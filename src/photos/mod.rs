@@ -35,6 +35,21 @@ pub enum Focus {
     Album,
 }
 
+/// Album pane sub-mode (RFC §6): thumbnail grid vs full-pane image view.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AlbumMode {
+    Grid,
+    Image,
+}
+
+/// A tree/curation action awaiting text or confirmation in the command pane (RFC §11).
+enum PendingCmd {
+    NewFolder { parent: PathBuf },
+    NewAlbum { parent: PathBuf },
+    Rename { path: PathBuf },
+    Delete { path: PathBuf, is_album: bool },
+}
+
 /// A flattened, displayable tree row.
 struct Row {
     path: PathBuf,
@@ -55,11 +70,23 @@ struct App {
 
     // Album grid.
     album_dir: Option<PathBuf>,
+    album_meta: hjson::AlbumMeta,
     album_paths: Vec<PathBuf>,
     album_cursor: usize,
+    selected: HashSet<usize>,
+    mode: AlbumMode,
+    show_exif: bool,
+    view_proto: Option<StatefulProtocol>,
+    view_exif: Option<hjson::ExifRecord>,
     thumbs: HashMap<PathBuf, StatefulProtocol>,
     cols: usize,
     thumb_px: u32,
+
+    // Command pane input (RFC §11).
+    cmd_active: bool,
+    cmd_prompt: String,
+    cmd_buffer: String,
+    pending: Option<PendingCmd>,
 
     picker: Picker,
     status: String,
@@ -80,11 +107,21 @@ impl App {
             tree_cursor: 0,
             focus: Focus::Tree,
             album_dir: None,
+            album_meta: hjson::AlbumMeta::default(),
             album_paths: Vec::new(),
             album_cursor: 0,
+            selected: HashSet::new(),
+            mode: AlbumMode::Grid,
+            show_exif: false,
+            view_proto: None,
+            view_exif: None,
             thumbs: HashMap::new(),
             cols: 4,
             thumb_px,
+            cmd_active: false,
+            cmd_prompt: String::new(),
+            cmd_buffer: String::new(),
+            pending: None,
             picker,
             status: String::from("↑/↓ move · →/Enter open · h collapse · Tab pane · q quit"),
             watch: None,
@@ -156,11 +193,111 @@ impl App {
             .collect();
         paths.sort();
         self.status = format!("{}  ·  {} images", dir.display(), paths.len());
+        self.album_meta = hjson::read_album(&dir).unwrap_or_default();
         self.album_dir = Some(dir);
         self.album_paths = paths;
         self.album_cursor = 0;
+        self.selected.clear();
+        self.mode = AlbumMode::Grid;
+        self.view_proto = None;
         self.thumbs.clear();
         self.focus = Focus::Album;
+    }
+
+    /// Filename (no path) of the album image at index `i`.
+    fn image_name(&self, i: usize) -> Option<String> {
+        self.album_paths.get(i).and_then(|p| p.file_name()).and_then(|n| n.to_str()).map(String::from)
+    }
+
+    /// Indices the next curation op applies to: the multi-selection if any, else the cursor.
+    fn targets(&self) -> Vec<usize> {
+        if self.selected.is_empty() {
+            vec![self.album_cursor]
+        } else {
+            let mut v: Vec<usize> = self.selected.iter().copied().collect();
+            v.sort_unstable();
+            v
+        }
+    }
+
+    /// Mutate each target image's record, then persist `album.hjson`.
+    fn edit_targets(&mut self, mut f: impl FnMut(&mut hjson::ImageRecord)) {
+        for i in self.targets() {
+            if let Some(name) = self.image_name(i) {
+                f(self.album_meta.images.entry(name).or_default());
+            }
+        }
+        self.save_album();
+    }
+
+    fn save_album(&mut self) {
+        if let Some(dir) = &self.album_dir {
+            if let Err(e) = hjson::write_album(dir, &self.album_meta) {
+                self.status = format!("save failed: {e}");
+            }
+        }
+    }
+
+    /// Open the command pane for a pending action (RFC §11).
+    fn prompt(&mut self, prompt: impl Into<String>, prefill: impl Into<String>, pending: PendingCmd) {
+        self.cmd_prompt = prompt.into();
+        self.cmd_buffer = prefill.into();
+        self.pending = Some(pending);
+        self.cmd_active = true;
+    }
+
+    /// Execute the pending command with `cmd_buffer` as the argument, then rescan.
+    fn commit_cmd(&mut self) {
+        let arg = self.cmd_buffer.trim().to_string();
+        let result: Result<()> = (|| {
+            match self.pending.take() {
+                Some(PendingCmd::NewFolder { parent }) if !arg.is_empty() => {
+                    let dir = parent.join(&arg);
+                    std::fs::create_dir_all(&dir)?;
+                    hjson::write_folder(&dir, &hjson::FolderMeta::default())?;
+                }
+                Some(PendingCmd::NewAlbum { parent }) if !arg.is_empty() => {
+                    let dir = parent.join(&arg);
+                    std::fs::create_dir_all(&dir)?;
+                    hjson::write_album(&dir, &hjson::AlbumMeta::default())?;
+                }
+                Some(PendingCmd::Rename { path }) if !arg.is_empty() => {
+                    if let Some(parent) = path.parent() {
+                        std::fs::rename(&path, parent.join(&arg))?;
+                    }
+                }
+                Some(PendingCmd::Delete { path, is_album }) if arg.eq_ignore_ascii_case("y") => {
+                    if is_album {
+                        std::fs::remove_dir_all(&path)?;
+                    } else {
+                        std::fs::remove_dir(&path)?; // folders: only if empty
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.status = format!("error: {e}");
+        }
+        self.cmd_active = false;
+        self.cmd_buffer.clear();
+        self.rescan();
+    }
+
+    fn enter_image_view(&mut self) {
+        self.mode = AlbumMode::Image;
+        self.load_view();
+    }
+
+    /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF.
+    fn load_view(&mut self) {
+        let path = self.album_paths.get(self.album_cursor).cloned();
+        self.view_proto = path
+            .as_ref()
+            .and_then(|p| loader::thumbnail(p, 1600).ok())
+            .map(|img| self.picker.new_resize_protocol(img));
+        self.view_exif = path.and_then(|p| exif::read_exif(&p).ok());
     }
 
     /// Lazily decode a few thumbnails per tick for images near the cursor that aren't built yet.
@@ -232,7 +369,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
                 if k.kind != KeyEventKind::Press {
                     continue;
                 }
-                if handle_key(app, k.code) {
+                if handle_key(app, k) {
                     break;
                 }
             }
@@ -261,15 +398,40 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
 }
 
 /// Returns true to quit.
-fn handle_key(app: &mut App, code: KeyCode) -> bool {
+fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::KeyModifiers;
+    if app.cmd_active {
+        handle_cmd_key(app, k.code);
+        return false;
+    }
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match app.focus {
-        Focus::Tree => handle_tree_key(app, code),
-        Focus::Album => handle_album_key(app, code),
+        Focus::Tree => handle_tree_key(app, k.code),
+        Focus::Album if app.mode == AlbumMode::Image => handle_image_key(app, k.code),
+        Focus::Album => handle_grid_key(app, k.code, ctrl),
+    }
+}
+
+/// Command-pane text input (RFC §11): type the argument, Enter commits, Esc cancels.
+fn handle_cmd_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.cmd_active = false;
+            app.pending = None;
+            app.cmd_buffer.clear();
+        }
+        KeyCode::Enter => app.commit_cmd(),
+        KeyCode::Backspace => {
+            app.cmd_buffer.pop();
+        }
+        KeyCode::Char(c) => app.cmd_buffer.push(c),
+        _ => {}
     }
 }
 
 fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
     let rows = app.rows();
+    let cur = rows.get(app.tree_cursor).map(|r| (r.path.clone(), r.kind, r.has_children));
     match code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('j') | KeyCode::Down => {
@@ -279,17 +441,17 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('g') => app.tree_cursor = 0,
         KeyCode::Char('G') => app.tree_cursor = rows.len().saturating_sub(1),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if let Some(r) = rows.get(app.tree_cursor) {
-                if r.kind == NodeKind::Album {
-                    app.open_album(r.path.clone());
-                } else if r.has_children {
-                    app.expanded.insert(r.path.clone());
+            if let Some((path, kind, has_children)) = cur {
+                if kind == NodeKind::Album {
+                    app.open_album(path);
+                } else if has_children {
+                    app.expanded.insert(path);
                 }
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if let Some(r) = rows.get(app.tree_cursor) {
-                app.expanded.remove(&r.path);
+            if let Some((path, ..)) = cur {
+                app.expanded.remove(&path);
             }
         }
         KeyCode::Tab => {
@@ -297,12 +459,39 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 app.focus = Focus::Album;
             }
         }
+        // Mutations (RFC §7.4) → command pane.
+        KeyCode::Char('n') => {
+            if let Some((path, ..)) = cur {
+                app.prompt("new folder: ", "", PendingCmd::NewFolder { parent: path });
+            }
+        }
+        KeyCode::Char('a') => {
+            if let Some((path, ..)) = cur {
+                app.prompt("new album: ", "", PendingCmd::NewAlbum { parent: path });
+            }
+        }
+        KeyCode::Char('R') => {
+            if let Some((path, ..)) = cur {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                app.prompt("rename to: ", name, PendingCmd::Rename { path });
+            }
+        }
+        KeyCode::Char('D') => {
+            if let Some((path, kind, _)) = cur {
+                let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                app.prompt(
+                    format!("delete \"{n}\"? [y/N] "),
+                    "",
+                    PendingCmd::Delete { path, is_album: kind == NodeKind::Album },
+                );
+            }
+        }
         _ => {}
     }
     false
 }
 
-fn handle_album_key(app: &mut App, code: KeyCode) -> bool {
+fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
     let n = app.album_paths.len();
     let cols = app.cols.max(1);
     match code {
@@ -319,13 +508,79 @@ fn handle_album_key(app: &mut App, code: KeyCode) -> bool {
                 app.album_cursor += cols;
             }
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.album_cursor = app.album_cursor.saturating_sub(cols);
-        }
+        KeyCode::Char('k') | KeyCode::Up => app.album_cursor = app.album_cursor.saturating_sub(cols),
         KeyCode::Char('g') => app.album_cursor = 0,
         KeyCode::Char('G') => app.album_cursor = n.saturating_sub(1),
         KeyCode::Char('[') => app.cols = app.cols.saturating_sub(1).max(1),
         KeyCode::Char(']') => app.cols = (app.cols + 1).min(12),
+        KeyCode::Enter => {
+            if n > 0 {
+                app.enter_image_view();
+            }
+        }
+        // Selection (RFC §8.4).
+        KeyCode::Char(' ') => {
+            if !app.selected.insert(app.album_cursor) {
+                app.selected.remove(&app.album_cursor);
+            }
+        }
+        KeyCode::Char('a') if ctrl => app.selected = (0..n).collect(),
+        KeyCode::Char('d') if ctrl => app.selected.clear(),
+        KeyCode::Char('i') if ctrl => {
+            let all: HashSet<usize> = (0..n).collect();
+            app.selected = all.difference(&app.selected).copied().collect();
+        }
+        // Curation (RFC §8.5) — applies to selection or cursor; persisted to album.hjson.
+        _ => return apply_curation(app, code),
+    }
+    false
+}
+
+fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
+    let n = app.album_paths.len();
+    match code {
+        KeyCode::Char('q') => return true,
+        KeyCode::Esc => {
+            app.mode = AlbumMode::Grid;
+            app.view_proto = None;
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.album_cursor + 1 < n {
+                app.album_cursor += 1;
+                app.load_view();
+            }
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.album_cursor > 0 {
+                app.album_cursor -= 1;
+                app.load_view();
+            }
+        }
+        KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        _ => return apply_curation(app, code),
+    }
+    false
+}
+
+/// Rating (1–5, 0 clears) / flag / reject / color-label, on the selection or cursor.
+fn apply_curation(app: &mut App, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Char(d @ '0'..='5') => {
+            let r = d.to_digit(10).unwrap() as u8;
+            app.edit_targets(|rec| rec.rating = r);
+        }
+        KeyCode::Char('f') => app.edit_targets(|rec| rec.flagged = !rec.flagged),
+        KeyCode::Char('x') => app.edit_targets(|rec| rec.rejected = !rec.rejected),
+        KeyCode::Char('c') => {
+            const LABELS: [&str; 5] = ["red", "yellow", "green", "blue", "purple"];
+            app.edit_targets(|rec| {
+                let next = match rec.color_label.as_deref() {
+                    None => Some(LABELS[0]),
+                    Some(l) => LABELS.iter().position(|x| *x == l).and_then(|i| LABELS.get(i + 1)).copied(),
+                };
+                rec.color_label = next.map(String::from);
+            });
+        }
         _ => {}
     }
     false
@@ -351,7 +606,17 @@ fn draw(f: &mut Frame, app: &mut App) {
     draw_tree(f, app, tree_col);
     draw_album(f, app, album_col);
 
-    f.render_widget(Paragraph::new(" CMD ▶ ").block(Block::default().borders(Borders::ALL)), cmd_pane);
+    // Command pane: active input (mutations/confirm) or a passive hint.
+    let cmd = if app.cmd_active {
+        format!(" {}{}_", app.cmd_prompt, app.cmd_buffer)
+    } else {
+        " CMD ▶ ".to_string()
+    };
+    let cmd_style = if app.cmd_active { Style::default().fg(Color::Yellow) } else { Style::default() };
+    f.render_widget(
+        Paragraph::new(cmd).style(cmd_style).block(Block::default().borders(Borders::ALL)),
+        cmd_pane,
+    );
 }
 
 fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
@@ -408,6 +673,11 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
+    if app.mode == AlbumMode::Image {
+        draw_image_view(f, app, inner);
+        return;
+    }
+
     let cols = app.cols.max(1);
     let rows = inner.height as usize / 8; // ~8 text rows per thumbnail cell
     let per_page = (cols * rows).max(1);
@@ -422,22 +692,130 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
             let vi = start + r * cols + c;
             let Some(path) = app.album_paths.get(vi).cloned() else { continue };
             let cell = col_rects[c];
-            let selected = vi == app.album_cursor;
-            let name: String = path.file_name().and_then(|n| n.to_str()).unwrap_or("").chars().collect();
+            let is_cursor = vi == app.album_cursor;
+            let is_sel = app.selected.contains(&vi);
+            let name: String = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             let cap: String = {
                 let cs: Vec<char> = name.chars().collect();
-                if cs.len() > 14 { cs[cs.len() - 14..].iter().collect() } else { name }
+                if cs.len() > 14 { cs[cs.len() - 14..].iter().collect() } else { name.clone() }
+            };
+            let border = if is_cursor {
+                Color::Cyan
+            } else if is_sel {
+                Color::Green
+            } else {
+                Color::DarkGray
             };
             let cb = Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::new().fg(if selected { Color::Cyan } else { Color::DarkGray }))
-                .title(if selected { format!("▶{cap}") } else { cap });
+                .border_style(Style::new().fg(border))
+                .title(if is_cursor { format!("▶{cap}") } else { cap });
             let ci = cb.inner(cell);
             f.render_widget(cb, cell);
+            // Curation badge (computed before the mutable thumbs borrow).
+            let badge = curation_badge(app.album_meta.images.get(&name));
+            let [thumb_area, badge_area] =
+                Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(ci);
             match app.thumbs.get_mut(&path) {
-                Some(proto) => f.render_stateful_widget(StatefulImage::new(), ci, proto),
-                None => f.render_widget(Paragraph::new("…").style(Style::new().fg(Color::DarkGray)), ci),
+                Some(proto) => f.render_stateful_widget(StatefulImage::new(), thumb_area, proto),
+                None => f.render_widget(
+                    Paragraph::new("…").style(Style::new().fg(Color::DarkGray)),
+                    thumb_area,
+                ),
+            }
+            f.render_widget(Paragraph::new(badge), badge_area);
+        }
+    }
+}
+
+fn label_color(l: &str) -> Color {
+    match l {
+        "red" => Color::Red,
+        "yellow" => Color::Yellow,
+        "green" => Color::Green,
+        "blue" => Color::Blue,
+        "purple" => Color::Magenta,
+        _ => Color::White,
+    }
+}
+
+/// Rating stars + flag / reject / color-label, from an image's curation record.
+fn curation_badge(rec: Option<&hjson::ImageRecord>) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if let Some(r) = rec {
+        if r.rating > 0 {
+            let stars: String = (0..5).map(|i| if i < r.rating { '★' } else { '☆' }).collect();
+            spans.push(Span::styled(stars, Style::new().fg(Color::Yellow)));
+        }
+        if r.flagged {
+            spans.push(Span::styled(" ⚑", Style::new().fg(Color::Yellow)));
+        }
+        if r.rejected {
+            spans.push(Span::styled(" ✗", Style::new().fg(Color::Red)));
+        }
+        if let Some(l) = &r.color_label {
+            spans.push(Span::styled(" ●", Style::new().fg(label_color(l))));
+        }
+    }
+    Line::from(spans)
+}
+
+/// Full-pane image view (RFC §9): the image, optionally with an EXIF + curation side panel (`i`).
+fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
+    let (img_area, panel) = if app.show_exif {
+        let [a, b] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).areas(area);
+        (a, Some(b))
+    } else {
+        (area, None)
+    };
+
+    match app.view_proto.as_mut() {
+        Some(proto) => f.render_stateful_widget(StatefulImage::new(), img_area, proto),
+        None => f.render_widget(Paragraph::new("  decoding…").style(Style::new().fg(Color::DarkGray)), img_area),
+    }
+
+    if let Some(panel) = panel {
+        let name = app.image_name(app.album_cursor).unwrap_or_default();
+        let mut lines: Vec<Line> = vec![Line::from(Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)))];
+        if let Some(e) = &app.view_exif {
+            let mut kv = |k: &str, v: Option<String>| {
+                if let Some(v) = v {
+                    lines.push(Line::from(format!("{k:<9}{v}")));
+                }
+            };
+            kv("Date", e.date_taken.clone());
+            kv("Camera", match (&e.camera_make, &e.camera_model) {
+                (Some(m), Some(md)) => Some(format!("{m} {md}")),
+                (_, Some(md)) => Some(md.clone()),
+                _ => None,
+            });
+            kv("Lens", e.lens_model.clone());
+            kv("Focal", e.focal_length_mm.map(|f| format!("{f:.0}mm")));
+            kv("Aperture", e.aperture.clone());
+            kv("Shutter", e.shutter.clone());
+            kv("ISO", e.iso.map(|i| i.to_string()));
+            kv("Size", match (e.width_px, e.height_px) {
+                (Some(w), Some(h)) => Some(format!("{w}×{h}")),
+                _ => None,
+            });
+            kv("GPS", match (e.gps_lat, e.gps_lon) {
+                (Some(la), Some(lo)) => Some(format!("{la:.4}, {lo:.4}")),
+                _ => None,
+            });
+        }
+        if let Some(r) = app.album_meta.images.get(&name) {
+            lines.push(Line::from("─ curation ─"));
+            lines.push(curation_badge(Some(r)));
+            if let Some(s) = r.score {
+                lines.push(Line::from(format!("score    {s:.2}")));
+            }
+            if !r.tags.is_empty() {
+                lines.push(Line::from(format!("tags     {}", r.tags.join(", "))));
             }
         }
+        f.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" EXIF ")),
+            panel,
+        );
     }
 }
