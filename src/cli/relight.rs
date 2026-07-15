@@ -50,6 +50,10 @@ pub struct RelightArgs {
     /// Output directory (or file path ending in an image extension).
     #[arg(long, default_value = "./")]
     pub out: PathBuf,
+
+    /// `--import <album>` / `--import-move`: land the relit image in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
 }
 
 pub async fn run(args: RelightArgs, device: Device) -> Result<()> {

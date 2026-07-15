@@ -18,6 +18,7 @@ pub mod embedding;
 pub mod gallery;
 pub mod generate;
 pub mod img2img;
+pub mod import;
 pub mod init;
 pub mod inspect;
 pub mod metadata;
@@ -259,22 +260,34 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Portrait(args) => {
             let device = crate::device::select(&cli.device)?;
-            portrait::run(args, device).await
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, portrait::run(args, device)).await
         }
         Command::Img2img(args) => {
             let device = crate::device::select(&cli.device)?;
-            img2img::run(args, device).await
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, img2img::run(args, device)).await
         }
         Command::Outpaint(args) => {
             let device = crate::device::select(&cli.device)?;
-            outpaint::run(args, device).await
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, outpaint::run(args, device)).await
         }
         Command::Stylize(args) => {
             let device = crate::device::select(&cli.device)?;
-            stylize::run(args, device).await
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, stylize::run(args, device)).await
         }
-        Command::Relight(a) => relight::run(a, crate::device::select(&cli.device)?).await,
-        Command::Multiperson(a) => multiperson::run(a, crate::device::select(&cli.device)?).await,
+        Command::Relight(a) => {
+            let device = crate::device::select(&cli.device)?;
+            let (imp, out) = (a.import.clone(), a.out.clone());
+            import::run_with_import(imp, out, relight::run(a, device)).await
+        }
+        Command::Multiperson(a) => {
+            let device = crate::device::select(&cli.device)?;
+            let (imp, out) = (a.import.clone(), a.out.clone());
+            import::run_with_import(imp, out, multiperson::run(a, device)).await
+        }
         Command::Transparent(args) => {
             let device = crate::device::select(&cli.device)?;
             transparent::run(args, device).await
@@ -285,7 +298,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;
-            upscale::run(args, device).await
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, upscale::run(args, device)).await
         }
         Command::Rank(args) => {
             let device = crate::device::select(&cli.device)?;

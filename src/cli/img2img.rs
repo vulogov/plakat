@@ -181,6 +181,10 @@ pub struct Img2ImgArgs {
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land each output in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// ControlNet conditioner kind (currently `depth`). Composes
     /// with the img2img / inpaint path — the conditioner guides
     /// every denoise step. Conditioning source: `--control-image PATH`
@@ -1423,6 +1427,7 @@ mod tests {
             loras: Vec::new(),
             lora_scale: 1.0,
             out: PathBuf::from("./out"),
+            import: Default::default(),
             control: None,
             control_image: None,
             control_from: None,

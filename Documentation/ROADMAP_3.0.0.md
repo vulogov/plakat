@@ -36,11 +36,14 @@ index" to build; it's the HJSON model itself.
   - [x] Filter bar (`/`, view layer + grammar rating/flag/rejected/tag/ai/free-text, unit-tested) +
         culling loupe (`C`, keep/reject/rate one-at-a-time).
   - [ ] Remaining: smart albums (`Ctrl-b F`), notes/caption editing, sort order.
-- [ ] **`--import` for the generation commands** (user request) — `generate`/`upscale`/`portrait`/
-      `multiperson`/… gain `--import <album>`: the output is copied/moved into the album, its gen
-      params (the existing `GenerationMetadata`) are written into the album.hjson per-image record, and
-      the album is updated. Closes the loop: generate → land in the manager. Design below in
-      RFC_PHOTOS_1 / a follow-up note.
+- [x] **`--import` for the generation commands** (user request) — `generate` + `upscale` /
+      `portrait` / `multiperson` / `img2img` / `outpaint` / `stylize` / `relight` all gain
+      `--import <album>` (+ `--import-move`): the output (and its `.json` sidecar) is copied/moved
+      into the album, its gen params (`GenerationMetadata`) are written into the `album.hjson`
+      per-image record, and the album is updated. Shared helper `cli/import.rs`
+      (`ImportArgs` flatten + `run_with_import` snapshot wrapper); feature-gated on `photos` with a
+      fast-fail build hint. Closes the loop: generate → land curated in the manager (live via the
+      watcher). RFC_PHOTOS_IMPORT.md.
 - [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).

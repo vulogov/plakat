@@ -7,6 +7,7 @@
 
 pub mod exif;
 pub mod hjson;
+pub mod import;
 pub mod library;
 pub mod loader;
 pub mod watcher;

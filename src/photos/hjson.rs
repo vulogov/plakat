@@ -99,6 +99,10 @@ pub struct ImageRecord {
     /// LAION aesthetic score (carried over from the gen sidecar / `rank`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
+    /// Generation parameters when this image was produced by plakat (`--import`): prompt, model,
+    /// seed, steps, guidance, loras, … (the standard `GenerationMetadata`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<crate::imaging::metadata::GenerationMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<EditEntry>,
 }

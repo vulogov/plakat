@@ -16,6 +16,10 @@ pub struct UpscaleArgs {
     #[arg(long, value_name = "OUT")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land the upscaled image in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// Scale factor for classical filters (e.g. 2 for 2×, 4 for 4×). Ignored
     /// for ML methods — their scale is fixed by the model.
     #[arg(long, default_value_t = 2.0)]

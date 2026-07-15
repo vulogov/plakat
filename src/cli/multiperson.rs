@@ -100,6 +100,10 @@ pub struct MultipersonArgs {
     #[arg(long, default_value = "./")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land the composed scene in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// Enable the identity face-refinement pass: detect each rendered face (SCRFD)
     /// and lightly repaint the crop conditioned on that persona's photos. Uses a
     /// LOW-strength masked repaint that preserves the face's scale/framing, so it

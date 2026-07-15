@@ -190,6 +190,10 @@ pub struct PortraitArgs {
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land each portrait in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// LoRA to apply. Repeatable. Same syntax as `generate`.
     #[arg(long = "lora")]
     pub loras: Vec<LoraSpec>,

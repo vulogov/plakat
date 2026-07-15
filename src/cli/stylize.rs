@@ -79,6 +79,10 @@ pub struct StylizeArgs {
     #[arg(long, value_name = "OUT")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land the stylized image in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// Strength of style transfer in [0.0, 1.0]. Higher = closer to REF.
     /// Default 0.7 is "heavy restyle" — drop to 0.35 for face inputs,
     /// or use `--for portrait` (which does this automatically).

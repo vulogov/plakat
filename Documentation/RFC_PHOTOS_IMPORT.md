@@ -1,6 +1,12 @@
 # RFC PHOTOS-IMPORT — `--import` for the generation commands
 
-**Status:** Plan (implementation-ready) · **Depends on:** RFC PHOTOS-1 (`src/photos/hjson.rs`)
+**Status:** Implemented (v3.0.0) · **Depends on:** RFC PHOTOS-1 (`src/photos/hjson.rs`)
+
+Landed: `ImageRecord.generation` field; `src/photos/import.rs` (`import_outputs`); shared
+`src/cli/import.rs` (`ImportArgs` flatten + `run_with_import` snapshot wrapper, feature-gated on
+`photos` with a fast-fail build hint). Wired into `generate` (via its score/snapshot wrapper) and
+`upscale` / `portrait` / `multiperson` / `img2img` / `outpaint` / `stylize` / `relight` (via
+`run_with_import` at dispatch). Tested + e2e-verified.
 
 ## Goal
 

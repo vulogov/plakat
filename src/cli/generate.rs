@@ -771,6 +771,11 @@ pub struct GenerateArgs {
     /// detail in the live preview.
     #[arg(long = "preview-size", default_value_t = 384, value_name = "PX")]
     pub preview_size: u32,
+
+    /// v3.x: `--import <album>` / `--import-move` — land each output in a photo album (see
+    /// `plakat photos`), recording its generation params in the album HJSON.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
 }
 
 /// Image files in `dir` (non-recursive) as a set — used to diff before/after a run so `--keep-best`
@@ -795,9 +800,13 @@ fn image_snapshot(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
 pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
     let keep_best = args.keep_best;
     let want_score = args.score || keep_best.is_some();
+    let import = args.import.clone();
+    import.validate()?; // fail before a multi-minute generation if `--import` needs the photos build
     let out_dir = args.out.clone();
-    // Snapshot the out-dir before generating so we only touch this run's outputs.
-    let before = want_score.then(|| image_snapshot(&out_dir));
+    // Snapshot the out-dir before generating so we only touch this run's outputs — needed for both
+    // `--keep-best`/`--score` (scoring) and `--import` (which files to land in the album).
+    let before =
+        (want_score || import.import.is_some()).then(|| image_snapshot(&out_dir));
 
     run_inner(args, device.clone()).await?;
 
@@ -805,7 +814,17 @@ pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
         let new_files: Vec<PathBuf> =
             image_snapshot(&out_dir).difference(&before).cloned().collect();
         if !new_files.is_empty() {
-            score_outputs(new_files, keep_best, &device).await?;
+            // Score first (writes the aesthetic score into each sidecar), THEN import — so the
+            // album record carries the score. `--keep-best` may have deleted the pruned files, but
+            // it only removes files this run created, so re-diff to import just the survivors.
+            if want_score {
+                score_outputs(new_files, keep_best, &device).await?;
+            }
+            if import.import.is_some() {
+                let survivors: Vec<PathBuf> =
+                    image_snapshot(&out_dir).difference(&before).cloned().collect();
+                import.apply(&survivors)?;
+            }
         }
     }
     Ok(())
@@ -1948,6 +1967,7 @@ mod tests {
             grid_padding: 0,
             preview_every: 0,
             preview_size: 384,
+            import: crate::cli::import::ImportArgs::default(),
         }
     }
 

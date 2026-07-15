@@ -132,6 +132,10 @@ pub struct OutpaintArgs {
     #[arg(long, default_value = "./out")]
     pub out: PathBuf,
 
+    /// `--import <album>` / `--import-move`: land the outpainted image in a photo album.
+    #[command(flatten)]
+    pub import: crate::cli::import::ImportArgs,
+
     /// v0.18 phase 2: with `--count N > 1`, also write a single
     /// `plakat-inpaint-grid-<base-seed>.png` combining all N outputs
     /// in a near-square layout. Forwarded to the underlying
@@ -257,6 +261,9 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
         loras: args.loras,
         lora_scale: args.lora_scale,
         out: args.out,
+        // Import happens once at the outpaint dispatch level — the nested inpaint pass must not
+        // re-import, so leave its flag unset.
+        import: Default::default(),
         // ControlNet / artefact compositing don't compose with the
         // simple outpaint wrapper in this phase — pass through empty.
         control: None,
