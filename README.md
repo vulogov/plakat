@@ -17,30 +17,29 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 2.8.0 — SD3.5 unblocked, curation persists, faces restored
+## What's new in 3.0.0 — `plakat photos`, a photo & image collection manager
 
-The 2.x send-off, right at the gate of the 3.x photo-manager flagship: it removes the last big
-blocker on SD3.5, makes curation durable, and adds a standalone face-restore finisher.
+The flagship pivot. The 2.6–2.8 quality, curation, and editing pipelines were the engine;
+**3.0 wraps them in a real image library you browse, curate, and generate into** — a full terminal
+UI, on by default.
 
-**SD 3.5 runs on 24 GB.** SD3.5's T5-XXL (~9.5 GB) and its MMDiT used to be resident at once,
-OOM-locking the whole family on 24 GB Apple Silicon. A new **low-mem mode** loads them
-**sequentially** — T5 encodes the prompt → is freed → the MMDiT loads → denoises — dropping peak
-memory from the sum to the max. Auto-enabled on Metal when RAM is tight (`PLAKAT_SD3_LOWMEM`
-overrides). SD3.5 now generates where every prior attempt OOM'd.
+**`plakat photos [DIR]`.** A three-pane TUI over a folder tree of images: a thumbnail grid (RAW +
+every common format, EXIF read once), a full image view (←/→, `i` EXIF overlay), and
+**non-destructive curation** — 1–5 star ratings, flag / reject, colour labels, tags — persisted
+per-album in a plain `album.hjson` (no hidden database; your files stay yours, the sidecar is
+additive). Filter the grid with a live grammar (`rating>=4`, `flag`, `tag:sunset`, `ai`, free text)
+and cull fast in a one-at-a-time loupe. A filesystem watcher folds in new files as they land.
 
-**Curation that persists.** `generate --score` (and `--keep-best`) now write the LAION aesthetic
-score into each image's `.json` metadata sidecar, and `plakat rank --write` does the same for an
-existing folder — an on-disk sort key ready for the 3.x collection manager.
+**`--import` closes the generate → collection loop.** Every image-producing command — `generate`,
+`upscale`, `portrait`, `multiperson`, `img2img`, `outpaint`, `stylize`, `relight` — gains
+`--import <album>` (plus `--import-move`): the output lands in a photo album with its full
+generation recipe (prompt, seed, steps, model, LoRAs) recorded in the album's per-image record.
+Generate in one terminal, watch it appear **already curated** in `plakat photos` in another.
 
-**`plakat restore-faces`.** Standalone face restoration for existing images: SCRFD-detect each face,
-diffusion-refine the crop at a gentle strength (identity-preserving), feather-composite back. The
-standalone form of `--adetailer` — run it on photos or after `upscale --diffusion`.
+Both TUIs (`plakat ui`, `plakat photos`) now ship **on by default** — no `--features` flag needed.
+Everything from the 2.x line is unchanged and verify-safe; default image output is byte-identical.
 
-Everything new is opt-in and verify-safe. **Next: 3.0 — `plakat photos`, a TUI photo & image
-collection manager** ([road to 3.0](Documentation/ROADMAP_TO_3.0.md)). The 2.6–2.8 quality,
-curation, and editing pipelines are its engine.
-
-**Earlier releases** (v0.13 – 2.7):
+**Earlier releases** (v0.13 – 2.8):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
@@ -317,10 +316,11 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 
 | Command | What it does |
 |---|---|
-| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18 — composes with ControlNet + Redux v0.19, **+ `--tiled` v0.20**) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax, inline `<lora:>` tags, `BREAK` keyword (SD-family), CLIP-skip, ADetailer, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every`, PNG metadata + JSON sidecar, `--negative-preset` (+ user catalog v0.20), `--format webp` (Flux + SD3 in v0.20), `--enhance local\|auto` + cache/temp/tokens/system + **`--enhance-keep-original`** (v0.20), **`--recipe FILE.json`** (v0.20). |
+| `generate <PROMPT>` | Single-shot text-to-image. SD 1.5 / 2.1 / SDXL / SDXL-Turbo / Flux (BF16, GGUF, NF4, **Kontext-dev** v0.18 — composes with ControlNet + Redux v0.19, **+ `--tiled` v0.20**) / SD3 / SD3.5. Built-in wildcards, A1111 attention syntax, inline `<lora:>` tags, `BREAK` keyword (SD-family), CLIP-skip, ADetailer, Hires fix, ControlNet, LoRA stacking, tiled hi-res, Flux Redux + concept variants, `--grid` bundling, `--preview-every`, PNG metadata + JSON sidecar, `--negative-preset` (+ user catalog v0.20), `--format webp` (Flux + SD3 in v0.20), `--enhance local\|auto` + cache/temp/tokens/system + **`--enhance-keep-original`** (v0.20), **`--recipe FILE.json`** (v0.20), **`--import <album>`** (v3.0 — land the output in a `plakat photos` album with its full recipe; also on `upscale`/`portrait`/`multiperson`/`img2img`/`outpaint`/`stylize`/`relight`). |
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
+| `photos [DIR]` | **v3.0 flagship.** TUI photo & image collection manager: folder tree + thumbnail grid (RAW + every common format, EXIF), full image view, non-destructive curation (1–5 ratings, flag/reject, colour labels, tags) persisted per-album in a plain `album.hjson`, a live filter grammar + culling loupe, and a filesystem watcher. On by default (needs a graphics-capable terminal). See [`PHOTOS_TUTORIAL.md`](Documentation/Tutorials/PHOTOS_TUTORIAL.md). |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
 | `map <DESCRIPTION>` | **v1.4–1.8**. Turn a prose world description into a fantasy map: LLM parse → `MapSpec v2`, then a geometry engine (terrain → hydrology → coastline → biomes → landmarks → roads → composite) — or, for a city/town spec (`urban` block), an **urban street graph** (wall, gates, blocks, waterfront). **`--map-render PATH`** writes the finished labelled map (`--map-style`, **`--map-urban-layout radial\|grid\|organic`**, **`--map-erosion <0..>1>`**); **`--map-render-sd PATH`** paints it with SD (`--map-sd-model`/`--map-sd-lora`/`--map-sd-tile`); **`--map-export-svg`/`--map-export-geojson`** export vectors. Also `--map-spec`, `--map-dump-{spec,…,features,conditioning,streets}`, `--seed`, `--map-tiles`/`--map-scale`. Geometry is a pure fn of (spec, seed) — byte-stable. A first-class step in `scenario` (`type: map`), `compile` (`map:` block), and `run` scripting (`plakat.map.*`). See [`ROADMAP_1.8.0.md`](Documentation/ROADMAP_1.8.0.md). |

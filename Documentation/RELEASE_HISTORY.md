@@ -8,6 +8,28 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 2.8.0 — SD3.5 unblocked, curation persists, faces restored
+
+The 2.x send-off, right at the gate of the 3.x photo-manager flagship: it removes the last big
+blocker on SD3.5, makes curation durable, and adds a standalone face-restore finisher.
+
+**SD 3.5 runs on 24 GB.** SD3.5's T5-XXL (~9.5 GB) and its MMDiT used to be resident at once,
+OOM-locking the whole family on 24 GB Apple Silicon. A new **low-mem mode** loads them
+**sequentially** — T5 encodes the prompt → is freed → the MMDiT loads → denoises — dropping peak
+memory from the sum to the max. Auto-enabled on Metal when RAM is tight (`PLAKAT_SD3_LOWMEM`
+overrides). SD3.5 now generates where every prior attempt OOM'd.
+
+**Curation that persists.** `generate --score` (and `--keep-best`) now write the LAION aesthetic
+score into each image's `.json` metadata sidecar, and `plakat rank --write` does the same for an
+existing folder — an on-disk sort key ready for the 3.x collection manager.
+
+**`plakat restore-faces`.** Standalone face restoration for existing images: SCRFD-detect each face,
+diffusion-refine the crop at a gentle strength (identity-preserving), feather-composite back. The
+standalone form of `--adetailer` — run it on photos or after `upscale --diffusion`.
+
+Everything new is opt-in and verify-safe. **Next: 3.0 — `plakat photos`, a TUI photo & image
+collection manager.** The 2.6–2.8 quality, curation, and editing pipelines are its engine.
+
 ## What's new in 2.7.0 — curate & finish, on the road to 3.0
 
 2.6 delivered image quality; **2.7 makes it usable at scale and reaches everywhere** — batch

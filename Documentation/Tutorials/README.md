@@ -25,6 +25,14 @@ If you're new to plakat, work through these in order:
    into scenarios — eight screens, all keyboard-driven, on the same
    engine as the CLI. The friendliest way to explore everything below.
 
+0b. [`PHOTOS_TUTORIAL.md`](PHOTOS_TUTORIAL.md) — **`plakat photos`, the
+   photo & image collection manager (the 3.x flagship).** Browse a folder
+   tree of images (RAW + every common format, EXIF), curate
+   non-destructively (ratings, flags, colour labels, tags in a plain
+   per-album `album.hjson`), filter and cull fast — and close the loop with
+   `--import`, which lands anything you generate straight into an album with
+   its full recipe. On by default.
+
 1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **the foundation.**
    Your first generation, the flags that matter, seeds for
    reproducibility, prompt wildcards, CLIP-skip, ADetailer face
@@ -286,6 +294,7 @@ feature:
 |---|---|
 | `GETTING_STARTED.md` | plakat installed; can run `plakat --help`. |
 | `UI_TUTORIAL.md` | plakat installed (default `ui` feature). A graphics-capable terminal (Kitty/Ghostty/WezTerm/iTerm2/Sixel) for inline images; runs without one (placeholders). |
+| `PHOTOS_TUTORIAL.md` | plakat installed (default `photos` feature). A graphics-capable terminal for thumbnails/image view; runs without one (placeholders). A folder of images to browse. |
 | `GENERATE_TUTORIAL.md` | plakat installed; can run `plakat --help`. |
 | `PORTRAIT_TUTORIAL.md` | Above + finished `GENERATE_TUTORIAL.md`. |
 | `STYLES_TUTORIAL.md` | Above + finished `PORTRAIT_TUTORIAL.md` (helpful but not required). |
