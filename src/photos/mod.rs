@@ -14,7 +14,7 @@ pub mod watcher;
 
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -50,7 +50,22 @@ enum PendingCmd {
     NewAlbum { parent: PathBuf },
     Rename { path: PathBuf },
     Delete { path: PathBuf, is_album: bool },
+    /// Edit a free-text metadata field of a single image (RFC §8.5: notes/caption).
+    EditMeta { name: String, field: EditField },
 }
+
+/// A free-text per-image metadata field editable from the command pane.
+#[derive(Clone, Copy)]
+enum EditField {
+    Caption,
+    Notes,
+    Title,
+    Tags,
+}
+
+/// Sort orders for the album grid (album.hjson `sort`), cycled with `s`.
+const SORT_ORDER: [&str; 6] =
+    ["name-asc", "name-desc", "date-desc", "date-asc", "rating-desc", "score-desc"];
 
 /// A flattened, displayable tree row.
 struct Row {
@@ -158,6 +173,7 @@ impl App {
                 paths.sort();
                 self.thumbs.retain(|k, _| paths.contains(k)); // drop thumbs for removed files
                 self.album_paths = paths;
+                self.sort_album(); // honour the album's persisted sort order
                 self.rebuild_view();
             }
         }
@@ -207,6 +223,7 @@ impl App {
         self.album_meta = hjson::read_album(&dir).unwrap_or_default();
         self.album_dir = Some(dir);
         self.album_paths = paths;
+        self.sort_album(); // honour the album's persisted sort order
         self.album_cursor = 0;
         self.selected.clear();
         self.filter.clear();
@@ -273,6 +290,47 @@ impl App {
         }
     }
 
+    /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`).
+    fn sort_album(&mut self) {
+        let mode = self.album_meta.sort.clone().unwrap_or_else(|| "name-asc".into());
+        let mut paths = std::mem::take(&mut self.album_paths);
+        sort_paths(&mut paths, &mode, &self.album_meta);
+        self.album_paths = paths;
+    }
+
+    /// Cycle to the next sort order, persist it, re-sort, and keep the cursor on the same image.
+    fn cycle_sort(&mut self) {
+        let cur = self.album_meta.sort.as_deref().unwrap_or("name-asc");
+        let i = SORT_ORDER.iter().position(|m| *m == cur).unwrap_or(0);
+        let next = SORT_ORDER[(i + 1) % SORT_ORDER.len()];
+        self.album_meta.sort = Some(next.to_string());
+        self.save_album();
+        let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
+        self.selected.clear(); // indices are about to be reshuffled
+        self.sort_album();
+        self.rebuild_view();
+        if let Some(cp) = cur_path {
+            if let Some(pos) = self.view.iter().position(|&pi| self.album_paths.get(pi) == Some(&cp)) {
+                self.album_cursor = pos;
+            }
+        }
+        self.status = format!("sort: {next}  (s to cycle)");
+    }
+
+    /// Open the command pane to edit a free-text metadata field of the cursor image, prefilled with
+    /// its current value.
+    fn begin_edit(&mut self, field: EditField) {
+        let Some(name) = self.cur_idx().and_then(|i| self.image_name(i)) else { return };
+        let rec = self.album_meta.images.get(&name);
+        let (label, prefill) = match field {
+            EditField::Caption => ("caption: ", rec.and_then(|r| r.caption.clone()).unwrap_or_default()),
+            EditField::Notes => ("notes: ", rec.and_then(|r| r.notes.clone()).unwrap_or_default()),
+            EditField::Title => ("title: ", rec.and_then(|r| r.title.clone()).unwrap_or_default()),
+            EditField::Tags => ("tags (comma-sep): ", rec.map(|r| r.tags.join(", ")).unwrap_or_default()),
+        };
+        self.prompt(label, prefill, PendingCmd::EditMeta { name, field });
+    }
+
     /// Open the command pane for a pending action (RFC §11).
     fn prompt(&mut self, prompt: impl Into<String>, prefill: impl Into<String>, pending: PendingCmd) {
         self.cmd_prompt = prompt.into();
@@ -281,25 +339,31 @@ impl App {
         self.cmd_active = true;
     }
 
-    /// Execute the pending command with `cmd_buffer` as the argument, then rescan.
+    /// Execute the pending command with `cmd_buffer` as the argument. Filesystem mutations trigger a
+    /// full rescan; a metadata edit only rebuilds the filtered view (tags can change filter matches).
     fn commit_cmd(&mut self) {
         let arg = self.cmd_buffer.trim().to_string();
+        let mut fs_changed = false;
+        let mut meta_changed = false;
         let result: Result<()> = (|| {
             match self.pending.take() {
                 Some(PendingCmd::NewFolder { parent }) if !arg.is_empty() => {
                     let dir = parent.join(&arg);
                     std::fs::create_dir_all(&dir)?;
                     hjson::write_folder(&dir, &hjson::FolderMeta::default())?;
+                    fs_changed = true;
                 }
                 Some(PendingCmd::NewAlbum { parent }) if !arg.is_empty() => {
                     let dir = parent.join(&arg);
                     std::fs::create_dir_all(&dir)?;
                     hjson::write_album(&dir, &hjson::AlbumMeta::default())?;
+                    fs_changed = true;
                 }
                 Some(PendingCmd::Rename { path }) if !arg.is_empty() => {
                     if let Some(parent) = path.parent() {
                         std::fs::rename(&path, parent.join(&arg))?;
                     }
+                    fs_changed = true;
                 }
                 Some(PendingCmd::Delete { path, is_album }) if arg.eq_ignore_ascii_case("y") => {
                     if is_album {
@@ -307,6 +371,19 @@ impl App {
                     } else {
                         std::fs::remove_dir(&path)?; // folders: only if empty
                     }
+                    fs_changed = true;
+                }
+                Some(PendingCmd::EditMeta { name, field }) => {
+                    let val = (!arg.is_empty()).then(|| arg.clone());
+                    let rec = self.album_meta.images.entry(name).or_default();
+                    match field {
+                        EditField::Caption => rec.caption = val,
+                        EditField::Notes => rec.notes = val,
+                        EditField::Title => rec.title = val,
+                        EditField::Tags => rec.tags = parse_tags(&arg),
+                    }
+                    self.save_album();
+                    meta_changed = true;
                 }
                 _ => {}
             }
@@ -317,7 +394,11 @@ impl App {
         }
         self.cmd_active = false;
         self.cmd_buffer.clear();
-        self.rescan();
+        if fs_changed {
+            self.rescan();
+        } else if meta_changed {
+            self.rebuild_view();
+        }
     }
 
     fn enter_image_view(&mut self) {
@@ -580,6 +661,7 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('G') => app.album_cursor = n.saturating_sub(1),
         KeyCode::Char('[') => app.cols = app.cols.saturating_sub(1).max(1),
         KeyCode::Char(']') => app.cols = (app.cols + 1).min(12),
+        KeyCode::Char('s') => app.cycle_sort(),
         KeyCode::Enter => {
             if n > 0 {
                 app.enter_image_view();
@@ -698,6 +780,11 @@ fn apply_curation(app: &mut App, code: KeyCode) -> bool {
                 rec.color_label = next.map(String::from);
             });
         }
+        // Free-text metadata editing (RFC §8.5) — opens the command pane on the cursor image.
+        KeyCode::Char('t') => app.begin_edit(EditField::Tags),
+        KeyCode::Char('e') => app.begin_edit(EditField::Caption),
+        KeyCode::Char('N') => app.begin_edit(EditField::Notes),
+        KeyCode::Char('T') => app.begin_edit(EditField::Title),
         _ => {}
     }
     false
@@ -771,7 +858,11 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
 fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     let active = app.focus == Focus::Album;
     let title = match &app.album_dir {
-        Some(d) => format!(" {} ", d.file_name().and_then(|n| n.to_str()).unwrap_or("album")),
+        Some(d) => format!(
+            " {}  ·  ↕ {} ",
+            d.file_name().and_then(|n| n.to_str()).unwrap_or("album"),
+            app.album_meta.sort.as_deref().unwrap_or("name-asc"),
+        ),
         None => " Album ".to_string(),
     };
     let block = Block::default()
@@ -868,6 +959,46 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
 /// Filter grammar (RFC §16 subset): whitespace-separated predicates, ALL must match. Supports
 /// `rating>=N` / `rating>N` / `rating=N` / `unrated`, `flag` / `-flag`, `rejected` / `-rejected`,
 /// `ai` (scored), `tag:X` / `-tag:X`, and free text (filename contains).
+/// File modified time, `UNIX_EPOCH` when unavailable (used as the `date-*` sort key — always
+/// present, unlike EXIF capture time).
+fn mtime(p: &Path) -> std::time::SystemTime {
+    std::fs::metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)
+}
+
+/// Order `paths` in place per `mode` (album.hjson `sort`), reading rating/score from `meta`.
+/// Unknown modes fall back to `name-asc`. Ties break on filename so the order is deterministic.
+fn sort_paths(paths: &mut [PathBuf], mode: &str, meta: &hjson::AlbumMeta) {
+    let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
+    let rec = |p: &Path| p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n));
+    match mode {
+        "name-desc" => paths.sort_by(|a, b| name(b).cmp(&name(a))),
+        "date-asc" => paths.sort_by_key(|p| mtime(p)),
+        "date-desc" => paths.sort_by(|a, b| mtime(b).cmp(&mtime(a))),
+        "rating-desc" => paths.sort_by(|a, b| {
+            let (ra, rb) = (rec(a).map_or(0, |r| r.rating), rec(b).map_or(0, |r| r.rating));
+            rb.cmp(&ra).then_with(|| name(a).cmp(&name(b)))
+        }),
+        "score-desc" => paths.sort_by(|a, b| {
+            let sa = rec(a).and_then(|r| r.score).unwrap_or(f64::MIN);
+            let sb = rec(b).and_then(|r| r.score).unwrap_or(f64::MIN);
+            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| name(a).cmp(&name(b)))
+        }),
+        _ => paths.sort_by(|a, b| name(a).cmp(&name(b))), // name-asc (default)
+    }
+}
+
+/// Parse a comma-separated tag string into a trimmed, de-duplicated, order-preserving list.
+fn parse_tags(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in s.split(',') {
+        let t = t.trim();
+        if !t.is_empty() && !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
 fn matches_filter(name: &str, rec: Option<&hjson::ImageRecord>, filter: &str) -> bool {
     let f = filter.trim();
     if f.is_empty() {
@@ -978,8 +1109,24 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             if let Some(s) = r.score {
                 lines.push(Line::from(format!("score    {s:.2}")));
             }
+            if let Some(t) = &r.title {
+                lines.push(Line::from(format!("title    {t}")));
+            }
             if !r.tags.is_empty() {
                 lines.push(Line::from(format!("tags     {}", r.tags.join(", "))));
+            }
+            if let Some(c) = &r.caption {
+                lines.push(Line::from(format!("caption  {c}")));
+            }
+            if let Some(no) = &r.notes {
+                lines.push(Line::from(format!("notes    {no}")));
+            }
+            // Generation recipe for plakat-made images (`--import`).
+            if let Some(g) = &r.generation {
+                lines.push(Line::from("─ plakat ─"));
+                lines.push(Line::from(format!("model    {}", g.model)));
+                lines.push(Line::from(format!("seed     {}", g.seed)));
+                lines.push(Line::from(format!("steps    {}  cfg {}", g.steps, g.guidance)));
             }
         }
         f.render_widget(
@@ -1008,5 +1155,37 @@ mod filter_tests {
         assert!(matches_filter("IMG_1.jpg", r, "img"));     // free text (case-insensitive)
         assert!(!matches_filter("a.jpg", None, "rating>=1")); // no record → rating 0
         assert!(matches_filter("a.jpg", None, "unrated"));
+    }
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn sort_orders() {
+        let mut meta = hjson::AlbumMeta::default();
+        meta.images.insert("b.png".into(), ImageRecord { rating: 5, score: Some(2.0), ..Default::default() });
+        meta.images.insert("a.png".into(), ImageRecord { rating: 1, score: Some(9.0), ..Default::default() });
+        // c.png has no record → rating 0, no score.
+        let names = |v: &[PathBuf]| v.iter().map(|p| p.file_name().unwrap().to_str().unwrap().to_string()).collect::<Vec<_>>();
+
+        let mut v = vec![p("c.png"), p("a.png"), p("b.png")];
+        sort_paths(&mut v, "name-asc", &meta);
+        assert_eq!(names(&v), ["a.png", "b.png", "c.png"]);
+        sort_paths(&mut v, "name-desc", &meta);
+        assert_eq!(names(&v), ["c.png", "b.png", "a.png"]);
+        sort_paths(&mut v, "rating-desc", &meta);
+        assert_eq!(names(&v), ["b.png", "a.png", "c.png"]); // 5, 1, 0
+        sort_paths(&mut v, "score-desc", &meta);
+        assert_eq!(names(&v), ["a.png", "b.png", "c.png"]); // 9.0, 2.0, none(MIN)
+        sort_paths(&mut v, "bogus-mode", &meta); // unknown → name-asc
+        assert_eq!(names(&v), ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn tags_parse_trim_dedup() {
+        assert_eq!(parse_tags("sunset, beach ,sunset,, iceland"), ["sunset", "beach", "iceland"]);
+        assert!(parse_tags("   ,  ,").is_empty());
+        assert_eq!(parse_tags("solo"), ["solo"]);
     }
 }

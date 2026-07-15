@@ -116,6 +116,33 @@ the state of the whole album is visible at a glance. Everything is written
 atomically (`.album.hjson.tmp` → rename), so an interrupted write never corrupts
 your curation.
 
+### Text metadata
+
+Beyond the one-key states above, each image carries free-text fields you can edit
+from the grid or image view — a small prompt opens on the command line, prefilled
+with the current value (empty input clears it):
+
+| Key | Field |
+|-----|-------|
+| `t` | **tags** — comma-separated; feeds the `tag:` filter |
+| `e` | **caption** — a short description |
+| `N` | **notes** — longer free text |
+| `T` | **title** — a display name |
+
+Tags, caption, notes, and title all show in the image-view panel (`i`), alongside
+the EXIF and — for plakat-generated images — the generation recipe.
+
+### Sorting
+
+Press `s` in the grid to cycle the album's **sort order**; it's shown in the pane
+title (`↕ name-asc`) and persisted in `album.hjson`:
+
+`name-asc → name-desc → date-desc → date-asc → rating-desc → score-desc`
+
+`date-*` sorts by file time, `rating-desc` puts your top picks first, and
+`score-desc` orders by the LAION aesthetic score (from `--score` / `rank`). The
+cursor stays on the same image across a re-sort.
+
 ---
 
 ## 4. Filtering
