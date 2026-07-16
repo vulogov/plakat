@@ -79,7 +79,11 @@ index" to build; it's the HJSON model itself.
       their base, `⧉N` badge, via `all_variant_names` + `rebuild_view`); timeline (`@` — modal of
       `YYYY-MM` EXIF-capture buckets over a date-sorted view, jump the grid to a month). All
       unit-tested. **Phase 5 COMPLETE** for the browse core; watermark/portfolio left as 3.1+ polish.
-- [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
+- [~] **Phase 6 — View analysis.** DONE: image-view analysis panel (`H`) — `photos/analysis.rs`
+      pure `analyze()` → luma histogram (64 bins) + mean + highlight/shadow clip % + focus score
+      (variance of the Laplacian); rendered as an 8-row bar chart + stats (clip flagged red),
+      recomputed on ←/→. Unit-tested (flat/clip/edges). REMAINING: focus peaking + pixel probe
+      (need per-pixel overlays on the graphics-protocol image — deferred, same constraint as mask paint).
 - [~] **Phase 7 — Vision + AI.** DONE: Gemini vision autotag/describe (`A` menu → `t` tags / `d`
       caption). `prompt/gemini.rs` gained `describe_image` (image→text; re-encodes ≤1024 JPEG, inline
       base64 — tiny inline encoder, no new dep) + `photos/vision.rs` (VisionOp + reply parsing,

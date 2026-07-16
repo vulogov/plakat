@@ -5,6 +5,7 @@
 //! tree | album grid · command) with a navigable Tree and a lazily-rendered thumbnail grid. Later
 //! phases (RFC §29) add the image view, editing, browse, and vision features.
 
+pub mod analysis;
 pub mod dedup;
 pub mod edit;
 pub mod exif;
@@ -123,6 +124,9 @@ struct App {
     selected: HashSet<usize>,
     mode: AlbumMode,
     show_exif: bool,
+    // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
+    show_analysis: bool,
+    analysis: Option<analysis::Analysis>,
     view_proto: Option<StatefulProtocol>,
     view_exif: Option<hjson::ExifRecord>,
     thumbs: HashMap<PathBuf, StatefulProtocol>,
@@ -197,6 +201,8 @@ impl App {
             selected: HashSet::new(),
             mode: AlbumMode::Grid,
             show_exif: false,
+            show_analysis: false,
+            analysis: None,
             view_proto: None,
             view_exif: None,
             thumbs: HashMap::new(),
@@ -1074,14 +1080,28 @@ impl App {
         self.timeline = false;
     }
 
-    /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF.
+    /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF,
+    /// and (when the analysis panel is on) its histogram/exposure/focus stats.
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
         self.view_proto = path
             .as_ref()
             .and_then(|p| loader::thumbnail(p, 1600).ok())
             .map(|img| self.picker.new_resize_protocol(img));
-        self.view_exif = path.and_then(|p| exif::read_exif(&p).ok());
+        self.view_exif = path.as_ref().and_then(|p| exif::read_exif(p).ok());
+        self.analysis = None;
+        if self.show_analysis {
+            self.compute_analysis();
+        }
+    }
+
+    /// Compute view-analysis stats for the cursor image (from a small decode, for speed).
+    fn compute_analysis(&mut self) {
+        self.analysis = self
+            .cur_idx()
+            .and_then(|i| self.album_paths.get(i))
+            .and_then(|p| loader::thumbnail(p, 384).ok())
+            .map(|img| analysis::analyze(&img));
     }
 
     /// Lazily decode a few thumbnails per tick for images near the cursor that aren't built yet.
@@ -1775,6 +1795,12 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             }
         }
         KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        KeyCode::Char('H') => {
+            app.show_analysis = !app.show_analysis;
+            if app.show_analysis {
+                app.compute_analysis();
+            }
+        }
         KeyCode::Char('E') => app.edit_menu = true, // open the pixel-edit menu
         KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
         KeyCode::Char('A') => app.ai_menu = true,   // open the vision/AI menu
@@ -2275,8 +2301,57 @@ fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// View-analysis panel (Phase 6): a luma histogram bar chart + exposure/focus stats.
+fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" Analysis (H) ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let Some(a) = &app.analysis else {
+        f.render_widget(Paragraph::new(" computing…").style(Style::new().fg(Color::DarkGray)), inner);
+        return;
+    };
+
+    // Histogram as an 8-row bar chart across `BINS` buckets, scaled to the panel width.
+    const ROWS: usize = 8;
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let width = (inner.width as usize).clamp(1, analysis::BINS);
+    let max = a.hist.iter().copied().max().unwrap_or(1).max(1) as f32;
+    // Down-sample the 64 buckets to the panel width.
+    let cols: Vec<f32> = (0..width)
+        .map(|c| {
+            let lo = c * analysis::BINS / width;
+            let hi = ((c + 1) * analysis::BINS / width).max(lo + 1);
+            let s: u32 = a.hist[lo..hi.min(analysis::BINS)].iter().sum();
+            (s as f32 / (hi - lo) as f32) / max // 0..1
+        })
+        .collect();
+    let mut lines: Vec<Line> = Vec::with_capacity(ROWS + 6);
+    for row in (0..ROWS).rev() {
+        let s: String = cols
+            .iter()
+            .map(|&v| {
+                let cell = (v * ROWS as f32) - row as f32; // portion of this cell filled in this row
+                BLOCKS[(cell.clamp(0.0, 1.0) * 8.0).round() as usize]
+            })
+            .collect();
+        lines.push(Line::from(Span::styled(s, Style::new().fg(Color::Cyan))));
+    }
+    lines.push(Line::from(Span::styled("0──────────────255 luma", Style::new().fg(Color::DarkGray))));
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("size     {}×{}", a.width, a.height)));
+    lines.push(Line::from(format!("mean     {:.0}/255", a.mean)));
+    let clip = |label: &str, frac: f32, warn: bool| {
+        let c = if warn && frac > 0.02 { Color::Red } else { Color::Reset };
+        Line::from(Span::styled(format!("{label}{:.1}%", frac * 100.0), Style::new().fg(c)))
+    };
+    lines.push(clip("clip hi  ", a.clip_high, true));
+    lines.push(clip("clip lo  ", a.clip_low, true));
+    lines.push(Line::from(format!("focus    {:.0}", a.sharpness)));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
-    let (img_area, panel) = if app.show_exif {
+    let (img_area, panel) = if app.show_exif || app.show_analysis {
         let [a, b] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).areas(area);
         (a, Some(b))
     } else {
@@ -2286,6 +2361,14 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
     match app.view_proto.as_mut() {
         Some(proto) => f.render_stateful_widget(StatefulImage::new(), img_area, proto),
         None => f.render_widget(Paragraph::new("  decoding…").style(Style::new().fg(Color::DarkGray)), img_area),
+    }
+
+    // The analysis panel (H) takes precedence over EXIF (i) when both are on.
+    if app.show_analysis {
+        if let Some(panel) = panel {
+            draw_analysis_panel(f, app, panel);
+        }
+        return;
     }
 
     if let Some(panel) = panel {

@@ -95,6 +95,13 @@ RAW files (`.cr2`, `.nef`, `.arw`, `.dng`, …) are decoded and demosaiced
 in-process, so they thumbnail and display alongside JPEG/PNG/WebP/TIFF without a
 separate conversion step.
 
+**Analysis (`H`).** In the image view, press `H` for a side panel with a **luma
+histogram** (an 8-row bar chart across the tonal range), the image's **mean**
+brightness, **highlight/shadow clipping** percentages (flagged red when a shot is
+blown out or crushed), and a **focus score** (variance of the Laplacian — higher =
+sharper, useful for picking the in-focus frame from a burst). It updates as you
+step through images with `←`/`→`. Press `H` again to hide it.
+
 ---
 
 ## 3. Curating
