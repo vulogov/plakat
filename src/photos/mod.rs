@@ -753,6 +753,7 @@ impl App {
                 Some(eop) => self.batch_edit(eop),
                 None => self.status = format!("unknown edit op: {op}"),
             },
+            Action::Export { dir, max_px } => self.export_targets(&dir, max_px),
             Action::Rename { pattern } => {
                 self.batch_rename(&pattern);
                 self.rescan();
@@ -2619,7 +2620,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("rename", "batch-rename with a #-pattern (r)"));
             l.push(hd("Natural language  (:)"));
             l.push(kv(":", "album-scoped command — pipe with 'then'"));
-            l.push(state("find rating>=4 then tag as portfolio then upscale"));
+            l.push(state("find rating>=4 then upscale then export to ~/best 2000"));
             l.push(state("all photos then autotag   ·   take flag then rate 5"));
         }
     }
