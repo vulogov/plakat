@@ -127,9 +127,24 @@ every selected image — see §6):
 | `c` | cycle the **colour label** (red / yellow / green / blue / purple) |
 
 Each thumbnail shows a small badge with its rating / flag / reject / colour so
-the state of the whole album is visible at a glance. Everything is written
-atomically (`.album.hjson.tmp` → rename), so an interrupted write never corrupts
-your curation.
+the state of the whole album is visible at a glance. Flagged images also get a
+**gold cell border** (rejected → dim red) and a `⚑ N` count in the album header, so
+your picks stand out. Everything is written atomically (`.album.hjson.tmp` →
+rename), so an interrupted write never corrupts your curation.
+
+**Undo / redo.** `u` undoes the last curation change (a rating, tag, flag, reject,
+colour — including a bulk one over a selection), `U` redoes it. It's a full history
+of your curation for this session (in a regular album; smart/search views edit each
+image's own album directly).
+
+### Versioning
+
+Editing is **non-destructive and versioned by design**. A T1 pixel edit (`E`) never
+overwrites the original — the pristine file is kept and the visible image is
+re-derived from an **edit log**, so `u` / `U` step backward and forward through the
+versions and `0` returns to the original. A model edit (`M`) writes a **new file**
+linked as a `variant` of the source, so each generation is its own version you can
+keep side by side. Nothing you do throws away an earlier state.
 
 ### Text metadata
 

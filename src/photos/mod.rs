@@ -195,6 +195,13 @@ struct App {
     compare: Vec<(PathBuf, StatefulProtocol)>,
     compare_cursor: usize,
 
+    // Curation undo/redo: snapshots of `album_meta` before each metadata mutation (normal-album
+    // mode only). Coarse but general — covers ratings/flags/reject/colour/tags/captions.
+    undo_stack: Vec<hjson::AlbumMeta>,
+    redo_stack: Vec<hjson::AlbumMeta>,
+    /// Redo stack for the cursor image's T1 pixel edits (cleared on a new edit / navigation).
+    edit_redo: Vec<edit::EditOp>,
+
     // Stacking (RFC §Phase 5): when on, derivative variants collapse under their base in the grid.
     stack_view: bool,
     // Timeline (RFC §Phase 5): a modal list of date buckets over the current view.
@@ -269,6 +276,9 @@ impl App {
             pending_plan: None,
             compare: Vec::new(),
             compare_cursor: 0,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            edit_redo: Vec::new(),
             stack_view: false,
             timeline: false,
             tl_buckets: Vec::new(),
@@ -601,9 +611,53 @@ impl App {
         }
     }
 
+    /// Snapshot `album_meta` onto the undo stack before a curation mutation (normal-album mode only;
+    /// smart/search views edit source albums directly and aren't covered). Clears the redo stack.
+    fn snapshot_meta(&mut self) {
+        if self.smart.is_some() || self.album_dir.is_none() {
+            return;
+        }
+        self.undo_stack.push(self.album_meta.clone());
+        if self.undo_stack.len() > 50 {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Undo the last curation change (restore the previous `album_meta`).
+    fn undo_curation(&mut self) {
+        if self.smart.is_some() {
+            self.status = "undo works in a regular album, not a smart/search view".into();
+            return;
+        }
+        match self.undo_stack.pop() {
+            Some(prev) => {
+                self.redo_stack.push(std::mem::replace(&mut self.album_meta, prev));
+                self.save_album();
+                self.rebuild_view();
+                self.status = format!("undo ({} more)", self.undo_stack.len());
+            }
+            None => self.status = "nothing to undo".into(),
+        }
+    }
+
+    /// Redo the last undone curation change.
+    fn redo_curation(&mut self) {
+        match self.redo_stack.pop() {
+            Some(next) => {
+                self.undo_stack.push(std::mem::replace(&mut self.album_meta, next));
+                self.save_album();
+                self.rebuild_view();
+                self.status = format!("redo ({} more)", self.redo_stack.len());
+            }
+            None => self.status = "nothing to redo".into(),
+        }
+    }
+
     /// Mutate each target image's record, then persist. In a smart-album view each write routes to
     /// the image's own source album; otherwise all targets share the open album (one write).
     fn edit_targets(&mut self, mut f: impl FnMut(&mut hjson::ImageRecord)) {
+        self.snapshot_meta(); // for undo (normal-album curation)
         let paths: Vec<PathBuf> =
             self.targets().into_iter().filter_map(|i| self.album_paths.get(i).cloned()).collect();
         if self.smart.is_some() {
@@ -671,11 +725,12 @@ impl App {
             self.status = format!("edit failed: {e:#}");
             return;
         }
+        self.edit_redo.clear(); // a fresh edit invalidates the redo chain
         self.edit_record_at(&path, |rec| rec.edits.push(op.to_entry()));
         let ops = self.cur_edit_ops();
         match edit::rebuild_file(&dir, &filename, &ops) {
             Ok(()) => {
-                self.status = format!("{} · {} edit(s) · u undo · 0 revert", op.label(), ops.len());
+                self.status = format!("{} · {} edit(s) · u undo · U redo · 0 revert", op.label(), ops.len());
                 self.refresh_after_edit(&path);
             }
             Err(e) => self.status = format!("edit failed: {e:#}"),
@@ -683,23 +738,42 @@ impl App {
     }
 
     /// Undo the cursor image's last edit (rebuild from the remaining ops; restores the original when
-    /// none remain).
+    /// none remain). The undone op moves onto the redo stack.
     fn undo_edit(&mut self) {
         let Some((dir, filename)) = self.cur_source() else { return };
         let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
-        if self.cur_edit_ops().is_empty() {
+        let mut ops = self.cur_edit_ops();
+        let Some(undone) = ops.pop() else {
             self.status = "nothing to undo".into();
             return;
-        }
+        };
+        self.edit_redo.push(undone);
         self.edit_record_at(&path, |rec| {
             rec.edits.pop();
         });
-        let ops = self.cur_edit_ops();
         if let Err(e) = edit::rebuild_file(&dir, &filename, &ops) {
             self.status = format!("undo failed: {e:#}");
             return;
         }
-        self.status = format!("undo · {} edit(s) remain", ops.len());
+        self.status = format!("undo · {} edit(s) · U redo", ops.len());
+        self.refresh_after_edit(&path);
+    }
+
+    /// Redo the last undone pixel edit on the cursor image.
+    fn redo_edit(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        let Some(op) = self.edit_redo.pop() else {
+            self.status = "nothing to redo".into();
+            return;
+        };
+        self.edit_record_at(&path, |rec| rec.edits.push(op.to_entry()));
+        let ops = self.cur_edit_ops();
+        if let Err(e) = edit::rebuild_file(&dir, &filename, &ops) {
+            self.status = format!("redo failed: {e:#}");
+            return;
+        }
+        self.status = format!("redo {} · {} edit(s)", op.label(), ops.len());
         self.refresh_after_edit(&path);
     }
 
@@ -736,6 +810,7 @@ impl App {
     /// merge recipe-derived tags (`ai` + model + prompt keywords). No network.
     fn ai_tag_from_recipe(&mut self) {
         self.ai_menu = false;
+        self.snapshot_meta();
         let paths: Vec<PathBuf> =
             self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
         let mut n = 0;
@@ -1131,6 +1206,7 @@ impl App {
                     fs_changed = true;
                 }
                 Some(PendingCmd::EditMeta { path, field }) => {
+                    self.snapshot_meta();
                     let val = (!arg.is_empty()).then(|| arg.clone());
                     self.edit_record_at(&path, |rec| match field {
                         EditField::Caption => rec.caption = val,
@@ -1753,6 +1829,7 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('>') | KeyCode::Char('.') => app.apply_edit(EditOp::Contrast(12)),
         KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
         KeyCode::Char('u') => app.undo_edit(),
+        KeyCode::Char('U') => app.redo_edit(),
         KeyCode::Char('0') => app.revert_edits(),
         _ => {}
     }
@@ -2125,6 +2202,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             if app.album_cursor + 1 < n {
                 app.album_cursor += 1;
                 app.zoom = 1.0; // each image starts fit
+                app.edit_redo.clear(); // redo chain is per-image
                 app.load_view();
             }
         }
@@ -2132,6 +2210,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             if app.album_cursor > 0 {
                 app.album_cursor -= 1;
                 app.zoom = 1.0;
+                app.edit_redo.clear();
                 app.load_view();
             }
         }
@@ -2183,6 +2262,9 @@ fn apply_curation(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('e') => app.begin_edit(EditField::Caption),
         KeyCode::Char('N') => app.begin_edit(EditField::Notes),
         KeyCode::Char('T') => app.begin_edit(EditField::Title),
+        // Curation undo / redo (u / U).
+        KeyCode::Char('u') => app.undo_curation(),
+        KeyCode::Char('U') => app.redo_curation(),
         _ => {}
     }
     false
@@ -2220,7 +2302,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     // Command pane: edit/ML menu, active text input, or a passive hint.
     let (cmd, cmd_style) = if app.edit_menu {
         (
-            " EDIT  r/R rotate · t 180° · h/v flip · g gray · s crop1:1 · -/+ bright · </> contrast · u undo · 0 revert · Esc"
+            " EDIT  r/R rotate · t 180° · h/v flip · g gray · s crop1:1 · -/+ bright · </> contrast · u undo · U redo · 0 revert · Esc"
                 .to_string(),
             Style::default().fg(Color::Cyan),
         )
@@ -2708,6 +2790,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(hd("Curate (image/selection)"));
             l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
             l.push(kv("t e N T", "tags · caption · notes · title · s sort"));
+            l.push(kv("u / U", "undo / redo curation"));
             l.push(hd("Select"));
             l.push(kv("Space", "toggle · Ctrl-A all · Ctrl-D none · Ctrl-I invert"));
             l.push(hd("Do"));
