@@ -13,6 +13,7 @@ pub mod hjson;
 pub mod import;
 pub mod mledit;
 pub mod rename;
+pub mod vision;
 pub mod library;
 pub mod loader;
 pub mod watcher;
@@ -140,6 +141,9 @@ struct App {
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
     pending_job: Option<mledit::MlJob>,
+    // Vision + AI menu (RFC §Phase 7) + a queued Gemini-vision request (image path).
+    ai_menu: bool,
+    pending_vision: Option<(vision::VisionOp, PathBuf)>,
 
     // Survey / compare (RFC §Phase 5): a small set of images decoded side-by-side, with a focus.
     compare: Vec<(PathBuf, StatefulProtocol)>,
@@ -201,6 +205,8 @@ impl App {
             edit_menu: false,
             ml_menu: false,
             pending_job: None,
+            ai_menu: false,
+            pending_vision: None,
             compare: Vec::new(),
             compare_cursor: 0,
             stack_view: false,
@@ -625,6 +631,16 @@ impl App {
         let input = album.join(&filename);
         self.status = format!("running {} … (the UI will pause)", op.label());
         self.pending_job = Some(mledit::MlJob { op, input, album });
+    }
+
+    /// Queue a Gemini-vision request on the cursor image (the event loop runs it).
+    fn queue_vision(&mut self, op: vision::VisionOp) {
+        self.ai_menu = false;
+        let Some((album, filename)) = self.cur_source() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        self.pending_vision = Some((op, album.join(filename)));
     }
 
     /// The album_paths indices the next *browse* op applies to: the multi-selection if any, else the
@@ -1139,6 +1155,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             run_ml_job(terminal, app, job)?;
             continue;
         }
+        // A queued Gemini-vision request (Phase 7): quick network call — no alt-screen suspend, just
+        // a one-frame "querying…" status while it blocks.
+        if let Some((op, path)) = app.pending_vision.take() {
+            run_vision_job(terminal, app, op, path)?;
+            continue;
+        }
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
         }
@@ -1198,6 +1220,48 @@ fn run_ml_job(
     Ok(())
 }
 
+/// Run a queued Gemini-vision request and merge the result into the image's record. Quick network
+/// call (no alt-screen suspend) — draws a "querying…" frame, then blocks on a dedicated-runtime
+/// thread (same no-`block_on`-on-event-loop reasoning as [`run_ml_job`]).
+fn run_vision_job(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    op: vision::VisionOp,
+    path: PathBuf,
+) -> Result<()> {
+    app.status = format!("querying Gemini ({})…", op.label());
+    terminal.draw(|f| draw(f, app))?; // show the status before we block
+
+    let job_path = path.clone();
+    let result = std::thread::spawn(move || -> Result<vision::VisionOutcome> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(vision::run(op, &job_path))
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("vision thread panicked")));
+
+    match result {
+        Ok(vision::VisionOutcome::Tags(tags)) => {
+            let added = tags.len();
+            app.edit_record_at(&path, |rec| {
+                for t in tags {
+                    if !rec.tags.contains(&t) {
+                        rec.tags.push(t);
+                    }
+                }
+            });
+            app.rebuild_view(); // tags change filter matches
+            app.status = format!("✓ autotag: +{added} tag(s)");
+        }
+        Ok(vision::VisionOutcome::Caption(caption)) => {
+            app.edit_record_at(&path, |rec| rec.caption = Some(caption.clone()));
+            app.status = format!("✓ caption: {caption}");
+        }
+        Err(e) => app.status = format!("✗ vision failed: {e:#}"),
+    }
+    Ok(())
+}
+
 /// Returns true to quit.
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyModifiers;
@@ -1215,6 +1279,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if app.ml_menu {
         handle_ml_key(app, k.code);
+        return false;
+    }
+    if app.ai_menu {
+        handle_ai_key(app, k.code);
         return false;
     }
     if app.timeline {
@@ -1250,6 +1318,16 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
         KeyCode::Char('u') => app.undo_edit(),
         KeyCode::Char('0') => app.revert_edits(),
+        _ => {}
+    }
+}
+
+/// Vision + AI menu (Phase 7): describe/tag the cursor image with Gemini vision.
+fn handle_ai_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('A') | KeyCode::Char('q') => app.ai_menu = false,
+        KeyCode::Char('t') => app.queue_vision(vision::VisionOp::Autotag),
+        KeyCode::Char('d') => app.queue_vision(vision::VisionOp::Describe),
         _ => {}
     }
 }
@@ -1493,6 +1571,12 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         }
         // Survey / compare the selection (2–4 images side by side).
         KeyCode::Char('=') => app.enter_compare(),
+        // Vision + AI menu (Gemini autotag / describe) on the cursor image.
+        KeyCode::Char('A') => {
+            if n > 0 {
+                app.ai_menu = true;
+            }
+        }
         // Stacking: collapse/expand derivative variants under their base.
         KeyCode::Char('S') => app.toggle_stack(),
         // Timeline: jump to a capture-month bucket.
@@ -1594,6 +1678,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('i') => app.show_exif = !app.show_exif,
         KeyCode::Char('E') => app.edit_menu = true, // open the pixel-edit menu
         KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
+        KeyCode::Char('A') => app.ai_menu = true,   // open the vision/AI menu
         _ => return apply_curation(app, code),
     }
     false
@@ -1663,6 +1748,11 @@ fn draw(f: &mut Frame, app: &mut App) {
             " ML EDIT  u upscale ×4 · i img2img (prompt) · l relight (prompt) · Esc   — runs a model; the UI pauses"
                 .to_string(),
             Style::default().fg(Color::Magenta),
+        )
+    } else if app.ai_menu {
+        (
+            " AI (Gemini vision)  t autotag · d describe · Esc   — needs GEMINI_API_KEY".to_string(),
+            Style::default().fg(Color::Green),
         )
     } else if app.cmd_active {
         (format!(" {}{}_", app.cmd_prompt, app.cmd_buffer), Style::default().fg(Color::Yellow))

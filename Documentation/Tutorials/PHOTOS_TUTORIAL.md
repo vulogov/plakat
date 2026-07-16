@@ -301,7 +301,25 @@ inside the library.
 > time with everything else freed). Interactive crop/mask painting to steer inpaint
 > is a later step.
 
-## 10. Browse — compare, duplicates, rename & export
+## 10. AI metadata — autotag & describe (`A`)
+
+Press `A` to open the AI menu and have **Gemini vision** look at the cursor image:
+
+| Key | Result |
+|-----|--------|
+| `t` | **autotag** — 5–12 content/style tags merged into the image's `tags` |
+| `d` | **describe** — a one-sentence `caption` |
+
+This makes an otherwise unlabeled library *searchable*: run autotag on a shoot,
+then `/ tag:...` or `?` metadata-search finds images by what's actually in them.
+Tags are merged (never replace what you've set), captions overwrite. It's a quick
+network call — the status shows `querying Gemini…` for a beat, then the record
+updates. Needs `GEMINI_API_KEY` in your environment / config.
+
+> This is the *text* side of semantic search. True **visual** search (find images
+> that look like a text prompt, via CLIP embeddings) is the next AI step.
+
+## 11. Browse — compare, duplicates, rename & export
 
 **Compare side-by-side (`=`).** Select 2–4 images (`Space`) and press `=` to see
 them large and side by side — the way to pick the keeper from a burst. `←`/`→`
@@ -351,7 +369,7 @@ month and `Enter` jumps the grid straight to it — fast travel through a big
 library. (Buckets read the EXIF capture date; images without one group as
 `undated`.)
 
-## 11. Closing the loop — `--import`
+## 12. Closing the loop — `--import`
 
 The point of the manager is that **generation flows into it**. Every
 image-producing command takes `--import <album>`:
@@ -384,7 +402,7 @@ aesthetic `score`, and carries its recipe in the EXIF overlay — the same recip
 
 ---
 
-## 12. A quick workflow
+## 13. A quick workflow
 
 1. `plakat photos ~/Pictures` — open your library.
 2. `Tab` to the tree, arrow to a shoot, `Enter` to open the album.

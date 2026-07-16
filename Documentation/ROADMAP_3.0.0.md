@@ -80,7 +80,13 @@ index" to build; it's the HJSON model itself.
       `YYYY-MM` EXIF-capture buckets over a date-sorted view, jump the grid to a month). All
       unit-tested. **Phase 5 COMPLETE** for the browse core; watermark/portfolio left as 3.1+ polish.
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
-- [ ] **Phase 7 — Vision + AI** (gemini vision, describe/lookalike/analyze-and-generate, autotag, face-scan, semantic search).
+- [~] **Phase 7 — Vision + AI.** DONE: Gemini vision autotag/describe (`A` menu → `t` tags / `d`
+      caption). `prompt/gemini.rs` gained `describe_image` (image→text; re-encodes ≤1024 JPEG, inline
+      base64 — tiny inline encoder, no new dep) + `photos/vision.rs` (VisionOp + reply parsing,
+      unit-tested). Runs off-thread via `run_vision_job` (quick net call, no alt-screen suspend);
+      tags merge, caption overwrites; feeds the existing `textsearch` metadata search — the *text*
+      half of semantic search. (Metadata `?` search already shipped.) REMAINING: CLIP-embedding
+      *visual* search (+ the derived vector index/store), lookalike, analyze-and-generate, face-scan.
 
 **3.0.0 releases** when Phase 1–2 (browse + curate) is usable — a real flagship, not an empty bump.
 Later phases can land in 3.1+.
