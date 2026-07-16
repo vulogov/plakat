@@ -55,9 +55,38 @@ fn import_one(album: &Path, src: &Path, move_files: bool, meta: &mut hjson::Albu
     let rec = meta.images.entry(name).or_default();
     if let Some(g) = &gen_meta {
         rec.score = rec.score.or(g.score); // carry the aesthetic score if the sidecar had one
+        // Auto-tag the imported AI image from its recipe (marker + model + prompt keywords).
+        for t in ai_tags(g) {
+            if !rec.tags.contains(&t) {
+                rec.tags.push(t);
+            }
+        }
     }
     rec.generation = gen_meta;
     Ok(())
+}
+
+/// Derive concise tags from an image's generation recipe — an `ai` marker, the model, and a few
+/// salient prompt keywords — for auto-tagging AI-made / imported images so they're searchable.
+pub fn ai_tags(g: &GenerationMetadata) -> Vec<String> {
+    const STOP: &[&str] = &[
+        // short filler
+        "the", "and", "for", "are", "was", "his", "her", "its", "our", "you", "who", "one", "off",
+        // generic prompt boilerplate
+        "with", "this", "that", "very", "from", "have", "photo", "image", "highly", "detailed",
+        "quality", "best", "masterpiece", "realistic", "beautiful", "background", "wearing", "style",
+    ];
+    let mut tags = vec!["ai".to_string(), g.model.to_lowercase()];
+    for w in g.prompt.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        let w = w.trim();
+        if w.len() >= 3 && !STOP.contains(&w) && !tags.iter().any(|t| t == w) {
+            tags.push(w.to_string());
+        }
+        if tags.len() >= 8 {
+            break;
+        }
+    }
+    tags
 }
 
 /// Read `GenerationMetadata` from a PNG's `.json` sidecar (the structured form plakat writes).
@@ -102,6 +131,20 @@ fn transfer(src: &Path, dest: &Path, move_files: bool) -> Result<()> {
 mod tests {
     use super::*;
     use image::{DynamicImage, ImageBuffer, Rgb};
+
+    #[test]
+    fn ai_tags_from_recipe() {
+        let g = GenerationMetadata::new(
+            "a red fox in fresh snow, golden hour", "SDXL", 42, 20, 7.0, "ddim", 1024, 1024,
+        );
+        let t = ai_tags(&g);
+        assert_eq!(&t[0], "ai");
+        assert_eq!(&t[1], "sdxl"); // model, lowercased
+        for kw in ["fox", "fresh", "snow", "golden"] {
+            assert!(t.iter().any(|x| x == kw), "missing keyword {kw}: {t:?}");
+        }
+        assert!(t.len() <= 8);
+    }
 
     #[test]
     fn imports_with_gen_params_and_dedups() {

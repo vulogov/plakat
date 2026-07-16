@@ -197,6 +197,18 @@ deletes the saved search (never the images).
 Examples worth saving: `rating>=4 -rejected` (keepers), `ai scored` (generated,
 scored), `flag` (your picks across shoots).
 
+### Search by tag (`Ctrl-B t`)
+
+Don't remember which tags you've used? Press `Ctrl-B t` for a **tag browser** — every
+tag in the album, most-used first, with counts. Arrow to one and `Enter` filters the
+grid to it (`tag:…`). It's the discoverable front-end to the `tag:` filter.
+
+**Auto-tagging AI images.** Anything you `--import` (or that carries a generation
+recipe) is auto-tagged from that recipe — an `ai` marker, the model, and a few prompt
+keywords — so generated images are searchable the moment they land. To backfill an
+existing album, `A` → `g` (offline, no LLM). For descriptive tags on *photos*, use the
+LLM autotag (`A` → `t`).
+
 ### Metadata search (`?`)
 
 A filter matches exact tokens; **search** ranks by *relevance*. Press `?` (from

@@ -205,6 +205,10 @@ struct App {
     // `Ctrl-B` leader prefix (tmux-style) + the quickhelp overlay it opens.
     leader: bool,
     help: Option<HelpKind>,
+    // Tag browser (Ctrl-B t): pick a tag from the album to filter by.
+    tag_browser: bool,
+    tags_list: Vec<(String, usize)>,
+    tag_cursor: usize,
 
     // Command pane input (RFC §11).
     cmd_active: bool,
@@ -271,6 +275,9 @@ impl App {
             tl_cursor: 0,
             leader: false,
             help: None,
+            tag_browser: false,
+            tags_list: Vec::new(),
+            tag_cursor: 0,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -521,6 +528,40 @@ impl App {
         }
     }
 
+    /// Open the tag browser: gather every tag used in the album with its count, most-used first.
+    fn open_tag_browser(&mut self) {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let recs: Box<dyn Iterator<Item = &hjson::ImageRecord>> = if self.smart.is_some() {
+            Box::new(self.smart_rec.values())
+        } else {
+            Box::new(self.album_meta.images.values())
+        };
+        for r in recs {
+            for t in &r.tags {
+                *counts.entry(t.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut list: Vec<(String, usize)> = counts.into_iter().collect();
+        list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if list.is_empty() {
+            self.status = "no tags in this album yet (t to add, A→t to autotag)".into();
+            return;
+        }
+        self.tags_list = list;
+        self.tag_cursor = 0;
+        self.tag_browser = true;
+    }
+
+    /// Filter the view to the selected tag and close the browser.
+    fn pick_tag(&mut self) {
+        if let Some((tag, _)) = self.tags_list.get(self.tag_cursor).cloned() {
+            self.filter = format!("tag:{tag}");
+            self.rebuild_view();
+            self.status = format!("filtered to tag:{tag} (/ to clear)");
+        }
+        self.tag_browser = false;
+    }
+
     /// All filenames referenced as a `variant` by some record (the derivatives, for stacking).
     fn all_variant_names(&self) -> HashSet<String> {
         let mut s = HashSet::new();
@@ -689,6 +730,30 @@ impl App {
         let input = album.join(&filename);
         self.status = format!("running {} … (the UI will pause)", op.label());
         self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
+    }
+
+    /// Offline auto-tag: for every browse target that has a generation recipe (AI-made / `--import`ed),
+    /// merge recipe-derived tags (`ai` + model + prompt keywords). No network.
+    fn ai_tag_from_recipe(&mut self) {
+        self.ai_menu = false;
+        let paths: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        let mut n = 0;
+        for p in paths {
+            let derived = self.record(&p).and_then(|r| r.generation.as_ref()).map(import::ai_tags);
+            if let Some(tags) = derived {
+                self.edit_record_at(&p, |rec| {
+                    for t in tags {
+                        if !rec.tags.contains(&t) {
+                            rec.tags.push(t);
+                        }
+                    }
+                });
+                n += 1;
+            }
+        }
+        self.rebuild_view();
+        self.status = format!("recipe-tagged {n} AI image(s)");
     }
 
     /// Queue a vision request on the cursor image (the event loop runs it).
@@ -1622,13 +1687,18 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         match k.code {
             KeyCode::Char('h') => app.help = Some(HelpKind::Chords),
             KeyCode::Char('H') => app.help = Some(HelpKind::Commands),
+            KeyCode::Char('t') => app.open_tag_browser(),
             _ => {}
         }
         return false;
     }
+    if app.tag_browser {
+        handle_tag_key(app, k.code);
+        return false;
+    }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h: key chords · H: commands".into();
+        app.status = "Ctrl-B · h chords · H commands · t tags".into();
         return false;
     }
     if app.cmd_active {
@@ -1694,6 +1764,20 @@ fn handle_ai_key(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('A') | KeyCode::Char('q') => app.ai_menu = false,
         KeyCode::Char('t') => app.queue_vision(vision::VisionOp::Autotag),
         KeyCode::Char('d') => app.queue_vision(vision::VisionOp::Describe),
+        KeyCode::Char('g') => app.ai_tag_from_recipe(),
+        _ => {}
+    }
+}
+
+/// Tag browser (Ctrl-B t): pick a tag to filter by.
+fn handle_tag_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.tag_browser = false,
+        KeyCode::Up | KeyCode::Char('k') => app.tag_cursor = app.tag_cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.tag_cursor = (app.tag_cursor + 1).min(app.tags_list.len().saturating_sub(1));
+        }
+        KeyCode::Enter | KeyCode::Char('l') => app.pick_tag(),
         _ => {}
     }
 }
@@ -2126,6 +2210,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.timeline {
         draw_timeline(f, app, album_col);
     }
+    if app.tag_browser {
+        draw_tag_browser(f, app, album_col);
+    }
     if let Some(kind) = app.help {
         draw_help(f, kind, app, body);
     }
@@ -2145,7 +2232,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         )
     } else if app.ai_menu {
         (
-            " AI vision  t autotag · d describe · Esc   — uses your configured LLM (Gemini / DeepSeek)"
+            " AI  t autotag · d describe (LLM vision) · g recipe-tag AI images (offline) · Esc"
                 .to_string(),
             Style::default().fg(Color::Green),
         )
@@ -2655,7 +2742,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l.push(hd("Anywhere"));
-    l.push(kv("Ctrl-B", "leader (h chords · H commands) · q quit"));
+    l.push(kv("Ctrl-B", "leader (h chords · H commands · t tag browser) · q quit"));
     l
 }
 
@@ -2696,6 +2783,45 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l
+}
+
+/// Tag browser popup (Ctrl-B t): the album's tags with counts; Enter filters by the chosen tag.
+fn draw_tag_browser(f: &mut Frame, app: &App, area: Rect) {
+    let w = area.width.min(30).max(18);
+    let rows = (app.tags_list.len() as u16 + 2).clamp(3, area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(w),
+        y: area.y,
+        width: w,
+        height: rows,
+    };
+    f.render_widget(Clear, popup);
+    let inner_h = popup.height.saturating_sub(2) as usize;
+    let start = app.tag_cursor.saturating_sub(inner_h.saturating_sub(1));
+    let lines: Vec<Line> = app
+        .tags_list
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_h)
+        .map(|(i, (tag, count))| {
+            let text = format!(" {tag}  ({count})");
+            let mut style = Style::default();
+            if i == app.tag_cursor {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Tags · Enter filters ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
 }
 
 /// Timeline popup (Phase 5): a scrollable list of capture-month buckets with counts, over the right
