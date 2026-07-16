@@ -171,7 +171,9 @@ struct App {
     smart: Option<String>,       // active smart-view label (None = a real album is open)
     smart_query: String,         // the active view's query (filter grammar, or NL search text)
     smart_is_search: bool,       // true = relevance-ranked semantic search; false = filter query
-    lookalike_of: Option<PathBuf>, // when Some, the smart view is a perceptual "similar-to" ranking
+    lookalike_of: Option<PathBuf>, // when Some, the smart view is a "similar-to" ranking
+    lookalike_clip: bool,          // true = CLIP semantic (snapshot, no auto-refresh); false = perceptual
+    pending_clip_lookalike: Option<PathBuf>, // queued CLIP lookalike (event loop runs it, TUI-suspended)
     smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
     smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
 
@@ -266,6 +268,8 @@ impl App {
             smart_query: String::new(),
             smart_is_search: false,
             lookalike_of: None,
+            lookalike_clip: false,
+            pending_clip_lookalike: None,
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
             edit_menu: false,
@@ -309,6 +313,11 @@ impl App {
         }
         // A lookalike view re-ranks by similarity (not a text query) — handle before the smart branch.
         if let Some(qpath) = self.lookalike_of.clone() {
+            // CLIP lookalike is expensive (embeddings) — treat it as a snapshot, don't re-run on a
+            // filesystem change. Perceptual lookalike is cheap → re-rank.
+            if self.lookalike_clip {
+                return;
+            }
             let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
             self.open_lookalike(qpath);
             if let Some(cp) = cur_path {
@@ -473,6 +482,7 @@ impl App {
         self.smart_query = query;
         self.smart_is_search = is_search;
         self.lookalike_of = None; // a plain smart/search view (open_lookalike re-sets this after)
+        self.lookalike_clip = false;
         self.smart_src = src;
         self.smart_rec = recs;
         self.album_dir = None;
@@ -1563,6 +1573,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             run_visual_search(terminal, app, query)?;
             continue;
         }
+        // A queued CLIP semantic lookalike (Phase 7): heavy (embeddings), run TUI-suspended.
+        if let Some(qpath) = app.pending_clip_lookalike.take() {
+            run_clip_lookalike(terminal, app, qpath)?;
+            continue;
+        }
         // A natural-language command the deterministic parser couldn't handle → LLM planner.
         if let Some(text) = app.pending_nl.take() {
             run_nl_planner(terminal, app, text)?;
@@ -1792,6 +1807,82 @@ fn run_visual_search(
     Ok(())
 }
 
+/// Run a queued CLIP semantic lookalike (image→image) with the TUI suspended. Reuses the persistent
+/// embedding cache with a lazy model load, so it runs offline when everything's already embedded.
+fn run_clip_lookalike(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    query_path: PathBuf,
+) -> Result<()> {
+    use std::io::Write as _;
+    let lib = app.collect_library();
+    if lib.is_empty() {
+        app.status = "no images to search".into();
+        return Ok(());
+    }
+    let items: Vec<(PathBuf, PathBuf)> = lib.iter().map(|(p, d, _)| (p.clone(), d.clone())).collect();
+    let qname = query_path.file_name().and_then(|n| n.to_str()).unwrap_or("image").to_string();
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ CLIP lookalike: images like \"{qname}\"  (embedding {} images; cached ones are instant)…\n", items.len());
+
+    let mut cache = std::mem::take(&mut app.clip_cache);
+    let dirs: Vec<PathBuf> = {
+        let mut d: Vec<PathBuf> = lib.iter().map(|(_, dir, _)| dir.clone()).collect();
+        d.sort();
+        d.dedup();
+        d
+    };
+    for (k, v) in visual_search::load_cache(&dirs) {
+        cache.entry(k).or_insert(v);
+    }
+
+    let qp = query_path.clone();
+    let result = std::thread::spawn(
+        move || -> Result<(Vec<(PathBuf, PathBuf, f32)>, visual_search::Cache)> {
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            let out = rt.block_on(async {
+                let device = crate::device::select("auto")?;
+                visual_search::search_by_image(&device, items, &qp, cache, |done, tot| {
+                    if done % 10 == 0 || done == tot {
+                        print!("\r  embedding {done}/{tot}…   ");
+                        let _ = std::io::stdout().flush();
+                    }
+                })
+                .await
+            })?;
+            visual_search::save_cache(&out.1);
+            Ok(out)
+        },
+    )
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("lookalike thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok((ranked, cache)) => {
+            app.clip_cache = cache;
+            let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
+                lib.into_iter().map(|(p, _, r)| (p, r)).collect();
+            let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked
+                .into_iter()
+                .take(120)
+                .map(|(p, d, _)| (p.clone(), d, lookup.get(&p).cloned().flatten()))
+                .collect();
+            let count = ordered.len();
+            app.enter_smart_view(format!("clip-similar: {qname}"), String::new(), true, ordered, true);
+            app.lookalike_of = Some(query_path); // snapshot; rescan won't re-embed
+            app.lookalike_clip = true;
+            app.status = format!("🔍 {count} most-similar to {qname} (CLIP)");
+        }
+        Err(e) => app.status = format!("✗ lookalike failed: {e:#}"),
+    }
+    Ok(())
+}
+
 /// Returns true to quit.
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyModifiers;
@@ -1809,7 +1900,13 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
             KeyCode::Char('t') => app.open_tag_browser(),
             KeyCode::Char('l') => {
                 if let Some(p) = app.cur_idx().and_then(|i| app.album_paths.get(i).cloned()) {
-                    app.open_lookalike(p); // find perceptually-similar images (offline)
+                    app.open_lookalike(p); // perceptual (offline, fast)
+                }
+            }
+            KeyCode::Char('L') => {
+                if let Some(p) = app.cur_idx().and_then(|i| app.album_paths.get(i).cloned()) {
+                    app.pending_clip_lookalike = Some(p); // CLIP semantic (event loop runs it)
+                    app.status = "CLIP lookalike … (the UI will pause)".into();
                 }
             }
             _ => {}
@@ -1822,7 +1919,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h chords · H commands · t tags · l lookalike".into();
+        app.status = "Ctrl-B · h chords · H commands · t tags · l lookalike · L CLIP-lookalike".into();
         return false;
     }
     if app.cmd_active {
@@ -2873,7 +2970,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l.push(hd("Anywhere"));
-    l.push(kv("Ctrl-B", "leader: h chords · H commands · t tags · l lookalike · q quit"));
+    l.push(kv("Ctrl-B", "h chords · H cmds · t tags · l lookalike · L CLIP-look · q quit"));
     l
 }
 

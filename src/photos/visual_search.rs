@@ -126,6 +126,57 @@ pub async fn search(
     Ok((scored, cache))
 }
 
+/// CLIP semantic lookalike: rank `items` by embedding similarity to the image at `query_path`.
+/// **Lazy model load** — the CLIP model is only loaded if *some* embedding isn't already cached, so a
+/// fully-cached library ranks entirely offline (no model, no cache disk).
+pub async fn search_by_image(
+    device: &Device,
+    items: Vec<(PathBuf, PathBuf)>,
+    query_path: &Path,
+    mut cache: Cache,
+    progress: impl Fn(usize, usize),
+) -> Result<(Vec<(PathBuf, PathBuf, f32)>, Cache)> {
+    let mut embedder: Option<ClipEmbedder> = None;
+
+    // Query embedding (cache-first; loads the model only on a miss).
+    let qmt = mtime_secs(query_path);
+    let q = match cache.get(query_path) {
+        Some((m, v)) if *m == qmt => v.clone(),
+        _ => {
+            let e = ClipEmbedder::load(device).await?;
+            let v = e.embed_image(query_path)?;
+            cache.insert(query_path.to_path_buf(), (qmt, v.clone()));
+            embedder = Some(e);
+            v
+        }
+    };
+
+    let total = items.len();
+    let mut scored: Vec<(PathBuf, PathBuf, f32)> = Vec::with_capacity(total);
+    for (i, (path, dir)) in items.into_iter().enumerate() {
+        progress(i + 1, total);
+        let mt = mtime_secs(&path);
+        let vec = match cache.get(&path) {
+            Some((m, v)) if *m == mt => v.clone(),
+            _ => {
+                if embedder.is_none() {
+                    embedder = Some(ClipEmbedder::load(device).await?);
+                }
+                match embedder.as_ref().unwrap().embed_image(&path) {
+                    Ok(v) => {
+                        cache.insert(path.clone(), (mt, v.clone()));
+                        v
+                    }
+                    Err(_) => continue,
+                }
+            }
+        };
+        scored.push((path, dir, cosine(&q, &vec)));
+    }
+    scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+    Ok((scored, cache))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

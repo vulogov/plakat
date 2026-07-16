@@ -410,14 +410,21 @@ it runs locally.
 
 Together, `?` (words) and `V` (pixels) are the two halves of semantic search.
 
-### Lookalike (`Ctrl-B l`)
+### Lookalike (`Ctrl-B l` / `Ctrl-B L`)
 
 To find images that *look like the one under the cursor* — other frames from a
-burst, near-duplicates, the same scene — press `Ctrl-B l`. It ranks the whole
-library by **perceptual-hash similarity** to the current image, nearest first. This
-one is fully **offline** (no model, no network, no API key) — it's the quick,
-always-available cousin of CLIP visual search, matching visual similarity rather
-than deep semantics.
+burst, near-duplicates, the same scene — plakat has two rankings:
+
+- **`Ctrl-B l` — perceptual.** Ranks the library by **perceptual-hash similarity**
+  to the current image, nearest first. Fully **offline** (no model, no network) —
+  fast and always available. Best for near-duplicates and same-shot matches.
+- **`Ctrl-B L` — CLIP semantic.** Ranks by **CLIP embedding similarity** — the same
+  meaning-aware space as visual search (`V`), so it finds images with the *same
+  subject, scene, or style*, not just visual near-copies. Loads the CLIP model
+  (pauses like `V`), but **reuses the persisted embedding cache** — so once a library
+  is embedded (e.g. by a prior `V` search), lookalike is instant *and* runs offline.
+
+Both open a relevance-ranked view (best first) you can curate and narrow with `/`.
 
 ## 11. Browse — compare, duplicates, rename & export
 
