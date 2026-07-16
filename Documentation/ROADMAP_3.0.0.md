@@ -100,6 +100,13 @@ index" to build; it's the HJSON model itself.
       CLIP example layout; `#[ignore]` real-load smoke test blocked here (cache disk offline — same
       failure `plakat rank` hits, not a code issue). REMAINING: lookalike (image→image),
       analyze-and-generate, face-scan.
+- [x] **Command surface — quickhelp + natural-language pipeline.** `Ctrl-B` leader → `h` contextual
+      key-chord card / `H` contextual commands card (both built from focus+mode, seeded with live
+      state). `:` opens a natural-language command pane (`photos/nl.rs`): an optional selector
+      (`find`/`take` a filter) + a `then`-joined pipeline of actions. Deterministic keyword parser for
+      common phrasings (offline); else the existing `prompt::complete` provider pipeline, **grounded
+      with the album HJSON**, returns a JSON plan from a closed vocabulary (routes intent, never
+      executes). y/N confirm; batch heavy ops drain through a unified `VecDeque<Job>`. Unit-tested.
 
 **3.0.0 releases** when Phase 1–2 (browse + curate) is usable — a real flagship, not an empty bump.
 Later phases can land in 3.1+.

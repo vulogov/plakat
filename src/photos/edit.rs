@@ -87,6 +87,12 @@ impl EditOp {
         EditEntry { op: op.to_string(), params, ts: None }
     }
 
+    /// Parse a bare op tag (`rotate_cw`, `grayscale`, `crop_square`, …) into an op. For the
+    /// param-less ops used by the NL pipeline; value ops default their value to 0.
+    pub fn from_tag(tag: &str) -> Option<EditOp> {
+        Self::from_entry(&EditEntry { op: tag.to_string(), params: Default::default(), ts: None })
+    }
+
     /// Parse an `album.hjson` edit-log entry back into an op (unknown ops → `None`, skipped on replay).
     pub fn from_entry(e: &EditEntry) -> Option<EditOp> {
         let val = || e.params.get("value").and_then(|v| v.as_i64()).unwrap_or(0) as i32;

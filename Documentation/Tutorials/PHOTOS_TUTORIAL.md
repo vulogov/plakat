@@ -335,6 +335,29 @@ It routes to whichever vision-capable LLM you have configured: **Gemini**
 (`DEEPSEEK_API_KEY`), preferring Gemini when both are set. The local (text-only)
 LLM has no vision model, so it reports that and asks you to configure one.
 
+### Natural-language commands (`:`)
+
+Press `:` and type a command in plain language — optionally a **pipeline** of steps
+joined by `then`:
+
+```
+find rating>=4 then upscale then export to ~/best 2000
+all photos then autotag
+take flag then tag as keeper then rate 5
+```
+
+A command is an optional **selector** (`find`/`take` a pattern — the same filter
+grammar as `/`, or `all` / `selected`) followed by actions run in order: `rate`,
+`flag`, `reject`, `tag`, `autotag`, `describe`, `upscale`, `img2img …`,
+`relight …`, `grayscale`/`rotate`/`crop`, `export to …`, `rename …`, `sort by …`,
+`dedup`, `stack`, `smart album …`.
+
+Common phrasings are parsed **locally** (no network); anything else is handed to
+your configured LLM, **grounded with the album's metadata**, which returns a plan
+from that same fixed vocabulary — it routes your intent, it never runs arbitrary
+code. You always get a `[y/N]` confirmation with a summary before anything runs.
+Batch model operations (upscale-all, autotag-all) queue up and run one at a time.
+
 ### Visual search (`V`)
 
 Where metadata search (`?`) matches the *words* on an image, **visual search**

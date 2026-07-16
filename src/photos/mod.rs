@@ -13,6 +13,7 @@ pub mod export;
 pub mod hjson;
 pub mod import;
 pub mod mledit;
+pub mod nl;
 pub mod rename;
 pub mod vision;
 pub mod visual_search;
@@ -20,7 +21,7 @@ pub mod library;
 pub mod loader;
 pub mod watcher;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -77,6 +78,17 @@ enum PendingCmd {
     Export,
     /// Batch-rename the current targets with the entered pattern (`#` runs = numbers).
     BatchRename,
+    /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
+    NlCommand,
+    /// Confirm and run the pending parsed command plan.
+    ConfirmPlan,
+}
+
+/// A heavy per-image job the event loop drains one at a time (TUI-suspended). Enables batches
+/// (e.g. "upscale every photo in this album") over the same run functions the menus use.
+enum Job {
+    Ml(mledit::MlJob),
+    Vision(vision::VisionOp, PathBuf),
 }
 
 /// Which quickhelp overlay is showing (opened via the `Ctrl-B` leader).
@@ -156,13 +168,18 @@ struct App {
     edit_menu: bool,
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
-    pending_job: Option<mledit::MlJob>,
-    // Vision + AI menu (RFC §Phase 7) + a queued Gemini-vision request (image path).
+    // Vision + AI menu (RFC §Phase 7).
     ai_menu: bool,
-    pending_vision: Option<(vision::VisionOp, PathBuf)>,
+    // Heavy jobs (ML edits + vision) drained one per tick — a batch of one from a menu, or many
+    // from a natural-language pipeline (`:`).
+    jobs: VecDeque<Job>,
     // CLIP visual search (RFC §Phase 7): a queued text query + the in-session embedding cache.
     pending_visual: Option<String>,
     clip_cache: visual_search::Cache,
+    // Natural-language command pipeline (`:`): a raw query awaiting the LLM planner, and a parsed
+    // plan awaiting the user's y/N confirmation.
+    pending_nl: Option<String>,
+    pending_plan: Option<nl::CommandPlan>,
 
     // Survey / compare (RFC §Phase 5): a small set of images decoded side-by-side, with a focus.
     compare: Vec<(PathBuf, StatefulProtocol)>,
@@ -229,11 +246,12 @@ impl App {
             smart_rec: HashMap::new(),
             edit_menu: false,
             ml_menu: false,
-            pending_job: None,
             ai_menu: false,
-            pending_vision: None,
+            jobs: VecDeque::new(),
             pending_visual: None,
             clip_cache: HashMap::new(),
+            pending_nl: None,
+            pending_plan: None,
             compare: Vec::new(),
             compare_cursor: 0,
             stack_view: false,
@@ -659,17 +677,156 @@ impl App {
         };
         let input = album.join(&filename);
         self.status = format!("running {} … (the UI will pause)", op.label());
-        self.pending_job = Some(mledit::MlJob { op, input, album });
+        self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
     }
 
-    /// Queue a Gemini-vision request on the cursor image (the event loop runs it).
+    /// Queue a vision request on the cursor image (the event loop runs it).
     fn queue_vision(&mut self, op: vision::VisionOp) {
         self.ai_menu = false;
         let Some((album, filename)) = self.cur_source() else {
             self.status = "open an album first".into();
             return;
         };
-        self.pending_vision = Some((op, album.join(filename)));
+        self.jobs.push_back(Job::Vision(op, album.join(filename)));
+    }
+
+    /// The source album dir + filename for an arbitrary image `path` (normal or smart/search view).
+    fn source_of(&self, path: &Path) -> Option<(PathBuf, String)> {
+        let filename = path.file_name().and_then(|n| n.to_str())?.to_string();
+        let dir = if self.smart.is_some() {
+            self.smart_src.get(path)?.clone()
+        } else {
+            self.album_dir.clone()?
+        };
+        Some((dir, filename))
+    }
+
+    // --- Natural-language command pipeline (`:`) — RFC PHOTOS-1 §NL. ---
+
+    /// Stash a parsed plan and open a y/N confirmation with its summary.
+    fn confirm_plan(&mut self, plan: nl::CommandPlan) {
+        let summary = plan.summary();
+        self.pending_plan = Some(plan);
+        self.prompt(format!("run: {summary}?  [y/N] "), "", PendingCmd::ConfirmPlan);
+    }
+
+    /// Execute a command plan: resolve the selector into the working set, then run the pipeline in
+    /// order over the existing primitives.
+    fn run_plan(&mut self, plan: nl::CommandPlan) {
+        if let Some(sel) = plan.select.as_deref() {
+            match sel.trim() {
+                "selected" | "selection" => {} // keep the current selection
+                "all" | "" => self.selected = self.view.iter().copied().collect(),
+                filter => {
+                    // Treat as a filter expression: narrow the view + select every match.
+                    self.filter = filter.to_string();
+                    self.rebuild_view();
+                    self.selected = self.view.iter().copied().collect();
+                }
+            }
+        }
+        for action in plan.actions {
+            self.run_action(action);
+        }
+    }
+
+    fn run_action(&mut self, action: nl::Action) {
+        use nl::Action;
+        match action {
+            Action::Rate { stars } => self.edit_targets(|r| r.rating = stars.min(5)),
+            Action::Flag => self.edit_targets(|r| r.flagged = true),
+            Action::Reject => self.edit_targets(|r| r.rejected = true),
+            Action::Color { label } => self.edit_targets(|r| r.color_label = Some(label.clone())),
+            Action::Tag { tags } => self.edit_targets(|r| {
+                for t in &tags {
+                    if !r.tags.contains(t) {
+                        r.tags.push(t.clone());
+                    }
+                }
+            }),
+            Action::Autotag => self.enqueue_vision_over_targets(vision::VisionOp::Autotag),
+            Action::Describe => self.enqueue_vision_over_targets(vision::VisionOp::Describe),
+            Action::Upscale => self.enqueue_ml_over_targets(mledit::MlOp::Upscale),
+            Action::Img2img { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Img2img { prompt }),
+            Action::Relight { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Relight { prompt }),
+            Action::Edit { op } => match edit::EditOp::from_tag(&op) {
+                Some(eop) => self.batch_edit(eop),
+                None => self.status = format!("unknown edit op: {op}"),
+            },
+            Action::Export { dir, max_px } => self.export_targets(&dir, max_px),
+            Action::Rename { pattern } => {
+                self.batch_rename(&pattern);
+                self.rescan();
+            }
+            Action::Sort { by } => {
+                self.album_meta.sort = Some(by);
+                self.save_album();
+                self.sort_album();
+                self.rebuild_view();
+            }
+            Action::Dedup => self.dedup_scan(),
+            Action::Stack => self.toggle_stack(),
+            Action::SmartAlbum { name } => {
+                let query = self.filter.trim().to_string();
+                if query.is_empty() {
+                    self.status = "smart album needs a filter/selector".into();
+                } else {
+                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
+                    fm.smart_albums.retain(|s| s.name != name);
+                    fm.smart_albums.push(hjson::SmartAlbum { name: name.clone(), query });
+                    let _ = hjson::write_folder(&self.root_dir, &fm);
+                    self.smart_albums = fm.smart_albums;
+                    self.status = format!("saved smart album '{name}'");
+                }
+            }
+        }
+    }
+
+    /// Apply a T1 pixel edit to every browse target (selection, else the whole view).
+    fn batch_edit(&mut self, op: edit::EditOp) {
+        let paths: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        let mut n = 0;
+        for p in paths {
+            let Some((dir, filename)) = self.source_of(&p) else { continue };
+            let _ = edit::ensure_backup(&dir, &filename);
+            self.edit_record_at(&p, |r| r.edits.push(op.to_entry()));
+            let ops: Vec<edit::EditOp> = self
+                .record(&p)
+                .map(|r| r.edits.iter().filter_map(edit::EditOp::from_entry).collect())
+                .unwrap_or_default();
+            if edit::rebuild_file(&dir, &filename, &ops).is_ok() {
+                self.thumbs.remove(&p);
+                n += 1;
+            }
+        }
+        self.status = format!("{} · {n} image(s)", op.label());
+    }
+
+    /// Enqueue an ML job per browse target (batch upscale / img2img / relight).
+    fn enqueue_ml_over_targets(&mut self, op: mledit::MlOp) {
+        let paths: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        let mut n = 0;
+        for p in paths {
+            if let Some((dir, _)) = self.source_of(&p) {
+                self.jobs.push_back(Job::Ml(mledit::MlJob { op: op.clone(), input: p, album: dir }));
+                n += 1;
+            }
+        }
+        self.status = format!("queued {n} × {} (the UI will pause per image)", op.label());
+    }
+
+    /// Enqueue a vision job per browse target (batch autotag / describe).
+    fn enqueue_vision_over_targets(&mut self, op: vision::VisionOp) {
+        let paths: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        let mut n = 0;
+        for p in paths {
+            self.jobs.push_back(Job::Vision(op, p));
+            n += 1;
+        }
+        self.status = format!("queued {n} × {}", op.label());
     }
 
     /// The album_paths indices the next *browse* op applies to: the multi-selection if any, else the
@@ -975,6 +1132,21 @@ impl App {
                     self.batch_rename(&arg);
                     fs_changed = true; // files moved on disk
                 }
+                Some(PendingCmd::NlCommand) if !arg.is_empty() => {
+                    // Deterministic fast-path first; otherwise hand off to the LLM planner.
+                    match nl::parse_deterministic(&arg) {
+                        Some(plan) => self.confirm_plan(plan),
+                        None => {
+                            self.pending_nl = Some(arg.clone());
+                            self.status = "planning with the LLM…".into();
+                        }
+                    }
+                }
+                Some(PendingCmd::ConfirmPlan) if arg.eq_ignore_ascii_case("y") => {
+                    if let Some(plan) = self.pending_plan.take() {
+                        self.run_plan(plan);
+                    }
+                }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
                     let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
                     fm.smart_albums.retain(|s| s.name != name);
@@ -1196,21 +1368,23 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
                 }
             }
         }
-        // A queued T2 ML edit (Phase 4): run it with the TUI suspended so the pipeline's normal
-        // progress shows on the real terminal, then resume + pick up the new file.
-        if let Some(job) = app.pending_job.take() {
-            run_ml_job(terminal, app, job)?;
-            continue;
-        }
-        // A queued Gemini-vision request (Phase 7): quick network call — no alt-screen suspend, just
-        // a one-frame "querying…" status while it blocks.
-        if let Some((op, path)) = app.pending_vision.take() {
-            run_vision_job(terminal, app, op, path)?;
+        // Drain one heavy job per tick (ML edits suspend the TUI; vision is a quick blocking call).
+        // A batch pipeline (`:`) enqueues many — they run in sequence, redrawing between each.
+        if let Some(job) = app.jobs.pop_front() {
+            match job {
+                Job::Ml(j) => run_ml_job(terminal, app, j)?,
+                Job::Vision(op, path) => run_vision_job(terminal, app, op, path)?,
+            }
             continue;
         }
         // A queued CLIP visual search (Phase 7): heavy (model load + embed), run TUI-suspended.
         if let Some(query) = app.pending_visual.take() {
             run_visual_search(terminal, app, query)?;
+            continue;
+        }
+        // A natural-language command the deterministic parser couldn't handle → LLM planner.
+        if let Some(text) = app.pending_nl.take() {
+            run_nl_planner(terminal, app, text)?;
             continue;
         }
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
@@ -1268,6 +1442,50 @@ fn run_ml_job(
             app.status = format!("✓ {label} → {name}");
         }
         Err(e) => app.status = format!("✗ ML edit failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Ask the configured LLM to turn `text` into a command plan, grounded with the album's HJSON, then
+/// open the y/N confirmation. Runs off a dedicated-runtime thread (a quick network call), drawing a
+/// "planning…" frame first — reuses the same provider pipeline as prompt enhancement.
+fn run_nl_planner(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    text: String,
+) -> Result<()> {
+    app.status = "planning with the LLM…".into();
+    terminal.draw(|f| draw(f, app))?;
+
+    // Ground the planner with the album HJSON + a one-line context summary.
+    let grounding = {
+        let album = serde_json::to_string_pretty(&app.album_meta).unwrap_or_default();
+        let name = app
+            .album_dir
+            .as_ref()
+            .and_then(|d| d.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("(album)");
+        format!(
+            "album: {name}\nvisible: {} images\nselected: {}\n{album}",
+            app.view.len(),
+            app.selected.len(),
+        )
+    };
+    let provider = crate::prompt::resolve_provider_label("auto");
+    let result = std::thread::spawn(move || -> Result<nl::CommandPlan> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(nl::plan_llm(&provider, &text, &grounding))
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("planner thread panicked")));
+
+    match result {
+        Ok(plan) if plan.actions.is_empty() => {
+            app.status = "couldn't turn that into a command — try rephrasing".into();
+        }
+        Ok(plan) => app.confirm_plan(plan),
+        Err(e) => app.status = format!("planner failed: {e:#}"),
     }
     Ok(())
 }
@@ -1616,6 +1834,7 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
         // Library-wide metadata / visual search from anywhere.
         KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
         KeyCode::Char('V') => app.prompt("visual search: ", "", PendingCmd::VisualSearch),
+        KeyCode::Char(':') => app.prompt("command: ", "", PendingCmd::NlCommand),
         KeyCode::Tab => {
             if app.album_dir.is_some() || app.smart.is_some() {
                 app.focus = Focus::Album;
@@ -1711,6 +1930,8 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
         // Library-wide CLIP visual search ("find images that look like…").
         KeyCode::Char('V') => app.prompt("visual search: ", "", PendingCmd::VisualSearch),
+        // Natural-language command pipeline (e.g. "find rating>=4 then upscale then export to ~/x").
+        KeyCode::Char(':') => app.prompt("command: ", "", PendingCmd::NlCommand),
         // Pixel-edit menu on the cursor image.
         KeyCode::Char('E') => {
             if n > 0 {
@@ -2445,6 +2666,10 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("edit", "rotate/flip/crop/bright/contrast (E)"));
             l.push(kv("export", format!("copy {target} out, optional resize (X)")));
             l.push(kv("rename", "batch-rename with a #-pattern (r)"));
+            l.push(hd("Natural language  (:)"));
+            l.push(kv(":", "type a command — pipe with 'then'"));
+            l.push(state("find rating>=4 then upscale then export to ~/best 2000"));
+            l.push(state("all photos then autotag   ·   take flag then tag as keep"));
         }
     }
     l
