@@ -63,6 +63,17 @@ fn dedup_in_dir(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{stem}-dup.{ext}"))
 }
 
+/// Reduce a pattern to a safe bare filename stem: keep only the last path component and drop leading
+/// dots, so a rename stays inside the album regardless of what was typed.
+fn sanitize(pattern: &str) -> String {
+    pattern
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(pattern)
+        .trim_start_matches('.')
+        .to_string()
+}
+
 /// First run of `#` in `pattern` as `(start, len)`, if any.
 fn hash_run(pattern: &str) -> Option<(usize, usize)> {
     let bytes = pattern.as_bytes();
@@ -71,8 +82,12 @@ fn hash_run(pattern: &str) -> Option<(usize, usize)> {
     Some((start, len))
 }
 
-/// Map each file to its new filename (extension preserved). 1-based numbering in input order.
+/// Map each file to its new filename (extension preserved). 1-based numbering in input order. The
+/// pattern is a **bare filename** — any directory prefix / leading dots are stripped so a rename can
+/// never escape the album (no path traversal).
 pub fn plan(files: &[PathBuf], pattern: &str) -> Vec<(PathBuf, String)> {
+    let pattern = sanitize(pattern);
+    let pattern = pattern.as_str();
     let width_default = files.len().to_string().len().max(1);
     let run = hash_run(pattern);
     files
@@ -121,6 +136,14 @@ mod tests {
     fn embedded_hash_run_keeps_prefix_and_suffix() {
         let out = plan(&[PathBuf::from("x.webp")], "IMG_###_final");
         assert_eq!(out[0].1, "IMG_001_final.webp");
+    }
+
+    #[test]
+    fn pattern_cannot_traverse_out_of_the_album() {
+        // Directory prefixes + leading dots are stripped → the name stays a bare album-local file.
+        assert_eq!(plan(&[PathBuf::from("x.png")], "../../evil")[0].1, "evil-1.png");
+        assert_eq!(plan(&[PathBuf::from("x.png")], "/etc/passwd")[0].1, "passwd-1.png");
+        assert_eq!(plan(&[PathBuf::from("x.png")], ".hidden")[0].1, "hidden-1.png");
     }
 
     #[test]

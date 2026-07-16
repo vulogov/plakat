@@ -341,7 +341,7 @@ Press `:` and type a command in plain language — optionally a **pipeline** of 
 joined by `then`:
 
 ```
-find rating>=4 then upscale then export to ~/best 2000
+find rating>=4 then tag as portfolio then upscale
 all photos then autotag
 take flag then tag as keeper then rate 5
 ```
@@ -349,8 +349,13 @@ take flag then tag as keeper then rate 5
 A command is an optional **selector** (`find`/`take` a pattern — the same filter
 grammar as `/`, or `all` / `selected`) followed by actions run in order: `rate`,
 `flag`, `reject`, `tag`, `autotag`, `describe`, `upscale`, `img2img …`,
-`relight …`, `grayscale`/`rotate`/`crop`, `export to …`, `rename …`, `sort by …`,
-`dedup`, `stack`, `smart album …`.
+`relight …`, `grayscale`/`rotate`/`crop`, `rename …`, `sort by …`, `dedup`, `stack`,
+`smart album …`.
+
+The command pane is **strictly album-scoped**: it acts on the current album's
+images and their metadata only — it has no filesystem access and won't take or
+invent directory/file paths. (Exporting *out* of the library stays the explicit
+`X` command, where you type the destination yourself.)
 
 Common phrasings are parsed **locally** (no network); anything else is handed to
 your configured LLM, **grounded with the album's metadata**, which returns a plan

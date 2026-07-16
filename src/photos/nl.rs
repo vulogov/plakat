@@ -30,7 +30,7 @@ pub enum Action {
     Relight { prompt: String },
     /// A T1 pixel edit: `rotate_cw`/`rotate_ccw`/`rotate_180`/`flip_h`/`flip_v`/`grayscale`/`crop_square`.
     Edit { op: String },
-    Export { dir: String, #[serde(default)] max_px: Option<u32> },
+    /// Rename in-album with a filename `pattern` (no path — stays inside the album).
     Rename { pattern: String },
     Sort { by: String },
     Dedup,
@@ -84,10 +84,6 @@ fn action_label(a: &Action) -> String {
         Action::Img2img { prompt } => format!("img2img '{prompt}'"),
         Action::Relight { prompt } => format!("relight '{prompt}'"),
         Action::Edit { op } => format!("edit {op}"),
-        Action::Export { dir, max_px } => match max_px {
-            Some(p) => format!("export→{dir} ≤{p}px"),
-            None => format!("export→{dir}"),
-        },
         Action::Rename { pattern } => format!("rename {pattern}"),
         Action::Sort { by } => format!("sort {by}"),
         Action::Dedup => "dedup".into(),
@@ -144,11 +140,8 @@ fn as_selector(stage: &str) -> Option<String> {
 
 fn parse_action(stage: &str) -> Option<Action> {
     let s = stage.trim();
-    // Value-carrying verbs first (prefix match), then bare verbs.
-    if let Some(r) = strip_any(s, &["export to ", "export "]) {
-        let (dir, max_px) = split_trailing_num(&r);
-        return Some(Action::Export { dir, max_px });
-    }
+    // Value-carrying verbs first (prefix match), then bare verbs. No filesystem-path verbs — the NL
+    // pipeline stays inside the album (export to a path is the manual `X` command).
     if let Some(r) = strip_any(s, &["rename to ", "rename "]) {
         return Some(Action::Rename { pattern: r.trim().to_string() });
     }
@@ -210,17 +203,6 @@ fn strip_any(s: &str, prefixes: &[&str]) -> Option<String> {
     prefixes.iter().find_map(|p| s.strip_prefix(p).map(|r| r.to_string()))
 }
 
-/// Split `"~/x 1600"` → `("~/x", Some(1600))`; a value with no trailing integer → `(value, None)`.
-fn split_trailing_num(s: &str) -> (String, Option<u32>) {
-    let s = s.trim();
-    if let Some((head, last)) = s.rsplit_once(char::is_whitespace) {
-        if let Ok(n) = last.trim().parse::<u32>() {
-            return (head.trim().to_string(), Some(n));
-        }
-    }
-    (s.to_string(), None)
-}
-
 /// Build the LLM plan from `input`, grounded with `grounding` (the album HJSON + context). Reuses the
 /// existing provider pipeline; the model returns only JSON from the closed vocabulary.
 pub async fn plan_llm(provider: &str, input: &str, grounding: &str) -> Result<CommandPlan> {
@@ -242,22 +224,25 @@ fn extract_json(text: &str) -> Option<String> {
 }
 
 const SYSTEM: &str = "\
-You translate a photo-manager command into a JSON plan. Respond with ONLY JSON, no prose, no fences.
+You translate a photo-manager command into a JSON plan. You operate ONLY on the images in the current
+album — their curation metadata and pixels. You have NO filesystem access: never emit, invent, or
+reference directory paths, file paths, or filenames. Respond with ONLY JSON, no prose, no fences.
 
 Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
 - select: \"all\" (whole album view), \"selected\" (current selection), or a filter expression using the
   grammar: rating>=N / rating>N / rating=N / unrated / flag / -flag / rejected / -rejected / ai / scored /
-  tag:WORD / -tag:WORD / free-text-filename. null keeps the current selection.
+  tag:WORD / -tag:WORD / free-text. null keeps the current selection. (This is a query, not a path.)
 - actions run in order. Each is one of:
   {\"action\":\"rate\",\"stars\":0-5} {\"action\":\"flag\"} {\"action\":\"reject\"}
   {\"action\":\"color\",\"label\":\"red|yellow|green|blue|purple\"}
   {\"action\":\"tag\",\"tags\":[\"...\"]} {\"action\":\"autotag\"} {\"action\":\"describe\"}
   {\"action\":\"upscale\"} {\"action\":\"img2img\",\"prompt\":\"...\"} {\"action\":\"relight\",\"prompt\":\"...\"}
   {\"action\":\"edit\",\"op\":\"rotate_cw|rotate_ccw|rotate_180|flip_h|flip_v|grayscale|crop_square\"}
-  {\"action\":\"export\",\"dir\":\"...\",\"max_px\":<int|null>} {\"action\":\"rename\",\"pattern\":\"trip_###\"}
+  {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE filename pattern, never a path)
   {\"action\":\"sort\",\"by\":\"name-asc|name-desc|date-desc|date-asc|rating-desc|score-desc\"}
   {\"action\":\"dedup\"} {\"action\":\"stack\"} {\"action\":\"smart_album\",\"name\":\"...\"}
-Only use actions/fields from this schema. If the request can't be expressed, return {\"select\":null,\"actions\":[]}.";
+Only use actions/fields from this schema. There is no export or file-writing action here. If the request
+needs a filesystem path or can't be expressed, return {\"select\":null,\"actions\":[]}.";
 
 #[cfg(test)]
 mod tests {
@@ -265,15 +250,19 @@ mod tests {
 
     #[test]
     fn parses_selector_and_pipeline() {
-        let p = parse_deterministic("find rating>=4 then upscale then export to ~/best 2000").unwrap();
+        let p = parse_deterministic("find rating>=4 then upscale then rename to trip_###").unwrap();
         assert_eq!(p.select.as_deref(), Some("rating>=4"));
         assert_eq!(
             p.actions,
-            vec![
-                Action::Upscale,
-                Action::Export { dir: "~/best".into(), max_px: Some(2000) },
-            ]
+            vec![Action::Upscale, Action::Rename { pattern: "trip_###".into() }]
         );
+    }
+
+    #[test]
+    fn no_filesystem_path_actions() {
+        // Export / file-path phrasings are not in the NL vocabulary → fall back (LLM will refuse).
+        assert!(parse_deterministic("export to ~/best 2000").is_none());
+        assert!(parse_deterministic("upscale then export to /tmp/out").is_none());
     }
 
     #[test]
@@ -310,15 +299,12 @@ mod tests {
     #[ignore]
     async fn nl_planner_live() {
         let grounding = "album: Iceland\nvisible: 42 images\nselected: 0\n{}";
-        let plan = plan_llm("deepseek", "upscale everything then export it to /tmp/out at 2000px", grounding)
+        let plan = plan_llm("deepseek", "tag every four-plus star photo as portfolio then upscale them", grounding)
             .await
             .expect("planner returned a plan");
         eprintln!("LIVE PLAN: {plan:?}");
+        assert!(plan.actions.iter().any(|a| matches!(a, Action::Tag { .. })), "has tag");
         assert!(plan.actions.iter().any(|a| matches!(a, Action::Upscale)), "has upscale");
-        assert!(
-            plan.actions.iter().any(|a| matches!(a, Action::Export { .. })),
-            "has export"
-        );
     }
 
     #[test]
