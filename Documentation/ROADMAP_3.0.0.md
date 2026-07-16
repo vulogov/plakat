@@ -50,6 +50,12 @@ index" to build; it's the HJSON model itself.
       (`ImportArgs` flatten + `run_with_import` snapshot wrapper); feature-gated on `photos` with a
       fast-fail build hint. Closes the loop: generate → land curated in the manager (live via the
       watcher). RFC_PHOTOS_IMPORT.md.
+- [x] **Metadata semantic search** (`?`) — library-wide TF-IDF relevance ranking over each image's
+      text metadata (filename/title/caption/notes/tags + `--import` prompt/model). Extracted the
+      History ranker to a shared, feature-agnostic `crate::textsearch`; a relevance-ranked smart
+      view (curation routes back to source albums). Unit-tested (`doc_for` + moved ranker tests).
+      Visual/CLIP-embedding search + a derived index/vector store are the Phase-7 follow-on (see the
+      storage note below).
 - [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).

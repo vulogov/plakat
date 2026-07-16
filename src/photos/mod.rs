@@ -57,6 +57,8 @@ enum PendingCmd {
     SaveSmart { query: String },
     /// Delete a named smart album from the root folder.hjson.
     DeleteSmart { name: String },
+    /// Run a library-wide metadata semantic search for the entered free-text query.
+    Search,
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -114,8 +116,9 @@ struct App {
     // images collected from many albums; records/writes route through the path-keyed maps below
     // instead of `album_meta`.
     smart_albums: Vec<hjson::SmartAlbum>,
-    smart: Option<String>,       // active smart album name (None = a real album is open)
-    smart_query: String,         // the active smart album's filter query
+    smart: Option<String>,       // active smart-view label (None = a real album is open)
+    smart_query: String,         // the active view's query (filter grammar, or NL search text)
+    smart_is_search: bool,       // true = relevance-ranked semantic search; false = filter query
     smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
     smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
 
@@ -162,6 +165,7 @@ impl App {
             smart_albums,
             smart: None,
             smart_query: String::new(),
+            smart_is_search: false,
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
             cmd_active: false,
@@ -181,11 +185,15 @@ impl App {
         if let Ok(root) = library::walk(&self.root_dir) {
             self.root = root;
         }
-        // A smart-album view spans the whole library — re-evaluate its query, preserving the cursor.
+        // A smart-album / search view spans the whole library — re-evaluate it, preserving the cursor.
         if let Some(name) = self.smart.clone() {
             let query = self.smart_query.clone();
             let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
-            self.open_smart(name, query);
+            if self.smart_is_search {
+                self.open_search(query);
+            } else {
+                self.open_smart(name, query);
+            }
             if let Some(cp) = cur_path {
                 if let Some(pos) = self.view.iter().position(|&pi| self.album_paths.get(pi) == Some(&cp)) {
                     self.album_cursor = pos;
@@ -265,7 +273,8 @@ impl App {
             .collect();
         paths.sort();
         self.status = format!("{}  ·  {} images", dir.display(), paths.len());
-        self.smart = None; // leaving any smart-album view
+        self.smart = None; // leaving any smart-album / search view
+        self.smart_is_search = false;
         self.smart_src.clear();
         self.smart_rec.clear();
         self.album_meta = hjson::read_album(&dir).unwrap_or_default();
@@ -282,15 +291,12 @@ impl App {
         self.focus = Focus::Album;
     }
 
-    /// Open a smart album: evaluate `query` against every album in the library and collect the
-    /// matching images (with their source album + record) into one grid. Curation writes route back
-    /// to each image's own album (see [`edit_record_at`]).
-    fn open_smart(&mut self, name: String, query: String) {
+    /// Every image in the library with its source album dir + record (each album.hjson read once).
+    /// The shared collection step behind smart albums and metadata search.
+    fn collect_library(&self) -> Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> {
         let mut dirs = Vec::new();
         collect_album_dirs(&self.root, &mut dirs);
-        let mut paths = Vec::new();
-        let mut src = HashMap::new();
-        let mut recs = HashMap::new();
+        let mut out = Vec::new();
         for dir in dirs {
             let meta = hjson::read_album(&dir).unwrap_or_default();
             let mut imgs: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -302,26 +308,48 @@ impl App {
                 .collect();
             imgs.sort();
             for p in imgs {
-                let Some(fname) = p.file_name().and_then(|n| n.to_str()) else { continue };
-                let rec = meta.images.get(fname);
-                if matches_filter(fname, rec, &query) {
-                    if let Some(r) = rec {
-                        recs.insert(p.clone(), r.clone());
-                    }
-                    src.insert(p.clone(), dir.clone());
-                    paths.push(p);
-                }
+                let rec = p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n)).cloned();
+                out.push((p, dir.clone(), rec));
             }
         }
-        let count = paths.len();
-        self.smart = Some(name.clone());
-        self.smart_query = query.clone();
+        out
+    }
+
+    /// Commit a collected result set as the active smart view (shared tail of smart-album / search).
+    /// `paths` is already in display order; pass `presorted` to keep it (search ranks by relevance).
+    fn enter_smart_view(
+        &mut self,
+        label: String,
+        query: String,
+        is_search: bool,
+        items: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)>,
+        presorted: bool,
+    ) {
+        let mut paths = Vec::with_capacity(items.len());
+        let mut src = HashMap::new();
+        let mut recs = HashMap::new();
+        for (p, dir, rec) in items {
+            if let Some(r) = rec {
+                recs.insert(p.clone(), r);
+            }
+            src.insert(p.clone(), dir);
+            paths.push(p);
+        }
+        self.smart = Some(label);
+        self.smart_query = query;
+        self.smart_is_search = is_search;
         self.smart_src = src;
         self.smart_rec = recs;
         self.album_dir = None;
-        self.album_meta = hjson::AlbumMeta::default(); // transient; only `sort` is used, unpersisted
+        // Transient meta; only `sort` is read. Search results are pre-ranked → `relevance` (no-op sort).
+        self.album_meta = hjson::AlbumMeta {
+            sort: presorted.then(|| "relevance".to_string()),
+            ..Default::default()
+        };
         self.album_paths = paths;
-        self.sort_album();
+        if !presorted {
+            self.sort_album();
+        }
         self.album_cursor = 0;
         self.selected.clear();
         self.filter.clear();
@@ -330,7 +358,37 @@ impl App {
         self.view_proto = None;
         self.thumbs.clear();
         self.focus = Focus::Album;
-        self.status = format!("★ {name}  ·  {count} images  ·  [{query}]  (curation writes to each source album)");
+    }
+
+    /// Open a smart album: evaluate `query` (filter grammar) against every album, collecting matches
+    /// into one grid. Curation writes route back to each image's own album (see [`edit_record_at`]).
+    fn open_smart(&mut self, name: String, query: String) {
+        let items: Vec<_> = self
+            .collect_library()
+            .into_iter()
+            .filter(|(p, _, rec)| {
+                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                matches_filter(fname, rec.as_ref(), &query)
+            })
+            .collect();
+        let count = items.len();
+        self.enter_smart_view(name.clone(), query.clone(), false, items, false);
+        self.status =
+            format!("★ {name}  ·  {count} images  ·  [{query}]  (curation writes to each source album)");
+    }
+
+    /// Metadata semantic search: rank every image in the library by TF-IDF relevance of `query`
+    /// against its text metadata (filename, title, caption, notes, tags, and the `--import` prompt /
+    /// model), and show the matches best-first. A relevance-ranked smart view — curation still routes
+    /// back to each source album.
+    fn open_search(&mut self, query: String) {
+        let items = self.collect_library();
+        let docs: Vec<String> = items.iter().map(|(p, _, rec)| doc_for(p, rec.as_ref())).collect();
+        let ranked = crate::textsearch::rank(&query, &docs); // (index, score) desc; empty on no hit
+        let ordered: Vec<_> = ranked.into_iter().map(|(i, _)| items[i].clone()).collect();
+        let count = ordered.len();
+        self.enter_smart_view(format!("search: {query}"), query.clone(), true, ordered, true);
+        self.status = format!("🔎 '{query}'  ·  {count} matches by relevance");
     }
 
     /// The `album_paths` index at the cursor (through the filtered view).
@@ -528,6 +586,9 @@ impl App {
                     hjson::write_folder(&self.root_dir, &fm)?;
                     self.smart_albums = fm.smart_albums;
                     self.status = format!("saved smart album '{arg}'");
+                }
+                Some(PendingCmd::Search) if !arg.is_empty() => {
+                    self.open_search(arg.clone());
                 }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
                     let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
@@ -760,6 +821,8 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 app.expanded.remove(&path);
             }
         }
+        // Library-wide metadata semantic search from anywhere.
+        KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
         KeyCode::Tab => {
             if app.album_dir.is_some() || app.smart.is_some() {
                 app.focus = Focus::Album;
@@ -851,6 +914,8 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.prompt("smart album name: ", "", PendingCmd::SaveSmart { query: q });
             }
         }
+        // Library-wide metadata semantic search (prompts / captions / notes / tags).
+        KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
         KeyCode::Char('C') => {
             if n > 0 {
                 app.selected.clear(); // cull operates one image at a time
@@ -1050,6 +1115,7 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     let active = app.focus == Focus::Album;
     let sort = app.album_meta.sort.as_deref().unwrap_or("name-asc");
     let title = match (&app.smart, &app.album_dir) {
+        (Some(name), _) if app.smart_is_search => format!(" 🔎 {name}  ·  ↕ {sort} "),
         (Some(name), _) => format!(" ★ {name}  ·  ↕ {sort} "),
         (None, Some(d)) => format!(
             " {}  ·  ↕ {} ",
@@ -1166,6 +1232,7 @@ fn sort_paths(
 ) {
     let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
     match mode {
+        "relevance" => {} // search results arrive pre-ranked — keep the given order
         "name-desc" => paths.sort_by(|a, b| name(b).cmp(&name(a))),
         "date-asc" => paths.sort_by_key(|p| mtime(p)),
         "date-desc" => paths.sort_by(|a, b| mtime(b).cmp(&mtime(a))),
@@ -1187,6 +1254,35 @@ fn collect_album_dirs(node: &LibraryNode, out: &mut Vec<PathBuf>) {
     for c in &node.children {
         collect_album_dirs(c, out);
     }
+}
+
+/// Build the searchable document for an image from its text metadata: filename, title, caption,
+/// notes, tags, and — for `--import`ed images — the generation prompt + model. Fed to the TF-IDF
+/// ranker for metadata search.
+fn doc_for(path: &Path, rec: Option<&hjson::ImageRecord>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+        parts.push(n.to_string());
+    }
+    if let Some(r) = rec {
+        if let Some(t) = &r.title {
+            parts.push(t.clone());
+        }
+        if let Some(c) = &r.caption {
+            parts.push(c.clone());
+        }
+        if let Some(n) = &r.notes {
+            parts.push(n.clone());
+        }
+        if !r.tags.is_empty() {
+            parts.push(r.tags.join(" "));
+        }
+        if let Some(g) = &r.generation {
+            parts.push(g.prompt.clone());
+            parts.push(g.model.clone());
+        }
+    }
+    parts.join(" ")
 }
 
 /// Parse a comma-separated tag string into a trimmed, de-duplicated, order-preserving list.
@@ -1397,6 +1493,27 @@ mod filter_tests {
         assert_eq!(parse_tags("sunset, beach ,sunset,, iceland"), ["sunset", "beach", "iceland"]);
         assert!(parse_tags("   ,  ,").is_empty());
         assert_eq!(parse_tags("solo"), ["solo"]);
+    }
+
+    #[test]
+    fn doc_for_gathers_text_metadata() {
+        use crate::imaging::metadata::GenerationMetadata;
+        let rec = ImageRecord {
+            title: Some("Foxes".into()),
+            caption: Some("a red fox in snow".into()),
+            notes: Some("golden hour".into()),
+            tags: vec!["wildlife".into(), "winter".into()],
+            generation: Some(GenerationMetadata::new(
+                "majestic fox portrait", "sdxl", 1, 20, 7.0, "ddim", 512, 512,
+            )),
+            ..Default::default()
+        };
+        let d = doc_for(Path::new("/a/plakat-7.png"), Some(&rec)).to_lowercase();
+        for term in ["plakat-7", "foxes", "fox", "snow", "golden", "wildlife", "winter", "majestic", "sdxl"] {
+            assert!(d.contains(term), "doc missing '{term}': {d}");
+        }
+        // No record → just the filename.
+        assert_eq!(doc_for(Path::new("/a/b.png"), None), "b.png");
     }
 
     #[test]

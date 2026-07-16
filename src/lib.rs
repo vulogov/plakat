@@ -54,6 +54,8 @@ pub mod memwatch;
 pub mod llm;
 #[doc(hidden)]
 pub mod pipelines;
+/// Local, model-free TF-IDF cosine text search (History + `plakat photos`). Feature-agnostic.
+pub mod textsearch;
 /// v3.0 flagship: `plakat photos` TUI collection manager (RFC PHOTOS-1). Behind `--features photos`.
 #[cfg(feature = "photos")]
 pub mod photos;

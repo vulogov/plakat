@@ -182,6 +182,20 @@ deletes the saved search (never the images).
 Examples worth saving: `rating>=4 -rejected` (keepers), `ai scored` (generated,
 scored), `flag` (your picks across shoots).
 
+### Metadata search (`?`)
+
+A filter matches exact tokens; **search** ranks by *relevance*. Press `?` (from
+the tree or the grid) and type a free-text query — plakat scores every image in
+the library against its text metadata (filename, title, caption, notes, tags, and
+the generation prompt/model for `--import`ed images) and shows the best matches
+first, 🔎 in the pane title.
+
+It's a local, model-free TF-IDF cosine ranker (the same engine `plakat ui`'s
+History uses) — instant, no model download, no network. Because it's
+meaning-aware rather than substring, `winter mountain` surfaces a caption like
+"fresh snow on the peaks" even with no shared word. The result is a live view you
+can curate (writes route back to each source album) and narrow further with `/`.
+
 ---
 
 ## 5. Culling
