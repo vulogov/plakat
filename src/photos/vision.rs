@@ -45,9 +45,10 @@ pub enum VisionOutcome {
     Caption(String),
 }
 
-/// Run `op` on `image` via Gemini vision, returning the parsed outcome.
-pub async fn run(op: VisionOp, image: &Path) -> Result<VisionOutcome> {
-    let text = crate::prompt::gemini::describe_image(image, op.instruction()).await?;
+/// Run `op` on `image` via the configured vision provider (`gemini` / `deepseek` / `auto`),
+/// returning the parsed outcome.
+pub async fn run(op: VisionOp, image: &Path, provider: &str) -> Result<VisionOutcome> {
+    let text = crate::prompt::vision::describe_image(provider, image, op.instruction()).await?;
     Ok(match op {
         VisionOp::Autotag => VisionOutcome::Tags(parse_tag_reply(&text)),
         VisionOp::Describe => VisionOutcome::Caption(clean_caption(&text)),

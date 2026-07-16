@@ -1246,13 +1246,14 @@ fn run_vision_job(
     op: vision::VisionOp,
     path: PathBuf,
 ) -> Result<()> {
-    app.status = format!("querying Gemini ({})…", op.label());
+    let provider = crate::prompt::vision::resolve_vision_provider("auto");
+    app.status = format!("querying {provider} ({})…", op.label());
     terminal.draw(|f| draw(f, app))?; // show the status before we block
 
     let job_path = path.clone();
     let result = std::thread::spawn(move || -> Result<vision::VisionOutcome> {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-        rt.block_on(vision::run(op, &job_path))
+        rt.block_on(vision::run(op, &job_path, &provider))
     })
     .join()
     .unwrap_or_else(|_| Err(anyhow::anyhow!("vision thread panicked")));
@@ -1849,7 +1850,8 @@ fn draw(f: &mut Frame, app: &mut App) {
         )
     } else if app.ai_menu {
         (
-            " AI (Gemini vision)  t autotag · d describe · Esc   — needs GEMINI_API_KEY".to_string(),
+            " AI vision  t autotag · d describe · Esc   — uses your configured LLM (Gemini / DeepSeek)"
+                .to_string(),
             Style::default().fg(Color::Green),
         )
     } else if app.cmd_active {

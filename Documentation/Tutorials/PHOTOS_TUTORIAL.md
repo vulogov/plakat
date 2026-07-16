@@ -303,7 +303,8 @@ inside the library.
 
 ## 10. AI metadata — autotag & describe (`A`)
 
-Press `A` to open the AI menu and have **Gemini vision** look at the cursor image:
+Press `A` to open the AI menu and have your **configured LLM** look at the cursor
+image:
 
 | Key | Result |
 |-----|--------|
@@ -313,8 +314,13 @@ Press `A` to open the AI menu and have **Gemini vision** look at the cursor imag
 This makes an otherwise unlabeled library *searchable*: run autotag on a shoot,
 then `/ tag:...` or `?` metadata-search finds images by what's actually in them.
 Tags are merged (never replace what you've set), captions overwrite. It's a quick
-network call — the status shows `querying Gemini…` for a beat, then the record
-updates. Needs `GEMINI_API_KEY` in your environment / config.
+network call — the status shows `querying <provider>…` for a beat, then the record
+updates.
+
+It routes to whichever vision-capable LLM you have configured: **Gemini**
+(`GEMINI_API_KEY`) or an **OpenAI-compatible** endpoint like DeepSeek
+(`DEEPSEEK_API_KEY`), preferring Gemini when both are set. The local (text-only)
+LLM has no vision model, so it reports that and asks you to configure one.
 
 ### Visual search (`V`)
 
