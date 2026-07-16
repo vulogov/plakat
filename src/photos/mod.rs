@@ -921,39 +921,8 @@ impl App {
             self.status = "nothing to rename".into();
             return;
         }
-        let planned = rename::plan(&files, pattern);
-        // Phase 1: everything to a unique hidden temp (dotfile → invisible to the walk / listing), so
-        // an intra-set name swap (a→b while b→c) can't clobber. Remember old name + desired new name.
-        let mut staged: Vec<(PathBuf, String, String)> = Vec::new();
-        for (i, (old, new_name)) in planned.into_iter().enumerate() {
-            let Some(old_name) = old.file_name().and_then(|n| n.to_str()).map(String::from) else {
-                continue;
-            };
-            let tmp = dir.join(format!(".plakat_rn_{i}"));
-            if std::fs::rename(&old, &tmp).is_ok() {
-                staged.push((tmp, old_name, new_name));
-            }
-        }
-        // Phase 2: temp → final (dedup vs any unrelated existing file), then migrate the record +
-        // pristine edit backup under the *actual* final name.
-        let mut n = 0;
-        for (tmp, old_name, want) in staged {
-            let dest = dedup_in_dir(&dir, &want);
-            if std::fs::rename(&tmp, &dest).is_err() {
-                continue;
-            }
-            let final_name =
-                dest.file_name().and_then(|f| f.to_str()).unwrap_or(&want).to_string();
-            if let Some(rec) = self.album_meta.images.remove(&old_name) {
-                self.album_meta.images.insert(final_name.clone(), rec);
-            }
-            let (bak_old, bak_new) =
-                (edit::backup_path(&dir, &old_name), edit::backup_path(&dir, &final_name));
-            if bak_old.exists() {
-                let _ = std::fs::rename(&bak_old, &bak_new);
-            }
-            n += 1;
-        }
+        let plan = rename::plan(&files, pattern);
+        let n = rename::apply(&dir, plan, &mut self.album_meta);
         self.save_album();
         self.status = format!("renamed {n} image(s)");
     }
@@ -2337,23 +2306,6 @@ fn sort_paths(
         }),
         _ => paths.sort_by(|a, b| name(a).cmp(&name(b))), // name-asc (default)
     }
-}
-
-/// `<dir>/<name>`, suffixing `-2`, `-3`, … before the extension on a collision.
-fn dedup_in_dir(dir: &Path, name: &str) -> PathBuf {
-    let cand = dir.join(name);
-    if !cand.exists() {
-        return cand;
-    }
-    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("image");
-    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("png");
-    for i in 2..10_000 {
-        let c = dir.join(format!("{stem}-{i}.{ext}"));
-        if !c.exists() {
-            return c;
-        }
-    }
-    dir.join(format!("{stem}-dup.{ext}"))
 }
 
 /// Expand a leading `~` to `$HOME` for an export destination the user typed.

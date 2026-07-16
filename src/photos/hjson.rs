@@ -209,6 +209,48 @@ mod tests {
     }
 
     #[test]
+    fn full_image_record_roundtrips() {
+        // Lock the whole record shape — every field a curated + generated + edited image accrues.
+        let dir = std::env::temp_dir().join(format!("plakat-fullrec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut rec = ImageRecord {
+            title: Some("Fox".into()),
+            rating: 4,
+            tags: vec!["wildlife".into(), "winter".into()],
+            color_label: Some("green".into()),
+            caption: Some("a red fox in snow".into()),
+            notes: Some("golden hour".into()),
+            flagged: true,
+            score: Some(6.8),
+            variants: vec!["fox_upscale.png".into()],
+            generation: Some(crate::imaging::metadata::GenerationMetadata::new(
+                "a red fox", "sdxl", 42, 20, 7.0, "ddim", 1024, 1024,
+            )),
+            ..Default::default()
+        };
+        rec.edits.push(EditEntry { op: "rotate_cw".into(), params: Default::default(), ts: None });
+        let mut m = AlbumMeta::default();
+        m.images.insert("fox.png".into(), rec);
+        write_album(&dir, &m).unwrap();
+
+        let back = read_album(&dir).unwrap();
+        let r = &back.images["fox.png"];
+        assert_eq!(r.title.as_deref(), Some("Fox"));
+        assert_eq!(r.rating, 4);
+        assert_eq!(r.tags, vec!["wildlife".to_string(), "winter".into()]);
+        assert_eq!(r.color_label.as_deref(), Some("green"));
+        assert_eq!(r.caption.as_deref(), Some("a red fox in snow"));
+        assert_eq!(r.notes.as_deref(), Some("golden hour"));
+        assert!(r.flagged);
+        assert_eq!(r.score, Some(6.8));
+        assert_eq!(r.variants, vec!["fox_upscale.png".to_string()]);
+        assert_eq!(r.generation.as_ref().map(|g| g.seed), Some(42));
+        assert_eq!(r.edits.len(), 1);
+        assert_eq!(r.edits[0].op, "rotate_cw");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn folder_smart_albums_roundtrip() {
         let dir = std::env::temp_dir().join(format!("plakat-photos-folder-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
