@@ -14,6 +14,7 @@ pub mod import;
 pub mod mledit;
 pub mod rename;
 pub mod vision;
+pub mod visual_search;
 pub mod library;
 pub mod loader;
 pub mod watcher;
@@ -65,8 +66,10 @@ enum PendingCmd {
     SaveSmart { query: String },
     /// Delete a named smart album from the root folder.hjson.
     DeleteSmart { name: String },
-    /// Run a library-wide metadata semantic search for the entered free-text query.
+    /// Run a library-wide metadata (TF-IDF) semantic search for the entered free-text query.
     Search,
+    /// Run a library-wide CLIP *visual* search for the entered free-text query.
+    VisualSearch,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -144,6 +147,9 @@ struct App {
     // Vision + AI menu (RFC §Phase 7) + a queued Gemini-vision request (image path).
     ai_menu: bool,
     pending_vision: Option<(vision::VisionOp, PathBuf)>,
+    // CLIP visual search (RFC §Phase 7): a queued text query + the in-session embedding cache.
+    pending_visual: Option<String>,
+    clip_cache: visual_search::Cache,
 
     // Survey / compare (RFC §Phase 5): a small set of images decoded side-by-side, with a focus.
     compare: Vec<(PathBuf, StatefulProtocol)>,
@@ -207,6 +213,8 @@ impl App {
             pending_job: None,
             ai_menu: false,
             pending_vision: None,
+            pending_visual: None,
+            clip_cache: HashMap::new(),
             compare: Vec::new(),
             compare_cursor: 0,
             stack_view: false,
@@ -920,6 +928,10 @@ impl App {
                 Some(PendingCmd::Search) if !arg.is_empty() => {
                     self.open_search(arg.clone());
                 }
+                Some(PendingCmd::VisualSearch) if !arg.is_empty() => {
+                    self.pending_visual = Some(arg.clone());
+                    self.status = format!("visual search '{arg}' … (the UI will pause)");
+                }
                 Some(PendingCmd::MlPrompt { relight }) if !arg.is_empty() => {
                     let op = if relight {
                         mledit::MlOp::Relight { prompt: arg.clone() }
@@ -1161,6 +1173,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             run_vision_job(terminal, app, op, path)?;
             continue;
         }
+        // A queued CLIP visual search (Phase 7): heavy (model load + embed), run TUI-suspended.
+        if let Some(query) = app.pending_visual.take() {
+            run_visual_search(terminal, app, query)?;
+            continue;
+        }
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
         }
@@ -1258,6 +1275,70 @@ fn run_vision_job(
             app.status = format!("✓ caption: {caption}");
         }
         Err(e) => app.status = format!("✗ vision failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Run a queued CLIP visual search with the TUI suspended (model load + per-image embed is heavy).
+/// Reuses/updates the in-session embedding cache, then shows the top matches as a relevance view.
+fn run_visual_search(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    query: String,
+) -> Result<()> {
+    use std::io::Write as _;
+    let lib = app.collect_library();
+    if lib.is_empty() {
+        app.status = "no images to search".into();
+        return Ok(());
+    }
+    let items: Vec<(PathBuf, PathBuf)> = lib.iter().map(|(p, d, _)| (p.clone(), d.clone())).collect();
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ CLIP visual search: \"{query}\"  (loading model + embedding {} images…)\n", items.len());
+
+    let cache = std::mem::take(&mut app.clip_cache);
+    let q = query.clone();
+    let result = std::thread::spawn(
+        move || -> Result<(Vec<(PathBuf, PathBuf, f32)>, visual_search::Cache)> {
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            rt.block_on(async {
+                let device = crate::device::select("auto")?;
+                visual_search::search(&device, items, &q, cache, |done, tot| {
+                    if done % 10 == 0 || done == tot {
+                        print!("\r  embedding {done}/{tot}…   ");
+                        let _ = std::io::stdout().flush();
+                    }
+                })
+                .await
+            })
+        },
+    )
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("visual-search thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok((ranked, cache)) => {
+            app.clip_cache = cache;
+            let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
+                lib.into_iter().map(|(p, _, r)| (p, r)).collect();
+            let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked
+                .into_iter()
+                .take(200)
+                .map(|(p, d, _)| {
+                    let r = lookup.get(&p).cloned().flatten();
+                    (p, d, r)
+                })
+                .collect();
+            let count = ordered.len();
+            app.enter_smart_view(format!("visual: {query}"), query.clone(), true, ordered, true);
+            app.status = format!("🔍 visual '{query}' · top {count} by CLIP similarity");
+        }
+        Err(e) => app.status = format!("✗ visual search failed: {e:#}"),
     }
     Ok(())
 }
@@ -1462,8 +1543,9 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 app.expanded.remove(&path);
             }
         }
-        // Library-wide metadata semantic search from anywhere.
+        // Library-wide metadata / visual search from anywhere.
         KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
+        KeyCode::Char('V') => app.prompt("visual search: ", "", PendingCmd::VisualSearch),
         KeyCode::Tab => {
             if app.album_dir.is_some() || app.smart.is_some() {
                 app.focus = Focus::Album;
@@ -1557,6 +1639,8 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         }
         // Library-wide metadata semantic search (prompts / captions / notes / tags).
         KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
+        // Library-wide CLIP visual search ("find images that look like…").
+        KeyCode::Char('V') => app.prompt("visual search: ", "", PendingCmd::VisualSearch),
         // Pixel-edit menu on the cursor image.
         KeyCode::Char('E') => {
             if n > 0 {

@@ -25,6 +25,7 @@ pub mod guidance;
 pub mod fft;
 pub mod diffusion_upscale;
 pub mod aesthetic;
+pub mod clip_embed;
 pub mod hires_fix;
 pub mod img2img;
 pub mod animatediff;

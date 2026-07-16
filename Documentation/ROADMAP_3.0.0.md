@@ -85,8 +85,14 @@ index" to build; it's the HJSON model itself.
       base64 — tiny inline encoder, no new dep) + `photos/vision.rs` (VisionOp + reply parsing,
       unit-tested). Runs off-thread via `run_vision_job` (quick net call, no alt-screen suspend);
       tags merge, caption overwrites; feeds the existing `textsearch` metadata search — the *text*
-      half of semantic search. (Metadata `?` search already shipped.) REMAINING: CLIP-embedding
-      *visual* search (+ the derived vector index/store), lookalike, analyze-and-generate, face-scan.
+      half of semantic search. (Metadata `?` search already shipped.) **+ CLIP visual search (`V`):**
+      `pipelines/clip_embed.rs` `ClipEmbedder` loads openai/clip-vit-large-patch14 (shared aesthetic
+      weights; both towers + projections via candle `ClipModel`, `get_image_features`/`get_text_features`
+      + `div_l2_norm`) → 768-d joint embeddings; `photos/visual_search.rs` ranks the library by cosine
+      with an in-session embed cache. Runs TUI-suspended (model load + per-image embed) → relevance
+      view. Load validated by candle's own CLIP example layout; `#[ignore]` real-load smoke test
+      (needs ~1.7 GB download). REMAINING: persistent vector store, lookalike (image→image),
+      analyze-and-generate, face-scan.
 
 **3.0.0 releases** when Phase 1–2 (browse + curate) is usable — a real flagship, not an empty bump.
 Later phases can land in 3.1+.

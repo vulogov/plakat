@@ -316,8 +316,20 @@ Tags are merged (never replace what you've set), captions overwrite. It's a quic
 network call — the status shows `querying Gemini…` for a beat, then the record
 updates. Needs `GEMINI_API_KEY` in your environment / config.
 
-> This is the *text* side of semantic search. True **visual** search (find images
-> that look like a text prompt, via CLIP embeddings) is the next AI step.
+### Visual search (`V`)
+
+Where metadata search (`?`) matches the *words* on an image, **visual search**
+matches the *pixels*. Press `V`, type a description, and plakat ranks your whole
+library by **CLIP** similarity — the image and your text are embedded into the
+same space and scored by cosine, so "golden hour on a mountain lake" finds the
+shot whether or not anyone ever tagged it.
+
+The first search loads the CLIP model and embeds every image (the UI pauses and
+shows progress on the terminal, like an ML edit); embeddings are cached for the
+session, so refining the query is fast. Results open as a relevance-ranked view
+you can curate and narrow with `/`. No API key needed — it runs locally.
+
+Together, `?` (words) and `V` (pixels) are the two halves of semantic search.
 
 ## 11. Browse — compare, duplicates, rename & export
 
