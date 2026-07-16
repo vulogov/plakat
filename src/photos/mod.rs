@@ -2559,29 +2559,23 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.version_browser {
         draw_version_browser(f, app, album_col);
     }
+    if app.edit_menu {
+        draw_menu_palette(f, "Edit", Color::Cyan, &edit_palette(app), album_col);
+    }
+    if app.ml_menu {
+        draw_menu_palette(f, "ML edit (loads a model)", Color::Magenta, &ml_palette(), album_col);
+    }
+    if app.ai_menu {
+        draw_menu_palette(f, "AI vision", Color::Green, &ai_palette(), album_col);
+    }
     if let Some(kind) = app.help {
         draw_help(f, kind, app, body);
     }
 
-    // Command pane: edit/ML menu, active text input, or a passive hint.
-    let (cmd, cmd_style) = if app.edit_menu {
-        (
-            " EDIT  r/R rotate · t 180° · h/v flip · g gray · s crop1:1 · -/+ bright · </> contrast · u undo · U redo · 0 revert · Esc"
-                .to_string(),
-            Style::default().fg(Color::Cyan),
-        )
-    } else if app.ml_menu {
-        (
-            " ML EDIT  u upscale ×4 · i img2img (prompt) · l relight (prompt) · Esc   — runs a model; the UI pauses"
-                .to_string(),
-            Style::default().fg(Color::Magenta),
-        )
-    } else if app.ai_menu {
-        (
-            " AI  t autotag · d describe (LLM vision) · g recipe-tag AI images (offline) · Esc"
-                .to_string(),
-            Style::default().fg(Color::Green),
-        )
+    // Command pane: menu hint, active text input, or a passive prompt. (Menus render as a palette
+    // overlay — see draw_menu_palette — so the pane just nudges toward it.)
+    let (cmd, cmd_style) = if app.edit_menu || app.ml_menu || app.ai_menu {
+        (" ▸ pick from the palette · Esc to close ".to_string(), Style::default().fg(Color::DarkGray))
     } else if app.cmd_active {
         (format!(" {}{}_", app.cmd_prompt, app.cmd_buffer), Style::default().fg(Color::Yellow))
     } else {
@@ -3131,6 +3125,86 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l
+}
+
+/// A modal command palette for a menu: `key — description` rows, centred, keys still act underneath.
+fn draw_menu_palette(f: &mut Frame, title: &str, color: Color, rows: &[(String, String)], area: Rect) {
+    let keyw = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(3);
+    let width = rows
+        .iter()
+        .map(|(_k, d)| keyw + 2 + d.chars().count())
+        .max()
+        .unwrap_or(30)
+        .clamp(24, 60) as u16
+        + 4;
+    let w = width.min(area.width);
+    let h = (rows.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, d)| {
+            Line::from(vec![
+                Span::styled(format!(" {k:>keyw$}  "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::raw(d.clone()),
+            ])
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {title} · any listed key · Esc "))
+                .border_style(Style::default().fg(color)),
+        ),
+        popup,
+    );
+}
+
+fn prow(k: &str, d: &str) -> (String, String) {
+    (k.to_string(), d.to_string())
+}
+
+/// T1 pixel-edit palette (dynamic: shows the current edit count).
+fn edit_palette(app: &App) -> Vec<(String, String)> {
+    let edits = app.cur_edit_ops().len();
+    vec![
+        prow("r", "rotate ⟳ (clockwise)"),
+        prow("R", "rotate ⟲ (counter-clockwise)"),
+        prow("t", "rotate 180°"),
+        prow("h", "flip horizontal"),
+        prow("v", "flip vertical"),
+        prow("g", "grayscale"),
+        prow("s", "crop to 1:1 square"),
+        prow("- / +", "brightness  down / up"),
+        prow("< / >", "contrast  down / up"),
+        prow("u / U", "undo / redo"),
+        prow("0", &format!("revert to original  ({edits} edit(s))")),
+        prow("Esc", "close"),
+    ]
+}
+
+fn ml_palette() -> Vec<(String, String)> {
+    vec![
+        prow("u", "ML upscale ×4 (Real-ESRGAN)"),
+        prow("i", "img2img — transform with a prompt"),
+        prow("l", "relight — re-illuminate with a prompt"),
+        prow("Esc", "close  (runs a model; the UI pauses)"),
+    ]
+}
+
+fn ai_palette() -> Vec<(String, String)> {
+    vec![
+        prow("t", "autotag — LLM vision → tags"),
+        prow("d", "describe — LLM vision → caption"),
+        prow("g", "recipe-tag AI images (offline)"),
+        prow("Esc", "close"),
+    ]
 }
 
 /// Version browser popup (Ctrl-B v): save the current image as a snapshot, or restore an earlier one.
