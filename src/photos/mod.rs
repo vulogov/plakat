@@ -112,6 +112,42 @@ enum HelpKind {
     Commands,
 }
 
+/// A command in the Edit palette (a pixel op, or undo/redo/revert).
+#[derive(Clone, Copy)]
+enum EditCmd {
+    Op(edit::EditOp),
+    Undo,
+    Redo,
+    Revert,
+}
+
+/// The Edit palette's command list: `(searchable label, action)`.
+fn edit_commands() -> Vec<(&'static str, EditCmd)> {
+    use edit::EditOp::*;
+    vec![
+        ("rotate clockwise ⟳", EditCmd::Op(RotateCw)),
+        ("rotate counter-clockwise ⟲", EditCmd::Op(RotateCcw)),
+        ("rotate 180°", EditCmd::Op(Rotate180)),
+        ("flip horizontal", EditCmd::Op(FlipH)),
+        ("flip vertical", EditCmd::Op(FlipV)),
+        ("grayscale / desaturate", EditCmd::Op(Grayscale)),
+        ("crop to square 1:1", EditCmd::Op(CropSquare)),
+        ("brightness up", EditCmd::Op(Brightness(15))),
+        ("brightness down", EditCmd::Op(Brightness(-15))),
+        ("contrast up", EditCmd::Op(Contrast(12))),
+        ("contrast down", EditCmd::Op(Contrast(-12))),
+        ("undo", EditCmd::Undo),
+        ("redo", EditCmd::Redo),
+        ("revert to original", EditCmd::Revert),
+    ]
+}
+
+/// Edit commands whose label contains `query` (case-insensitive; empty query = all).
+fn filtered_edit_commands(query: &str) -> Vec<(&'static str, EditCmd)> {
+    let q = query.trim().to_lowercase();
+    edit_commands().into_iter().filter(|(l, _)| q.is_empty() || l.to_lowercase().contains(&q)).collect()
+}
+
 /// A free-text per-image metadata field editable from the command pane.
 #[derive(Clone, Copy)]
 enum EditField {
@@ -181,8 +217,11 @@ struct App {
     smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
     smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
 
-    // T1 pixel-edit menu (RFC §Phase 3) — a modal key layer over the cursor image.
+    // T1 pixel-edit palette (RFC §Phase 3) — a searchable/scrollable modal over the cursor image.
     edit_menu: bool,
+    edit_query: String,
+    edit_cursor: usize,
+    edit_visible: usize, // rows the palette can show (set at draw; used for PageUp/Down)
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
     // Vision + AI menu (RFC §Phase 7).
@@ -282,6 +321,9 @@ impl App {
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
             edit_menu: false,
+            edit_query: String::new(),
+            edit_cursor: 0,
+            edit_visible: 10,
             ml_menu: false,
             ai_menu: false,
             jobs: VecDeque::new(),
@@ -826,6 +868,23 @@ impl App {
             .and_then(|p| self.record(p))
             .map(|r| r.edits.iter().filter_map(edit::EditOp::from_entry).collect())
             .unwrap_or_default()
+    }
+
+    /// Open the Edit palette (reset its search + cursor).
+    fn open_edit_menu(&mut self) {
+        self.edit_menu = true;
+        self.edit_query.clear();
+        self.edit_cursor = 0;
+    }
+
+    /// Run a selected Edit-palette command. The palette stays open so edits can be chained.
+    fn run_edit_cmd(&mut self, cmd: EditCmd) {
+        match cmd {
+            EditCmd::Op(op) => self.apply_edit(op),
+            EditCmd::Undo => self.undo_edit(),
+            EditCmd::Redo => self.redo_edit(),
+            EditCmd::Revert => self.revert_edits(),
+        }
     }
 
     /// Append a pixel edit to the cursor image: back up the pristine original (once), record the op
@@ -2060,24 +2119,34 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
 
 /// T1 pixel-edit menu (Phase 3): a modal key layer over the cursor image. Each op applies and keeps
 /// the menu open (chain edits); `u` undoes, `0` reverts, Esc/`E` closes.
+/// Edit command palette (`E`): a searchable, scrollable list. Type to filter; ↑/↓ · PgUp/PgDn ·
+/// Home/End to navigate; Enter runs the selected command (palette stays open to chain edits); Esc
+/// closes. Keys still fall through to running commands — but selection is by search + Enter now.
 fn handle_edit_key(app: &mut App, code: KeyCode) {
-    use edit::EditOp;
+    let n = filtered_edit_commands(&app.edit_query).len();
+    let last = n.saturating_sub(1);
+    let page = app.edit_visible.max(1);
     match code {
-        KeyCode::Esc | KeyCode::Char('E') | KeyCode::Char('q') => app.edit_menu = false,
-        KeyCode::Char('r') => app.apply_edit(EditOp::RotateCw),
-        KeyCode::Char('R') => app.apply_edit(EditOp::RotateCcw),
-        KeyCode::Char('t') => app.apply_edit(EditOp::Rotate180),
-        KeyCode::Char('h') => app.apply_edit(EditOp::FlipH),
-        KeyCode::Char('v') => app.apply_edit(EditOp::FlipV),
-        KeyCode::Char('g') => app.apply_edit(EditOp::Grayscale),
-        KeyCode::Char('s') => app.apply_edit(EditOp::CropSquare),
-        KeyCode::Char('+') | KeyCode::Char('=') => app.apply_edit(EditOp::Brightness(15)),
-        KeyCode::Char('-') | KeyCode::Char('_') => app.apply_edit(EditOp::Brightness(-15)),
-        KeyCode::Char('>') | KeyCode::Char('.') => app.apply_edit(EditOp::Contrast(12)),
-        KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
-        KeyCode::Char('u') => app.undo_edit(),
-        KeyCode::Char('U') => app.redo_edit(),
-        KeyCode::Char('0') => app.revert_edits(),
+        KeyCode::Esc => app.edit_menu = false,
+        KeyCode::Up => app.edit_cursor = app.edit_cursor.saturating_sub(1),
+        KeyCode::Down => app.edit_cursor = (app.edit_cursor + 1).min(last),
+        KeyCode::PageUp => app.edit_cursor = app.edit_cursor.saturating_sub(page),
+        KeyCode::PageDown => app.edit_cursor = (app.edit_cursor + page).min(last),
+        KeyCode::Home => app.edit_cursor = 0,
+        KeyCode::End => app.edit_cursor = last,
+        KeyCode::Enter => {
+            if let Some((_, cmd)) = filtered_edit_commands(&app.edit_query).get(app.edit_cursor).copied() {
+                app.run_edit_cmd(cmd);
+            }
+        }
+        KeyCode::Backspace => {
+            app.edit_query.pop();
+            app.edit_cursor = 0;
+        }
+        KeyCode::Char(c) => {
+            app.edit_query.push(c);
+            app.edit_cursor = 0;
+        }
         _ => {}
     }
 }
@@ -2354,7 +2423,7 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         // Pixel-edit menu on the cursor image.
         KeyCode::Char('E') => {
             if n > 0 {
-                app.edit_menu = true;
+                app.open_edit_menu();
             }
         }
         // ML-edit menu (upscale / img2img / relight) on the cursor image.
@@ -2491,7 +2560,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
                 app.compute_analysis();
             }
         }
-        KeyCode::Char('E') => app.edit_menu = true, // open the pixel-edit menu
+        KeyCode::Char('E') => app.open_edit_menu(),
         KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
         KeyCode::Char('A') => app.ai_menu = true,   // open the vision/AI menu
         _ => return apply_curation(app, code),
@@ -2560,7 +2629,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         draw_version_browser(f, app, album_col);
     }
     if app.edit_menu {
-        draw_menu_palette(f, "Edit", Color::Cyan, &edit_palette(app), album_col);
+        draw_edit_palette(f, app, album_col);
     }
     if app.ml_menu {
         draw_menu_palette(f, "ML edit (loads a model)", Color::Magenta, &ml_palette(), album_col);
@@ -3170,23 +3239,47 @@ fn prow(k: &str, d: &str) -> (String, String) {
     (k.to_string(), d.to_string())
 }
 
-/// T1 pixel-edit palette (dynamic: shows the current edit count).
-fn edit_palette(app: &App) -> Vec<(String, String)> {
-    let edits = app.cur_edit_ops().len();
-    vec![
-        prow("r", "rotate ⟳ (clockwise)"),
-        prow("R", "rotate ⟲ (counter-clockwise)"),
-        prow("t", "rotate 180°"),
-        prow("h", "flip horizontal"),
-        prow("v", "flip vertical"),
-        prow("g", "grayscale"),
-        prow("s", "crop to 1:1 square"),
-        prow("- / +", "brightness  down / up"),
-        prow("< / >", "contrast  down / up"),
-        prow("u / U", "undo / redo"),
-        prow("0", &format!("revert to original  ({edits} edit(s))")),
-        prow("Esc", "close"),
-    ]
+/// Searchable/scrollable Edit command palette (`E`): a search line + a windowed command list with a
+/// highlighted cursor. Type to filter, arrows/PgUp-Dn/Home/End to move, Enter to run.
+fn draw_edit_palette(f: &mut Frame, app: &mut App, area: Rect) {
+    let cmds = filtered_edit_commands(&app.edit_query);
+    let w = 46u16.min(area.width);
+    let h = (cmds.len() as u16 + 4).clamp(6, area.height); // search line + list + borders
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+
+    let list_h = popup.height.saturating_sub(3) as usize; // minus borders (2) + search line (1)
+    app.edit_visible = list_h.max(1);
+    let cursor = app.edit_cursor.min(cmds.len().saturating_sub(1));
+    let start = if cursor >= list_h { cursor + 1 - list_h } else { 0 };
+
+    let mut lines: Vec<Line> = vec![Line::from(vec![
+        Span::styled("🔎 ", Style::new().fg(Color::DarkGray)),
+        Span::styled(app.edit_query.clone(), Style::new().fg(Color::Yellow)),
+        Span::styled("_", Style::new().fg(Color::DarkGray)),
+    ])];
+    if cmds.is_empty() {
+        lines.push(Line::from(Span::styled("  no match", Style::new().fg(Color::DarkGray))));
+    }
+    for (i, (label, _)) in cmds.iter().enumerate().skip(start).take(list_h) {
+        let mut style = Style::default();
+        if i == cursor {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        lines.push(Line::from(Span::styled(format!(" {label}"), style)));
+    }
+    let title = format!(" Edit palette  {}/{} · Enter run · Esc ", (cursor + 1).min(cmds.len().max(1)), cmds.len());
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
 }
 
 fn ml_palette() -> Vec<(String, String)> {

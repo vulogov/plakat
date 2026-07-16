@@ -301,29 +301,23 @@ cancel.
 
 ## 8. Pixel editing (`E`)
 
-Press `E` (in the grid or image view) to open the **edit menu** — quick,
-**non-destructive** pixel edits on the cursor image:
+Press `E` (in the grid or image view) to open the **edit palette** — a searchable
+command list for **non-destructive** pixel edits on the cursor image:
 
-| Key | Edit |
-|-----|------|
-| `r` / `R` | rotate 90° clockwise / counter-clockwise |
-| `t` | rotate 180° |
-| `h` / `v` | flip horizontal / vertical |
-| `g` | grayscale |
-| `s` | crop to a centered 1:1 square |
-| `-` / `+` | brightness down / up |
-| `<` / `>` | contrast down / up |
-| `u` | undo the last edit |
-| `0` | revert — discard all edits, restore the original |
-| `Esc` | close the menu |
+- **Type** to filter (`rot` → the rotate commands, `flip`, `bright`, …).
+- **`↑` / `↓`**, **`PgUp` / `PgDn`**, **`Home` / `End`** to move the selection.
+- **`Enter`** runs the highlighted command; the palette stays open so you can
+  **chain** edits (rotate → brighten → crop). **`Esc`** closes it.
 
-Edits chain (rotate, then brighten, then crop) and the thumbnail/image update
-live. Nothing is destroyed: the **pristine original** is copied once into a hidden
-`.plakat_edits/` folder, and the visible file is re-derived from it by replaying
-the edit list — so `u` and `0` always get you back, and ten edits cost one
-re-encode from the original, not ten. The edit list is stored in the image's
-`album.hjson` record (`edits`), so it persists across sessions and shows in the
-image-view panel (`i`).
+The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, crop 1:1,
+brightness up/down, contrast up/down, **undo**, **redo**, and **revert to original**.
+
+The thumbnail/image update live. Nothing is destroyed: the **pristine original** is
+copied once into a hidden `.plakat_edits/` folder, and the visible file is
+re-derived from it by replaying the edit list — so **undo** / **redo** / **revert**
+always get you back, and ten edits cost one re-encode from the original, not ten.
+The edit list is stored in the image's `album.hjson` record (`edits`), so it
+persists across sessions and shows in the image-view panel (`i`).
 
 ## 9. ML editing (`M`)
 
