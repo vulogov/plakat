@@ -325,9 +325,11 @@ same space and scored by cosine, so "golden hour on a mountain lake" finds the
 shot whether or not anyone ever tagged it.
 
 The first search loads the CLIP model and embeds every image (the UI pauses and
-shows progress on the terminal, like an ML edit); embeddings are cached for the
-session, so refining the query is fast. Results open as a relevance-ranked view
-you can curate and narrow with `/`. No API key needed — it runs locally.
+shows progress on the terminal, like an ML edit); embeddings are **cached to disk**
+per album (a hidden `.plakat_clip` file), so refining the query — or searching
+again next session — only re-embeds images that are new or changed. Results open
+as a relevance-ranked view you can curate and narrow with `/`. No API key needed —
+it runs locally.
 
 Together, `?` (words) and `V` (pixels) are the two halves of semantic search.
 

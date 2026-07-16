@@ -1298,12 +1298,23 @@ fn run_visual_search(
     stdout().execute(LeaveAlternateScreen)?;
     println!("\n▶ CLIP visual search: \"{query}\"  (loading model + embedding {} images…)\n", items.len());
 
-    let cache = std::mem::take(&mut app.clip_cache);
+    // Seed from the persisted per-album cache (fast) before embedding; the in-session cache wins.
+    let mut cache = std::mem::take(&mut app.clip_cache);
+    let dirs: Vec<PathBuf> = {
+        let mut d: Vec<PathBuf> = lib.iter().map(|(_, dir, _)| dir.clone()).collect();
+        d.sort();
+        d.dedup();
+        d
+    };
+    for (k, v) in visual_search::load_cache(&dirs) {
+        cache.entry(k).or_insert(v);
+    }
+
     let q = query.clone();
     let result = std::thread::spawn(
         move || -> Result<(Vec<(PathBuf, PathBuf, f32)>, visual_search::Cache)> {
             let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            rt.block_on(async {
+            let out = rt.block_on(async {
                 let device = crate::device::select("auto")?;
                 visual_search::search(&device, items, &q, cache, |done, tot| {
                     if done % 10 == 0 || done == tot {
@@ -1312,7 +1323,10 @@ fn run_visual_search(
                     }
                 })
                 .await
-            })
+            })?;
+            // Persist embeddings to disk so the next session's search is fast.
+            visual_search::save_cache(&out.1);
+            Ok(out)
         },
     )
     .join()

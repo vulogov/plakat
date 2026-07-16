@@ -90,8 +90,11 @@ index" to build; it's the HJSON model itself.
       weights; both towers + projections via candle `ClipModel`, `get_image_features`/`get_text_features`
       + `div_l2_norm`) → 768-d joint embeddings; `photos/visual_search.rs` ranks the library by cosine
       with an in-session embed cache. Runs TUI-suspended (model load + per-image embed) → relevance
-      view. Load validated by candle's own CLIP example layout; `#[ignore]` real-load smoke test
-      (needs ~1.7 GB download). REMAINING: persistent vector store, lookalike (image→image),
+      view. **Persistent vector store DONE**: per-album hidden `.plakat_clip` binary cache
+      (magic+count+[name,mtime,768×f32]) via `load_cache`/`save_cache` — seeded before embed, saved
+      after, mtime-invalidated; corrupt files load empty (unit-tested). Load validated by candle's own
+      CLIP example layout; `#[ignore]` real-load smoke test blocked here (cache disk offline — same
+      failure `plakat rank` hits, not a code issue). REMAINING: lookalike (image→image),
       analyze-and-generate, face-scan.
 
 **3.0.0 releases** when Phase 1–2 (browse + curate) is usable — a real flagship, not an empty bump.
