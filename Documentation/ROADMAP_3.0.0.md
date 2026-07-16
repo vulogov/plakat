@@ -70,7 +70,11 @@ index" to build; it's the HJSON model itself.
       output lands as a new `<name>_<op>.png` in the album, linked as a `variant`, cursor jumps to it.
       Unit-tested (`dest_path` dedup). REMAINING: true background (non-blocking) progress, mask/region
       steering (folds in the deferred Phase-3 mask paint), more ops (stylize/restore-faces), model choice.
-- [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).
+- [~] **Phase 5 — Browse features.** DONE: near-duplicate detection (`#` — 64-bit dHash in
+      `photos/dedup.rs`, greedy transitive grouping, tags all-but-best `dup` + focuses `tag:dup` for
+      culling) and export (`X` — `photos/export.rs`, copy selection/view to a dir with optional
+      `MAXPX` longer-side downscale, deduped). Both unit-tested. REMAINING: side-by-side/survey,
+      stacking, timeline, batch rename, watermark/portfolio.
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
 - [ ] **Phase 7 — Vision + AI** (gemini vision, describe/lookalike/analyze-and-generate, autotag, face-scan, semantic search).
 

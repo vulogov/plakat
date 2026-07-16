@@ -5,8 +5,10 @@
 //! tree | album grid · command) with a navigable Tree and a lazily-rendered thumbnail grid. Later
 //! phases (RFC §29) add the image view, editing, browse, and vision features.
 
+pub mod dedup;
 pub mod edit;
 pub mod exif;
+pub mod export;
 pub mod hjson;
 pub mod import;
 pub mod mledit;
@@ -63,6 +65,8 @@ enum PendingCmd {
     Search,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
+    /// Export the current targets to the entered `DIR [MAXPX]`.
+    Export,
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -579,6 +583,84 @@ impl App {
         self.pending_job = Some(mledit::MlJob { op, input, album });
     }
 
+    /// The album_paths indices the next *browse* op applies to: the multi-selection if any, else the
+    /// whole current view (unlike curation's `targets`, which falls back to the single cursor image).
+    fn browse_targets(&self) -> Vec<usize> {
+        if self.selected.is_empty() {
+            self.view.clone()
+        } else {
+            let mut v: Vec<usize> = self.selected.iter().copied().collect();
+            v.sort_unstable();
+            v
+        }
+    }
+
+    /// Scan the current view for near-duplicates (perceptual dHash), tag every duplicate-of-a-kept
+    /// image `dup`, and narrow the view to `tag:dup` so they can be reviewed / culled. The best image
+    /// per group (highest rating, then score, then first) is kept untagged.
+    fn dedup_scan(&mut self) {
+        let paths: Vec<PathBuf> =
+            self.view.iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if paths.len() < 2 {
+            self.status = "need at least 2 images to scan for duplicates".into();
+            return;
+        }
+        self.status = format!("hashing {} images…", paths.len());
+        let hashes: Vec<(PathBuf, u64)> = paths
+            .iter()
+            .filter_map(|p| loader::thumbnail(p, 64).ok().map(|img| (p.clone(), dedup::dhash(&img))))
+            .collect();
+        let groups = dedup::find_duplicates(&hashes, 5);
+        let mut dups = 0;
+        for group in &groups {
+            // Keep the best; tag the rest `dup`.
+            let best = group
+                .iter()
+                .max_by(|a, b| {
+                    let ra = self.record(a);
+                    let rb = self.record(b);
+                    let key = |r: Option<&hjson::ImageRecord>| {
+                        (r.map_or(0, |x| x.rating), r.and_then(|x| x.score).unwrap_or(f64::MIN))
+                    };
+                    key(ra).partial_cmp(&key(rb)).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .cloned();
+            for p in group {
+                if Some(p) != best.as_ref() {
+                    self.edit_record_at(p, |rec| {
+                        if !rec.tags.iter().any(|t| t == "dup") {
+                            rec.tags.push("dup".into());
+                        }
+                    });
+                    dups += 1;
+                }
+            }
+        }
+        if dups == 0 {
+            self.status = "no near-duplicates found".into();
+        } else {
+            self.filter = "tag:dup".into();
+            self.rebuild_view();
+            self.status = format!("{dups} duplicate(s) in {} group(s) tagged `dup` (C to cull)", groups.len());
+        }
+    }
+
+    /// Export the browse targets (selection, else the whole view) to `dir`, optionally downscaling to
+    /// a `max_px` longer side.
+    fn export_targets(&mut self, dir: &str, max_px: Option<u32>) {
+        let files: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if files.is_empty() {
+            self.status = "nothing to export".into();
+            return;
+        }
+        let dest = expand_tilde(dir);
+        match export::export(&files, &dest, max_px) {
+            Ok(n) => self.status = format!("exported {n} image(s) → {}", dest.display()),
+            Err(e) => self.status = format!("export failed: {e:#}"),
+        }
+    }
+
     /// Link `out_name` as a derivative variant of the source image at `src` (deduped).
     fn record_variant(&mut self, src: &Path, out_name: &str) {
         let out = out_name.to_string();
@@ -734,6 +816,16 @@ impl App {
                         mledit::MlOp::Img2img { prompt: arg.clone() }
                     };
                     self.queue_ml(op);
+                }
+                Some(PendingCmd::Export) if !arg.is_empty() => {
+                    // `DIR [MAXPX]` — a trailing integer sets a longer-side cap.
+                    let mut it = arg.rsplitn(2, char::is_whitespace);
+                    let last = it.next().unwrap_or("");
+                    let (dir, max_px) = match (last.parse::<u32>().ok(), it.next()) {
+                        (Some(px), Some(d)) => (d.trim().to_string(), Some(px)),
+                        _ => (arg.clone(), None),
+                    };
+                    self.export_targets(&dir, max_px);
                 }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
                     let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
@@ -1165,6 +1257,11 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.ml_menu = true;
             }
         }
+        // Browse: scan for near-duplicates (#) · export selection/view (X).
+        KeyCode::Char('#') => app.dedup_scan(),
+        KeyCode::Char('X') => {
+            app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
+        }
         KeyCode::Char('C') => {
             if n > 0 {
                 app.selected.clear(); // cull operates one image at a time
@@ -1506,6 +1603,16 @@ fn sort_paths(
         }),
         _ => paths.sort_by(|a, b| name(a).cmp(&name(b))), // name-asc (default)
     }
+}
+
+/// Expand a leading `~` to `$HOME` for an export destination the user typed.
+fn expand_tilde(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 /// Collect every album directory under `node` (depth-first) — the search space for a smart album.

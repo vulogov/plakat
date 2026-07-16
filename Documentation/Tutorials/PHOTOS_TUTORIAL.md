@@ -301,7 +301,29 @@ inside the library.
 > time with everything else freed). Interactive crop/mask painting to steer inpaint
 > is a later step.
 
-## 10. Closing the loop — `--import`
+## 10. Browse — duplicates & export
+
+**Find near-duplicates (`#`).** Shot the same thing five times? Press `#` in the
+grid to hash every image in the current view (a perceptual dHash — robust to
+scaling, mild exposure/colour shifts, and re-compression) and group the ones that
+match. The best image in each group (highest rating, then aesthetic score) is
+kept; every other member is tagged `dup`, and the view narrows to `tag:dup` so you
+can review them — press `C` to cull, `x` to reject, or clear the tag (`t`) on
+keepers. Nothing is deleted; duplicates are only *marked*.
+
+**Export (`X`).** Press `X` to copy the current selection (or the whole view, if
+nothing's selected) out of the library. Type a destination directory; add a
+trailing number to cap the longer side in pixels:
+
+```
+~/Desktop/share            # full-size copies
+~/Desktop/share 1600       # downscaled so the longer side ≤ 1600 px
+```
+
+Exports are copies — your originals stay in the album — and name collisions in the
+destination are suffixed `-2`, `-3`, ….
+
+## 11. Closing the loop — `--import`
 
 The point of the manager is that **generation flows into it**. Every
 image-producing command takes `--import <album>`:
@@ -334,7 +356,7 @@ aesthetic `score`, and carries its recipe in the EXIF overlay — the same recip
 
 ---
 
-## 11. A quick workflow
+## 12. A quick workflow
 
 1. `plakat photos ~/Pictures` — open your library.
 2. `Tab` to the tree, arrow to a shoot, `Enter` to open the album.
