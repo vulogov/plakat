@@ -165,6 +165,23 @@ must match):
 Example: `rating>=4 -rejected tag:iceland` → your four- and five-star Iceland
 keepers.
 
+### Smart albums (library-wide saved searches)
+
+A filter is scoped to one album; a **smart album** is a saved filter evaluated
+across your *whole* library. With a filter active in the grid, press `F` and give
+it a name — it's saved to the root `folder.hjson` and appears as a ★ entry at the
+top of the tree.
+
+Open a smart album (→ / `Enter` on its ★ row) and the grid fills with every
+matching image from every album at once — "all my five-star picks", "everything
+AI-generated", "everything tagged `portfolio`". You can browse, open the image
+view, and **curate**: a rating or flag you set here writes straight back to that
+image's own album, so the source stays the source of truth. `D` on a ★ row
+deletes the saved search (never the images).
+
+Examples worth saving: `rating>=4 -rejected` (keepers), `ai scored` (generated,
+scored), `flag` (your picks across shoots).
+
 ---
 
 ## 5. Culling

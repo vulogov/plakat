@@ -30,7 +30,7 @@ index" to build; it's the HJSON model itself.
         StatefulProtocol, [/] columns), Tree↔Album focus, event loop + tick.
   - [x] Tree mutations (n/a/R/D via command pane, pending-action model) + grid selection model
         (Space/Ctrl-A/D/I). **Phase 1 COMPLETE.**
-- [~] **Phase 2 — Image view + curation** (the 3.0.0 release gate).
+- [x] **Phase 2 — Image view + curation** (the 3.0.0 release gate). COMPLETE.
   - [x] Image view (Enter → full-pane render, ←/→, Esc) + EXIF overlay (`i`, cached kamadak read).
   - [x] Curation: 1–5/0 rating, `f` flag, `x` reject, `c` color-label → album.hjson; grid badges.
   - [x] Filter bar (`/`, view layer + grammar rating/flag/rejected/tag/ai/free-text, unit-tested) +
@@ -38,7 +38,10 @@ index" to build; it's the HJSON model itself.
   - [x] Notes/caption/title/tags editing (`e`/`N`/`T`/`t` → command pane, prefilled, empty clears)
         + sort order (`s` cycles name/date/rating/score, persisted in `album.hjson`, cursor-stable).
         Shown in the image-view panel (incl. `--import` generation recipe). Unit-tested.
-  - [ ] Remaining: smart albums (`Ctrl-b F` — saved filter queries across the library).
+  - [x] Smart albums — library-wide saved searches. `F` saves the current filter (named) to root
+        `folder.hjson`; ★ tree rows open a cross-album grid of matches; curation routes writes back
+        to each image's own album (path-keyed record model, `smart_*` maps + `edit_record_at`); `D`
+        deletes the saved search. **Phase 2 COMPLETE.**
 - [x] **`--import` for the generation commands** (user request) — `generate` + `upscale` /
       `portrait` / `multiperson` / `img2img` / `outpaint` / `stylize` / `relight` all gain
       `--import <album>` (+ `--import-move`): the output (and its `.json` sidecar) is copied/moved

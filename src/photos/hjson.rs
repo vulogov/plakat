@@ -13,6 +13,14 @@ use serde::{Deserialize, Serialize};
 pub const ALBUM_FILE: &str = "album.hjson";
 pub const FOLDER_FILE: &str = "folder.hjson";
 
+/// A saved filter query (root `folder.hjson`) — a library-wide "smart album" (RFC §8): its `query`
+/// is evaluated across every album on open, collecting the matching images into one grid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartAlbum {
+    pub name: String,
+    pub query: String,
+}
+
 /// `folder.hjson` — display name + persisted UI state for a non-leaf directory.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FolderMeta {
@@ -26,6 +34,9 @@ pub struct FolderMeta {
     /// Thumbnail worker count (root only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumb_workers: Option<usize>,
+    /// Library-wide saved searches (root folder only). Shown as ★ entries at the top of the tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_albums: Vec<SmartAlbum>,
 }
 
 /// EXIF read once on first scan (RFC §4.3). All optional — cameras vary.
@@ -194,6 +205,28 @@ mod tests {
         assert_eq!(r.score, Some(6.2));
         // No leftover .tmp.
         assert!(!dir.join(".album.hjson.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_smart_albums_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("plakat-photos-folder-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fm = FolderMeta {
+            smart_albums: vec![
+                SmartAlbum { name: "Keepers".into(), query: "rating>=4 -rejected".into() },
+                SmartAlbum { name: "AI".into(), query: "ai".into() },
+            ],
+            ..Default::default()
+        };
+        write_folder(&dir, &fm).unwrap();
+        let back = read_folder(&dir).unwrap();
+        assert_eq!(back.smart_albums.len(), 2);
+        assert_eq!(back.smart_albums[0].name, "Keepers");
+        assert_eq!(back.smart_albums[0].query, "rating>=4 -rejected");
+        // An empty smart_albums list serialises away (sparse file).
+        let empty = read_folder(&std::env::temp_dir()).unwrap_or_default();
+        assert!(empty.smart_albums.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

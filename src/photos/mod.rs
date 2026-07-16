@@ -50,8 +50,13 @@ enum PendingCmd {
     NewAlbum { parent: PathBuf },
     Rename { path: PathBuf },
     Delete { path: PathBuf, is_album: bool },
-    /// Edit a free-text metadata field of a single image (RFC §8.5: notes/caption).
-    EditMeta { name: String, field: EditField },
+    /// Edit a free-text metadata field of a single image (RFC §8.5: notes/caption). Carries the
+    /// image path so the write can be routed to the right album even in a smart-album view.
+    EditMeta { path: PathBuf, field: EditField },
+    /// Save the current filter as a named library-wide smart album (root folder.hjson).
+    SaveSmart { query: String },
+    /// Delete a named smart album from the root folder.hjson.
+    DeleteSmart { name: String },
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -105,6 +110,15 @@ struct App {
     cols: usize,
     thumb_px: u32,
 
+    // Smart-album view (RFC §8: library-wide saved searches). When `smart` is set, the grid holds
+    // images collected from many albums; records/writes route through the path-keyed maps below
+    // instead of `album_meta`.
+    smart_albums: Vec<hjson::SmartAlbum>,
+    smart: Option<String>,       // active smart album name (None = a real album is open)
+    smart_query: String,         // the active smart album's filter query
+    smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
+    smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
+
     // Command pane input (RFC §11).
     cmd_active: bool,
     cmd_prompt: String,
@@ -123,6 +137,7 @@ impl App {
     fn new(root: LibraryNode, root_dir: PathBuf, picker: Picker, thumb_px: u32) -> Self {
         let mut expanded = HashSet::new();
         expanded.insert(root.path.clone());
+        let smart_albums = hjson::read_folder(&root_dir).unwrap_or_default().smart_albums;
         Self {
             root,
             root_dir,
@@ -144,6 +159,11 @@ impl App {
             thumbs: HashMap::new(),
             cols: 4,
             thumb_px,
+            smart_albums,
+            smart: None,
+            smart_query: String::new(),
+            smart_src: HashMap::new(),
+            smart_rec: HashMap::new(),
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -160,6 +180,18 @@ impl App {
     fn rescan(&mut self) {
         if let Ok(root) = library::walk(&self.root_dir) {
             self.root = root;
+        }
+        // A smart-album view spans the whole library — re-evaluate its query, preserving the cursor.
+        if let Some(name) = self.smart.clone() {
+            let query = self.smart_query.clone();
+            let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
+            self.open_smart(name, query);
+            if let Some(cp) = cur_path {
+                if let Some(pos) = self.view.iter().position(|&pi| self.album_paths.get(pi) == Some(&cp)) {
+                    self.album_cursor = pos;
+                }
+            }
+            return;
         }
         if let Some(dir) = self.album_dir.clone() {
             if dir.is_dir() {
@@ -181,6 +213,19 @@ impl App {
 
     fn rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
+        // Library-wide smart albums come first, as ★ rows at depth 0 (sentinel paths — never
+        // touched on disk; the tree handler routes them by name).
+        for sa in &self.smart_albums {
+            out.push(Row {
+                path: PathBuf::from(format!("\u{1}smart:{}", sa.name)),
+                name: sa.name.clone(),
+                kind: NodeKind::SmartAlbum,
+                count: 0,
+                depth: 0,
+                expanded: false,
+                has_children: false,
+            });
+        }
         fn rec(node: &LibraryNode, depth: usize, exp: &HashSet<PathBuf>, out: &mut Vec<Row>) {
             let is_open = exp.contains(&node.path);
             out.push(Row {
@@ -220,6 +265,9 @@ impl App {
             .collect();
         paths.sort();
         self.status = format!("{}  ·  {} images", dir.display(), paths.len());
+        self.smart = None; // leaving any smart-album view
+        self.smart_src.clear();
+        self.smart_rec.clear();
         self.album_meta = hjson::read_album(&dir).unwrap_or_default();
         self.album_dir = Some(dir);
         self.album_paths = paths;
@@ -234,9 +282,55 @@ impl App {
         self.focus = Focus::Album;
     }
 
-    /// Filename (no path) of the album image at `album_paths` index `i`.
-    fn image_name(&self, i: usize) -> Option<String> {
-        self.album_paths.get(i).and_then(|p| p.file_name()).and_then(|n| n.to_str()).map(String::from)
+    /// Open a smart album: evaluate `query` against every album in the library and collect the
+    /// matching images (with their source album + record) into one grid. Curation writes route back
+    /// to each image's own album (see [`edit_record_at`]).
+    fn open_smart(&mut self, name: String, query: String) {
+        let mut dirs = Vec::new();
+        collect_album_dirs(&self.root, &mut dirs);
+        let mut paths = Vec::new();
+        let mut src = HashMap::new();
+        let mut recs = HashMap::new();
+        for dir in dirs {
+            let meta = hjson::read_album(&dir).unwrap_or_default();
+            let mut imgs: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && library::is_image(p))
+                .collect();
+            imgs.sort();
+            for p in imgs {
+                let Some(fname) = p.file_name().and_then(|n| n.to_str()) else { continue };
+                let rec = meta.images.get(fname);
+                if matches_filter(fname, rec, &query) {
+                    if let Some(r) = rec {
+                        recs.insert(p.clone(), r.clone());
+                    }
+                    src.insert(p.clone(), dir.clone());
+                    paths.push(p);
+                }
+            }
+        }
+        let count = paths.len();
+        self.smart = Some(name.clone());
+        self.smart_query = query.clone();
+        self.smart_src = src;
+        self.smart_rec = recs;
+        self.album_dir = None;
+        self.album_meta = hjson::AlbumMeta::default(); // transient; only `sort` is used, unpersisted
+        self.album_paths = paths;
+        self.sort_album();
+        self.album_cursor = 0;
+        self.selected.clear();
+        self.filter.clear();
+        self.rebuild_view();
+        self.mode = AlbumMode::Grid;
+        self.view_proto = None;
+        self.thumbs.clear();
+        self.focus = Focus::Album;
+        self.status = format!("★ {name}  ·  {count} images  ·  [{query}]  (curation writes to each source album)");
     }
 
     /// The `album_paths` index at the cursor (through the filtered view).
@@ -256,13 +350,24 @@ impl App {
         }
     }
 
+    /// The curation record for `path`: from the source-album maps in a smart-album view, else from
+    /// the open album's `album_meta` (keyed by filename).
+    fn record(&self, path: &Path) -> Option<&hjson::ImageRecord> {
+        if self.smart.is_some() {
+            self.smart_rec.get(path)
+        } else {
+            path.file_name().and_then(|n| n.to_str()).and_then(|n| self.album_meta.images.get(n))
+        }
+    }
+
     /// Rebuild the filtered view from `filter` over `album_paths` + the curation records.
     fn rebuild_view(&mut self) {
         let f = self.filter.trim().to_string();
         self.view = (0..self.album_paths.len())
             .filter(|&i| {
-                let name = self.album_paths[i].file_name().and_then(|n| n.to_str()).unwrap_or("");
-                matches_filter(name, self.album_meta.images.get(name), &f)
+                let path = &self.album_paths[i];
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                matches_filter(name, self.record(path), &f)
             })
             .collect();
         if self.view.is_empty() {
@@ -272,14 +377,44 @@ impl App {
         }
     }
 
-    /// Mutate each target image's record, then persist `album.hjson`.
+    /// Mutate each target image's record, then persist. In a smart-album view each write routes to
+    /// the image's own source album; otherwise all targets share the open album (one write).
     fn edit_targets(&mut self, mut f: impl FnMut(&mut hjson::ImageRecord)) {
-        for i in self.targets() {
-            if let Some(name) = self.image_name(i) {
-                f(self.album_meta.images.entry(name).or_default());
+        let paths: Vec<PathBuf> =
+            self.targets().into_iter().filter_map(|i| self.album_paths.get(i).cloned()).collect();
+        if self.smart.is_some() {
+            for p in paths {
+                self.edit_record_at(&p, |rec| f(rec));
             }
+        } else {
+            for p in &paths {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    f(self.album_meta.images.entry(name.to_string()).or_default());
+                }
+            }
+            self.save_album();
         }
-        self.save_album();
+    }
+
+    /// Apply `f` to a single image's record and persist it, routing to the right album whether or
+    /// not a smart-album view is active. In smart mode, refreshes the cached record for the badges.
+    fn edit_record_at(&mut self, path: &Path, f: impl FnOnce(&mut hjson::ImageRecord)) {
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { return };
+        if self.smart.is_some() {
+            let Some(dir) = self.smart_src.get(path).cloned() else { return };
+            let mut m = hjson::read_album(&dir).unwrap_or_default();
+            f(m.images.entry(name.clone()).or_default());
+            if let Err(e) = hjson::write_album(&dir, &m) {
+                self.status = format!("save failed: {e}");
+                return;
+            }
+            if let Some(r) = m.images.get(&name) {
+                self.smart_rec.insert(path.to_path_buf(), r.clone());
+            }
+        } else {
+            f(self.album_meta.images.entry(name).or_default());
+            self.save_album();
+        }
     }
 
     fn save_album(&mut self) {
@@ -290,11 +425,14 @@ impl App {
         }
     }
 
-    /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`).
+    /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`). Rating/score
+    /// come from the smart-view maps in a smart album, else from `album_meta`.
     fn sort_album(&mut self) {
         let mode = self.album_meta.sort.clone().unwrap_or_else(|| "name-asc".into());
         let mut paths = std::mem::take(&mut self.album_paths);
-        sort_paths(&mut paths, &mode, &self.album_meta);
+        let rating = |p: &Path| self.record(p).map_or(0, |r| r.rating);
+        let score = |p: &Path| self.record(p).and_then(|r| r.score).unwrap_or(f64::MIN);
+        sort_paths(&mut paths, &mode, rating, score);
         self.album_paths = paths;
     }
 
@@ -320,15 +458,15 @@ impl App {
     /// Open the command pane to edit a free-text metadata field of the cursor image, prefilled with
     /// its current value.
     fn begin_edit(&mut self, field: EditField) {
-        let Some(name) = self.cur_idx().and_then(|i| self.image_name(i)) else { return };
-        let rec = self.album_meta.images.get(&name);
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        let rec = self.record(&path);
         let (label, prefill) = match field {
             EditField::Caption => ("caption: ", rec.and_then(|r| r.caption.clone()).unwrap_or_default()),
             EditField::Notes => ("notes: ", rec.and_then(|r| r.notes.clone()).unwrap_or_default()),
             EditField::Title => ("title: ", rec.and_then(|r| r.title.clone()).unwrap_or_default()),
             EditField::Tags => ("tags (comma-sep): ", rec.map(|r| r.tags.join(", ")).unwrap_or_default()),
         };
-        self.prompt(label, prefill, PendingCmd::EditMeta { name, field });
+        self.prompt(label, prefill, PendingCmd::EditMeta { path, field });
     }
 
     /// Open the command pane for a pending action (RFC §11).
@@ -373,17 +511,33 @@ impl App {
                     }
                     fs_changed = true;
                 }
-                Some(PendingCmd::EditMeta { name, field }) => {
+                Some(PendingCmd::EditMeta { path, field }) => {
                     let val = (!arg.is_empty()).then(|| arg.clone());
-                    let rec = self.album_meta.images.entry(name).or_default();
-                    match field {
+                    self.edit_record_at(&path, |rec| match field {
                         EditField::Caption => rec.caption = val,
                         EditField::Notes => rec.notes = val,
                         EditField::Title => rec.title = val,
                         EditField::Tags => rec.tags = parse_tags(&arg),
-                    }
-                    self.save_album();
+                    });
                     meta_changed = true;
+                }
+                Some(PendingCmd::SaveSmart { query }) if !arg.is_empty() => {
+                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
+                    fm.smart_albums.retain(|s| s.name != arg); // upsert by name
+                    fm.smart_albums.push(hjson::SmartAlbum { name: arg.clone(), query });
+                    hjson::write_folder(&self.root_dir, &fm)?;
+                    self.smart_albums = fm.smart_albums;
+                    self.status = format!("saved smart album '{arg}'");
+                }
+                Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
+                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
+                    fm.smart_albums.retain(|s| s.name != name);
+                    hjson::write_folder(&self.root_dir, &fm)?;
+                    self.smart_albums = fm.smart_albums;
+                    if self.smart.as_deref() == Some(name.as_str()) {
+                        self.smart = None; // the open view was just deleted
+                    }
+                    self.status = format!("deleted smart album '{name}'");
                 }
                 _ => {}
             }
@@ -579,7 +733,7 @@ fn handle_cmd_key(app: &mut App, code: KeyCode) {
 
 fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
     let rows = app.rows();
-    let cur = rows.get(app.tree_cursor).map(|r| (r.path.clone(), r.kind, r.has_children));
+    let cur = rows.get(app.tree_cursor).map(|r| (r.path.clone(), r.kind, r.has_children, r.name.clone()));
     match code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('j') | KeyCode::Down => {
@@ -589,8 +743,12 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('g') => app.tree_cursor = 0,
         KeyCode::Char('G') => app.tree_cursor = rows.len().saturating_sub(1),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if let Some((path, kind, has_children)) = cur {
-                if kind == NodeKind::Album {
+            if let Some((path, kind, has_children, name)) = cur {
+                if kind == NodeKind::SmartAlbum {
+                    if let Some(q) = app.smart_albums.iter().find(|s| s.name == name).map(|s| s.query.clone()) {
+                        app.open_smart(name, q);
+                    }
+                } else if kind == NodeKind::Album {
                     app.open_album(path);
                 } else if has_children {
                     app.expanded.insert(path);
@@ -603,35 +761,50 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
             }
         }
         KeyCode::Tab => {
-            if app.album_dir.is_some() {
+            if app.album_dir.is_some() || app.smart.is_some() {
                 app.focus = Focus::Album;
             }
         }
-        // Mutations (RFC §7.4) → command pane.
+        // Mutations (RFC §7.4) → command pane. Smart-album (★) rows are virtual — only Delete
+        // applies; new-folder/new-album/rename are skipped for them.
         KeyCode::Char('n') => {
-            if let Some((path, ..)) = cur {
-                app.prompt("new folder: ", "", PendingCmd::NewFolder { parent: path });
+            if let Some((path, kind, ..)) = cur {
+                if kind != NodeKind::SmartAlbum {
+                    app.prompt("new folder: ", "", PendingCmd::NewFolder { parent: path });
+                }
             }
         }
         KeyCode::Char('a') => {
-            if let Some((path, ..)) = cur {
-                app.prompt("new album: ", "", PendingCmd::NewAlbum { parent: path });
+            if let Some((path, kind, ..)) = cur {
+                if kind != NodeKind::SmartAlbum {
+                    app.prompt("new album: ", "", PendingCmd::NewAlbum { parent: path });
+                }
             }
         }
         KeyCode::Char('R') => {
-            if let Some((path, ..)) = cur {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                app.prompt("rename to: ", name, PendingCmd::Rename { path });
+            if let Some((path, kind, _, _)) = cur {
+                if kind != NodeKind::SmartAlbum {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    app.prompt("rename to: ", name, PendingCmd::Rename { path });
+                }
             }
         }
         KeyCode::Char('D') => {
-            if let Some((path, kind, _)) = cur {
-                let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                app.prompt(
-                    format!("delete \"{n}\"? [y/N] "),
-                    "",
-                    PendingCmd::Delete { path, is_album: kind == NodeKind::Album },
-                );
+            if let Some((path, kind, _, name)) = cur {
+                if kind == NodeKind::SmartAlbum {
+                    app.prompt(
+                        format!("delete smart album \"{name}\"? [y/N] "),
+                        "",
+                        PendingCmd::DeleteSmart { name },
+                    );
+                } else {
+                    let n = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    app.prompt(
+                        format!("delete \"{n}\"? [y/N] "),
+                        "",
+                        PendingCmd::Delete { path, is_album: kind == NodeKind::Album },
+                    );
+                }
             }
         }
         _ => {}
@@ -669,6 +842,15 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         }
         // Filter bar (`/`) + culling loupe (`C`).
         KeyCode::Char('/') => app.filter_active = true,
+        // Save the current filter as a library-wide smart album.
+        KeyCode::Char('F') => {
+            let q = app.filter.trim().to_string();
+            if q.is_empty() {
+                app.status = "type a filter (/) first, then F to save it as a smart album".into();
+            } else {
+                app.prompt("smart album name: ", "", PendingCmd::SaveSmart { query: q });
+            }
+        }
         KeyCode::Char('C') => {
             if n > 0 {
                 app.selected.clear(); // cull operates one image at a time
@@ -831,13 +1013,22 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, r)| {
             let icon = match (r.kind, r.has_children, r.expanded) {
+                (NodeKind::SmartAlbum, ..) => "★ ",
                 (NodeKind::Album, false, _) => "│ ",
                 (_, true, true) => "▼ ",
                 (_, true, false) => "▶ ",
                 _ => "  ",
             };
-            let text = format!("{}{}{}  [{}]", "  ".repeat(r.depth), icon, r.name, r.count);
+            // Smart albums are virtual saved searches — no on-disk image count.
+            let text = if r.kind == NodeKind::SmartAlbum {
+                format!("{}{}", icon, r.name)
+            } else {
+                format!("{}{}{}  [{}]", "  ".repeat(r.depth), icon, r.name, r.count)
+            };
             let mut style = Style::default();
+            if r.kind == NodeKind::SmartAlbum {
+                style = style.fg(Color::Magenta);
+            }
             if i == app.tree_cursor {
                 style = style.add_modifier(Modifier::REVERSED);
             }
@@ -857,13 +1048,15 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     let active = app.focus == Focus::Album;
-    let title = match &app.album_dir {
-        Some(d) => format!(
+    let sort = app.album_meta.sort.as_deref().unwrap_or("name-asc");
+    let title = match (&app.smart, &app.album_dir) {
+        (Some(name), _) => format!(" ★ {name}  ·  ↕ {sort} "),
+        (None, Some(d)) => format!(
             " {}  ·  ↕ {} ",
             d.file_name().and_then(|n| n.to_str()).unwrap_or("album"),
-            app.album_meta.sort.as_deref().unwrap_or("name-asc"),
+            sort,
         ),
-        None => " Album ".to_string(),
+        (None, None) => " Album ".to_string(),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -941,7 +1134,7 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
             let ci = cb.inner(cell);
             f.render_widget(cb, cell);
             // Curation badge (computed before the mutable thumbs borrow).
-            let badge = curation_badge(app.album_meta.images.get(&name));
+            let badge = curation_badge(app.record(&path));
             let [thumb_area, badge_area] =
                 Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(ci);
             match app.thumbs.get_mut(&path) {
@@ -956,34 +1149,43 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Filter grammar (RFC §16 subset): whitespace-separated predicates, ALL must match. Supports
-/// `rating>=N` / `rating>N` / `rating=N` / `unrated`, `flag` / `-flag`, `rejected` / `-rejected`,
-/// `ai` (scored), `tag:X` / `-tag:X`, and free text (filename contains).
 /// File modified time, `UNIX_EPOCH` when unavailable (used as the `date-*` sort key — always
 /// present, unlike EXIF capture time).
 fn mtime(p: &Path) -> std::time::SystemTime {
     std::fs::metadata(p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)
 }
 
-/// Order `paths` in place per `mode` (album.hjson `sort`), reading rating/score from `meta`.
-/// Unknown modes fall back to `name-asc`. Ties break on filename so the order is deterministic.
-fn sort_paths(paths: &mut [PathBuf], mode: &str, meta: &hjson::AlbumMeta) {
+/// Order `paths` in place per `mode` (album.hjson `sort`). `rating`/`score` look up each path's
+/// curation values (source varies: the open album, or the smart-view maps). Unknown modes fall back
+/// to `name-asc`. Ties break on filename so the order is deterministic.
+fn sort_paths(
+    paths: &mut [PathBuf],
+    mode: &str,
+    rating: impl Fn(&Path) -> u8,
+    score: impl Fn(&Path) -> f64,
+) {
     let name = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
-    let rec = |p: &Path| p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n));
     match mode {
         "name-desc" => paths.sort_by(|a, b| name(b).cmp(&name(a))),
         "date-asc" => paths.sort_by_key(|p| mtime(p)),
         "date-desc" => paths.sort_by(|a, b| mtime(b).cmp(&mtime(a))),
-        "rating-desc" => paths.sort_by(|a, b| {
-            let (ra, rb) = (rec(a).map_or(0, |r| r.rating), rec(b).map_or(0, |r| r.rating));
-            rb.cmp(&ra).then_with(|| name(a).cmp(&name(b)))
-        }),
+        "rating-desc" => {
+            paths.sort_by(|a, b| rating(b).cmp(&rating(a)).then_with(|| name(a).cmp(&name(b))))
+        }
         "score-desc" => paths.sort_by(|a, b| {
-            let sa = rec(a).and_then(|r| r.score).unwrap_or(f64::MIN);
-            let sb = rec(b).and_then(|r| r.score).unwrap_or(f64::MIN);
-            sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal).then_with(|| name(a).cmp(&name(b)))
+            score(b).partial_cmp(&score(a)).unwrap_or(std::cmp::Ordering::Equal).then_with(|| name(a).cmp(&name(b)))
         }),
         _ => paths.sort_by(|a, b| name(a).cmp(&name(b))), // name-asc (default)
+    }
+}
+
+/// Collect every album directory under `node` (depth-first) — the search space for a smart album.
+fn collect_album_dirs(node: &LibraryNode, out: &mut Vec<PathBuf>) {
+    if node.kind == NodeKind::Album {
+        out.push(node.path.clone());
+    }
+    for c in &node.children {
+        collect_album_dirs(c, out);
     }
 }
 
@@ -999,6 +1201,9 @@ fn parse_tags(s: &str) -> Vec<String> {
     out
 }
 
+/// Filter grammar (RFC §16 subset): whitespace-separated predicates, ALL must match. Supports
+/// `rating>=N` / `rating>N` / `rating=N` / `unrated`, `flag` / `-flag`, `rejected` / `-rejected`,
+/// `ai` (scored), `tag:X` / `-tag:X`, and free text (filename contains).
 fn matches_filter(name: &str, rec: Option<&hjson::ImageRecord>, filter: &str) -> bool {
     let f = filter.trim();
     if f.is_empty() {
@@ -1075,7 +1280,8 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     if let Some(panel) = panel {
-        let name = app.cur_idx().and_then(|i| app.image_name(i)).unwrap_or_default();
+        let path = app.cur_idx().and_then(|i| app.album_paths.get(i).cloned());
+        let name = path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("").to_string();
         let mut lines: Vec<Line> = vec![Line::from(Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)))];
         if let Some(e) = &app.view_exif {
             let mut kv = |k: &str, v: Option<String>| {
@@ -1103,7 +1309,7 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
                 _ => None,
             });
         }
-        if let Some(r) = app.album_meta.images.get(&name) {
+        if let Some(r) = path.as_ref().and_then(|p| app.record(p)) {
             lines.push(Line::from("─ curation ─"));
             lines.push(curation_badge(Some(r)));
             if let Some(s) = r.score {
@@ -1169,16 +1375,20 @@ mod filter_tests {
         // c.png has no record → rating 0, no score.
         let names = |v: &[PathBuf]| v.iter().map(|p| p.file_name().unwrap().to_str().unwrap().to_string()).collect::<Vec<_>>();
 
+        let rec = |p: &Path| p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n));
+        let rating = |p: &Path| rec(p).map_or(0, |r| r.rating);
+        let score = |p: &Path| rec(p).and_then(|r| r.score).unwrap_or(f64::MIN);
+
         let mut v = vec![p("c.png"), p("a.png"), p("b.png")];
-        sort_paths(&mut v, "name-asc", &meta);
+        sort_paths(&mut v, "name-asc", rating, score);
         assert_eq!(names(&v), ["a.png", "b.png", "c.png"]);
-        sort_paths(&mut v, "name-desc", &meta);
+        sort_paths(&mut v, "name-desc", rating, score);
         assert_eq!(names(&v), ["c.png", "b.png", "a.png"]);
-        sort_paths(&mut v, "rating-desc", &meta);
+        sort_paths(&mut v, "rating-desc", rating, score);
         assert_eq!(names(&v), ["b.png", "a.png", "c.png"]); // 5, 1, 0
-        sort_paths(&mut v, "score-desc", &meta);
+        sort_paths(&mut v, "score-desc", rating, score);
         assert_eq!(names(&v), ["a.png", "b.png", "c.png"]); // 9.0, 2.0, none(MIN)
-        sort_paths(&mut v, "bogus-mode", &meta); // unknown → name-asc
+        sort_paths(&mut v, "bogus-mode", rating, score); // unknown → name-asc
         assert_eq!(names(&v), ["a.png", "b.png", "c.png"]);
     }
 
@@ -1187,5 +1397,26 @@ mod filter_tests {
         assert_eq!(parse_tags("sunset, beach ,sunset,, iceland"), ["sunset", "beach", "iceland"]);
         assert!(parse_tags("   ,  ,").is_empty());
         assert_eq!(parse_tags("solo"), ["solo"]);
+    }
+
+    #[test]
+    fn collect_album_dirs_finds_only_albums() {
+        let base = std::env::temp_dir().join(format!("plakat-collect-{}", std::process::id()));
+        let iceland = base.join("2024/Iceland");
+        let faroes = base.join("2024/Faroes");
+        std::fs::create_dir_all(&iceland).unwrap();
+        std::fs::create_dir_all(&faroes).unwrap();
+        for d in [&iceland, &faroes] {
+            image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(2, 2, image::Rgb([0, 0, 0])))
+                .save(d.join("x.png"))
+                .unwrap();
+        }
+        let root = library::walk(&base).unwrap();
+        let mut dirs = Vec::new();
+        collect_album_dirs(&root, &mut dirs);
+        assert!(dirs.contains(&iceland));
+        assert!(dirs.contains(&faroes));
+        assert!(!dirs.contains(&base.join("2024"))); // a folder of sub-dirs is not an album
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
