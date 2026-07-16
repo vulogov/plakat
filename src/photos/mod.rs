@@ -5,6 +5,7 @@
 //! tree | album grid · command) with a navigable Tree and a lazily-rendered thumbnail grid. Later
 //! phases (RFC §29) add the image view, editing, browse, and vision features.
 
+pub mod edit;
 pub mod exif;
 pub mod hjson;
 pub mod import;
@@ -122,6 +123,9 @@ struct App {
     smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
     smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
 
+    // T1 pixel-edit menu (RFC §Phase 3) — a modal key layer over the cursor image.
+    edit_menu: bool,
+
     // Command pane input (RFC §11).
     cmd_active: bool,
     cmd_prompt: String,
@@ -168,6 +172,7 @@ impl App {
             smart_is_search: false,
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
+            edit_menu: false,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -475,6 +480,94 @@ impl App {
         }
     }
 
+    /// The cursor image's source album dir + filename (works in a normal or smart-album view).
+    fn cur_source(&self) -> Option<(PathBuf, String)> {
+        let p = self.cur_idx().and_then(|i| self.album_paths.get(i))?.clone();
+        let filename = p.file_name().and_then(|n| n.to_str())?.to_string();
+        let dir = if self.smart.is_some() {
+            self.smart_src.get(&p)?.clone()
+        } else {
+            self.album_dir.clone()?
+        };
+        Some((dir, filename))
+    }
+
+    /// The cursor image's current edit ops (parsed from its record's edit log).
+    fn cur_edit_ops(&self) -> Vec<edit::EditOp> {
+        self.cur_idx()
+            .and_then(|i| self.album_paths.get(i))
+            .and_then(|p| self.record(p))
+            .map(|r| r.edits.iter().filter_map(edit::EditOp::from_entry).collect())
+            .unwrap_or_default()
+    }
+
+    /// Append a pixel edit to the cursor image: back up the pristine original (once), record the op
+    /// in `album.hjson`, and re-derive the visible file from original + the full edit list.
+    fn apply_edit(&mut self, op: edit::EditOp) {
+        let Some((dir, filename)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        if let Err(e) = edit::ensure_backup(&dir, &filename) {
+            self.status = format!("edit failed: {e:#}");
+            return;
+        }
+        self.edit_record_at(&path, |rec| rec.edits.push(op.to_entry()));
+        let ops = self.cur_edit_ops();
+        match edit::rebuild_file(&dir, &filename, &ops) {
+            Ok(()) => {
+                self.status = format!("{} · {} edit(s) · u undo · 0 revert", op.label(), ops.len());
+                self.refresh_after_edit(&path);
+            }
+            Err(e) => self.status = format!("edit failed: {e:#}"),
+        }
+    }
+
+    /// Undo the cursor image's last edit (rebuild from the remaining ops; restores the original when
+    /// none remain).
+    fn undo_edit(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        if self.cur_edit_ops().is_empty() {
+            self.status = "nothing to undo".into();
+            return;
+        }
+        self.edit_record_at(&path, |rec| {
+            rec.edits.pop();
+        });
+        let ops = self.cur_edit_ops();
+        if let Err(e) = edit::rebuild_file(&dir, &filename, &ops) {
+            self.status = format!("undo failed: {e:#}");
+            return;
+        }
+        self.status = format!("undo · {} edit(s) remain", ops.len());
+        self.refresh_after_edit(&path);
+    }
+
+    /// Discard all edits on the cursor image and restore the pristine original.
+    fn revert_edits(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        if self.cur_edit_ops().is_empty() {
+            self.status = "no edits to revert".into();
+            return;
+        }
+        self.edit_record_at(&path, |rec| rec.edits.clear());
+        if let Err(e) = edit::rebuild_file(&dir, &filename, &[]) {
+            self.status = format!("revert failed: {e:#}");
+            return;
+        }
+        self.status = "reverted to original".into();
+        self.refresh_after_edit(&path);
+    }
+
+    /// After a file's pixels change: drop its cached thumbnail (so it re-decodes) and reload the
+    /// full-pane image if it's on screen.
+    fn refresh_after_edit(&mut self, path: &Path) {
+        self.thumbs.remove(path);
+        if self.mode == AlbumMode::Image {
+            self.load_view();
+        }
+    }
+
     fn save_album(&mut self) {
         if let Some(dir) = &self.album_dir {
             if let Err(e) = hjson::write_album(dir, &self.album_meta) {
@@ -742,12 +835,39 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_filter_key(app, k.code);
         return false;
     }
+    if app.edit_menu {
+        handle_edit_key(app, k.code);
+        return false;
+    }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match app.focus {
         Focus::Tree => handle_tree_key(app, k.code),
         Focus::Album if app.mode == AlbumMode::Image => handle_image_key(app, k.code),
         Focus::Album if app.mode == AlbumMode::Cull => handle_cull_key(app, k.code),
         Focus::Album => handle_grid_key(app, k.code, ctrl),
+    }
+}
+
+/// T1 pixel-edit menu (Phase 3): a modal key layer over the cursor image. Each op applies and keeps
+/// the menu open (chain edits); `u` undoes, `0` reverts, Esc/`E` closes.
+fn handle_edit_key(app: &mut App, code: KeyCode) {
+    use edit::EditOp;
+    match code {
+        KeyCode::Esc | KeyCode::Char('E') | KeyCode::Char('q') => app.edit_menu = false,
+        KeyCode::Char('r') => app.apply_edit(EditOp::RotateCw),
+        KeyCode::Char('R') => app.apply_edit(EditOp::RotateCcw),
+        KeyCode::Char('t') => app.apply_edit(EditOp::Rotate180),
+        KeyCode::Char('h') => app.apply_edit(EditOp::FlipH),
+        KeyCode::Char('v') => app.apply_edit(EditOp::FlipV),
+        KeyCode::Char('g') => app.apply_edit(EditOp::Grayscale),
+        KeyCode::Char('s') => app.apply_edit(EditOp::CropSquare),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.apply_edit(EditOp::Brightness(15)),
+        KeyCode::Char('-') | KeyCode::Char('_') => app.apply_edit(EditOp::Brightness(-15)),
+        KeyCode::Char('>') | KeyCode::Char('.') => app.apply_edit(EditOp::Contrast(12)),
+        KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
+        KeyCode::Char('u') => app.undo_edit(),
+        KeyCode::Char('0') => app.revert_edits(),
+        _ => {}
     }
 }
 
@@ -916,6 +1036,12 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         }
         // Library-wide metadata semantic search (prompts / captions / notes / tags).
         KeyCode::Char('?') => app.prompt("search metadata: ", "", PendingCmd::Search),
+        // Pixel-edit menu on the cursor image.
+        KeyCode::Char('E') => {
+            if n > 0 {
+                app.edit_menu = true;
+            }
+        }
         KeyCode::Char('C') => {
             if n > 0 {
                 app.selected.clear(); // cull operates one image at a time
@@ -1003,6 +1129,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             }
         }
         KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        KeyCode::Char('E') => app.edit_menu = true, // open the pixel-edit menu
         _ => return apply_curation(app, code),
     }
     false
@@ -1057,13 +1184,18 @@ fn draw(f: &mut Frame, app: &mut App) {
     draw_tree(f, app, tree_col);
     draw_album(f, app, album_col);
 
-    // Command pane: active input (mutations/confirm) or a passive hint.
-    let cmd = if app.cmd_active {
-        format!(" {}{}_", app.cmd_prompt, app.cmd_buffer)
+    // Command pane: pixel-edit menu, active text input, or a passive hint.
+    let (cmd, cmd_style) = if app.edit_menu {
+        (
+            " EDIT  r/R rotate · t 180° · h/v flip · g gray · s crop1:1 · -/+ bright · </> contrast · u undo · 0 revert · Esc"
+                .to_string(),
+            Style::default().fg(Color::Cyan),
+        )
+    } else if app.cmd_active {
+        (format!(" {}{}_", app.cmd_prompt, app.cmd_buffer), Style::default().fg(Color::Yellow))
     } else {
-        " CMD ▶ ".to_string()
+        (" CMD ▶ ".to_string(), Style::default())
     };
-    let cmd_style = if app.cmd_active { Style::default().fg(Color::Yellow) } else { Style::default() };
     f.render_widget(
         Paragraph::new(cmd).style(cmd_style).block(Block::default().borders(Borders::ALL)),
         cmd_pane,
@@ -1422,6 +1554,14 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             }
             if let Some(no) = &r.notes {
                 lines.push(Line::from(format!("notes    {no}")));
+            }
+            if !r.edits.is_empty() {
+                let ops: Vec<&str> =
+                    r.edits.iter().filter_map(edit::EditOp::from_entry).map(|o| o.label()).collect();
+                lines.push(Line::from(Span::styled(
+                    format!("edits    {} ({})", r.edits.len(), ops.join(", ")),
+                    Style::new().fg(Color::Cyan),
+                )));
             }
             // Generation recipe for plakat-made images (`--import`).
             if let Some(g) = &r.generation {

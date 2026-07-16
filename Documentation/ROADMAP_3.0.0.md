@@ -56,7 +56,13 @@ index" to build; it's the HJSON model itself.
       view (curation routes back to source albums). Unit-tested (`doc_for` + moved ranker tests).
       Visual/CLIP-embedding search + a derived index/vector store are the Phase-7 follow-on (see the
       storage note below).
-- [ ] **Phase 3 — T1 pixel editing** (image/imageproc ops, crop, mask paint, undo).
+- [~] **Phase 3 — T1 pixel editing.** DONE: non-destructive, replayable edit engine (`photos/edit.rs`
+      — rotate ⟳/⟲/180, flip H/V, grayscale, brightness, contrast, crop 1:1) with a modal edit menu
+      (`E`), undo (`u`) + revert (`0`). Pristine original backed up once to hidden `.plakat_edits/`
+      (skipped by the walk); visible file re-derived by replaying the `edits` log in `album.hjson`
+      (one re-encode regardless of edit count; works in normal + smart/search views). Unit-tested
+      (apply/replay/roundtrip/backup-revert). REMAINING: interactive crop/mask paint (deferred —
+      needs pixel-precise pointer input; the mask half folds into Phase 4 T2 inpaint).
 - [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).

@@ -250,7 +250,33 @@ cancel.
 
 ---
 
-## 8. Closing the loop — `--import`
+## 8. Pixel editing (`E`)
+
+Press `E` (in the grid or image view) to open the **edit menu** — quick,
+**non-destructive** pixel edits on the cursor image:
+
+| Key | Edit |
+|-----|------|
+| `r` / `R` | rotate 90° clockwise / counter-clockwise |
+| `t` | rotate 180° |
+| `h` / `v` | flip horizontal / vertical |
+| `g` | grayscale |
+| `s` | crop to a centered 1:1 square |
+| `-` / `+` | brightness down / up |
+| `<` / `>` | contrast down / up |
+| `u` | undo the last edit |
+| `0` | revert — discard all edits, restore the original |
+| `Esc` | close the menu |
+
+Edits chain (rotate, then brighten, then crop) and the thumbnail/image update
+live. Nothing is destroyed: the **pristine original** is copied once into a hidden
+`.plakat_edits/` folder, and the visible file is re-derived from it by replaying
+the edit list — so `u` and `0` always get you back, and ten edits cost one
+re-encode from the original, not ten. The edit list is stored in the image's
+`album.hjson` record (`edits`), so it persists across sessions and shows in the
+image-view panel (`i`).
+
+## 9. Closing the loop — `--import`
 
 The point of the manager is that **generation flows into it**. Every
 image-producing command takes `--import <album>`:
@@ -283,7 +309,7 @@ aesthetic `score`, and carries its recipe in the EXIF overlay — the same recip
 
 ---
 
-## 9. A quick workflow
+## 10. A quick workflow
 
 1. `plakat photos ~/Pictures` — open your library.
 2. `Tab` to the tree, arrow to a shoot, `Enter` to open the album.
