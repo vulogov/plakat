@@ -301,7 +301,24 @@ inside the library.
 > time with everything else freed). Interactive crop/mask painting to steer inpaint
 > is a later step.
 
-## 10. Browse — duplicates & export
+## 10. Browse — compare, duplicates, rename & export
+
+**Compare side-by-side (`=`).** Select 2–4 images (`Space`) and press `=` to see
+them large and side by side — the way to pick the keeper from a burst. `←`/`→`
+moves the focus (cyan border); `1`–`5`, `f`, `x` rate / flag / reject the focused
+image without leaving the comparison; `Esc` returns to the grid. With nothing
+selected, `=` compares the cursor image and its next few neighbours.
+
+**Batch rename (`r`).** Rename the selection (or the whole view) with a pattern:
+type it with a run of `#` where the sequence number goes.
+
+```
+trip_###        → trip_001.jpg, trip_002.png, trip_003.jpg …
+```
+
+Extensions are preserved, numbering follows the current order, and the rename is
+safe (staged so intra-set swaps can't clobber) — each image's ratings/tags and
+its edit backup move with it. Album-local (open a real album, not a smart view).
 
 **Find near-duplicates (`#`).** Shot the same thing five times? Press `#` in the
 grid to hash every image in the current view (a perceptual dHash — robust to

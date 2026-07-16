@@ -70,11 +70,13 @@ index" to build; it's the HJSON model itself.
       output lands as a new `<name>_<op>.png` in the album, linked as a `variant`, cursor jumps to it.
       Unit-tested (`dest_path` dedup). REMAINING: true background (non-blocking) progress, mask/region
       steering (folds in the deferred Phase-3 mask paint), more ops (stylize/restore-faces), model choice.
-- [~] **Phase 5 — Browse features.** DONE: near-duplicate detection (`#` — 64-bit dHash in
-      `photos/dedup.rs`, greedy transitive grouping, tags all-but-best `dup` + focuses `tag:dup` for
-      culling) and export (`X` — `photos/export.rs`, copy selection/view to a dir with optional
-      `MAXPX` longer-side downscale, deduped). Both unit-tested. REMAINING: side-by-side/survey,
-      stacking, timeline, batch rename, watermark/portfolio.
+- [~] **Phase 5 — Browse features.** DONE: dedup (`#` — 64-bit dHash `photos/dedup.rs`, greedy
+      grouping, tags all-but-best `dup` + focuses `tag:dup`); export (`X` — `photos/export.rs`, copy
+      selection/view to a dir, optional `MAXPX` downscale, deduped); survey/compare (`=` — 2–4 images
+      side-by-side, focus + rate/flag/reject the focused, `AlbumMode::Compare`); batch rename (`r` —
+      `photos/rename.rs` `#`-run pattern, album-local, two-phase stage so intra-set swaps can't
+      clobber, migrates record + edit backup). All unit-tested. REMAINING: stacking, timeline,
+      watermark/portfolio.
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
 - [ ] **Phase 7 — Vision + AI** (gemini vision, describe/lookalike/analyze-and-generate, autotag, face-scan, semantic search).
 

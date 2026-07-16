@@ -12,6 +12,7 @@ pub mod export;
 pub mod hjson;
 pub mod import;
 pub mod mledit;
+pub mod rename;
 pub mod library;
 pub mod loader;
 pub mod watcher;
@@ -40,12 +41,14 @@ pub enum Focus {
     Album,
 }
 
-/// Album pane sub-mode (RFC §6): thumbnail grid, full-pane image view, or the culling loupe.
+/// Album pane sub-mode (RFC §6): thumbnail grid, full-pane image view, the culling loupe, or the
+/// side-by-side survey/compare of a small selection.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AlbumMode {
     Grid,
     Image,
     Cull,
+    Compare,
 }
 
 /// A tree/curation action awaiting text or confirmation in the command pane (RFC §11).
@@ -67,6 +70,8 @@ enum PendingCmd {
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
     Export,
+    /// Batch-rename the current targets with the entered pattern (`#` runs = numbers).
+    BatchRename,
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -136,6 +141,10 @@ struct App {
     ml_menu: bool,
     pending_job: Option<mledit::MlJob>,
 
+    // Survey / compare (RFC §Phase 5): a small set of images decoded side-by-side, with a focus.
+    compare: Vec<(PathBuf, StatefulProtocol)>,
+    compare_cursor: usize,
+
     // Command pane input (RFC §11).
     cmd_active: bool,
     cmd_prompt: String,
@@ -185,6 +194,8 @@ impl App {
             edit_menu: false,
             ml_menu: false,
             pending_job: None,
+            compare: Vec::new(),
+            compare_cursor: 0,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -661,6 +672,57 @@ impl App {
         }
     }
 
+    /// Batch-rename the browse targets in the open album with `pattern` (`#` runs → sequence number).
+    /// Album-local only (not in a smart/search view). Two-phase (→ hidden temp → final) so intra-set
+    /// name swaps can't clobber, and each image's `album.hjson` record + edit backup migrate with it.
+    fn batch_rename(&mut self, pattern: &str) {
+        let Some(dir) = self.album_dir.clone() else {
+            self.status = "open a real album to batch-rename".into();
+            return;
+        };
+        let files: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if files.is_empty() {
+            self.status = "nothing to rename".into();
+            return;
+        }
+        let planned = rename::plan(&files, pattern);
+        // Phase 1: everything to a unique hidden temp (dotfile → invisible to the walk / listing), so
+        // an intra-set name swap (a→b while b→c) can't clobber. Remember old name + desired new name.
+        let mut staged: Vec<(PathBuf, String, String)> = Vec::new();
+        for (i, (old, new_name)) in planned.into_iter().enumerate() {
+            let Some(old_name) = old.file_name().and_then(|n| n.to_str()).map(String::from) else {
+                continue;
+            };
+            let tmp = dir.join(format!(".plakat_rn_{i}"));
+            if std::fs::rename(&old, &tmp).is_ok() {
+                staged.push((tmp, old_name, new_name));
+            }
+        }
+        // Phase 2: temp → final (dedup vs any unrelated existing file), then migrate the record +
+        // pristine edit backup under the *actual* final name.
+        let mut n = 0;
+        for (tmp, old_name, want) in staged {
+            let dest = dedup_in_dir(&dir, &want);
+            if std::fs::rename(&tmp, &dest).is_err() {
+                continue;
+            }
+            let final_name =
+                dest.file_name().and_then(|f| f.to_str()).unwrap_or(&want).to_string();
+            if let Some(rec) = self.album_meta.images.remove(&old_name) {
+                self.album_meta.images.insert(final_name.clone(), rec);
+            }
+            let (bak_old, bak_new) =
+                (edit::backup_path(&dir, &old_name), edit::backup_path(&dir, &final_name));
+            if bak_old.exists() {
+                let _ = std::fs::rename(&bak_old, &bak_new);
+            }
+            n += 1;
+        }
+        self.save_album();
+        self.status = format!("renamed {n} image(s)");
+    }
+
     /// Link `out_name` as a derivative variant of the source image at `src` (deduped).
     fn record_variant(&mut self, src: &Path, out_name: &str) {
         let out = out_name.to_string();
@@ -827,6 +889,10 @@ impl App {
                     };
                     self.export_targets(&dir, max_px);
                 }
+                Some(PendingCmd::BatchRename) if !arg.is_empty() => {
+                    self.batch_rename(&arg);
+                    fs_changed = true; // files moved on disk
+                }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
                     let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
                     fm.smart_albums.retain(|s| s.name != name);
@@ -856,6 +922,42 @@ impl App {
     fn enter_image_view(&mut self) {
         self.mode = AlbumMode::Image;
         self.load_view();
+    }
+
+    /// Enter the survey/compare view of the current selection (2–4 images, decoded side-by-side).
+    /// Falls back to the cursor image + its neighbours when nothing is selected.
+    fn enter_compare(&mut self) {
+        let mut idxs: Vec<usize> = if self.selected.is_empty() {
+            // Cursor + up to the next 3 in the view.
+            self.view.iter().skip(self.album_cursor).take(4).copied().collect()
+        } else {
+            let mut v: Vec<usize> = self.selected.iter().copied().collect();
+            v.sort_unstable();
+            v.truncate(4);
+            v
+        };
+        idxs.dedup();
+        let paths: Vec<PathBuf> =
+            idxs.iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if paths.len() < 2 {
+            self.status = "select 2–4 images (Space) to compare".into();
+            return;
+        }
+        self.compare = paths
+            .into_iter()
+            .filter_map(|p| {
+                loader::thumbnail(&p, 1400).ok().map(|img| (p, self.picker.new_resize_protocol(img)))
+            })
+            .collect();
+        self.compare_cursor = 0;
+        self.mode = AlbumMode::Compare;
+        self.status = "compare · ←/→ focus · 1–5/f/x rate the focused · Esc".into();
+    }
+
+    /// Apply a curation edit to the focused compare image (routes to its source album).
+    fn curate_compare(&mut self, f: impl FnOnce(&mut hjson::ImageRecord)) {
+        let Some(path) = self.compare.get(self.compare_cursor).map(|(p, _)| p.clone()) else { return };
+        self.edit_record_at(&path, f);
     }
 
     /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF.
@@ -1034,6 +1136,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         Focus::Tree => handle_tree_key(app, k.code),
         Focus::Album if app.mode == AlbumMode::Image => handle_image_key(app, k.code),
         Focus::Album if app.mode == AlbumMode::Cull => handle_cull_key(app, k.code),
+        Focus::Album if app.mode == AlbumMode::Compare => handle_compare_key(app, k.code),
         Focus::Album => handle_grid_key(app, k.code, ctrl),
     }
 }
@@ -1059,6 +1162,34 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('0') => app.revert_edits(),
         _ => {}
     }
+}
+
+/// Survey / compare mode (Phase 5): side-by-side images; move the focus and rate/flag/reject the
+/// focused one without leaving the comparison.
+fn handle_compare_key(app: &mut App, code: KeyCode) -> bool {
+    match code {
+        KeyCode::Char('q') => return true,
+        KeyCode::Esc => {
+            app.mode = AlbumMode::Grid;
+            app.compare.clear();
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.compare_cursor = app.compare_cursor.saturating_sub(1);
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if app.compare_cursor + 1 < app.compare.len() {
+                app.compare_cursor += 1;
+            }
+        }
+        KeyCode::Char(d @ '0'..='5') => {
+            let r = d.to_digit(10).unwrap() as u8;
+            app.curate_compare(|rec| rec.rating = r);
+        }
+        KeyCode::Char('f') => app.curate_compare(|rec| rec.flagged = !rec.flagged),
+        KeyCode::Char('x') => app.curate_compare(|rec| rec.rejected = !rec.rejected),
+        _ => {}
+    }
+    false
 }
 
 /// T2 ML-edit menu (Phase 4): pick an operation to run on the cursor image via an existing pipeline.
@@ -1257,10 +1388,15 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.ml_menu = true;
             }
         }
-        // Browse: scan for near-duplicates (#) · export selection/view (X).
+        // Survey / compare the selection (2–4 images side by side).
+        KeyCode::Char('=') => app.enter_compare(),
+        // Browse: scan for near-duplicates (#) · export (X) · batch-rename (r).
         KeyCode::Char('#') => app.dedup_scan(),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
+        }
+        KeyCode::Char('r') => {
+            app.prompt("rename pattern (# = number): ", "", PendingCmd::BatchRename);
         }
         KeyCode::Char('C') => {
             if n > 0 {
@@ -1503,6 +1639,10 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
         draw_image_view(f, app, inner);
         return;
     }
+    if app.mode == AlbumMode::Compare {
+        draw_compare(f, app, inner);
+        return;
+    }
 
     // Optional filter bar at the top of the grid (shown while typing or when a filter is set).
     let grid_area = if app.filter_active || !app.filter.is_empty() {
@@ -1603,6 +1743,23 @@ fn sort_paths(
         }),
         _ => paths.sort_by(|a, b| name(a).cmp(&name(b))), // name-asc (default)
     }
+}
+
+/// `<dir>/<name>`, suffixing `-2`, `-3`, … before the extension on a collision.
+fn dedup_in_dir(dir: &Path, name: &str) -> PathBuf {
+    let cand = dir.join(name);
+    if !cand.exists() {
+        return cand;
+    }
+    let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("png");
+    for i in 2..10_000 {
+        let c = dir.join(format!("{stem}-{i}.{ext}"));
+        if !c.exists() {
+            return c;
+        }
+    }
+    dir.join(format!("{stem}-dup.{ext}"))
 }
 
 /// Expand a leading `~` to `$HOME` for an export destination the user typed.
@@ -1731,6 +1888,39 @@ fn curation_badge(rec: Option<&hjson::ImageRecord>) -> Line<'static> {
 }
 
 /// Full-pane image view (RFC §9): the image, optionally with an EXIF + curation side panel (`i`).
+/// Side-by-side survey/compare (Phase 5): N images in equal columns, the focused one cyan-bordered,
+/// each with its filename + curation badge.
+fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
+    let n = app.compare.len();
+    if n == 0 {
+        return;
+    }
+    // Precompute labels + badges (immutable borrow) before the mutable protocol render.
+    let meta: Vec<(String, Line, bool)> = app
+        .compare
+        .iter()
+        .enumerate()
+        .map(|(i, (p, _))| {
+            let name = p.file_name().and_then(|x| x.to_str()).unwrap_or("").to_string();
+            (name, curation_badge(app.record(p)), i == app.compare_cursor)
+        })
+        .collect();
+    let cells = Layout::horizontal(vec![Constraint::Ratio(1, n as u32); n]).split(area);
+    for (i, (_, proto)) in app.compare.iter_mut().enumerate() {
+        let (name, badge, focused) = &meta[i];
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(if *focused { format!("▶ {name}") } else { name.clone() })
+            .border_style(Style::default().fg(if *focused { Color::Cyan } else { Color::DarkGray }));
+        let inner = block.inner(cells[i]);
+        f.render_widget(block, cells[i]);
+        let [img_area, badge_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+        f.render_stateful_widget(StatefulImage::new(), img_area, proto);
+        f.render_widget(Paragraph::new(badge.clone()), badge_area);
+    }
+}
+
 fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
     let (img_area, panel) = if app.show_exif {
         let [a, b] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).areas(area);
