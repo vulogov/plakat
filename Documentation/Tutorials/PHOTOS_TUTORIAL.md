@@ -92,10 +92,12 @@ with it. Your files stay yours.
 ### Image view
 
 `Enter` on a thumbnail opens the image full-pane. `←` / `→` step through the
-album, `i` toggles an **EXIF overlay** (camera, lens, focal length, aperture,
-shutter, ISO, GPS — read once and cached), and `Esc` returns to the grid. For a
-plakat-generated image the overlay also shows its recipe (prompt, seed, steps,
-model) straight from the album record — no PNG re-parse.
+album, and `Esc` returns to the grid. **Zoom** with `Z` (in) / `z` (out) — a
+centre crop-zoom up to 8×; each image starts fit. The **info panel** shows EXIF
+(camera, lens, focal length, aperture, shutter, ISO, GPS — read once and cached)
+plus curation and, for a plakat-generated image, its recipe (prompt, seed, steps,
+model): press `i` to dock it on the **right**, or `I` (Shift-i) to dock it across
+the **bottom**.
 
 RAW files (`.cr2`, `.nef`, `.arw`, `.dng`, …) are decoded and demosaiced
 in-process, so they thumbnail and display alongside JPEG/PNG/WebP/TIFF without a

@@ -91,6 +91,14 @@ enum Job {
     Vision(vision::VisionOp, PathBuf),
 }
 
+/// Where the image-view info panel sits: hidden, on the right (`i`), or across the bottom (`I`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InfoPos {
+    Off,
+    Right,
+    Bottom,
+}
+
 /// Which quickhelp overlay is showing (opened via the `Ctrl-B` leader).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HelpKind {
@@ -144,7 +152,9 @@ struct App {
     /// Multi-selection stored as `album_paths` indices (survives filter changes).
     selected: HashSet<usize>,
     mode: AlbumMode,
-    show_exif: bool,
+    info: InfoPos,
+    /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
+    zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
     show_analysis: bool,
     analysis: Option<analysis::Analysis>,
@@ -230,7 +240,8 @@ impl App {
             album_cursor: 0,
             selected: HashSet::new(),
             mode: AlbumMode::Grid,
-            show_exif: false,
+            info: InfoPos::Off,
+            zoom: 1.0,
             show_analysis: false,
             analysis: None,
             view_proto: None,
@@ -1144,6 +1155,7 @@ impl App {
 
     fn enter_image_view(&mut self) {
         self.mode = AlbumMode::Image;
+        self.zoom = 1.0;
         self.load_view();
     }
 
@@ -1237,18 +1249,34 @@ impl App {
     }
 
     /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF,
-    /// and (when the analysis panel is on) its histogram/exposure/focus stats.
+    /// and (when the analysis panel is on) its histogram/exposure/focus stats. Honours the current
+    /// zoom by centre-cropping the source before it's fit to the pane.
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
+        let zoom = self.zoom;
         self.view_proto = path
             .as_ref()
             .and_then(|p| loader::thumbnail(p, 1600).ok())
-            .map(|img| self.picker.new_resize_protocol(img));
+            .map(|img| {
+                let img = if zoom > 1.01 { crop_center(&img, zoom) } else { img };
+                self.picker.new_resize_protocol(img)
+            });
         self.view_exif = path.as_ref().and_then(|p| exif::read_exif(p).ok());
         self.analysis = None;
         if self.show_analysis {
             self.compute_analysis();
         }
+    }
+
+    /// Zoom the image view by `factor` (>1 in, <1 out), clamped to 1.0–8.0, and re-decode.
+    fn zoom_by(&mut self, factor: f32) {
+        self.zoom = (self.zoom * factor).clamp(1.0, 8.0);
+        self.load_view();
+        self.status = if self.zoom > 1.01 {
+            format!("zoom {:.1}× · z out · Z in", self.zoom)
+        } else {
+            "fit".into()
+        };
     }
 
     /// Compute view-analysis stats for the cursor image (from a small decode, for speed).
@@ -1993,7 +2021,9 @@ fn handle_cull_key(app: &mut App, code: KeyCode) -> bool {
             app.edit_targets(|rec| rec.rating = r);
             advance(app);
         }
-        KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        KeyCode::Char('i') => {
+            app.info = if app.info == InfoPos::Right { InfoPos::Off } else { InfoPos::Right };
+        }
         _ => {}
     }
     false
@@ -2010,16 +2040,27 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('l') | KeyCode::Right => {
             if app.album_cursor + 1 < n {
                 app.album_cursor += 1;
+                app.zoom = 1.0; // each image starts fit
                 app.load_view();
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
             if app.album_cursor > 0 {
                 app.album_cursor -= 1;
+                app.zoom = 1.0;
                 app.load_view();
             }
         }
-        KeyCode::Char('i') => app.show_exif = !app.show_exif,
+        // Info panel: i = right, I (Shift-i) = bottom (toggle each).
+        KeyCode::Char('i') => {
+            app.info = if app.info == InfoPos::Right { InfoPos::Off } else { InfoPos::Right };
+        }
+        KeyCode::Char('I') => {
+            app.info = if app.info == InfoPos::Bottom { InfoPos::Off } else { InfoPos::Bottom };
+        }
+        // Zoom: Z (Shift-z) in, z out.
+        KeyCode::Char('Z') => app.zoom_by(1.5),
+        KeyCode::Char('z') => app.zoom_by(1.0 / 1.5),
         KeyCode::Char('H') => {
             app.show_analysis = !app.show_analysis;
             if app.show_analysis {
@@ -2163,13 +2204,21 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
 fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     let active = app.focus == Focus::Album;
     let sort = app.album_meta.sort.as_deref().unwrap_or("name-asc");
+    // Count flagged images in the current view so the pick state is reflected in the header.
+    let flagged = app
+        .view
+        .iter()
+        .filter(|&&pi| app.album_paths.get(pi).and_then(|p| app.record(p)).map(|r| r.flagged).unwrap_or(false))
+        .count();
+    let flag_note = if flagged > 0 { format!("  ·  ⚑ {flagged}") } else { String::new() };
     let title = match (&app.smart, &app.album_dir) {
-        (Some(name), _) if app.smart_is_search => format!(" 🔎 {name}  ·  ↕ {sort} "),
-        (Some(name), _) => format!(" ★ {name}  ·  ↕ {sort} "),
+        (Some(name), _) if app.smart_is_search => format!(" 🔎 {name}  ·  ↕ {sort}{flag_note} "),
+        (Some(name), _) => format!(" ★ {name}  ·  ↕ {sort}{flag_note} "),
         (None, Some(d)) => format!(
-            " {}  ·  ↕ {} ",
+            " {}  ·  ↕ {}{} ",
             d.file_name().and_then(|n| n.to_str()).unwrap_or("album"),
             sort,
+            flag_note,
         ),
         (None, None) => " Album ".to_string(),
     };
@@ -2234,22 +2283,37 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
             let cell = col_rects[c];
             let is_cursor = vi == app.album_cursor;
             let is_sel = app.selected.contains(&pi);
+            let rec = app.record(&path);
+            let flagged = rec.map(|r| r.flagged).unwrap_or(false);
+            let rejected = rec.map(|r| r.rejected).unwrap_or(false);
             let name: String = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             let cap: String = {
                 let cs: Vec<char> = name.chars().collect();
                 if cs.len() > 14 { cs[cs.len() - 14..].iter().collect() } else { name.clone() }
             };
+            // Cursor/selection take border priority; otherwise flagged→gold, rejected→dim red so the
+            // pick/reject state is visible at a glance (not just the small badge).
             let border = if is_cursor {
                 Color::Cyan
             } else if is_sel {
                 Color::Green
+            } else if flagged {
+                Color::LightYellow
+            } else if rejected {
+                Color::Rgb(120, 60, 60)
             } else {
                 Color::DarkGray
+            };
+            // Prefix a ⚑ on the flagged cell's title too.
+            let title = match (is_cursor, flagged) {
+                (true, _) => format!("▶{cap}"),
+                (false, true) => format!("⚑{cap}"),
+                (false, false) => cap,
             };
             let cb = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::new().fg(border))
-                .title(if is_cursor { format!("▶{cap}") } else { cap });
+                .title(title);
             let ci = cb.inner(cell);
             f.render_widget(cb, cell);
             // Curation badge (computed before the mutable thumbs borrow).
@@ -2275,6 +2339,14 @@ fn date_bucket(_path: &Path, rec: Option<&hjson::ImageRecord>) -> String {
         .and_then(|e| e.date_taken.as_ref())
         .and_then(|d| (d.len() >= 7).then(|| d[..7].replace(':', "-")))
         .unwrap_or_else(|| "undated".into())
+}
+
+/// Centre-crop `img` to `1/zoom` of its size (so fitting the crop to a pane magnifies by `zoom`).
+fn crop_center(img: &image::DynamicImage, zoom: f32) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    let cw = ((w as f32 / zoom) as u32).max(1);
+    let ch = ((h as f32 / zoom) as u32).max(1);
+    img.crop_imm((w - cw) / 2, (h - ch) / 2, cw, ch)
 }
 
 /// File modified time, `UNIX_EPOCH` when unavailable (used as the `date-*` sort key — always
@@ -2561,10 +2633,9 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         HelpCtx::Image => {
             l.push(hd("Image view"));
             l.push(kv("← →", "previous / next · Esc back to grid"));
-            l.push(kv("i H", format!(
-                "EXIF panel · analysis panel{}",
-                if app.show_analysis { " (on)" } else { "" }
-            )));
+            l.push(kv("Z / z", format!("zoom in / out ({:.1}×)", app.zoom)));
+            l.push(kv("i / I", "info panel: right / bottom"));
+            l.push(kv("H", format!("analysis panel{}", if app.show_analysis { " (on)" } else { "" })));
             l.push(hd("Curate"));
             l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
             l.push(kv("t e N T", "tags · caption · notes · title"));
@@ -2751,11 +2822,18 @@ fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
-    let (img_area, panel) = if app.show_exif || app.show_analysis {
-        let [a, b] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).areas(area);
-        (a, Some(b))
-    } else {
-        (area, None)
+    // Analysis (H) forces a right panel; otherwise the info panel sits per `info` (i=right, I=bottom).
+    let placement = if app.show_analysis { InfoPos::Right } else { app.info };
+    let (img_area, panel) = match placement {
+        InfoPos::Off => (area, None),
+        InfoPos::Right => {
+            let [a, b] = Layout::horizontal([Constraint::Percentage(60), Constraint::Fill(1)]).areas(area);
+            (a, Some(b))
+        }
+        InfoPos::Bottom => {
+            let [a, b] = Layout::vertical([Constraint::Fill(1), Constraint::Length(8)]).areas(area);
+            (a, Some(b))
+        }
     };
 
     match app.view_proto.as_mut() {
