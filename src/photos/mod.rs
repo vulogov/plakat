@@ -79,6 +79,15 @@ enum PendingCmd {
     BatchRename,
 }
 
+/// Which quickhelp overlay is showing (opened via the `Ctrl-B` leader).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HelpKind {
+    /// Key chords (the keyboard shortcuts).
+    Chords,
+    /// Named commands / actions.
+    Commands,
+}
+
 /// A free-text per-image metadata field editable from the command pane.
 #[derive(Clone, Copy)]
 enum EditField {
@@ -166,6 +175,10 @@ struct App {
     tl_buckets: Vec<(String, usize, usize)>, // (label, first view-position, count)
     tl_cursor: usize,
 
+    // `Ctrl-B` leader prefix (tmux-style) + the quickhelp overlay it opens.
+    leader: bool,
+    help: Option<HelpKind>,
+
     // Command pane input (RFC §11).
     cmd_active: bool,
     cmd_prompt: String,
@@ -227,6 +240,8 @@ impl App {
             timeline: false,
             tl_buckets: Vec::new(),
             tl_cursor: 0,
+            leader: false,
+            help: None,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -1381,6 +1396,26 @@ fn run_visual_search(
 /// Returns true to quit.
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyModifiers;
+    // A quickhelp overlay swallows the next key (dismiss).
+    if app.help.is_some() {
+        app.help = None;
+        return false;
+    }
+    // `Ctrl-B` leader: the next key is a leader command (h = chords help, H = commands help).
+    if app.leader {
+        app.leader = false;
+        match k.code {
+            KeyCode::Char('h') => app.help = Some(HelpKind::Chords),
+            KeyCode::Char('H') => app.help = Some(HelpKind::Commands),
+            _ => {}
+        }
+        return false;
+    }
+    if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
+        app.leader = true;
+        app.status = "Ctrl-B · h: key chords · H: commands".into();
+        return false;
+    }
     if app.cmd_active {
         handle_cmd_key(app, k.code);
         return false;
@@ -1860,6 +1895,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.timeline {
         draw_timeline(f, app, album_col);
     }
+    if let Some(kind) = app.help {
+        draw_help(f, kind, app, body);
+    }
 
     // Command pane: edit/ML menu, active text input, or a passive hint.
     let (cmd, cmd_style) = if app.edit_menu {
@@ -2227,6 +2265,191 @@ fn curation_badge(rec: Option<&hjson::ImageRecord>) -> Line<'static> {
 }
 
 /// Full-pane image view (RFC §9): the image, optionally with an EXIF + curation side panel (`i`).
+/// The context the quickhelp is shown in — drives which bindings/commands are listed.
+enum HelpCtx {
+    Tree,
+    Grid,
+    Image,
+    Cull,
+    Compare,
+}
+
+fn help_ctx(app: &App) -> HelpCtx {
+    if app.focus == Focus::Tree {
+        HelpCtx::Tree
+    } else {
+        match app.mode {
+            AlbumMode::Grid => HelpCtx::Grid,
+            AlbumMode::Image => HelpCtx::Image,
+            AlbumMode::Cull => HelpCtx::Cull,
+            AlbumMode::Compare => HelpCtx::Compare,
+        }
+    }
+}
+
+fn ctx_name(ctx: &HelpCtx) -> &'static str {
+    match ctx {
+        HelpCtx::Tree => "Tree",
+        HelpCtx::Grid => "Album grid",
+        HelpCtx::Image => "Image view",
+        HelpCtx::Cull => "Cull loupe",
+        HelpCtx::Compare => "Compare",
+    }
+}
+
+/// Quickhelp overlay (`Ctrl-B h` chords / `Ctrl-B H` commands): a centered card **built for the
+/// current pane/mode** and seeded with live state. Any key dismisses it.
+fn draw_help(f: &mut Frame, kind: HelpKind, app: &App, area: Rect) {
+    let ctx = help_ctx(app);
+    let (label, lines): (&str, Vec<Line>) = match kind {
+        HelpKind::Chords => ("chords", chords_help(app, &ctx)),
+        HelpKind::Commands => ("commands", commands_help(app, &ctx)),
+    };
+    let title = format!(" {} · {} · any key to close ", ctx_name(&ctx), label);
+    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(40).clamp(24, 76) as u16 + 4).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+fn hd(s: &str) -> Line<'static> {
+    Line::from(Span::styled(s.to_string(), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+}
+fn kv(k: &str, v: impl Into<String>) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {k:<10}"), Style::new().fg(Color::Cyan)),
+        Span::raw(v.into()),
+    ])
+}
+/// A dim live-state line (current sort, selection count, …).
+fn state(v: impl Into<String>) -> Line<'static> {
+    Line::from(Span::styled(format!("  {}", v.into()), Style::new().fg(Color::DarkGray)))
+}
+
+/// Live one-line status of the album view (sort, selection, filter, stacking) for the help header.
+fn album_state_lines(app: &App) -> Vec<Line<'static>> {
+    let mut out = vec![state(format!(
+        "{} images · sort {} · {} selected",
+        app.view.len(),
+        app.album_meta.sort.as_deref().unwrap_or("name-asc"),
+        app.selected.len(),
+    ))];
+    if !app.filter.trim().is_empty() {
+        out.push(state(format!("filter: {}", app.filter)));
+    }
+    if app.stack_view {
+        out.push(state("stacked (variants collapsed)"));
+    }
+    out
+}
+
+/// Contextual key chords for the current pane/mode, seeded with live state.
+fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
+    let mut l: Vec<Line> = Vec::new();
+    match ctx {
+        HelpCtx::Tree => {
+            l.push(hd("Tree"));
+            l.push(kv("j k / ↑↓", "move · g/G first/last"));
+            l.push(kv("l → Enter", "open album / expand folder · h collapse"));
+            l.push(kv("n a R D", "new folder · new album · rename · delete"));
+            l.push(kv("Tab", "focus the album grid"));
+            l.push(kv("? V", "metadata search · visual search"));
+        }
+        HelpCtx::Grid => {
+            l.extend(album_state_lines(app));
+            l.push(hd("Move"));
+            l.push(kv("h j k l", "move · g/G first-last · [ ] columns · Enter open"));
+            l.push(hd("Curate (image/selection)"));
+            l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
+            l.push(kv("t e N T", "tags · caption · notes · title · s sort"));
+            l.push(hd("Select"));
+            l.push(kv("Space", "toggle · Ctrl-A all · Ctrl-D none · Ctrl-I invert"));
+            l.push(hd("Do"));
+            l.push(kv("/ C =", "filter · cull · compare selection"));
+            l.push(kv("E M A", "edit · ML-edit · AI-vision menus"));
+            l.push(kv("# X r", "duplicates · export · batch-rename"));
+            l.push(kv("S @ F", "stack · timeline · save smart album"));
+            l.push(kv("? V", "search metadata · visual (CLIP)"));
+        }
+        HelpCtx::Image => {
+            l.push(hd("Image view"));
+            l.push(kv("← →", "previous / next · Esc back to grid"));
+            l.push(kv("i H", format!(
+                "EXIF panel · analysis panel{}",
+                if app.show_analysis { " (on)" } else { "" }
+            )));
+            l.push(hd("Curate"));
+            l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
+            l.push(kv("t e N T", "tags · caption · notes · title"));
+            l.push(kv("E M A", "edit · ML-edit · AI-vision menus"));
+        }
+        HelpCtx::Cull => {
+            l.push(hd("Cull loupe"));
+            l.push(kv("→ Space", "keep + advance · ← back"));
+            l.push(kv("x f", "reject + advance · flag + advance"));
+            l.push(kv("1–5", "rate + advance · i EXIF · Esc leave"));
+        }
+        HelpCtx::Compare => {
+            l.push(hd("Compare"));
+            l.push(kv("← →", "move focus between images"));
+            l.push(kv("1–5 f x", "rate / flag / reject the focused one"));
+            l.push(kv("Esc", "back to grid"));
+        }
+    }
+    l.push(hd("Anywhere"));
+    l.push(kv("Ctrl-B", "leader (h chords · H commands) · q quit"));
+    l
+}
+
+/// Contextual named commands for the current pane/mode — the vocabulary a natural-language command
+/// would map onto.
+fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
+    let mut l: Vec<Line> = Vec::new();
+    match ctx {
+        HelpCtx::Tree => {
+            l.push(hd("Organise"));
+            l.push(kv("new", "create a folder (n) or album (a) here"));
+            l.push(kv("rename", "rename this folder/album (R)"));
+            l.push(kv("delete", "delete this folder/album (D)"));
+            l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
+        }
+        HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare => {
+            let provider = crate::prompt::vision::resolve_vision_provider("auto");
+            let target = if app.selected.is_empty() { "the view" } else { "the selection" };
+            l.extend(album_state_lines(app));
+            l.push(hd("Curate"));
+            l.push(kv("rate", format!("stars / flag / reject / colour on {target}")));
+            l.push(kv("tag caption", "edit tags / caption / notes / title"));
+            l.push(kv("autotag", format!("AI vision → tags/caption (via {provider})")));
+            l.push(hd("Find"));
+            l.push(kv("filter", "rating/flag/tag/ai grammar (/)"));
+            l.push(kv("search", "metadata (?) · visual CLIP (V) · smart album (F)"));
+            l.push(kv("duplicates", "perceptual near-dupes (#)"));
+            l.push(hd("Produce"));
+            l.push(kv("upscale", "ML ×4 (M → u)"));
+            l.push(kv("img2img", "transform / relight with a prompt (M → i/l)"));
+            l.push(kv("edit", "rotate/flip/crop/bright/contrast (E)"));
+            l.push(kv("export", format!("copy {target} out, optional resize (X)")));
+            l.push(kv("rename", "batch-rename with a #-pattern (r)"));
+        }
+    }
+    l
+}
+
 /// Timeline popup (Phase 5): a scrollable list of capture-month buckets with counts, over the right
 /// edge of the album pane.
 fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {

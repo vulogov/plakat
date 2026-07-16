@@ -49,6 +49,12 @@ The screen is three panes plus a status bar and a command line:
 
 `Tab` moves focus between the tree and the grid. `q` quits from anywhere.
 
+**Quickhelp.** `Ctrl-B` is a leader key: press it, then `h` for a **key-chord** card
+or `H` for a **commands** card. The card is **contextual** — it shows what's
+relevant to where you are (tree vs grid vs image view vs cull vs compare) and is
+seeded with live state (current sort, how many images are selected, the active
+filter, whether stacking is on). Any key closes it.
+
 ### The storage model — `album.hjson`, not a database
 
 There is **no hidden index**. Each album stores its metadata in a plain
