@@ -34,7 +34,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
+use ratatui_image::{Resize, StatefulImage};
 
 use library::{LibraryNode, NodeKind};
 
@@ -1395,9 +1395,12 @@ impl App {
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
         let zoom = self.zoom;
+        // Decode proportionally to the zoom so the cropped centre stays ~1600 px and still fills the
+        // pane sharply (cropping a fixed 1600 px thumbnail would shrink at higher zoom).
+        let bound = (1600.0 * zoom).min(4096.0) as u32;
         self.view_proto = path
             .as_ref()
-            .and_then(|p| loader::thumbnail(p, 1600).ok())
+            .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
                 let img = if zoom > 1.01 { crop_center(&img, zoom) } else { img };
                 self.picker.new_resize_protocol(img)
@@ -3046,7 +3049,11 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     match app.view_proto.as_mut() {
-        Some(proto) => f.render_stateful_widget(StatefulImage::new(), img_area, proto),
+        // `Scale` (unlike the default `Fit`) also upscales, so the image always fills the pane —
+        // needed for zoom, where the cropped centre may be smaller than the render area.
+        Some(proto) => {
+            f.render_stateful_widget(StatefulImage::new().resize(Resize::Scale(None)), img_area, proto)
+        }
         None => f.render_widget(Paragraph::new("  decoding…").style(Style::new().fg(Color::DarkGray)), img_area),
     }
 
