@@ -70,7 +70,7 @@ index" to build; it's the HJSON model itself.
       output lands as a new `<name>_<op>.png` in the album, linked as a `variant`, cursor jumps to it.
       Unit-tested (`dest_path` dedup). REMAINING: true background (non-blocking) progress, mask/region
       steering (folds in the deferred Phase-3 mask paint), more ops (stylize/restore-faces), model choice.
-- [x] **Phase 5 — Browse features** (core COMPLETE; watermark/portfolio → 3.1+). DONE: dedup (`#` — 64-bit dHash `photos/dedup.rs`, greedy
+- [x] **Phase 5 — Browse features** (core COMPLETE; watermark/portfolio DONE). DONE: dedup (`#` — 64-bit dHash `photos/dedup.rs`, greedy
       grouping, tags all-but-best `dup` + focuses `tag:dup`); export (`X` — `photos/export.rs`, copy
       selection/view to a dir, optional `MAXPX` downscale, deduped); survey/compare (`=` — 2–4 images
       side-by-side, focus + rate/flag/reject the focused, `AlbumMode::Compare`); batch rename (`r` —

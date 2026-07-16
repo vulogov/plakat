@@ -14,6 +14,7 @@ pub mod hjson;
 pub mod import;
 pub mod mledit;
 pub mod nl;
+pub mod portfolio;
 pub mod rename;
 pub mod versions;
 pub mod vision;
@@ -79,6 +80,8 @@ enum PendingCmd {
     Export,
     /// Batch-rename the current targets with the entered pattern (`#` runs = numbers).
     BatchRename,
+    /// Export the current targets as a portfolio to the entered `DIR [MAXPX] [| watermark text]`.
+    Portfolio,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -1167,6 +1170,21 @@ impl App {
         }
     }
 
+    /// Export the browse targets as a portfolio (watermarked/resized copies + a contact sheet).
+    fn export_portfolio(&mut self, dir: &str, max_px: Option<u32>, mark: Option<&str>) {
+        let files: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if files.is_empty() {
+            self.status = "nothing to export".into();
+            return;
+        }
+        let dest = expand_tilde(dir);
+        match portfolio::export(&files, &dest, mark, max_px) {
+            Ok(n) => self.status = format!("portfolio: {n} image(s) + contact sheet → {}", dest.display()),
+            Err(e) => self.status = format!("portfolio failed: {e:#}"),
+        }
+    }
+
     /// Batch-rename the browse targets in the open album with `pattern` (`#` runs → sequence number).
     /// Album-local only (not in a smart/search view). Two-phase (→ hidden temp → final) so intra-set
     /// name swaps can't clobber, and each image's `album.hjson` record + edit backup migrate with it.
@@ -1361,6 +1379,23 @@ impl App {
                 Some(PendingCmd::BatchRename) if !arg.is_empty() => {
                     self.batch_rename(&arg);
                     fs_changed = true; // files moved on disk
+                }
+                Some(PendingCmd::Portfolio) if !arg.is_empty() => {
+                    // `DIR [MAXPX] | watermark text` — `|` splits off the optional watermark.
+                    let (left, mark) = match arg.split_once('|') {
+                        Some((l, r)) => {
+                            let t = r.trim();
+                            (l.trim().to_string(), (!t.is_empty()).then(|| t.to_string()))
+                        }
+                        None => (arg.clone(), None),
+                    };
+                    let (dir, max_px) = match left.trim().rsplit_once(char::is_whitespace) {
+                        Some((h, last)) if last.parse::<u32>().is_ok() => {
+                            (h.trim().to_string(), last.parse::<u32>().ok())
+                        }
+                        _ => (left.trim().to_string(), None),
+                    };
+                    self.export_portfolio(&dir, max_px, mark.as_deref());
                 }
                 Some(PendingCmd::NlCommand) if !arg.is_empty() => {
                     // Deterministic fast-path first; otherwise hand off to the LLM planner.
@@ -1969,6 +2004,9 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
                 }
             }
             KeyCode::Char('v') => app.open_version_browser(),
+            KeyCode::Char('p') => {
+                app.prompt("portfolio to (DIR [MAXPX] | watermark): ", "", PendingCmd::Portfolio)
+            }
             _ => {}
         }
         return false;
@@ -1983,7 +2021,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h/H help · t tags · v versions · l/L lookalike".into();
+        app.status = "Ctrl-B · h/H help · t tags · v versions · p portfolio · l/L lookalike".into();
         return false;
     }
     if app.cmd_active {
@@ -3084,6 +3122,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("img2img", "transform / relight with a prompt (M → i/l)"));
             l.push(kv("edit", "rotate/flip/crop/bright/contrast (E)"));
             l.push(kv("export", format!("copy {target} out, optional resize (X)")));
+            l.push(kv("portfolio", "Ctrl-B p: watermarked copies + contact sheet"));
             l.push(kv("rename", "batch-rename with a #-pattern (r)"));
             l.push(hd("Natural language  (:)"));
             l.push(kv(":", "album-scoped command — pipe with 'then'"));

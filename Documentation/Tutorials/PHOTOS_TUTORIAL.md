@@ -472,6 +472,19 @@ trailing number to cap the longer side in pixels:
 Exports are copies — your originals stay in the album — and name collisions in the
 destination are suffixed `-2`, `-3`, ….
 
+**Portfolio (`Ctrl-B p`).** To hand a set to someone, press `Ctrl-B p` and give a
+destination — plakat writes down-sized, optionally **watermarked** copies of the
+selection plus a `_contact_sheet.png` grid. The prompt is
+`DIR [MAXPX] | watermark text`:
+
+```
+~/Desktop/portfolio 1600 | © Your Name
+~/Desktop/proofs 1200
+```
+
+The longer side is capped at `MAXPX`, and any text after `|` is stamped in the
+corner (haloed, so it reads on any image). Create-only — your library is untouched.
+
 **Stacking (`S`).** When you edit an image (T1 `E` or ML `M`), the result is linked
 as a *variant* of its source. Press `S` to **stack** — the derivatives collapse
 out of the grid and their base shows a `⧉N` badge (N variants). Press `S` again to
