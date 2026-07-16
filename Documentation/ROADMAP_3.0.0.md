@@ -123,4 +123,9 @@ Later phases can land in 3.1+.
       `cargo install plakat` out of the box; `--no-default-features` still gives the lean CLI.
 - [x] **Cut 3.0.0** — Phase 1–2 (browse + curate) + `--import` complete; README "What's new" +
       `PHOTOS_TUTORIAL.md` + RELEASE_HISTORY migration; 1724 lib tests green. Tagged `v3.0.0`.
+- [x] **Cut 3.1.0** — Phases 3–7 + command surface: pixel editing (`E`), ML editing (`M`), browse
+      (dedup/export/compare/rename/stack/timeline), view analysis (`H`), vision autotag/describe
+      (`A`, provider-agnostic), metadata + CLIP visual search (`?`/`V`), NL command pipeline (`:`),
+      contextual quickhelp (`Ctrl-B`). README "What's new in 3.1.0" + 3.0.0 → RELEASE_HISTORY;
+      1756 lib tests green. Tagged `v3.1.0`.
 - [ ] Deferred features (RFC §28) tracked under GALLERY-* placeholder RFCs.

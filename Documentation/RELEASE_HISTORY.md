@@ -8,6 +8,27 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.0.0 — `plakat photos`, a photo & image collection manager
+
+The flagship pivot. The 2.6–2.8 quality, curation, and editing pipelines were the engine;
+**3.0 wraps them in a real image library you browse, curate, and generate into** — a full terminal
+UI, on by default.
+
+**`plakat photos [DIR]`.** A three-pane TUI over a folder tree of images: a thumbnail grid (RAW +
+every common format, EXIF read once), a full image view (←/→, `i` EXIF overlay), and
+**non-destructive curation** — 1–5 star ratings, flag / reject, colour labels, tags — persisted
+per-album in a plain `album.hjson` (no hidden database; your files stay yours, the sidecar is
+additive). Filter the grid with a live grammar (`rating>=4`, `flag`, `tag:sunset`, `ai`, free text)
+and cull fast in a one-at-a-time loupe. A filesystem watcher folds in new files as they land.
+
+**`--import` closes the generate → collection loop.** Every image-producing command — `generate`,
+`upscale`, `portrait`, `multiperson`, `img2img`, `outpaint`, `stylize`, `relight` — gains
+`--import <album>` (plus `--import-move`): the output lands in a photo album with its full
+generation recipe (prompt, seed, steps, model, LoRAs) recorded in the album's per-image record.
+
+Both TUIs (`plakat ui`, `plakat photos`) ship **on by default**. Everything from the 2.x line is
+unchanged and verify-safe; default image output is byte-identical.
+
 ## What's new in 2.8.0 — SD3.5 unblocked, curation persists, faces restored
 
 The 2.x send-off, right at the gate of the 3.x photo-manager flagship: it removes the last big

@@ -17,29 +17,35 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.0.0 — `plakat photos`, a photo & image collection manager
+## What's new in 3.1.0 — `plakat photos` grows up: edit, curate & command
 
-The flagship pivot. The 2.6–2.8 quality, curation, and editing pipelines were the engine;
-**3.0 wraps them in a real image library you browse, curate, and generate into** — a full terminal
-UI, on by default.
+3.0 shipped the collection manager (browse + curate + `--import`). **3.1 makes it a full
+workbench** — you edit, enhance, search, and drive it in plain language, all in the terminal.
 
-**`plakat photos [DIR]`.** A three-pane TUI over a folder tree of images: a thumbnail grid (RAW +
-every common format, EXIF read once), a full image view (←/→, `i` EXIF overlay), and
-**non-destructive curation** — 1–5 star ratings, flag / reject, colour labels, tags — persisted
-per-album in a plain `album.hjson` (no hidden database; your files stay yours, the sidecar is
-additive). Filter the grid with a live grammar (`rating>=4`, `flag`, `tag:sunset`, `ai`, free text)
-and cull fast in a one-at-a-time loupe. A filesystem watcher folds in new files as they land.
+**Edit, in two tiers.** `E` opens a **non-destructive pixel editor** (rotate / flip / grayscale /
+crop / brightness / contrast, with undo + revert — the pristine original is kept and the file
+re-derived from an edit log). `M` runs **model edits** on the cursor image via the same pipelines as
+the CLI — ML upscale ×4, img2img, relight — landing the result as a linked variant.
 
-**`--import` closes the generate → collection loop.** Every image-producing command — `generate`,
-`upscale`, `portrait`, `multiperson`, `img2img`, `outpaint`, `stylize`, `relight` — gains
-`--import <album>` (plus `--import-move`): the output lands in a photo album with its full
-generation recipe (prompt, seed, steps, model, LoRAs) recorded in the album's per-image record.
-Generate in one terminal, watch it appear **already curated** in `plakat photos` in another.
+**Search by words *and* pixels.** `?` ranks the library by **metadata relevance** (TF-IDF over
+prompts / captions / notes / tags); `V` ranks by **CLIP visual similarity** ("find images that
+*look like* this"), with a persistent per-album vector cache. `A` fills that metadata in for you —
+**AI autotag / describe** via whichever LLM you have configured (Gemini, or an OpenAI-compatible
+endpoint).
 
-Both TUIs (`plakat ui`, `plakat photos`) now ship **on by default** — no `--features` flag needed.
-Everything from the 2.x line is unchanged and verify-safe; default image output is byte-identical.
+**Browse at scale.** Near-duplicate detection (perceptual hash), side-by-side compare, batch
+rename, export (with resize), variant **stacking**, a **timeline** date-jump, and a per-image
+**analysis panel** (`H`: histogram, exposure clipping, focus score).
 
-**Earlier releases** (v0.13 – 2.8):
+**Drive it in plain language.** `:` opens a command pane: *"find rating>=4 then upscale then export
+to ~/best 2000"*. Common phrasings parse locally; anything else goes to your configured LLM
+(grounded with the album's metadata) and comes back as a plan from a fixed, safe vocabulary — it
+routes intent, never runs code. `Ctrl-B h` / `Ctrl-B H` give **contextual** key-chord / command
+help that reflects where you are and your live state.
+
+Smart albums (library-wide saved searches), and everything from 3.0 and the 2.x line, are unchanged.
+
+**Earlier releases** (v0.13 – 3.0):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
