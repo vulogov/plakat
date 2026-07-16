@@ -27,7 +27,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::StatefulImage;
@@ -145,6 +145,13 @@ struct App {
     compare: Vec<(PathBuf, StatefulProtocol)>,
     compare_cursor: usize,
 
+    // Stacking (RFC §Phase 5): when on, derivative variants collapse under their base in the grid.
+    stack_view: bool,
+    // Timeline (RFC §Phase 5): a modal list of date buckets over the current view.
+    timeline: bool,
+    tl_buckets: Vec<(String, usize, usize)>, // (label, first view-position, count)
+    tl_cursor: usize,
+
     // Command pane input (RFC §11).
     cmd_active: bool,
     cmd_prompt: String,
@@ -196,6 +203,10 @@ impl App {
             pending_job: None,
             compare: Vec::new(),
             compare_cursor: 0,
+            stack_view: false,
+            timeline: false,
+            tl_buckets: Vec::new(),
+            tl_cursor: 0,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -446,13 +457,35 @@ impl App {
         }
     }
 
-    /// Rebuild the filtered view from `filter` over `album_paths` + the curation records.
+    /// All filenames referenced as a `variant` by some record (the derivatives, for stacking).
+    fn all_variant_names(&self) -> HashSet<String> {
+        let mut s = HashSet::new();
+        let recs: Box<dyn Iterator<Item = &hjson::ImageRecord>> = if self.smart.is_some() {
+            Box::new(self.smart_rec.values())
+        } else {
+            Box::new(self.album_meta.images.values())
+        };
+        for r in recs {
+            for v in &r.variants {
+                s.insert(v.clone());
+            }
+        }
+        s
+    }
+
+    /// Rebuild the filtered view from `filter` over `album_paths` + the curation records. When
+    /// stacking is on, images that are someone's derivative `variant` are collapsed out (their base
+    /// carries a `⧉N` badge).
     fn rebuild_view(&mut self) {
         let f = self.filter.trim().to_string();
+        let variants = if self.stack_view { self.all_variant_names() } else { HashSet::new() };
         self.view = (0..self.album_paths.len())
             .filter(|&i| {
                 let path = &self.album_paths[i];
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if self.stack_view && variants.contains(name) {
+                    return false;
+                }
                 matches_filter(name, self.record(path), &f)
             })
             .collect();
@@ -960,6 +993,59 @@ impl App {
         self.edit_record_at(&path, f);
     }
 
+    /// Toggle stacking: collapse/expand derivative variants under their base image.
+    fn toggle_stack(&mut self) {
+        self.stack_view = !self.stack_view;
+        let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
+        self.rebuild_view();
+        if let Some(cp) = cur_path {
+            if let Some(pos) = self.view.iter().position(|&pi| self.album_paths.get(pi) == Some(&cp)) {
+                self.album_cursor = pos;
+            }
+        }
+        self.status = if self.stack_view {
+            "stacked: variants collapsed under their base (⧉N) · S to expand".into()
+        } else {
+            "stacks expanded".into()
+        };
+    }
+
+    /// Open the timeline: date-sort the view, then bucket it by capture month so you can jump.
+    fn enter_timeline(&mut self) {
+        if self.view.is_empty() {
+            self.status = "no images to place on a timeline".into();
+            return;
+        }
+        // Date-sort so buckets are contiguous, then group by YYYY-MM.
+        self.album_meta.sort = Some("date-desc".into());
+        self.sort_album();
+        self.rebuild_view();
+        let mut buckets: Vec<(String, usize, usize)> = Vec::new();
+        for (vpos, &pi) in self.view.iter().enumerate() {
+            let label = self
+                .album_paths
+                .get(pi)
+                .map(|p| date_bucket(p, self.record(p)))
+                .unwrap_or_else(|| "undated".into());
+            match buckets.last_mut() {
+                Some((l, _, count)) if *l == label => *count += 1,
+                _ => buckets.push((label, vpos, 1)),
+            }
+        }
+        self.tl_buckets = buckets;
+        self.tl_cursor = 0;
+        self.timeline = true;
+        self.status = "timeline · ↑/↓ pick a month · Enter jump · Esc".into();
+    }
+
+    /// Jump the grid cursor to the selected timeline bucket's first image, then close the timeline.
+    fn jump_timeline(&mut self) {
+        if let Some((_, vpos, _)) = self.tl_buckets.get(self.tl_cursor) {
+            self.album_cursor = (*vpos).min(self.view.len().saturating_sub(1));
+        }
+        self.timeline = false;
+    }
+
     /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF.
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
@@ -1131,6 +1217,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_ml_key(app, k.code);
         return false;
     }
+    if app.timeline {
+        handle_timeline_key(app, k.code);
+        return false;
+    }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match app.focus {
         Focus::Tree => handle_tree_key(app, k.code),
@@ -1160,6 +1250,19 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
         KeyCode::Char('u') => app.undo_edit(),
         KeyCode::Char('0') => app.revert_edits(),
+        _ => {}
+    }
+}
+
+/// Timeline modal (Phase 5): pick a capture-month bucket and jump the grid to it.
+fn handle_timeline_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('@') => app.timeline = false,
+        KeyCode::Up | KeyCode::Char('k') => app.tl_cursor = app.tl_cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.tl_cursor = (app.tl_cursor + 1).min(app.tl_buckets.len().saturating_sub(1));
+        }
+        KeyCode::Enter | KeyCode::Char('l') => app.jump_timeline(),
         _ => {}
     }
 }
@@ -1390,6 +1493,10 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         }
         // Survey / compare the selection (2–4 images side by side).
         KeyCode::Char('=') => app.enter_compare(),
+        // Stacking: collapse/expand derivative variants under their base.
+        KeyCode::Char('S') => app.toggle_stack(),
+        // Timeline: jump to a capture-month bucket.
+        KeyCode::Char('@') => app.enter_timeline(),
         // Browse: scan for near-duplicates (#) · export (X) · batch-rename (r).
         KeyCode::Char('#') => app.dedup_scan(),
         KeyCode::Char('X') => {
@@ -1540,6 +1647,9 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     draw_tree(f, app, tree_col);
     draw_album(f, app, album_col);
+    if app.timeline {
+        draw_timeline(f, app, album_col);
+    }
 
     // Command pane: edit/ML menu, active text input, or a passive hint.
     let (cmd, cmd_style) = if app.edit_menu {
@@ -1714,6 +1824,15 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The `YYYY-MM` capture-month bucket for the timeline, from the record's EXIF `date_taken`
+/// (`"YYYY:MM:DD …"`). Images without a scanned capture date bucket as `undated`.
+fn date_bucket(_path: &Path, rec: Option<&hjson::ImageRecord>) -> String {
+    rec.and_then(|r| r.exif.as_ref())
+        .and_then(|e| e.date_taken.as_ref())
+        .and_then(|d| (d.len() >= 7).then(|| d[..7].replace(':', "-")))
+        .unwrap_or_else(|| "undated".into())
+}
+
 /// File modified time, `UNIX_EPOCH` when unavailable (used as the `date-*` sort key — always
 /// present, unlike EXIF capture time).
 fn mtime(p: &Path) -> std::time::SystemTime {
@@ -1883,11 +2002,56 @@ fn curation_badge(rec: Option<&hjson::ImageRecord>) -> Line<'static> {
         if let Some(l) = &r.color_label {
             spans.push(Span::styled(" ●", Style::new().fg(label_color(l))));
         }
+        if !r.variants.is_empty() {
+            // Stack badge: this image has derivative variants (edits / ML outputs).
+            spans.push(Span::styled(format!(" ⧉{}", r.variants.len()), Style::new().fg(Color::Cyan)));
+        }
     }
     Line::from(spans)
 }
 
 /// Full-pane image view (RFC §9): the image, optionally with an EXIF + curation side panel (`i`).
+/// Timeline popup (Phase 5): a scrollable list of capture-month buckets with counts, over the right
+/// edge of the album pane.
+fn draw_timeline(f: &mut Frame, app: &App, area: Rect) {
+    let w = area.width.min(28).max(16);
+    let rows = (app.tl_buckets.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(w),
+        y: area.y,
+        width: w,
+        height: rows.max(3),
+    };
+    f.render_widget(Clear, popup);
+    let inner_h = popup.height.saturating_sub(2) as usize;
+    // Keep the cursor visible within the window.
+    let start = app.tl_cursor.saturating_sub(inner_h.saturating_sub(1));
+    let lines: Vec<Line> = app
+        .tl_buckets
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_h)
+        .map(|(i, (label, _, count))| {
+            let text = format!(" {label}  ({count})");
+            let mut style = Style::default();
+            if i == app.tl_cursor {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Timeline ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
 /// Side-by-side survey/compare (Phase 5): N images in equal columns, the focused one cyan-bordered,
 /// each with its filename + curation badge.
 fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2053,6 +2217,18 @@ mod filter_tests {
         assert_eq!(names(&v), ["a.png", "b.png", "c.png"]); // 9.0, 2.0, none(MIN)
         sort_paths(&mut v, "bogus-mode", rating, score); // unknown → name-asc
         assert_eq!(names(&v), ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn date_bucket_from_exif_month() {
+        let mut rec = ImageRecord::default();
+        rec.exif = Some(crate::photos::hjson::ExifRecord {
+            date_taken: Some("2024:07:15 12:00:00".into()),
+            ..Default::default()
+        });
+        assert_eq!(date_bucket(Path::new("a.jpg"), Some(&rec)), "2024-07");
+        assert_eq!(date_bucket(Path::new("a.jpg"), None), "undated");
+        assert_eq!(date_bucket(Path::new("a.jpg"), Some(&ImageRecord::default())), "undated");
     }
 
     #[test]

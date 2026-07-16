@@ -340,6 +340,17 @@ trailing number to cap the longer side in pixels:
 Exports are copies — your originals stay in the album — and name collisions in the
 destination are suffixed `-2`, `-3`, ….
 
+**Stacking (`S`).** When you edit an image (T1 `E` or ML `M`), the result is linked
+as a *variant* of its source. Press `S` to **stack** — the derivatives collapse
+out of the grid and their base shows a `⧉N` badge (N variants). Press `S` again to
+expand. A tidy way to keep a shoot readable when it's full of edits and upscales.
+
+**Timeline (`@`).** Press `@` for a timeline of capture months. The view
+date-sorts and a popup lists each `YYYY-MM` bucket with its count; `↑`/`↓` picks a
+month and `Enter` jumps the grid straight to it — fast travel through a big
+library. (Buckets read the EXIF capture date; images without one group as
+`undated`.)
+
 ## 11. Closing the loop — `--import`
 
 The point of the manager is that **generation flows into it**. Every

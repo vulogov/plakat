@@ -70,13 +70,15 @@ index" to build; it's the HJSON model itself.
       output lands as a new `<name>_<op>.png` in the album, linked as a `variant`, cursor jumps to it.
       Unit-tested (`dest_path` dedup). REMAINING: true background (non-blocking) progress, mask/region
       steering (folds in the deferred Phase-3 mask paint), more ops (stylize/restore-faces), model choice.
-- [~] **Phase 5 — Browse features.** DONE: dedup (`#` — 64-bit dHash `photos/dedup.rs`, greedy
+- [x] **Phase 5 — Browse features** (core COMPLETE; watermark/portfolio → 3.1+). DONE: dedup (`#` — 64-bit dHash `photos/dedup.rs`, greedy
       grouping, tags all-but-best `dup` + focuses `tag:dup`); export (`X` — `photos/export.rs`, copy
       selection/view to a dir, optional `MAXPX` downscale, deduped); survey/compare (`=` — 2–4 images
       side-by-side, focus + rate/flag/reject the focused, `AlbumMode::Compare`); batch rename (`r` —
       `photos/rename.rs` `#`-run pattern, album-local, two-phase stage so intra-set swaps can't
-      clobber, migrates record + edit backup). All unit-tested. REMAINING: stacking, timeline,
-      watermark/portfolio.
+      clobber, migrates record + edit backup); stacking (`S` — collapse derivative `variant`s under
+      their base, `⧉N` badge, via `all_variant_names` + `rebuild_view`); timeline (`@` — modal of
+      `YYYY-MM` EXIF-capture buckets over a date-sorted view, jump the grid to a month). All
+      unit-tested. **Phase 5 COMPLETE** for the browse core; watermark/portfolio left as 3.1+ polish.
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
 - [ ] **Phase 7 — Vision + AI** (gemini vision, describe/lookalike/analyze-and-generate, autotag, face-scan, semantic search).
 
