@@ -171,6 +171,7 @@ struct App {
     smart: Option<String>,       // active smart-view label (None = a real album is open)
     smart_query: String,         // the active view's query (filter grammar, or NL search text)
     smart_is_search: bool,       // true = relevance-ranked semantic search; false = filter query
+    lookalike_of: Option<PathBuf>, // when Some, the smart view is a perceptual "similar-to" ranking
     smart_src: HashMap<PathBuf, PathBuf>, // image path → its source album dir (for write routing)
     smart_rec: HashMap<PathBuf, hjson::ImageRecord>, // image path → its record (badges/filter/sort)
 
@@ -264,6 +265,7 @@ impl App {
             smart: None,
             smart_query: String::new(),
             smart_is_search: false,
+            lookalike_of: None,
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
             edit_menu: false,
@@ -304,6 +306,17 @@ impl App {
     fn rescan(&mut self) {
         if let Ok(root) = library::walk(&self.root_dir) {
             self.root = root;
+        }
+        // A lookalike view re-ranks by similarity (not a text query) — handle before the smart branch.
+        if let Some(qpath) = self.lookalike_of.clone() {
+            let cur_path = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned());
+            self.open_lookalike(qpath);
+            if let Some(cp) = cur_path {
+                if let Some(pos) = self.view.iter().position(|&pi| self.album_paths.get(pi) == Some(&cp)) {
+                    self.album_cursor = pos;
+                }
+            }
+            return;
         }
         // A smart-album / search view spans the whole library — re-evaluate it, preserving the cursor.
         if let Some(name) = self.smart.clone() {
@@ -395,6 +408,7 @@ impl App {
         self.status = format!("{}  ·  {} images", dir.display(), paths.len());
         self.smart = None; // leaving any smart-album / search view
         self.smart_is_search = false;
+        self.lookalike_of = None;
         self.smart_src.clear();
         self.smart_rec.clear();
         self.album_meta = hjson::read_album(&dir).unwrap_or_default();
@@ -458,6 +472,7 @@ impl App {
         self.smart = Some(label);
         self.smart_query = query;
         self.smart_is_search = is_search;
+        self.lookalike_of = None; // a plain smart/search view (open_lookalike re-sets this after)
         self.smart_src = src;
         self.smart_rec = recs;
         self.album_dir = None;
@@ -509,6 +524,31 @@ impl App {
         let count = ordered.len();
         self.enter_smart_view(format!("search: {query}"), query.clone(), true, ordered, true);
         self.status = format!("🔎 '{query}'  ·  {count} matches by relevance");
+    }
+
+    /// Perceptual lookalike: rank the whole library by dHash similarity to `query_path` (nearest
+    /// first). Fully offline — no model, no network. A relevance-style smart view.
+    fn open_lookalike(&mut self, query_path: PathBuf) {
+        let Some(qhash) = loader::thumbnail(&query_path, 64).ok().map(|img| dedup::dhash(&img)) else {
+            self.status = "couldn't read the image".into();
+            return;
+        };
+        let mut ranked: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>, u32)> = self
+            .collect_library()
+            .into_iter()
+            .filter_map(|(p, dir, rec)| {
+                loader::thumbnail(&p, 64)
+                    .ok()
+                    .map(|img| (p, dir, rec, dedup::hamming(qhash, dedup::dhash(&img))))
+            })
+            .collect();
+        ranked.sort_by_key(|x| x.3); // nearest (query itself is distance 0, stays first)
+        let ordered: Vec<_> = ranked.into_iter().take(120).map(|(p, d, r, _)| (p, d, r)).collect();
+        let count = ordered.len();
+        let name = query_path.file_name().and_then(|n| n.to_str()).unwrap_or("image").to_string();
+        self.enter_smart_view(format!("similar: {name}"), String::new(), true, ordered, true);
+        self.lookalike_of = Some(query_path); // so a rescan re-ranks rather than filtering
+        self.status = format!("🔍 {count} most-similar to {name} (perceptual hash)");
     }
 
     /// The `album_paths` index at the cursor (through the filtered view).
@@ -1767,6 +1807,11 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
             KeyCode::Char('h') => app.help = Some(HelpKind::Chords),
             KeyCode::Char('H') => app.help = Some(HelpKind::Commands),
             KeyCode::Char('t') => app.open_tag_browser(),
+            KeyCode::Char('l') => {
+                if let Some(p) = app.cur_idx().and_then(|i| app.album_paths.get(i).cloned()) {
+                    app.open_lookalike(p); // find perceptually-similar images (offline)
+                }
+            }
             _ => {}
         }
         return false;
@@ -1777,7 +1822,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h chords · H commands · t tags".into();
+        app.status = "Ctrl-B · h chords · H commands · t tags · l lookalike".into();
         return false;
     }
     if app.cmd_active {
@@ -2828,7 +2873,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l.push(hd("Anywhere"));
-    l.push(kv("Ctrl-B", "leader (h chords · H commands · t tag browser) · q quit"));
+    l.push(kv("Ctrl-B", "leader: h chords · H commands · t tags · l lookalike · q quit"));
     l
 }
 

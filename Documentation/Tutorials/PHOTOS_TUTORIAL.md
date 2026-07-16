@@ -410,6 +410,15 @@ it runs locally.
 
 Together, `?` (words) and `V` (pixels) are the two halves of semantic search.
 
+### Lookalike (`Ctrl-B l`)
+
+To find images that *look like the one under the cursor* — other frames from a
+burst, near-duplicates, the same scene — press `Ctrl-B l`. It ranks the whole
+library by **perceptual-hash similarity** to the current image, nearest first. This
+one is fully **offline** (no model, no network, no API key) — it's the quick,
+always-available cousin of CLIP visual search, matching visual similarity rather
+than deep semantics.
+
 ## 11. Browse — compare, duplicates, rename & export
 
 **Compare side-by-side (`=`).** Select 2–4 images (`Space`) and press `=` to see
