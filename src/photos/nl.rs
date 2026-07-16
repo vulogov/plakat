@@ -304,6 +304,23 @@ mod tests {
         assert!(parse_deterministic("please make my photos look cinematic somehow").is_none());
     }
 
+    // Real LLM planner round-trip. Hits the configured provider; run with:
+    //   DEEPSEEK_API_KEY=… cargo test -p plakat --features photos -- --ignored nl_planner_live
+    #[tokio::test]
+    #[ignore]
+    async fn nl_planner_live() {
+        let grounding = "album: Iceland\nvisible: 42 images\nselected: 0\n{}";
+        let plan = plan_llm("deepseek", "upscale everything then export it to /tmp/out at 2000px", grounding)
+            .await
+            .expect("planner returned a plan");
+        eprintln!("LIVE PLAN: {plan:?}");
+        assert!(plan.actions.iter().any(|a| matches!(a, Action::Upscale)), "has upscale");
+        assert!(
+            plan.actions.iter().any(|a| matches!(a, Action::Export { .. })),
+            "has export"
+        );
+    }
+
     #[test]
     fn llm_json_parses_into_plan() {
         let json = r#"```json

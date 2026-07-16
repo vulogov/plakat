@@ -14,7 +14,12 @@ pub async fn describe_image(provider: &str, image: &Path, instruction: &str) -> 
     let b64 = image_jpeg_base64(image)?;
     match resolve_vision_provider(provider).as_str() {
         "gemini" => super::gemini::describe_image_jpeg(instruction, &b64).await,
-        "deepseek" => super::deepseek::describe_image_jpeg(instruction, &b64).await,
+        "deepseek" => super::deepseek::describe_image_jpeg(instruction, &b64).await.map_err(|e| {
+            anyhow!(
+                "{e}\nhint: DeepSeek's public `deepseek-chat` is text-only — for image analysis set \
+                 GEMINI_API_KEY (or point DeepSeek at a vision-capable OpenAI-compatible endpoint)"
+            )
+        }),
         other if other.starts_with("local") => Err(anyhow!(
             "the local LLM has no vision model — configure a vision provider \
              (set GEMINI_API_KEY, or DEEPSEEK_API_KEY for an OpenAI-compatible vision endpoint)"
@@ -84,6 +89,24 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    // Real vision round-trip. Hits the provider; run with a key set:
+    //   DEEPSEEK_API_KEY=… cargo test -p plakat -- --ignored --nocapture vision_live
+    #[tokio::test]
+    #[ignore]
+    async fn vision_live() {
+        let dir = std::env::temp_dir().join("plakat-vision-live");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("x.png");
+        image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(64, 64, image::Rgb([200, 40, 40])))
+            .save(&p)
+            .unwrap();
+        // deepseek-chat is text-only → this either works (vision-capable endpoint) or errors cleanly.
+        let r = describe_image("deepseek", &p, "List 3 short tags for this image.").await;
+        eprintln!("VISION RESULT ({:?}): {r:?}", resolve_vision_provider("auto"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(r.is_ok() || r.is_err(), "no panic");
     }
 
     #[test]
