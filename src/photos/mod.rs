@@ -15,6 +15,7 @@ pub mod import;
 pub mod mledit;
 pub mod nl;
 pub mod rename;
+pub mod versions;
 pub mod vision;
 pub mod visual_search;
 pub mod library;
@@ -219,6 +220,11 @@ struct App {
     tag_browser: bool,
     tags_list: Vec<(String, usize)>,
     tag_cursor: usize,
+    // Version browser (Ctrl-B v): save/restore per-image snapshots for the cursor image.
+    version_browser: bool,
+    versions_list: Vec<u32>,
+    version_cursor: usize,
+    version_target: Option<(PathBuf, String, PathBuf)>, // (album dir, filename, image path)
 
     // Command pane input (RFC §11).
     cmd_active: bool,
@@ -294,6 +300,10 @@ impl App {
             tag_browser: false,
             tags_list: Vec::new(),
             tag_cursor: 0,
+            version_browser: false,
+            versions_list: Vec::new(),
+            version_cursor: 0,
+            version_target: None,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -610,6 +620,55 @@ impl App {
         self.tags_list = list;
         self.tag_cursor = 0;
         self.tag_browser = true;
+    }
+
+    /// Open the version browser for the cursor image (save current / restore a snapshot).
+    fn open_version_browser(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        let path = dir.join(&filename);
+        self.versions_list = versions::list(&dir, &filename);
+        self.version_target = Some((dir, filename, path));
+        self.version_cursor = 0; // 0 = "save current"
+        self.version_browser = true;
+    }
+
+    /// Version-browser action: row 0 snapshots the current image; a version row restores it.
+    fn version_action(&mut self) {
+        let Some((dir, filename, path)) = self.version_target.clone() else {
+            self.version_browser = false;
+            return;
+        };
+        if self.version_cursor == 0 {
+            match versions::snapshot(&dir, &filename) {
+                Ok(n) => {
+                    self.versions_list = versions::list(&dir, &filename);
+                    self.status = format!("saved v{n} of {filename}");
+                }
+                Err(e) => self.status = format!("snapshot failed: {e:#}"),
+            }
+        } else if let Some(&n) = self.versions_list.get(self.version_cursor - 1) {
+            match versions::restore(&dir, &filename, n) {
+                Ok(()) => {
+                    // Make the restored version the new pristine baseline so the T1 edit log (if any)
+                    // doesn't re-derive over it: point the backup at the restored file + clear edits.
+                    let bak = edit::backup_path(&dir, &filename);
+                    if bak.exists() {
+                        let _ = std::fs::copy(&path, &bak);
+                    }
+                    self.edit_record_at(&path, |rec| rec.edits.clear());
+                    self.thumbs.remove(&path);
+                    if self.mode == AlbumMode::Image {
+                        self.load_view();
+                    }
+                    self.status = format!("restored v{n} of {filename}");
+                    self.version_browser = false;
+                }
+                Err(e) => self.status = format!("restore failed: {e:#}"),
+            }
+        }
     }
 
     /// Filter the view to the selected tag and close the browser.
@@ -1909,6 +1968,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
                     app.status = "CLIP lookalike … (the UI will pause)".into();
                 }
             }
+            KeyCode::Char('v') => app.open_version_browser(),
             _ => {}
         }
         return false;
@@ -1917,9 +1977,13 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_tag_key(app, k.code);
         return false;
     }
+    if app.version_browser {
+        handle_version_key(app, k.code);
+        return false;
+    }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h chords · H commands · t tags · l lookalike · L CLIP-lookalike".into();
+        app.status = "Ctrl-B · h/H help · t tags · v versions · l/L lookalike".into();
         return false;
     }
     if app.cmd_active {
@@ -2000,6 +2064,20 @@ fn handle_tag_key(app: &mut App, code: KeyCode) {
             app.tag_cursor = (app.tag_cursor + 1).min(app.tags_list.len().saturating_sub(1));
         }
         KeyCode::Enter | KeyCode::Char('l') => app.pick_tag(),
+        _ => {}
+    }
+}
+
+/// Version browser (Ctrl-B v): row 0 saves the current image; rows below restore a snapshot.
+fn handle_version_key(app: &mut App, code: KeyCode) {
+    let rows = app.versions_list.len() + 1; // +1 for the "save current" row
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.version_browser = false,
+        KeyCode::Up | KeyCode::Char('k') => app.version_cursor = app.version_cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.version_cursor = (app.version_cursor + 1).min(rows.saturating_sub(1));
+        }
+        KeyCode::Enter | KeyCode::Char('l') => app.version_action(),
         _ => {}
     }
 }
@@ -2439,6 +2517,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.tag_browser {
         draw_tag_browser(f, app, album_col);
+    }
+    if app.version_browser {
+        draw_version_browser(f, app, album_col);
     }
     if let Some(kind) = app.help {
         draw_help(f, kind, app, body);
@@ -2970,7 +3051,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l.push(hd("Anywhere"));
-    l.push(kv("Ctrl-B", "h chords · H cmds · t tags · l lookalike · L CLIP-look · q quit"));
+    l.push(kv("Ctrl-B", "h/H help · t tags · v versions · l/L lookalike · q quit"));
     l
 }
 
@@ -3011,6 +3092,36 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
     }
     l
+}
+
+/// Version browser popup (Ctrl-B v): save the current image as a snapshot, or restore an earlier one.
+fn draw_version_browser(f: &mut Frame, app: &App, area: Rect) {
+    let name = app.version_target.as_ref().map(|(_, f, _)| f.as_str()).unwrap_or("");
+    let w = area.width.min(34).max(20);
+    let rows = (app.versions_list.len() as u16 + 3).clamp(3, area.height);
+    let popup = Rect { x: area.x + area.width.saturating_sub(w), y: area.y, width: w, height: rows };
+    f.render_widget(Clear, popup);
+    let mut items: Vec<Line> = vec![row_line("＋ save current version", app.version_cursor == 0)];
+    for (i, n) in app.versions_list.iter().enumerate() {
+        items.push(row_line(&format!("v{n}  (restore)"), app.version_cursor == i + 1));
+    }
+    f.render_widget(
+        Paragraph::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Versions · {name} "))
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+fn row_line(text: &str, selected: bool) -> Line<'static> {
+    let mut style = Style::default();
+    if selected {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    Line::from(Span::styled(format!(" {text}"), style))
 }
 
 /// Tag browser popup (Ctrl-B t): the album's tags with counts; Enter filters by the chosen tag.

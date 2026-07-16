@@ -146,6 +146,13 @@ versions and `0` returns to the original. A model edit (`M`) writes a **new file
 linked as a `variant` of the source, so each generation is its own version you can
 keep side by side. Nothing you do throws away an earlier state.
 
+**Explicit snapshots (`Ctrl-B v`).** For a deliberate checkpoint, press `Ctrl-B v`
+to open the version browser for the current image: pick **＋ save current version**
+to freeze its current state as `v1`, `v2`, …, or pick an existing version to
+**restore** it. Snapshots are full frozen copies kept in a hidden
+`.plakat_versions/` folder — restoring makes that version the new working state
+(and the new edit baseline). Handy before a risky edit, or to keep alternate looks.
+
 ### Text metadata
 
 Beyond the one-key states above, each image carries free-text fields you can edit
