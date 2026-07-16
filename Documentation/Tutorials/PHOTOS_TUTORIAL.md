@@ -276,7 +276,32 @@ re-encode from the original, not ten. The edit list is stored in the image's
 `album.hjson` record (`edits`), so it persists across sessions and shows in the
 image-view panel (`i`).
 
-## 9. Closing the loop — `--import`
+## 9. ML editing (`M`)
+
+The T1 edits above are instant, geometric. For **model-powered** edits, press `M`
+to open the ML menu on the cursor image:
+
+| Key | Edit | Needs |
+|-----|------|-------|
+| `u` | ML upscale ×4 (Real-ESRGAN) | — |
+| `i` | img2img transform | a prompt |
+| `l` | relight (IC-Light) | a lighting prompt |
+
+These run an actual pipeline (the same engine as `plakat generate` / `upscale` /
+`relight`), so they take a while and may download a model on first use. The
+manager **pauses** while a job runs — the alternate screen drops so you see the
+familiar plakat download/denoise progress bars, then it resumes automatically.
+
+The result is a **new** image (your source is never touched): it lands in the same
+album as `<name>_upscale.png` / `_img2img.png` / `_relight.png`, is linked as a
+`variant` of the source, and the cursor jumps to it. Generate → edit → keep, all
+inside the library.
+
+> First-run notes: img2img/relight load SDXL (heavy — the manager runs one job at a
+> time with everything else freed). Interactive crop/mask painting to steer inpaint
+> is a later step.
+
+## 10. Closing the loop — `--import`
 
 The point of the manager is that **generation flows into it**. Every
 image-producing command takes `--import <album>`:
@@ -309,7 +334,7 @@ aesthetic `score`, and carries its recipe in the EXIF overlay — the same recip
 
 ---
 
-## 10. A quick workflow
+## 11. A quick workflow
 
 1. `plakat photos ~/Pictures` — open your library.
 2. `Tab` to the tree, arrow to a shoot, `Enter` to open the album.

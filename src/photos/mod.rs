@@ -9,6 +9,7 @@ pub mod edit;
 pub mod exif;
 pub mod hjson;
 pub mod import;
+pub mod mledit;
 pub mod library;
 pub mod loader;
 pub mod watcher;
@@ -60,6 +61,8 @@ enum PendingCmd {
     DeleteSmart { name: String },
     /// Run a library-wide metadata semantic search for the entered free-text query.
     Search,
+    /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
+    MlPrompt { relight: bool },
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -125,6 +128,9 @@ struct App {
 
     // T1 pixel-edit menu (RFC §Phase 3) — a modal key layer over the cursor image.
     edit_menu: bool,
+    // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
+    ml_menu: bool,
+    pending_job: Option<mledit::MlJob>,
 
     // Command pane input (RFC §11).
     cmd_active: bool,
@@ -173,6 +179,8 @@ impl App {
             smart_src: HashMap::new(),
             smart_rec: HashMap::new(),
             edit_menu: false,
+            ml_menu: false,
+            pending_job: None,
             cmd_active: false,
             cmd_prompt: String::new(),
             cmd_buffer: String::new(),
@@ -559,6 +567,42 @@ impl App {
         self.refresh_after_edit(&path);
     }
 
+    /// Queue a T2 ML edit on the cursor image (the event loop runs it with the TUI suspended).
+    fn queue_ml(&mut self, op: mledit::MlOp) {
+        self.ml_menu = false;
+        let Some((album, filename)) = self.cur_source() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        let input = album.join(&filename);
+        self.status = format!("running {} … (the UI will pause)", op.label());
+        self.pending_job = Some(mledit::MlJob { op, input, album });
+    }
+
+    /// Link `out_name` as a derivative variant of the source image at `src` (deduped).
+    fn record_variant(&mut self, src: &Path, out_name: &str) {
+        let out = out_name.to_string();
+        self.edit_record_at(src, |rec| {
+            if !rec.variants.iter().any(|v| v == &out) {
+                rec.variants.push(out);
+            }
+        });
+    }
+
+    /// Move the album cursor onto the image named `name`, if it's in the current view.
+    fn select_by_name(&mut self, name: &str) {
+        let Some(pi) = self
+            .album_paths
+            .iter()
+            .position(|p| p.file_name().and_then(|n| n.to_str()) == Some(name))
+        else {
+            return;
+        };
+        if let Some(vpos) = self.view.iter().position(|&i| i == pi) {
+            self.album_cursor = vpos;
+        }
+    }
+
     /// After a file's pixels change: drop its cached thumbnail (so it re-decodes) and reload the
     /// full-pane image if it's on screen.
     fn refresh_after_edit(&mut self, path: &Path) {
@@ -683,6 +727,14 @@ impl App {
                 Some(PendingCmd::Search) if !arg.is_empty() => {
                     self.open_search(arg.clone());
                 }
+                Some(PendingCmd::MlPrompt { relight }) if !arg.is_empty() => {
+                    let op = if relight {
+                        mledit::MlOp::Relight { prompt: arg.clone() }
+                    } else {
+                        mledit::MlOp::Img2img { prompt: arg.clone() }
+                    };
+                    self.queue_ml(op);
+                }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
                     let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
                     fm.smart_albums.retain(|s| s.name != name);
@@ -801,6 +853,12 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
                 }
             }
         }
+        // A queued T2 ML edit (Phase 4): run it with the TUI suspended so the pipeline's normal
+        // progress shows on the real terminal, then resume + pick up the new file.
+        if let Some(job) = app.pending_job.take() {
+            run_ml_job(terminal, app, job)?;
+            continue;
+        }
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
         }
@@ -824,6 +882,42 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
     Ok(())
 }
 
+/// Run a queued T2 ML edit with the TUI suspended, then resume. The job runs on a dedicated thread
+/// with its own runtime (avoiding a `block_on` on the async event-loop thread); the `join` blocks
+/// here on purpose while the manager is paused and the pipeline's progress shows on the real screen.
+fn run_ml_job(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    job: mledit::MlJob,
+) -> Result<()> {
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ {}\n   {}\n", job.op.label(), job.input.display());
+    let label = job.op.label();
+    let src = job.input.clone();
+    let result = std::thread::spawn(move || -> Result<PathBuf> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(job.run())
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("ML edit thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(out) => {
+            let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            app.record_variant(&src, &name); // link the derivative before the rescan
+            app.rescan();
+            app.select_by_name(&name);
+            app.status = format!("✓ {label} → {name}");
+        }
+        Err(e) => app.status = format!("✗ ML edit failed: {e:#}"),
+    }
+    Ok(())
+}
+
 /// Returns true to quit.
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyModifiers;
@@ -837,6 +931,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if app.edit_menu {
         handle_edit_key(app, k.code);
+        return false;
+    }
+    if app.ml_menu {
+        handle_ml_key(app, k.code);
         return false;
     }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -867,6 +965,25 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('<') | KeyCode::Char(',') => app.apply_edit(EditOp::Contrast(-12)),
         KeyCode::Char('u') => app.undo_edit(),
         KeyCode::Char('0') => app.revert_edits(),
+        _ => {}
+    }
+}
+
+/// T2 ML-edit menu (Phase 4): pick an operation to run on the cursor image via an existing pipeline.
+/// Prompt-driven ops open the command pane; upscale queues immediately. The event loop runs the job
+/// with the TUI suspended.
+fn handle_ml_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('M') | KeyCode::Char('q') => app.ml_menu = false,
+        KeyCode::Char('u') => app.queue_ml(mledit::MlOp::Upscale),
+        KeyCode::Char('i') => {
+            app.ml_menu = false;
+            app.prompt("img2img prompt: ", "", PendingCmd::MlPrompt { relight: false });
+        }
+        KeyCode::Char('l') => {
+            app.ml_menu = false;
+            app.prompt("relight prompt: ", "", PendingCmd::MlPrompt { relight: true });
+        }
         _ => {}
     }
 }
@@ -1042,6 +1159,12 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.edit_menu = true;
             }
         }
+        // ML-edit menu (upscale / img2img / relight) on the cursor image.
+        KeyCode::Char('M') => {
+            if n > 0 {
+                app.ml_menu = true;
+            }
+        }
         KeyCode::Char('C') => {
             if n > 0 {
                 app.selected.clear(); // cull operates one image at a time
@@ -1130,6 +1253,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Char('i') => app.show_exif = !app.show_exif,
         KeyCode::Char('E') => app.edit_menu = true, // open the pixel-edit menu
+        KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
         _ => return apply_curation(app, code),
     }
     false
@@ -1184,12 +1308,18 @@ fn draw(f: &mut Frame, app: &mut App) {
     draw_tree(f, app, tree_col);
     draw_album(f, app, album_col);
 
-    // Command pane: pixel-edit menu, active text input, or a passive hint.
+    // Command pane: edit/ML menu, active text input, or a passive hint.
     let (cmd, cmd_style) = if app.edit_menu {
         (
             " EDIT  r/R rotate · t 180° · h/v flip · g gray · s crop1:1 · -/+ bright · </> contrast · u undo · 0 revert · Esc"
                 .to_string(),
             Style::default().fg(Color::Cyan),
+        )
+    } else if app.ml_menu {
+        (
+            " ML EDIT  u upscale ×4 · i img2img (prompt) · l relight (prompt) · Esc   — runs a model; the UI pauses"
+                .to_string(),
+            Style::default().fg(Color::Magenta),
         )
     } else if app.cmd_active {
         (format!(" {}{}_", app.cmd_prompt, app.cmd_buffer), Style::default().fg(Color::Yellow))

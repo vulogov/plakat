@@ -63,7 +63,13 @@ index" to build; it's the HJSON model itself.
       (one re-encode regardless of edit count; works in normal + smart/search views). Unit-tested
       (apply/replay/roundtrip/backup-revert). REMAINING: interactive crop/mask paint (deferred —
       needs pixel-precise pointer input; the mask half folds into Phase 4 T2 inpaint).
-- [ ] **Phase 4 — T2 ML editing** (dispatch to existing pipelines; prompt modal; progress).
+- [~] **Phase 4 — T2 ML editing.** DONE: `M` menu dispatches the cursor image to existing pipelines
+      via the `plakat::api` builders (`photos/mledit.rs` — ML upscale ×4, img2img w/ prompt, relight
+      w/ prompt). Runs with the TUI **suspended** (leave alt-screen → job on a dedicated-runtime
+      thread so no `block_on` on the event-loop thread → resume), showing the pipeline's own progress;
+      output lands as a new `<name>_<op>.png` in the album, linked as a `variant`, cursor jumps to it.
+      Unit-tested (`dest_path` dedup). REMAINING: true background (non-blocking) progress, mask/region
+      steering (folds in the deferred Phase-3 mask paint), more ops (stylize/restore-faces), model choice.
 - [ ] **Phase 5 — Browse features** (side-by-side/survey, stacking, dedup/pHash, timeline, batch, export).
 - [ ] **Phase 6 — View analysis** (histogram, focus peaking, exposure, sharpness map, pixel probe).
 - [ ] **Phase 7 — Vision + AI** (gemini vision, describe/lookalike/analyze-and-generate, autotag, face-scan, semantic search).
