@@ -309,8 +309,16 @@ command list for **non-destructive** pixel edits on the cursor image:
 - **`Enter`** runs the highlighted command; the palette stays open so you can
   **chain** edits (rotate → brighten → crop). **`Esc`** closes it.
 
-The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, crop 1:1,
-brightness up/down, contrast up/down, **undo**, **redo**, and **revert to original**.
+The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, **crops**
+(1:1, 4:5, 5:4, 3:2, 2:3, 16:9, 9:16 — centered), brightness up/down, contrast
+up/down, **undo**, **redo**, and **revert to original**. (Type `crop` to see them
+all.)
+
+**Free-form crop.** Pick **crop free-form (interactive)** for an arbitrary
+rectangle: the image shows full, with everything outside the crop **dimmed**.
+`arrows` move the box, `+` / `-` resize it, `[` / `]` adjust width, `,` / `.`
+adjust height; **`Enter`** applies the crop, **`Esc`** cancels. Like every edit,
+it's non-destructive and replayable.
 
 The thumbnail/image update live. Nothing is destroyed: the **pristine original** is
 copied once into a hidden `.plakat_edits/` folder, and the visible file is

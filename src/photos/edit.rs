@@ -30,6 +30,10 @@ pub enum EditOp {
     Contrast(i32),
     /// Centered square (1:1) crop.
     CropSquare,
+    /// Centered crop to aspect ratio `w:h` (largest fitting rect).
+    CropAspect { w: u32, h: u32 },
+    /// Free-form crop: a rectangle in [0,1] fractions of the image (x, y, width, height).
+    Crop { x: f32, y: f32, w: f32, h: f32 },
 }
 
 impl EditOp {
@@ -44,46 +48,68 @@ impl EditOp {
             EditOp::Grayscale => img.grayscale(),
             EditOp::Brightness(v) => img.brighten(v),
             EditOp::Contrast(v) => img.adjust_contrast(v as f32),
-            EditOp::CropSquare => {
-                let (w, h) = (img.width(), img.height());
-                let s = w.min(h);
-                img.crop_imm((w - s) / 2, (h - s) / 2, s, s)
+            EditOp::CropSquare => centered_aspect(&img, 1, 1),
+            EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
+            EditOp::Crop { x, y, w, h } => {
+                let (iw, ih) = (img.width() as f32, img.height() as f32);
+                let cx = (x.clamp(0.0, 1.0) * iw) as u32;
+                let cy = (y.clamp(0.0, 1.0) * ih) as u32;
+                let cw = ((w.clamp(0.0, 1.0) * iw) as u32).max(1).min(img.width() - cx.min(img.width() - 1));
+                let ch = ((h.clamp(0.0, 1.0) * ih) as u32).max(1).min(img.height() - cy.min(img.height() - 1));
+                img.crop_imm(cx, cy, cw, ch)
             }
         }
     }
 
     /// A short human label for the status line / edit menu.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            EditOp::RotateCw => "rotate ⟳",
-            EditOp::RotateCcw => "rotate ⟲",
-            EditOp::Rotate180 => "rotate 180°",
-            EditOp::FlipH => "flip H",
-            EditOp::FlipV => "flip V",
-            EditOp::Grayscale => "grayscale",
-            EditOp::Brightness(_) => "brightness",
-            EditOp::Contrast(_) => "contrast",
-            EditOp::CropSquare => "crop 1:1",
+            EditOp::RotateCw => "rotate ⟳".into(),
+            EditOp::RotateCcw => "rotate ⟲".into(),
+            EditOp::Rotate180 => "rotate 180°".into(),
+            EditOp::FlipH => "flip H".into(),
+            EditOp::FlipV => "flip V".into(),
+            EditOp::Grayscale => "grayscale".into(),
+            EditOp::Brightness(_) => "brightness".into(),
+            EditOp::Contrast(_) => "contrast".into(),
+            EditOp::CropSquare => "crop 1:1".into(),
+            EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
+            EditOp::Crop { .. } => "crop (free-form)".into(),
         }
     }
 
     /// Serialise to an `album.hjson` edit-log entry.
     pub fn to_entry(self) -> EditEntry {
-        let (op, val): (&str, Option<i64>) = match self {
-            EditOp::RotateCw => ("rotate_cw", None),
-            EditOp::RotateCcw => ("rotate_ccw", None),
-            EditOp::Rotate180 => ("rotate_180", None),
-            EditOp::FlipH => ("flip_h", None),
-            EditOp::FlipV => ("flip_v", None),
-            EditOp::Grayscale => ("grayscale", None),
-            EditOp::Brightness(v) => ("brightness", Some(v as i64)),
-            EditOp::Contrast(v) => ("contrast", Some(v as i64)),
-            EditOp::CropSquare => ("crop_square", None),
-        };
         let mut params = std::collections::HashMap::new();
-        if let Some(v) = val {
-            params.insert("value".to_string(), serde_json::json!(v));
-        }
+        let op = match self {
+            EditOp::RotateCw => "rotate_cw",
+            EditOp::RotateCcw => "rotate_ccw",
+            EditOp::Rotate180 => "rotate_180",
+            EditOp::FlipH => "flip_h",
+            EditOp::FlipV => "flip_v",
+            EditOp::Grayscale => "grayscale",
+            EditOp::Brightness(v) => {
+                params.insert("value".into(), serde_json::json!(v));
+                "brightness"
+            }
+            EditOp::Contrast(v) => {
+                params.insert("value".into(), serde_json::json!(v));
+                "contrast"
+            }
+            EditOp::CropSquare => "crop_square",
+            EditOp::CropAspect { w, h } => {
+                params.insert("w".into(), serde_json::json!(w));
+                params.insert("h".into(), serde_json::json!(h));
+                "crop_aspect"
+            }
+            EditOp::Crop { x, y, w, h } => {
+                params.insert("x".into(), serde_json::json!(x));
+                params.insert("y".into(), serde_json::json!(y));
+                params.insert("w".into(), serde_json::json!(w));
+                params.insert("h".into(), serde_json::json!(h));
+                "crop"
+            }
+        };
         EditEntry { op: op.to_string(), params, ts: None }
     }
 
@@ -96,6 +122,8 @@ impl EditOp {
     /// Parse an `album.hjson` edit-log entry back into an op (unknown ops → `None`, skipped on replay).
     pub fn from_entry(e: &EditEntry) -> Option<EditOp> {
         let val = || e.params.get("value").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let u = |k: &str| e.params.get(k).and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+        let fr = |k: &str| e.params.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
         Some(match e.op.as_str() {
             "rotate_cw" => EditOp::RotateCw,
             "rotate_ccw" => EditOp::RotateCcw,
@@ -106,9 +134,27 @@ impl EditOp {
             "brightness" => EditOp::Brightness(val()),
             "contrast" => EditOp::Contrast(val()),
             "crop_square" => EditOp::CropSquare,
+            "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
+            "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
             _ => return None,
         })
     }
+}
+
+/// Largest centered rectangle of `img` with aspect ratio `aw:ah`.
+fn centered_aspect(img: &DynamicImage, aw: u32, ah: u32) -> DynamicImage {
+    let (iw, ih) = (img.width(), img.height());
+    if aw == 0 || ah == 0 {
+        return img.clone();
+    }
+    let target = aw as f64 / ah as f64;
+    let (cw, ch) = if (iw as f64 / ih as f64) > target {
+        (((ih as f64 * target).round() as u32).min(iw), ih) // too wide → cap width
+    } else {
+        (iw, ((iw as f64 / target).round() as u32).min(ih)) // too tall → cap height
+    };
+    let (cw, ch) = (cw.max(1), ch.max(1));
+    img.crop_imm((iw - cw) / 2, (ih - ch) / 2, cw, ch)
 }
 
 /// Replay `ops` over a pristine `original`, returning the fully-edited image.
@@ -188,12 +234,25 @@ mod tests {
         for op in [
             EditOp::RotateCw, EditOp::RotateCcw, EditOp::Rotate180, EditOp::FlipH, EditOp::FlipV,
             EditOp::Grayscale, EditOp::Brightness(15), EditOp::Contrast(-10), EditOp::CropSquare,
+            EditOp::CropAspect { w: 16, h: 9 },
+            EditOp::Crop { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
         // Unknown op → None (skipped, not a crash).
         let unknown = EditEntry { op: "warp_drive".into(), params: Default::default(), ts: None };
         assert_eq!(EditOp::from_entry(&unknown), None);
+    }
+
+    #[test]
+    fn aspect_and_freeform_crop_dimensions() {
+        // 16:9 centered crop of a 4:3 image → full width, reduced height.
+        let out = EditOp::CropAspect { w: 16, h: 9 }.apply(img(400, 300));
+        assert_eq!(out.width(), 400);
+        assert_eq!(out.height(), 225); // 400 * 9/16
+        // Free-form: middle 50%×40% of a 200×100 image.
+        let ff = EditOp::Crop { x: 0.25, y: 0.3, w: 0.5, h: 0.4 }.apply(img(200, 100));
+        assert_eq!((ff.width(), ff.height()), (100, 40));
     }
 
     #[test]

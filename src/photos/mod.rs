@@ -112,10 +112,11 @@ enum HelpKind {
     Commands,
 }
 
-/// A command in the Edit palette (a pixel op, or undo/redo/revert).
+/// A command in the Edit palette (a pixel op, undo/redo/revert, or the interactive free-form crop).
 #[derive(Clone, Copy)]
 enum EditCmd {
     Op(edit::EditOp),
+    FreeCrop,
     Undo,
     Redo,
     Revert,
@@ -131,7 +132,14 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("flip horizontal", EditCmd::Op(FlipH)),
         ("flip vertical", EditCmd::Op(FlipV)),
         ("grayscale / desaturate", EditCmd::Op(Grayscale)),
+        ("crop free-form (interactive)", EditCmd::FreeCrop),
         ("crop to square 1:1", EditCmd::Op(CropSquare)),
+        ("crop 4:5 (portrait)", EditCmd::Op(CropAspect { w: 4, h: 5 })),
+        ("crop 5:4", EditCmd::Op(CropAspect { w: 5, h: 4 })),
+        ("crop 3:2 (photo)", EditCmd::Op(CropAspect { w: 3, h: 2 })),
+        ("crop 2:3 (portrait)", EditCmd::Op(CropAspect { w: 2, h: 3 })),
+        ("crop 16:9 (wide)", EditCmd::Op(CropAspect { w: 16, h: 9 })),
+        ("crop 9:16 (tall)", EditCmd::Op(CropAspect { w: 9, h: 16 })),
         ("brightness up", EditCmd::Op(Brightness(15))),
         ("brightness down", EditCmd::Op(Brightness(-15))),
         ("contrast up", EditCmd::Op(Contrast(12))),
@@ -222,6 +230,9 @@ struct App {
     edit_query: String,
     edit_cursor: usize,
     edit_visible: usize, // rows the palette can show (set at draw; used for PageUp/Down)
+    // Interactive free-form crop (from the Edit palette): rect in [0,1] fractions (x, y, w, h).
+    crop_mode: bool,
+    crop_rect: (f32, f32, f32, f32),
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
     // Vision + AI menu (RFC §Phase 7).
@@ -324,6 +335,8 @@ impl App {
             edit_query: String::new(),
             edit_cursor: 0,
             edit_visible: 10,
+            crop_mode: false,
+            crop_rect: (0.1, 0.1, 0.8, 0.8),
             ml_menu: false,
             ai_menu: false,
             jobs: VecDeque::new(),
@@ -881,10 +894,74 @@ impl App {
     fn run_edit_cmd(&mut self, cmd: EditCmd) {
         match cmd {
             EditCmd::Op(op) => self.apply_edit(op),
+            EditCmd::FreeCrop => self.enter_crop(),
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
         }
+    }
+
+    /// Enter interactive free-form crop on the cursor image (a dimmed live preview in the image pane).
+    fn enter_crop(&mut self) {
+        if self.cur_source().is_none() {
+            self.status = "open an image first".into();
+            return;
+        }
+        self.edit_menu = false;
+        self.crop_mode = true;
+        self.crop_rect = (0.1, 0.1, 0.8, 0.8);
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_crop_status();
+    }
+
+    /// Nudge the crop rect (deltas in fractions), keeping it inside the image, then refresh preview.
+    fn adjust_crop(&mut self, dx: f32, dy: f32, dw: f32, dh: f32) {
+        let (mut x, mut y, mut w, mut h) = self.crop_rect;
+        w = (w + dw).clamp(0.05, 1.0);
+        h = (h + dh).clamp(0.05, 1.0);
+        x = (x + dx).clamp(0.0, 1.0 - w);
+        y = (y + dy).clamp(0.0, 1.0 - h);
+        self.crop_rect = (x, y, w, h);
+        self.load_view();
+        self.set_crop_status();
+    }
+
+    fn set_crop_status(&mut self) {
+        let (_, _, w, h) = self.crop_rect;
+        self.status = format!(
+            "crop {:.0}%×{:.0}% · arrows move · +/- size · [ ] width · , . height · Enter apply · Esc",
+            w * 100.0,
+            h * 100.0
+        );
+    }
+
+    /// Grow (`d`>0) or shrink the crop box, keeping it centered.
+    fn grow_crop(&mut self, d: f32) {
+        let (x, y, w, h) = self.crop_rect;
+        let (nw, nh) = ((w + d).clamp(0.05, 1.0), (h + d).clamp(0.05, 1.0));
+        self.crop_rect = (
+            (x - (nw - w) / 2.0).clamp(0.0, 1.0 - nw),
+            (y - (nh - h) / 2.0).clamp(0.0, 1.0 - nh),
+            nw,
+            nh,
+        );
+        self.load_view();
+        self.set_crop_status();
+    }
+
+    /// Commit the free-form crop as an edit; leave crop mode.
+    fn apply_crop(&mut self) {
+        let (x, y, w, h) = self.crop_rect;
+        self.crop_mode = false;
+        self.apply_edit(edit::EditOp::Crop { x, y, w, h });
+    }
+
+    /// Leave crop mode without cropping.
+    fn cancel_crop(&mut self) {
+        self.crop_mode = false;
+        self.load_view();
+        self.status = "crop cancelled".into();
     }
 
     /// Append a pixel edit to the cursor image: back up the pristine original (once), record the op
@@ -1605,7 +1682,13 @@ impl App {
             .as_ref()
             .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
-                let img = if zoom > 1.01 { crop_center(&img, zoom) } else { img };
+                let img = if self.crop_mode {
+                    crop_preview(&img, self.crop_rect) // full image, dimmed outside the crop rect
+                } else if zoom > 1.01 {
+                    crop_center(&img, zoom)
+                } else {
+                    img
+                };
                 self.picker.new_resize_protocol(img)
             });
         self.view_exif = path.as_ref().and_then(|p| exif::read_exif(p).ok());
@@ -2091,6 +2174,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_filter_key(app, k.code);
         return false;
     }
+    if app.crop_mode {
+        handle_crop_key(app, k.code);
+        return false;
+    }
     if app.edit_menu {
         handle_edit_key(app, k.code);
         return false;
@@ -2119,6 +2206,26 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
 
 /// T1 pixel-edit menu (Phase 3): a modal key layer over the cursor image. Each op applies and keeps
 /// the menu open (chain edits); `u` undoes, `0` reverts, Esc/`E` closes.
+/// Interactive free-form crop: adjust the crop rectangle over the dimmed preview; Enter applies.
+fn handle_crop_key(app: &mut App, code: KeyCode) {
+    let s = 0.02;
+    match code {
+        KeyCode::Esc => app.cancel_crop(),
+        KeyCode::Enter => app.apply_crop(),
+        KeyCode::Left => app.adjust_crop(-s, 0.0, 0.0, 0.0),
+        KeyCode::Right => app.adjust_crop(s, 0.0, 0.0, 0.0),
+        KeyCode::Up => app.adjust_crop(0.0, -s, 0.0, 0.0),
+        KeyCode::Down => app.adjust_crop(0.0, s, 0.0, 0.0),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.grow_crop(0.04),
+        KeyCode::Char('-') | KeyCode::Char('_') => app.grow_crop(-0.04),
+        KeyCode::Char('[') => app.adjust_crop(0.0, 0.0, -s, 0.0),
+        KeyCode::Char(']') => app.adjust_crop(0.0, 0.0, s, 0.0),
+        KeyCode::Char(',') => app.adjust_crop(0.0, 0.0, 0.0, -s),
+        KeyCode::Char('.') => app.adjust_crop(0.0, 0.0, 0.0, s),
+        _ => {}
+    }
+}
+
 /// Edit command palette (`E`): a searchable, scrollable list. Type to filter; ↑/↓ · PgUp/PgDn ·
 /// Home/End to navigate; Enter runs the selected command (palette stays open to chain edits); Esc
 /// closes. Keys still fall through to running commands — but selection is by search + Enter now.
@@ -2835,6 +2942,23 @@ fn date_bucket(_path: &Path, rec: Option<&hjson::ImageRecord>) -> String {
         .and_then(|e| e.date_taken.as_ref())
         .and_then(|d| (d.len() >= 7).then(|| d[..7].replace(':', "-")))
         .unwrap_or_else(|| "undated".into())
+}
+
+/// Free-form crop preview: the full image with everything OUTSIDE the crop `rect` (x,y,w,h fractions)
+/// dimmed, so the kept region stands out. Baked into the pixels (no graphics-protocol overlay needed).
+fn crop_preview(img: &image::DynamicImage, rect: (f32, f32, f32, f32)) -> image::DynamicImage {
+    let mut rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+    let (x0, y0) = (rect.0 * w, rect.1 * h);
+    let (x1, y1) = ((rect.0 + rect.2) * w, (rect.1 + rect.3) * h);
+    for (px, py, p) in rgb.enumerate_pixels_mut() {
+        let (fx, fy) = (px as f32, py as f32);
+        let inside = fx >= x0 && fx < x1 && fy >= y0 && fy < y1;
+        if !inside {
+            p.0 = [p.0[0] / 3, p.0[1] / 3, p.0[2] / 3];
+        }
+    }
+    image::DynamicImage::ImageRgb8(rgb)
 }
 
 /// Centre-crop `img` to `1/zoom` of its size (so fitting the crop to a pane magnifies by `zoom`).
@@ -3573,7 +3697,7 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(format!("notes    {no}")));
             }
             if !r.edits.is_empty() {
-                let ops: Vec<&str> =
+                let ops: Vec<String> =
                     r.edits.iter().filter_map(edit::EditOp::from_entry).map(|o| o.label()).collect();
                 lines.push(Line::from(Span::styled(
                     format!("edits    {} ({})", r.edits.len(), ops.join(", ")),
