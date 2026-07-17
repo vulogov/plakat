@@ -98,6 +98,18 @@ pub enum EditOp {
     Solarize(i32),
     /// Threshold to black & white at luma `level` (0..255).
     Threshold(i32),
+    /// Oil-paint / oilify filter (per-pixel dominant-intensity bucket over a `radius`).
+    OilPaint(i32),
+    /// Pencil-sketch (grayscale colour-dodge of a blurred inverse).
+    PencilSketch,
+    /// Cartoon / comic (colour quantise + dark ink edges).
+    Cartoon,
+    /// Watercolour (edge-preserving smoothing + reduced palette + soft edges).
+    Watercolor,
+    /// Emboss (directional gradient, grey relief).
+    Emboss,
+    /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
+    Pixelate(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -155,6 +167,12 @@ impl EditOp {
             EditOp::Posterize(v) => adjust::posterize(&img, v),
             EditOp::Solarize(v) => adjust::solarize(&img, v),
             EditOp::Threshold(v) => adjust::threshold(&img, v),
+            EditOp::OilPaint(r) => adjust::oil_paint(&img, r),
+            EditOp::PencilSketch => adjust::pencil_sketch(&img),
+            EditOp::Cartoon => adjust::cartoon(&img),
+            EditOp::Watercolor => adjust::watercolor(&img),
+            EditOp::Emboss => adjust::emboss(&img),
+            EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -187,7 +205,7 @@ impl EditOp {
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
-            | EditOp::Solarize(v) => v,
+            | EditOp::Solarize(v) | EditOp::Pixelate(v) => v,
             EditOp::GradND { strength, .. } => strength,
             _ => return None,
         })
@@ -221,6 +239,7 @@ impl EditOp {
             EditOp::Clahe(_) => EditOp::Clahe(v),
             EditOp::Posterize(_) => EditOp::Posterize(v),
             EditOp::Solarize(_) => EditOp::Solarize(v),
+            EditOp::Pixelate(_) => EditOp::Pixelate(v),
             EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
             other => other,
         }
@@ -232,7 +251,9 @@ impl EditOp {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
             EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
-            | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) => (0, 100, 5),
+            | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_) => {
+                (0, 100, 5)
+            }
             _ => (-100, 100, 5),
         }
     }
@@ -285,6 +306,12 @@ impl EditOp {
             EditOp::Posterize(_) => "posterize".into(),
             EditOp::Solarize(_) => "solarize".into(),
             EditOp::Threshold(_) => "threshold".into(),
+            EditOp::OilPaint(_) => "oil paint".into(),
+            EditOp::PencilSketch => "pencil sketch".into(),
+            EditOp::Cartoon => "cartoon".into(),
+            EditOp::Watercolor => "watercolour".into(),
+            EditOp::Emboss => "emboss".into(),
+            EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -362,6 +389,12 @@ impl EditOp {
             EditOp::Posterize(v) => val_op(&mut params, v, "posterize"),
             EditOp::Solarize(v) => val_op(&mut params, v, "solarize"),
             EditOp::Threshold(v) => val_op(&mut params, v, "threshold"),
+            EditOp::OilPaint(v) => val_op(&mut params, v, "oil_paint"),
+            EditOp::PencilSketch => "pencil_sketch",
+            EditOp::Cartoon => "cartoon",
+            EditOp::Watercolor => "watercolor",
+            EditOp::Emboss => "emboss",
+            EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -442,6 +475,12 @@ impl EditOp {
             "posterize" => EditOp::Posterize(50),
             "solarize" => EditOp::Solarize(50),
             "threshold" | "black_white" => EditOp::Threshold(128),
+            "oil_paint" | "oilify" | "oil" => EditOp::OilPaint(3),
+            "pencil_sketch" | "sketch" | "pencil" => EditOp::PencilSketch,
+            "cartoon" | "comic" => EditOp::Cartoon,
+            "watercolor" | "watercolour" => EditOp::Watercolor,
+            "emboss" => EditOp::Emboss,
+            "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
             "pop_greens" | "pop_green" | "boost_greens" => EditOp::SelectiveColor { hue: 120, sat: 45 },
@@ -536,6 +575,12 @@ impl EditOp {
             "posterize" => EditOp::Posterize(val()),
             "solarize" => EditOp::Solarize(val()),
             "threshold" => EditOp::Threshold(val()),
+            "oil_paint" => EditOp::OilPaint(val()),
+            "pencil_sketch" => EditOp::PencilSketch,
+            "cartoon" => EditOp::Cartoon,
+            "watercolor" => EditOp::Watercolor,
+            "emboss" => EditOp::Emboss,
+            "pixelate" => EditOp::Pixelate(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -1026,6 +1071,174 @@ mod adjust {
         })
     }
 
+    /// Oil-paint / oilify: for each pixel, over a `radius` window, pick the most common intensity
+    /// bucket and paint that bucket's average colour.
+    pub fn oil_paint(img: &DynamicImage, radius: i32) -> DynamicImage {
+        let r = radius.clamp(1, 6);
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as i32, rgb.height() as i32);
+        const NB: usize = 20;
+        let mut out = RgbImage::new(w as u32, h as u32);
+        for y in 0..h {
+            for x in 0..w {
+                let mut cnt = [0u32; NB];
+                let mut sum = [[0u32; 3]; NB];
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let sx = (x + dx).clamp(0, w - 1) as u32;
+                        let sy = (y + dy).clamp(0, h - 1) as u32;
+                        let p = rgb.get_pixel(sx, sy).0;
+                        let l = luma(p[0] as f32, p[1] as f32, p[2] as f32) as usize;
+                        let b = (l * NB / 256).min(NB - 1);
+                        cnt[b] += 1;
+                        for c in 0..3 {
+                            sum[b][c] += p[c] as u32;
+                        }
+                    }
+                }
+                let best = (0..NB).max_by_key(|&b| cnt[b]).unwrap_or(0);
+                let n = cnt[best].max(1);
+                out.put_pixel(
+                    x as u32,
+                    y as u32,
+                    Rgb([(sum[best][0] / n) as u8, (sum[best][1] / n) as u8, (sum[best][2] / n) as u8]),
+                );
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Pencil sketch: colour-dodge the grayscale by a blurred inverse of itself.
+    pub fn pencil_sketch(img: &DynamicImage) -> DynamicImage {
+        let g = img.to_luma8();
+        let mut inv = g.clone();
+        for p in inv.pixels_mut() {
+            p.0[0] = 255 - p.0[0];
+        }
+        let bl = image::imageops::blur(&inv, 8.0);
+        let (w, h) = (g.width(), g.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let a = g.get_pixel(x, y).0[0] as f32;
+                let b = bl.get_pixel(x, y).0[0] as f32;
+                let v = if b >= 255.0 { 255.0 } else { (a * 255.0 / (255.0 - b)).min(255.0) };
+                let v = v as u8;
+                out.put_pixel(x, y, Rgb([v, v, v]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Sobel edge magnitude (0..1) over the luma of `rgb`.
+    fn edge_mag(rgb: &RgbImage, x: u32, y: u32) -> f32 {
+        let (w, h) = (rgb.width() as i32, rgb.height() as i32);
+        let l = |xx: i32, yy: i32| {
+            let p = rgb.get_pixel(xx.clamp(0, w - 1) as u32, yy.clamp(0, h - 1) as u32).0;
+            luma(p[0] as f32, p[1] as f32, p[2] as f32)
+        };
+        let (x, y) = (x as i32, y as i32);
+        let gx = l(x + 1, y - 1) + 2.0 * l(x + 1, y) + l(x + 1, y + 1)
+            - l(x - 1, y - 1) - 2.0 * l(x - 1, y) - l(x - 1, y + 1);
+        let gy = l(x - 1, y + 1) + 2.0 * l(x, y + 1) + l(x + 1, y + 1)
+            - l(x - 1, y - 1) - 2.0 * l(x, y - 1) - l(x + 1, y - 1);
+        ((gx * gx + gy * gy).sqrt() / 255.0).min(1.0)
+    }
+
+    /// Cartoon / comic: quantise the (blurred) colours and lay dark ink on the strong edges.
+    pub fn cartoon(img: &DynamicImage) -> DynamicImage {
+        let sm = image::imageops::blur(&img.to_rgb8(), 1.5);
+        let (w, h) = (sm.width(), sm.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let p = sm.get_pixel(x, y).0;
+                // Posterize each channel to 6 levels.
+                let q = |c: u8| ((c as f32 / 255.0 * 5.0).round() / 5.0 * 255.0) as u8;
+                let edge = edge_mag(&sm, x, y);
+                let px = if edge > 0.28 { [20, 20, 20] } else { [q(p[0]), q(p[1]), q(p[2])] };
+                out.put_pixel(x, y, Rgb(px));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Watercolour: edge-preserving smoothing (median blur) + reduced palette + soft dark edges.
+    pub fn watercolor(img: &DynamicImage) -> DynamicImage {
+        let base = despeckle(img, 100); // median smoothing
+        let sm = image::imageops::blur(&base.to_rgb8(), 1.0);
+        let (w, h) = (sm.width(), sm.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let p = sm.get_pixel(x, y).0;
+                let q = |c: u8| (c as f32 / 255.0 * 9.0).round() / 9.0 * 255.0;
+                let e = edge_mag(&sm, x, y);
+                let dark = 1.0 - 0.5 * (e - 0.2).clamp(0.0, 1.0); // gently darken strong edges
+                out.put_pixel(
+                    x,
+                    y,
+                    Rgb([enc(q(p[0]) / 255.0 * dark), enc(q(p[1]) / 255.0 * dark), enc(q(p[2]) / 255.0 * dark)]),
+                );
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Emboss: a directional luma gradient rendered as grey relief.
+    pub fn emboss(img: &DynamicImage) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (iw, ih) = (w as i32, h as i32);
+        let l = |xx: i32, yy: i32| {
+            let p = rgb.get_pixel(xx.clamp(0, iw - 1) as u32, yy.clamp(0, ih - 1) as u32).0;
+            luma(p[0] as f32, p[1] as f32, p[2] as f32)
+        };
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let (xi, yi) = (x as i32, y as i32);
+                let v = (128.0 + (l(xi - 1, yi - 1) - l(xi + 1, yi + 1))).clamp(0.0, 255.0) as u8;
+                out.put_pixel(x, y, Rgb([v, v, v]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Pixelate / mosaic: average each block. `strength` 0 = none … 100 = large blocks.
+    pub fn pixelate(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let block = (1 + strength.clamp(0, 100) * 40 / 100) as u32;
+        if block <= 1 {
+            return img.clone();
+        }
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        for by in (0..h).step_by(block as usize) {
+            for bx in (0..w).step_by(block as usize) {
+                let (x1, y1) = ((bx + block).min(w), (by + block).min(h));
+                let mut sum = [0u64; 3];
+                let mut n = 0u64;
+                for y in by..y1 {
+                    for x in bx..x1 {
+                        let p = rgb.get_pixel(x, y).0;
+                        for c in 0..3 {
+                            sum[c] += p[c] as u64;
+                        }
+                        n += 1;
+                    }
+                }
+                let n = n.max(1);
+                let avg = [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8];
+                for y in by..y1 {
+                    for x in bx..x1 {
+                        rgb.put_pixel(x, y, Rgb(avg));
+                    }
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -1275,6 +1488,8 @@ mod tests {
             EditOp::Curve { pts: [0, 50, 128, 205, 255] }, EditOp::Clahe(60),
             EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
+            EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon,
+            EditOp::Watercolor, EditOp::Emboss, EditOp::Pixelate(40),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1414,6 +1629,25 @@ mod tests {
         buf.put_pixel(4, 4, Rgb([255, 255, 255])); // a single speckle in a flat field
         let out = EditOp::Despeckle(100).apply(DynamicImage::ImageRgb8(buf)).to_rgb8();
         assert_eq!(out.get_pixel(4, 4).0, [100, 100, 100], "median wipes the lone speckle");
+    }
+
+    #[test]
+    fn stylize_filters_run_and_change_pixels() {
+        let src = DynamicImage::ImageRgb8(ImageBuffer::from_fn(24, 24, |x, y| {
+            Rgb([(x * 10) as u8, (y * 10) as u8, ((x + y) * 5) as u8])
+        }));
+        let base = src.to_rgb8();
+        for op in [
+            EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon, EditOp::Watercolor,
+            EditOp::Emboss, EditOp::Pixelate(50),
+        ] {
+            let out = op.apply(src.clone()).to_rgb8();
+            assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());
+            assert_ne!(out, base, "{} should change pixels", op.label());
+        }
+        // Pixelate at strength 0 is identity; a block averages to a flat cell.
+        assert_eq!(EditOp::Pixelate(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch));
     }
 
     #[test]

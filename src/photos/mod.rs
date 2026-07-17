@@ -164,6 +164,7 @@ enum EditCmd {
     Levels,     // interactive black/white/gamma editor
     Curve,      // interactive tone-curve editor
     History,    // step through / trim the edit stack
+    Look(usize), // apply a built-in look preset (index into look_presets)
     CopyEdits,   // copy this image's edit stack
     PasteEdits,  // paste the copied edits onto the targets
     SavePreset,  // save this image's edits as a named preset
@@ -180,7 +181,7 @@ enum EditCmd {
 /// The Edit palette's command list: `(searchable label, action)`.
 /// The category keys for the `Ctrl-B` edit chords (the first key after the leader, in image view).
 /// Each avoids the global leader keys (h/H/t/v/p/l/L).
-fn chord_categories() -> [(char, &'static str); 7] {
+fn chord_categories() -> [(char, &'static str); 8] {
     [
         ('g', "geometry"),
         ('c', "crop"),
@@ -189,6 +190,22 @@ fn chord_categories() -> [(char, &'static str); 7] {
         ('x', "effects / detail"),
         ('e', "edit stack"),
         ('m', "manage"),
+        ('s', "stylize (looks & filters)"),
+    ]
+}
+
+/// Built-in "look" presets — a named, fixed sequence of edits applied in one keystroke.
+fn look_presets() -> Vec<(&'static str, &'static str, Vec<edit::EditOp>)> {
+    use edit::EditOp::*;
+    vec![
+        ("look: vintage / faded film", "sv", vec![
+            Curve { pts: [24, 72, 128, 188, 232] }, Warmth(15), Saturation(-15), Vignette(22), Grain(14),
+        ]),
+        ("look: lomo", "sl", vec![Saturation(32), Contrast(16), Vignette(45), Warmth(10)]),
+        ("look: cross-process", "sc", vec![SplitTone(32), Saturation(22), Contrast(14), HueRotate(-8)]),
+        ("look: noir (b&w)", "sn", vec![Grayscale, Contrast(26), Vignette(34)]),
+        ("look: pop-art", "sp", vec![Posterize(62), Saturation(55), Contrast(20)]),
+        ("look: golden hour", "sd", vec![Warmth(30), Brilliance(16), Saturation(12), Vignette(14)]),
     ]
 }
 
@@ -196,7 +213,7 @@ fn chord_categories() -> [(char, &'static str); 7] {
 /// (image view); it's the single source of truth for the palette, the chord dispatch, and KEYMAP.md.
 fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
     use edit::EditOp::*;
-    vec![
+    let mut v = vec![
         // Geometry (g)
         ("rotate clockwise ⟳", "gr", EditCmd::Op(RotateCw)),
         ("rotate counter-clockwise ⟲", "gl", EditCmd::Op(RotateCcw)),
@@ -275,7 +292,19 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
-    ]
+        // Stylize — algorithmic filters (s)
+        ("oil paint", "so", EditCmd::Op(OilPaint(3))),
+        ("pencil sketch", "sk", EditCmd::Op(PencilSketch)),
+        ("cartoon / comic", "st", EditCmd::Op(Cartoon)),
+        ("watercolour", "sw", EditCmd::Op(Watercolor)),
+        ("emboss", "se", EditCmd::Op(Emboss)),
+        ("pixelate / mosaic…", "sx", EditCmd::Adjust(Pixelate(0))),
+    ];
+    // Stylize (s): built-in look presets appended after the filters.
+    for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
+        v.push((label, chord, EditCmd::Look(i)));
+    }
+    v
 }
 
 /// Look up an edit command by its 2-char chord.
@@ -1435,6 +1464,7 @@ impl App {
             EditCmd::Levels => self.enter_levels(),
             EditCmd::Curve => self.enter_curve(),
             EditCmd::History => self.enter_history(),
+            EditCmd::Look(i) => self.apply_look(i),
             EditCmd::CopyEdits => self.copy_edits(),
             EditCmd::PasteEdits => self.paste_edits(),
             EditCmd::SavePreset => {
@@ -2825,6 +2855,17 @@ impl App {
             .and_then(|p| self.record(p))
             .map(|r| r.edits.clone())
             .unwrap_or_default()
+    }
+
+    /// Apply a built-in look preset (a fixed edit sequence) to the target image(s).
+    fn apply_look(&mut self, i: usize) {
+        let Some((label, _, ops)) = look_presets().into_iter().nth(i) else { return };
+        let entries: Vec<hjson::EditEntry> = ops.iter().map(|o| o.to_entry()).collect();
+        self.apply_edit_ops_to_targets(&entries, "applied");
+        // Overwrite the generic status with the look name.
+        if !self.status.starts_with("no ") {
+            self.status = format!("applied {label}");
+        }
     }
 
     /// Copy the cursor image's edit stack to the in-session clipboard.

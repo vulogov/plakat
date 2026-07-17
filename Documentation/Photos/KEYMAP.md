@@ -4,6 +4,9 @@ The full chord reference for the terminal photo manager. The star of this file i
 **`Ctrl-B` edit-chord map** (image view), which mirrors the Edit palette (`E`) so every edit
 has a fast keyboard path.
 
+Categories after `Ctrl-B` (image view): `g` geometry · `c` crop · `a` adjust · `k` colour ·
+`x` effects · `e` edit-stack · `m` manage · **`s` stylize** (looks & filters).
+
 ## The `Ctrl-B` leader
 
 `Ctrl-B` (tmux-style) starts a chord. The next key(s) run a command:
@@ -117,6 +120,14 @@ command's chord in its right column.
 | `Ctrl-B m m` | strip metadata (EXIF / GPS) |
 | `Ctrl-B m g` | redact GPS only (keep other EXIF) |
 | `Ctrl-B m c` | convert format / resize (jpg·png·webp) |
+
+### `s` — stylize (looks & filters)
+| Chord | Command |
+|-------|---------|
+| `Ctrl-B s o` | oil paint · `s k` pencil sketch · `s t` cartoon |
+| `Ctrl-B s w` | watercolour · `s e` emboss · `s x` pixelate… |
+| `Ctrl-B s v` | look: vintage · `s l` lomo · `s c` cross-process |
+| `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour |
 
 The scalar adjustments (`…`) open a live **slider**: `←`/`→` = **fine ±1**, `[`/`]` (or
 `-`/`+`, PgUp/PgDn) = the **coarse jump**, `Enter` apply, `Esc` cancel. Curves, levels,
