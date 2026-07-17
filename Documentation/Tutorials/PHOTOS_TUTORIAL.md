@@ -365,6 +365,10 @@ available** of each image (the file, its pristine backup, or the biggest variant
 all your edits, layers, and exports live in that sub-album; the source album stays clean. In
 the `:` pane it's `take photo` (bare `take` is the *selector* keyword).
 
+**Duplicate (`d`).** For a quick alternate version *in the same album*, select image(s) and
+press **`d`** — each gets a `<stem>_copy` next to the original (curation carried, edit history
+reset), so you can try a different edit without a whole sub-album. `:` verb: `duplicate`.
+
 **Put back (`p`).** When you're happy, open the workbench sub-album, select the keepers, and
 press **`p`** — plakat copies those finished images **up to the parent album** (deduped, so
 your originals aren't clobbered; curation carried). Then you can safely **delete the whole

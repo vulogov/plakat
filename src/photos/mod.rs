@@ -164,6 +164,7 @@ enum EditCmd {
     Levels,     // interactive black/white/gamma editor
     Curve,      // interactive tone-curve editor
     History,    // step through / trim the edit stack
+    Duplicate,  // duplicate the target image(s) within the album
     Look(usize), // apply a built-in look preset (index into look_presets)
     CopyEdits,   // copy this image's edit stack
     PasteEdits,  // paste the copied edits onto the targets
@@ -281,6 +282,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         // Edit stack (e)
         ("layers — overlay / compose images", "ey", EditCmd::Layers),
         ("edit history (step / trim)…", "eh", EditCmd::History),
+        ("duplicate image in album", "ed", EditCmd::Duplicate),
         ("copy edits (from this image)", "ec", EditCmd::CopyEdits),
         ("paste edits (to selection / cursor)", "ev", EditCmd::PasteEdits),
         ("save edits as preset…", "es", EditCmd::SavePreset),
@@ -1486,6 +1488,7 @@ impl App {
             EditCmd::Levels => self.enter_levels(),
             EditCmd::Curve => self.enter_curve(),
             EditCmd::History => self.enter_history(),
+            EditCmd::Duplicate => self.duplicate_in_album(),
             EditCmd::Look(i) => self.apply_look(i),
             EditCmd::CopyEdits => self.copy_edits(),
             EditCmd::PasteEdits => self.paste_edits(),
@@ -2415,6 +2418,7 @@ impl App {
             Action::RedactGps => self.redact_gps_targets(),
             Action::Take => self.take_photo(),
             Action::PutBack => self.promote_to_parent(),
+            Action::Duplicate => self.duplicate_in_album(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -2716,6 +2720,58 @@ impl App {
         let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
         self.status =
             format!("took {ok} photo(s) → sub-album '{subname}'{tail} — edit there, source stays clean");
+    }
+
+    /// Duplicate the target image(s) **within their album** (a `<stem>_copy` next to the original),
+    /// so you can try an alternate edit without touching the original. Curation is carried; the edit
+    /// baseline starts clean. Multi-select aware.
+    fn duplicate_in_album(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "select image(s) to duplicate".into();
+            return;
+        }
+        let (mut ok, mut err) = (0u32, 0u32);
+        let mut last = None;
+        for (dir, path) in &files {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
+            let mut name = format!("{stem}_copy.{ext}");
+            let mut i = 2;
+            while dir.join(&name).exists() {
+                name = format!("{stem}_copy-{i}.{ext}");
+                i += 1;
+            }
+            if std::fs::copy(path, dir.join(&name)).is_err() {
+                err += 1;
+                continue;
+            }
+            let sc = path.with_extension("json");
+            if sc.exists() {
+                let _ = std::fs::copy(&sc, dir.join(&name).with_extension("json"));
+            }
+            let rec = self.record(path).map(|r| {
+                let mut r = r.clone();
+                r.edits.clear();
+                r.variants.clear();
+                r.layers.clear();
+                r
+            });
+            let key = name.clone();
+            self.edit_album_meta_at(dir, |m| {
+                if let Some(r) = rec {
+                    m.images.insert(key, r);
+                }
+            });
+            last = Some(name);
+            ok += 1;
+        }
+        self.rescan();
+        if let Some(n) = &last {
+            self.select_by_name(n);
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("duplicated {ok} image(s){tail}");
     }
 
     /// "Put back": copy the selected finished image(s) from a workbench sub-album up to its **parent
@@ -4614,6 +4670,8 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('P') => app.take_photo(),
         // Put back: promote the selected finished image(s) up to the parent album.
         KeyCode::Char('p') => app.promote_to_parent(),
+        // Duplicate the selected image(s) within the album (a <stem>_copy).
+        KeyCode::Char('d') if !ctrl => app.duplicate_in_album(),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
         }
@@ -5700,6 +5758,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("E M A", "edit · ML-edit · AI-vision menus"));
             l.push(kv("# X r", "duplicates · export · batch-rename"));
             l.push(kv("P / p", "take → working sub-album  ·  put back → parent album"));
+            l.push(kv("d", "duplicate image(s) in the album"));
             l.push(kv("S @ F", "stack · timeline · save smart album"));
             l.push(kv("? V", "search metadata · visual (CLIP)"));
         }
