@@ -118,16 +118,21 @@ pub fn thumb_cache_dir() -> PathBuf {
 /// Cache path for a thumbnail: `sha256(abs_path + mtime)` → `<hex>.png`.
 pub fn thumb_cache_path(path: &Path, size: u32) -> PathBuf {
     use sha2::{Digest, Sha256};
-    let mtime = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
+    let meta = std::fs::metadata(path).ok();
+    // Whole-second mtime can collide on a quick edit; the file byte-size disambiguates (a crop /
+    // most edits change the encoded size), so an in-place edit always invalidates the cached thumb.
+    let mtime = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
     hasher.update(size.to_le_bytes());
     hasher.update(mtime.to_le_bytes());
+    hasher.update(len.to_le_bytes());
     let hex = format!("{:x}", hasher.finalize());
     thumb_cache_dir().join(format!("{hex}.png"))
 }
