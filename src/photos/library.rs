@@ -93,17 +93,23 @@ pub fn classify(dir: &Path) -> NodeKind {
 /// images are loaded lazily by the grid pane, not here). Symlinks are not followed. Directories
 /// beginning with `.` are skipped.
 pub fn walk(root: &Path) -> std::io::Result<LibraryNode> {
-    let name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("/")
-        .to_string();
+    let basename = root.file_name().and_then(|n| n.to_str()).unwrap_or("/").to_string();
 
     let images = count_images(root);
     let subdirs = has_subdirs(root);
     // Album = holds images. Folder = only sub-dirs (or empty). A dir with BOTH images and subdirs
     // is treated as an Album (its own images shown; subdirs still walked as children).
     let kind = if images > 0 { NodeKind::Album } else { NodeKind::Folder };
+
+    // Display name comes from the HJSON metadata `name` (album.hjson for albums, folder.hjson for
+    // folders), falling back to the directory basename. This is a label only — the directory is
+    // never renamed by setting it.
+    let meta_name = if kind == NodeKind::Album {
+        super::hjson::read_album(root).ok().and_then(|m| m.name)
+    } else {
+        super::hjson::read_folder(root).ok().and_then(|m| m.name)
+    };
+    let name = meta_name.filter(|n| !n.trim().is_empty()).unwrap_or(basename);
 
     let mut children = Vec::new();
     if subdirs {
@@ -153,6 +159,29 @@ mod tests {
         assert_eq!(trip.kind, NodeKind::Album);
         assert_eq!(trip.image_count, 2);
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn display_name_prefers_album_metadata_then_falls_back() {
+        let tmp = std::env::temp_dir().join(format!("plakat-lib-name-{}", std::process::id()));
+        let named = tmp.join("2024-07-14");
+        let plain = tmp.join("misc");
+        std::fs::create_dir_all(&named).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(named.join("IMG_1.jpg"), b"x").unwrap();
+        std::fs::write(plain.join("IMG_2.jpg"), b"x").unwrap();
+        // Give one album a metadata display name; leave the other without.
+        super::super::hjson::write_album(
+            &named,
+            &super::super::hjson::AlbumMeta { name: Some("Summer Trip".into()), ..Default::default() },
+        )
+        .unwrap();
+
+        let tree = walk(&tmp).unwrap();
+        assert!(tree.children.iter().any(|c| c.name == "Summer Trip"), "metadata name shown");
+        assert!(tree.children.iter().any(|c| c.name == "misc"), "fallback to dir basename");
+        assert!(!tree.children.iter().any(|c| c.name == "2024-07-14"), "dir name overridden by metadata");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

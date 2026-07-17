@@ -106,6 +106,9 @@ enum PendingCmd {
     ExportAlbum { path: PathBuf, recursive: bool },
     /// Export + convert an album/folder's images (tree `E`) to the entered `FMT DIR [MAXPX]`.
     ExportConvertAlbum { path: PathBuf, recursive: bool },
+    /// Materialize a smart album (saved search) into a portable album of file **copies** at the
+    /// entered directory — no symlinks; curation travels in a fresh `album.hjson`.
+    MaterializeSmart { name: String, query: String },
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -736,6 +739,80 @@ impl App {
         }
         let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
         self.status = format!("exported+converted {ok} → {} ({fmt}){tail}", dest.display());
+    }
+
+    /// Materialize a smart album (saved search) into a **portable** album at `dest`: copy every
+    /// matching image (real file copies — no symlinks/hardlinks) and write a fresh `album.hjson`
+    /// carrying each image's curation, so the result is self-contained and movable. Filenames are
+    /// de-duplicated across source albums; the replay-only fields (edits/variants/layers, which point
+    /// at files that aren't copied) are cleared so each copy is a clean baseline.
+    fn materialize_smart(&mut self, name: &str, query: &str, dest: &str) {
+        let items: Vec<_> = self
+            .collect_library()
+            .into_iter()
+            .filter(|(p, _, rec)| {
+                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                matches_filter(fname, rec.as_ref(), query)
+            })
+            .collect();
+        if items.is_empty() {
+            self.status = "no matches to materialize".into();
+            return;
+        }
+        let d = expand_tilde(dest);
+        if let Err(e) = std::fs::create_dir_all(&d) {
+            self.status = format!("mkdir failed: {e}");
+            return;
+        }
+        let mut meta = hjson::AlbumMeta {
+            name: Some(name.to_string()),
+            description: Some(format!("Portable smart album — query: {query}")),
+            ..Default::default()
+        };
+        let mut used: HashSet<String> = HashSet::new();
+        let (mut ok, mut err) = (0u32, 0u32);
+        for (src, _dir, rec) in &items {
+            let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let make = |s: &str| if ext.is_empty() { s.to_string() } else { format!("{s}.{ext}") };
+            let mut fname = make(stem);
+            let mut i = 2;
+            while used.contains(&fname) || d.join(&fname).exists() {
+                fname = make(&format!("{stem}-{i}"));
+                i += 1;
+            }
+            if std::fs::copy(src, d.join(&fname)).is_err() {
+                err += 1;
+                continue;
+            }
+            used.insert(fname.clone());
+            let dstem = std::path::Path::new(&fname).file_stem().and_then(|s| s.to_str()).unwrap_or(stem);
+            // Carry the generation sidecar (<stem>.json) alongside, renamed to the copy's stem.
+            let sidecar = src.with_extension("json");
+            if sidecar.exists() {
+                let _ = std::fs::copy(&sidecar, d.join(format!("{dstem}.json")));
+            }
+            if let Some(r) = rec {
+                let mut r = r.clone();
+                r.edits.clear(); // the copy already reflects them
+                r.variants.clear(); // derivative files aren't copied
+                r.layers.clear();
+                meta.images.insert(fname, r);
+            }
+            ok += 1;
+        }
+        if let Err(e) = hjson::write_album(&d, &meta) {
+            self.status = format!("write album.hjson failed: {e}");
+            return;
+        }
+        // If the destination lands inside the library, surface it in the tree.
+        if d.starts_with(&self.root_dir) {
+            if let Ok(root) = library::walk(&self.root_dir) {
+                self.root = root;
+            }
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("materialized ★ {name} → {} · {ok} copies (no links){tail}", d.display());
     }
 
     /// Open the read-only album/folder info panel for the tree cursor.
@@ -2423,6 +2500,10 @@ impl App {
                             }
                         }
                     });
+                    // Name changes affect the tree/grid label → re-walk so it shows immediately.
+                    if let Ok(root) = library::walk(&self.root_dir) {
+                        self.root = root;
+                    }
                     self.status = "album metadata updated".into();
                 }
                 Some(PendingCmd::ExportAlbum { path, recursive }) if !arg.is_empty() => {
@@ -2430,6 +2511,10 @@ impl App {
                 }
                 Some(PendingCmd::ExportConvertAlbum { path, recursive }) if !arg.is_empty() => {
                     self.export_convert_files(&path, recursive, &arg);
+                }
+                Some(PendingCmd::MaterializeSmart { name, query }) if !arg.is_empty() => {
+                    self.materialize_smart(&name, &query, &arg);
+                    fs_changed = true;
                 }
                 Some(PendingCmd::Straighten) if !arg.is_empty() => match arg.trim().parse::<f32>() {
                     Ok(deg) => {
@@ -3530,8 +3615,17 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('I') => app.open_info_editor(),
         KeyCode::Char('r') => app.regen_thumbs_tree(),
         KeyCode::Char('e') => {
-            if let Some((path, kind, ..)) = cur.clone() {
-                if kind != NodeKind::SmartAlbum {
+            if let Some((path, kind, _, name)) = cur.clone() {
+                if kind == NodeKind::SmartAlbum {
+                    // Materialize the saved search into a portable album of copies.
+                    if let Some(q) = app.smart_albums.iter().find(|s| s.name == name).map(|s| s.query.clone()) {
+                        app.prompt(
+                            "materialize smart album to (DIR): ",
+                            "",
+                            PendingCmd::MaterializeSmart { name, query: q },
+                        );
+                    }
+                } else {
                     let recursive = kind == NodeKind::Folder;
                     app.prompt("export to (DIR [maxpx]): ", "", PendingCmd::ExportAlbum { path, recursive });
                 }
@@ -3984,7 +4078,11 @@ fn draw_album(f: &mut Frame, app: &mut App, area: Rect) {
         (Some(name), _) => format!(" ★ {name}  ·  ↕ {sort}{flag_note} "),
         (None, Some(d)) => format!(
             " {}  ·  ↕ {}{} ",
-            d.file_name().and_then(|n| n.to_str()).unwrap_or("album"),
+            app.album_meta
+                .name
+                .as_deref()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| d.file_name().and_then(|n| n.to_str()).unwrap_or("album")),
             sort,
             flag_note,
         ),

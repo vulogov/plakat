@@ -216,6 +216,14 @@ view, and **curate**: a rating or flag you set here writes straight back to that
 image's own album, so the source stays the source of truth. `D` on a ★ row
 deletes the saved search (never the images).
 
+**Make it portable (`e`).** A smart album is just a live query — nothing on disk. Press
+`e` on a ★ row and give it a destination to **materialize** it into a real, self-contained
+album: every matching image is **copied** there (real copies — *no symlinks*), with a fresh
+`album.hjson` carrying each image's rating/flag/tags/caption so the curation travels. The
+result is a normal folder you can move to another disk or hand to someone, and it works with
+no link back to the original library. (Filenames colliding across source albums are
+auto-numbered; the copies are a clean baseline, so per-image edit history isn't carried.)
+
 Examples worth saving: `rating>=4 -rejected` (keepers), `ai scored` (generated,
 scored), `flag` (your picks across shoots).
 
@@ -296,9 +304,15 @@ level** to the parent.
 |-----|------|
 | `n` | **new folder** under the cursor |
 | `a` or `+` | **new album** under the cursor |
-| `R` | **rename** the folder/album |
+| `R` | **rename the directory** on disk (changes the path) |
 | `D` or `-` | **delete** (asks `y/N` first) |
 | `/` | **filter the tree by name** — type to match, `Enter` keeps it, `Esc` clears |
+
+There are **two kinds of name**. The tree shows the album's **display name** from its
+`album.hjson` `name` field when set, falling back to the **directory basename**. So
+`I → n` (or the `name` field) gives an album a friendly label (e.g. a folder
+`2024-07-14` shown as *"Summer Trip"*) **without moving any files**; `R` is the
+heavier rename that changes the actual directory on disk.
 
 **Album operations** (on the album/folder at the cursor):
 
