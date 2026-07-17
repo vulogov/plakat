@@ -283,19 +283,38 @@ to **every** selected image at once.
 
 ---
 
-## 7. Managing folders and albums
+## 7. Managing folders and albums (the tree pane)
 
-From the tree:
+**Move around:** `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn` by a page, `Home`/`End` (or
+`g`/`G`) to the ends. `→`/`Enter` opens an album or expands a folder; `←`/`h`
+collapses an open folder, or — on an album or collapsed folder — jumps **up one
+level** to the parent.
 
-| Key | Prompt |
-|-----|--------|
+**Create / organise:**
+
+| Key | Does |
+|-----|------|
 | `n` | **new folder** under the cursor |
-| `a` | **new album** under the cursor |
+| `a` or `+` | **new album** under the cursor |
 | `R` | **rename** the folder/album |
-| `D` | **delete** (asks `y/N` first) |
+| `D` or `-` | **delete** (asks `y/N` first) |
+| `/` | **filter the tree by name** — type to match, `Enter` keeps it, `Esc` clears |
 
-Each opens on the command line at the bottom; type and `Enter`, or `Esc` to
-cancel.
+**Album operations** (on the album/folder at the cursor):
+
+| Key | Does |
+|-----|------|
+| `i` | **info panel** — path, image count, total size, rating/flag/reject summary, tags, cover, sort |
+| `I` | **info editor** — a menu to set name · description · tags · cover · sort |
+| `t` | **add album tags** (comma-separated) |
+| `T` | **edit album tags** (replace the whole list, prefilled) |
+| `e` | **export** the album's images to a directory (`DIR [maxpx]`) |
+| `E` | **export + convert** — `FMT DIR [maxpx]` (e.g. `jpg ~/out 2048`); on a folder these recurse over every album under it |
+| `r` | **regenerate thumbnails** (drop the cached ones and rebuild) |
+
+Album-level tags and name/description/cover live in the album's `album.hjson`
+alongside the per-image records. Prompts open on the command line at the bottom;
+type and `Enter`, or `Esc` to cancel.
 
 ---
 

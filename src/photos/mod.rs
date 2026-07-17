@@ -100,6 +100,12 @@ enum PendingCmd {
     RedactGps,
     /// Convert the targets to the entered `fmt [Npx | NkB]`.
     Convert,
+    /// Edit an album-level metadata field (from the tree info editor / tag keys).
+    AlbumEdit { path: PathBuf, field: AlbumFieldKind },
+    /// Export an album/folder's images (tree `e`) to the entered `DIR [MAXPX]`.
+    ExportAlbum { path: PathBuf, recursive: bool },
+    /// Export + convert an album/folder's images (tree `E`) to the entered `FMT DIR [MAXPX]`.
+    ExportConvertAlbum { path: PathBuf, recursive: bool },
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -240,6 +246,17 @@ enum EditField {
     Tags,
 }
 
+/// An album-level metadata field editable from the tree (info editor / `t`·`T`).
+#[derive(Clone, Copy)]
+enum AlbumFieldKind {
+    Name,
+    Description,
+    TagsAdd,
+    TagsReplace,
+    Cover,
+    Sort,
+}
+
 /// Sort orders for the album grid (album.hjson `sort`), cycled with `s`.
 const SORT_ORDER: [&str; 6] =
     ["name-asc", "name-desc", "date-desc", "date-asc", "rating-desc", "score-desc"];
@@ -261,6 +278,14 @@ struct App {
     expanded: HashSet<PathBuf>,
     tree_cursor: usize,
     focus: Focus,
+    // Tree-name incremental filter (`/`): when active, the tree shows only matching nodes + their
+    // ancestor folders.
+    tree_filter: String,
+    tree_filter_active: bool,
+    // Album info panel (`i`, read-only modal) + info editor menu (`I`); both target `info_target`.
+    album_info: Option<(String, Vec<String>)>,
+    info_editor: bool,
+    info_target: Option<PathBuf>,
 
     // Album grid.
     album_dir: Option<PathBuf>,
@@ -393,6 +418,11 @@ impl App {
             expanded,
             tree_cursor: 0,
             focus: Focus::Tree,
+            tree_filter: String::new(),
+            tree_filter_active: false,
+            album_info: None,
+            info_editor: false,
+            info_target: None,
             album_dir: None,
             album_meta: hjson::AlbumMeta::default(),
             album_paths: Vec::new(),
@@ -529,21 +559,33 @@ impl App {
 
     fn rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
+        let filter = self.tree_filter.trim().to_lowercase();
         // Library-wide smart albums come first, as ★ rows at depth 0 (sentinel paths — never
-        // touched on disk; the tree handler routes them by name).
+        // touched on disk; the tree handler routes them by name). Hidden when a filter excludes them.
         for sa in &self.smart_albums {
-            out.push(Row {
-                path: PathBuf::from(format!("\u{1}smart:{}", sa.name)),
-                name: sa.name.clone(),
-                kind: NodeKind::SmartAlbum,
-                count: 0,
-                depth: 0,
-                expanded: false,
-                has_children: false,
-            });
+            if filter.is_empty() || sa.name.to_lowercase().contains(&filter) {
+                out.push(Row {
+                    path: PathBuf::from(format!("\u{1}smart:{}", sa.name)),
+                    name: sa.name.clone(),
+                    kind: NodeKind::SmartAlbum,
+                    count: 0,
+                    depth: 0,
+                    expanded: false,
+                    has_children: false,
+                });
+            }
         }
-        fn rec(node: &LibraryNode, depth: usize, exp: &HashSet<PathBuf>, out: &mut Vec<Row>) {
-            let is_open = exp.contains(&node.path);
+        // Whether a subtree contains a name match (so ancestor folders of a match stay visible).
+        fn matches(node: &LibraryNode, f: &str) -> bool {
+            node.name.to_lowercase().contains(f) || node.children.iter().any(|c| matches(c, f))
+        }
+        fn rec(node: &LibraryNode, depth: usize, exp: &HashSet<PathBuf>, f: &str, out: &mut Vec<Row>) {
+            // When filtering, a node shows if it or a descendant matches, and we descend regardless
+            // of the expanded state so matches surface without manual expansion.
+            if !f.is_empty() && !matches(node, f) {
+                return;
+            }
+            let is_open = f.is_empty() && exp.contains(&node.path);
             out.push(Row {
                 path: node.path.clone(),
                 name: node.name.clone(),
@@ -553,14 +595,211 @@ impl App {
                 expanded: is_open,
                 has_children: !node.children.is_empty(),
             });
-            if is_open {
+            if is_open || (!f.is_empty() && !node.children.is_empty()) {
                 for c in &node.children {
-                    rec(c, depth + 1, exp, out);
+                    rec(c, depth + 1, exp, f, out);
                 }
             }
         }
-        rec(&self.root, 0, &self.expanded, &mut out);
+        rec(&self.root, 0, &self.expanded, &filter, &mut out);
         out
+    }
+
+    // ---- Tree album operations (RFC §7.4, extended) ----------------------------------------------
+
+    /// The tree cursor's `(path, kind, name)`.
+    fn cur_tree_node(&self) -> Option<(PathBuf, NodeKind, String)> {
+        self.rows().get(self.tree_cursor).map(|r| (r.path.clone(), r.kind, r.name.clone()))
+    }
+
+    /// Collapse an expanded folder, else move the cursor up to the parent row (Left / `h`).
+    fn goto_tree_parent(&mut self) {
+        let rows = self.rows();
+        let Some(cur) = rows.get(self.tree_cursor) else { return };
+        if cur.expanded {
+            let p = cur.path.clone();
+            self.expanded.remove(&p);
+            return;
+        }
+        if let Some(parent) = cur.path.parent().map(|p| p.to_path_buf()) {
+            if let Some(i) = rows.iter().position(|r| r.path == parent) {
+                self.tree_cursor = i;
+            }
+        }
+    }
+
+    /// An album's metadata (the open album's live copy if it matches, else read from disk).
+    fn album_meta_at(&self, dir: &Path) -> hjson::AlbumMeta {
+        if self.album_dir.as_deref() == Some(dir) {
+            self.album_meta.clone()
+        } else {
+            hjson::read_album(dir).unwrap_or_default()
+        }
+    }
+
+    /// Mutate an album's metadata on disk (and in memory if it's the open album).
+    fn edit_album_meta_at(&mut self, dir: &Path, f: impl FnOnce(&mut hjson::AlbumMeta)) {
+        let mut meta = self.album_meta_at(dir);
+        f(&mut meta);
+        if let Err(e) = hjson::write_album(dir, &meta) {
+            self.status = format!("save failed: {e}");
+            return;
+        }
+        if self.album_dir.as_deref() == Some(dir) {
+            self.album_meta = meta;
+        }
+    }
+
+    /// Image files directly in `dir` (album), or all images under it (folder, when `recursive`).
+    fn gather_image_files(dir: &Path, recursive: bool) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_file() && library::is_image(&p) {
+                    out.push(p);
+                } else if recursive && p.is_dir() {
+                    let hidden = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with('.'));
+                    if !hidden {
+                        out.extend(Self::gather_image_files(&p, true));
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Regenerate thumbnails for the tree cursor's album/folder (drop cached + in-memory thumbs).
+    fn regen_thumbs_tree(&mut self) {
+        let Some((path, kind, _)) = self.cur_tree_node() else { return };
+        if kind == NodeKind::SmartAlbum {
+            self.status = "not an album".into();
+            return;
+        }
+        let files = Self::gather_image_files(&path, kind == NodeKind::Folder);
+        let mut cleared = 0;
+        for f in &files {
+            for size in [self.thumb_px, 384] {
+                if std::fs::remove_file(loader::thumb_cache_path(f, size)).is_ok() {
+                    cleared += 1;
+                }
+            }
+            self.thumbs.remove(f);
+        }
+        self.status =
+            format!("regenerating thumbnails: cleared {cleared} cached for {} image(s)", files.len());
+    }
+
+    /// Export the tree cursor's images to `dest`.
+    fn export_album_files(&mut self, path: &Path, recursive: bool, dest: &str) {
+        let files = Self::gather_image_files(path, recursive);
+        if files.is_empty() {
+            self.status = "no images to export".into();
+            return;
+        }
+        // A trailing integer is a longest-side cap.
+        let (dir, max_px) = match dest.trim().rsplit_once(char::is_whitespace) {
+            Some((h, last)) if last.parse::<u32>().is_ok() => (h.trim().to_string(), last.parse().ok()),
+            _ => (dest.trim().to_string(), None),
+        };
+        let d = expand_tilde(&dir);
+        match export::export(&files, &d, max_px) {
+            Ok(n) => self.status = format!("exported {n} image(s) → {}", d.display()),
+            Err(e) => self.status = format!("export failed: {e:#}"),
+        }
+    }
+
+    /// Export + convert the tree cursor's images: `FMT DIR [MAXPX]`.
+    fn export_convert_files(&mut self, path: &Path, recursive: bool, arg: &str) {
+        let Some((fmt, rest)) = arg.trim().split_once(char::is_whitespace) else {
+            self.status = "enter: FMT DIR [maxpx]  (e.g. jpg ~/out 2048)".into();
+            return;
+        };
+        let (dir, max_px) = match rest.trim().rsplit_once(char::is_whitespace) {
+            Some((h, last)) if last.parse::<u32>().is_ok() => (h.trim().to_string(), last.parse().ok()),
+            _ => (rest.trim().to_string(), None),
+        };
+        let dest = expand_tilde(&dir);
+        if let Err(e) = std::fs::create_dir_all(&dest) {
+            self.status = format!("mkdir failed: {e}");
+            return;
+        }
+        let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
+        let files = Self::gather_image_files(path, recursive);
+        let (mut ok, mut err) = (0, 0);
+        for f in &files {
+            match scrub::convert(f, &dest, fmt, size) {
+                Ok(_) => ok += 1,
+                Err(_) => err += 1,
+            }
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("exported+converted {ok} → {} ({fmt}){tail}", dest.display());
+    }
+
+    /// Open the read-only album/folder info panel for the tree cursor.
+    fn open_album_info(&mut self) {
+        let Some((path, kind, name)) = self.cur_tree_node() else { return };
+        if kind == NodeKind::SmartAlbum {
+            let q = self.smart_albums.iter().find(|s| s.name == name).map(|s| s.query.clone());
+            self.album_info = Some((
+                format!("★ {name}"),
+                vec!["smart album (saved search)".into(), format!("query: {}", q.unwrap_or_default())],
+            ));
+            return;
+        }
+        let meta = self.album_meta_at(&path);
+        let files = Self::gather_image_files(&path, kind == NodeKind::Folder);
+        let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+        let flagged = meta.images.values().filter(|r| r.flagged).count();
+        let rejected = meta.images.values().filter(|r| r.rejected).count();
+        let rated = meta.images.values().filter(|r| r.rating > 0).count();
+        let mut lines = vec![
+            format!("path:   {}", path.display()),
+            format!("kind:   {}", if kind == NodeKind::Folder { "folder" } else { "album" }),
+        ];
+        if let Some(d) = meta.description.as_deref().filter(|d| !d.is_empty()) {
+            lines.push(format!("desc:   {d}"));
+        }
+        if !meta.tags.is_empty() {
+            lines.push(format!("tags:   {}", meta.tags.join(", ")));
+        }
+        lines.push(format!("images: {}", files.len()));
+        lines.push(format!("size:   {}", human_size(total)));
+        lines.push(format!("rated {rated}  ·  ⚑ {flagged}  ·  ✗ {rejected}"));
+        if let Some(c) = &meta.cover {
+            lines.push(format!("cover:  {c}"));
+        }
+        lines.push(format!("sort:   {}", meta.sort.as_deref().unwrap_or("name-asc")));
+        let title = meta.name.clone().unwrap_or(name);
+        self.album_info = Some((format!("ⓘ {title}"), lines));
+    }
+
+    /// Open the album info editor (a field menu) for the tree cursor.
+    fn open_info_editor(&mut self) {
+        let Some((path, kind, _)) = self.cur_tree_node() else { return };
+        if kind == NodeKind::SmartAlbum {
+            self.status = "can't edit a smart album's info (D deletes it)".into();
+            return;
+        }
+        self.info_target = Some(path);
+        self.info_editor = true;
+        self.status = "album info: n name · d desc · t tags · a add-tag · c cover · s sort · Esc".into();
+    }
+
+    /// Prompt to edit `field` on the album at `path` (prefilled with the current value).
+    fn prompt_album_field(&mut self, path: PathBuf, field: AlbumFieldKind) {
+        let m = self.album_meta_at(&path);
+        let (label, prefill) = match field {
+            AlbumFieldKind::Name => ("album name: ", m.name.unwrap_or_default()),
+            AlbumFieldKind::Description => ("album description: ", m.description.unwrap_or_default()),
+            AlbumFieldKind::TagsReplace => ("album tags (comma-sep): ", m.tags.join(", ")),
+            AlbumFieldKind::TagsAdd => ("add album tags (comma-sep): ", String::new()),
+            AlbumFieldKind::Cover => ("cover image filename: ", m.cover.unwrap_or_default()),
+            AlbumFieldKind::Sort => ("sort (name-asc|date-desc|rating-desc|…): ", m.sort.unwrap_or_default()),
+        };
+        self.prompt(label, prefill, PendingCmd::AlbumEdit { path, field });
     }
 
     fn album_count(&self) -> usize {
@@ -2164,6 +2403,34 @@ impl App {
                 Some(PendingCmd::MaskImage) if !arg.is_empty() => {
                     self.set_layer_mask_image(&arg);
                 }
+                Some(PendingCmd::AlbumEdit { path, field }) => {
+                    let v = arg.trim().to_string();
+                    let some = (!v.is_empty()).then(|| v.clone());
+                    self.edit_album_meta_at(&path, |m| match field {
+                        AlbumFieldKind::Name => m.name = some,
+                        AlbumFieldKind::Description => m.description = some,
+                        AlbumFieldKind::Cover => m.cover = some,
+                        AlbumFieldKind::Sort => m.sort = some,
+                        AlbumFieldKind::TagsReplace => {
+                            m.tags =
+                                v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+                        }
+                        AlbumFieldKind::TagsAdd => {
+                            for t in v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
+                                if !m.tags.contains(&t) {
+                                    m.tags.push(t);
+                                }
+                            }
+                        }
+                    });
+                    self.status = "album metadata updated".into();
+                }
+                Some(PendingCmd::ExportAlbum { path, recursive }) if !arg.is_empty() => {
+                    self.export_album_files(&path, recursive, &arg);
+                }
+                Some(PendingCmd::ExportConvertAlbum { path, recursive }) if !arg.is_empty() => {
+                    self.export_convert_files(&path, recursive, &arg);
+                }
                 Some(PendingCmd::Straighten) if !arg.is_empty() => match arg.trim().parse::<f32>() {
                     Ok(deg) => {
                         self.apply_edit(edit::EditOp::Straighten((deg * 10.0).round() as i32));
@@ -2850,6 +3117,18 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_filter_key(app, k.code);
         return false;
     }
+    if app.album_info.is_some() {
+        app.album_info = None; // any key dismisses the info panel
+        return false;
+    }
+    if app.info_editor {
+        handle_info_editor_key(app, k.code);
+        return false;
+    }
+    if app.tree_filter_active {
+        handle_tree_filter_key(app, k.code);
+        return false;
+    }
     if app.levels_mode {
         handle_levels_key(app, k.code);
         return false;
@@ -3118,6 +3397,46 @@ fn handle_ml_key(app: &mut App, code: KeyCode) {
 }
 
 /// Filter-bar input: type a filter expression, Enter applies, Esc clears.
+/// Incremental tree-name filter: type to narrow, Enter keeps it applied, Esc clears it.
+fn handle_tree_filter_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.tree_filter.clear();
+            app.tree_filter_active = false;
+        }
+        KeyCode::Enter => app.tree_filter_active = false,
+        KeyCode::Backspace => {
+            app.tree_filter.pop();
+        }
+        KeyCode::Char(c) => app.tree_filter.push(c),
+        _ => {}
+    }
+    app.tree_cursor = app.tree_cursor.min(app.rows().len().saturating_sub(1));
+}
+
+/// Album info editor menu (`I`): a key picks a field to edit via the command pane.
+fn handle_info_editor_key(app: &mut App, code: KeyCode) {
+    let Some(path) = app.info_target.clone() else {
+        app.info_editor = false;
+        return;
+    };
+    let field = match code {
+        KeyCode::Esc => {
+            app.info_editor = false;
+            return;
+        }
+        KeyCode::Char('n') => AlbumFieldKind::Name,
+        KeyCode::Char('d') => AlbumFieldKind::Description,
+        KeyCode::Char('t') => AlbumFieldKind::TagsReplace,
+        KeyCode::Char('a') => AlbumFieldKind::TagsAdd,
+        KeyCode::Char('c') => AlbumFieldKind::Cover,
+        KeyCode::Char('s') => AlbumFieldKind::Sort,
+        _ => return,
+    };
+    app.info_editor = false;
+    app.prompt_album_field(path, field);
+}
+
 fn handle_filter_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => {
@@ -3167,8 +3486,12 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
             app.tree_cursor = (app.tree_cursor + 1).min(rows.len().saturating_sub(1));
         }
         KeyCode::Char('k') | KeyCode::Up => app.tree_cursor = app.tree_cursor.saturating_sub(1),
-        KeyCode::Char('g') => app.tree_cursor = 0,
-        KeyCode::Char('G') => app.tree_cursor = rows.len().saturating_sub(1),
+        KeyCode::PageDown => {
+            app.tree_cursor = (app.tree_cursor + 10).min(rows.len().saturating_sub(1));
+        }
+        KeyCode::PageUp => app.tree_cursor = app.tree_cursor.saturating_sub(10),
+        KeyCode::Char('g') | KeyCode::Home => app.tree_cursor = 0,
+        KeyCode::Char('G') | KeyCode::End => app.tree_cursor = rows.len().saturating_sub(1),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
             if let Some((path, kind, has_children, name)) = cur {
                 if kind == NodeKind::SmartAlbum {
@@ -3182,9 +3505,48 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 }
             }
         }
-        KeyCode::Char('h') | KeyCode::Left => {
-            if let Some((path, ..)) = cur {
-                app.expanded.remove(&path);
+        KeyCode::Char('h') | KeyCode::Left => app.goto_tree_parent(),
+        // Incremental tree-name filter.
+        KeyCode::Char('/') => {
+            app.tree_filter_active = true;
+            app.status = "filter tree: type to match names · Enter keep · Esc clear".into();
+        }
+        // Album operations on the cursor node.
+        KeyCode::Char('t') => {
+            if let Some((path, kind, ..)) = cur.clone() {
+                if kind != NodeKind::SmartAlbum {
+                    app.prompt_album_field(path, AlbumFieldKind::TagsAdd);
+                }
+            }
+        }
+        KeyCode::Char('T') => {
+            if let Some((path, kind, ..)) = cur.clone() {
+                if kind != NodeKind::SmartAlbum {
+                    app.prompt_album_field(path, AlbumFieldKind::TagsReplace);
+                }
+            }
+        }
+        KeyCode::Char('i') => app.open_album_info(),
+        KeyCode::Char('I') => app.open_info_editor(),
+        KeyCode::Char('r') => app.regen_thumbs_tree(),
+        KeyCode::Char('e') => {
+            if let Some((path, kind, ..)) = cur.clone() {
+                if kind != NodeKind::SmartAlbum {
+                    let recursive = kind == NodeKind::Folder;
+                    app.prompt("export to (DIR [maxpx]): ", "", PendingCmd::ExportAlbum { path, recursive });
+                }
+            }
+        }
+        KeyCode::Char('E') => {
+            if let Some((path, kind, ..)) = cur.clone() {
+                if kind != NodeKind::SmartAlbum {
+                    let recursive = kind == NodeKind::Folder;
+                    app.prompt(
+                        "export + convert (FMT DIR [maxpx]): ",
+                        "",
+                        PendingCmd::ExportConvertAlbum { path, recursive },
+                    );
+                }
             }
         }
         // Library-wide metadata / visual search from anywhere.
@@ -3205,7 +3567,7 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 }
             }
         }
-        KeyCode::Char('a') => {
+        KeyCode::Char('a') | KeyCode::Char('+') => {
             if let Some((path, kind, ..)) = cur {
                 if kind != NodeKind::SmartAlbum {
                     app.prompt("new album: ", "", PendingCmd::NewAlbum { parent: path });
@@ -3220,7 +3582,7 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
                 }
             }
         }
-        KeyCode::Char('D') => {
+        KeyCode::Char('D') | KeyCode::Char('-') => {
             if let Some((path, kind, _, name)) = cur {
                 if kind == NodeKind::SmartAlbum {
                     app.prompt(
@@ -3505,6 +3867,20 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.ai_menu {
         draw_menu_palette(f, "AI vision", Color::Green, &ai_palette(), album_col);
     }
+    if app.info_editor {
+        let rows = [
+            prow("n", "edit name"),
+            prow("d", "edit description"),
+            prow("t", "set tags (replace)"),
+            prow("a", "add tags"),
+            prow("c", "set cover image"),
+            prow("s", "set sort order"),
+        ];
+        draw_menu_palette(f, "Album info editor", Color::Yellow, &rows, tree_col);
+    }
+    if let Some((title, lines)) = &app.album_info {
+        draw_info_panel(f, title, lines, body);
+    }
     if let Some(kind) = app.help {
         draw_help(f, kind, app, body);
     }
@@ -3524,8 +3900,36 @@ fn draw(f: &mut Frame, app: &mut App) {
     );
 }
 
+/// Centered read-only info panel (album/folder `i`): a titled card, any key dismisses it.
+fn draw_info_panel(f: &mut Frame, title: &str, lines: &[String], area: Rect) {
+    let body: Vec<Line> = lines.iter().map(|l| Line::from(format!(" {l}"))).collect();
+    let w = (body.iter().map(|l| l.width()).max().unwrap_or(30).clamp(24, 76) as u16 + 3).min(area.width);
+    let h = (body.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(body).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {title} · any key "))
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
 fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
     let active = app.focus == Focus::Tree;
+    let title = if app.tree_filter_active || !app.tree_filter.is_empty() {
+        format!(" Library · /{}{} ", app.tree_filter, if app.tree_filter_active { "_" } else { "" })
+    } else {
+        " Library ".to_string()
+    };
     let lines: Vec<Line> = app
         .rows()
         .iter()
@@ -3558,7 +3962,7 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Library ")
+                .title(title)
                 .border_style(Style::default().fg(if active { Color::Yellow } else { Color::DarkGray })),
         ),
         area,
@@ -3763,6 +4167,20 @@ fn sort_paths(
 
 /// Parse a dimensions string: `"1200x800"` / `"1200×800"` / `"1200 800"` → `(1200, 800)`; a single
 /// `"1200"` → `(1200, 1200)`.
+/// Human-readable byte size (GB/MB/KB/B).
+fn human_size(b: u64) -> String {
+    let f = b as f64;
+    if f >= 1e9 {
+        format!("{:.1} GB", f / 1e9)
+    } else if f >= 1e6 {
+        format!("{:.1} MB", f / 1e6)
+    } else if f >= 1e3 {
+        format!("{:.0} KB", f / 1e3)
+    } else {
+        format!("{b} B")
+    }
+}
+
 /// Parse a convert spec `fmt [Npx | NkB]` → `(fmt, ConvertSize)`. A bare integer = max longest side;
 /// a `kb`/`k` suffix = target JPEG size; nothing = keep dimensions.
 fn parse_convert(arg: &str) -> Option<(String, scrub::ConvertSize)> {
@@ -4039,9 +4457,15 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
     match ctx {
         HelpCtx::Tree => {
             l.push(hd("Tree"));
-            l.push(kv("j k / ↑↓", "move · g/G first/last"));
-            l.push(kv("l → Enter", "open album / expand folder · h collapse"));
-            l.push(kv("n a R D", "new folder · new album · rename · delete"));
+            l.push(kv("j k / ↑↓", "move · PgUp/PgDn page · Home/End · g/G first/last"));
+            l.push(kv("l → Enter", "open album / expand folder"));
+            l.push(kv("h ←", "collapse folder / up one level"));
+            l.push(kv("n a/+ R D/-", "new folder · new album · rename · delete"));
+            l.push(hd("Album"));
+            l.push(kv("i / I", "info panel / info editor (name·desc·cover·sort)"));
+            l.push(kv("t / T", "add album tags / edit album tags"));
+            l.push(kv("e / E", "export album / export + convert (fmt)"));
+            l.push(kv("r /", "regenerate thumbnails · filter tree by name"));
             l.push(kv("Tab", "focus the album grid"));
             l.push(kv("? V", "metadata search · visual search"));
         }
@@ -4630,6 +5054,51 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" EXIF ")),
             panel,
         );
+    }
+}
+
+#[cfg(test)]
+mod tree_ops_tests {
+    use super::*;
+    use image::{ImageBuffer, Rgb};
+
+    #[test]
+    fn gather_image_files_album_and_recursive() {
+        let dir = std::env::temp_dir().join(format!("plakat-tree-{}", std::process::id()));
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let img = image::DynamicImage::ImageRgb8(ImageBuffer::from_pixel(4, 4, Rgb([1u8, 2, 3])));
+        img.save(dir.join("a.png")).unwrap();
+        img.save(dir.join("b.jpg")).unwrap();
+        img.save(sub.join("c.png")).unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap(); // not an image
+
+        // Non-recursive: only the two images directly in `dir`.
+        assert_eq!(App::gather_image_files(&dir, false).len(), 2);
+        // Recursive: includes the sub-album image.
+        assert_eq!(App::gather_image_files(&dir, true).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn human_size_scales() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2_000), "2 KB");
+        assert_eq!(human_size(3_500_000), "3.5 MB");
+        assert_eq!(human_size(2_000_000_000), "2.0 GB");
+    }
+
+    #[test]
+    fn album_tags_roundtrip_through_hjson() {
+        let dir = std::env::temp_dir().join(format!("plakat-atags-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = hjson::AlbumMeta { tags: vec!["trip".into(), "2026".into()], ..Default::default() };
+        m.description = Some("summer".into());
+        hjson::write_album(&dir, &m).unwrap();
+        let back = hjson::read_album(&dir).unwrap();
+        assert_eq!(back.tags, vec!["trip".to_string(), "2026".into()]);
+        assert_eq!(back.description.as_deref(), Some("summer"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
