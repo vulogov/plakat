@@ -8,6 +8,31 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.1.0 — `plakat photos` grows up: edit, curate & command
+
+3.0 shipped the collection manager (browse + curate + `--import`). **3.1 makes it a full
+workbench** — you edit, enhance, search, and drive it in plain language, all in the terminal.
+
+**Edit, in two tiers.** `E` opens a **non-destructive pixel editor** (rotate / flip / grayscale /
+crop / brightness / contrast, with undo + revert — the pristine original is kept and the file
+re-derived from an edit log). `M` runs **model edits** on the cursor image via the same pipelines as
+the CLI — ML upscale ×4, img2img, relight — landing the result as a linked variant.
+
+**Search by words *and* pixels.** `?` ranks the library by **metadata relevance** (TF-IDF over
+prompts / captions / notes / tags); `V` ranks by **CLIP visual similarity**, with a persistent
+per-album vector cache. `A` fills that metadata in for you — **AI autotag / describe** via whichever
+LLM you have configured (Gemini, or an OpenAI-compatible endpoint).
+
+**Browse at scale.** Near-duplicate detection (perceptual hash), side-by-side compare, batch
+rename, export (with resize), variant **stacking**, a **timeline** date-jump, and a per-image
+**analysis panel** (`H`: histogram, exposure clipping, focus score).
+
+**Drive it in plain language.** `:` opens a command pane: *"find rating>=4 then upscale then export
+to ~/best 2000"*. Common phrasings parse locally; anything else goes to your configured LLM
+(grounded with the album's metadata) and comes back as a plan from a fixed, safe vocabulary — it
+routes intent, never runs code. `Ctrl-B h` / `Ctrl-B H` give **contextual** key-chord / command
+help.
+
 ## What's new in 3.0.0 — `plakat photos`, a photo & image collection manager
 
 The flagship pivot. The 2.6–2.8 quality, curation, and editing pipelines were the engine;
