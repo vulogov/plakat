@@ -136,6 +136,7 @@ enum EditCmd {
     CropExact,  // prompts for WxH pixels
     ResizeExact, // prompts for WxH (or N) pixels
     Layers,     // interactive layer compositing
+    Levels,     // interactive black/white/gamma editor
     Straighten, // prompts for degrees
     StripExif,  // strip file metadata (confirm)
     Convert,    // prompts for format / size
@@ -193,6 +194,9 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("tint green", EditCmd::Op(Tint(-15))),
         ("definition up", EditCmd::Op(Definition(18))),
         ("definition down", EditCmd::Op(Definition(-18))),
+        ("levels (black / white / gamma)…", EditCmd::Levels),
+        ("vignette (darken edges)", EditCmd::Op(Vignette(30))),
+        ("vignette light (lighten edges)", EditCmd::Op(Vignette(-30))),
         ("sharpen", EditCmd::Op(Sharpen(22))),
         ("soften", EditCmd::Op(Sharpen(-22))),
         ("noise reduction", EditCmd::Op(NoiseReduction(30))),
@@ -287,6 +291,13 @@ struct App {
     // Interactive free-form crop (from the Edit palette): rect in [0,1] fractions (x, y, w, h).
     crop_mode: bool,
     crop_rect: (f32, f32, f32, f32),
+    // Interactive levels editor (from the Edit palette): black/white input points (0..255) + midtone
+    // gamma (×100), with a live preview. `lv_sel` = which handle the ←/→ keys adjust (0/1/2).
+    levels_mode: bool,
+    lv_black: i32,
+    lv_white: i32,
+    lv_gamma: i32,
+    lv_sel: usize,
     // Interactive layer compositing (Phase 8): an overlay stack over the cursor image. The stack is
     // persisted on the image's record (`layers`); `layer_active` is the selected layer.
     layer_mode: bool,
@@ -398,6 +409,11 @@ impl App {
             edit_visible: 10,
             crop_mode: false,
             crop_rect: (0.1, 0.1, 0.8, 0.8),
+            levels_mode: false,
+            lv_black: 0,
+            lv_white: 255,
+            lv_gamma: 100,
+            lv_sel: 0,
             layer_mode: false,
             layers: Vec::new(),
             layer_active: 0,
@@ -969,6 +985,7 @@ impl App {
                 self.prompt("resize to (WxH or N px): ", "", PendingCmd::ResizeExact);
             }
             EditCmd::Layers => self.enter_layers(),
+            EditCmd::Levels => self.enter_levels(),
             EditCmd::Straighten => {
                 self.edit_menu = false;
                 self.prompt("straighten by degrees (e.g. 3 or -2.5): ", "", PendingCmd::Straighten);
@@ -1053,6 +1070,77 @@ impl App {
         self.crop_mode = false;
         self.load_view();
         self.status = "crop cancelled".into();
+    }
+
+    // ---- Interactive levels editor -----------------------------------------------------------------
+
+    /// Enter the levels editor on the cursor image (live preview; ↑/↓ pick a handle, ←/→ adjust).
+    fn enter_levels(&mut self) {
+        if self.cur_source().is_none() {
+            self.status = "open an image first".into();
+            return;
+        }
+        self.edit_menu = false;
+        self.levels_mode = true;
+        self.lv_black = 0;
+        self.lv_white = 255;
+        self.lv_gamma = 100;
+        self.lv_sel = 0;
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_levels_status();
+    }
+
+    /// The working levels as an `EditOp` (for the preview + commit).
+    fn levels_op(&self) -> edit::EditOp {
+        edit::EditOp::Levels { black: self.lv_black, white: self.lv_white, gamma: self.lv_gamma }
+    }
+
+    /// Adjust the selected handle by `d` (black/white in 0..255, gamma in hundredths), clamped so
+    /// black < white and gamma stays sane.
+    fn adjust_levels(&mut self, d: i32) {
+        match self.lv_sel {
+            0 => self.lv_black = (self.lv_black + d).clamp(0, self.lv_white - 1),
+            1 => self.lv_white = (self.lv_white + d).clamp(self.lv_black + 1, 255),
+            _ => self.lv_gamma = (self.lv_gamma + d).clamp(20, 500),
+        }
+        self.load_view();
+        self.set_levels_status();
+    }
+
+    /// Cycle which handle ←/→ adjusts (black → white → gamma).
+    fn select_levels(&mut self, delta: i32) {
+        self.lv_sel = (((self.lv_sel as i32 + delta) % 3 + 3) % 3) as usize;
+        self.set_levels_status();
+    }
+
+    fn set_levels_status(&mut self) {
+        let mark = |i: usize, s: String| if self.lv_sel == i { format!("[{s}]") } else { s };
+        self.status = format!(
+            "levels · {} {} {} · ↑↓ pick · ←→ adjust · Enter apply · Esc",
+            mark(0, format!("black {}", self.lv_black)),
+            mark(1, format!("white {}", self.lv_white)),
+            mark(2, format!("γ {:.2}", self.lv_gamma as f32 / 100.0)),
+        );
+    }
+
+    /// Commit the levels as a pixel edit; leave the editor.
+    fn apply_levels(&mut self) {
+        let op = self.levels_op();
+        self.levels_mode = false;
+        if op == (edit::EditOp::Levels { black: 0, white: 255, gamma: 100 }) {
+            self.load_view();
+            self.status = "levels: no change".into();
+            return;
+        }
+        self.apply_edit(op);
+    }
+
+    /// Leave the levels editor without applying.
+    fn cancel_levels(&mut self) {
+        self.levels_mode = false;
+        self.load_view();
+        self.status = "levels cancelled".into();
     }
 
     // ---- Layer compositing (Phase 8) -------------------------------------------------------------
@@ -2213,7 +2301,9 @@ impl App {
             .as_ref()
             .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
-                let img = if self.layer_mode {
+                let img = if self.levels_mode {
+                    self.levels_op().apply(img) // live levels preview
+                } else if self.layer_mode {
                     layers::composite(&img, &self.layers, Some(self.layer_active)) // live composite
                 } else if self.crop_mode {
                     crop_preview(&img, self.crop_rect) // full image, dimmed outside the crop rect
@@ -2707,6 +2797,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_filter_key(app, k.code);
         return false;
     }
+    if app.levels_mode {
+        handle_levels_key(app, k.code);
+        return false;
+    }
     if app.layer_mode {
         handle_layer_key(app, k.code);
         return false;
@@ -2759,6 +2853,21 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
         KeyCode::Char(']') => app.adjust_crop(0.0, 0.0, s, 0.0),
         KeyCode::Char(',') => app.adjust_crop(0.0, 0.0, 0.0, -s),
         KeyCode::Char('.') => app.adjust_crop(0.0, 0.0, 0.0, s),
+        _ => {}
+    }
+}
+
+/// Interactive levels editor: ↑/↓ pick a handle (black/white/gamma), ←/→ adjust with a live preview,
+/// Enter commits the edit, Esc cancels. `[`/`]` and `,`/`.` mirror ←/→ for the current handle.
+fn handle_levels_key(app: &mut App, code: KeyCode) {
+    let step = if app.lv_sel == 2 { 5 } else { 3 }; // gamma in hundredths, points in 0..255
+    match code {
+        KeyCode::Esc => app.cancel_levels(),
+        KeyCode::Enter => app.apply_levels(),
+        KeyCode::Up => app.select_levels(-1),
+        KeyCode::Down => app.select_levels(1),
+        KeyCode::Left | KeyCode::Char('[') | KeyCode::Char(',') => app.adjust_levels(-step),
+        KeyCode::Right | KeyCode::Char(']') | KeyCode::Char('.') => app.adjust_levels(step),
         _ => {}
     }
 }
@@ -3776,10 +3885,13 @@ enum HelpCtx {
     Compare,
     Crop,
     Layers,
+    Levels,
 }
 
 fn help_ctx(app: &App) -> HelpCtx {
-    if app.layer_mode {
+    if app.levels_mode {
+        HelpCtx::Levels
+    } else if app.layer_mode {
         HelpCtx::Layers
     } else if app.crop_mode {
         HelpCtx::Crop
@@ -3804,6 +3916,7 @@ fn ctx_name(ctx: &HelpCtx) -> &'static str {
         HelpCtx::Compare => "Compare",
         HelpCtx::Crop => "Free-form crop",
         HelpCtx::Layers => "Layers",
+        HelpCtx::Levels => "Levels",
     }
 }
 
@@ -3958,6 +4071,22 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("Enter", "flatten → a new _layered.png · Esc leave (stack saved)"));
             return l; // layer mode has no global chords
         }
+        HelpCtx::Levels => {
+            l.push(hd("Levels"));
+            l.push(state(format!(
+                "black {} · white {} · γ {:.2}",
+                app.lv_black,
+                app.lv_white,
+                app.lv_gamma as f32 / 100.0
+            )));
+            l.push(hd("Adjust"));
+            l.push(kv("↑ / ↓", "pick a handle: black point / white point / gamma"));
+            l.push(kv("← / →", "decrease / increase it ([ ] and , . also work)"));
+            l.push(state("black/white clip the input range; gamma > 1 brightens the mid-tones"));
+            l.push(hd("Finish"));
+            l.push(kv("Enter", "apply as an edit · Esc cancel"));
+            return l; // levels mode has no global chords
+        }
     }
     l.push(hd("Anywhere"));
     l.push(kv("Ctrl-B", "h/H help · t tags · v versions · l/L lookalike · q quit"));
@@ -3977,7 +4106,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
         }
         HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop
-        | HelpCtx::Layers => {
+        | HelpCtx::Layers | HelpCtx::Levels => {
             let provider = crate::prompt::vision::resolve_vision_provider("auto");
             let target = if app.selected.is_empty() { "the view" } else { "the selection" };
             l.extend(album_state_lines(app));

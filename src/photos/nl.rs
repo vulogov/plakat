@@ -195,6 +195,14 @@ fn parse_action(stage: &str) -> Option<Action> {
         let deg: f32 = tok.split_whitespace().next()?.parse().ok()?;
         return Some(Action::Edit { op: format!("straighten:{deg}") });
     }
+    if let Some(r) = strip_any(s, &["levels "]) {
+        // `levels BLACK WHITE GAMMA` (e.g. levels 16 235 1.1).
+        let n: Vec<&str> = r.split([',', ' ']).filter(|t| !t.is_empty()).collect();
+        if let [b, w, g] = n.as_slice() {
+            return Some(Action::Edit { op: format!("levels:{b},{w},{g}") });
+        }
+        return None;
+    }
     if let Some(r) = strip_any(s, &["convert to ", "convert "]) {
         let mut it = r.split_whitespace();
         let fmt = it.next()?.to_string();
@@ -230,6 +238,8 @@ fn edit_op_word(s: &str) -> Option<String> {
         "grayscale" | "greyscale" | "black and white" | "b&w" => "grayscale",
         "crop" | "crop square" | "square crop" | "crop 1:1" => "crop_square",
         "auto enhance" | "auto-enhance" | "auto fix" | "enhance auto" => "auto_enhance",
+        "vignette" | "darken edges" => "vignette",
+        "vignette light" | "lighten edges" => "vignette_light",
         // Tonal / colour adjustments (canonical directional tags → edit::EditOp::from_tag).
         "sharpen" | "sharpen it" | "sharpen image" => "sharpen",
         "soften" | "blur" | "blur it" => "soften",
@@ -321,7 +331,8 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
     tone bands: highlights_up highlights_down midrange_up midrange_down shadows_up shadows_down
       blackpoint_up blackpoint_down
     colour: saturate desaturate vibrant vibrance_down warmer cooler tint_magenta tint_green
-    detail: sharpen soften definition denoise
+    detail: sharpen soften definition denoise vignette vignette_light
+    levels:<black>,<white>,<gamma>  (0..255, 0..255, float — e.g. levels:16,235,1.1)
   {\"action\":\"strip_meta\"}  (remove EXIF/GPS metadata from the album files, in place)
   {\"action\":\"convert\",\"fmt\":\"jpg|png|webp\",\"max_px\":<int|null>}  (write NEW converted files in-album)
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
@@ -385,6 +396,13 @@ mod tests {
         );
         // straighten:3 resolves to a real op.
         assert!(crate::photos::edit::EditOp::from_tag("straighten:3").is_some());
+        // Vignette + levels.
+        assert_eq!(parse_deterministic("vignette").unwrap().actions, vec![Action::Edit { op: "vignette".into() }]);
+        assert_eq!(
+            parse_deterministic("levels 16 235 1.1").unwrap().actions,
+            vec![Action::Edit { op: "levels:16,235,1.1".into() }]
+        );
+        assert!(crate::photos::edit::EditOp::from_tag("levels:16,235,1.1").is_some());
     }
 
     #[test]

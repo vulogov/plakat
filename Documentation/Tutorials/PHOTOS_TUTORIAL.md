@@ -321,7 +321,7 @@ repeatedly for more):
 | Light | brightness · exposure · brilliance · contrast |
 | Tone bands | highlights · midrange · shadows · black point |
 | Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) |
-| Detail | definition (clarity) · sharpen / soften · noise reduction |
+| Detail | definition (clarity) · sharpen / soften · noise reduction · **vignette** (darken/lighten edges) |
 
 Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
@@ -330,6 +330,19 @@ highlights for a richer, deeper look. All are non-destructive and replayable.
 **One-tap fixes & geometry.** The palette also has **auto-enhance** (auto levels +
 colour balance in one press) and **straighten** — pick it and type an angle in
 degrees (`3`, `-2.5`); the image rotates and auto-crops the empty corners.
+
+**Levels** (black / white / gamma) opens a small **live editor** — the image updates as
+you go:
+
+| Key | Does |
+|-----|------|
+| `↑` / `↓` | pick the handle: **black point → white point → gamma** |
+| `←` / `→` | decrease / increase it (`[` `]` and `,` `.` also work) |
+| `Enter` / `Esc` | apply as an edit / cancel |
+
+Black and white **clip the input range** (crush shadows / lift a dull white); **gamma > 1**
+brightens the mid-tones. `Ctrl-B h` shows these keys while you're in the editor. From the
+`:` pane it's one shot: `levels 16 235 1.1`.
 
 **File management** (these change the file, so they're *not* part of undo/replay):
 - **strip metadata (EXIF / GPS)** — removes EXIF/XMP/IPTC/GPS from the selected

@@ -59,6 +59,11 @@ pub enum EditOp {
     AutoEnhance,
     /// Straighten: rotate by `degrees` about the centre, auto-cropping the empty corners.
     Straighten(i32),
+    /// Vignette: darken (positive) / lighten (negative) the frame edges radially.
+    Vignette(i32),
+    /// Levels: map input `[black, white]` (0..255) to full range with a midtone `gamma` (×100:
+    /// 100 = 1.00). `gamma > 1` brightens the mids.
+    Levels { black: i32, white: i32, gamma: i32 },
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -98,6 +103,8 @@ impl EditOp {
             EditOp::NoiseReduction(v) => adjust::denoise(&img, v),
             EditOp::AutoEnhance => adjust::auto_enhance(&img),
             EditOp::Straighten(tenths) => straighten(&img, tenths as f32 / 10.0),
+            EditOp::Vignette(v) => adjust::vignette(&img, v),
+            EditOp::Levels { black, white, gamma } => adjust::levels(&img, black, white, gamma as f32 / 100.0),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -146,6 +153,10 @@ impl EditOp {
             EditOp::NoiseReduction(_) => "noise reduction".into(),
             EditOp::AutoEnhance => "auto-enhance".into(),
             EditOp::Straighten(t) => format!("straighten {:.1}°", t as f32 / 10.0),
+            EditOp::Vignette(_) => "vignette".into(),
+            EditOp::Levels { black, white, gamma } => {
+                format!("levels {black}/{white}·γ{:.2}", gamma as f32 / 100.0)
+            }
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -187,6 +198,13 @@ impl EditOp {
             EditOp::NoiseReduction(v) => val_op(&mut params, v, "noise_reduction"),
             EditOp::AutoEnhance => "auto_enhance",
             EditOp::Straighten(v) => val_op(&mut params, v, "straighten"),
+            EditOp::Vignette(v) => val_op(&mut params, v, "vignette"),
+            EditOp::Levels { black, white, gamma } => {
+                params.insert("black".into(), serde_json::json!(black));
+                params.insert("white".into(), serde_json::json!(white));
+                params.insert("gamma".into(), serde_json::json!(gamma));
+                "levels"
+            }
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -225,8 +243,22 @@ impl EditOp {
         if let Some(rest) = tag.strip_prefix("straighten:") {
             return rest.trim().parse::<f32>().ok().map(|d| EditOp::Straighten((d * 10.0).round() as i32));
         }
+        // `levels:BLACK,WHITE,GAMMA` (e.g. levels:16,235,1.1) — gamma is a float, stored ×100.
+        if let Some(rest) = tag.strip_prefix("levels:") {
+            let parts: Vec<&str> = rest.split(&[',', '/', ' ']).filter(|s| !s.is_empty()).collect();
+            if let [b, w, g] = parts.as_slice() {
+                return Some(EditOp::Levels {
+                    black: b.trim().parse().ok()?,
+                    white: w.trim().parse().ok()?,
+                    gamma: (g.trim().parse::<f32>().ok()? * 100.0).round() as i32,
+                });
+            }
+            return None;
+        }
         let op = match tag {
             "auto_enhance" | "enhance" | "auto" => EditOp::AutoEnhance,
+            "vignette" | "vignette_dark" => EditOp::Vignette(30),
+            "vignette_light" | "lighten_edges" => EditOp::Vignette(-30),
             "sharpen" => EditOp::Sharpen(S),
             "soften" | "blur" => EditOp::Sharpen(-S),
             "denoise" | "noise_reduction" | "reduce_noise" => EditOp::NoiseReduction(S + 8),
@@ -270,6 +302,7 @@ impl EditOp {
         let val = || e.params.get("value").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let u = |k: &str| e.params.get(k).and_then(|v| v.as_u64()).unwrap_or(1) as u32;
         let fr = |k: &str| e.params.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        let iv = |k: &str, d: i32| e.params.get(k).and_then(|v| v.as_i64()).unwrap_or(d as i64) as i32;
         Some(match e.op.as_str() {
             "rotate_cw" => EditOp::RotateCw,
             "rotate_ccw" => EditOp::RotateCcw,
@@ -294,6 +327,8 @@ impl EditOp {
             "noise_reduction" => EditOp::NoiseReduction(val()),
             "auto_enhance" => EditOp::AutoEnhance,
             "straighten" => EditOp::Straighten(val()),
+            "vignette" => EditOp::Vignette(val()),
+            "levels" => EditOp::Levels { black: iv("black", 0), white: iv("white", 255), gamma: iv("gamma", 100) },
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -454,6 +489,38 @@ mod adjust {
     pub fn denoise(img: &DynamicImage, amount: i32) -> DynamicImage {
         let s = (amount as f32 / 100.0).clamp(0.0, 1.0);
         spatial(img, 1.4, |base, bl, _| std::array::from_fn(|i| base[i] * (1.0 - s) + bl[i] * s))
+    }
+
+    /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
+    /// (a smooth ramp from the centre out to the corners), negative lightens them.
+    pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let maxr = (cx * cx + cy * cy).sqrt().max(1.0);
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+            let r = (dx * dx + dy * dy).sqrt() / maxr; // 0 at centre, 1 at the corners
+            let f = (1.0 - t * smoothstep(0.4, 1.0, r)).clamp(0.0, 2.0);
+            for c in 0..3 {
+                p.0[c] = enc(p.0[c] as f32 / 255.0 * f);
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Levels: remap the input range `[black, white]` (0..255) to the full range with a midtone
+    /// `gamma` (>1 brightens the mids). The classic levels tool — the core of a tone curve.
+    pub fn levels(img: &DynamicImage, black: i32, white: i32, gamma: f32) -> DynamicImage {
+        let b = (black as f32 / 255.0).clamp(0.0, 1.0);
+        let w = (white as f32 / 255.0).clamp(0.0, 1.0);
+        let span = (w - b).max(1e-3);
+        let inv_g = 1.0 / gamma.clamp(0.05, 20.0);
+        map_rgb(img, |r, g, bl| {
+            let f = |c: f32| ((c - b) / span).clamp(0.0, 1.0).powf(inv_g);
+            [f(r), f(g), f(bl)]
+        })
     }
 
     /// Auto-enhance: stretch each channel between its 0.5 % / 99.5 % percentiles — auto levels plus
@@ -665,7 +732,8 @@ mod tests {
             EditOp::Midrange(-20), EditOp::Shadows(25), EditOp::Blackpoint(10),
             EditOp::Saturation(-40), EditOp::Vibrance(35), EditOp::Warmth(15),
             EditOp::Tint(-25), EditOp::Definition(20), EditOp::Sharpen(-22),
-            EditOp::NoiseReduction(30),
+            EditOp::NoiseReduction(30), EditOp::Vignette(40),
+            EditOp::Levels { black: 16, white: 235, gamma: 110 },
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -724,6 +792,12 @@ mod tests {
         assert_eq!(EditOp::from_tag("desaturate"), Some(EditOp::Saturation(-22)));
         assert_eq!(EditOp::from_tag("brighter"), Some(EditOp::Brightness(20)));
         assert_eq!(EditOp::from_tag("auto"), Some(EditOp::AutoEnhance));
+        assert_eq!(EditOp::from_tag("vignette"), Some(EditOp::Vignette(30)));
+        assert_eq!(EditOp::from_tag("vignette_light"), Some(EditOp::Vignette(-30)));
+        assert_eq!(
+            EditOp::from_tag("levels:16,235,1.1"),
+            Some(EditOp::Levels { black: 16, white: 235, gamma: 110 })
+        );
         // Tag angle is in degrees; the op stores tenths (5° → 50, 2.5° → 25).
         assert_eq!(EditOp::from_tag("straighten:5"), Some(EditOp::Straighten(50)));
         assert_eq!(EditOp::from_tag("straighten:-2.5"), Some(EditOp::Straighten(-25)));
@@ -751,6 +825,27 @@ mod tests {
         assert!(out.width() < 200 && out.height() < 120);
         let noop = EditOp::Straighten(0).apply(img(20, 20));
         assert_eq!((noop.width(), noop.height()), (20, 20));
+    }
+
+    #[test]
+    fn vignette_darkens_corners_not_centre() {
+        let flat = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(60, 60, Rgb([200, 200, 200])));
+        let out = EditOp::Vignette(60).apply(flat).to_rgb8();
+        let centre = out.get_pixel(30, 30).0[0];
+        let corner = out.get_pixel(0, 0).0[0];
+        assert!(centre >= 198, "centre stays bright ({centre})");
+        assert!(corner < 160, "corner darkened ({corner})");
+    }
+
+    #[test]
+    fn levels_black_and_white_points_clip() {
+        // A 0..255 gradient. Black=64, white=192, gamma=1 → below 64 clips to 0, above 192 to 255.
+        let grad = DynamicImage::ImageRgb8(ImageBuffer::from_fn(256, 1, |x, _| Rgb([x as u8; 3])));
+        let out = EditOp::Levels { black: 64, white: 192, gamma: 100 }.apply(grad).to_rgb8();
+        assert_eq!(out.get_pixel(30, 0).0[0], 0, "below black → 0");
+        assert_eq!(out.get_pixel(220, 0).0[0], 255, "above white → 255");
+        let mid = out.get_pixel(128, 0).0[0];
+        assert!((120..=135).contains(&mid), "midpoint maps to ~mid ({mid})");
     }
 
     #[test]
