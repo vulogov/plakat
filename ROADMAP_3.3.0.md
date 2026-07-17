@@ -11,13 +11,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 ## Track A — more non-AI editing (edit palette + `:` parity)
 
 - [x] **Vignette** — radial edge darken/lighten (`EditOp::Vignette`). Palette + `:` (c687dce).
-- [ ] **Dehaze** — local contrast + saturation lift in low-contrast regions.
+- [x] **Dehaze** — contrast + saturation lift (`EditOp::Dehaze`) (0b1ed1a).
 - [x] **Curves / Levels** — black/white/gamma (`EditOp::Levels`) with an interactive live-preview
       editor (↑↓ pick handle, ←→ adjust); `:` one-shot `levels B W G` (c687dce).
-- [ ] **Hue rotate / selective colour / split-tone** — colour-grading beyond warmth/tint.
-- [ ] **Film grain**, **median despeckle** (a stronger denoise than the blur blend).
-- [ ] **Redact GPS only** — keep the rest of the EXIF (needs an EXIF read+rewrite, unlike the
-      lossless full-strip already shipped).
+- [x] **Hue rotate / selective colour / split-tone** — `EditOp::HueRotate` / `SelectiveColor`
+      (per-hue-band saturation) / `SplitTone` (0b1ed1a).
+- [x] **Film grain**, **median despeckle** — `EditOp::Grain` (deterministic, replay-stable) +
+      `EditOp::Despeckle` (3×3 median) (0b1ed1a).
+- [x] **Redact GPS only** — `scrub::redact_gps` zeros the GPS IFD (via IFD0 tag 0x8825), keeps the
+      rest of the EXIF; lossless JPEG/PNG. `EditCmd::RedactGps` + `Action::RedactGps` (0b1ed1a).
 - [ ] **Batch convert/rename presets** — remembered format/size targets for one-key export sets.
 
 Each stays non-destructive (an `EditOp` or a `scrub`-style file op), searchable in the palette, and
