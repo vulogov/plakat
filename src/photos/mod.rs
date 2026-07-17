@@ -12,6 +12,7 @@ pub mod exif;
 pub mod export;
 pub mod hjson;
 pub mod import;
+pub mod layers;
 pub mod mledit;
 pub mod nl;
 pub mod portfolio;
@@ -86,6 +87,8 @@ enum PendingCmd {
     CropExact,
     /// Resize the cursor image to fit the entered `WxH` (or single `N`) pixels.
     ResizeExact,
+    /// Add the entered image (album filename or path) as a new top layer in layer mode.
+    AddLayer,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -123,6 +126,7 @@ enum EditCmd {
     FreeCrop,
     CropExact,  // prompts for WxH pixels
     ResizeExact, // prompts for WxH (or N) pixels
+    Layers,     // interactive layer compositing
     Undo,
     Redo,
     Revert,
@@ -141,6 +145,7 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("crop free-form (interactive)", EditCmd::FreeCrop),
         ("crop to exact size (WxH px)", EditCmd::CropExact),
         ("resize to exact size (WxH or N px)", EditCmd::ResizeExact),
+        ("layers — overlay / compose images", EditCmd::Layers),
         ("crop to square 1:1", EditCmd::Op(CropSquare)),
         ("crop 4:5 (portrait)", EditCmd::Op(CropAspect { w: 4, h: 5 })),
         ("crop 5:4", EditCmd::Op(CropAspect { w: 5, h: 4 })),
@@ -241,6 +246,11 @@ struct App {
     // Interactive free-form crop (from the Edit palette): rect in [0,1] fractions (x, y, w, h).
     crop_mode: bool,
     crop_rect: (f32, f32, f32, f32),
+    // Interactive layer compositing (Phase 8): an overlay stack over the cursor image. The stack is
+    // persisted on the image's record (`layers`); `layer_active` is the selected layer.
+    layer_mode: bool,
+    layers: Vec<layers::Layer>,
+    layer_active: usize,
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
     // Vision + AI menu (RFC §Phase 7).
@@ -345,6 +355,9 @@ impl App {
             edit_visible: 10,
             crop_mode: false,
             crop_rect: (0.1, 0.1, 0.8, 0.8),
+            layer_mode: false,
+            layers: Vec::new(),
+            layer_active: 0,
             ml_menu: false,
             ai_menu: false,
             jobs: VecDeque::new(),
@@ -911,6 +924,7 @@ impl App {
                 self.edit_menu = false;
                 self.prompt("resize to (WxH or N px): ", "", PendingCmd::ResizeExact);
             }
+            EditCmd::Layers => self.enter_layers(),
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
@@ -978,6 +992,178 @@ impl App {
         self.crop_mode = false;
         self.load_view();
         self.status = "crop cancelled".into();
+    }
+
+    // ---- Layer compositing (Phase 8) -------------------------------------------------------------
+
+    /// Enter interactive layer compositing on the cursor image, loading any persisted stack.
+    fn enter_layers(&mut self) {
+        let Some((dir, _)) = self.cur_source() else {
+            self.status = "open an image first".into();
+            return;
+        };
+        self.edit_menu = false;
+        self.layers = self
+            .cur_idx()
+            .and_then(|i| self.album_paths.get(i))
+            .and_then(|p| self.record(p))
+            .map(|r| r.layers.iter().map(|e| layers::Layer::from_entry(e, &dir)).collect())
+            .unwrap_or_default();
+        self.layer_active = self.layers.len().saturating_sub(1);
+        self.layer_mode = true;
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_layer_status();
+    }
+
+    /// Prompt for a source image to add as a new top layer (an album filename or a filesystem path).
+    fn layer_add_prompt(&mut self) {
+        self.prompt("add layer (album file or path): ", "", PendingCmd::AddLayer);
+    }
+
+    /// Resolve `spec` (an in-album filename first, else a path) and push it as a new top layer.
+    fn add_layer(&mut self, spec: &str) {
+        let Some((dir, _)) = self.cur_source() else { return };
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return;
+        }
+        let in_album = dir.join(spec);
+        let path = if in_album.exists() {
+            in_album
+        } else {
+            let p = expand_tilde(spec);
+            if p.exists() {
+                p
+            } else {
+                self.status = format!("no such image: {spec}");
+                return;
+            }
+        };
+        self.layers.push(layers::Layer::new(path));
+        self.layer_active = self.layers.len() - 1;
+        self.after_layer_change();
+    }
+
+    /// Move the active layer by `(dx, dy)` fractions of the base.
+    fn nudge_layer(&mut self, dx: f32, dy: f32) {
+        let Some(l) = self.layers.get_mut(self.layer_active) else { return };
+        l.x = (l.x + dx).clamp(-0.9, 0.99);
+        l.y = (l.y + dy).clamp(-0.9, 0.99);
+        self.after_layer_change();
+    }
+
+    /// Grow/shrink the active layer (scale = fraction of base width).
+    fn scale_layer(&mut self, d: f32) {
+        let Some(l) = self.layers.get_mut(self.layer_active) else { return };
+        l.scale = (l.scale + d).clamp(0.02, 4.0);
+        self.after_layer_change();
+    }
+
+    /// Adjust the active layer's opacity.
+    fn opacity_layer(&mut self, d: f32) {
+        let Some(l) = self.layers.get_mut(self.layer_active) else { return };
+        l.opacity = (l.opacity + d).clamp(0.0, 1.0);
+        self.after_layer_change();
+    }
+
+    /// Cycle the active layer's blend mode.
+    fn cycle_layer_blend(&mut self) {
+        let Some(l) = self.layers.get_mut(self.layer_active) else { return };
+        l.blend = l.blend.cycle();
+        self.after_layer_change();
+    }
+
+    /// Select the next/previous layer (wraps).
+    fn select_layer(&mut self, delta: i32) {
+        if self.layers.is_empty() {
+            return;
+        }
+        let n = self.layers.len() as i32;
+        self.layer_active = (((self.layer_active as i32 + delta) % n + n) % n) as usize;
+        self.load_view();
+        self.set_layer_status();
+    }
+
+    /// Move the active layer up (`up`=toward the top of the stack) or down in z-order.
+    fn reorder_layer(&mut self, up: bool) {
+        let i = self.layer_active;
+        if up && i + 1 < self.layers.len() {
+            self.layers.swap(i, i + 1);
+            self.layer_active = i + 1;
+        } else if !up && i > 0 {
+            self.layers.swap(i, i - 1);
+            self.layer_active = i - 1;
+        } else {
+            return;
+        }
+        self.after_layer_change();
+    }
+
+    /// Delete the active layer.
+    fn delete_layer(&mut self) {
+        if self.layer_active >= self.layers.len() {
+            return;
+        }
+        self.layers.remove(self.layer_active);
+        self.layer_active = self.layer_active.min(self.layers.len().saturating_sub(1));
+        self.after_layer_change();
+    }
+
+    /// Persist the stack + refresh the composited preview + status after any change.
+    fn after_layer_change(&mut self) {
+        self.persist_layers();
+        self.load_view();
+        self.set_layer_status();
+    }
+
+    /// Write the working stack onto the cursor image's record.
+    fn persist_layers(&mut self) {
+        let Some((dir, _)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        let entries: Vec<hjson::LayerEntry> = self.layers.iter().map(|l| l.to_entry(&dir)).collect();
+        self.edit_record_at(&path, |rec| rec.layers = entries);
+    }
+
+    fn set_layer_status(&mut self) {
+        if let Some(l) = self.layers.get(self.layer_active) {
+            self.status = format!(
+                "layer {}/{}: {} · arrows move · +/- size · < > opacity · b blend · {{ }} order · n/p select · x del · a add · Enter flatten · Esc",
+                self.layer_active + 1,
+                self.layers.len(),
+                l.label()
+            );
+        } else {
+            self.status = "layers · a add an image · Esc leave".into();
+        }
+    }
+
+    /// Bake the stack into a new `_layered.png` variant, record it, and return to the grid on it.
+    fn flatten_layers(&mut self) {
+        let Some((dir, _)) = self.cur_source() else { return };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else { return };
+        if self.layers.is_empty() {
+            self.status = "no layers to flatten — press a to add one".into();
+            return;
+        }
+        match layers::flatten(&path, &dir, &self.layers) {
+            Ok(name) => {
+                self.record_variant(&path, &name);
+                self.layer_mode = false;
+                self.mode = AlbumMode::Grid;
+                self.rescan();
+                self.select_by_name(&name);
+                self.status = format!("flattened {} layer(s) → {name}", self.layers.len());
+            }
+            Err(e) => self.status = format!("flatten failed: {e:#}"),
+        }
+    }
+
+    /// Leave layer mode (the stack stays persisted for next time).
+    fn cancel_layers(&mut self) {
+        self.layer_mode = false;
+        self.load_view();
+        self.status = "layers closed (stack saved)".into();
     }
 
     /// Append a pixel edit to the cursor image: back up the pristine original (once), record the op
@@ -1550,6 +1736,9 @@ impl App {
                         None => self.status = "enter WxH, or a single number for the longer side".into(),
                     }
                 }
+                Some(PendingCmd::AddLayer) if !arg.is_empty() => {
+                    self.add_layer(&arg);
+                }
                 Some(PendingCmd::Portfolio) if !arg.is_empty() => {
                     // `DIR [MAXPX] | watermark text` — `|` splits off the optional watermark.
                     let (left, mark) = match arg.split_once('|') {
@@ -1716,7 +1905,9 @@ impl App {
             .as_ref()
             .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
-                let img = if self.crop_mode {
+                let img = if self.layer_mode {
+                    layers::composite(&img, &self.layers, Some(self.layer_active)) // live composite
+                } else if self.crop_mode {
                     crop_preview(&img, self.crop_rect) // full image, dimmed outside the crop rect
                 } else if zoom > 1.01 {
                     crop_center(&img, zoom)
@@ -2208,6 +2399,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_filter_key(app, k.code);
         return false;
     }
+    if app.layer_mode {
+        handle_layer_key(app, k.code);
+        return false;
+    }
     if app.crop_mode {
         handle_crop_key(app, k.code);
         return false;
@@ -2256,6 +2451,32 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
         KeyCode::Char(']') => app.adjust_crop(0.0, 0.0, s, 0.0),
         KeyCode::Char(',') => app.adjust_crop(0.0, 0.0, 0.0, -s),
         KeyCode::Char('.') => app.adjust_crop(0.0, 0.0, 0.0, s),
+        _ => {}
+    }
+}
+
+/// Interactive layer compositing (Phase 8): arrows move the active layer over a live composited
+/// preview; the stack persists on the record; Enter flattens to a new `_layered.png` variant.
+fn handle_layer_key(app: &mut App, code: KeyCode) {
+    let m = 0.02;
+    match code {
+        KeyCode::Esc => app.cancel_layers(),
+        KeyCode::Enter => app.flatten_layers(),
+        KeyCode::Char('a') => app.layer_add_prompt(),
+        KeyCode::Left => app.nudge_layer(-m, 0.0),
+        KeyCode::Right => app.nudge_layer(m, 0.0),
+        KeyCode::Up => app.nudge_layer(0.0, -m),
+        KeyCode::Down => app.nudge_layer(0.0, m),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.scale_layer(0.05),
+        KeyCode::Char('-') | KeyCode::Char('_') => app.scale_layer(-0.05),
+        KeyCode::Char('<') | KeyCode::Char(',') => app.opacity_layer(-0.05),
+        KeyCode::Char('>') | KeyCode::Char('.') => app.opacity_layer(0.05),
+        KeyCode::Char('b') => app.cycle_layer_blend(),
+        KeyCode::Char('{') | KeyCode::Char('[') => app.reorder_layer(false),
+        KeyCode::Char('}') | KeyCode::Char(']') => app.reorder_layer(true),
+        KeyCode::Char('n') | KeyCode::Tab => app.select_layer(1),
+        KeyCode::Char('p') | KeyCode::BackTab => app.select_layer(-1),
+        KeyCode::Char('x') => app.delete_layer(),
         _ => {}
     }
 }
@@ -3190,10 +3411,13 @@ enum HelpCtx {
     Cull,
     Compare,
     Crop,
+    Layers,
 }
 
 fn help_ctx(app: &App) -> HelpCtx {
-    if app.crop_mode {
+    if app.layer_mode {
+        HelpCtx::Layers
+    } else if app.crop_mode {
         HelpCtx::Crop
     } else if app.focus == Focus::Tree {
         HelpCtx::Tree
@@ -3215,6 +3439,7 @@ fn ctx_name(ctx: &HelpCtx) -> &'static str {
         HelpCtx::Cull => "Cull loupe",
         HelpCtx::Compare => "Compare",
         HelpCtx::Crop => "Free-form crop",
+        HelpCtx::Layers => "Layers",
     }
 }
 
@@ -3344,6 +3569,25 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(state("(for an exact size, use the Edit palette → crop/resize to exact size)"));
             return l; // crop mode has no global chords
         }
+        HelpCtx::Layers => {
+            l.push(hd("Layers"));
+            if let Some(la) = app.layers.get(app.layer_active) {
+                l.push(state(format!("active {}/{}: {}", app.layer_active + 1, app.layers.len(), la.label())));
+            } else {
+                l.push(state("stack is empty — press a to add an image"));
+            }
+            l.push(hd("Build the stack"));
+            l.push(kv("a", "add an image (album file or path) as a new top layer"));
+            l.push(kv("n / p", "select next / previous layer (Tab / Shift-Tab)"));
+            l.push(kv("{ / }", "move the active layer down / up in z-order"));
+            l.push(kv("x", "delete the active layer"));
+            l.push(hd("Transform the active layer"));
+            l.push(kv("← ↑ → ↓", "move · + / - grow / shrink"));
+            l.push(kv("< / >", "opacity down / up · b cycle blend mode"));
+            l.push(hd("Finish"));
+            l.push(kv("Enter", "flatten → a new _layered.png · Esc leave (stack saved)"));
+            return l; // layer mode has no global chords
+        }
     }
     l.push(hd("Anywhere"));
     l.push(kv("Ctrl-B", "h/H help · t tags · v versions · l/L lookalike · q quit"));
@@ -3362,7 +3606,8 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("delete", "delete this folder/album (D)"));
             l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
         }
-        HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop => {
+        HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop
+        | HelpCtx::Layers => {
             let provider = crate::prompt::vision::resolve_vision_provider("auto");
             let target = if app.selected.is_empty() { "the view" } else { "the selection" };
             l.extend(album_state_lines(app));
@@ -3378,6 +3623,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("upscale", "ML ×4 (M → u)"));
             l.push(kv("img2img", "transform / relight with a prompt (M → i/l)"));
             l.push(kv("edit", "rotate/flip/crop/bright/contrast (E)"));
+            l.push(kv("layers", "overlay/compose images → flatten (E → layers)"));
             l.push(kv("export", format!("copy {target} out, optional resize (X)")));
             l.push(kv("portfolio", "Ctrl-B p: watermarked copies + contact sheet"));
             l.push(kv("rename", "batch-rename with a #-pattern (r)"));
@@ -3637,6 +3883,42 @@ fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Layer-mode HUD (Phase 8): the stack listed top-of-stack first, the active layer highlighted.
+fn draw_layers_hud(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        " Layers · a add · b blend · {} order · Enter flatten · Esc ",
+        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ))];
+    if app.layers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (empty) — press a to add an image",
+            Style::new().fg(Color::DarkGray),
+        )));
+    }
+    // Top of the list = top of the stack (last composited).
+    for (i, l) in app.layers.iter().enumerate().rev() {
+        let sel = i == app.layer_active;
+        let mut st = Style::default();
+        if sel {
+            st = st.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", if sel { "▶" } else { " " }, l.label()),
+            st,
+        )));
+    }
+    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 2).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect { x: area.x, y: area.y, width: w, height: h };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).border_style(Style::new().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
 /// View-analysis panel (Phase 6): a luma histogram bar chart + exposure/focus stats.
 fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title(" Analysis (H) ");
@@ -3708,6 +3990,11 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_stateful_widget(StatefulImage::new().resize(Resize::Scale(None)), img_area, proto)
         }
         None => f.render_widget(Paragraph::new("  decoding…").style(Style::new().fg(Color::DarkGray)), img_area),
+    }
+
+    // Layer mode: a compact stack HUD over the top-left of the image.
+    if app.layer_mode {
+        draw_layers_hud(f, app, img_area);
     }
 
     // The analysis panel (H) takes precedence over EXIF (i) when both are on.

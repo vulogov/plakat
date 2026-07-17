@@ -342,6 +342,34 @@ always get you back, and ten edits cost one re-encode from the original, not ten
 The edit list is stored in the image's `album.hjson` record (`edits`), so it
 persists across sessions and shows in the image-view panel (`i`).
 
+### Layers — overlay & compose (`E` → layers)
+
+Pick **layers — overlay / compose images** from the edit palette to stack one or
+more images on top of the current one, each with its own position, size, opacity,
+blend mode, and z-order. The image pane shows a **live composite** as you work, with
+the active layer outlined in cyan; a HUD in the top-left lists the stack (top of the
+list = top of the stack).
+
+| Key | Does |
+|-----|------|
+| `a` | add an image as a new top layer — enter an **album filename** or a **path** |
+| `n` / `p` (or `Tab` / `Shift-Tab`) | select the next / previous layer |
+| `←` `↑` `→` `↓` | move the active layer |
+| `+` / `-` | grow / shrink the active layer |
+| `<` / `>` | opacity down / up |
+| `b` | cycle blend mode — **normal → multiply → screen → overlay** |
+| `{` / `}` | move the active layer down / up in z-order |
+| `x` | delete the active layer |
+| `Enter` | **flatten** the stack into a new `_layered.png` |
+| `Esc` | leave (the stack is saved — reopen to keep editing) |
+
+Position (`x`/`y`) and size (`scale`) are fractions of the base image, so a layer
+keeps its placement even if you flatten at a different resolution. **Flatten** never
+touches the base — it writes a new `<name>_layered.png` derivative into the album
+(recorded as a variant, like an ML edit) and drops you on it in the grid. The layer
+stack itself lives on the image's `album.hjson` record (`layers`), so closing with
+`Esc` keeps it for next time. `Ctrl-B h` shows these keys while you're in layer mode.
+
 ## 9. ML editing (`M`)
 
 The T1 edits above are instant, geometric. For **model-powered** edits, press `M`

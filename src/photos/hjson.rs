@@ -80,6 +80,30 @@ pub struct EditEntry {
     pub ts: Option<String>,
 }
 
+/// One composite layer (Phase 8): an image overlaid on the base with position/scale/opacity/blend.
+/// `src` is relative to the album when the source lives under it, else an absolute path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerEntry {
+    pub src: String,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+    #[serde(default = "one_f32")]
+    pub scale: f32,
+    #[serde(default = "one_f32")]
+    pub opacity: f32,
+    #[serde(default = "normal_blend")]
+    pub blend: String,
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+fn normal_blend() -> String {
+    "normal".to_string()
+}
+
 /// Per-image record. Key in `AlbumMeta.images` = filename (no path). Sparse — only set fields
 /// are stored.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -116,6 +140,10 @@ pub struct ImageRecord {
     pub generation: Option<crate::imaging::metadata::GenerationMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edits: Vec<EditEntry>,
+    /// Composite layer stack (Phase 8): images overlaid on the base, flattened into a `_layered.png`
+    /// variant on demand. Non-destructive — the stack stays editable across sessions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<LayerEntry>,
 }
 
 /// `album.hjson` — album metadata + sparse per-image records.
