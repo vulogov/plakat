@@ -292,13 +292,35 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
-        // Stylize — algorithmic filters (s)
-        ("oil paint", "so", EditCmd::Op(OilPaint(3))),
+        // Stylize — algorithmic filters (s). Numbered variants are palette-only (empty chord).
         ("pencil sketch", "sk", EditCmd::Op(PencilSketch)),
         ("cartoon / comic", "st", EditCmd::Op(Cartoon)),
-        ("watercolour", "sw", EditCmd::Op(Watercolor)),
         ("emboss", "se", EditCmd::Op(Emboss)),
         ("pixelate / mosaic…", "sx", EditCmd::Adjust(Pixelate(0))),
+        ("ink: European", "si", EditCmd::Op(Ink(1))),
+        ("ink: Japanese sumi-e", "sj", EditCmd::Op(Ink(2))),
+        ("ink: Chinese wash", "sh", EditCmd::Op(Ink(3))),
+        ("ink: Russian icon (tempera)", "sr", EditCmd::Op(Ink(4))),
+        ("oil paint 1", "", EditCmd::Op(OilPaint(1))),
+        ("oil paint 2", "", EditCmd::Op(OilPaint(2))),
+        ("oil paint 3", "so", EditCmd::Op(OilPaint(3))),
+        ("oil paint 4", "", EditCmd::Op(OilPaint(4))),
+        ("oil paint 5", "", EditCmd::Op(OilPaint(5))),
+        ("oil paint 6", "", EditCmd::Op(OilPaint(6))),
+        ("oil paint 7", "", EditCmd::Op(OilPaint(7))),
+        ("oil paint 8", "", EditCmd::Op(OilPaint(8))),
+        ("oil paint 9", "", EditCmd::Op(OilPaint(9))),
+        ("oil paint 10", "", EditCmd::Op(OilPaint(10))),
+        ("watercolour 1", "", EditCmd::Op(Watercolor(1))),
+        ("watercolour 2", "", EditCmd::Op(Watercolor(2))),
+        ("watercolour 3", "", EditCmd::Op(Watercolor(3))),
+        ("watercolour 4", "", EditCmd::Op(Watercolor(4))),
+        ("watercolour 5", "sw", EditCmd::Op(Watercolor(5))),
+        ("watercolour 6", "", EditCmd::Op(Watercolor(6))),
+        ("watercolour 7", "", EditCmd::Op(Watercolor(7))),
+        ("watercolour 8", "", EditCmd::Op(Watercolor(8))),
+        ("watercolour 9", "", EditCmd::Op(Watercolor(9))),
+        ("watercolour 10", "", EditCmd::Op(Watercolor(10))),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -307,9 +329,9 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
     v
 }
 
-/// Look up an edit command by its 2-char chord.
+/// Look up an edit command by its 2-char chord (empty chords are palette-only, never matched).
 fn edit_cmd_for_chord(chord: &str) -> Option<EditCmd> {
-    edit_commands().into_iter().find(|(_, c, _)| *c == chord).map(|(_, _, cmd)| cmd)
+    edit_commands().into_iter().find(|(_, c, _)| !c.is_empty() && *c == chord).map(|(_, _, cmd)| cmd)
 }
 
 /// Edit commands whose label or chord contains `query` (case-insensitive; empty query = all).
@@ -5915,13 +5937,12 @@ fn draw_edit_palette(f: &mut Frame, app: &mut App, area: Rect) {
         let sel = i == cursor;
         let base = if sel { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
         let name = format!(" {label:<w$}", w = labw.saturating_sub(1));
-        lines.push(Line::from(vec![
-            Span::styled(name, base),
-            Span::styled(
-                format!("⌃B {chord} "),
-                if sel { base } else { Style::new().fg(Color::DarkGray) },
-            ),
-        ]));
+        let chord_span = if chord.is_empty() {
+            Span::styled("       ".to_string(), base)
+        } else {
+            Span::styled(format!("⌃B {chord} "), if sel { base } else { Style::new().fg(Color::DarkGray) })
+        };
+        lines.push(Line::from(vec![Span::styled(name, base), chord_span]));
     }
     let title = format!(" Edit palette  {}/{} · Enter run · ⌃B chord · Esc ", (cursor + 1).min(cmds.len().max(1)), cmds.len());
     f.render_widget(
@@ -6562,6 +6583,9 @@ mod tree_ops_tests {
         }
         let mut seen = std::collections::HashSet::new();
         for (_, chord, _) in edit_commands() {
+            if chord.is_empty() {
+                continue; // palette-only entry (e.g. a numbered filter variant)
+            }
             assert_eq!(chord.chars().count(), 2, "chord '{chord}' must be 2 chars");
             let cat = chord.chars().next().unwrap();
             assert!(cats.contains(&cat), "chord '{chord}' category '{cat}' not registered");

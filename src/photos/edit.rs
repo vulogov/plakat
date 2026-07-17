@@ -98,14 +98,17 @@ pub enum EditOp {
     Solarize(i32),
     /// Threshold to black & white at luma `level` (0..255).
     Threshold(i32),
-    /// Oil-paint / oilify filter (per-pixel dominant-intensity bucket over a `radius`).
+    /// Oil-paint / oilify filter — `style` 1..10 selects a brush/palette preset.
     OilPaint(i32),
     /// Pencil-sketch (grayscale colour-dodge of a blurred inverse).
     PencilSketch,
     /// Cartoon / comic (colour quantise + dark ink edges).
     Cartoon,
-    /// Watercolour (edge-preserving smoothing + reduced palette + soft edges).
-    Watercolor,
+    /// Watercolour — `style` 1..10 selects a wash/palette preset.
+    Watercolor(i32),
+    /// Ink / traditional painting — `style`: 1 European ink · 2 Japanese sumi-e · 3 Chinese wash ·
+    /// 4 Russian icon (tempera).
+    Ink(i32),
     /// Emboss (directional gradient, grey relief).
     Emboss,
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
@@ -167,10 +170,11 @@ impl EditOp {
             EditOp::Posterize(v) => adjust::posterize(&img, v),
             EditOp::Solarize(v) => adjust::solarize(&img, v),
             EditOp::Threshold(v) => adjust::threshold(&img, v),
-            EditOp::OilPaint(r) => adjust::oil_paint(&img, r),
+            EditOp::OilPaint(v) => adjust::oil_paint(&img, v),
             EditOp::PencilSketch => adjust::pencil_sketch(&img),
             EditOp::Cartoon => adjust::cartoon(&img),
-            EditOp::Watercolor => adjust::watercolor(&img),
+            EditOp::Watercolor(v) => adjust::watercolor(&img, v),
+            EditOp::Ink(v) => adjust::ink(&img, v),
             EditOp::Emboss => adjust::emboss(&img),
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
@@ -306,10 +310,11 @@ impl EditOp {
             EditOp::Posterize(_) => "posterize".into(),
             EditOp::Solarize(_) => "solarize".into(),
             EditOp::Threshold(_) => "threshold".into(),
-            EditOp::OilPaint(_) => "oil paint".into(),
+            EditOp::OilPaint(v) => format!("oil paint {}", v.clamp(1, 10)),
             EditOp::PencilSketch => "pencil sketch".into(),
             EditOp::Cartoon => "cartoon".into(),
-            EditOp::Watercolor => "watercolour".into(),
+            EditOp::Watercolor(v) => format!("watercolour {}", v.clamp(1, 10)),
+            EditOp::Ink(v) => format!("ink ({})", adjust::ink_name(v)),
             EditOp::Emboss => "emboss".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::CropSquare => "crop 1:1".into(),
@@ -392,7 +397,8 @@ impl EditOp {
             EditOp::OilPaint(v) => val_op(&mut params, v, "oil_paint"),
             EditOp::PencilSketch => "pencil_sketch",
             EditOp::Cartoon => "cartoon",
-            EditOp::Watercolor => "watercolor",
+            EditOp::Watercolor(v) => val_op(&mut params, v, "watercolor"),
+            EditOp::Ink(v) => val_op(&mut params, v, "ink"),
             EditOp::Emboss => "emboss",
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::CropSquare => "crop_square",
@@ -478,7 +484,11 @@ impl EditOp {
             "oil_paint" | "oilify" | "oil" => EditOp::OilPaint(3),
             "pencil_sketch" | "sketch" | "pencil" => EditOp::PencilSketch,
             "cartoon" | "comic" => EditOp::Cartoon,
-            "watercolor" | "watercolour" => EditOp::Watercolor,
+            "watercolor" | "watercolour" => EditOp::Watercolor(5),
+            "european_ink" | "ink" => EditOp::Ink(1),
+            "japanese_ink" | "sumie" | "sumi_e" => EditOp::Ink(2),
+            "chinese_ink" | "ink_wash" | "shanshui" => EditOp::Ink(3),
+            "russian_icon" | "icon" | "tempera" => EditOp::Ink(4),
             "emboss" => EditOp::Emboss,
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
@@ -578,7 +588,8 @@ impl EditOp {
             "oil_paint" => EditOp::OilPaint(val()),
             "pencil_sketch" => EditOp::PencilSketch,
             "cartoon" => EditOp::Cartoon,
-            "watercolor" => EditOp::Watercolor,
+            "watercolor" => EditOp::Watercolor(val()),
+            "ink" => EditOp::Ink(val()),
             "emboss" => EditOp::Emboss,
             "pixelate" => EditOp::Pixelate(val()),
             "crop_square" => EditOp::CropSquare,
@@ -1071,32 +1082,30 @@ mod adjust {
         })
     }
 
-    /// Oil-paint / oilify: for each pixel, over a `radius` window, pick the most common intensity
-    /// bucket and paint that bucket's average colour.
-    pub fn oil_paint(img: &DynamicImage, radius: i32) -> DynamicImage {
-        let r = radius.clamp(1, 6);
-        let rgb = img.to_rgb8();
+    /// Oilify core: for each pixel, over a `radius` window with `bins` intensity buckets, paint the
+    /// most-common bucket's average colour.
+    fn oilify(rgb: &RgbImage, radius: i32, bins: usize) -> RgbImage {
         let (w, h) = (rgb.width() as i32, rgb.height() as i32);
-        const NB: usize = 20;
+        let bins = bins.clamp(4, 32);
         let mut out = RgbImage::new(w as u32, h as u32);
         for y in 0..h {
             for x in 0..w {
-                let mut cnt = [0u32; NB];
-                let mut sum = [[0u32; 3]; NB];
-                for dy in -r..=r {
-                    for dx in -r..=r {
+                let mut cnt = vec![0u32; bins];
+                let mut sum = vec![[0u32; 3]; bins];
+                for dy in -radius..=radius {
+                    for dx in -radius..=radius {
                         let sx = (x + dx).clamp(0, w - 1) as u32;
                         let sy = (y + dy).clamp(0, h - 1) as u32;
                         let p = rgb.get_pixel(sx, sy).0;
                         let l = luma(p[0] as f32, p[1] as f32, p[2] as f32) as usize;
-                        let b = (l * NB / 256).min(NB - 1);
+                        let b = (l * bins / 256).min(bins - 1);
                         cnt[b] += 1;
                         for c in 0..3 {
                             sum[b][c] += p[c] as u32;
                         }
                     }
                 }
-                let best = (0..NB).max_by_key(|&b| cnt[b]).unwrap_or(0);
+                let best = (0..bins).max_by_key(|&b| cnt[b]).unwrap_or(0);
                 let n = cnt[best].max(1);
                 out.put_pixel(
                     x as u32,
@@ -1105,7 +1114,23 @@ mod adjust {
                 );
             }
         }
-        DynamicImage::ImageRgb8(out)
+        out
+    }
+
+    /// Oil-paint style presets: `(radius, bins, saturation×100 delta)` — ten distinct brush looks.
+    fn oil_style(v: i32) -> (i32, usize, i32) {
+        const S: [(i32, usize, i32); 10] = [
+            (2, 24, 5), (3, 20, 12), (3, 14, 22), (4, 18, 0), (4, 10, 30),
+            (5, 16, 15), (2, 12, 40), (5, 8, 25), (3, 28, -12), (6, 12, 10),
+        ];
+        S[(v.clamp(1, 10) - 1) as usize]
+    }
+
+    /// Oil paint, style 1..10.
+    pub fn oil_paint(img: &DynamicImage, style: i32) -> DynamicImage {
+        let (r, bins, sat) = oil_style(style);
+        let painted = DynamicImage::ImageRgb8(oilify(&img.to_rgb8(), r, bins));
+        if sat != 0 { saturation(&painted, sat) } else { painted }
     }
 
     /// Pencil sketch: colour-dodge the grayscale by a blurred inverse of itself.
@@ -1163,26 +1188,147 @@ mod adjust {
         DynamicImage::ImageRgb8(out)
     }
 
-    /// Watercolour: edge-preserving smoothing (median blur) + reduced palette + soft dark edges.
-    pub fn watercolor(img: &DynamicImage) -> DynamicImage {
-        let base = despeckle(img, 100); // median smoothing
-        let sm = image::imageops::blur(&base.to_rgb8(), 1.0);
+    /// Watercolour core: edge-preserving smoothing + reduced palette (`levels`) + soft dark edges
+    /// (`edge`), on an optionally `warm`-tinted, `sat`-scaled base.
+    fn watercolor_core(img: &DynamicImage, blur: f32, levels: f32, edge: f32, sat: i32, warm: i32) -> DynamicImage {
+        let mut base = despeckle(img, 100); // median smoothing
+        if sat != 0 {
+            base = saturation(&base, sat);
+        }
+        if warm != 0 {
+            base = warmth(&base, warm);
+        }
+        let sm = image::imageops::blur(&base.to_rgb8(), blur.max(0.3));
         let (w, h) = (sm.width(), sm.height());
+        let n = (levels - 1.0).max(1.0);
         let mut out = RgbImage::new(w, h);
         for y in 0..h {
             for x in 0..w {
                 let p = sm.get_pixel(x, y).0;
-                let q = |c: u8| (c as f32 / 255.0 * 9.0).round() / 9.0 * 255.0;
+                let q = |c: u8| (c as f32 / 255.0 * n).round() / n;
                 let e = edge_mag(&sm, x, y);
-                let dark = 1.0 - 0.5 * (e - 0.2).clamp(0.0, 1.0); // gently darken strong edges
-                out.put_pixel(
-                    x,
-                    y,
-                    Rgb([enc(q(p[0]) / 255.0 * dark), enc(q(p[1]) / 255.0 * dark), enc(q(p[2]) / 255.0 * dark)]),
-                );
+                let dark = 1.0 - edge * (e - 0.2).clamp(0.0, 1.0);
+                out.put_pixel(x, y, Rgb([enc(q(p[0]) * dark), enc(q(p[1]) * dark), enc(q(p[2]) * dark)]));
             }
         }
         DynamicImage::ImageRgb8(out)
+    }
+
+    /// Watercolour style presets: `(blur, palette levels, edge darkening, saturation, warmth)`.
+    fn watercolor_style(v: i32) -> (f32, f32, f32, i32, i32) {
+        const S: [(f32, f32, f32, i32, i32); 10] = [
+            (1.0, 10.0, 0.5, 10, 4), (1.5, 8.0, 0.4, 20, 8), (2.0, 6.0, 0.6, 15, 0),
+            (0.8, 12.0, 0.7, 5, -6), (2.5, 7.0, 0.3, 25, 12), (1.2, 9.0, 0.55, 12, 6),
+            (3.0, 5.0, 0.45, 30, -4), (1.8, 11.0, 0.35, 8, 10), (1.0, 6.0, 0.8, 18, 2),
+            (2.2, 8.0, 0.5, 22, 16),
+        ];
+        S[(v.clamp(1, 10) - 1) as usize]
+    }
+
+    /// Watercolour, style 1..10.
+    pub fn watercolor(img: &DynamicImage, style: i32) -> DynamicImage {
+        let (b, l, e, s, w) = watercolor_style(style);
+        watercolor_core(img, b, l, e, s, w)
+    }
+
+    /// Short name for an ink/paint style.
+    pub fn ink_name(v: i32) -> &'static str {
+        match v {
+            1 => "European",
+            2 => "Japanese sumi-e",
+            3 => "Chinese wash",
+            4 => "Russian icon",
+            _ => "ink",
+        }
+    }
+
+    fn to_gray(img: &DynamicImage) -> DynamicImage {
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            [y, y, y]
+        })
+    }
+
+    /// Ink / traditional-painting styles (non-AI combinations of tone, edges, wash, and tint).
+    pub fn ink(img: &DynamicImage, style: i32) -> DynamicImage {
+        match style {
+            // European pen-and-ink: high-contrast black lines on white (edges over a bright wash).
+            1 => {
+                let rgb = img.to_rgb8();
+                let (w, h) = (rgb.width(), rgb.height());
+                let mut out = RgbImage::new(w, h);
+                for y in 0..h {
+                    for x in 0..w {
+                        let p = rgb.get_pixel(x, y).0;
+                        let yl = luma(p[0] as f32, p[1] as f32, p[2] as f32) / 255.0;
+                        let e = edge_mag(&rgb, x, y);
+                        // Strong edges → ink; dark tones get sparse hatching; else paper white.
+                        let v = if e > 0.22 || (yl < 0.28 && (x + y) % 5 == 0) { 0.0 } else { 1.0 };
+                        out.put_pixel(x, y, Rgb([enc(v), enc(v), enc(v)]));
+                    }
+                }
+                DynamicImage::ImageRgb8(out)
+            }
+            // Japanese sumi-e: soft high-key grey ink, bold dark accents, warm paper.
+            2 => {
+                let g = to_gray(img);
+                let g = brightness_f(&g, 0.12); // high key
+                let sm = DynamicImage::ImageRgb8(image::imageops::blur(&g.to_rgb8(), 1.6));
+                let inked = map_rgb(&sm, |r, _, _| {
+                    let v = if r < 0.32 { r * 0.4 } else { r }; // deepen the darkest strokes
+                    [v, v, v]
+                });
+                warmth(&paper_tint(&inked, [1.0, 0.98, 0.92]), 6)
+            }
+            // Chinese ink wash (shan-shui): soft misty grey gradients, low contrast, paper tone.
+            3 => {
+                let g = to_gray(img);
+                let sm = DynamicImage::ImageRgb8(image::imageops::blur(&g.to_rgb8(), 2.4));
+                let washed = map_rgb(&sm, |r, _, _| {
+                    let v = (r - 0.5) * 0.7 + 0.55; // gentle contrast, lifted
+                    [v, v, v]
+                });
+                paper_tint(&washed, [0.99, 0.98, 0.94])
+            }
+            // Russian icon / egg-tempera: warm ochre/gold palette, flat regions, dark outlines.
+            _ => {
+                let warm = warmth(img, 22);
+                let sm = image::imageops::blur(&warm.to_rgb8(), 1.2);
+                let (w, h) = (sm.width(), sm.height());
+                let mut out = RgbImage::new(w, h);
+                let n = 4.0f32; // flat, posterised regions
+                for y in 0..h {
+                    for x in 0..w {
+                        let p = sm.get_pixel(x, y).0;
+                        let q = |c: u8| (c as f32 / 255.0 * n).round() / n;
+                        let yl = luma(p[0] as f32, p[1] as f32, p[2] as f32) / 255.0;
+                        let e = edge_mag(&sm, x, y);
+                        let mut px = [q(p[0]), q(p[1]), q(p[2])];
+                        // Gold in the highlights.
+                        if yl > 0.72 {
+                            px = [px[0].max(0.85), px[1].max(0.72), px[2].max(0.35)];
+                        }
+                        // Dark ochre outlines.
+                        if e > 0.3 {
+                            px = [0.16, 0.11, 0.06];
+                        }
+                        out.put_pixel(x, y, Rgb([enc(px[0]), enc(px[1]), enc(px[2])]));
+                    }
+                }
+                // A slight vignette for the icon frame feel.
+                vignette(&DynamicImage::ImageRgb8(out), 20)
+            }
+        }
+    }
+
+    /// Multiply toward a paper-tone RGB (subtle warm/cream cast).
+    fn paper_tint(img: &DynamicImage, tint: [f32; 3]) -> DynamicImage {
+        map_rgb(img, |r, g, b| [r * tint[0], g * tint[1], b * tint[2]])
+    }
+
+    /// Brightness as a normalised additive lift (for internal filter use).
+    fn brightness_f(img: &DynamicImage, d: f32) -> DynamicImage {
+        map_rgb(img, |r, g, b| [r + d, g + d, b + d])
     }
 
     /// Emboss: a directional luma gradient rendered as grey relief.
@@ -1489,7 +1635,7 @@ mod tests {
             EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
             EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon,
-            EditOp::Watercolor, EditOp::Emboss, EditOp::Pixelate(40),
+            EditOp::Watercolor(5), EditOp::Ink(2), EditOp::Emboss, EditOp::Pixelate(40),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1638,7 +1784,9 @@ mod tests {
         }));
         let base = src.to_rgb8();
         for op in [
-            EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon, EditOp::Watercolor,
+            EditOp::OilPaint(1), EditOp::OilPaint(7), EditOp::PencilSketch, EditOp::Cartoon,
+            EditOp::Watercolor(1), EditOp::Watercolor(9),
+            EditOp::Ink(1), EditOp::Ink(2), EditOp::Ink(3), EditOp::Ink(4),
             EditOp::Emboss, EditOp::Pixelate(50),
         ] {
             let out = op.apply(src.clone()).to_rgb8();

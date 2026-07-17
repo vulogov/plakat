@@ -411,7 +411,12 @@ The adjustments:
 | Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 | Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
-| Stylize | **oil paint** · **pencil sketch** · **cartoon** · **watercolour** · **emboss** · **pixelate**; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour** |
+| Stylize | **oil paint 1–10** · **watercolour 1–10** · **pencil sketch** · **cartoon** · **emboss** · **pixelate**; **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour** |
+
+Oil paint and watercolour come in **ten numbered styles** each — type `oil` or `water` in the
+palette to browse them. The **ink** family gives four traditional looks: **European** pen-and-ink
+(high-contrast line art), **Japanese** sumi-e (soft high-key grey on warm paper), **Chinese** ink
+wash (misty grey gradients), and **Russian** icon / egg-tempera (warm ochre + gold + dark outlines).
 
 Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
