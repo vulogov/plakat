@@ -355,6 +355,22 @@ type and `Enter`, or `Esc` to cancel.
 
 ---
 
+### Take photo for processing (`P`)
+
+Editing is destructive to *derivatives* — variants and artefacts can clutter (and "poison")
+a nice album. So before you start fiddling, **take** the photo(s): press `P` in the grid
+(on the cursor, or a multi-selection). plakat copies the **highest-resolution version
+available** of each image (the file, its pristine backup, or the biggest variant) into a new
+**nested working sub-album** — named after the image — and drops the tree cursor on it. Now
+all your edits, layers, and exports live in that sub-album; the source album stays clean. In
+the `:` pane it's `take photo` (bare `take` is the *selector* keyword).
+
+**Put back (`p`).** When you're happy, open the workbench sub-album, select the keepers, and
+press **`p`** — plakat copies those finished images **up to the parent album** (deduped, so
+your originals aren't clobbered; curation carried). Then you can safely **delete the whole
+sub-album** (`D` in the tree) — you've kept only what you need. So `P` pulls a working copy
+down; `p` pushes the results back up.
+
 ## 8. Pixel editing (`E`)
 
 Press `E` (in the grid or image view) to open the **edit palette** — a searchable

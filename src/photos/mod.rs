@@ -2361,6 +2361,8 @@ impl App {
             Action::Stack => self.toggle_stack(),
             Action::StripMeta => self.strip_metadata_targets(),
             Action::RedactGps => self.redact_gps_targets(),
+            Action::Take => self.take_photo(),
+            Action::PutBack => self.promote_to_parent(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -2573,6 +2575,152 @@ impl App {
         } else {
             format!("GPS redacted from {redacted} image(s) · {none} had none")
         };
+    }
+
+    /// "Take photo for processing": copy the highest-resolution version of each target image into a
+    /// new **nested sub-album** (named from the image), so destructive edits + artefacts stay
+    /// isolated from the source album. Multi-select aware.
+    fn take_photo(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "select image(s) first (Space to multi-select), then take".into();
+            return;
+        }
+        let Some(parent) = self.album_dir.clone().or_else(|| files.first().map(|(d, _)| d.clone())) else {
+            self.status = "no album to take from".into();
+            return;
+        };
+        // Sub-album name derived from the (first) image.
+        let stem = files[0].1.file_stem().and_then(|s| s.to_str()).unwrap_or("photo");
+        let base = if files.len() == 1 { stem.to_string() } else { format!("{stem}+{}", files.len() - 1) };
+        let subname = sanitize_name(&base);
+        let mut subdir = parent.join(&subname);
+        let mut i = 2;
+        while subdir.exists() {
+            subdir = parent.join(format!("{subname}-{i}"));
+            i += 1;
+        }
+        if let Err(e) = std::fs::create_dir_all(&subdir) {
+            self.status = format!("couldn't create sub-album: {e}");
+            return;
+        }
+        let mut meta = hjson::AlbumMeta {
+            name: Some(base.clone()),
+            description: Some(format!(
+                "Working copies taken from {}",
+                parent.file_name().and_then(|n| n.to_str()).unwrap_or("album")
+            )),
+            ..Default::default()
+        };
+        let (mut ok, mut err) = (0u32, 0u32);
+        for (dir, path) in &files {
+            let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("photo").to_string();
+            // Candidates: the file, its pristine backup, and any variants — pick the largest by area.
+            let mut cands: Vec<PathBuf> = vec![path.clone()];
+            let bak = edit::backup_path(dir, &filename);
+            if bak.exists() {
+                cands.push(bak);
+            }
+            if let Some(rec) = self.record(path) {
+                for v in &rec.variants {
+                    let vp = dir.join(v);
+                    if vp.exists() {
+                        cands.push(vp);
+                    }
+                }
+            }
+            let best = cands
+                .iter()
+                .max_by_key(|p| image::image_dimensions(p).map(|(w, h)| w as u64 * h as u64).unwrap_or(0))
+                .cloned()
+                .unwrap_or_else(|| path.clone());
+            if std::fs::copy(&best, subdir.join(&filename)).is_err() {
+                err += 1;
+                continue;
+            }
+            let sc = path.with_extension("json");
+            if sc.exists() {
+                let _ = std::fs::copy(&sc, subdir.join(&filename).with_extension("json"));
+            }
+            // Carry curation, but clear the replay state so the copy is a clean high-res baseline.
+            if let Some(rec) = self.record(path) {
+                let mut r = rec.clone();
+                r.edits.clear();
+                r.variants.clear();
+                r.layers.clear();
+                r.generation = None;
+                meta.images.insert(filename, r);
+            }
+            ok += 1;
+        }
+        let _ = hjson::write_album(&subdir, &meta);
+        if let Ok(root) = library::walk(&self.root_dir) {
+            self.root = root;
+        }
+        self.expanded.insert(parent);
+        if let Some(pos) = self.rows().iter().position(|r| r.path == subdir) {
+            self.tree_cursor = pos;
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status =
+            format!("took {ok} photo(s) → sub-album '{subname}'{tail} — edit there, source stays clean");
+    }
+
+    /// "Put back": copy the selected finished image(s) from a workbench sub-album up to its **parent
+    /// album** (deduped, curation carried, replay state cleared), so the sub-album can then be
+    /// deleted — keeping only the results you want.
+    fn promote_to_parent(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "select image(s) to put back".into();
+            return;
+        }
+        let Some(sub) = self.album_dir.clone() else {
+            self.status = "open the workbench sub-album first".into();
+            return;
+        };
+        let Some(parent) = sub.parent().filter(|p| p.is_dir() && *p != self.root_dir).map(|p| p.to_path_buf())
+        else {
+            self.status = "no parent album to put back into".into();
+            return;
+        };
+        let mut pmeta = hjson::read_album(&parent).unwrap_or_default();
+        let (mut ok, mut err) = (0u32, 0u32);
+        for (_dir, path) in &files {
+            let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("photo").to_string();
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("photo");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
+            // Don't clobber the original (same name); the promoted, edited copy is deduped.
+            let mut dest = filename.clone();
+            let mut i = 2;
+            while parent.join(&dest).exists() {
+                dest = format!("{stem}-{i}.{ext}");
+                i += 1;
+            }
+            if std::fs::copy(path, parent.join(&dest)).is_err() {
+                err += 1;
+                continue;
+            }
+            let sc = path.with_extension("json");
+            if sc.exists() {
+                let _ = std::fs::copy(&sc, parent.join(&dest).with_extension("json"));
+            }
+            if let Some(rec) = self.record(path) {
+                let mut r = rec.clone();
+                r.edits.clear();
+                r.variants.clear();
+                r.layers.clear();
+                pmeta.images.insert(dest, r);
+            }
+            ok += 1;
+        }
+        let _ = hjson::write_album(&parent, &pmeta);
+        if let Ok(root) = library::walk(&self.root_dir) {
+            self.root = root;
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status =
+            format!("put back {ok} image(s) → parent album{tail} — safe to delete this sub-album now");
     }
 
     /// Convert the target images to `fmt`/`size`, landing a new file per source (deduped variant).
@@ -4399,6 +4547,10 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('@') => app.enter_timeline(),
         // Browse: scan for near-duplicates (#) · export (X) · batch-rename (r).
         KeyCode::Char('#') => app.dedup_scan(),
+        // Take photo(s) for processing → a fresh nested working sub-album (keeps the source clean).
+        KeyCode::Char('P') => app.take_photo(),
+        // Put back: promote the selected finished image(s) up to the parent album.
+        KeyCode::Char('p') => app.promote_to_parent(),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
         }
@@ -5146,6 +5298,16 @@ fn sort_paths(
 
 /// Parse a dimensions string: `"1200x800"` / `"1200×800"` / `"1200 800"` → `(1200, 800)`; a single
 /// `"1200"` → `(1200, 1200)`.
+/// Filename-safe version of a derived album name (keeps alphanumerics + `- _ . space`).
+fn sanitize_name(s: &str) -> String {
+    let out: String = s
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "-_. ".contains(c) { c } else { '_' })
+        .collect();
+    let out = out.trim().to_string();
+    if out.is_empty() { "photo".to_string() } else { out }
+}
+
 /// Human-readable byte size (GB/MB/KB/B).
 fn human_size(b: u64) -> String {
     let f = b as f64;
@@ -5474,6 +5636,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("/ C =", "filter · cull · compare selection"));
             l.push(kv("E M A", "edit · ML-edit · AI-vision menus"));
             l.push(kv("# X r", "duplicates · export · batch-rename"));
+            l.push(kv("P / p", "take → working sub-album  ·  put back → parent album"));
             l.push(kv("S @ F", "stack · timeline · save smart album"));
             l.push(kv("? V", "search metadata · visual (CLIP)"));
         }
@@ -5618,6 +5781,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("filter", "rating/flag/tag/ai grammar (/)"));
             l.push(kv("search", "metadata (?) · visual CLIP (V) · smart album (F)"));
             l.push(kv("duplicates", "perceptual near-dupes (#)"));
+            l.push(kv("take", "copy hi-res into a working sub-album (P)"));
             l.push(hd("Produce"));
             l.push(kv("upscale", "ML ×4 (M → u)"));
             l.push(kv("img2img", "transform / relight with a prompt (M → i/l)"));
@@ -6377,6 +6541,14 @@ mod tree_ops_tests {
         ];
         // Grouped by label, first-seen order, with counts — not "shadows, shadows, shadows, …".
         assert_eq!(edit_summary(&edits), "shadows ×3 · sharpen ×2 · warmth");
+    }
+
+    #[test]
+    fn sanitize_name_is_filename_safe() {
+        assert_eq!(sanitize_name("IMG_1234"), "IMG_1234");
+        assert_eq!(sanitize_name("beach/day 2"), "beach_day 2");
+        assert_eq!(sanitize_name("a:b*c?"), "a_b_c_");
+        assert_eq!(sanitize_name("   "), "photo");
     }
 
     #[test]

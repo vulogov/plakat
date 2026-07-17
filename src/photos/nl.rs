@@ -44,6 +44,10 @@ pub enum Action {
     StripMeta,
     /// Remove only the GPS location from the target files, keeping the rest of the EXIF. Not undoable.
     RedactGps,
+    /// Copy the highest-res version of the targets into a new nested working sub-album.
+    Take,
+    /// Copy the selected finished image(s) from a workbench sub-album up to its parent album.
+    PutBack,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -106,6 +110,8 @@ fn action_label(a: &Action) -> String {
         Action::SmartAlbum { name } => format!("smart-album {name}"),
         Action::StripMeta => "strip metadata".into(),
         Action::RedactGps => "redact GPS".into(),
+        Action::Take => "take for processing".into(),
+        Action::PutBack => "put back to parent".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -235,6 +241,9 @@ fn parse_action(stage: &str) -> Option<Action> {
         "redact gps" | "remove gps" | "strip gps" | "remove location" | "redact location" => {
             Some(Action::RedactGps)
         }
+        // Note: bare "take" is a *selector* keyword, so the take-photo action needs the fuller phrase.
+        "take photo" | "take for processing" | "work copy" | "take copy" => Some(Action::Take),
+        "put back" | "promote" | "copy to parent" | "put back to parent" => Some(Action::PutBack),
         _ => None,
     }
 }
@@ -366,6 +375,8 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
     levels:<black>,<white>,<gamma>  (0..255, 0..255, float — e.g. levels:16,235,1.1)
   {\"action\":\"strip_meta\"}  (remove all EXIF/GPS metadata from the album files, in place)
   {\"action\":\"redact_gps\"}  (remove only the GPS location, keep the rest of the EXIF)
+  {\"action\":\"take\"}  (copy the highest-res targets into a new nested working sub-album)
+  {\"action\":\"put_back\"}  (copy the finished targets from a sub-album up to its parent album)
   {\"action\":\"convert\",\"fmt\":\"jpg|png|webp\",\"max_px\":<int|null>}  (write NEW converted files in-album)
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
   {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE in-album filename pattern, never a path)
