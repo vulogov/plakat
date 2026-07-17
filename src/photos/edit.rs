@@ -34,6 +34,10 @@ pub enum EditOp {
     CropAspect { w: u32, h: u32 },
     /// Free-form crop: a rectangle in [0,1] fractions of the image (x, y, width, height).
     Crop { x: f32, y: f32, w: f32, h: f32 },
+    /// Centered crop to exactly `w`×`h` pixels (clamped to the image).
+    CropPx { w: u32, h: u32 },
+    /// Resize to fit within `w`×`h` pixels, preserving aspect (Lanczos).
+    Resize { w: u32, h: u32 },
 }
 
 impl EditOp {
@@ -58,6 +62,15 @@ impl EditOp {
                 let ch = ((h.clamp(0.0, 1.0) * ih) as u32).max(1).min(img.height() - cy.min(img.height() - 1));
                 img.crop_imm(cx, cy, cw, ch)
             }
+            EditOp::CropPx { w, h } => {
+                let (iw, ih) = (img.width(), img.height());
+                let cw = w.clamp(1, iw);
+                let ch = h.clamp(1, ih);
+                img.crop_imm((iw - cw) / 2, (ih - ch) / 2, cw, ch)
+            }
+            EditOp::Resize { w, h } => {
+                img.resize(w.max(1), h.max(1), image::imageops::FilterType::Lanczos3)
+            }
         }
     }
 
@@ -75,6 +88,8 @@ impl EditOp {
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
+            EditOp::CropPx { w, h } => format!("crop {w}×{h}px"),
+            EditOp::Resize { w, h } => format!("resize ≤{w}×{h}px"),
         }
     }
 
@@ -109,6 +124,16 @@ impl EditOp {
                 params.insert("h".into(), serde_json::json!(h));
                 "crop"
             }
+            EditOp::CropPx { w, h } => {
+                params.insert("w".into(), serde_json::json!(w));
+                params.insert("h".into(), serde_json::json!(h));
+                "crop_px"
+            }
+            EditOp::Resize { w, h } => {
+                params.insert("w".into(), serde_json::json!(w));
+                params.insert("h".into(), serde_json::json!(h));
+                "resize"
+            }
         };
         EditEntry { op: op.to_string(), params, ts: None }
     }
@@ -136,6 +161,8 @@ impl EditOp {
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
+            "crop_px" => EditOp::CropPx { w: u("w"), h: u("h") },
+            "resize" => EditOp::Resize { w: u("w"), h: u("h") },
             _ => return None,
         })
     }
@@ -236,6 +263,8 @@ mod tests {
             EditOp::Grayscale, EditOp::Brightness(15), EditOp::Contrast(-10), EditOp::CropSquare,
             EditOp::CropAspect { w: 16, h: 9 },
             EditOp::Crop { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
+            EditOp::CropPx { w: 800, h: 600 },
+            EditOp::Resize { w: 1024, h: 768 },
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -253,6 +282,12 @@ mod tests {
         // Free-form: middle 50%×40% of a 200×100 image.
         let ff = EditOp::Crop { x: 0.25, y: 0.3, w: 0.5, h: 0.4 }.apply(img(200, 100));
         assert_eq!((ff.width(), ff.height()), (100, 40));
+        // Exact centered pixel crop (clamped to the image).
+        let cp = EditOp::CropPx { w: 120, h: 80 }.apply(img(400, 300));
+        assert_eq!((cp.width(), cp.height()), (120, 80));
+        // Resize fits within the box preserving aspect: 400×300 into 200×200 → 200×150.
+        let rz = EditOp::Resize { w: 200, h: 200 }.apply(img(400, 300));
+        assert_eq!((rz.width(), rz.height()), (200, 150));
     }
 
     #[test]

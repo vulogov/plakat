@@ -316,9 +316,24 @@ all.)
 
 **Free-form crop.** Pick **crop free-form (interactive)** for an arbitrary
 rectangle: the image shows full, with everything outside the crop **dimmed**.
-`arrows` move the box, `+` / `-` resize it, `[` / `]` adjust width, `,` / `.`
-adjust height; **`Enter`** applies the crop, **`Esc`** cancels. Like every edit,
-it's non-destructive and replayable.
+
+| Key | Changes the crop box |
+|-----|----------------------|
+| `+` / `-` | grow / shrink both sides (centered) |
+| `[` / `]` | width — narrower / wider |
+| `,` / `.` | height — shorter / taller |
+| `←` `↑` `→` `↓` | move the box |
+| `Enter` / `Esc` | apply / cancel |
+
+The status bar shows the current size (`crop 60% × 45%`), and `Ctrl-B h` brings up
+these keys while you're cropping.
+
+**Exact size.** For a specific pixel size, the palette also has:
+- **crop to exact size** — enter `WxH` (e.g. `1200x800`) for a centered pixel crop.
+- **resize to exact size** — enter `WxH` (fit within, aspect preserved) or a single
+  number for the longer side (e.g. `2048`).
+
+Like every edit, all of these are non-destructive and replayable.
 
 The thumbnail/image update live. Nothing is destroyed: the **pristine original** is
 copied once into a hidden `.plakat_edits/` folder, and the visible file is

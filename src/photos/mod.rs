@@ -82,6 +82,10 @@ enum PendingCmd {
     BatchRename,
     /// Export the current targets as a portfolio to the entered `DIR [MAXPX] [| watermark text]`.
     Portfolio,
+    /// Crop the cursor image to the entered exact `WxH` pixels (centered).
+    CropExact,
+    /// Resize the cursor image to fit the entered `WxH` (or single `N`) pixels.
+    ResizeExact,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -117,6 +121,8 @@ enum HelpKind {
 enum EditCmd {
     Op(edit::EditOp),
     FreeCrop,
+    CropExact,  // prompts for WxH pixels
+    ResizeExact, // prompts for WxH (or N) pixels
     Undo,
     Redo,
     Revert,
@@ -133,6 +139,8 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("flip vertical", EditCmd::Op(FlipV)),
         ("grayscale / desaturate", EditCmd::Op(Grayscale)),
         ("crop free-form (interactive)", EditCmd::FreeCrop),
+        ("crop to exact size (WxH px)", EditCmd::CropExact),
+        ("resize to exact size (WxH or N px)", EditCmd::ResizeExact),
         ("crop to square 1:1", EditCmd::Op(CropSquare)),
         ("crop 4:5 (portrait)", EditCmd::Op(CropAspect { w: 4, h: 5 })),
         ("crop 5:4", EditCmd::Op(CropAspect { w: 5, h: 4 })),
@@ -895,6 +903,14 @@ impl App {
         match cmd {
             EditCmd::Op(op) => self.apply_edit(op),
             EditCmd::FreeCrop => self.enter_crop(),
+            EditCmd::CropExact => {
+                self.edit_menu = false;
+                self.prompt("crop to size (WxH px): ", "", PendingCmd::CropExact);
+            }
+            EditCmd::ResizeExact => {
+                self.edit_menu = false;
+                self.prompt("resize to (WxH or N px): ", "", PendingCmd::ResizeExact);
+            }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
@@ -1515,6 +1531,24 @@ impl App {
                 Some(PendingCmd::BatchRename) if !arg.is_empty() => {
                     self.batch_rename(&arg);
                     fs_changed = true; // files moved on disk
+                }
+                Some(PendingCmd::CropExact) if !arg.is_empty() => {
+                    match parse_dims(&arg) {
+                        Some((w, h)) => {
+                            self.apply_edit(edit::EditOp::CropPx { w, h });
+                            meta_changed = true;
+                        }
+                        None => self.status = "enter WxH pixels, e.g. 1200x800".into(),
+                    }
+                }
+                Some(PendingCmd::ResizeExact) if !arg.is_empty() => {
+                    match parse_dims(&arg) {
+                        Some((w, h)) => {
+                            self.apply_edit(edit::EditOp::Resize { w, h });
+                            meta_changed = true;
+                        }
+                        None => self.status = "enter WxH, or a single number for the longer side".into(),
+                    }
                 }
                 Some(PendingCmd::Portfolio) if !arg.is_empty() => {
                     // `DIR [MAXPX] | watermark text` — `|` splits off the optional watermark.
@@ -3000,6 +3034,24 @@ fn sort_paths(
     }
 }
 
+/// Parse a dimensions string: `"1200x800"` / `"1200×800"` / `"1200 800"` → `(1200, 800)`; a single
+/// `"1200"` → `(1200, 1200)`.
+fn parse_dims(s: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = s
+        .trim()
+        .split(|c| matches!(c, 'x' | 'X' | '×' | ' ' | ','))
+        .filter(|p| !p.is_empty())
+        .collect();
+    match parts.as_slice() {
+        [n] => {
+            let v: u32 = n.parse().ok()?;
+            Some((v, v))
+        }
+        [w, h] => Some((w.parse().ok()?, h.parse().ok()?)),
+        _ => None,
+    }
+}
+
 /// Expand a leading `~` to `$HOME` for an export destination the user typed.
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
@@ -3137,10 +3189,13 @@ enum HelpCtx {
     Image,
     Cull,
     Compare,
+    Crop,
 }
 
 fn help_ctx(app: &App) -> HelpCtx {
-    if app.focus == Focus::Tree {
+    if app.crop_mode {
+        HelpCtx::Crop
+    } else if app.focus == Focus::Tree {
         HelpCtx::Tree
     } else {
         match app.mode {
@@ -3159,6 +3214,7 @@ fn ctx_name(ctx: &HelpCtx) -> &'static str {
         HelpCtx::Image => "Image view",
         HelpCtx::Cull => "Cull loupe",
         HelpCtx::Compare => "Compare",
+        HelpCtx::Crop => "Free-form crop",
     }
 }
 
@@ -3274,6 +3330,20 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("1–5 f x", "rate / flag / reject the focused one"));
             l.push(kv("Esc", "back to grid"));
         }
+        HelpCtx::Crop => {
+            let (_, _, w, h) = app.crop_rect;
+            l.push(hd("Free-form crop"));
+            l.push(state(format!("current box: {:.0}% × {:.0}% of the image", w * 100.0, h * 100.0)));
+            l.push(hd("Change the box"));
+            l.push(kv("+ / -", "grow / shrink both sides (centred)"));
+            l.push(kv("[ / ]", "width  narrower / wider"));
+            l.push(kv(", / .", "height  shorter / taller"));
+            l.push(kv("← ↑ → ↓", "move the box"));
+            l.push(hd("Finish"));
+            l.push(kv("Enter", "apply the crop · Esc cancel"));
+            l.push(state("(for an exact size, use the Edit palette → crop/resize to exact size)"));
+            return l; // crop mode has no global chords
+        }
     }
     l.push(hd("Anywhere"));
     l.push(kv("Ctrl-B", "h/H help · t tags · v versions · l/L lookalike · q quit"));
@@ -3292,7 +3362,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("delete", "delete this folder/album (D)"));
             l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
         }
-        HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare => {
+        HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop => {
             let provider = crate::prompt::vision::resolve_vision_provider("auto");
             let target = if app.selected.is_empty() { "the view" } else { "the selection" };
             l.extend(album_state_lines(app));
