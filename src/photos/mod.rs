@@ -143,6 +143,8 @@ enum HelpKind {
 #[derive(Clone, Copy)]
 enum EditCmd {
     Op(edit::EditOp),
+    /// Open the interactive +/- slider for a scalar adjustment (the op carries the template value).
+    Adjust(edit::EditOp),
     FreeCrop,
     CropExact,  // prompts for WxH pixels
     ResizeExact, // prompts for WxH (or N) pixels
@@ -180,51 +182,35 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("crop 2:3 (portrait)", EditCmd::Op(CropAspect { w: 2, h: 3 })),
         ("crop 16:9 (wide)", EditCmd::Op(CropAspect { w: 16, h: 9 })),
         ("crop 9:16 (tall)", EditCmd::Op(CropAspect { w: 9, h: 16 })),
-        ("brightness up", EditCmd::Op(Brightness(15))),
-        ("brightness down", EditCmd::Op(Brightness(-15))),
-        ("contrast up", EditCmd::Op(Contrast(12))),
-        ("contrast down", EditCmd::Op(Contrast(-12))),
-        ("exposure up", EditCmd::Op(Exposure(12))),
-        ("exposure down", EditCmd::Op(Exposure(-12))),
-        ("brilliance up", EditCmd::Op(Brilliance(15))),
-        ("brilliance down", EditCmd::Op(Brilliance(-15))),
-        ("highlights up", EditCmd::Op(Highlights(15))),
-        ("highlights down (recover)", EditCmd::Op(Highlights(-15))),
-        ("midrange up", EditCmd::Op(Midrange(15))),
-        ("midrange down", EditCmd::Op(Midrange(-15))),
-        ("shadows up (lift)", EditCmd::Op(Shadows(15))),
-        ("shadows down", EditCmd::Op(Shadows(-15))),
-        ("black point up (crush)", EditCmd::Op(Blackpoint(12))),
-        ("black point down (lift)", EditCmd::Op(Blackpoint(-12))),
-        ("saturation up", EditCmd::Op(Saturation(15))),
-        ("saturation down", EditCmd::Op(Saturation(-15))),
-        ("vibrance up", EditCmd::Op(Vibrance(18))),
-        ("vibrance down", EditCmd::Op(Vibrance(-18))),
-        ("warmth up (warmer)", EditCmd::Op(Warmth(15))),
-        ("warmth down (cooler)", EditCmd::Op(Warmth(-15))),
-        ("tint magenta", EditCmd::Op(Tint(15))),
-        ("tint green", EditCmd::Op(Tint(-15))),
-        ("definition up", EditCmd::Op(Definition(18))),
-        ("definition down", EditCmd::Op(Definition(-18))),
+        // Scalar adjustments open an interactive +/- slider with a live preview.
+        ("brightness…", EditCmd::Adjust(Brightness(0))),
+        ("contrast…", EditCmd::Adjust(Contrast(0))),
+        ("exposure…", EditCmd::Adjust(Exposure(0))),
+        ("brilliance…", EditCmd::Adjust(Brilliance(0))),
+        ("highlights…", EditCmd::Adjust(Highlights(0))),
+        ("midrange…", EditCmd::Adjust(Midrange(0))),
+        ("shadows…", EditCmd::Adjust(Shadows(0))),
+        ("black point…", EditCmd::Adjust(Blackpoint(0))),
+        ("saturation…", EditCmd::Adjust(Saturation(0))),
+        ("vibrance…", EditCmd::Adjust(Vibrance(0))),
+        ("warmth (warm / cool)…", EditCmd::Adjust(Warmth(0))),
+        ("tint (magenta / green)…", EditCmd::Adjust(Tint(0))),
+        ("definition (clarity)…", EditCmd::Adjust(Definition(0))),
+        ("dehaze…", EditCmd::Adjust(Dehaze(0))),
+        ("hue rotate…", EditCmd::Adjust(HueRotate(0))),
+        ("split-tone…", EditCmd::Adjust(SplitTone(0))),
+        ("vignette…", EditCmd::Adjust(Vignette(0))),
+        ("sharpen / soften…", EditCmd::Adjust(Sharpen(0))),
+        ("noise reduction…", EditCmd::Adjust(NoiseReduction(0))),
+        ("film grain…", EditCmd::Adjust(Grain(0))),
+        ("despeckle (median)…", EditCmd::Adjust(Despeckle(0))),
         ("levels (black / white / gamma)…", EditCmd::Levels),
-        ("vignette (darken edges)", EditCmd::Op(Vignette(30))),
-        ("vignette light (lighten edges)", EditCmd::Op(Vignette(-30))),
-        ("dehaze (cut haze)", EditCmd::Op(Dehaze(30))),
-        ("hue rotate +20°", EditCmd::Op(HueRotate(20))),
-        ("hue rotate -20°", EditCmd::Op(HueRotate(-20))),
-        ("split-tone (warm highlights)", EditCmd::Op(SplitTone(30))),
-        ("split-tone (cool highlights)", EditCmd::Op(SplitTone(-30))),
         ("selective colour: boost reds", EditCmd::Op(SelectiveColor { hue: 0, sat: 45 })),
         ("selective colour: mute reds", EditCmd::Op(SelectiveColor { hue: 0, sat: -55 })),
         ("selective colour: boost greens", EditCmd::Op(SelectiveColor { hue: 120, sat: 45 })),
         ("selective colour: mute greens", EditCmd::Op(SelectiveColor { hue: 120, sat: -55 })),
         ("selective colour: boost blues", EditCmd::Op(SelectiveColor { hue: 240, sat: 45 })),
         ("selective colour: mute blues", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
-        ("film grain", EditCmd::Op(Grain(30))),
-        ("despeckle (median)", EditCmd::Op(Despeckle(55))),
-        ("sharpen", EditCmd::Op(Sharpen(22))),
-        ("soften", EditCmd::Op(Sharpen(-22))),
-        ("noise reduction", EditCmd::Op(NoiseReduction(30))),
         ("strip metadata (EXIF / GPS)", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", EditCmd::Convert),
@@ -336,6 +322,10 @@ struct App {
     // Interactive free-form crop (from the Edit palette): rect in [0,1] fractions (x, y, w, h).
     crop_mode: bool,
     crop_rect: (f32, f32, f32, f32),
+    // Interactive scalar-adjustment slider (brightness/contrast/…): the op carries the live value,
+    // shown on a +/- bar with a live preview.
+    adjust_mode: bool,
+    adjust_op: Option<edit::EditOp>,
     // Interactive levels editor (from the Edit palette): black/white input points (0..255) + midtone
     // gamma (×100), with a live preview. `lv_sel` = which handle the ←/→ keys adjust (0/1/2).
     levels_mode: bool,
@@ -459,6 +449,8 @@ impl App {
             edit_visible: 10,
             crop_mode: false,
             crop_rect: (0.1, 0.1, 0.8, 0.8),
+            adjust_mode: false,
+            adjust_op: None,
             levels_mode: false,
             lv_black: 0,
             lv_white: 255,
@@ -1308,6 +1300,7 @@ impl App {
     fn run_edit_cmd(&mut self, cmd: EditCmd) {
         match cmd {
             EditCmd::Op(op) => self.apply_edit(op),
+            EditCmd::Adjust(op) => self.enter_adjust(op),
             EditCmd::FreeCrop => self.enter_crop(),
             EditCmd::CropExact => {
                 self.edit_menu = false;
@@ -1349,6 +1342,62 @@ impl App {
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
         }
+    }
+
+    // ---- Interactive scalar-adjustment slider ----------------------------------------------------
+
+    /// Enter the +/- slider for a scalar adjustment on the cursor image (live preview).
+    fn enter_adjust(&mut self, op: edit::EditOp) {
+        if self.cur_source().is_none() {
+            self.status = "open an image first".into();
+            return;
+        }
+        self.edit_menu = false;
+        self.adjust_op = Some(op.with_scalar(0));
+        self.adjust_mode = true;
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_adjust_status();
+    }
+
+    /// Change the slider value by `delta`, clamped to the op's range; refresh the live preview.
+    fn nudge_adjust(&mut self, delta: i32) {
+        let Some(op) = self.adjust_op else { return };
+        let (min, max, _) = op.scalar_range();
+        let v = (op.scalar().unwrap_or(0) + delta).clamp(min, max);
+        self.adjust_op = Some(op.with_scalar(v));
+        self.load_view();
+        self.set_adjust_status();
+    }
+
+    fn set_adjust_status(&mut self) {
+        if let Some(op) = self.adjust_op {
+            self.status = format!(
+                "{} {:+} · ←/→ adjust · [ ] fine · Enter apply · Esc cancel",
+                op.label(),
+                op.scalar().unwrap_or(0)
+            );
+        }
+    }
+
+    /// Commit the slider value as an edit (a no-op at 0); leave the slider.
+    fn apply_adjust(&mut self) {
+        let Some(op) = self.adjust_op.take() else { return };
+        self.adjust_mode = false;
+        if op.scalar() == Some(0) {
+            self.load_view();
+            self.status = "no change".into();
+            return;
+        }
+        self.apply_edit(op);
+    }
+
+    /// Leave the slider without applying.
+    fn cancel_adjust(&mut self) {
+        self.adjust_mode = false;
+        self.adjust_op = None;
+        self.load_view();
+        self.status = "adjustment cancelled".into();
     }
 
     /// Enter interactive free-form crop on the cursor image (a dimmed live preview in the image pane).
@@ -2706,7 +2755,9 @@ impl App {
             .as_ref()
             .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
-                let img = if self.levels_mode {
+                let img = if self.adjust_mode {
+                    self.adjust_op.map(|op| op.apply(img.clone())).unwrap_or(img) // live slider preview
+                } else if self.levels_mode {
                     self.levels_op().apply(img) // live levels preview
                 } else if self.layer_mode {
                     layers::composite(&img, &self.layers, Some(self.layer_active)) // live composite
@@ -3214,6 +3265,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_tree_filter_key(app, k.code);
         return false;
     }
+    if app.adjust_mode {
+        handle_adjust_key(app, k.code);
+        return false;
+    }
     if app.levels_mode {
         handle_levels_key(app, k.code);
         return false;
@@ -3270,6 +3325,21 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
         KeyCode::Char(']') => app.adjust_crop(0.0, 0.0, s, 0.0),
         KeyCode::Char(',') => app.adjust_crop(0.0, 0.0, 0.0, -s),
         KeyCode::Char('.') => app.adjust_crop(0.0, 0.0, 0.0, s),
+        _ => {}
+    }
+}
+
+/// Interactive scalar-adjustment slider: ←/→ change the value by the op's step, `[`/`]` fine ±1,
+/// live preview, Enter commits, Esc cancels.
+fn handle_adjust_key(app: &mut App, code: KeyCode) {
+    let step = app.adjust_op.map(|o| o.scalar_range().2).unwrap_or(5);
+    match code {
+        KeyCode::Esc => app.cancel_adjust(),
+        KeyCode::Enter => app.apply_adjust(),
+        KeyCode::Left | KeyCode::Char('-') | KeyCode::Char('_') => app.nudge_adjust(-step),
+        KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => app.nudge_adjust(step),
+        KeyCode::Char('[') => app.nudge_adjust(-1),
+        KeyCode::Char(']') => app.nudge_adjust(1),
         _ => {}
     }
 }
@@ -3577,8 +3647,24 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::PageUp => app.tree_cursor = app.tree_cursor.saturating_sub(10),
         KeyCode::Char('g') | KeyCode::Home => app.tree_cursor = 0,
         KeyCode::Char('G') | KeyCode::End => app.tree_cursor = rows.len().saturating_sub(1),
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            if let Some((path, kind, has_children, name)) = cur {
+        // → / `l` reveal children first: a folder OR a *nested* album (images + sub-dirs) expands;
+        // only a leaf album (no children) opens the grid here.
+        KeyCode::Char('l') | KeyCode::Right => {
+            if let Some((path, kind, has_children, name)) = cur.clone() {
+                if kind == NodeKind::SmartAlbum {
+                    if let Some(q) = app.smart_albums.iter().find(|s| s.name == name).map(|s| s.query.clone()) {
+                        app.open_smart(name, q);
+                    }
+                } else if has_children {
+                    app.expanded.insert(path);
+                } else if kind == NodeKind::Album {
+                    app.open_album(path);
+                }
+            }
+        }
+        // Enter always *opens* an album's images (a nested album's own pictures), else expands.
+        KeyCode::Enter => {
+            if let Some((path, kind, has_children, name)) = cur.clone() {
                 if kind == NodeKind::SmartAlbum {
                     if let Some(q) = app.smart_albums.iter().find(|s| s.name == name).map(|s| s.query.clone()) {
                         app.open_smart(name, q);
@@ -3961,6 +4047,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.ai_menu {
         draw_menu_palette(f, "AI vision", Color::Green, &ai_palette(), album_col);
     }
+    if app.adjust_mode {
+        draw_adjust_bar(f, app, album_col);
+    }
     if app.info_editor {
         let rows = [
             prow("n", "edit name"),
@@ -3991,6 +4080,52 @@ fn draw(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(cmd).style(cmd_style).block(Block::default().borders(Borders::ALL)),
         cmd_pane,
+    );
+}
+
+/// Interactive scalar-adjustment slider overlay: the op name, a `─┼───●──` bar (center tick at 0,
+/// dot at the value), the numeric value, and the keys.
+fn draw_adjust_bar(f: &mut Frame, app: &App, area: Rect) {
+    let Some(op) = app.adjust_op else { return };
+    let (min, max, _) = op.scalar_range();
+    let v = op.scalar().unwrap_or(0);
+    let width = 40usize.min(area.width.saturating_sub(6).max(10) as usize).max(10);
+    let pos = |x: i32| {
+        (((x - min) as f32 / (max - min).max(1) as f32) * (width as f32 - 1.0)).round() as usize
+    };
+    let mut bar: Vec<char> = vec!['─'; width];
+    let zp = pos(0);
+    if zp < width {
+        bar[zp] = '┼'; // the neutral (0) tick
+    }
+    let vp = pos(v).min(width - 1);
+    bar[vp] = '●';
+    let bar: String = bar.into_iter().collect();
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(op.label(), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {v:+}   [{min}..{max}]", ), Style::new().fg(Color::DarkGray)),
+        ]),
+        Line::from(Span::styled(bar, Style::new().fg(Color::Cyan))),
+        Line::from(Span::styled(
+            "←/→ adjust · [ ] fine · Enter apply · Esc",
+            Style::new().fg(Color::DarkGray),
+        )),
+    ];
+    let w = (width as u16 + 4).min(area.width);
+    let h = 5.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + area.height.saturating_sub(h + 1),
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
     );
 }
 
@@ -4455,10 +4590,13 @@ enum HelpCtx {
     Crop,
     Layers,
     Levels,
+    Adjust,
 }
 
 fn help_ctx(app: &App) -> HelpCtx {
-    if app.levels_mode {
+    if app.adjust_mode {
+        HelpCtx::Adjust
+    } else if app.levels_mode {
         HelpCtx::Levels
     } else if app.layer_mode {
         HelpCtx::Layers
@@ -4486,6 +4624,7 @@ fn ctx_name(ctx: &HelpCtx) -> &'static str {
         HelpCtx::Crop => "Free-form crop",
         HelpCtx::Layers => "Layers",
         HelpCtx::Levels => "Levels",
+        HelpCtx::Adjust => "Adjust",
     }
 }
 
@@ -4662,6 +4801,18 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("Enter", "apply as an edit · Esc cancel"));
             return l; // levels mode has no global chords
         }
+        HelpCtx::Adjust => {
+            l.push(hd("Adjust"));
+            if let Some(op) = app.adjust_op {
+                let (min, max, step) = op.scalar_range();
+                l.push(state(format!("{}: {:+}  [{min}..{max}, step {step}]", op.label(), op.scalar().unwrap_or(0))));
+            }
+            l.push(kv("← / →", "decrease / increase by the step"));
+            l.push(kv("[ / ]", "fine ±1  ·  − / + also adjust"));
+            l.push(kv("Enter", "apply as an edit · Esc cancel"));
+            l.push(state("the bar's centre tick is 0 (no change); the dot is the current value"));
+            return l; // adjust mode has no global chords
+        }
     }
     l.push(hd("Anywhere"));
     l.push(kv("Ctrl-B", "h/H help · t tags · v versions · l/L lookalike · q quit"));
@@ -4681,7 +4832,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
         }
         HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop
-        | HelpCtx::Layers | HelpCtx::Levels => {
+        | HelpCtx::Layers | HelpCtx::Levels | HelpCtx::Adjust => {
             let provider = crate::prompt::vision::resolve_vision_provider("auto");
             let target = if app.selected.is_empty() { "the view" } else { "the selection" };
             l.extend(album_state_lines(app));
@@ -5044,7 +5195,42 @@ fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
     lines.push(clip("clip hi  ", a.clip_high, true));
     lines.push(clip("clip lo  ", a.clip_low, true));
     lines.push(Line::from(format!("focus    {:.0}", a.sharpness)));
+
+    // Colour balance — mean R/G/B as coloured bars (a right-leaning bar = a colour cast).
+    let barw = (inner.width as usize).saturating_sub(12).clamp(6, 32);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Colour balance", Style::new().fg(Color::Yellow))));
+    for (i, (lbl, col)) in [("R", Color::Red), ("G", Color::Green), ("B", Color::Blue)].iter().enumerate() {
+        let v = a.channel_mean[i];
+        lines.push(Line::from(vec![
+            Span::raw(format!("{lbl} ")),
+            Span::styled(hbar(v / 255.0, barw), Style::new().fg(*col)),
+            Span::styled(format!(" {v:.0}"), Style::new().fg(Color::DarkGray)),
+        ]));
+    }
+
+    // Lighting balance — share of pixels in shadows / midtones / highlights.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Lighting", Style::new().fg(Color::Yellow))));
+    for (i, lbl) in ["shadow", "mid", "highlt"].iter().enumerate() {
+        let v = a.zones[i];
+        lines.push(Line::from(vec![
+            Span::raw(format!("{lbl} ")),
+            Span::styled(hbar(v, barw), Style::new().fg(Color::Cyan)),
+            Span::styled(format!(" {:.0}%", v * 100.0), Style::new().fg(Color::DarkGray)),
+        ]));
+    }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A horizontal bar of `width` cells filled to `frac` (0..1) with block chars.
+fn hbar(frac: f32, width: usize) -> String {
+    let fill = (frac.clamp(0.0, 1.0) * width as f32).round() as usize;
+    let mut s = String::with_capacity(width);
+    for i in 0..width {
+        s.push(if i < fill { '█' } else { '░' });
+    }
+    s
 }
 
 fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {

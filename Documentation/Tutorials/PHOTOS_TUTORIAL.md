@@ -107,8 +107,15 @@ separate conversion step.
 histogram** (an 8-row bar chart across the tonal range), the image's **mean**
 brightness, **highlight/shadow clipping** percentages (flagged red when a shot is
 blown out or crushed), and a **focus score** (variance of the Laplacian — higher =
-sharper, useful for picking the in-focus frame from a burst). It updates as you
-step through images with `←`/`→`. Press `H` again to hide it.
+sharper, useful for picking the in-focus frame from a burst).
+
+Below those it shows two more read-outs, alongside the image like the info panel:
+- **Colour balance** — mean **R / G / B** as coloured bars; a channel running longer
+  than the others is a colour **cast** (e.g. a long blue bar = a cool/blue tint).
+- **Lighting balance** — the share of pixels in **shadows / midtones / highlights**, so
+  you can see at a glance whether a shot is bottom-heavy (dark) or blown toward the top.
+
+It updates as you step through images with `←`/`→`. Press `H` again to hide it.
 
 ---
 
@@ -293,10 +300,16 @@ to **every** selected image at once.
 
 ## 7. Managing folders and albums (the tree pane)
 
+**Albums nest.** Albums and folders are just directories, so they nest arbitrarily — an
+album can hold sub-albums. A **folder** is a directory with no images of its own; an
+**album** holds images (and may *also* have sub-directories). For a node that has both
+its own images **and** children, `→` reveals the children and `Enter` opens the node's
+own pictures.
+
 **Move around:** `↑`/`↓` (or `j`/`k`), `PgUp`/`PgDn` by a page, `Home`/`End` (or
-`g`/`G`) to the ends. `→`/`Enter` opens an album or expands a folder; `←`/`h`
-collapses an open folder, or — on an album or collapsed folder — jumps **up one
-level** to the parent.
+`g`/`G`) to the ends. `→`/`l` expands a folder (or a nested album); a leaf album opens.
+`Enter` opens an album's images. `←`/`h` collapses an open folder, or — on a leaf —
+jumps **up one level** to the parent.
 
 **Create / organise:**
 
@@ -346,8 +359,17 @@ The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, **crops
 (1:1, 4:5, 5:4, 3:2, 2:3, 16:9, 9:16 — centered), **undo**, **redo**, and **revert
 to original**. (Type `crop` to see them all.)
 
-**Tonal & colour adjustments** (each has up/down and chains like the rest — press
-repeatedly for more):
+**Tonal & colour adjustments** — each opens an interactive **slider** (the entry ends
+in `…`): the image previews live as you dial it, with a `─┼───●──` bar (the centre tick
+is 0 = no change, the dot is your value).
+
+| Key (in the slider) | Does |
+|-----|------|
+| `←` / `→` | decrease / increase by the step |
+| `[` / `]` | fine ±1 (`−`/`+` also work) |
+| `Enter` / `Esc` | apply as an edit / cancel |
+
+The adjustments:
 
 | Group | Commands |
 |-------|----------|

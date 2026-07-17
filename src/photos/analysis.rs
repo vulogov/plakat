@@ -22,6 +22,11 @@ pub struct Analysis {
     pub clip_low: f32,
     /// Focus/sharpness measure — variance of the Laplacian (higher = sharper / better focus).
     pub sharpness: f32,
+    /// Mean R, G, B (0..255) — the colour balance / cast.
+    pub channel_mean: [f32; 3],
+    /// Fraction of pixels in shadows / midtones / highlights (luma < 85 / 85–170 / ≥ 170) — the
+    /// lighting balance / tonal distribution.
+    pub zones: [f32; 3],
 }
 
 /// Rec. 601 luma of an 8-bit RGB pixel.
@@ -37,12 +42,17 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
     let mut sum = 0.0f64;
     let mut clip_high = 0u64;
     let mut clip_low = 0u64;
+    let mut chan = [0.0f64; 3];
+    let mut zones = [0u64; 3]; // shadows / mids / highlights
     // Precompute a luma plane for the Laplacian pass.
     let mut lum = vec![0f32; (w * h) as usize];
     for (i, px) in rgb.pixels().enumerate() {
         let y = luma(px[0], px[1], px[2]);
         lum[i] = y;
         sum += y as f64;
+        for c in 0..3 {
+            chan[c] += px[c] as f64;
+        }
         let yi = y as u8;
         hist[(yi as usize) * BINS / 256] += 1;
         if yi >= 250 {
@@ -51,6 +61,7 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         if yi <= 5 {
             clip_low += 1;
         }
+        zones[if yi < 85 { 0 } else if yi < 170 { 1 } else { 2 }] += 1;
     }
     let n = (w * h).max(1) as f32;
     let sharpness = laplacian_variance(&lum, w, h);
@@ -62,6 +73,8 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         clip_high: clip_high as f32 / n,
         clip_low: clip_low as f32 / n,
         sharpness,
+        channel_mean: [chan[0] as f32 / n, chan[1] as f32 / n, chan[2] as f32 / n],
+        zones: [zones[0] as f32 / n, zones[1] as f32 / n, zones[2] as f32 / n],
     }
 }
 

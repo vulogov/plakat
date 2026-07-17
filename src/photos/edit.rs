@@ -145,6 +145,60 @@ impl EditOp {
         }
     }
 
+    /// The single scalar amount for slider-style adjustments (`None` for structural / multi-param
+    /// ops, which use a prompt or their own mode instead).
+    pub fn scalar(self) -> Option<i32> {
+        Some(match self {
+            EditOp::Brightness(v) | EditOp::Contrast(v) | EditOp::Exposure(v) | EditOp::Brilliance(v)
+            | EditOp::Highlights(v) | EditOp::Midrange(v) | EditOp::Shadows(v) | EditOp::Blackpoint(v)
+            | EditOp::Saturation(v) | EditOp::Vibrance(v) | EditOp::Warmth(v) | EditOp::Tint(v)
+            | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
+            | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
+            | EditOp::Despeckle(v) => v,
+            _ => return None,
+        })
+    }
+
+    /// Replace a scalar op's amount (identity for non-scalar ops).
+    pub fn with_scalar(self, v: i32) -> EditOp {
+        match self {
+            EditOp::Brightness(_) => EditOp::Brightness(v),
+            EditOp::Contrast(_) => EditOp::Contrast(v),
+            EditOp::Exposure(_) => EditOp::Exposure(v),
+            EditOp::Brilliance(_) => EditOp::Brilliance(v),
+            EditOp::Highlights(_) => EditOp::Highlights(v),
+            EditOp::Midrange(_) => EditOp::Midrange(v),
+            EditOp::Shadows(_) => EditOp::Shadows(v),
+            EditOp::Blackpoint(_) => EditOp::Blackpoint(v),
+            EditOp::Saturation(_) => EditOp::Saturation(v),
+            EditOp::Vibrance(_) => EditOp::Vibrance(v),
+            EditOp::Warmth(_) => EditOp::Warmth(v),
+            EditOp::Tint(_) => EditOp::Tint(v),
+            EditOp::Definition(_) => EditOp::Definition(v),
+            EditOp::Sharpen(_) => EditOp::Sharpen(v),
+            EditOp::NoiseReduction(_) => EditOp::NoiseReduction(v),
+            EditOp::Dehaze(_) => EditOp::Dehaze(v),
+            EditOp::HueRotate(_) => EditOp::HueRotate(v),
+            EditOp::SplitTone(_) => EditOp::SplitTone(v),
+            EditOp::Vignette(_) => EditOp::Vignette(v),
+            EditOp::Grain(_) => EditOp::Grain(v),
+            EditOp::Despeckle(_) => EditOp::Despeckle(v),
+            other => other,
+        }
+    }
+
+    /// `(min, max, step)` for the slider — most tonal/colour ops are bipolar ±100; hue is ±180;
+    /// the effect-only ops (grain/denoise/despeckle/dehaze) are one-sided 0..100.
+    pub fn scalar_range(self) -> (i32, i32, i32) {
+        match self {
+            EditOp::HueRotate(_) => (-180, 180, 5),
+            EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_) => {
+                (0, 100, 5)
+            }
+            _ => (-100, 100, 5),
+        }
+    }
+
     /// A short human label for the status line / edit menu.
     pub fn label(self) -> String {
         match self {
@@ -1008,6 +1062,20 @@ mod tests {
         // Structural tags still resolve through from_entry.
         assert_eq!(EditOp::from_tag("grayscale"), Some(EditOp::Grayscale));
         assert_eq!(EditOp::from_tag("warp_drive"), None);
+    }
+
+    #[test]
+    fn scalar_helpers_roundtrip_and_range() {
+        // Scalar ops expose + replace their amount; structural ops don't.
+        assert_eq!(EditOp::Brightness(15).scalar(), Some(15));
+        assert_eq!(EditOp::Warmth(0).with_scalar(-40), EditOp::Warmth(-40));
+        assert_eq!(EditOp::HueRotate(0).with_scalar(90).scalar(), Some(90));
+        assert_eq!(EditOp::Grayscale.scalar(), None);
+        assert_eq!(EditOp::Levels { black: 0, white: 255, gamma: 100 }.scalar(), None);
+        // Ranges: hue is ±180, effect ops are one-sided, tonal ops bipolar ±100.
+        assert_eq!(EditOp::HueRotate(0).scalar_range(), (-180, 180, 5));
+        assert_eq!(EditOp::NoiseReduction(0).scalar_range().0, 0);
+        assert_eq!(EditOp::Brightness(0).scalar_range(), (-100, 100, 5));
     }
 
     #[test]
