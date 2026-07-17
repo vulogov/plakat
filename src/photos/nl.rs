@@ -39,6 +39,12 @@ pub enum Action {
     Dedup,
     Stack,
     SmartAlbum { name: String },
+    /// Strip EXIF/XMP/IPTC/GPS metadata from the target files in place (album-scoped; no external
+    /// read, no re-import). Not undoable.
+    StripMeta,
+    /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
+    /// files inside the album (create-only; the source is untouched).
+    Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
 }
 
 /// A parsed command: an optional selector (`all` / `selected` / a filter expression) + the pipeline.
@@ -96,6 +102,11 @@ fn action_label(a: &Action) -> String {
         Action::Dedup => "dedup".into(),
         Action::Stack => "stack".into(),
         Action::SmartAlbum { name } => format!("smart-album {name}"),
+        Action::StripMeta => "strip metadata".into(),
+        Action::Convert { fmt, max_px } => match max_px {
+            Some(p) => format!("convert→{fmt} ≤{p}px"),
+            None => format!("convert→{fmt}"),
+        },
     }
 }
 
@@ -179,6 +190,17 @@ fn parse_action(stage: &str) -> Option<Action> {
     if let Some(r) = strip_any(s, &["smart album ", "save as smart album ", "save smart album "]) {
         return Some(Action::SmartAlbum { name: r.trim().to_string() });
     }
+    if let Some(r) = strip_any(s, &["straighten by ", "straighten "]) {
+        let tok = r.trim().trim_end_matches("degrees").trim_end_matches('°').trim();
+        let deg: f32 = tok.split_whitespace().next()?.parse().ok()?;
+        return Some(Action::Edit { op: format!("straighten:{deg}") });
+    }
+    if let Some(r) = strip_any(s, &["convert to ", "convert "]) {
+        let mut it = r.split_whitespace();
+        let fmt = it.next()?.to_string();
+        let max_px = it.next().and_then(|t| t.to_ascii_lowercase().trim_end_matches("px").parse::<u32>().ok());
+        return Some(Action::Convert { fmt, max_px });
+    }
     if let Some(op) = edit_op_word(s) {
         return Some(Action::Edit { op });
     }
@@ -191,6 +213,8 @@ fn parse_action(stage: &str) -> Option<Action> {
         "upscale" | "enhance" | "upscale x4" => Some(Action::Upscale),
         "dedup" | "deduplicate" | "find duplicates" | "duplicates" => Some(Action::Dedup),
         "stack" => Some(Action::Stack),
+        "strip metadata" | "strip exif" | "remove exif" | "remove metadata" | "strip gps"
+        | "remove gps" | "scrub metadata" => Some(Action::StripMeta),
         _ => None,
     }
 }
@@ -205,6 +229,7 @@ fn edit_op_word(s: &str) -> Option<String> {
         "flip vertical" | "flip v" => "flip_v",
         "grayscale" | "greyscale" | "black and white" | "b&w" => "grayscale",
         "crop" | "crop square" | "square crop" | "crop 1:1" => "crop_square",
+        "auto enhance" | "auto-enhance" | "auto fix" | "enhance auto" => "auto_enhance",
         // Tonal / colour adjustments (canonical directional tags → edit::EditOp::from_tag).
         "sharpen" | "sharpen it" | "sharpen image" => "sharpen",
         "soften" | "blur" | "blur it" => "soften",
@@ -290,12 +315,15 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
   {\"action\":\"tag\",\"tags\":[\"...\"]} {\"action\":\"autotag\"} {\"action\":\"describe\"}
   {\"action\":\"upscale\"} {\"action\":\"img2img\",\"prompt\":\"...\"} {\"action\":\"relight\",\"prompt\":\"...\"}
   {\"action\":\"edit\",\"op\":\"<one of the edit tags>\"}  where the tag is one of:
-    geometry: rotate_cw rotate_ccw rotate_180 flip_h flip_v grayscale crop_square
+    geometry: rotate_cw rotate_ccw rotate_180 flip_h flip_v grayscale crop_square auto_enhance
+      straighten:<degrees>  (e.g. straighten:3 or straighten:-2.5)
     light: brighter darker exposure_up exposure_down brilliance more_contrast less_contrast
     tone bands: highlights_up highlights_down midrange_up midrange_down shadows_up shadows_down
       blackpoint_up blackpoint_down
     colour: saturate desaturate vibrant vibrance_down warmer cooler tint_magenta tint_green
     detail: sharpen soften definition denoise
+  {\"action\":\"strip_meta\"}  (remove EXIF/GPS metadata from the album files, in place)
+  {\"action\":\"convert\",\"fmt\":\"jpg|png|webp\",\"max_px\":<int|null>}  (write NEW converted files in-album)
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
   {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE in-album filename pattern, never a path)
   {\"action\":\"sort\",\"by\":\"name-asc|name-desc|date-desc|date-asc|rating-desc|score-desc\"}
@@ -339,6 +367,24 @@ mod tests {
                 _ => panic!("{verb} should be an edit"),
             }
         }
+    }
+
+    #[test]
+    fn management_verbs_parse() {
+        assert_eq!(
+            parse_deterministic("all then auto enhance then straighten 3").unwrap().actions,
+            vec![
+                Action::Edit { op: "auto_enhance".into() },
+                Action::Edit { op: "straighten:3".into() },
+            ]
+        );
+        assert_eq!(parse_deterministic("strip exif").unwrap().actions, vec![Action::StripMeta]);
+        assert_eq!(
+            parse_deterministic("convert to jpg 2048").unwrap().actions,
+            vec![Action::Convert { fmt: "jpg".into(), max_px: Some(2048) }]
+        );
+        // straighten:3 resolves to a real op.
+        assert!(crate::photos::edit::EditOp::from_tag("straighten:3").is_some());
     }
 
     #[test]

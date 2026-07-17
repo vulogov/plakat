@@ -17,6 +17,7 @@ pub mod mledit;
 pub mod nl;
 pub mod portfolio;
 pub mod rename;
+pub mod scrub;
 pub mod versions;
 pub mod vision;
 pub mod visual_search;
@@ -91,6 +92,12 @@ enum PendingCmd {
     AddLayer,
     /// Set the active layer's mask to the entered grayscale matte (album filename or path).
     MaskImage,
+    /// Straighten the cursor image by the entered degrees.
+    Straighten,
+    /// Confirm stripping EXIF/GPS metadata from the target images.
+    StripExif,
+    /// Convert the targets to the entered `fmt [Npx | NkB]`.
+    Convert,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -129,6 +136,9 @@ enum EditCmd {
     CropExact,  // prompts for WxH pixels
     ResizeExact, // prompts for WxH (or N) pixels
     Layers,     // interactive layer compositing
+    Straighten, // prompts for degrees
+    StripExif,  // strip file metadata (confirm)
+    Convert,    // prompts for format / size
     Undo,
     Redo,
     Revert,
@@ -144,6 +154,8 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("flip horizontal", EditCmd::Op(FlipH)),
         ("flip vertical", EditCmd::Op(FlipV)),
         ("grayscale / desaturate", EditCmd::Op(Grayscale)),
+        ("auto-enhance (auto levels + colour)", EditCmd::Op(AutoEnhance)),
+        ("straighten (rotate by degrees)", EditCmd::Straighten),
         ("crop free-form (interactive)", EditCmd::FreeCrop),
         ("crop to exact size (WxH px)", EditCmd::CropExact),
         ("resize to exact size (WxH or N px)", EditCmd::ResizeExact),
@@ -184,6 +196,8 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("sharpen", EditCmd::Op(Sharpen(22))),
         ("soften", EditCmd::Op(Sharpen(-22))),
         ("noise reduction", EditCmd::Op(NoiseReduction(30))),
+        ("strip metadata (EXIF / GPS)", EditCmd::StripExif),
+        ("convert format / resize (jpg·png·webp)", EditCmd::Convert),
         ("undo", EditCmd::Undo),
         ("redo", EditCmd::Redo),
         ("revert to original", EditCmd::Revert),
@@ -955,6 +969,23 @@ impl App {
                 self.prompt("resize to (WxH or N px): ", "", PendingCmd::ResizeExact);
             }
             EditCmd::Layers => self.enter_layers(),
+            EditCmd::Straighten => {
+                self.edit_menu = false;
+                self.prompt("straighten by degrees (e.g. 3 or -2.5): ", "", PendingCmd::Straighten);
+            }
+            EditCmd::StripExif => {
+                self.edit_menu = false;
+                let n = self.targets().len();
+                self.prompt(
+                    format!("strip EXIF/GPS from {n} image(s)? [y/N]: "),
+                    "",
+                    PendingCmd::StripExif,
+                );
+            }
+            EditCmd::Convert => {
+                self.edit_menu = false;
+                self.prompt("convert to (fmt [Npx | NkB]): ", "", PendingCmd::Convert);
+            }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
@@ -1535,6 +1566,11 @@ impl App {
             }
             Action::Dedup => self.dedup_scan(),
             Action::Stack => self.toggle_stack(),
+            Action::StripMeta => self.strip_metadata_targets(),
+            Action::Convert { fmt, max_px } => {
+                let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
+                self.convert_targets(&fmt, size);
+            }
             Action::SmartAlbum { name } => {
                 let query = self.filter.trim().to_string();
                 if query.is_empty() {
@@ -1673,6 +1709,87 @@ impl App {
         match export::export(&files, &dest, max_px) {
             Ok(n) => self.status = format!("exported {n} image(s) → {}", dest.display()),
             Err(e) => self.status = format!("export failed: {e:#}"),
+        }
+    }
+
+    /// The target images as `(source album dir, full path)` pairs — the selection, else the cursor.
+    /// Routes to each image's own album even in a smart-album view.
+    fn target_sources(&self) -> Vec<(PathBuf, PathBuf)> {
+        self.targets()
+            .iter()
+            .filter_map(|&i| {
+                let p = self.album_paths.get(i)?.clone();
+                let dir = if self.smart.is_some() {
+                    self.smart_src.get(&p)?.clone()
+                } else {
+                    self.album_dir.clone()?
+                };
+                Some((dir, p))
+            })
+            .collect()
+    }
+
+    /// Strip EXIF/XMP/IPTC/GPS metadata from the target files (in place; JPEG/PNG lossless).
+    fn strip_metadata_targets(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to strip".into();
+            return;
+        }
+        let (mut ok, mut reencoded, mut err) = (0, 0, 0);
+        for (_dir, path) in &files {
+            match scrub::strip_metadata(path) {
+                Ok(true) => ok += 1,
+                Ok(false) => {
+                    ok += 1;
+                    reencoded += 1;
+                }
+                Err(_) => err += 1,
+            }
+            self.thumbs.remove(path);
+        }
+        if self.mode == AlbumMode::Image {
+            self.load_view();
+        }
+        let extra = if reencoded > 0 { format!(" ({reencoded} re-encoded)") } else { String::new() };
+        self.status = if err > 0 {
+            format!("stripped {ok} · {err} failed{extra}")
+        } else {
+            format!("stripped metadata from {ok} image(s){extra}")
+        };
+    }
+
+    /// Convert the target images to `fmt`/`size`, landing a new file per source (deduped variant).
+    fn convert_targets(&mut self, fmt: &str, size: scrub::ConvertSize) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to convert".into();
+            return;
+        }
+        let (mut ok, mut err, mut last) = (0, 0, None);
+        for (dir, path) in &files {
+            match scrub::convert(path, dir, fmt, size) {
+                Ok(name) => {
+                    self.record_variant(path, &name);
+                    last = Some(name);
+                    ok += 1;
+                }
+                Err(e) => {
+                    err += 1;
+                    self.status = format!("convert failed: {e:#}");
+                }
+            }
+        }
+        if ok > 0 {
+            self.rescan();
+            if let Some(n) = &last {
+                self.select_by_name(n);
+            }
+            self.status = if err > 0 {
+                format!("converted {ok} · {err} failed")
+            } else {
+                format!("converted {ok} image(s) → {fmt}")
+            };
         }
     }
 
@@ -1910,6 +2027,26 @@ impl App {
                 Some(PendingCmd::MaskImage) if !arg.is_empty() => {
                     self.set_layer_mask_image(&arg);
                 }
+                Some(PendingCmd::Straighten) if !arg.is_empty() => match arg.trim().parse::<f32>() {
+                    Ok(deg) => {
+                        self.apply_edit(edit::EditOp::Straighten((deg * 10.0).round() as i32));
+                        meta_changed = true;
+                    }
+                    Err(_) => self.status = "enter a number of degrees, e.g. 3 or -2.5".into(),
+                },
+                Some(PendingCmd::StripExif) if arg.eq_ignore_ascii_case("y") => {
+                    self.strip_metadata_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Convert) if !arg.is_empty() => match parse_convert(&arg) {
+                    Some((fmt, size)) => {
+                        self.convert_targets(&fmt, size);
+                        fs_changed = true;
+                    }
+                    None => {
+                        self.status = "enter e.g. 'jpg 2048', 'jpg 500kb', or 'png'".into()
+                    }
+                },
                 Some(PendingCmd::Portfolio) if !arg.is_empty() => {
                     // `DIR [MAXPX] | watermark text` — `|` splits off the optional watermark.
                     let (left, mark) = match arg.split_once('|') {
@@ -3464,6 +3601,26 @@ fn sort_paths(
 
 /// Parse a dimensions string: `"1200x800"` / `"1200×800"` / `"1200 800"` → `(1200, 800)`; a single
 /// `"1200"` → `(1200, 1200)`.
+/// Parse a convert spec `fmt [Npx | NkB]` → `(fmt, ConvertSize)`. A bare integer = max longest side;
+/// a `kb`/`k` suffix = target JPEG size; nothing = keep dimensions.
+fn parse_convert(arg: &str) -> Option<(String, scrub::ConvertSize)> {
+    let mut it = arg.split_whitespace();
+    let fmt = it.next()?.to_string();
+    let size = match it.next() {
+        None => scrub::ConvertSize::Keep,
+        Some(tok) => {
+            let low = tok.to_ascii_lowercase();
+            let low = low.strip_suffix("px").unwrap_or(&low);
+            if let Some(kb) = low.strip_suffix("kb").or_else(|| low.strip_suffix('k')) {
+                scrub::ConvertSize::MaxKb(kb.parse().ok()?)
+            } else {
+                scrub::ConvertSize::MaxPx(low.parse().ok()?)
+            }
+        }
+    };
+    Some((fmt, size))
+}
+
 fn parse_dims(s: &str) -> Option<(u32, u32)> {
     let parts: Vec<&str> = s
         .trim()

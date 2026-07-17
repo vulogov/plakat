@@ -55,6 +55,10 @@ pub enum EditOp {
     Sharpen(i32),
     /// Noise reduction (edge-softening blend; positive only).
     NoiseReduction(i32),
+    /// One-tap auto-enhance: per-channel histogram stretch (auto levels + auto colour balance).
+    AutoEnhance,
+    /// Straighten: rotate by `degrees` about the centre, auto-cropping the empty corners.
+    Straighten(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -92,6 +96,8 @@ impl EditOp {
             EditOp::Definition(v) => adjust::definition(&img, v),
             EditOp::Sharpen(v) => adjust::sharpen(&img, v),
             EditOp::NoiseReduction(v) => adjust::denoise(&img, v),
+            EditOp::AutoEnhance => adjust::auto_enhance(&img),
+            EditOp::Straighten(tenths) => straighten(&img, tenths as f32 / 10.0),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -138,6 +144,8 @@ impl EditOp {
             EditOp::Definition(_) => "definition".into(),
             EditOp::Sharpen(_) => "sharpen".into(),
             EditOp::NoiseReduction(_) => "noise reduction".into(),
+            EditOp::AutoEnhance => "auto-enhance".into(),
+            EditOp::Straighten(t) => format!("straighten {:.1}°", t as f32 / 10.0),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -177,6 +185,8 @@ impl EditOp {
             EditOp::Definition(v) => val_op(&mut params, v, "definition"),
             EditOp::Sharpen(v) => val_op(&mut params, v, "sharpen"),
             EditOp::NoiseReduction(v) => val_op(&mut params, v, "noise_reduction"),
+            EditOp::AutoEnhance => "auto_enhance",
+            EditOp::Straighten(v) => val_op(&mut params, v, "straighten"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -210,7 +220,13 @@ impl EditOp {
     /// (`rotate_cw`, `grayscale`, `crop_square`, …) fall through to [`from_entry`].
     pub fn from_tag(tag: &str) -> Option<EditOp> {
         const S: i32 = 22; // default adjustment step for a one-shot command
+        // `straighten:N` carries its angle in **degrees** in the tag (the NL pipeline emits it this
+        // way); the op stores tenths-of-a-degree internally.
+        if let Some(rest) = tag.strip_prefix("straighten:") {
+            return rest.trim().parse::<f32>().ok().map(|d| EditOp::Straighten((d * 10.0).round() as i32));
+        }
         let op = match tag {
+            "auto_enhance" | "enhance" | "auto" => EditOp::AutoEnhance,
             "sharpen" => EditOp::Sharpen(S),
             "soften" | "blur" => EditOp::Sharpen(-S),
             "denoise" | "noise_reduction" | "reduce_noise" => EditOp::NoiseReduction(S + 8),
@@ -276,6 +292,8 @@ impl EditOp {
             "definition" => EditOp::Definition(val()),
             "sharpen" => EditOp::Sharpen(val()),
             "noise_reduction" => EditOp::NoiseReduction(val()),
+            "auto_enhance" => EditOp::AutoEnhance,
+            "straighten" => EditOp::Straighten(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -437,6 +455,113 @@ mod adjust {
         let s = (amount as f32 / 100.0).clamp(0.0, 1.0);
         spatial(img, 1.4, |base, bl, _| std::array::from_fn(|i| base[i] * (1.0 - s) + bl[i] * s))
     }
+
+    /// Auto-enhance: stretch each channel between its 0.5 % / 99.5 % percentiles — auto levels plus
+    /// auto colour balance (independent channel stretch neutralises casts) in one pass.
+    pub fn auto_enhance(img: &DynamicImage) -> DynamicImage {
+        let mut rgb = img.to_rgb8();
+        let n = (rgb.width() * rgb.height()) as u64;
+        if n == 0 {
+            return img.clone();
+        }
+        let mut hist = [[0u64; 256]; 3];
+        for p in rgb.pixels() {
+            for c in 0..3 {
+                hist[c][p.0[c] as usize] += 1;
+            }
+        }
+        let clip = (n as f64 * 0.005) as u64; // ignore the extreme 0.5 % tails
+        let (mut lo, mut hi) = ([0f32; 3], [255f32; 3]);
+        for c in 0..3 {
+            let (mut acc, mut l) = (0u64, 0usize);
+            while l < 255 {
+                acc += hist[c][l];
+                if acc > clip {
+                    break;
+                }
+                l += 1;
+            }
+            let (mut acc2, mut h) = (0u64, 255usize);
+            while h > 0 {
+                acc2 += hist[c][h];
+                if acc2 > clip {
+                    break;
+                }
+                h -= 1;
+            }
+            lo[c] = l as f32;
+            hi[c] = (h.max(l + 1)) as f32;
+        }
+        for p in rgb.pixels_mut() {
+            for c in 0..3 {
+                let v = (p.0[c] as f32 - lo[c]) / (hi[c] - lo[c]);
+                p.0[c] = enc(v);
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+}
+
+/// Largest axis-aligned rectangle (w, h) that fits inside a `w0`×`h0` rectangle rotated by `a`
+/// radians — the classic `rotatedRectWithMaxArea`, used to auto-crop a straighten.
+fn max_inner_rect(w0: f32, h0: f32, a: f32) -> (f32, f32) {
+    if w0 <= 0.0 || h0 <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let (sin, cos) = (a.sin().abs(), a.cos().abs());
+    let width_longer = w0 >= h0;
+    let (long, short) = if width_longer { (w0, h0) } else { (h0, w0) };
+    if short <= 2.0 * sin * cos * long || (sin - cos).abs() < 1e-10 {
+        let x = 0.5 * short;
+        let (a1, a2) = (sin.max(1e-6), cos.max(1e-6));
+        if width_longer { (x / a1, x / a2) } else { (x / a2, x / a1) }
+    } else {
+        let cos2 = cos * cos - sin * sin;
+        (((w0 * cos - h0 * sin) / cos2).abs(), ((h0 * cos - w0 * sin) / cos2).abs())
+    }
+}
+
+/// Bilinear sample of `src` at (possibly fractional) `(x, y)`, edge-clamped.
+fn bilinear(src: &image::RgbImage, x: f32, y: f32) -> image::Rgb<u8> {
+    let (w, h) = (src.width() as i32, src.height() as i32);
+    let (x0, y0) = (x.floor() as i32, y.floor() as i32);
+    let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+    let at = |xx: i32, yy: i32| src.get_pixel(xx.clamp(0, w - 1) as u32, yy.clamp(0, h - 1) as u32).0;
+    let (p00, p10, p01, p11) = (at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1));
+    let mut o = [0u8; 3];
+    for c in 0..3 {
+        let top = p00[c] as f32 * (1.0 - fx) + p10[c] as f32 * fx;
+        let bot = p01[c] as f32 * (1.0 - fx) + p11[c] as f32 * fx;
+        o[c] = (top * (1.0 - fy) + bot * fy).round().clamp(0.0, 255.0) as u8;
+    }
+    image::Rgb(o)
+}
+
+/// Rotate `img` by `degrees` about its centre (bilinear), auto-cropped to the largest inner rect so
+/// there are no empty corners. Positive = counter-clockwise.
+fn straighten(img: &DynamicImage, degrees: f32) -> DynamicImage {
+    if degrees.abs() < 1e-3 {
+        return img.clone();
+    }
+    let src = img.to_rgb8();
+    let (w, h) = (src.width() as f32, src.height() as f32);
+    let a = degrees.to_radians();
+    let (sin, cos) = (a.sin(), a.cos());
+    let (cw, ch) = max_inner_rect(w, h, a);
+    let (ow, oh) = ((cw.floor() as u32).max(1).min(src.width()), (ch.floor() as u32).max(1).min(src.height()));
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let mut out = image::RgbImage::new(ow, oh);
+    for oy in 0..oh {
+        let ry = oy as f32 - oh as f32 / 2.0;
+        for ox in 0..ow {
+            let rx = ox as f32 - ow as f32 / 2.0;
+            // Source point for this rotated-frame offset: R(-a)·(rx, ry) about the source centre.
+            let sx = cx + rx * cos + ry * sin;
+            let sy = cy - rx * sin + ry * cos;
+            out.put_pixel(ox, oy, bilinear(&src, sx, sy));
+        }
+    }
+    DynamicImage::ImageRgb8(out)
 }
 
 /// Largest centered rectangle of `img` with aspect ratio `aw:ah`.
@@ -598,9 +723,34 @@ mod tests {
         assert_eq!(EditOp::from_tag("warmer"), Some(EditOp::Warmth(22)));
         assert_eq!(EditOp::from_tag("desaturate"), Some(EditOp::Saturation(-22)));
         assert_eq!(EditOp::from_tag("brighter"), Some(EditOp::Brightness(20)));
+        assert_eq!(EditOp::from_tag("auto"), Some(EditOp::AutoEnhance));
+        // Tag angle is in degrees; the op stores tenths (5° → 50, 2.5° → 25).
+        assert_eq!(EditOp::from_tag("straighten:5"), Some(EditOp::Straighten(50)));
+        assert_eq!(EditOp::from_tag("straighten:-2.5"), Some(EditOp::Straighten(-25)));
         // Structural tags still resolve through from_entry.
         assert_eq!(EditOp::from_tag("grayscale"), Some(EditOp::Grayscale));
         assert_eq!(EditOp::from_tag("warp_drive"), None);
+    }
+
+    #[test]
+    fn auto_enhance_stretches_a_flat_image() {
+        // A low-contrast gradient (values 80..120) should stretch toward the full 0..255 range.
+        let src = DynamicImage::ImageRgb8(ImageBuffer::from_fn(40, 4, |x, _| {
+            Rgb([(80 + x) as u8, (80 + x) as u8, (80 + x) as u8])
+        }));
+        let out = EditOp::AutoEnhance.apply(src).to_rgb8();
+        assert!(out.get_pixel(0, 0).0[0] < 20, "darkest stretched down");
+        assert!(out.get_pixel(39, 0).0[0] > 235, "brightest stretched up");
+    }
+
+    #[test]
+    fn straighten_autocrops_and_stays_valid() {
+        let out = EditOp::Straighten(100).apply(img(200, 120)); // 10.0°
+        // Auto-crop → smaller than the source, non-empty, no all-black corners from the rotation.
+        assert!(out.width() > 0 && out.height() > 0);
+        assert!(out.width() < 200 && out.height() < 120);
+        let noop = EditOp::Straighten(0).apply(img(20, 20));
+        assert_eq!((noop.width(), noop.height()), (20, 20));
     }
 
     #[test]

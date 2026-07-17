@@ -327,6 +327,20 @@ Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and 
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
 highlights for a richer, deeper look. All are non-destructive and replayable.
 
+**One-tap fixes & geometry.** The palette also has **auto-enhance** (auto levels +
+colour balance in one press) and **straighten** — pick it and type an angle in
+degrees (`3`, `-2.5`); the image rotates and auto-crops the empty corners.
+
+**File management** (these change the file, so they're *not* part of undo/replay):
+- **strip metadata (EXIF / GPS)** — removes EXIF/XMP/IPTC/GPS from the selected
+  files, in place. JPEG and PNG are stripped **losslessly** (pixels untouched); it
+  asks first. Good for sharing without location/camera data.
+- **convert format / resize** — type `jpg 2048` (format + longest-side cap),
+  `jpg 500kb` (target a JPEG file size), or just `png`/`webp`. Writes a **new** file
+  next to the original (the source is untouched).
+
+Both act on the multi-selection if you have one, else the cursor image.
+
 **Free-form crop.** Pick **crop free-form (interactive)** for an arbitrary
 rectangle: the image shows full, with everything outside the crop **dimmed**.
 
@@ -465,16 +479,19 @@ all photos then autotag
 take flag then tag as keeper then rate 5
 find ai then sharpen then warmer then desaturate
 selected then lift shadows then recover highlights then add clarity
+all then auto enhance then straighten 2
+find flag then strip exif then convert to jpg 2048
 ```
 
 A command is an optional **selector** (`find`/`take` a pattern — the same filter
 grammar as `/`, or `all` / `selected`) followed by actions run in order: `rate`,
 `flag`, `reject`, `tag`, `autotag`, `describe`, `upscale`, `img2img …`,
 `relight …`, `export to …`, `rename …`, `sort by …`, `dedup`, `stack`,
-`smart album …`, and the **edits** — `rotate`/`flip`/`crop`, plus every adjustment:
-`brighter`/`darker`, `more contrast`, `warmer`/`cooler`, `saturate`/`desaturate`,
-`vibrant`, `sharpen`/`soften`, `denoise`, `add clarity`, `lift shadows`, `recover
-highlights`, `crush blacks`, `add brilliance`, and so on.
+`smart album …`, and the **edits** — `rotate`/`flip`/`crop`, `auto enhance`,
+`straighten N`, plus every adjustment: `brighter`/`darker`, `more contrast`,
+`warmer`/`cooler`, `saturate`/`desaturate`, `vibrant`, `sharpen`/`soften`, `denoise`,
+`add clarity`, `lift shadows`, `recover highlights`, `crush blacks`, `add brilliance`;
+plus the management ops `strip exif` / `remove gps` and `convert to jpg 2048`.
 
 **Security model.** The command pane acts on the current album's images and their
 metadata. The one outward operation is `export`, which *copies* images to a
