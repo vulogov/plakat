@@ -59,6 +59,9 @@ pub enum EditOp {
     AutoEnhance,
     /// Straighten: rotate by `degrees` about the centre, auto-cropping the empty corners.
     Straighten(i32),
+    /// Keystone / perspective: correct converging lines by a trapezoidal warp. `axis` 0 = vertical
+    /// (converging verticals), 1 = horizontal; `amount` −100..100.
+    Keystone { axis: i32, amount: i32 },
     /// Vignette: darken (positive) / lighten (negative) the frame edges radially.
     Vignette(i32),
     /// Levels: map input `[black, white]` (0..255) to full range with a midtone `gamma` (×100:
@@ -152,6 +155,7 @@ impl EditOp {
             EditOp::NoiseReduction(v) => adjust::denoise(&img, v),
             EditOp::AutoEnhance => adjust::auto_enhance(&img),
             EditOp::Straighten(tenths) => straighten(&img, tenths as f32 / 10.0),
+            EditOp::Keystone { axis, amount } => keystone(&img, axis, amount),
             EditOp::Vignette(v) => adjust::vignette(&img, v),
             EditOp::Levels { black, white, gamma } => adjust::levels(&img, black, white, gamma as f32 / 100.0),
             EditOp::Dehaze(v) => adjust::dehaze(&img, v),
@@ -211,6 +215,7 @@ impl EditOp {
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
             | EditOp::Solarize(v) | EditOp::Pixelate(v) => v,
             EditOp::GradND { strength, .. } => strength,
+            EditOp::Keystone { amount, .. } => amount,
             _ => return None,
         })
     }
@@ -245,6 +250,7 @@ impl EditOp {
             EditOp::Solarize(_) => EditOp::Solarize(v),
             EditOp::Pixelate(_) => EditOp::Pixelate(v),
             EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
+            EditOp::Keystone { axis, .. } => EditOp::Keystone { axis, amount: v },
             other => other,
         }
     }
@@ -288,6 +294,9 @@ impl EditOp {
             EditOp::NoiseReduction(_) => "noise reduction".into(),
             EditOp::AutoEnhance => "auto-enhance".into(),
             EditOp::Straighten(t) => format!("straighten {:.1}°", t as f32 / 10.0),
+            EditOp::Keystone { axis, .. } => {
+                format!("keystone {}", if axis == 0 { "vertical" } else { "horizontal" })
+            }
             EditOp::Vignette(_) => "vignette".into(),
             EditOp::Levels { black, white, gamma } => {
                 format!("levels {black}/{white}·γ{:.2}", gamma as f32 / 100.0)
@@ -358,6 +367,11 @@ impl EditOp {
             EditOp::NoiseReduction(v) => val_op(&mut params, v, "noise_reduction"),
             EditOp::AutoEnhance => "auto_enhance",
             EditOp::Straighten(v) => val_op(&mut params, v, "straighten"),
+            EditOp::Keystone { axis, amount } => {
+                params.insert("axis".into(), serde_json::json!(axis));
+                params.insert("amount".into(), serde_json::json!(amount));
+                "keystone"
+            }
             EditOp::Vignette(v) => val_op(&mut params, v, "vignette"),
             EditOp::Levels { black, white, gamma } => {
                 params.insert("black".into(), serde_json::json!(black));
@@ -474,6 +488,8 @@ impl EditOp {
             "burn" => EditOp::Radial(30),
             "dodge" => EditOp::Radial(-30),
             "grad_nd" | "graduated_nd" | "nd_grad" => EditOp::GradND { dir: 0, strength: 30 },
+            "keystone" | "fix_verticals" | "keystone_v" => EditOp::Keystone { axis: 0, amount: 30 },
+            "keystone_h" => EditOp::Keystone { axis: 1, amount: 30 },
             "clahe" | "equalize" | "adaptive_contrast" => EditOp::Clahe(60),
             "invert" | "negative" => EditOp::Invert,
             "sepia" => EditOp::Sepia,
@@ -565,6 +581,7 @@ impl EditOp {
             "noise_reduction" => EditOp::NoiseReduction(val()),
             "auto_enhance" => EditOp::AutoEnhance,
             "straighten" => EditOp::Straighten(val()),
+            "keystone" => EditOp::Keystone { axis: iv("axis", 0), amount: iv("amount", 0) },
             "vignette" => EditOp::Vignette(val()),
             "levels" => EditOp::Levels { black: iv("black", 0), white: iv("white", 255), gamma: iv("gamma", 100) },
             "dehaze" => EditOp::Dehaze(val()),
@@ -1498,6 +1515,35 @@ fn bilinear(src: &image::RgbImage, x: f32, y: f32) -> image::Rgb<u8> {
     image::Rgb(o)
 }
 
+/// Keystone / perspective correction: a trapezoidal warp (bilinear, edge-clamped so there are no
+/// black wedges). `axis` 0 scales width per row (vertical keystone — converging verticals), 1 scales
+/// height per column (horizontal keystone); `amount` −100..100.
+fn keystone(img: &DynamicImage, axis: i32, amount: i32) -> DynamicImage {
+    let k = (amount as f32 / 100.0).clamp(-1.0, 1.0);
+    if k.abs() < 1e-4 {
+        return img.clone();
+    }
+    let src = img.to_rgb8();
+    let (w, h) = (src.width() as f32, src.height() as f32);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let mut out = image::RgbImage::new(src.width(), src.height());
+    for oy in 0..src.height() {
+        let ny = (oy as f32 - cy) / h; // ~[-0.5, 0.5]
+        for ox in 0..src.width() {
+            let nx = (ox as f32 - cx) / w;
+            let (sx, sy) = if axis == 0 {
+                let scale = (1.0 + k * ny * 2.0).max(0.1); // width scale varies with the row
+                (cx + (ox as f32 - cx) / scale, oy as f32)
+            } else {
+                let scale = (1.0 + k * nx * 2.0).max(0.1); // height scale varies with the column
+                (ox as f32, cy + (oy as f32 - cy) / scale)
+            };
+            out.put_pixel(ox, oy, bilinear(&src, sx, sy));
+        }
+    }
+    DynamicImage::ImageRgb8(out)
+}
+
 /// Rotate `img` by `degrees` about its centre (bilinear), auto-cropped to the largest inner rect so
 /// there are no empty corners. Positive = counter-clockwise.
 fn straighten(img: &DynamicImage, degrees: f32) -> DynamicImage {
@@ -1632,6 +1678,7 @@ mod tests {
             EditOp::SelectiveColor { hue: 120, sat: 45 }, EditOp::Grain(30), EditOp::Despeckle(55),
             EditOp::GradND { dir: 1, strength: 40 }, EditOp::Radial(-30),
             EditOp::Curve { pts: [0, 50, 128, 205, 255] }, EditOp::Clahe(60),
+            EditOp::Keystone { axis: 0, amount: 30 }, EditOp::Keystone { axis: 1, amount: -20 },
             EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
             EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon,
@@ -1737,6 +1784,18 @@ mod tests {
         let out = EditOp::AutoEnhance.apply(src).to_rgb8();
         assert!(out.get_pixel(0, 0).0[0] < 20, "darkest stretched down");
         assert!(out.get_pixel(39, 0).0[0] > 235, "brightest stretched up");
+    }
+
+    #[test]
+    fn keystone_warps_and_is_noop_at_zero() {
+        let src = img(40, 40);
+        let noop = EditOp::Keystone { axis: 0, amount: 0 }.apply(src.clone()).to_rgb8();
+        assert_eq!(noop, src.to_rgb8(), "0 amount is identity");
+        // A vertical keystone keeps dims but changes pixels; the centre row stays put.
+        let out = EditOp::Keystone { axis: 0, amount: 60 }.apply(src.clone()).to_rgb8();
+        assert_eq!((out.width(), out.height()), (40, 40));
+        assert_ne!(out, src.to_rgb8());
+        assert_eq!(EditOp::from_tag("keystone"), Some(EditOp::Keystone { axis: 0, amount: 30 }));
     }
 
     #[test]

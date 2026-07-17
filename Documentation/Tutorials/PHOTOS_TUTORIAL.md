@@ -430,6 +430,11 @@ highlights for a richer, deeper look. All are non-destructive and replayable.
 colour balance in one press) and **straighten** — pick it and type an angle in
 degrees (`3`, `-2.5`); the image rotates and auto-crops the empty corners.
 
+**Keystone / perspective.** *keystone vertical* and *keystone horizontal* open the slider
+and warp the frame to correct **converging lines** — the classic architecture fix for
+buildings that lean back. `←`/`→` to dial it (edges stretch to fill, so no black wedges;
+crop after if you like). `:` verb: `fix verticals`.
+
 **Levels** (black / white / gamma) opens a small **live editor** — the image updates as
 you go:
 

@@ -266,6 +266,8 @@ fn edit_op_word(s: &str) -> Option<String> {
         "vignette" | "darken edges" => "vignette",
         "vignette light" | "lighten edges" => "vignette_light",
         "dehaze" | "defog" | "remove haze" => "dehaze",
+        "keystone" | "fix verticals" | "correct perspective" => "keystone",
+        "keystone horizontal" => "keystone_h",
         "invert" | "negative" => "invert",
         "sepia" => "sepia",
         "duotone" => "duotone",

@@ -224,6 +224,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("grayscale / desaturate", "gg", EditCmd::Op(Grayscale)),
         ("auto-enhance (auto levels + colour)", "ga", EditCmd::Op(AutoEnhance)),
         ("straighten (rotate by degrees)", "gs", EditCmd::Straighten),
+        ("keystone vertical (fix verticals)…", "gk", EditCmd::Adjust(Keystone { axis: 0, amount: 0 })),
+        ("keystone horizontal…", "gK", EditCmd::Adjust(Keystone { axis: 1, amount: 0 })),
         // Crop (c)
         ("crop free-form (interactive)", "cf", EditCmd::FreeCrop),
         ("crop to exact size (WxH px)", "cx", EditCmd::CropExact),

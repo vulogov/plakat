@@ -38,6 +38,8 @@ command's chord in its right column.
 | `Ctrl-B g g` | grayscale / desaturate |
 | `Ctrl-B g a` | auto-enhance (auto levels + colour) |
 | `Ctrl-B g s` | straighten (rotate by degrees) |
+| `Ctrl-B g k` | keystone vertical (fix verticals)… |
+| `Ctrl-B g K` | keystone horizontal… |
 
 ### `c` — crop
 | Chord | Command |
