@@ -43,9 +43,11 @@ The screen is three panes plus a status bar and a command line:
   **folder** (holds sub-folders) or an **album** (holds images). Albums are the
   unit of curation.
 - **Album grid** (right) — thumbnails of the selected album, lazily rendered.
-- **Status bar** (top) — root, current album, image count, active filter.
-- **Command line** (bottom) — where rename / new-album / delete prompts and the
-  filter appear.
+- **Status bar** (top) — the **open album's name**, library counts, and a **live
+  luma histogram** of the current image (it updates under the edit previews, so you can
+  watch the tones shift as you adjust).
+- **Command line** (bottom) — where rename / new-album / delete prompts and the filter
+  appear, and where **status messages and contextual key-hints** are shown.
 
 `Tab` moves focus between the tree and the grid. `q` quits from anywhere.
 

@@ -35,7 +35,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
@@ -323,6 +323,9 @@ struct App {
     analysis: Option<analysis::Analysis>,
     view_proto: Option<StatefulProtocol>,
     view_exif: Option<hjson::ExifRecord>,
+    /// A compact luma-histogram sparkline of the currently-displayed image, for the top bar (updates
+    /// live under the edit previews).
+    view_spark: Option<String>,
     thumbs: HashMap<PathBuf, StatefulProtocol>,
     cols: usize,
     thumb_px: u32,
@@ -463,6 +466,7 @@ impl App {
             analysis: None,
             view_proto: None,
             view_exif: None,
+            view_spark: None,
             thumbs: HashMap::new(),
             cols: 4,
             thumb_px,
@@ -637,6 +641,23 @@ impl App {
     }
 
     // ---- Tree album operations (RFC §7.4, extended) ----------------------------------------------
+
+    /// The display name of whatever's open in the album pane — the smart-view label, the open album's
+    /// metadata name (fallback to its dir), else the library root.
+    fn current_view_name(&self) -> String {
+        if let Some(name) = &self.smart {
+            return format!("{} {}", if self.smart_is_search { "🔎" } else { "★" }, name);
+        }
+        if let Some(dir) = &self.album_dir {
+            return self
+                .album_meta
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| dir.file_name().and_then(|n| n.to_str()).unwrap_or("album").to_string());
+        }
+        self.root_dir.file_name().and_then(|n| n.to_str()).unwrap_or("library").to_string()
+    }
 
     /// The tree cursor's `(path, kind, name)`.
     fn cur_tree_node(&self) -> Option<(PathBuf, NodeKind, String)> {
@@ -2916,8 +2937,12 @@ impl App {
                 } else {
                     apply_overlay(img, self.overlay)
                 };
+                self.view_spark = Some(spark_of(&img)); // live histogram for the top bar
                 self.picker.new_resize_protocol(img)
             });
+        if path.is_none() {
+            self.view_spark = None;
+        }
         self.view_exif = path.as_ref().and_then(|p| exif::read_exif(p).ok());
         self.analysis = None;
         if self.show_analysis {
@@ -4200,14 +4225,23 @@ fn draw(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(3)])
             .areas(f.area());
 
-    let status = format!(
-        " plakat photos  {}   {} albums · {} images   {}",
-        app.root_dir.display(),
-        app.album_count(),
-        app.root.total_images(),
-        app.status,
-    );
-    f.render_widget(Paragraph::new(status).style(Style::default().fg(Color::Black).bg(Color::Gray)), status_bar);
+    // Top bar: the open album's name + library counts + a live histogram of the current image
+    // (updates under the edit previews). Transient status/hints go to the command pane below.
+    let base = Style::default().fg(Color::Black).bg(Color::Gray);
+    let mut top: Vec<Span> = vec![
+        Span::styled(" plakat photos ", base.add_modifier(Modifier::DIM)),
+        Span::styled(format!(" {} ", app.current_view_name()), base.add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {} albums · {} images ", app.album_count(), app.root.total_images()),
+            base.add_modifier(Modifier::DIM),
+        ),
+    ];
+    if app.mode == AlbumMode::Image {
+        if let Some(sp) = &app.view_spark {
+            top.push(Span::styled(format!("  {sp}  "), base.fg(Color::DarkGray)));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(top)).style(base), status_bar);
 
     let [tree_col, album_col] =
         Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).areas(body);
@@ -4262,6 +4296,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         (" ▸ pick from the palette · Esc to close ".to_string(), Style::default().fg(Color::DarkGray))
     } else if app.cmd_active {
         (format!(" {}{}_", app.cmd_prompt, app.cmd_buffer), Style::default().fg(Color::Yellow))
+    } else if !app.status.is_empty() {
+        // The transient status / contextual key-hints live here now (not the top bar).
+        (format!(" {} ", app.status), Style::default().fg(Color::Gray))
     } else {
         (" CMD ▶ ".to_string(), Style::default())
     };
@@ -5509,6 +5546,22 @@ fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// A compact luma-histogram sparkline of `img` (sampled, 28 columns) for the top bar.
+fn spark_of(img: &image::DynamicImage) -> String {
+    let rgb = img.to_rgb8();
+    let total = (rgb.width() as u64 * rgb.height() as u64).max(1);
+    let stride = (total / 8000).max(1) as usize; // cap ~8k samples
+    let mut hist = [0u32; 28];
+    for (i, p) in rgb.pixels().enumerate() {
+        if i % stride != 0 {
+            continue;
+        }
+        let y = (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) as usize;
+        hist[(y * 28 / 256).min(27)] += 1;
+    }
+    sparkline(&hist, 28)
+}
+
 /// A one-row sparkline of `hist` down-sampled to `width` columns (8 block levels).
 fn sparkline(hist: &[u32], width: usize) -> String {
     const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -5603,7 +5656,7 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             });
         }
         if let Some(r) = path.as_ref().and_then(|p| app.record(p)) {
-            lines.push(Line::from("─ curation ─"));
+            lines.push(section("curation"));
             lines.push(curation_badge(Some(r)));
             if let Some(s) = r.score {
                 lines.push(Line::from(format!("score    {s:.2}")));
@@ -5621,26 +5674,54 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(format!("notes    {no}")));
             }
             if !r.edits.is_empty() {
-                let ops: Vec<String> =
-                    r.edits.iter().filter_map(edit::EditOp::from_entry).map(|o| o.label()).collect();
+                lines.push(section("edits"));
                 lines.push(Line::from(Span::styled(
-                    format!("edits    {} ({})", r.edits.len(), ops.join(", ")),
+                    format!("{} edit(s):  {}", r.edits.len(), edit_summary(&r.edits)),
                     Style::new().fg(Color::Cyan),
                 )));
             }
             // Generation recipe for plakat-made images (`--import`).
             if let Some(g) = &r.generation {
-                lines.push(Line::from("─ plakat ─"));
+                lines.push(section("plakat"));
                 lines.push(Line::from(format!("model    {}", g.model)));
                 lines.push(Line::from(format!("seed     {}", g.seed)));
                 lines.push(Line::from(format!("steps    {}  cfg {}", g.steps, g.guidance)));
             }
         }
         f.render_widget(
-            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" EXIF ")),
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: true })
+                .block(Block::default().borders(Borders::ALL).title(" Info ")),
             panel,
         );
     }
+}
+
+/// A styled section divider for the info panel.
+fn section(name: &str) -> Line<'static> {
+    Line::from(Span::styled(format!("── {name} ──"), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+}
+
+/// Collapse a raw edit log into a readable summary: group by label (first-seen order) with counts,
+/// e.g. "shadows ×3 · sharpen ×4 · warmth". Avoids the repetitive "shadows, shadows, shadows, …".
+fn edit_summary(edits: &[hjson::EditEntry]) -> String {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for op in edits.iter().filter_map(edit::EditOp::from_entry) {
+        let l = op.label();
+        if !counts.contains_key(&l) {
+            order.push(l.clone());
+        }
+        *counts.entry(l).or_insert(0) += 1;
+    }
+    order
+        .iter()
+        .map(|l| {
+            let c = counts[l];
+            if c > 1 { format!("{l} ×{c}") } else { l.clone() }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 #[cfg(test)]
@@ -5687,6 +5768,20 @@ mod tree_ops_tests {
             back.edit_presets[0].ops.iter().filter_map(edit::EditOp::from_entry).collect();
         assert_eq!(parsed, vec![edit::EditOp::Warmth(20), edit::EditOp::Vignette(30)]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_summary_groups_repeats_in_order() {
+        let edits = vec![
+            edit::EditOp::Shadows(15).to_entry(),
+            edit::EditOp::Shadows(15).to_entry(),
+            edit::EditOp::Shadows(15).to_entry(),
+            edit::EditOp::Sharpen(22).to_entry(),
+            edit::EditOp::Warmth(10).to_entry(),
+            edit::EditOp::Sharpen(22).to_entry(),
+        ];
+        // Grouped by label, first-seen order, with counts — not "shadows, shadows, shadows, …".
+        assert_eq!(edit_summary(&edits), "shadows ×3 · sharpen ×2 · warmth");
     }
 
     #[test]
