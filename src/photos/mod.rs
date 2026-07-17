@@ -176,79 +176,109 @@ enum EditCmd {
 }
 
 /// The Edit palette's command list: `(searchable label, action)`.
-fn edit_commands() -> Vec<(&'static str, EditCmd)> {
-    use edit::EditOp::*;
-    vec![
-        ("rotate clockwise ⟳", EditCmd::Op(RotateCw)),
-        ("rotate counter-clockwise ⟲", EditCmd::Op(RotateCcw)),
-        ("rotate 180°", EditCmd::Op(Rotate180)),
-        ("flip horizontal", EditCmd::Op(FlipH)),
-        ("flip vertical", EditCmd::Op(FlipV)),
-        ("grayscale / desaturate", EditCmd::Op(Grayscale)),
-        ("auto-enhance (auto levels + colour)", EditCmd::Op(AutoEnhance)),
-        ("straighten (rotate by degrees)", EditCmd::Straighten),
-        ("crop free-form (interactive)", EditCmd::FreeCrop),
-        ("crop to exact size (WxH px)", EditCmd::CropExact),
-        ("resize to exact size (WxH or N px)", EditCmd::ResizeExact),
-        ("layers — overlay / compose images", EditCmd::Layers),
-        ("crop to square 1:1", EditCmd::Op(CropSquare)),
-        ("crop 4:5 (portrait)", EditCmd::Op(CropAspect { w: 4, h: 5 })),
-        ("crop 5:4", EditCmd::Op(CropAspect { w: 5, h: 4 })),
-        ("crop 3:2 (photo)", EditCmd::Op(CropAspect { w: 3, h: 2 })),
-        ("crop 2:3 (portrait)", EditCmd::Op(CropAspect { w: 2, h: 3 })),
-        ("crop 16:9 (wide)", EditCmd::Op(CropAspect { w: 16, h: 9 })),
-        ("crop 9:16 (tall)", EditCmd::Op(CropAspect { w: 9, h: 16 })),
-        // Scalar adjustments open an interactive +/- slider with a live preview.
-        ("brightness…", EditCmd::Adjust(Brightness(0))),
-        ("contrast…", EditCmd::Adjust(Contrast(0))),
-        ("exposure…", EditCmd::Adjust(Exposure(0))),
-        ("brilliance…", EditCmd::Adjust(Brilliance(0))),
-        ("highlights…", EditCmd::Adjust(Highlights(0))),
-        ("midrange…", EditCmd::Adjust(Midrange(0))),
-        ("shadows…", EditCmd::Adjust(Shadows(0))),
-        ("black point…", EditCmd::Adjust(Blackpoint(0))),
-        ("saturation…", EditCmd::Adjust(Saturation(0))),
-        ("vibrance…", EditCmd::Adjust(Vibrance(0))),
-        ("warmth (warm / cool)…", EditCmd::Adjust(Warmth(0))),
-        ("tint (magenta / green)…", EditCmd::Adjust(Tint(0))),
-        ("definition (clarity)…", EditCmd::Adjust(Definition(0))),
-        ("dehaze…", EditCmd::Adjust(Dehaze(0))),
-        ("hue rotate…", EditCmd::Adjust(HueRotate(0))),
-        ("split-tone…", EditCmd::Adjust(SplitTone(0))),
-        ("vignette…", EditCmd::Adjust(Vignette(0))),
-        ("radial dodge / burn…", EditCmd::Adjust(Radial(0))),
-        ("graduated ND (from top)…", EditCmd::Adjust(GradND { dir: 0, strength: 0 })),
-        ("graduated ND (from bottom)…", EditCmd::Adjust(GradND { dir: 1, strength: 0 })),
-        ("graduated ND (from left)…", EditCmd::Adjust(GradND { dir: 2, strength: 0 })),
-        ("graduated ND (from right)…", EditCmd::Adjust(GradND { dir: 3, strength: 0 })),
-        ("sharpen / soften…", EditCmd::Adjust(Sharpen(0))),
-        ("noise reduction…", EditCmd::Adjust(NoiseReduction(0))),
-        ("film grain…", EditCmd::Adjust(Grain(0))),
-        ("despeckle (median)…", EditCmd::Adjust(Despeckle(0))),
-        ("levels (black / white / gamma)…", EditCmd::Levels),
-        ("selective colour: boost reds", EditCmd::Op(SelectiveColor { hue: 0, sat: 45 })),
-        ("selective colour: mute reds", EditCmd::Op(SelectiveColor { hue: 0, sat: -55 })),
-        ("selective colour: boost greens", EditCmd::Op(SelectiveColor { hue: 120, sat: 45 })),
-        ("selective colour: mute greens", EditCmd::Op(SelectiveColor { hue: 120, sat: -55 })),
-        ("selective colour: boost blues", EditCmd::Op(SelectiveColor { hue: 240, sat: 45 })),
-        ("selective colour: mute blues", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
-        ("strip metadata (EXIF / GPS)", EditCmd::StripExif),
-        ("redact GPS only (keep other EXIF)", EditCmd::RedactGps),
-        ("convert format / resize (jpg·png·webp)", EditCmd::Convert),
-        ("copy edits (from this image)", EditCmd::CopyEdits),
-        ("paste edits (to selection / cursor)", EditCmd::PasteEdits),
-        ("save edits as preset…", EditCmd::SavePreset),
-        ("apply preset…", EditCmd::ApplyPreset),
-        ("undo", EditCmd::Undo),
-        ("redo", EditCmd::Redo),
-        ("revert to original", EditCmd::Revert),
+/// The category keys for the `Ctrl-B` edit chords (the first key after the leader, in image view).
+/// Each avoids the global leader keys (h/H/t/v/p/l/L).
+fn chord_categories() -> [(char, &'static str); 7] {
+    [
+        ('g', "geometry"),
+        ('c', "crop"),
+        ('a', "adjust (light/tone)"),
+        ('k', "colour"),
+        ('x', "effects / detail"),
+        ('e', "edit stack"),
+        ('m', "manage"),
     ]
 }
 
-/// Edit commands whose label contains `query` (case-insensitive; empty query = all).
-fn filtered_edit_commands(query: &str) -> Vec<(&'static str, EditCmd)> {
+/// The full edit command table: `(label, chord, command)`. The 2-char `chord` is `Ctrl-B <cat><item>`
+/// (image view); it's the single source of truth for the palette, the chord dispatch, and KEYMAP.md.
+fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
+    use edit::EditOp::*;
+    vec![
+        // Geometry (g)
+        ("rotate clockwise ⟳", "gr", EditCmd::Op(RotateCw)),
+        ("rotate counter-clockwise ⟲", "gl", EditCmd::Op(RotateCcw)),
+        ("rotate 180°", "g2", EditCmd::Op(Rotate180)),
+        ("flip horizontal", "gh", EditCmd::Op(FlipH)),
+        ("flip vertical", "gv", EditCmd::Op(FlipV)),
+        ("grayscale / desaturate", "gg", EditCmd::Op(Grayscale)),
+        ("auto-enhance (auto levels + colour)", "ga", EditCmd::Op(AutoEnhance)),
+        ("straighten (rotate by degrees)", "gs", EditCmd::Straighten),
+        // Crop (c)
+        ("crop free-form (interactive)", "cf", EditCmd::FreeCrop),
+        ("crop to exact size (WxH px)", "cx", EditCmd::CropExact),
+        ("resize to exact size (WxH or N px)", "cz", EditCmd::ResizeExact),
+        ("crop to square 1:1", "cs", EditCmd::Op(CropSquare)),
+        ("crop 4:5 (portrait)", "c4", EditCmd::Op(CropAspect { w: 4, h: 5 })),
+        ("crop 5:4", "c5", EditCmd::Op(CropAspect { w: 5, h: 4 })),
+        ("crop 3:2 (photo)", "c3", EditCmd::Op(CropAspect { w: 3, h: 2 })),
+        ("crop 2:3 (portrait)", "c2", EditCmd::Op(CropAspect { w: 2, h: 3 })),
+        ("crop 16:9 (wide)", "cw", EditCmd::Op(CropAspect { w: 16, h: 9 })),
+        ("crop 9:16 (tall)", "ct", EditCmd::Op(CropAspect { w: 9, h: 16 })),
+        // Adjust — light/tone (a); scalar sliders
+        ("brightness…", "ab", EditCmd::Adjust(Brightness(0))),
+        ("contrast…", "ac", EditCmd::Adjust(Contrast(0))),
+        ("exposure…", "ae", EditCmd::Adjust(Exposure(0))),
+        ("brilliance…", "ar", EditCmd::Adjust(Brilliance(0))),
+        ("highlights…", "ah", EditCmd::Adjust(Highlights(0))),
+        ("midrange…", "am", EditCmd::Adjust(Midrange(0))),
+        ("shadows…", "as", EditCmd::Adjust(Shadows(0))),
+        ("black point…", "ak", EditCmd::Adjust(Blackpoint(0))),
+        ("levels (black / white / gamma)…", "al", EditCmd::Levels),
+        // Colour (k)
+        ("saturation…", "ks", EditCmd::Adjust(Saturation(0))),
+        ("vibrance…", "kv", EditCmd::Adjust(Vibrance(0))),
+        ("warmth (warm / cool)…", "kw", EditCmd::Adjust(Warmth(0))),
+        ("tint (magenta / green)…", "kt", EditCmd::Adjust(Tint(0))),
+        ("hue rotate…", "kh", EditCmd::Adjust(HueRotate(0))),
+        ("split-tone…", "kp", EditCmd::Adjust(SplitTone(0))),
+        ("selective colour: boost reds", "kr", EditCmd::Op(SelectiveColor { hue: 0, sat: 45 })),
+        ("selective colour: mute reds", "kR", EditCmd::Op(SelectiveColor { hue: 0, sat: -55 })),
+        ("selective colour: boost greens", "kg", EditCmd::Op(SelectiveColor { hue: 120, sat: 45 })),
+        ("selective colour: mute greens", "kG", EditCmd::Op(SelectiveColor { hue: 120, sat: -55 })),
+        ("selective colour: boost blues", "kb", EditCmd::Op(SelectiveColor { hue: 240, sat: 45 })),
+        ("selective colour: mute blues", "kB", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
+        // Effects / detail (x)
+        ("definition (clarity)…", "xd", EditCmd::Adjust(Definition(0))),
+        ("sharpen / soften…", "xs", EditCmd::Adjust(Sharpen(0))),
+        ("noise reduction…", "xn", EditCmd::Adjust(NoiseReduction(0))),
+        ("film grain…", "xg", EditCmd::Adjust(Grain(0))),
+        ("despeckle (median)…", "xk", EditCmd::Adjust(Despeckle(0))),
+        ("dehaze…", "xz", EditCmd::Adjust(Dehaze(0))),
+        ("vignette…", "xv", EditCmd::Adjust(Vignette(0))),
+        ("radial dodge / burn…", "xr", EditCmd::Adjust(Radial(0))),
+        ("graduated ND (from top)…", "xt", EditCmd::Adjust(GradND { dir: 0, strength: 0 })),
+        ("graduated ND (from bottom)…", "xb", EditCmd::Adjust(GradND { dir: 1, strength: 0 })),
+        ("graduated ND (from left)…", "xl", EditCmd::Adjust(GradND { dir: 2, strength: 0 })),
+        ("graduated ND (from right)…", "xR", EditCmd::Adjust(GradND { dir: 3, strength: 0 })),
+        // Edit stack (e)
+        ("layers — overlay / compose images", "ey", EditCmd::Layers),
+        ("copy edits (from this image)", "ec", EditCmd::CopyEdits),
+        ("paste edits (to selection / cursor)", "ev", EditCmd::PasteEdits),
+        ("save edits as preset…", "es", EditCmd::SavePreset),
+        ("apply preset…", "ea", EditCmd::ApplyPreset),
+        ("undo", "eu", EditCmd::Undo),
+        ("redo", "eo", EditCmd::Redo),
+        ("revert to original", "e0", EditCmd::Revert),
+        // Manage (m)
+        ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
+        ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
+        ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
+    ]
+}
+
+/// Look up an edit command by its 2-char chord.
+fn edit_cmd_for_chord(chord: &str) -> Option<EditCmd> {
+    edit_commands().into_iter().find(|(_, c, _)| *c == chord).map(|(_, _, cmd)| cmd)
+}
+
+/// Edit commands whose label or chord contains `query` (case-insensitive; empty query = all).
+fn filtered_edit_commands(query: &str) -> Vec<(&'static str, &'static str, EditCmd)> {
     let q = query.trim().to_lowercase();
-    edit_commands().into_iter().filter(|(l, _)| q.is_empty() || l.to_lowercase().contains(&q)).collect()
+    edit_commands()
+        .into_iter()
+        .filter(|(l, c, _)| q.is_empty() || l.to_lowercase().contains(&q) || c.contains(&q))
+        .collect()
 }
 
 /// A free-text per-image metadata field editable from the command pane.
@@ -404,6 +434,9 @@ struct App {
 
     // `Ctrl-B` leader prefix (tmux-style) + the quickhelp overlay it opens.
     leader: bool,
+    // Edit-chord second stage (image view): after `Ctrl-B <category>`, this holds the category key
+    // while we wait for the item key.
+    chord_prefix: Option<char>,
     help: Option<HelpKind>,
     // Copy/paste edits + presets: the copied edit stack, and the apply-preset picker.
     edit_clipboard: Vec<hjson::EditEntry>,
@@ -513,6 +546,7 @@ impl App {
             tl_buckets: Vec::new(),
             tl_cursor: 0,
             leader: false,
+            chord_prefix: None,
             help: None,
             edit_clipboard: Vec::new(),
             preset_browser: false,
@@ -3379,9 +3413,41 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         app.help = None;
         return false;
     }
-    // `Ctrl-B` leader: the next key is a leader command (h = chords help, H = commands help).
+    // Second stage of an edit chord: `Ctrl-B <category>` is set; this key is the item.
+    if let Some(cat) = app.chord_prefix.take() {
+        match k.code {
+            KeyCode::Esc => app.status = "chord cancelled".into(),
+            KeyCode::Char(item) => {
+                let chord = format!("{cat}{item}");
+                match edit_cmd_for_chord(&chord) {
+                    Some(cmd) => app.run_edit_cmd(cmd),
+                    None => app.status = format!("no edit chord Ctrl-B {chord}"),
+                }
+            }
+            _ => {}
+        }
+        return false;
+    }
+    // `Ctrl-B` leader: the next key is a leader command (h = chords help, H = commands help). In the
+    // image view, a category key (g/c/a/k/x/e/m) begins a two-key edit chord.
     if app.leader {
         app.leader = false;
+        let img_view = app.focus == Focus::Album && app.mode == AlbumMode::Image;
+        if img_view {
+            if let KeyCode::Char(c) = k.code {
+                if chord_categories().iter().any(|(cat, _)| *cat == c) {
+                    app.chord_prefix = Some(c);
+                    let items: Vec<String> = edit_commands()
+                        .iter()
+                        .filter(|(_, ch, _)| ch.starts_with(c))
+                        .map(|(_, ch, _)| ch[1..].to_string())
+                        .collect();
+                    let name = chord_categories().iter().find(|(cat, _)| *cat == c).map(|(_, n)| *n).unwrap_or("");
+                    app.status = format!("⌃B {c} · {name}: {} · Esc", items.join(" "));
+                    return false;
+                }
+            }
+        }
         match k.code {
             KeyCode::Char('h') => app.help = Some(HelpKind::Chords),
             KeyCode::Char('H') => app.help = Some(HelpKind::Commands),
@@ -3419,7 +3485,13 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
-        app.status = "Ctrl-B · h/H help · t tags · v versions · p portfolio · l/L lookalike".into();
+        let edits = if app.focus == Focus::Album && app.mode == AlbumMode::Image {
+            " · edits g/c/a/k/x/e/m"
+        } else {
+            ""
+        };
+        app.status =
+            format!("Ctrl-B · h/H help · t tags · v versions · p portfolio · l/L lookalike{edits}");
         return false;
     }
     if app.cmd_active {
@@ -3614,7 +3686,7 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Home => app.edit_cursor = 0,
         KeyCode::End => app.edit_cursor = last,
         KeyCode::Enter => {
-            if let Some((_, cmd)) = filtered_edit_commands(&app.edit_query).get(app.edit_cursor).copied() {
+            if let Some((_, _, cmd)) = filtered_edit_commands(&app.edit_query).get(app.edit_cursor).copied() {
                 app.run_edit_cmd(cmd);
             }
         }
@@ -4285,6 +4357,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     if let Some((title, lines)) = &app.album_info {
         draw_info_panel(f, title, lines, body);
+    }
+    if let Some(cat) = app.chord_prefix {
+        draw_chord_overlay(f, cat, album_col);
     }
     if let Some(kind) = app.help {
         draw_help(f, kind, app, body);
@@ -4996,6 +5071,9 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("i / I", "info panel: right / bottom"));
             l.push(kv("H", format!("analysis panel{}", if app.show_analysis { " (on)" } else { "" })));
             l.push(kv("o", "overlay: clipping zebras → focus peaking → off"));
+            l.push(hd("Edit"));
+            l.push(kv("E", "edit palette (search + Enter)"));
+            l.push(kv("Ctrl-B", "edit chord → category g/c/a/k/x/e/m → item (see KEYMAP.md)"));
             l.push(hd("Curate"));
             l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
             l.push(kv("t e N T", "tags · caption · notes · title"));
@@ -5175,7 +5253,7 @@ fn prow(k: &str, d: &str) -> (String, String) {
 /// highlighted cursor. Type to filter, arrows/PgUp-Dn/Home/End to move, Enter to run.
 fn draw_edit_palette(f: &mut Frame, app: &mut App, area: Rect) {
     let cmds = filtered_edit_commands(&app.edit_query);
-    let w = 46u16.min(area.width);
+    let w = 54u16.min(area.width);
     let h = (cmds.len() as u16 + 4).clamp(6, area.height); // search line + list + borders
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
@@ -5198,14 +5276,20 @@ fn draw_edit_palette(f: &mut Frame, app: &mut App, area: Rect) {
     if cmds.is_empty() {
         lines.push(Line::from(Span::styled("  no match", Style::new().fg(Color::DarkGray))));
     }
-    for (i, (label, _)) in cmds.iter().enumerate().skip(start).take(list_h) {
-        let mut style = Style::default();
-        if i == cursor {
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-        lines.push(Line::from(Span::styled(format!(" {label}"), style)));
+    let labw = (w as usize).saturating_sub(12); // room for the chord column on the right
+    for (i, (label, chord, _)) in cmds.iter().enumerate().skip(start).take(list_h) {
+        let sel = i == cursor;
+        let base = if sel { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() };
+        let name = format!(" {label:<w$}", w = labw.saturating_sub(1));
+        lines.push(Line::from(vec![
+            Span::styled(name, base),
+            Span::styled(
+                format!("⌃B {chord} "),
+                if sel { base } else { Style::new().fg(Color::DarkGray) },
+            ),
+        ]));
     }
-    let title = format!(" Edit palette  {}/{} · Enter run · Esc ", (cursor + 1).min(cmds.len().max(1)), cmds.len());
+    let title = format!(" Edit palette  {}/{} · Enter run · ⌃B chord · Esc ", (cursor + 1).min(cmds.len().max(1)), cmds.len());
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::Cyan)),
@@ -5260,6 +5344,45 @@ fn row_line(text: &str, selected: bool) -> Line<'static> {
         style = style.add_modifier(Modifier::REVERSED);
     }
     Line::from(Span::styled(format!(" {text}"), style))
+}
+
+/// Which-key overlay after `Ctrl-B <category>` in image view: the category's edit chords + labels.
+fn draw_chord_overlay(f: &mut Frame, cat: char, area: Rect) {
+    let name = chord_categories().iter().find(|(c, _)| *c == cat).map(|(_, n)| *n).unwrap_or("");
+    let rows: Vec<(String, String)> = edit_commands()
+        .iter()
+        .filter(|(_, chord, _)| chord.starts_with(cat))
+        .map(|(label, chord, _)| (chord[1..].to_string(), label.to_string()))
+        .collect();
+    let keyw = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(1);
+    let width = rows.iter().map(|(_, d)| keyw + 2 + d.chars().count()).max().unwrap_or(24).clamp(24, 60) as u16 + 4;
+    let w = width.min(area.width);
+    let h = (rows.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|(k, d)| {
+            Line::from(vec![
+                Span::styled(format!(" {k:>keyw$}  "), Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(d.clone()),
+            ])
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" ⌃B {cat} · {name} · Esc "))
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
 }
 
 /// Preset picker popup (Edit → apply preset): saved edit stacks; Enter applies to the targets.
@@ -5768,6 +5891,23 @@ mod tree_ops_tests {
             back.edit_presets[0].ops.iter().filter_map(edit::EditOp::from_entry).collect();
         assert_eq!(parsed, vec![edit::EditOp::Warmth(20), edit::EditOp::Vignette(30)]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_chords_are_unique_two_char_and_categorised() {
+        let cats: Vec<char> = chord_categories().iter().map(|(c, _)| *c).collect();
+        // Categories must not collide with the global Ctrl-B leader keys.
+        for g in ['h', 'H', 't', 'v', 'p', 'l', 'L', 'q'] {
+            assert!(!cats.contains(&g), "category '{g}' collides with a global leader key");
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (_, chord, _) in edit_commands() {
+            assert_eq!(chord.chars().count(), 2, "chord '{chord}' must be 2 chars");
+            let cat = chord.chars().next().unwrap();
+            assert!(cats.contains(&cat), "chord '{chord}' category '{cat}' not registered");
+            assert!(seen.insert(chord), "duplicate chord '{chord}'");
+            assert!(edit_cmd_for_chord(chord).is_some(), "chord '{chord}' does not resolve");
+        }
     }
 
     #[test]

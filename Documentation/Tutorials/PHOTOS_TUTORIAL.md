@@ -364,6 +364,12 @@ command list for **non-destructive** pixel edits on the cursor image:
 - **`Enter`** runs the highlighted command; the palette stays open so you can
   **chain** edits (rotate → brighten → crop). **`Esc`** closes it.
 
+Each palette row shows its **`Ctrl-B` chord** in the right column. In the image view every
+edit also has a fast chord — `Ctrl-B` then a **category** (`g` geometry · `c` crop ·
+`a` adjust · `k` colour · `x` effects · `e` edit-stack · `m` manage), which pops a which-key
+card, then the **item** key. So `Ctrl-B a b` = brightness, `Ctrl-B g r` = rotate, `Ctrl-B c s`
+= square crop. The full list is in [`Documentation/Photos/KEYMAP.md`](../Photos/KEYMAP.md).
+
 The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, **crops**
 (1:1, 4:5, 5:4, 3:2, 2:3, 16:9, 9:16 — centered), **undo**, **redo**, and **revert
 to original**. (Type `crop` to see them all.)
