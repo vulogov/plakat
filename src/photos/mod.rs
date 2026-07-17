@@ -89,6 +89,8 @@ enum PendingCmd {
     ResizeExact,
     /// Add the entered image (album filename or path) as a new top layer in layer mode.
     AddLayer,
+    /// Set the active layer's mask to the entered grayscale matte (album filename or path).
+    MaskImage,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -1074,6 +1076,95 @@ impl App {
         self.after_layer_change();
     }
 
+    /// Cycle the active layer's mask: none → ellipse → rectangle → none (image mattes use `k`).
+    fn cycle_layer_mask(&mut self) {
+        use layers::{Mask, ShapeKind};
+        let Some(l) = self.layers.get_mut(self.layer_active) else { return };
+        l.mask = match &l.mask {
+            Mask::None => Mask::centered_shape(ShapeKind::Ellipse),
+            Mask::Shape { kind: ShapeKind::Ellipse, x, y, w, h, feather, invert } => Mask::Shape {
+                kind: ShapeKind::Rect,
+                x: *x,
+                y: *y,
+                w: *w,
+                h: *h,
+                feather: *feather,
+                invert: *invert,
+            },
+            Mask::Shape { kind: ShapeKind::Rect, .. } | Mask::Image { .. } => Mask::None,
+        };
+        self.after_layer_change();
+    }
+
+    /// Prompt for a grayscale matte image to use as the active layer's mask.
+    fn layer_mask_prompt(&mut self) {
+        if self.layers.get(self.layer_active).is_none() {
+            self.status = "add a layer first (a)".into();
+            return;
+        }
+        self.prompt("mask matte (grayscale album file or path): ", "", PendingCmd::MaskImage);
+    }
+
+    /// Set the active layer's mask to an image matte resolved from `spec` (album file or path).
+    fn set_layer_mask_image(&mut self, spec: &str) {
+        let Some((dir, _)) = self.cur_source() else { return };
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return;
+        }
+        let in_album = dir.join(spec);
+        let path = if in_album.exists() {
+            in_album
+        } else {
+            let p = expand_tilde(spec);
+            if p.exists() {
+                p
+            } else {
+                self.status = format!("no such image: {spec}");
+                return;
+            }
+        };
+        if let Some(l) = self.layers.get_mut(self.layer_active) {
+            l.mask = layers::Mask::Image { src: path, invert: false };
+        }
+        self.after_layer_change();
+    }
+
+    /// Grow/shrink a centred shape mask (fraction of the layer).
+    fn resize_mask(&mut self, d: f32) {
+        if let Some(layers::Mask::Shape { x, y, w, h, .. }) =
+            self.layers.get_mut(self.layer_active).map(|l| &mut l.mask)
+        {
+            let s = (*w + d).clamp(0.05, 1.0);
+            *w = s;
+            *h = s;
+            *x = (1.0 - s) / 2.0;
+            *y = (1.0 - s) / 2.0;
+            self.after_layer_change();
+        }
+    }
+
+    /// Soften/harden a shape mask's edge.
+    fn feather_mask(&mut self, d: f32) {
+        if let Some(layers::Mask::Shape { feather, .. }) =
+            self.layers.get_mut(self.layer_active).map(|l| &mut l.mask)
+        {
+            *feather = (*feather + d).clamp(0.0, 0.9);
+            self.after_layer_change();
+        }
+    }
+
+    /// Invert the active layer's mask (show ↔ hide).
+    fn invert_mask(&mut self) {
+        match self.layers.get_mut(self.layer_active).map(|l| &mut l.mask) {
+            Some(layers::Mask::Shape { invert, .. }) | Some(layers::Mask::Image { invert, .. }) => {
+                *invert = !*invert;
+                self.after_layer_change();
+            }
+            _ => {}
+        }
+    }
+
     /// Select the next/previous layer (wraps).
     fn select_layer(&mut self, delta: i32) {
         if self.layers.is_empty() {
@@ -1128,7 +1219,7 @@ impl App {
     fn set_layer_status(&mut self) {
         if let Some(l) = self.layers.get(self.layer_active) {
             self.status = format!(
-                "layer {}/{}: {} · arrows move · +/- size · < > opacity · b blend · {{ }} order · n/p select · x del · a add · Enter flatten · Esc",
+                "layer {}/{}: {} · arrows move · +/- size · < > opacity · b blend · m mask · {{ }} order · x del · a add · Enter flatten · Esc",
                 self.layer_active + 1,
                 self.layers.len(),
                 l.label()
@@ -1738,6 +1829,9 @@ impl App {
                 }
                 Some(PendingCmd::AddLayer) if !arg.is_empty() => {
                     self.add_layer(&arg);
+                }
+                Some(PendingCmd::MaskImage) if !arg.is_empty() => {
+                    self.set_layer_mask_image(&arg);
                 }
                 Some(PendingCmd::Portfolio) if !arg.is_empty() => {
                     // `DIR [MAXPX] | watermark text` — `|` splits off the optional watermark.
@@ -2469,14 +2563,22 @@ fn handle_layer_key(app: &mut App, code: KeyCode) {
         KeyCode::Down => app.nudge_layer(0.0, m),
         KeyCode::Char('+') | KeyCode::Char('=') => app.scale_layer(0.05),
         KeyCode::Char('-') | KeyCode::Char('_') => app.scale_layer(-0.05),
-        KeyCode::Char('<') | KeyCode::Char(',') => app.opacity_layer(-0.05),
-        KeyCode::Char('>') | KeyCode::Char('.') => app.opacity_layer(0.05),
+        KeyCode::Char('<') => app.opacity_layer(-0.05),
+        KeyCode::Char('>') => app.opacity_layer(0.05),
         KeyCode::Char('b') => app.cycle_layer_blend(),
-        KeyCode::Char('{') | KeyCode::Char('[') => app.reorder_layer(false),
-        KeyCode::Char('}') | KeyCode::Char(']') => app.reorder_layer(true),
+        KeyCode::Char('{') => app.reorder_layer(false),
+        KeyCode::Char('}') => app.reorder_layer(true),
         KeyCode::Char('n') | KeyCode::Tab => app.select_layer(1),
         KeyCode::Char('p') | KeyCode::BackTab => app.select_layer(-1),
         KeyCode::Char('x') => app.delete_layer(),
+        // Mask (active layer): m cycle shape · k image matte · [ ] size · , . feather · / invert.
+        KeyCode::Char('m') => app.cycle_layer_mask(),
+        KeyCode::Char('k') => app.layer_mask_prompt(),
+        KeyCode::Char('[') => app.resize_mask(-0.05),
+        KeyCode::Char(']') => app.resize_mask(0.05),
+        KeyCode::Char(',') => app.feather_mask(-0.03),
+        KeyCode::Char('.') => app.feather_mask(0.03),
+        KeyCode::Char('/') => app.invert_mask(),
         _ => {}
     }
 }
@@ -3584,6 +3686,11 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(hd("Transform the active layer"));
             l.push(kv("← ↑ → ↓", "move · + / - grow / shrink"));
             l.push(kv("< / >", "opacity down / up · b cycle blend mode"));
+            l.push(hd("Mask the active layer"));
+            l.push(kv("m", "cycle mask: none → ellipse → rectangle"));
+            l.push(kv("k", "image matte — a grayscale file (white shows, black hides)"));
+            l.push(kv("[ / ]", "mask smaller / larger · , / . feather less / more"));
+            l.push(kv("/", "invert the mask (show ↔ hide)"));
             l.push(hd("Finish"));
             l.push(kv("Enter", "flatten → a new _layered.png · Esc leave (stack saved)"));
             return l; // layer mode has no global chords
@@ -3886,7 +3993,7 @@ fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
 /// Layer-mode HUD (Phase 8): the stack listed top-of-stack first, the active layer highlighted.
 fn draw_layers_hud(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        " Layers · a add · b blend · {} order · Enter flatten · Esc ",
+        " Layers · a add · b blend · m mask · Enter flatten · Esc ",
         Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
     ))];
     if app.layers.is_empty() {

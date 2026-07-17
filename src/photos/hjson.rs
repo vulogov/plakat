@@ -95,6 +95,31 @@ pub struct LayerEntry {
     pub opacity: f32,
     #[serde(default = "normal_blend")]
     pub blend: String,
+    /// Optional per-layer mask (shape region or image matte).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<MaskEntry>,
+}
+
+/// A per-layer mask: a feathered shape region (`rect`/`ellipse`) or an image matte (`image`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MaskEntry {
+    /// `rect` | `ellipse` | `image`.
+    pub kind: String,
+    #[serde(default)]
+    pub x: f32,
+    #[serde(default)]
+    pub y: f32,
+    #[serde(default = "one_f32")]
+    pub w: f32,
+    #[serde(default = "one_f32")]
+    pub h: f32,
+    #[serde(default)]
+    pub feather: f32,
+    #[serde(default)]
+    pub invert: bool,
+    /// Matte source (relative to the album or absolute) for `kind = "image"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub src: String,
 }
 
 fn one_f32() -> f32 {

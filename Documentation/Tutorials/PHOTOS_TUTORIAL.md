@@ -363,6 +363,24 @@ list = top of the stack).
 | `Enter` | **flatten** the stack into a new `_layered.png` |
 | `Esc` | leave (the stack is saved — reopen to keep editing) |
 
+**Masks.** Each layer can be masked so only part of it shows. Freehand painting
+isn't possible on a terminal image, so masks are **parametric** — but they cover the
+real compositing cases:
+
+| Key | Mask on the active layer |
+|-----|--------------------------|
+| `m` | cycle the mask: **none → ellipse → rectangle** (a centered, feathered region) |
+| `k` | **image matte** — point at a grayscale file (white shows, black hides) |
+| `[` / `]` | shrink / grow the shape mask |
+| `,` / `.` | less / more feather (soft edge) |
+| `/` | invert the mask (show ↔ hide) |
+
+An **ellipse** mask with feather gives a soft vignette / spotlight; **invert** it to
+fade the *middle* out. An **image matte** is the precise route — any grayscale image
+(or one with alpha) becomes the mask, resized to the layer, so you can cut a layer to
+an exact shape prepared elsewhere. The mask multiplies the layer's opacity, so it
+stacks with the `< >` opacity and the blend mode. Masks are saved with the layer.
+
 Position (`x`/`y`) and size (`scale`) are fractions of the base image, so a layer
 keeps its placement even if you flatten at a different resolution. **Flatten** never
 touches the base — it writes a new `<name>_layered.png` derivative into the album
