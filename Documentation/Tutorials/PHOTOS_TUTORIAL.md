@@ -369,11 +369,18 @@ real compositing cases:
 
 | Key | Mask on the active layer |
 |-----|--------------------------|
-| `m` | cycle the mask: **none → ellipse → rectangle** (a centered, feathered region) |
+| `m` | cycle the mask: **none → ellipse → rectangle** (a feathered region) |
 | `k` | **image matte** — point at a grayscale file (white shows, black hides) |
-| `[` / `]` | shrink / grow the shape mask |
+| `M` | **position the mask** — arrows move it; `Enter`/`Esc` when done |
+| `[` / `]` | shrink / grow the shape mask (around its own centre) |
 | `,` / `.` | less / more feather (soft edge) |
 | `/` | invert the mask (show ↔ hide) |
+
+By default a shape mask sits in the middle of the layer. Press `M` to **free-position**
+it — the arrows now move the *mask* (a `◆ MASK MOVE` badge shows in the HUD), so you can
+put the soft oval over a face in the corner, mask an edge, and so on; resizing keeps the
+mask where you placed it. `Enter` or `Esc` returns the arrows to moving the layer. (An
+image matte fills the layer, so you position that by moving the layer itself.)
 
 An **ellipse** mask with feather gives a soft vignette / spotlight; **invert** it to
 fade the *middle* out. An **image matte** is the precise route — any grayscale image

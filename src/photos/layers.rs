@@ -479,6 +479,15 @@ mod tests {
     }
 
     #[test]
+    fn offcentre_ellipse_mask_tracks_its_position() {
+        // An ellipse mask placed in the top-left quadrant is opaque at its own centre and clear at
+        // the layer centre — i.e. position is honoured, not forced to the middle.
+        let m = Mask::Shape { kind: ShapeKind::Ellipse, x: 0.0, y: 0.0, w: 0.4, h: 0.4, feather: 0.1, invert: false };
+        assert!((m.coverage(0.2, 0.2, None) - 1.0).abs() < 1e-3, "own centre should be 1");
+        assert_eq!(m.coverage(0.5, 0.5, None), 0.0, "layer centre should be outside");
+    }
+
+    #[test]
     fn image_matte_uses_luminance() {
         // A matte that is white on the left half, black on the right.
         let mut matte = image::GrayImage::new(10, 4);

@@ -253,6 +253,8 @@ struct App {
     layer_mode: bool,
     layers: Vec<layers::Layer>,
     layer_active: usize,
+    /// Mask-adjust sub-mode: arrows reposition the active layer's shape mask (rather than the layer).
+    mask_adjust: bool,
     // T2 ML-edit menu (RFC §Phase 4) + a queued job the event loop runs with the TUI suspended.
     ml_menu: bool,
     // Vision + AI menu (RFC §Phase 7).
@@ -360,6 +362,7 @@ impl App {
             layer_mode: false,
             layers: Vec::new(),
             layer_active: 0,
+            mask_adjust: false,
             ml_menu: false,
             ai_menu: false,
             jobs: VecDeque::new(),
@@ -1013,6 +1016,7 @@ impl App {
             .unwrap_or_default();
         self.layer_active = self.layers.len().saturating_sub(1);
         self.layer_mode = true;
+        self.mask_adjust = false;
         self.mode = AlbumMode::Image;
         self.load_view();
         self.set_layer_status();
@@ -1130,16 +1134,55 @@ impl App {
         self.after_layer_change();
     }
 
-    /// Grow/shrink a centred shape mask (fraction of the layer).
+    /// Grow/shrink a shape mask around its own centre (fraction of the layer), so it stays put.
     fn resize_mask(&mut self, d: f32) {
         if let Some(layers::Mask::Shape { x, y, w, h, .. }) =
             self.layers.get_mut(self.layer_active).map(|l| &mut l.mask)
         {
+            let (cx, cy) = (*x + *w / 2.0, *y + *h / 2.0);
             let s = (*w + d).clamp(0.05, 1.0);
             *w = s;
             *h = s;
-            *x = (1.0 - s) / 2.0;
-            *y = (1.0 - s) / 2.0;
+            *x = cx - s / 2.0;
+            *y = cy - s / 2.0;
+            self.after_layer_change();
+        }
+    }
+
+    /// Enter the mask-adjust sub-mode (arrows reposition the mask). Creates a default ellipse if the
+    /// active layer has no shape mask; image mattes fill the layer, so there's nothing to position.
+    fn enter_mask_adjust(&mut self) {
+        use layers::{Mask, ShapeKind};
+        let Some(l) = self.layers.get_mut(self.layer_active) else {
+            self.status = "add a layer first (a)".into();
+            return;
+        };
+        match &l.mask {
+            Mask::Shape { .. } => {}
+            Mask::Image { .. } => {
+                self.status = "image mattes fill the layer — move the layer to reposition".into();
+                return;
+            }
+            Mask::None => l.mask = Mask::centered_shape(ShapeKind::Ellipse),
+        }
+        self.mask_adjust = true;
+        self.after_layer_change();
+    }
+
+    /// Leave the mask-adjust sub-mode, back to moving the layer.
+    fn exit_mask_adjust(&mut self) {
+        self.mask_adjust = false;
+        self.set_layer_status();
+    }
+
+    /// Move the active layer's shape mask by `(dx, dy)` fractions of the layer (may sit partly off
+    /// the layer for edge masks; kept at least ~quarter-overlapping).
+    fn move_mask(&mut self, dx: f32, dy: f32) {
+        if let Some(layers::Mask::Shape { x, y, w, h, .. }) =
+            self.layers.get_mut(self.layer_active).map(|l| &mut l.mask)
+        {
+            *x = (*x + dx).clamp(-*w * 0.75, 1.0 - *w * 0.25);
+            *y = (*y + dy).clamp(-*h * 0.75, 1.0 - *h * 0.25);
             self.after_layer_change();
         }
     }
@@ -1172,6 +1215,7 @@ impl App {
         }
         let n = self.layers.len() as i32;
         self.layer_active = (((self.layer_active as i32 + delta) % n + n) % n) as usize;
+        self.mask_adjust = false; // the newly-selected layer may have no shape mask
         self.load_view();
         self.set_layer_status();
     }
@@ -1198,6 +1242,7 @@ impl App {
         }
         self.layers.remove(self.layer_active);
         self.layer_active = self.layer_active.min(self.layers.len().saturating_sub(1));
+        self.mask_adjust = false;
         self.after_layer_change();
     }
 
@@ -1217,6 +1262,11 @@ impl App {
     }
 
     fn set_layer_status(&mut self) {
+        if self.mask_adjust {
+            self.status =
+                "position mask · arrows move · [ ] size · , . feather · / invert · Enter/Esc done".into();
+            return;
+        }
         if let Some(l) = self.layers.get(self.layer_active) {
             self.status = format!(
                 "layer {}/{}: {} · arrows move · +/- size · < > opacity · b blend · m mask · {{ }} order · x del · a add · Enter flatten · Esc",
@@ -1241,6 +1291,7 @@ impl App {
             Ok(name) => {
                 self.record_variant(&path, &name);
                 self.layer_mode = false;
+                self.mask_adjust = false;
                 self.mode = AlbumMode::Grid;
                 self.rescan();
                 self.select_by_name(&name);
@@ -1253,6 +1304,7 @@ impl App {
     /// Leave layer mode (the stack stays persisted for next time).
     fn cancel_layers(&mut self) {
         self.layer_mode = false;
+        self.mask_adjust = false;
         self.load_view();
         self.status = "layers closed (stack saved)".into();
     }
@@ -2553,10 +2605,38 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
 /// preview; the stack persists on the record; Enter flattens to a new `_layered.png` variant.
 fn handle_layer_key(app: &mut App, code: KeyCode) {
     let m = 0.02;
+    // Mask-adjust sub-mode: arrows reposition the active layer's mask; Esc/Enter/M leave it. Other
+    // keys fall through to the normal handlers below (size/feather/blend/… behave the same).
+    if app.mask_adjust {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('M') => {
+                app.exit_mask_adjust();
+                return;
+            }
+            KeyCode::Left => {
+                app.move_mask(-m, 0.0);
+                return;
+            }
+            KeyCode::Right => {
+                app.move_mask(m, 0.0);
+                return;
+            }
+            KeyCode::Up => {
+                app.move_mask(0.0, -m);
+                return;
+            }
+            KeyCode::Down => {
+                app.move_mask(0.0, m);
+                return;
+            }
+            _ => {}
+        }
+    }
     match code {
         KeyCode::Esc => app.cancel_layers(),
         KeyCode::Enter => app.flatten_layers(),
         KeyCode::Char('a') => app.layer_add_prompt(),
+        KeyCode::Char('M') => app.enter_mask_adjust(),
         KeyCode::Left => app.nudge_layer(-m, 0.0),
         KeyCode::Right => app.nudge_layer(m, 0.0),
         KeyCode::Up => app.nudge_layer(0.0, -m),
@@ -3689,6 +3769,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(hd("Mask the active layer"));
             l.push(kv("m", "cycle mask: none → ellipse → rectangle"));
             l.push(kv("k", "image matte — a grayscale file (white shows, black hides)"));
+            l.push(kv("M", "position the mask (arrows move it) — Enter/Esc when done"));
             l.push(kv("[ / ]", "mask smaller / larger · , / . feather less / more"));
             l.push(kv("/", "invert the mask (show ↔ hide)"));
             l.push(hd("Finish"));
@@ -3992,8 +4073,13 @@ fn draw_compare(f: &mut Frame, app: &mut App, area: Rect) {
 
 /// Layer-mode HUD (Phase 8): the stack listed top-of-stack first, the active layer highlighted.
 fn draw_layers_hud(f: &mut Frame, app: &App, area: Rect) {
+    let header = if app.mask_adjust {
+        " Layers · ◆ MASK MOVE · arrows position · Enter/Esc done "
+    } else {
+        " Layers · a add · b blend · m mask · M move-mask · Enter flatten · Esc "
+    };
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        " Layers · a add · b blend · m mask · Enter flatten · Esc ",
+        header,
         Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
     ))];
     if app.layers.is_empty() {
