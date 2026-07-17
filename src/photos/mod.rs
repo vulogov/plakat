@@ -255,6 +255,12 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("graduated ND (from bottom)…", "xb", EditCmd::Adjust(GradND { dir: 1, strength: 0 })),
         ("graduated ND (from left)…", "xl", EditCmd::Adjust(GradND { dir: 2, strength: 0 })),
         ("graduated ND (from right)…", "xR", EditCmd::Adjust(GradND { dir: 3, strength: 0 })),
+        ("invert (negative)", "xi", EditCmd::Op(Invert)),
+        ("sepia", "xe", EditCmd::Op(Sepia)),
+        ("duotone", "xu", EditCmd::Op(Duotone)),
+        ("posterize…", "xp", EditCmd::Adjust(Posterize(0))),
+        ("solarize…", "xa", EditCmd::Adjust(Solarize(0))),
+        ("threshold (black & white)", "xh", EditCmd::Op(Threshold(128))),
         // Edit stack (e)
         ("layers — overlay / compose images", "ey", EditCmd::Layers),
         ("edit history (step / trim)…", "eh", EditCmd::History),

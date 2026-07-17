@@ -91,6 +91,12 @@ command's chord in its right column.
 | `Ctrl-B x r` | radial dodge / burn… |
 | `Ctrl-B x t` / `x b` | graduated ND from top / bottom |
 | `Ctrl-B x l` / `x R` | graduated ND from left / right |
+| `Ctrl-B x i` | invert (negative) |
+| `Ctrl-B x e` | sepia |
+| `Ctrl-B x u` | duotone |
+| `Ctrl-B x p` | posterize… |
+| `Ctrl-B x a` | solarize… |
+| `Ctrl-B x h` | threshold (black & white) |
 
 ### `e` — edit stack
 | Chord | Command |

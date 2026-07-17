@@ -86,6 +86,18 @@ pub enum EditOp {
     Curve { pts: [i32; 5] },
     /// CLAHE — contrast-limited adaptive histogram equalization, blended by `amount` (0..100).
     Clahe(i32),
+    /// Invert (photo negative).
+    Invert,
+    /// Sepia tone.
+    Sepia,
+    /// Duotone: map luma to a two-colour gradient (deep indigo → warm cream).
+    Duotone,
+    /// Posterize: reduce the number of tonal levels. `strength` 0 = none … 100 = 2 levels.
+    Posterize(i32),
+    /// Solarize: invert tones above a threshold. `strength` 0 = none … 100 = classic (mid).
+    Solarize(i32),
+    /// Threshold to black & white at luma `level` (0..255).
+    Threshold(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -137,6 +149,12 @@ impl EditOp {
             EditOp::Radial(v) => adjust::radial(&img, v),
             EditOp::Curve { pts } => adjust::curve(&img, pts),
             EditOp::Clahe(v) => adjust::clahe(&img, v),
+            EditOp::Invert => adjust::invert(&img),
+            EditOp::Sepia => adjust::sepia(&img),
+            EditOp::Duotone => adjust::duotone(&img),
+            EditOp::Posterize(v) => adjust::posterize(&img, v),
+            EditOp::Solarize(v) => adjust::solarize(&img, v),
+            EditOp::Threshold(v) => adjust::threshold(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -168,7 +186,8 @@ impl EditOp {
             | EditOp::Saturation(v) | EditOp::Vibrance(v) | EditOp::Warmth(v) | EditOp::Tint(v)
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
-            | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) => v,
+            | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
+            | EditOp::Solarize(v) => v,
             EditOp::GradND { strength, .. } => strength,
             _ => return None,
         })
@@ -200,6 +219,8 @@ impl EditOp {
             EditOp::Despeckle(_) => EditOp::Despeckle(v),
             EditOp::Radial(_) => EditOp::Radial(v),
             EditOp::Clahe(_) => EditOp::Clahe(v),
+            EditOp::Posterize(_) => EditOp::Posterize(v),
+            EditOp::Solarize(_) => EditOp::Solarize(v),
             EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
             other => other,
         }
@@ -211,7 +232,7 @@ impl EditOp {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
             EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
-            | EditOp::Clahe(_) => (0, 100, 5),
+            | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -258,6 +279,12 @@ impl EditOp {
             EditOp::Radial(_) => "radial dodge/burn".into(),
             EditOp::Curve { .. } => "curves".into(),
             EditOp::Clahe(_) => "CLAHE".into(),
+            EditOp::Invert => "invert".into(),
+            EditOp::Sepia => "sepia".into(),
+            EditOp::Duotone => "duotone".into(),
+            EditOp::Posterize(_) => "posterize".into(),
+            EditOp::Solarize(_) => "solarize".into(),
+            EditOp::Threshold(_) => "threshold".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -329,6 +356,12 @@ impl EditOp {
                 "curve"
             }
             EditOp::Clahe(v) => val_op(&mut params, v, "clahe"),
+            EditOp::Invert => "invert",
+            EditOp::Sepia => "sepia",
+            EditOp::Duotone => "duotone",
+            EditOp::Posterize(v) => val_op(&mut params, v, "posterize"),
+            EditOp::Solarize(v) => val_op(&mut params, v, "solarize"),
+            EditOp::Threshold(v) => val_op(&mut params, v, "threshold"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -403,6 +436,12 @@ impl EditOp {
             "dodge" => EditOp::Radial(-30),
             "grad_nd" | "graduated_nd" | "nd_grad" => EditOp::GradND { dir: 0, strength: 30 },
             "clahe" | "equalize" | "adaptive_contrast" => EditOp::Clahe(60),
+            "invert" | "negative" => EditOp::Invert,
+            "sepia" => EditOp::Sepia,
+            "duotone" => EditOp::Duotone,
+            "posterize" => EditOp::Posterize(50),
+            "solarize" => EditOp::Solarize(50),
+            "threshold" | "black_white" => EditOp::Threshold(128),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
             "pop_greens" | "pop_green" | "boost_greens" => EditOp::SelectiveColor { hue: 120, sat: 45 },
@@ -491,6 +530,12 @@ impl EditOp {
                 pts: [iv("p0", 0), iv("p1", 64), iv("p2", 128), iv("p3", 192), iv("p4", 255)],
             },
             "clahe" => EditOp::Clahe(val()),
+            "invert" => EditOp::Invert,
+            "sepia" => EditOp::Sepia,
+            "duotone" => EditOp::Duotone,
+            "posterize" => EditOp::Posterize(val()),
+            "solarize" => EditOp::Solarize(val()),
+            "threshold" => EditOp::Threshold(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -932,6 +977,55 @@ mod adjust {
         DynamicImage::ImageRgb8(out)
     }
 
+    /// Invert (photo negative).
+    pub fn invert(img: &DynamicImage) -> DynamicImage {
+        map_rgb(img, |r, g, b| [1.0 - r, 1.0 - g, 1.0 - b])
+    }
+
+    /// Sepia tone (the classic luminance-preserving warm matrix).
+    pub fn sepia(img: &DynamicImage) -> DynamicImage {
+        map_rgb(img, |r, g, b| {
+            [
+                0.393 * r + 0.769 * g + 0.189 * b,
+                0.349 * r + 0.686 * g + 0.168 * b,
+                0.272 * r + 0.534 * g + 0.131 * b,
+            ]
+        })
+    }
+
+    /// Duotone: map luma to a two-colour gradient (deep indigo shadows → warm cream highlights).
+    pub fn duotone(img: &DynamicImage) -> DynamicImage {
+        let lo = [0.12, 0.10, 0.24];
+        let hi = [1.0, 0.90, 0.71];
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            std::array::from_fn(|i| lo[i] + (hi[i] - lo[i]) * y)
+        })
+    }
+
+    /// Posterize: quantise each channel to N tonal levels. `strength` 0 → 256 (identity) … 100 → 2.
+    pub fn posterize(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let levels = (256.0 - (strength.clamp(0, 100) as f32 / 100.0) * 254.0).round().max(2.0);
+        let n = levels - 1.0;
+        map_rgb(img, |r, g, b| [(r * n).round() / n, (g * n).round() / n, (b * n).round() / n])
+    }
+
+    /// Solarize: invert channel values above a threshold. `strength` 0 → none … 100 → mid (classic).
+    pub fn solarize(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let thr = 1.0 - strength.clamp(0, 100) as f32 / 200.0; // 1.0 .. 0.5
+        let s = |c: f32| if c > thr { 1.0 - c } else { c };
+        map_rgb(img, |r, g, b| [s(r), s(g), s(b)])
+    }
+
+    /// Threshold to black & white at luma `level` (0..255).
+    pub fn threshold(img: &DynamicImage, level: i32) -> DynamicImage {
+        let t = level.clamp(0, 255) as f32 / 255.0;
+        map_rgb(img, |r, g, b| {
+            let v = if luma(r, g, b) >= t { 1.0 } else { 0.0 };
+            [v, v, v]
+        })
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -1179,6 +1273,8 @@ mod tests {
             EditOp::SelectiveColor { hue: 120, sat: 45 }, EditOp::Grain(30), EditOp::Despeckle(55),
             EditOp::GradND { dir: 1, strength: 40 }, EditOp::Radial(-30),
             EditOp::Curve { pts: [0, 50, 128, 205, 255] }, EditOp::Clahe(60),
+            EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
+            EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1318,6 +1414,28 @@ mod tests {
         buf.put_pixel(4, 4, Rgb([255, 255, 255])); // a single speckle in a flat field
         let out = EditOp::Despeckle(100).apply(DynamicImage::ImageRgb8(buf)).to_rgb8();
         assert_eq!(out.get_pixel(4, 4).0, [100, 100, 100], "median wipes the lone speckle");
+    }
+
+    #[test]
+    fn creative_looks_behave() {
+        let mid = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(8, 8, Rgb([100, 150, 200])));
+        // Invert is its own inverse.
+        let inv = EditOp::Invert.apply(mid.clone()).to_rgb8();
+        assert_eq!(inv.get_pixel(0, 0).0, [155, 105, 55]);
+        assert_eq!(EditOp::Invert.apply(EditOp::Invert.apply(mid.clone())).to_rgb8(), mid.to_rgb8());
+        // Threshold → pure black or white.
+        let th = EditOp::Threshold(128).apply(mid.clone()).to_rgb8().get_pixel(0, 0).0;
+        assert!(th == [0, 0, 0] || th == [255, 255, 255]);
+        // Posterize at full strength → 2 levels per channel (each channel is 0 or 255).
+        let po = EditOp::Posterize(100).apply(mid.clone()).to_rgb8().get_pixel(0, 0).0;
+        assert!(po.iter().all(|&c| c == 0 || c == 255), "got {po:?}");
+        // Strength 0 posterize / solarize are (near) identity.
+        assert_eq!(EditOp::Posterize(0).apply(mid.clone()).to_rgb8(), mid.to_rgb8());
+        assert_eq!(EditOp::Solarize(0).apply(mid.clone()).to_rgb8(), mid.to_rgb8());
+        // Sepia warms it: red channel ends up ≥ blue.
+        let se = EditOp::Sepia.apply(mid).to_rgb8().get_pixel(0, 0).0;
+        assert!(se[0] >= se[2]);
+        assert_eq!(EditOp::from_tag("negative"), Some(EditOp::Invert));
     }
 
     #[test]

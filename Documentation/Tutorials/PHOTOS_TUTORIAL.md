@@ -394,6 +394,7 @@ The adjustments:
 | Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · **hue rotate** · **split-tone** (warm/cool highlights) · **selective colour** (boost/mute reds/greens/blues) |
 | Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
+| Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
 
 Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
