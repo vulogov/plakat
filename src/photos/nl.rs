@@ -42,6 +42,8 @@ pub enum Action {
     /// Strip EXIF/XMP/IPTC/GPS metadata from the target files in place (album-scoped; no external
     /// read, no re-import). Not undoable.
     StripMeta,
+    /// Remove only the GPS location from the target files, keeping the rest of the EXIF. Not undoable.
+    RedactGps,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -103,6 +105,7 @@ fn action_label(a: &Action) -> String {
         Action::Stack => "stack".into(),
         Action::SmartAlbum { name } => format!("smart-album {name}"),
         Action::StripMeta => "strip metadata".into(),
+        Action::RedactGps => "redact GPS".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -203,6 +206,11 @@ fn parse_action(stage: &str) -> Option<Action> {
         }
         return None;
     }
+    if let Some(r) = strip_any(s, &["hue rotate ", "hue "]) {
+        let tok = r.trim().trim_end_matches("degrees").trim_end_matches('°').trim();
+        let deg: i32 = tok.split_whitespace().next()?.parse().ok()?;
+        return Some(Action::Edit { op: format!("hue:{deg}") });
+    }
     if let Some(r) = strip_any(s, &["convert to ", "convert "]) {
         let mut it = r.split_whitespace();
         let fmt = it.next()?.to_string();
@@ -221,8 +229,12 @@ fn parse_action(stage: &str) -> Option<Action> {
         "upscale" | "enhance" | "upscale x4" => Some(Action::Upscale),
         "dedup" | "deduplicate" | "find duplicates" | "duplicates" => Some(Action::Dedup),
         "stack" => Some(Action::Stack),
-        "strip metadata" | "strip exif" | "remove exif" | "remove metadata" | "strip gps"
-        | "remove gps" | "scrub metadata" => Some(Action::StripMeta),
+        "strip metadata" | "strip exif" | "remove exif" | "remove metadata" | "scrub metadata" => {
+            Some(Action::StripMeta)
+        }
+        "redact gps" | "remove gps" | "strip gps" | "remove location" | "redact location" => {
+            Some(Action::RedactGps)
+        }
         _ => None,
     }
 }
@@ -240,6 +252,17 @@ fn edit_op_word(s: &str) -> Option<String> {
         "auto enhance" | "auto-enhance" | "auto fix" | "enhance auto" => "auto_enhance",
         "vignette" | "darken edges" => "vignette",
         "vignette light" | "lighten edges" => "vignette_light",
+        "dehaze" | "defog" | "remove haze" => "dehaze",
+        "split tone" | "split-tone" | "warm highlights" => "split_tone",
+        "split tone cool" | "cool highlights" => "split_tone_cool",
+        "film grain" | "add grain" | "grain" => "grain",
+        "despeckle" | "median" | "remove speckle" => "despeckle",
+        "pop reds" | "boost reds" => "pop_reds",
+        "mute reds" => "mute_reds",
+        "pop greens" | "boost greens" => "pop_greens",
+        "mute greens" => "mute_greens",
+        "pop blues" | "boost blues" => "pop_blues",
+        "mute blues" => "mute_blues",
         // Tonal / colour adjustments (canonical directional tags → edit::EditOp::from_tag).
         "sharpen" | "sharpen it" | "sharpen image" => "sharpen",
         "soften" | "blur" | "blur it" => "soften",
@@ -331,9 +354,12 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
     tone bands: highlights_up highlights_down midrange_up midrange_down shadows_up shadows_down
       blackpoint_up blackpoint_down
     colour: saturate desaturate vibrant vibrance_down warmer cooler tint_magenta tint_green
-    detail: sharpen soften definition denoise vignette vignette_light
+      dehaze split_tone split_tone_cool  hue:<deg>  selcolor:<hue>,<sat>
+      pop_reds mute_reds pop_greens mute_greens pop_blues mute_blues
+    detail: sharpen soften definition denoise vignette vignette_light grain despeckle
     levels:<black>,<white>,<gamma>  (0..255, 0..255, float — e.g. levels:16,235,1.1)
-  {\"action\":\"strip_meta\"}  (remove EXIF/GPS metadata from the album files, in place)
+  {\"action\":\"strip_meta\"}  (remove all EXIF/GPS metadata from the album files, in place)
+  {\"action\":\"redact_gps\"}  (remove only the GPS location, keep the rest of the EXIF)
   {\"action\":\"convert\",\"fmt\":\"jpg|png|webp\",\"max_px\":<int|null>}  (write NEW converted files in-album)
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
   {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE in-album filename pattern, never a path)
@@ -403,6 +429,15 @@ mod tests {
             vec![Action::Edit { op: "levels:16,235,1.1".into() }]
         );
         assert!(crate::photos::edit::EditOp::from_tag("levels:16,235,1.1").is_some());
+        // Grading verbs + GPS-only redact (distinct from full strip).
+        assert_eq!(parse_deterministic("dehaze").unwrap().actions, vec![Action::Edit { op: "dehaze".into() }]);
+        assert_eq!(parse_deterministic("pop blues").unwrap().actions, vec![Action::Edit { op: "pop_blues".into() }]);
+        assert_eq!(parse_deterministic("hue rotate 30").unwrap().actions, vec![Action::Edit { op: "hue:30".into() }]);
+        assert_eq!(parse_deterministic("remove gps").unwrap().actions, vec![Action::RedactGps]);
+        assert_eq!(parse_deterministic("strip exif").unwrap().actions, vec![Action::StripMeta]);
+        for tag in ["dehaze", "pop_blues", "hue:30", "grain", "despeckle", "split_tone"] {
+            assert!(crate::photos::edit::EditOp::from_tag(tag).is_some(), "unmapped {tag}");
+        }
     }
 
     #[test]

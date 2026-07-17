@@ -320,8 +320,8 @@ repeatedly for more):
 |-------|----------|
 | Light | brightness · exposure · brilliance · contrast |
 | Tone bands | highlights · midrange · shadows · black point |
-| Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) |
-| Detail | definition (clarity) · sharpen / soften · noise reduction · **vignette** (darken/lighten edges) |
+| Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · **hue rotate** · **split-tone** (warm/cool highlights) · **selective colour** (boost/mute reds/greens/blues) |
+| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** (darken/lighten edges) · **film grain** · **despeckle** (median) |
 
 Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
@@ -348,6 +348,9 @@ brightens the mid-tones. `Ctrl-B h` shows these keys while you're in the editor.
 - **strip metadata (EXIF / GPS)** — removes EXIF/XMP/IPTC/GPS from the selected
   files, in place. JPEG and PNG are stripped **losslessly** (pixels untouched); it
   asks first. Good for sharing without location/camera data.
+- **redact GPS only** — removes just the **location** from the EXIF and keeps the rest
+  (camera, lens, date). In place, lossless, JPEG/PNG. For when you want to keep the
+  shot data but not say *where* it was taken.
 - **convert format / resize** — type `jpg 2048` (format + longest-side cap),
   `jpg 500kb` (target a JPEG file size), or just `png`/`webp`. Writes a **new** file
   next to the original (the source is untouched).

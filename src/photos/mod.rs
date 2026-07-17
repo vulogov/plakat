@@ -96,6 +96,8 @@ enum PendingCmd {
     Straighten,
     /// Confirm stripping EXIF/GPS metadata from the target images.
     StripExif,
+    /// Confirm redacting only GPS from the target images (keeps the rest of the EXIF).
+    RedactGps,
     /// Convert the targets to the entered `fmt [Npx | NkB]`.
     Convert,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
@@ -139,6 +141,7 @@ enum EditCmd {
     Levels,     // interactive black/white/gamma editor
     Straighten, // prompts for degrees
     StripExif,  // strip file metadata (confirm)
+    RedactGps,  // remove only GPS, keep the rest of the EXIF (confirm)
     Convert,    // prompts for format / size
     Undo,
     Redo,
@@ -197,10 +200,24 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("levels (black / white / gamma)…", EditCmd::Levels),
         ("vignette (darken edges)", EditCmd::Op(Vignette(30))),
         ("vignette light (lighten edges)", EditCmd::Op(Vignette(-30))),
+        ("dehaze (cut haze)", EditCmd::Op(Dehaze(30))),
+        ("hue rotate +20°", EditCmd::Op(HueRotate(20))),
+        ("hue rotate -20°", EditCmd::Op(HueRotate(-20))),
+        ("split-tone (warm highlights)", EditCmd::Op(SplitTone(30))),
+        ("split-tone (cool highlights)", EditCmd::Op(SplitTone(-30))),
+        ("selective colour: boost reds", EditCmd::Op(SelectiveColor { hue: 0, sat: 45 })),
+        ("selective colour: mute reds", EditCmd::Op(SelectiveColor { hue: 0, sat: -55 })),
+        ("selective colour: boost greens", EditCmd::Op(SelectiveColor { hue: 120, sat: 45 })),
+        ("selective colour: mute greens", EditCmd::Op(SelectiveColor { hue: 120, sat: -55 })),
+        ("selective colour: boost blues", EditCmd::Op(SelectiveColor { hue: 240, sat: 45 })),
+        ("selective colour: mute blues", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
+        ("film grain", EditCmd::Op(Grain(30))),
+        ("despeckle (median)", EditCmd::Op(Despeckle(55))),
         ("sharpen", EditCmd::Op(Sharpen(22))),
         ("soften", EditCmd::Op(Sharpen(-22))),
         ("noise reduction", EditCmd::Op(NoiseReduction(30))),
         ("strip metadata (EXIF / GPS)", EditCmd::StripExif),
+        ("redact GPS only (keep other EXIF)", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", EditCmd::Convert),
         ("undo", EditCmd::Undo),
         ("redo", EditCmd::Redo),
@@ -999,6 +1016,15 @@ impl App {
                     PendingCmd::StripExif,
                 );
             }
+            EditCmd::RedactGps => {
+                self.edit_menu = false;
+                let n = self.targets().len();
+                self.prompt(
+                    format!("redact GPS from {n} image(s)? [y/N]: "),
+                    "",
+                    PendingCmd::RedactGps,
+                );
+            }
             EditCmd::Convert => {
                 self.edit_menu = false;
                 self.prompt("convert to (fmt [Npx | NkB]): ", "", PendingCmd::Convert);
@@ -1655,6 +1681,7 @@ impl App {
             Action::Dedup => self.dedup_scan(),
             Action::Stack => self.toggle_stack(),
             Action::StripMeta => self.strip_metadata_targets(),
+            Action::RedactGps => self.redact_gps_targets(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -1844,6 +1871,28 @@ impl App {
             format!("stripped {ok} · {err} failed{extra}")
         } else {
             format!("stripped metadata from {ok} image(s){extra}")
+        };
+    }
+
+    /// Redact only the GPS location from the target files (in place; keeps the rest of the EXIF).
+    fn redact_gps_targets(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to redact".into();
+            return;
+        }
+        let (mut redacted, mut none, mut err) = (0, 0, 0);
+        for (_dir, path) in &files {
+            match scrub::redact_gps(path) {
+                Ok(true) => redacted += 1,
+                Ok(false) => none += 1,
+                Err(_) => err += 1,
+            }
+        }
+        self.status = if err > 0 {
+            format!("GPS redacted from {redacted} · {none} had none · {err} unsupported")
+        } else {
+            format!("GPS redacted from {redacted} image(s) · {none} had none")
         };
     }
 
@@ -2124,6 +2173,10 @@ impl App {
                 },
                 Some(PendingCmd::StripExif) if arg.eq_ignore_ascii_case("y") => {
                     self.strip_metadata_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::RedactGps) if arg.eq_ignore_ascii_case("y") => {
+                    self.redact_gps_targets();
                     fs_changed = true;
                 }
                 Some(PendingCmd::Convert) if !arg.is_empty() => match parse_convert(&arg) {

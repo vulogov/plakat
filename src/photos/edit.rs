@@ -64,6 +64,18 @@ pub enum EditOp {
     /// Levels: map input `[black, white]` (0..255) to full range with a midtone `gamma` (×100:
     /// 100 = 1.00). `gamma > 1` brightens the mids.
     Levels { black: i32, white: i32, gamma: i32 },
+    /// Dehaze: cut the washed-out veil (contrast + saturation lift).
+    Dehaze(i32),
+    /// Rotate all hues by `degrees`.
+    HueRotate(i32),
+    /// Split-tone: warm highlights / cool shadows (positive), or the inverse (negative).
+    SplitTone(i32),
+    /// Selective colour: change the saturation of pixels near `hue` (degrees) by `sat` (−100..100).
+    SelectiveColor { hue: i32, sat: i32 },
+    /// Film grain: add deterministic monochrome noise (positive only).
+    Grain(i32),
+    /// Median despeckle: blend toward a 3×3 per-channel median (positive only).
+    Despeckle(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -105,6 +117,12 @@ impl EditOp {
             EditOp::Straighten(tenths) => straighten(&img, tenths as f32 / 10.0),
             EditOp::Vignette(v) => adjust::vignette(&img, v),
             EditOp::Levels { black, white, gamma } => adjust::levels(&img, black, white, gamma as f32 / 100.0),
+            EditOp::Dehaze(v) => adjust::dehaze(&img, v),
+            EditOp::HueRotate(v) => adjust::hue_rotate(&img, v),
+            EditOp::SplitTone(v) => adjust::split_tone(&img, v),
+            EditOp::SelectiveColor { hue, sat } => adjust::selective_color(&img, hue, sat),
+            EditOp::Grain(v) => adjust::grain(&img, v),
+            EditOp::Despeckle(v) => adjust::despeckle(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -157,6 +175,12 @@ impl EditOp {
             EditOp::Levels { black, white, gamma } => {
                 format!("levels {black}/{white}·γ{:.2}", gamma as f32 / 100.0)
             }
+            EditOp::Dehaze(_) => "dehaze".into(),
+            EditOp::HueRotate(d) => format!("hue {d:+}°"),
+            EditOp::SplitTone(_) => "split-tone".into(),
+            EditOp::SelectiveColor { hue, sat } => format!("selective colour {hue}°·{sat:+}"),
+            EditOp::Grain(_) => "film grain".into(),
+            EditOp::Despeckle(_) => "despeckle".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -205,6 +229,16 @@ impl EditOp {
                 params.insert("gamma".into(), serde_json::json!(gamma));
                 "levels"
             }
+            EditOp::Dehaze(v) => val_op(&mut params, v, "dehaze"),
+            EditOp::HueRotate(v) => val_op(&mut params, v, "hue_rotate"),
+            EditOp::SplitTone(v) => val_op(&mut params, v, "split_tone"),
+            EditOp::SelectiveColor { hue, sat } => {
+                params.insert("hue".into(), serde_json::json!(hue));
+                params.insert("sat".into(), serde_json::json!(sat));
+                "selective_color"
+            }
+            EditOp::Grain(v) => val_op(&mut params, v, "grain"),
+            EditOp::Despeckle(v) => val_op(&mut params, v, "despeckle"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -255,10 +289,32 @@ impl EditOp {
             }
             return None;
         }
+        // `hue:DEGREES` and `selcolor:HUE,SAT`.
+        if let Some(rest) = tag.strip_prefix("hue:") {
+            return rest.trim().parse::<i32>().ok().map(EditOp::HueRotate);
+        }
+        if let Some(rest) = tag.strip_prefix("selcolor:") {
+            let p: Vec<&str> = rest.split(&[',', ' ']).filter(|s| !s.is_empty()).collect();
+            if let [h, s] = p.as_slice() {
+                return Some(EditOp::SelectiveColor { hue: h.trim().parse().ok()?, sat: s.trim().parse().ok()? });
+            }
+            return None;
+        }
         let op = match tag {
             "auto_enhance" | "enhance" | "auto" => EditOp::AutoEnhance,
             "vignette" | "vignette_dark" => EditOp::Vignette(30),
             "vignette_light" | "lighten_edges" => EditOp::Vignette(-30),
+            "dehaze" | "defog" => EditOp::Dehaze(35),
+            "split_tone" | "split_tone_warm" => EditOp::SplitTone(35),
+            "split_tone_cool" => EditOp::SplitTone(-35),
+            "grain" | "film_grain" | "add_grain" => EditOp::Grain(30),
+            "despeckle" | "median" | "remove_speckle" => EditOp::Despeckle(55),
+            "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
+            "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
+            "pop_greens" | "pop_green" | "boost_greens" => EditOp::SelectiveColor { hue: 120, sat: 45 },
+            "mute_greens" | "mute_green" => EditOp::SelectiveColor { hue: 120, sat: -55 },
+            "pop_blues" | "pop_blue" | "boost_blues" => EditOp::SelectiveColor { hue: 240, sat: 45 },
+            "mute_blues" | "mute_blue" => EditOp::SelectiveColor { hue: 240, sat: -55 },
             "sharpen" => EditOp::Sharpen(S),
             "soften" | "blur" => EditOp::Sharpen(-S),
             "denoise" | "noise_reduction" | "reduce_noise" => EditOp::NoiseReduction(S + 8),
@@ -329,6 +385,12 @@ impl EditOp {
             "straighten" => EditOp::Straighten(val()),
             "vignette" => EditOp::Vignette(val()),
             "levels" => EditOp::Levels { black: iv("black", 0), white: iv("white", 255), gamma: iv("gamma", 100) },
+            "dehaze" => EditOp::Dehaze(val()),
+            "hue_rotate" => EditOp::HueRotate(val()),
+            "split_tone" => EditOp::SplitTone(val()),
+            "selective_color" => EditOp::SelectiveColor { hue: iv("hue", 0), sat: iv("sat", 0) },
+            "grain" => EditOp::Grain(val()),
+            "despeckle" => EditOp::Despeckle(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -489,6 +551,140 @@ mod adjust {
     pub fn denoise(img: &DynamicImage, amount: i32) -> DynamicImage {
         let s = (amount as f32 / 100.0).clamp(0.0, 1.0);
         spatial(img, 1.4, |base, bl, _| std::array::from_fn(|i| base[i] * (1.0 - s) + bl[i] * s))
+    }
+
+    /// RGB (0..1) → HSV (h in 0..360, s/v in 0..1).
+    fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let d = max - min;
+        let h = if d < 1e-6 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / d) % 6.0)
+        } else if max == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        let h = if h < 0.0 { h + 360.0 } else { h };
+        (h, if max < 1e-6 { 0.0 } else { d / max }, max)
+    }
+
+    /// HSV → RGB (0..1).
+    fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
+        let h = h.rem_euclid(360.0);
+        let c = v * s;
+        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+        let m = v - c;
+        let (r, g, b) = match (h / 60.0) as i32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        [r + m, g + m, b + m]
+    }
+
+    /// Dehaze: cut the washed-out veil — contrast around mid-grey plus a saturation lift, scaled by
+    /// `amount`. Reads as pulling a flat, hazy frame back to punch.
+    pub fn dehaze(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = (amount as f32 / 100.0).clamp(-1.0, 1.0);
+        map_rgb(img, |r, g, b| {
+            let ct = 1.0 + t * 0.8; // contrast around 0.5
+            let cr = |c: f32| (c - 0.5) * ct + 0.5;
+            let (r, g, b) = (cr(r), cr(g), cr(b));
+            let y = luma(r, g, b);
+            let sf = 1.0 + t * 0.5; // saturation lift
+            [y + (r - y) * sf, y + (g - y) * sf, y + (b - y) * sf]
+        })
+    }
+
+    /// Rotate every hue by `degrees`.
+    pub fn hue_rotate(img: &DynamicImage, degrees: i32) -> DynamicImage {
+        let d = degrees as f32;
+        map_rgb(img, |r, g, b| {
+            let (h, s, v) = rgb_to_hsv(r, g, b);
+            hsv_to_rgb(h + d, s, v)
+        })
+    }
+
+    /// Split-tone: warm the highlights and cool the shadows (positive), or the inverse (negative).
+    pub fn split_tone(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            let whi = smoothstep(0.5, 1.0, y);
+            let wsh = 1.0 - smoothstep(0.0, 0.5, y);
+            let dr = t * (0.15 * whi - 0.10 * wsh);
+            let db = t * (0.15 * wsh - 0.12 * whi);
+            [r + dr, g, b + db]
+        })
+    }
+
+    /// Selective colour: scale the saturation of pixels whose hue is near `hue` (degrees) by `sat`
+    /// (−100..100), with a smooth ±60° band so the shift is confined to that colour family.
+    pub fn selective_color(img: &DynamicImage, hue: i32, sat: i32) -> DynamicImage {
+        let target = hue as f32;
+        let amt = sat as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let (h, s, v) = rgb_to_hsv(r, g, b);
+            let mut dh = (h - target).abs() % 360.0;
+            if dh > 180.0 {
+                dh = 360.0 - dh;
+            }
+            let w = 1.0 - smoothstep(20.0, 80.0, dh); // full within 20°, gone by 80°
+            hsv_to_rgb(h, (s * (1.0 + amt * w)).clamp(0.0, 1.0), v)
+        })
+    }
+
+    /// Film grain: add deterministic monochrome noise (same pattern on replay — seeded by position).
+    pub fn grain(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = (amount as f32 / 100.0).clamp(0.0, 1.0) * 0.18;
+        let mut rgb = img.to_rgb8();
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            // Cheap integer hash of (x, y) → noise in [-1, 1]; deterministic, so replay matches.
+            let hsh = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)).wrapping_mul(83_492_791);
+            let n = ((hsh >> 8) & 0xffff) as f32 / 32_768.0 - 1.0;
+            let d = n * t;
+            for c in 0..3 {
+                p.0[c] = enc(p.0[c] as f32 / 255.0 + d);
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Median despeckle: blend toward a 3×3 per-channel median (edge-clamped) by `amount` (0..100).
+    pub fn despeckle(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = (amount as f32 / 100.0).clamp(0.0, 1.0);
+        let src = img.to_rgb8();
+        let (w, h) = (src.width() as i32, src.height() as i32);
+        let mut out = RgbImage::new(w as u32, h as u32);
+        for y in 0..h {
+            for x in 0..w {
+                let base = src.get_pixel(x as u32, y as u32).0;
+                let mut px = [0u8; 3];
+                for c in 0..3 {
+                    let mut win = [0u8; 9];
+                    let mut k = 0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let sx = (x + dx).clamp(0, w - 1) as u32;
+                            let sy = (y + dy).clamp(0, h - 1) as u32;
+                            win[k] = src.get_pixel(sx, sy).0[c];
+                            k += 1;
+                        }
+                    }
+                    win.sort_unstable();
+                    let med = win[4] as f32;
+                    px[c] = enc((base[c] as f32 * (1.0 - t) + med * t) / 255.0);
+                }
+                out.put_pixel(x as u32, y as u32, Rgb(px));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
     }
 
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
@@ -734,6 +930,8 @@ mod tests {
             EditOp::Tint(-25), EditOp::Definition(20), EditOp::Sharpen(-22),
             EditOp::NoiseReduction(30), EditOp::Vignette(40),
             EditOp::Levels { black: 16, white: 235, gamma: 110 },
+            EditOp::Dehaze(30), EditOp::HueRotate(45), EditOp::SplitTone(-20),
+            EditOp::SelectiveColor { hue: 120, sat: 45 }, EditOp::Grain(30), EditOp::Despeckle(55),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -798,6 +996,12 @@ mod tests {
             EditOp::from_tag("levels:16,235,1.1"),
             Some(EditOp::Levels { black: 16, white: 235, gamma: 110 })
         );
+        assert_eq!(EditOp::from_tag("dehaze"), Some(EditOp::Dehaze(35)));
+        assert_eq!(EditOp::from_tag("hue:45"), Some(EditOp::HueRotate(45)));
+        assert_eq!(EditOp::from_tag("grain"), Some(EditOp::Grain(30)));
+        assert_eq!(EditOp::from_tag("despeckle"), Some(EditOp::Despeckle(55)));
+        assert_eq!(EditOp::from_tag("pop_blues"), Some(EditOp::SelectiveColor { hue: 240, sat: 45 }));
+        assert_eq!(EditOp::from_tag("selcolor:120,-50"), Some(EditOp::SelectiveColor { hue: 120, sat: -50 }));
         // Tag angle is in degrees; the op stores tenths (5° → 50, 2.5° → 25).
         assert_eq!(EditOp::from_tag("straighten:5"), Some(EditOp::Straighten(50)));
         assert_eq!(EditOp::from_tag("straighten:-2.5"), Some(EditOp::Straighten(-25)));
@@ -825,6 +1029,34 @@ mod tests {
         assert!(out.width() < 200 && out.height() < 120);
         let noop = EditOp::Straighten(0).apply(img(20, 20));
         assert_eq!((noop.width(), noop.height()), (20, 20));
+    }
+
+    #[test]
+    fn hue_rotate_360_is_identity_and_grain_is_deterministic() {
+        let src = DynamicImage::ImageRgb8(ImageBuffer::from_fn(16, 16, |x, y| {
+            Rgb([(x * 15) as u8, (y * 15) as u8, 90])
+        }));
+        // A full turn returns (near) the original colours.
+        let back = EditOp::HueRotate(360).apply(src.clone()).to_rgb8();
+        let orig = src.to_rgb8();
+        for (a, b) in orig.pixels().zip(back.pixels()) {
+            for c in 0..3 {
+                assert!(a.0[c].abs_diff(b.0[c]) <= 2, "hue 360° ~ identity");
+            }
+        }
+        // Grain is deterministic → replaying it twice is byte-identical.
+        let g1 = EditOp::Grain(40).apply(src.clone()).to_rgb8();
+        let g2 = EditOp::Grain(40).apply(src.clone()).to_rgb8();
+        assert_eq!(g1, g2, "grain must be replay-stable");
+        assert_ne!(g1, src.to_rgb8(), "grain changes pixels");
+    }
+
+    #[test]
+    fn despeckle_removes_a_lone_hot_pixel() {
+        let mut buf = ImageBuffer::from_pixel(9, 9, Rgb([100u8, 100, 100]));
+        buf.put_pixel(4, 4, Rgb([255, 255, 255])); // a single speckle in a flat field
+        let out = EditOp::Despeckle(100).apply(DynamicImage::ImageRgb8(buf)).to_rgb8();
+        assert_eq!(out.get_pixel(4, 4).0, [100, 100, 100], "median wipes the lone speckle");
     }
 
     #[test]
