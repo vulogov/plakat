@@ -28,6 +28,33 @@ pub enum EditOp {
     Brightness(i32),
     /// Contrast delta (image `adjust_contrast`, ±/step).
     Contrast(i32),
+    // --- Tonal / colour adjustments (amount in ~[-100, 100], applied per-step & chainable) ---
+    /// Overall exposure in stops (multiplicative light).
+    Exposure(i32),
+    /// Brilliance — adaptive: lifts shadows/mids and recovers highlights for richer depth.
+    Brilliance(i32),
+    /// Brighten/darken the highlight tones.
+    Highlights(i32),
+    /// Brighten/darken the mid tones.
+    Midrange(i32),
+    /// Brighten/darken the shadow tones.
+    Shadows(i32),
+    /// Black point — remap the darkest tones (raise = crush blacks, lower = lift).
+    Blackpoint(i32),
+    /// Global saturation (chroma scale; -100 = greyscale).
+    Saturation(i32),
+    /// Vibrance — saturation weighted toward the least-saturated pixels.
+    Vibrance(i32),
+    /// Warmth — colour temperature (blue ↔ orange).
+    Warmth(i32),
+    /// Tint — green ↔ magenta balance.
+    Tint(i32),
+    /// Definition — midtone local contrast (clarity / structure).
+    Definition(i32),
+    /// Sharpen (positive) / soften (negative) via unsharp mask.
+    Sharpen(i32),
+    /// Noise reduction (edge-softening blend; positive only).
+    NoiseReduction(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -52,6 +79,19 @@ impl EditOp {
             EditOp::Grayscale => img.grayscale(),
             EditOp::Brightness(v) => img.brighten(v),
             EditOp::Contrast(v) => img.adjust_contrast(v as f32),
+            EditOp::Exposure(v) => adjust::exposure(&img, v),
+            EditOp::Brilliance(v) => adjust::brilliance(&img, v),
+            EditOp::Highlights(v) => adjust::tone(&img, v, adjust::Region::High),
+            EditOp::Midrange(v) => adjust::tone(&img, v, adjust::Region::Mid),
+            EditOp::Shadows(v) => adjust::tone(&img, v, adjust::Region::Shadow),
+            EditOp::Blackpoint(v) => adjust::blackpoint(&img, v),
+            EditOp::Saturation(v) => adjust::saturation(&img, v),
+            EditOp::Vibrance(v) => adjust::vibrance(&img, v),
+            EditOp::Warmth(v) => adjust::warmth(&img, v),
+            EditOp::Tint(v) => adjust::tint(&img, v),
+            EditOp::Definition(v) => adjust::definition(&img, v),
+            EditOp::Sharpen(v) => adjust::sharpen(&img, v),
+            EditOp::NoiseReduction(v) => adjust::denoise(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -85,6 +125,19 @@ impl EditOp {
             EditOp::Grayscale => "grayscale".into(),
             EditOp::Brightness(_) => "brightness".into(),
             EditOp::Contrast(_) => "contrast".into(),
+            EditOp::Exposure(_) => "exposure".into(),
+            EditOp::Brilliance(_) => "brilliance".into(),
+            EditOp::Highlights(_) => "highlights".into(),
+            EditOp::Midrange(_) => "midrange".into(),
+            EditOp::Shadows(_) => "shadows".into(),
+            EditOp::Blackpoint(_) => "black point".into(),
+            EditOp::Saturation(_) => "saturation".into(),
+            EditOp::Vibrance(_) => "vibrance".into(),
+            EditOp::Warmth(_) => "warmth".into(),
+            EditOp::Tint(_) => "tint".into(),
+            EditOp::Definition(_) => "definition".into(),
+            EditOp::Sharpen(_) => "sharpen".into(),
+            EditOp::NoiseReduction(_) => "noise reduction".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -111,6 +164,19 @@ impl EditOp {
                 params.insert("value".into(), serde_json::json!(v));
                 "contrast"
             }
+            EditOp::Exposure(v) => val_op(&mut params, v, "exposure"),
+            EditOp::Brilliance(v) => val_op(&mut params, v, "brilliance"),
+            EditOp::Highlights(v) => val_op(&mut params, v, "highlights"),
+            EditOp::Midrange(v) => val_op(&mut params, v, "midrange"),
+            EditOp::Shadows(v) => val_op(&mut params, v, "shadows"),
+            EditOp::Blackpoint(v) => val_op(&mut params, v, "blackpoint"),
+            EditOp::Saturation(v) => val_op(&mut params, v, "saturation"),
+            EditOp::Vibrance(v) => val_op(&mut params, v, "vibrance"),
+            EditOp::Warmth(v) => val_op(&mut params, v, "warmth"),
+            EditOp::Tint(v) => val_op(&mut params, v, "tint"),
+            EditOp::Definition(v) => val_op(&mut params, v, "definition"),
+            EditOp::Sharpen(v) => val_op(&mut params, v, "sharpen"),
+            EditOp::NoiseReduction(v) => val_op(&mut params, v, "noise_reduction"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -138,10 +204,49 @@ impl EditOp {
         EditEntry { op: op.to_string(), params, ts: None }
     }
 
-    /// Parse a bare op tag (`rotate_cw`, `grayscale`, `crop_square`, …) into an op. For the
-    /// param-less ops used by the NL pipeline; value ops default their value to 0.
+    /// Parse a bare op tag into an op — the vocabulary the natural-language / free-form command
+    /// pipeline maps onto. Directional adjustment verbs (`sharpen`, `warmer`, `brighter`, …) carry a
+    /// sensible default amount so a single command makes a visible change; structural ops
+    /// (`rotate_cw`, `grayscale`, `crop_square`, …) fall through to [`from_entry`].
     pub fn from_tag(tag: &str) -> Option<EditOp> {
-        Self::from_entry(&EditEntry { op: tag.to_string(), params: Default::default(), ts: None })
+        const S: i32 = 22; // default adjustment step for a one-shot command
+        let op = match tag {
+            "sharpen" => EditOp::Sharpen(S),
+            "soften" | "blur" => EditOp::Sharpen(-S),
+            "denoise" | "noise_reduction" | "reduce_noise" => EditOp::NoiseReduction(S + 8),
+            "definition" | "clarity" => EditOp::Definition(S),
+            "less_definition" => EditOp::Definition(-S),
+            "brighter" | "brighten" => EditOp::Brightness(20),
+            "darker" | "darken" => EditOp::Brightness(-20),
+            "more_contrast" | "contrast_up" => EditOp::Contrast(18),
+            "less_contrast" | "contrast_down" => EditOp::Contrast(-18),
+            "exposure_up" | "overexpose" => EditOp::Exposure(S),
+            "exposure_down" | "underexpose" => EditOp::Exposure(-S),
+            "brilliance" | "brilliance_up" => EditOp::Brilliance(S),
+            "brilliance_down" => EditOp::Brilliance(-S),
+            "highlights_up" => EditOp::Highlights(S),
+            "highlights_down" | "recover_highlights" => EditOp::Highlights(-S),
+            "midrange_up" => EditOp::Midrange(S),
+            "midrange_down" => EditOp::Midrange(-S),
+            "shadows_up" | "lift_shadows" => EditOp::Shadows(S),
+            "shadows_down" => EditOp::Shadows(-S),
+            "blackpoint_up" | "crush_blacks" => EditOp::Blackpoint(S),
+            "blackpoint_down" | "lift_blacks" => EditOp::Blackpoint(-S),
+            "saturate" | "more_saturation" | "saturation_up" => EditOp::Saturation(S),
+            "desaturate" | "less_saturation" | "saturation_down" => EditOp::Saturation(-S),
+            "vibrant" | "vibrance_up" | "more_vibrance" => EditOp::Vibrance(S),
+            "vibrance_down" | "less_vibrance" => EditOp::Vibrance(-S),
+            "warmer" | "warmth_up" => EditOp::Warmth(S),
+            "cooler" | "warmth_down" => EditOp::Warmth(-S),
+            "tint_magenta" | "tint_up" => EditOp::Tint(S),
+            "tint_green" | "tint_down" => EditOp::Tint(-S),
+            _ => return Self::from_entry(&EditEntry {
+                op: tag.to_string(),
+                params: Default::default(),
+                ts: None,
+            }),
+        };
+        Some(op)
     }
 
     /// Parse an `album.hjson` edit-log entry back into an op (unknown ops → `None`, skipped on replay).
@@ -158,6 +263,19 @@ impl EditOp {
             "grayscale" => EditOp::Grayscale,
             "brightness" => EditOp::Brightness(val()),
             "contrast" => EditOp::Contrast(val()),
+            "exposure" => EditOp::Exposure(val()),
+            "brilliance" => EditOp::Brilliance(val()),
+            "highlights" => EditOp::Highlights(val()),
+            "midrange" => EditOp::Midrange(val()),
+            "shadows" => EditOp::Shadows(val()),
+            "blackpoint" => EditOp::Blackpoint(val()),
+            "saturation" => EditOp::Saturation(val()),
+            "vibrance" => EditOp::Vibrance(val()),
+            "warmth" => EditOp::Warmth(val()),
+            "tint" => EditOp::Tint(val()),
+            "definition" => EditOp::Definition(val()),
+            "sharpen" => EditOp::Sharpen(val()),
+            "noise_reduction" => EditOp::NoiseReduction(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -165,6 +283,159 @@ impl EditOp {
             "resize" => EditOp::Resize { w: u("w"), h: u("h") },
             _ => return None,
         })
+    }
+}
+
+/// Serialise a value-carrying op: insert its `value` param and return the op tag.
+fn val_op(params: &mut std::collections::HashMap<String, serde_json::Value>, v: i32, tag: &'static str) -> &'static str {
+    params.insert("value".into(), serde_json::json!(v));
+    tag
+}
+
+/// Tonal / colour adjustment pixel math (RFC PHOTOS-1 Phase 3, extended set). Everything works on
+/// normalised sRGB channels in `[0,1]`; `amount` is roughly `[-100, 100]` mapped to `t = amount/100`.
+mod adjust {
+    use image::{DynamicImage, Rgb, RgbImage};
+
+    /// Which tonal band a region adjustment targets.
+    #[derive(Clone, Copy)]
+    pub enum Region {
+        Shadow,
+        Mid,
+        High,
+    }
+
+    fn luma(r: f32, g: f32, b: f32) -> f32 {
+        0.299 * r + 0.587 * g + 0.114 * b
+    }
+    fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+        let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    }
+    fn enc(v: f32) -> u8 {
+        (v.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    /// Map every pixel through `f(r,g,b) -> [r,g,b]` (normalised).
+    fn map_rgb(img: &DynamicImage, f: impl Fn(f32, f32, f32) -> [f32; 3]) -> DynamicImage {
+        let mut rgb = img.to_rgb8();
+        for p in rgb.pixels_mut() {
+            let o = f(p.0[0] as f32 / 255.0, p.0[1] as f32 / 255.0, p.0[2] as f32 / 255.0);
+            p.0 = [enc(o[0]), enc(o[1]), enc(o[2])];
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    pub fn exposure(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let f = 2f32.powf(amount as f32 / 100.0); // ±1 stop at the extremes
+        map_rgb(img, |r, g, b| [r * f, g * f, b * f])
+    }
+
+    /// Brighten/darken a tonal band, weighting the shift by the band's luma membership.
+    pub fn tone(img: &DynamicImage, amount: i32, region: Region) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            let w = match region {
+                Region::Shadow => 1.0 - smoothstep(0.0, 0.5, y),
+                Region::High => smoothstep(0.5, 1.0, y),
+                Region::Mid => (1.0 - (y - 0.5).abs() * 2.0).clamp(0.0, 1.0),
+            };
+            let d = t * 0.5 * w;
+            [r + d, g + d, b + d]
+        })
+    }
+
+    /// Adaptive richness: lift shadows & mids, gently recover highlights.
+    pub fn brilliance(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            let wsh = 1.0 - smoothstep(0.0, 0.5, y);
+            let wmid = (1.0 - (y - 0.5).abs() * 2.0).clamp(0.0, 1.0);
+            let whi = smoothstep(0.5, 1.0, y);
+            let d = t * (0.45 * wsh + 0.2 * wmid - 0.25 * whi);
+            [r + d, g + d, b + d]
+        })
+    }
+
+    /// Remap the black point: positive crushes blacks, negative lifts them.
+    pub fn blackpoint(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let b0 = (amount as f32 / 100.0) * 0.5; // [-0.5, 0.5]
+        let denom = (1.0 - b0).max(0.05);
+        map_rgb(img, |r, g, b| [(r - b0) / denom, (g - b0) / denom, (b - b0) / denom])
+    }
+
+    pub fn saturation(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let f = 1.0 + amount as f32 / 100.0; // -100 → greyscale, +100 → 2×
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            [y + (r - y) * f, y + (g - y) * f, y + (b - y) * f]
+        })
+    }
+
+    /// Saturation weighted toward the least-saturated pixels (protects already-vivid colour).
+    pub fn vibrance(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let y = luma(r, g, b);
+            let s = r.max(g).max(b) - r.min(g).min(b); // current saturation 0..1
+            let f = 1.0 + t * (1.0 - s);
+            [y + (r - y) * f, y + (g - y) * f, y + (b - y) * f]
+        })
+    }
+
+    /// Colour temperature: warmer boosts red / cuts blue, cooler the reverse.
+    pub fn warmth(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| [r * (1.0 + 0.2 * t), g, b * (1.0 - 0.2 * t)])
+    }
+
+    /// Green ↔ magenta balance.
+    pub fn tint(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = amount as f32 / 100.0;
+        map_rgb(img, |r, g, b| [r * (1.0 + 0.1 * t), g * (1.0 - 0.2 * t), b * (1.0 + 0.1 * t)])
+    }
+
+    /// Blur `img` and combine base + blurred per pixel via `f(base, blurred, luma)`.
+    fn spatial(img: &DynamicImage, sigma: f32, f: impl Fn([f32; 3], [f32; 3], f32) -> [f32; 3]) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let blurred = image::imageops::blur(&rgb, sigma);
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let bp = rgb.get_pixel(x, y).0;
+                let bl = blurred.get_pixel(x, y).0;
+                let base = [bp[0] as f32 / 255.0, bp[1] as f32 / 255.0, bp[2] as f32 / 255.0];
+                let blf = [bl[0] as f32 / 255.0, bl[1] as f32 / 255.0, bl[2] as f32 / 255.0];
+                let yy = luma(base[0], base[1], base[2]);
+                let o = f(base, blf, yy);
+                out.put_pixel(x, y, Rgb([enc(o[0]), enc(o[1]), enc(o[2])]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Unsharp mask: positive sharpens, negative softens.
+    pub fn sharpen(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let k = amount as f32 / 100.0 * 1.5;
+        spatial(img, 1.2, |base, bl, _| std::array::from_fn(|i| base[i] + k * (base[i] - bl[i])))
+    }
+
+    /// Midtone local contrast (clarity): large-radius unsharp, weighted to the mids.
+    pub fn definition(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let k = amount as f32 / 100.0;
+        spatial(img, 6.0, |base, bl, y| {
+            let wmid = (1.0 - (y - 0.5).abs() * 2.0).clamp(0.0, 1.0);
+            std::array::from_fn(|i| base[i] + k * wmid * (base[i] - bl[i]))
+        })
+    }
+
+    /// Edge-softening noise reduction: blend toward a small blur (positive only).
+    pub fn denoise(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let s = (amount as f32 / 100.0).clamp(0.0, 1.0);
+        spatial(img, 1.4, |base, bl, _| std::array::from_fn(|i| base[i] * (1.0 - s) + bl[i] * s))
     }
 }
 
@@ -265,6 +536,11 @@ mod tests {
             EditOp::Crop { x: 0.1, y: 0.2, w: 0.5, h: 0.4 },
             EditOp::CropPx { w: 800, h: 600 },
             EditOp::Resize { w: 1024, h: 768 },
+            EditOp::Exposure(20), EditOp::Brilliance(-15), EditOp::Highlights(30),
+            EditOp::Midrange(-20), EditOp::Shadows(25), EditOp::Blackpoint(10),
+            EditOp::Saturation(-40), EditOp::Vibrance(35), EditOp::Warmth(15),
+            EditOp::Tint(-25), EditOp::Definition(20), EditOp::Sharpen(-22),
+            EditOp::NoiseReduction(30),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -288,6 +564,43 @@ mod tests {
         // Resize fits within the box preserving aspect: 400×300 into 200×200 → 200×150.
         let rz = EditOp::Resize { w: 200, h: 200 }.apply(img(400, 300));
         assert_eq!((rz.width(), rz.height()), (200, 150));
+    }
+
+    #[test]
+    fn adjustments_move_pixels_the_expected_way() {
+        // A flat mid-grey 8×8 image: exposure up brightens, saturation -100 keeps grey, warmth up
+        // pushes red above blue.
+        let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(8, 8, Rgb([128, 128, 128])));
+        let up = EditOp::Exposure(50).apply(grey.clone()).to_rgb8();
+        assert!(up.get_pixel(4, 4).0[0] > 128, "exposure up should brighten");
+
+        let desat = EditOp::Saturation(-100).apply(grey.clone()).to_rgb8().get_pixel(4, 4).0;
+        assert!(desat[0].abs_diff(desat[2]) <= 1, "greyscale stays neutral");
+
+        let warm = EditOp::Warmth(60).apply(grey.clone()).to_rgb8().get_pixel(4, 4).0;
+        assert!(warm[0] > warm[2], "warmth up: red over blue");
+
+        // Sharpen touches an edge: a black/white split should get a stronger contrast at the seam.
+        let mut edge = ImageBuffer::from_pixel(8, 8, Rgb([120u8, 120, 120]));
+        for y in 0..8 {
+            for x in 4..8 {
+                edge.put_pixel(x, y, Rgb([160, 160, 160]));
+            }
+        }
+        let sharp = EditOp::Sharpen(80).apply(DynamicImage::ImageRgb8(edge.clone())).to_rgb8();
+        let base_lo = 120i32;
+        assert!((sharp.get_pixel(3, 4).0[0] as i32) <= base_lo, "sharpen darkens the dark side of the edge");
+    }
+
+    #[test]
+    fn from_tag_directional_verbs() {
+        assert_eq!(EditOp::from_tag("sharpen"), Some(EditOp::Sharpen(22)));
+        assert_eq!(EditOp::from_tag("warmer"), Some(EditOp::Warmth(22)));
+        assert_eq!(EditOp::from_tag("desaturate"), Some(EditOp::Saturation(-22)));
+        assert_eq!(EditOp::from_tag("brighter"), Some(EditOp::Brightness(20)));
+        // Structural tags still resolve through from_entry.
+        assert_eq!(EditOp::from_tag("grayscale"), Some(EditOp::Grayscale));
+        assert_eq!(EditOp::from_tag("warp_drive"), None);
     }
 
     #[test]

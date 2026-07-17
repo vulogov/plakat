@@ -310,9 +310,22 @@ command list for **non-destructive** pixel edits on the cursor image:
   **chain** edits (rotate → brighten → crop). **`Esc`** closes it.
 
 The commands: rotate ⟳/⟲/180°, flip horizontal/vertical, grayscale, **crops**
-(1:1, 4:5, 5:4, 3:2, 2:3, 16:9, 9:16 — centered), brightness up/down, contrast
-up/down, **undo**, **redo**, and **revert to original**. (Type `crop` to see them
-all.)
+(1:1, 4:5, 5:4, 3:2, 2:3, 16:9, 9:16 — centered), **undo**, **redo**, and **revert
+to original**. (Type `crop` to see them all.)
+
+**Tonal & colour adjustments** (each has up/down and chains like the rest — press
+repeatedly for more):
+
+| Group | Commands |
+|-------|----------|
+| Light | brightness · exposure · brilliance · contrast |
+| Tone bands | highlights · midrange · shadows · black point |
+| Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) |
+| Detail | definition (clarity) · sharpen / soften · noise reduction |
+
+Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
+"Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
+highlights for a richer, deeper look. All are non-destructive and replayable.
 
 **Free-form crop.** Pick **crop free-form (interactive)** for an arbitrary
 rectangle: the image shows full, with everything outside the crop **dimmed**.
@@ -450,13 +463,18 @@ joined by `then`:
 find rating>=4 then upscale then export to ~/best 2000
 all photos then autotag
 take flag then tag as keeper then rate 5
+find ai then sharpen then warmer then desaturate
+selected then lift shadows then recover highlights then add clarity
 ```
 
 A command is an optional **selector** (`find`/`take` a pattern — the same filter
 grammar as `/`, or `all` / `selected`) followed by actions run in order: `rate`,
 `flag`, `reject`, `tag`, `autotag`, `describe`, `upscale`, `img2img …`,
-`relight …`, `grayscale`/`rotate`/`crop`, `export to …`, `rename …`, `sort by …`,
-`dedup`, `stack`, `smart album …`.
+`relight …`, `export to …`, `rename …`, `sort by …`, `dedup`, `stack`,
+`smart album …`, and the **edits** — `rotate`/`flip`/`crop`, plus every adjustment:
+`brighter`/`darker`, `more contrast`, `warmer`/`cooler`, `saturate`/`desaturate`,
+`vibrant`, `sharpen`/`soften`, `denoise`, `add clarity`, `lift shadows`, `recover
+highlights`, `crush blacks`, `add brilliance`, and so on.
 
 **Security model.** The command pane acts on the current album's images and their
 metadata. The one outward operation is `export`, which *copies* images to a

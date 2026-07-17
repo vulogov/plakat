@@ -203,8 +203,36 @@ fn edit_op_word(s: &str) -> Option<String> {
         "rotate 180" | "flip 180" => "rotate_180",
         "flip" | "flip horizontal" | "flip h" | "mirror" => "flip_h",
         "flip vertical" | "flip v" => "flip_v",
-        "grayscale" | "greyscale" | "black and white" | "b&w" | "desaturate" => "grayscale",
+        "grayscale" | "greyscale" | "black and white" | "b&w" => "grayscale",
         "crop" | "crop square" | "square crop" | "crop 1:1" => "crop_square",
+        // Tonal / colour adjustments (canonical directional tags → edit::EditOp::from_tag).
+        "sharpen" | "sharpen it" | "sharpen image" => "sharpen",
+        "soften" | "blur" | "blur it" => "soften",
+        "denoise" | "reduce noise" | "noise reduction" | "remove noise" => "denoise",
+        "clarity" | "definition" | "add clarity" | "add definition" => "definition",
+        "brighter" | "brighten" | "brighten it" => "brighter",
+        "darker" | "darken" | "darken it" => "darker",
+        "more contrast" | "increase contrast" | "punchier" => "more_contrast",
+        "less contrast" | "reduce contrast" | "flatten contrast" => "less_contrast",
+        "more exposure" | "increase exposure" | "brighten exposure" | "overexpose" => "exposure_up",
+        "less exposure" | "decrease exposure" | "underexpose" => "exposure_down",
+        "brilliance" | "add brilliance" | "richer" => "brilliance",
+        "recover highlights" | "reduce highlights" | "less highlights" => "highlights_down",
+        "boost highlights" | "more highlights" | "brighter highlights" => "highlights_up",
+        "lift shadows" | "open shadows" | "brighten shadows" | "more shadows" => "shadows_up",
+        "deepen shadows" | "darken shadows" | "less shadows" => "shadows_down",
+        "lighten midtones" | "more midrange" | "midrange up" => "midrange_up",
+        "darken midtones" | "less midrange" | "midrange down" => "midrange_down",
+        "crush blacks" | "deepen blacks" | "black point up" => "blackpoint_up",
+        "lift blacks" | "raise blacks" | "black point down" => "blackpoint_down",
+        "saturate" | "more saturation" | "increase saturation" | "more color" | "more colour" => "saturate",
+        "desaturate" | "less saturation" | "reduce saturation" | "muted" => "desaturate",
+        "vibrance" | "more vibrance" | "boost vibrance" | "vibrant" => "vibrant",
+        "less vibrance" | "reduce vibrance" => "vibrance_down",
+        "warmer" | "warm up" | "more warmth" => "warmer",
+        "cooler" | "cool down" | "less warmth" => "cooler",
+        "tint magenta" | "more magenta" => "tint_magenta",
+        "tint green" | "more green" => "tint_green",
         _ => return None,
     }
     .to_string())
@@ -261,7 +289,13 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
   {\"action\":\"color\",\"label\":\"red|yellow|green|blue|purple\"}
   {\"action\":\"tag\",\"tags\":[\"...\"]} {\"action\":\"autotag\"} {\"action\":\"describe\"}
   {\"action\":\"upscale\"} {\"action\":\"img2img\",\"prompt\":\"...\"} {\"action\":\"relight\",\"prompt\":\"...\"}
-  {\"action\":\"edit\",\"op\":\"rotate_cw|rotate_ccw|rotate_180|flip_h|flip_v|grayscale|crop_square\"}
+  {\"action\":\"edit\",\"op\":\"<one of the edit tags>\"}  where the tag is one of:
+    geometry: rotate_cw rotate_ccw rotate_180 flip_h flip_v grayscale crop_square
+    light: brighter darker exposure_up exposure_down brilliance more_contrast less_contrast
+    tone bands: highlights_up highlights_down midrange_up midrange_down shadows_up shadows_down
+      blackpoint_up blackpoint_down
+    colour: saturate desaturate vibrant vibrance_down warmer cooler tint_magenta tint_green
+    detail: sharpen soften definition denoise
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
   {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE in-album filename pattern, never a path)
   {\"action\":\"sort\",\"by\":\"name-asc|name-desc|date-desc|date-asc|rating-desc|score-desc\"}
@@ -281,6 +315,30 @@ mod tests {
             p.actions,
             vec![Action::Upscale, Action::Export { dir: "~/best".into(), max_px: Some(2000) }]
         );
+    }
+
+    #[test]
+    fn adjustment_verbs_pipeline_into_edit_actions() {
+        // Free-form verbs map to canonical edit tags; each resolves to a real op via from_tag.
+        let p = parse_deterministic("find rating>=4 then sharpen then warmer then export to ~/out")
+            .unwrap();
+        assert_eq!(
+            p.actions,
+            vec![
+                Action::Edit { op: "sharpen".into() },
+                Action::Edit { op: "warmer".into() },
+                Action::Export { dir: "~/out".into(), max_px: None },
+            ]
+        );
+        for verb in ["denoise", "lift shadows", "desaturate", "add clarity", "recover highlights"] {
+            let a = &parse_deterministic(verb).unwrap().actions[0];
+            match a {
+                Action::Edit { op } => {
+                    assert!(crate::photos::edit::EditOp::from_tag(op).is_some(), "unmapped tag {op}")
+                }
+                _ => panic!("{verb} should be an edit"),
+            }
+        }
     }
 
     #[test]
