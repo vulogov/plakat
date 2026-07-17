@@ -17,36 +17,35 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.2.0 — `plakat photos`: a real darkroom in the terminal
+## What's new in 3.3.0 — `plakat photos`: the pro darkroom (still no AI)
 
-3.1 made the collection manager a workbench. **3.2 turns the editor into a darkroom** — layers,
-masks, a full set of tonal/colour adjustments, and file-management ops, all non-destructive, all
-reachable from the **edit palette** *and* the plain-language `:` command.
+3.2 turned the editor into a darkroom. **3.3 makes it a *pro* one** — a deep, non-AI editing and
+analysis pass, a full album-management surface, and a faster, clearer UI. Everything stays
+non-destructive and works from the **edit palette**, the plain-language `:` command, and now
+**`Ctrl-B` chords**.
 
-**Layers & masks.** `E → layers` opens an interactive compositor: stack images over the base with
-per-layer **position / scale / opacity / blend** (normal / multiply / screen / overlay) and
-z-order, over a **live composite** — then **flatten** to a new `_layered.png` (the base is never
-touched; the stack is saved on the record for next time). Each layer takes a **mask** — a feathered
-**ellipse / rectangle** you can **free-position** (`M`), or an **image matte** (a grayscale file:
-white shows, black hides).
+**Editing, on a live slider.** Every tonal/colour adjustment opens an interactive **+/- slider with
+a live preview** (a `─┼──●─` bar). Alongside them: **curves** (a 5-point tone-curve editor),
+**levels**, **CLAHE** (adaptive local contrast), **dehaze**, **hue rotate**, **split-tone**,
+**selective colour** (per-hue), **film grain**, **despeckle**, **vignette**, **graduated ND**, and
+**radial dodge/burn** — plus **before/after** (`\`), an **edit-history scrubber** (step through and
+trim any edit), and **copy/paste edits + named presets** to sync a look across a shoot.
 
-**A full adjustment set.** Fifteen tonal/colour tools alongside the crops: **exposure, brilliance**
-(adaptive shadow-lift / highlight-recover), **highlights / midrange / shadows, black point,
-brightness / contrast, saturation, vibrance, warmth, tint, definition** (clarity),
-**sharpen / soften**, and **noise reduction** — each up/down and chainable. Plus one-tap
-**auto-enhance** (auto levels + colour balance) and **straighten** (rotate by an angle, auto-cropped).
+**Read the image.** Diagnostic **overlays** (`o`): clipping "zebras" and focus peaking, baked onto
+the picture. The analysis panel (`H`) now shows per-channel **RGB histograms**, **colour & lighting
+balance**, **dominant colours**, and pro **waveform + RGB parade** scopes.
 
-**Management ops.** **Strip metadata** removes EXIF / XMP / IPTC / **GPS** in place — losslessly for
-JPEG and PNG (pixels untouched). **Convert / resize** writes a new file in `jpg` / `png` / `webp`,
-capping the longest side or targeting a JPEG file size.
+**Manage the library.** The tree pane became a real manager: album **info panel & editor**, album
+**tags**, **export** / export-and-convert, **thumbnail regen**, **tree search**, and proper **nested
+albums**. Albums show a **display name** (metadata, with a directory fallback), and a smart album can
+be **materialized into a portable folder of copies** — no symlinks.
 
-**All of it in plain language too.** `:` now speaks the whole editor — *"find flag then auto enhance
-then straighten 2 then strip exif then convert to jpg 2048"* — parsed locally where it can, else
-routed through your LLM from the same fixed, album-scoped, no-read / no-exec vocabulary.
+**Faster & clearer.** A live **histogram in the top bar** (it tracks the edit preview), a cleaner
+**info panel**, and a full **`Ctrl-B` edit-chord map** ([`Documentation/Photos/KEYMAP.md`](Documentation/Photos/KEYMAP.md)).
 
-Everything from 3.0 / 3.1 and the 2.x line is unchanged; default image output stays byte-identical.
+Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.0):
+**Earlier releases** (v0.13 – 3.2):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

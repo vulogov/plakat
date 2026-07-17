@@ -8,6 +8,22 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.2.0 — `plakat photos`: a real darkroom in the terminal
+
+3.1 made the collection manager a workbench. **3.2 turned the editor into a darkroom** — layers,
+masks, a full set of tonal/colour adjustments, and file-management ops, all non-destructive, all
+reachable from the **edit palette** and the plain-language `:` command.
+
+**Layers & masks.** `E → layers` opens an interactive compositor: stack images with per-layer
+position / scale / opacity / blend (normal / multiply / screen / overlay) and z-order over a live
+composite, then flatten to a new `_layered.png` (base untouched; stack saved on the record). Each
+layer takes a mask — a feathered ellipse / rectangle you can free-position, or an image matte.
+
+**Adjustments & management.** Fifteen tonal/colour tools alongside the crops (exposure, brilliance,
+highlights/midrange/shadows, black point, saturation, vibrance, warmth, tint, definition, sharpen,
+noise reduction), one-tap auto-enhance and straighten; plus lossless strip-metadata (EXIF/GPS) and
+convert/resize (jpg/png/webp). All of it scriptable through the album-scoped `:` command.
+
 ## What's new in 3.1.0 — `plakat photos` grows up: edit, curate & command
 
 3.0 shipped the collection manager (browse + curate + `--import`). **3.1 makes it a full

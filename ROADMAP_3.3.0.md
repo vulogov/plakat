@@ -1,4 +1,10 @@
-# plakat 3.3.0 — roadmap (planning)
+# plakat 3.3.0 — roadmap (shipped)
+
+**Shipped.** Track A landed in full, plus a large unplanned expansion: a full tree-pane album
+manager, interactive editing modes (slider / curves / levels / layers / crop / history), before-after
++ edit-history scrubber, copy-paste-edits + presets, clipping/focus overlays, an analysis panel with
+RGB histograms + colour/lighting balance + dominant colours + waveform/RGB-parade scopes, portable
+smart albums, `Ctrl-B` edit chords (KEYMAP.md), and a live-histogram top bar. See README for the cut.
 
 Opening the cycle after 3.2.0 (photos darkroom: layers, masks, adjustments, management ops —
 published to crates.io). 3.2 made `plakat photos` a real editor; **3.3 rounds out the darkroom and
