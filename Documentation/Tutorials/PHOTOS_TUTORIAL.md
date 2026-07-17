@@ -115,7 +115,14 @@ Below those it shows two more read-outs, alongside the image like the info panel
 - **Lighting balance** — the share of pixels in **shadows / midtones / highlights**, so
   you can see at a glance whether a shot is bottom-heavy (dark) or blown toward the top.
 
-It updates as you step through images with `←`/`→`. Press `H` again to hide it.
+Below that: a **per-channel RGB histogram** (three coloured sparklines) and a strip of the
+image's **dominant colours** as swatches. It updates as you step through images with
+`←`/`→`. Press `H` again to hide it.
+
+**Overlays (`o`).** In the image view, `o` cycles a diagnostic overlay baked onto the
+picture: **clipping "zebras"** (blown highlights → red, crushed shadows → blue) → **focus
+peaking** (in-focus edges → green) → off. Great for nailing exposure and picking the
+sharpest frame.
 
 ---
 
@@ -376,7 +383,8 @@ The adjustments:
 | Light | brightness · exposure · brilliance · contrast |
 | Tone bands | highlights · midrange · shadows · black point |
 | Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · **hue rotate** · **split-tone** (warm/cool highlights) · **selective colour** (boost/mute reds/greens/blues) |
-| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** (darken/lighten edges) · **film grain** · **despeckle** (median) |
+| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** · **film grain** · **despeckle** (median) |
+| Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 
 Type to filter — `shad` → the shadows commands, `warm`, `sharp`, `vib`, and so on.
 "Brilliance" is the adaptive one: it lifts shadows and mid-tones and eases the
@@ -432,6 +440,15 @@ these keys while you're cropping.
   number for the longer side (e.g. `2048`).
 
 Like every edit, all of these are non-destructive and replayable.
+
+**Reuse edits across images.** Because the edit stack is a replayable log, you can move it
+around from the palette:
+- **copy edits** captures the cursor image's whole edit stack; **paste edits** appends it
+  onto the selection (or the cursor) and rebuilds each.
+- **save edits as preset…** stores the stack under a name (in the root `folder.hjson`);
+  **apply preset…** opens a picker to drop a saved look onto any selection.
+
+So you can dial in one photo, then sync that look across a whole shoot in two keystrokes.
 
 The thumbnail/image update live. Nothing is destroyed: the **pristine original** is
 copied once into a hidden `.plakat_edits/` folder, and the visible file is

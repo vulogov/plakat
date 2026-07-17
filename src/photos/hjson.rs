@@ -21,6 +21,14 @@ pub struct SmartAlbum {
     pub query: String,
 }
 
+/// A named, reusable edit stack (a saved sequence of pixel edits) — applied to any image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditPreset {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ops: Vec<EditEntry>,
+}
+
 /// `folder.hjson` — display name + persisted UI state for a non-leaf directory.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FolderMeta {
@@ -37,6 +45,9 @@ pub struct FolderMeta {
     /// Library-wide saved searches (root folder only). Shown as ★ entries at the top of the tree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_albums: Vec<SmartAlbum>,
+    /// Reusable edit presets (root folder only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edit_presets: Vec<EditPreset>,
 }
 
 /// EXIF read once on first scan (RFC §4.3). All optional — cameras vary.

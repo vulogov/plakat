@@ -76,6 +76,11 @@ pub enum EditOp {
     Grain(i32),
     /// Median despeckle: blend toward a 3×3 per-channel median (positive only).
     Despeckle(i32),
+    /// Graduated ND: darken (positive) / lighten (negative) a linear gradient from an edge
+    /// (`dir`: 0 top, 1 bottom, 2 left, 3 right — strongest at that edge, fading to the middle).
+    GradND { dir: i32, strength: i32 },
+    /// Radial dodge/burn: darken the centre (positive = burn) or lighten it (negative = dodge).
+    Radial(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -123,6 +128,8 @@ impl EditOp {
             EditOp::SelectiveColor { hue, sat } => adjust::selective_color(&img, hue, sat),
             EditOp::Grain(v) => adjust::grain(&img, v),
             EditOp::Despeckle(v) => adjust::despeckle(&img, v),
+            EditOp::GradND { dir, strength } => adjust::grad_nd(&img, dir, strength),
+            EditOp::Radial(v) => adjust::radial(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -154,7 +161,8 @@ impl EditOp {
             | EditOp::Saturation(v) | EditOp::Vibrance(v) | EditOp::Warmth(v) | EditOp::Tint(v)
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
-            | EditOp::Despeckle(v) => v,
+            | EditOp::Despeckle(v) | EditOp::Radial(v) => v,
+            EditOp::GradND { strength, .. } => strength,
             _ => return None,
         })
     }
@@ -183,6 +191,8 @@ impl EditOp {
             EditOp::Vignette(_) => EditOp::Vignette(v),
             EditOp::Grain(_) => EditOp::Grain(v),
             EditOp::Despeckle(_) => EditOp::Despeckle(v),
+            EditOp::Radial(_) => EditOp::Radial(v),
+            EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
             other => other,
         }
     }
@@ -235,6 +245,10 @@ impl EditOp {
             EditOp::SelectiveColor { hue, sat } => format!("selective colour {hue}°·{sat:+}"),
             EditOp::Grain(_) => "film grain".into(),
             EditOp::Despeckle(_) => "despeckle".into(),
+            EditOp::GradND { dir, .. } => {
+                format!("grad ND {}", ["top", "bottom", "left", "right"].get(dir as usize).unwrap_or(&"top"))
+            }
+            EditOp::Radial(_) => "radial dodge/burn".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -293,6 +307,12 @@ impl EditOp {
             }
             EditOp::Grain(v) => val_op(&mut params, v, "grain"),
             EditOp::Despeckle(v) => val_op(&mut params, v, "despeckle"),
+            EditOp::GradND { dir, strength } => {
+                params.insert("dir".into(), serde_json::json!(dir));
+                params.insert("strength".into(), serde_json::json!(strength));
+                "grad_nd"
+            }
+            EditOp::Radial(v) => val_op(&mut params, v, "radial"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -363,6 +383,9 @@ impl EditOp {
             "split_tone_cool" => EditOp::SplitTone(-35),
             "grain" | "film_grain" | "add_grain" => EditOp::Grain(30),
             "despeckle" | "median" | "remove_speckle" => EditOp::Despeckle(55),
+            "burn" => EditOp::Radial(30),
+            "dodge" => EditOp::Radial(-30),
+            "grad_nd" | "graduated_nd" | "nd_grad" => EditOp::GradND { dir: 0, strength: 30 },
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
             "pop_greens" | "pop_green" | "boost_greens" => EditOp::SelectiveColor { hue: 120, sat: 45 },
@@ -445,6 +468,8 @@ impl EditOp {
             "selective_color" => EditOp::SelectiveColor { hue: iv("hue", 0), sat: iv("sat", 0) },
             "grain" => EditOp::Grain(val()),
             "despeckle" => EditOp::Despeckle(val()),
+            "grad_nd" => EditOp::GradND { dir: iv("dir", 0), strength: iv("strength", 0) },
+            "radial" => EditOp::Radial(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -741,6 +766,49 @@ mod adjust {
         DynamicImage::ImageRgb8(out)
     }
 
+    /// Graduated ND: a linear tonal gradient strongest at one edge (`dir`: 0 top/1 bottom/2 left/
+    /// 3 right), fading to nothing by the middle. Positive darkens (a grad-ND filter for skies),
+    /// negative lightens.
+    pub fn grad_nd(img: &DynamicImage, dir: i32, strength: i32) -> DynamicImage {
+        let t = (strength as f32 / 100.0).clamp(-1.0, 1.0);
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            let frac = match dir {
+                0 => y as f32 / h.max(1.0),         // top
+                1 => 1.0 - y as f32 / h.max(1.0),   // bottom
+                2 => x as f32 / w.max(1.0),         // left
+                _ => 1.0 - x as f32 / w.max(1.0),   // right
+            };
+            let wgt = (1.0 - frac * 2.0).clamp(0.0, 1.0); // full at the edge, 0 by the centre
+            let f = (1.0 - t * wgt).clamp(0.0, 2.0);
+            for c in 0..3 {
+                p.0[c] = enc(p.0[c] as f32 / 255.0 * f);
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Radial dodge/burn: a centred radial adjustment — positive darkens (burns) the centre, negative
+    /// lightens (dodges) it, fading out toward the edges.
+    pub fn radial(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let t = (strength as f32 / 100.0).clamp(-1.0, 1.0);
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let maxr = (cx * cx + cy * cy).sqrt().max(1.0);
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+            let r = (dx * dx + dy * dy).sqrt() / maxr;
+            let wgt = 1.0 - smoothstep(0.0, 0.75, r); // strong at the centre
+            let f = (1.0 - t * wgt).clamp(0.0, 2.0);
+            for c in 0..3 {
+                p.0[c] = enc(p.0[c] as f32 / 255.0 * f);
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -986,6 +1054,7 @@ mod tests {
             EditOp::Levels { black: 16, white: 235, gamma: 110 },
             EditOp::Dehaze(30), EditOp::HueRotate(45), EditOp::SplitTone(-20),
             EditOp::SelectiveColor { hue: 120, sat: 45 }, EditOp::Grain(30), EditOp::Despeckle(55),
+            EditOp::GradND { dir: 1, strength: 40 }, EditOp::Radial(-30),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1125,6 +1194,20 @@ mod tests {
         buf.put_pixel(4, 4, Rgb([255, 255, 255])); // a single speckle in a flat field
         let out = EditOp::Despeckle(100).apply(DynamicImage::ImageRgb8(buf)).to_rgb8();
         assert_eq!(out.get_pixel(4, 4).0, [100, 100, 100], "median wipes the lone speckle");
+    }
+
+    #[test]
+    fn grad_nd_darkens_its_edge_and_radial_hits_the_centre() {
+        let flat = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(20, 20, Rgb([200, 200, 200])));
+        // Grad ND from the top darkens the top row, leaves the bottom (past the midpoint) untouched.
+        let g = EditOp::GradND { dir: 0, strength: 60 }.apply(flat.clone()).to_rgb8();
+        assert!(g.get_pixel(10, 0).0[0] < 190, "top edge darkened");
+        assert_eq!(g.get_pixel(10, 19).0[0], 200, "bottom untouched");
+        // Radial burn darkens the centre more than the corner.
+        let r = EditOp::Radial(60).apply(flat).to_rgb8();
+        assert!(r.get_pixel(10, 10).0[0] < 180, "centre burned");
+        assert!(r.get_pixel(10, 10).0[0] < r.get_pixel(0, 0).0[0], "centre darker than corner");
+        assert_eq!(EditOp::from_tag("dodge"), Some(EditOp::Radial(-30)));
     }
 
     #[test]

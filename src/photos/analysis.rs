@@ -27,6 +27,10 @@ pub struct Analysis {
     /// Fraction of pixels in shadows / midtones / highlights (luma < 85 / 85–170 / ≥ 170) — the
     /// lighting balance / tonal distribution.
     pub zones: [f32; 3],
+    /// Per-channel histograms (R, G, B), `BINS` buckets each.
+    pub hist_rgb: [[u32; BINS]; 3],
+    /// The most common colours (representative RGB), most-frequent first — a rough palette.
+    pub dominant: Vec<[u8; 3]>,
 }
 
 /// Rec. 601 luma of an 8-bit RGB pixel.
@@ -44,6 +48,9 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
     let mut clip_low = 0u64;
     let mut chan = [0.0f64; 3];
     let mut zones = [0u64; 3]; // shadows / mids / highlights
+    let mut hist_rgb = [[0u32; BINS]; 3];
+    // Dominant-colour buckets: 4 bits/channel (12-bit key) → count + colour sum, for a rough palette.
+    let mut buckets: std::collections::HashMap<u16, (u32, [u64; 3])> = std::collections::HashMap::new();
     // Precompute a luma plane for the Laplacian pass.
     let mut lum = vec![0f32; (w * h) as usize];
     for (i, px) in rgb.pixels().enumerate() {
@@ -52,6 +59,7 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         sum += y as f64;
         for c in 0..3 {
             chan[c] += px[c] as f64;
+            hist_rgb[c][(px[c] as usize) * BINS / 256] += 1;
         }
         let yi = y as u8;
         hist[(yi as usize) * BINS / 256] += 1;
@@ -62,7 +70,24 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
             clip_low += 1;
         }
         zones[if yi < 85 { 0 } else if yi < 170 { 1 } else { 2 }] += 1;
+        let key = (((px[0] >> 4) as u16) << 8) | (((px[1] >> 4) as u16) << 4) | (px[2] >> 4) as u16;
+        let e = buckets.entry(key).or_insert((0, [0; 3]));
+        e.0 += 1;
+        for c in 0..3 {
+            e.1[c] += px[c] as u64;
+        }
     }
+    // Top colours: most-populated buckets, averaged to a representative RGB.
+    let mut ranked: Vec<(u32, [u64; 3])> = buckets.into_values().collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    let dominant: Vec<[u8; 3]> = ranked
+        .iter()
+        .take(6)
+        .map(|(cnt, s)| {
+            let c = (*cnt).max(1) as u64;
+            [(s[0] / c) as u8, (s[1] / c) as u8, (s[2] / c) as u8]
+        })
+        .collect();
     let n = (w * h).max(1) as f32;
     let sharpness = laplacian_variance(&lum, w, h);
     Analysis {
@@ -75,6 +100,8 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         sharpness,
         channel_mean: [chan[0] as f32 / n, chan[1] as f32 / n, chan[2] as f32 / n],
         zones: [zones[0] as f32 / n, zones[1] as f32 / n, zones[2] as f32 / n],
+        hist_rgb,
+        dominant,
     }
 }
 
@@ -103,6 +130,22 @@ mod tests {
 
     fn flat(v: u8) -> DynamicImage {
         DynamicImage::ImageRgb8(ImageBuffer::from_pixel(32, 32, Rgb([v, v, v])))
+    }
+
+    #[test]
+    fn channel_stats_and_dominant_colour() {
+        // A solid teal image → channel means match, one dominant colour close to it.
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(32, 32, Rgb([20, 160, 160])));
+        let a = analyze(&img);
+        assert!((a.channel_mean[0] - 20.0).abs() < 1.0);
+        assert!((a.channel_mean[1] - 160.0).abs() < 1.0);
+        assert!(!a.dominant.is_empty());
+        let d = a.dominant[0];
+        assert!(d[1] > 140 && d[2] > 140 && d[0] < 40, "dominant ≈ teal, got {d:?}");
+        // Per-channel histograms each hold every pixel.
+        for c in 0..3 {
+            assert_eq!(a.hist_rgb[c].iter().sum::<u32>(), 32 * 32);
+        }
     }
 
     #[test]

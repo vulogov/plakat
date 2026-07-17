@@ -92,6 +92,8 @@ enum PendingCmd {
     AddLayer,
     /// Set the active layer's mask to the entered grayscale matte (album filename or path).
     MaskImage,
+    /// Save the cursor image's edit stack as a named preset.
+    SavePreset,
     /// Straighten the cursor image by the entered degrees.
     Straighten,
     /// Confirm stripping EXIF/GPS metadata from the target images.
@@ -130,6 +132,16 @@ enum InfoPos {
     Bottom,
 }
 
+/// Diagnostic overlay baked into the image view (`o` cycles it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OverlayMode {
+    Off,
+    /// "Zebras": blown highlights → red, crushed shadows → blue.
+    Clipping,
+    /// Focus peaking: high-gradient (in-focus) edges → green.
+    FocusPeak,
+}
+
 /// Which quickhelp overlay is showing (opened via the `Ctrl-B` leader).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HelpKind {
@@ -150,6 +162,10 @@ enum EditCmd {
     ResizeExact, // prompts for WxH (or N) pixels
     Layers,     // interactive layer compositing
     Levels,     // interactive black/white/gamma editor
+    CopyEdits,   // copy this image's edit stack
+    PasteEdits,  // paste the copied edits onto the targets
+    SavePreset,  // save this image's edits as a named preset
+    ApplyPreset, // pick a preset and apply to the targets
     Straighten, // prompts for degrees
     StripExif,  // strip file metadata (confirm)
     RedactGps,  // remove only GPS, keep the rest of the EXIF (confirm)
@@ -200,6 +216,11 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("hue rotate…", EditCmd::Adjust(HueRotate(0))),
         ("split-tone…", EditCmd::Adjust(SplitTone(0))),
         ("vignette…", EditCmd::Adjust(Vignette(0))),
+        ("radial dodge / burn…", EditCmd::Adjust(Radial(0))),
+        ("graduated ND (from top)…", EditCmd::Adjust(GradND { dir: 0, strength: 0 })),
+        ("graduated ND (from bottom)…", EditCmd::Adjust(GradND { dir: 1, strength: 0 })),
+        ("graduated ND (from left)…", EditCmd::Adjust(GradND { dir: 2, strength: 0 })),
+        ("graduated ND (from right)…", EditCmd::Adjust(GradND { dir: 3, strength: 0 })),
         ("sharpen / soften…", EditCmd::Adjust(Sharpen(0))),
         ("noise reduction…", EditCmd::Adjust(NoiseReduction(0))),
         ("film grain…", EditCmd::Adjust(Grain(0))),
@@ -214,6 +235,10 @@ fn edit_commands() -> Vec<(&'static str, EditCmd)> {
         ("strip metadata (EXIF / GPS)", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", EditCmd::Convert),
+        ("copy edits (from this image)", EditCmd::CopyEdits),
+        ("paste edits (to selection / cursor)", EditCmd::PasteEdits),
+        ("save edits as preset…", EditCmd::SavePreset),
+        ("apply preset…", EditCmd::ApplyPreset),
         ("undo", EditCmd::Undo),
         ("redo", EditCmd::Redo),
         ("revert to original", EditCmd::Revert),
@@ -290,6 +315,7 @@ struct App {
     selected: HashSet<usize>,
     mode: AlbumMode,
     info: InfoPos,
+    overlay: OverlayMode,
     /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
     zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
@@ -376,6 +402,11 @@ struct App {
     // `Ctrl-B` leader prefix (tmux-style) + the quickhelp overlay it opens.
     leader: bool,
     help: Option<HelpKind>,
+    // Copy/paste edits + presets: the copied edit stack, and the apply-preset picker.
+    edit_clipboard: Vec<hjson::EditEntry>,
+    preset_browser: bool,
+    presets_list: Vec<hjson::EditPreset>,
+    preset_cursor: usize,
     // Tag browser (Ctrl-B t): pick a tag from the album to filter by.
     tag_browser: bool,
     tags_list: Vec<(String, usize)>,
@@ -426,6 +457,7 @@ impl App {
             selected: HashSet::new(),
             mode: AlbumMode::Grid,
             info: InfoPos::Off,
+            overlay: OverlayMode::Off,
             zoom: 1.0,
             show_analysis: false,
             analysis: None,
@@ -478,6 +510,10 @@ impl App {
             tl_cursor: 0,
             leader: false,
             help: None,
+            edit_clipboard: Vec::new(),
+            preset_browser: false,
+            presets_list: Vec::new(),
+            preset_cursor: 0,
             tag_browser: false,
             tags_list: Vec::new(),
             tag_cursor: 0,
@@ -1312,6 +1348,16 @@ impl App {
             }
             EditCmd::Layers => self.enter_layers(),
             EditCmd::Levels => self.enter_levels(),
+            EditCmd::CopyEdits => self.copy_edits(),
+            EditCmd::PasteEdits => self.paste_edits(),
+            EditCmd::SavePreset => {
+                self.edit_menu = false;
+                self.prompt("save edits as preset (name): ", "", PendingCmd::SavePreset);
+            }
+            EditCmd::ApplyPreset => {
+                self.edit_menu = false;
+                self.open_preset_browser();
+            }
             EditCmd::Straighten => {
                 self.edit_menu = false;
                 self.prompt("straighten by degrees (e.g. 3 or -2.5): ", "", PendingCmd::Straighten);
@@ -2354,6 +2400,105 @@ impl App {
         }
     }
 
+    // ---- Copy/paste edits + presets --------------------------------------------------------------
+
+    /// The cursor image's raw edit entries (for copy / save-preset).
+    fn cur_edit_entries(&self) -> Vec<hjson::EditEntry> {
+        self.cur_idx()
+            .and_then(|i| self.album_paths.get(i))
+            .and_then(|p| self.record(p))
+            .map(|r| r.edits.clone())
+            .unwrap_or_default()
+    }
+
+    /// Copy the cursor image's edit stack to the in-session clipboard.
+    fn copy_edits(&mut self) {
+        let ops = self.cur_edit_entries();
+        if ops.is_empty() {
+            self.status = "this image has no edits to copy".into();
+            return;
+        }
+        self.status = format!("copied {} edit(s) — paste onto a selection", ops.len());
+        self.edit_clipboard = ops;
+    }
+
+    /// Paste the copied edit stack onto the target images.
+    fn paste_edits(&mut self) {
+        if self.edit_clipboard.is_empty() {
+            self.status = "clipboard empty — copy edits first".into();
+            return;
+        }
+        let ops = self.edit_clipboard.clone();
+        self.apply_edit_ops_to_targets(&ops, "pasted");
+    }
+
+    /// Append `ops` to every target image's edit log and rebuild each from its pristine original.
+    fn apply_edit_ops_to_targets(&mut self, ops: &[hjson::EditEntry], verb: &str) {
+        let valid = ops.iter().filter(|e| edit::EditOp::from_entry(e).is_some()).count();
+        if valid == 0 {
+            self.status = "no applicable edits".into();
+            return;
+        }
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "no target image".into();
+            return;
+        }
+        let mut n = 0;
+        for (dir, path) in &files {
+            let Some(filename) = path.file_name().and_then(|f| f.to_str()).map(|s| s.to_string()) else {
+                continue;
+            };
+            if edit::ensure_backup(dir, &filename).is_err() {
+                continue;
+            }
+            self.edit_record_at(path, |rec| rec.edits.extend(ops.iter().cloned()));
+            let full: Vec<edit::EditOp> = self
+                .record(path)
+                .map(|r| r.edits.iter().filter_map(edit::EditOp::from_entry).collect())
+                .unwrap_or_default();
+            if edit::rebuild_file(dir, &filename, &full).is_ok() {
+                self.thumbs.remove(path);
+                n += 1;
+            }
+        }
+        self.edit_redo.clear();
+        if self.mode == AlbumMode::Image {
+            self.load_view();
+        }
+        self.status = format!("{verb} {valid} edit(s) → {n} image(s)");
+    }
+
+    /// Save the cursor image's edit stack as a named preset in the root `folder.hjson`.
+    fn save_preset(&mut self, name: &str) {
+        let ops = self.cur_edit_entries();
+        if ops.is_empty() {
+            self.status = "this image has no edits to save".into();
+            return;
+        }
+        let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
+        fm.edit_presets.retain(|p| p.name != name);
+        let count = ops.len();
+        fm.edit_presets.push(hjson::EditPreset { name: name.to_string(), ops });
+        if let Err(e) = hjson::write_folder(&self.root_dir, &fm) {
+            self.status = format!("save failed: {e}");
+            return;
+        }
+        self.status = format!("saved preset '{name}' ({count} edits)");
+    }
+
+    /// Open the preset picker (apply-preset modal).
+    fn open_preset_browser(&mut self) {
+        let fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
+        if fm.edit_presets.is_empty() {
+            self.status = "no presets saved yet — 'save edits as preset' first".into();
+            return;
+        }
+        self.presets_list = fm.edit_presets;
+        self.preset_cursor = 0;
+        self.preset_browser = true;
+    }
+
     /// After a file's pixels change: drop its cached thumbnail (so it re-decodes) and reload the
     /// full-pane image if it's on screen.
     fn refresh_after_edit(&mut self, path: &Path) {
@@ -2565,6 +2710,9 @@ impl App {
                     self.materialize_smart(&name, &query, &arg);
                     fs_changed = true;
                 }
+                Some(PendingCmd::SavePreset) if !arg.is_empty() => {
+                    self.save_preset(arg.trim());
+                }
                 Some(PendingCmd::Straighten) if !arg.is_empty() => match arg.trim().parse::<f32>() {
                     Ok(deg) => {
                         self.apply_edit(edit::EditOp::Straighten((deg * 10.0).round() as i32));
@@ -2764,9 +2912,9 @@ impl App {
                 } else if self.crop_mode {
                     crop_preview(&img, self.crop_rect) // full image, dimmed outside the crop rect
                 } else if zoom > 1.01 {
-                    crop_center(&img, zoom)
+                    apply_overlay(crop_center(&img, zoom), self.overlay)
                 } else {
-                    img
+                    apply_overlay(img, self.overlay)
                 };
                 self.picker.new_resize_protocol(img)
             });
@@ -3240,6 +3388,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_version_key(app, k.code);
         return false;
     }
+    if app.preset_browser {
+        handle_preset_key(app, k.code);
+        return false;
+    }
     if k.modifiers.contains(KeyModifiers::CONTROL) && matches!(k.code, KeyCode::Char('b')) {
         app.leader = true;
         app.status = "Ctrl-B · h/H help · t tags · v versions · p portfolio · l/L lookalike".into();
@@ -3473,6 +3625,25 @@ fn handle_tag_key(app: &mut App, code: KeyCode) {
             app.tag_cursor = (app.tag_cursor + 1).min(app.tags_list.len().saturating_sub(1));
         }
         KeyCode::Enter | KeyCode::Char('l') => app.pick_tag(),
+        _ => {}
+    }
+}
+
+/// Preset picker (Edit → apply preset): pick a saved edit stack and apply it to the targets.
+fn handle_preset_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.preset_browser = false,
+        KeyCode::Up | KeyCode::Char('k') => app.preset_cursor = app.preset_cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.preset_cursor = (app.preset_cursor + 1).min(app.presets_list.len().saturating_sub(1));
+        }
+        KeyCode::Enter | KeyCode::Char('l') => {
+            if let Some(p) = app.presets_list.get(app.preset_cursor) {
+                let ops = p.ops.clone();
+                app.preset_browser = false;
+                app.apply_edit_ops_to_targets(&ops, "applied preset:");
+            }
+        }
         _ => {}
     }
 }
@@ -3970,6 +4141,20 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
                 app.compute_analysis();
             }
         }
+        // Cycle the diagnostic overlay: off → clipping zebras → focus peaking.
+        KeyCode::Char('o') => {
+            app.overlay = match app.overlay {
+                OverlayMode::Off => OverlayMode::Clipping,
+                OverlayMode::Clipping => OverlayMode::FocusPeak,
+                OverlayMode::FocusPeak => OverlayMode::Off,
+            };
+            app.status = match app.overlay {
+                OverlayMode::Off => "overlay: off".into(),
+                OverlayMode::Clipping => "overlay: clipping (red=blown · blue=crushed)".into(),
+                OverlayMode::FocusPeak => "overlay: focus peaking (green=in-focus edges)".into(),
+            };
+            app.load_view();
+        }
         KeyCode::Char('E') => app.open_edit_menu(),
         KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
         KeyCode::Char('A') => app.ai_menu = true,   // open the vision/AI menu
@@ -4037,6 +4222,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.version_browser {
         draw_version_browser(f, app, album_col);
+    }
+    if app.preset_browser {
+        draw_preset_browser(f, app, album_col);
     }
     if app.edit_menu {
         draw_edit_palette(f, app, album_col);
@@ -4360,6 +4548,47 @@ fn crop_preview(img: &image::DynamicImage, rect: (f32, f32, f32, f32)) -> image:
 }
 
 /// Centre-crop `img` to `1/zoom` of its size (so fitting the crop to a pane magnifies by `zoom`).
+/// Bake a diagnostic overlay into the displayed image: clipping "zebras" (blown → red, crushed →
+/// blue) or focus peaking (high-gradient edges → green). `Off` returns the image unchanged.
+fn apply_overlay(img: image::DynamicImage, mode: OverlayMode) -> image::DynamicImage {
+    use image::Rgb;
+    let lum = |p: &[u8; 3]| 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+    match mode {
+        OverlayMode::Off => img,
+        OverlayMode::Clipping => {
+            let mut rgb = img.to_rgb8();
+            for p in rgb.pixels_mut() {
+                let y = lum(&p.0);
+                if y >= 250.0 {
+                    p.0 = [255, 0, 0];
+                } else if y <= 5.0 {
+                    p.0 = [0, 0, 255];
+                }
+            }
+            image::DynamicImage::ImageRgb8(rgb)
+        }
+        OverlayMode::FocusPeak => {
+            let rgb = img.to_rgb8();
+            let (w, h) = (rgb.width(), rgb.height());
+            if w < 3 || h < 3 {
+                return image::DynamicImage::ImageRgb8(rgb);
+            }
+            let at = |x: u32, y: u32| lum(&rgb.get_pixel(x, y).0);
+            let mut out = rgb.clone();
+            for y in 1..h - 1 {
+                for x in 1..w - 1 {
+                    let gx = at(x + 1, y) - at(x - 1, y);
+                    let gy = at(x, y + 1) - at(x, y - 1);
+                    if (gx * gx + gy * gy).sqrt() > 40.0 {
+                        out.put_pixel(x, y, Rgb([0, 255, 0]));
+                    }
+                }
+            }
+            image::DynamicImage::ImageRgb8(out)
+        }
+    }
+}
+
 fn crop_center(img: &image::DynamicImage, zoom: f32) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
     let cw = ((w as f32 / zoom) as u32).max(1);
@@ -4729,6 +4958,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("Z / z", format!("zoom in / out ({:.1}×)", app.zoom)));
             l.push(kv("i / I", "info panel: right / bottom"));
             l.push(kv("H", format!("analysis panel{}", if app.show_analysis { " (on)" } else { "" })));
+            l.push(kv("o", "overlay: clipping zebras → focus peaking → off"));
             l.push(hd("Curate"));
             l.push(kv("1–5 0", "rate/clear · f flag · x reject · c colour"));
             l.push(kv("t e N T", "tags · caption · notes · title"));
@@ -4995,6 +5225,42 @@ fn row_line(text: &str, selected: bool) -> Line<'static> {
     Line::from(Span::styled(format!(" {text}"), style))
 }
 
+/// Preset picker popup (Edit → apply preset): saved edit stacks; Enter applies to the targets.
+fn draw_preset_browser(f: &mut Frame, app: &App, area: Rect) {
+    let rows: Vec<String> = app
+        .presets_list
+        .iter()
+        .map(|p| format!("{}  ({} edits)", p.name, p.ops.len()))
+        .collect();
+    let w = (rows.iter().map(|r| r.len()).max().unwrap_or(20) as u16 + 4).clamp(24, 60).min(area.width);
+    let h = (rows.len() as u16 + 2).clamp(3, area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    let inner_h = popup.height.saturating_sub(2) as usize;
+    let start = app.preset_cursor.saturating_sub(inner_h.saturating_sub(1));
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_h)
+        .map(|(i, r)| row_line(r, i == app.preset_cursor))
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Apply preset · Enter · Esc ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
 /// Tag browser popup (Ctrl-B t): the album's tags with counts; Enter filters by the chosen tag.
 fn draw_tag_browser(f: &mut Frame, app: &App, area: Rect) {
     let w = area.width.min(30).max(18);
@@ -5220,7 +5486,43 @@ fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!(" {:.0}%", v * 100.0), Style::new().fg(Color::DarkGray)),
         ]));
     }
+
+    // Per-channel (RGB) histograms as compact coloured sparklines.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("RGB histogram", Style::new().fg(Color::Yellow))));
+    let sw = (inner.width as usize).saturating_sub(2).clamp(8, analysis::BINS);
+    for (i, col) in [Color::Red, Color::Green, Color::Blue].iter().enumerate() {
+        lines.push(Line::from(Span::styled(sparkline(&a.hist_rgb[i], sw), Style::new().fg(*col))));
+    }
+
+    // Dominant colours — swatches of the most common hues.
+    if !a.dominant.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Dominant colours", Style::new().fg(Color::Yellow))));
+        let sw: Vec<Span> = a
+            .dominant
+            .iter()
+            .map(|c| Span::styled("██", Style::new().fg(Color::Rgb(c[0], c[1], c[2]))))
+            .collect();
+        lines.push(Line::from(sw));
+    }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A one-row sparkline of `hist` down-sampled to `width` columns (8 block levels).
+fn sparkline(hist: &[u32], width: usize) -> String {
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let n = hist.len().max(1);
+    let max = hist.iter().copied().max().unwrap_or(1).max(1) as f32;
+    (0..width)
+        .map(|c| {
+            let lo = c * n / width;
+            let hi = ((c + 1) * n / width).max(lo + 1).min(n);
+            let s: u32 = hist[lo..hi].iter().sum();
+            let v = (s as f32 / (hi - lo) as f32) / max; // 0..1
+            BLOCKS[(v * 8.0).round().clamp(0.0, 8.0) as usize]
+        })
+        .collect()
 }
 
 /// A horizontal bar of `width` cells filled to `frac` (0..1) with block chars.
@@ -5361,6 +5663,29 @@ mod tree_ops_tests {
         assert_eq!(App::gather_image_files(&dir, false).len(), 2);
         // Recursive: includes the sub-album image.
         assert_eq!(App::gather_image_files(&dir, true).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_presets_roundtrip_through_folder_hjson() {
+        let dir = std::env::temp_dir().join(format!("plakat-preset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ops = vec![
+            edit::EditOp::Warmth(20).to_entry(),
+            edit::EditOp::Vignette(30).to_entry(),
+        ];
+        let fm = hjson::FolderMeta {
+            edit_presets: vec![hjson::EditPreset { name: "warm vignette".into(), ops }],
+            ..Default::default()
+        };
+        hjson::write_folder(&dir, &fm).unwrap();
+        let back = hjson::read_folder(&dir).unwrap();
+        assert_eq!(back.edit_presets.len(), 1);
+        assert_eq!(back.edit_presets[0].name, "warm vignette");
+        // The stored ops parse back into real edits.
+        let parsed: Vec<_> =
+            back.edit_presets[0].ops.iter().filter_map(edit::EditOp::from_entry).collect();
+        assert_eq!(parsed, vec![edit::EditOp::Warmth(20), edit::EditOp::Vignette(30)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
