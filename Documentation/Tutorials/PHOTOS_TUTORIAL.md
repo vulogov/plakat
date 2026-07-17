@@ -117,9 +117,10 @@ Below those it shows two more read-outs, alongside the image like the info panel
 - **Lighting balance** — the share of pixels in **shadows / midtones / highlights**, so
   you can see at a glance whether a shot is bottom-heavy (dark) or blown toward the top.
 
-Below that: a **per-channel RGB histogram** (three coloured sparklines) and a strip of the
-image's **dominant colours** as swatches. It updates as you step through images with
-`←`/`→`. Press `H` again to hide it.
+Below that: a **per-channel RGB histogram** (three coloured sparklines), a strip of the
+image's **dominant colours**, a **luma waveform** (a per-column tonal scope) and an **RGB
+parade** (the three channel waveforms side by side — the pro colourist's exposure/colour
+tools). It updates as you step through images with `←`/`→`. Press `H` again to hide it.
 
 **Overlays (`o`).** In the image view, `o` cycles a diagnostic overlay baked onto the
 picture: **clipping "zebras"** (blown highlights → red, crushed shadows → blue) → **focus
@@ -439,8 +440,8 @@ rectangle: the image shows full, with everything outside the crop **dimmed**.
 | `←` `↑` `→` `↓` | move the box |
 | `Enter` / `Esc` | apply / cancel |
 
-The status bar shows the current size (`crop 60% × 45%`), and `Ctrl-B h` brings up
-these keys while you're cropping.
+The status bar shows the current size (`crop 60% × 45%`), a **rule-of-thirds** grid is drawn
+inside the crop box to help you compose, and `Ctrl-B h` brings up these keys while cropping.
 
 **Exact size.** For a specific pixel size, the palette also has:
 - **crop to exact size** — enter `WxH` (e.g. `1200x800`) for a centered pixel crop.
@@ -448,6 +449,18 @@ these keys while you're cropping.
   number for the longer side (e.g. `2048`).
 
 Like every edit, all of these are non-destructive and replayable.
+
+**Before / after (`\`).** In the image view, `\` toggles between the **edited** file and the
+**pristine original** (from the hidden backup), so you can check your work at a glance.
+
+**Edit history (`Ctrl-B e h`, or the palette).** Since edits are a replayable log, the
+history scrubber lets you **step through** the stack — `←`/`→` moves back and forth over the
+pristine original, showing the image at each step — and **`d`** deletes the edit at the
+current step (not just the last one). `Enter` applies the trimmed stack; `Esc` cancels.
+
+**Curves & CLAHE.** *curves* opens a 5-point tone-curve editor (`←`/`→` pick a point, `↑`/`↓`
+move its output, live graph); *CLAHE* is contrast-limited adaptive histogram equalization on
+a slider — a strong one-tap local-contrast lift.
 
 **Reuse edits across images.** Because the edit stack is a replayable log, you can move it
 around from the palette:

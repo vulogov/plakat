@@ -162,6 +162,8 @@ enum EditCmd {
     ResizeExact, // prompts for WxH (or N) pixels
     Layers,     // interactive layer compositing
     Levels,     // interactive black/white/gamma editor
+    Curve,      // interactive tone-curve editor
+    History,    // step through / trim the edit stack
     CopyEdits,   // copy this image's edit stack
     PasteEdits,  // paste the copied edits onto the targets
     SavePreset,  // save this image's edits as a named preset
@@ -225,6 +227,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("shadows…", "as", EditCmd::Adjust(Shadows(0))),
         ("black point…", "ak", EditCmd::Adjust(Blackpoint(0))),
         ("levels (black / white / gamma)…", "al", EditCmd::Levels),
+        ("curves (tone curve)…", "au", EditCmd::Curve),
+        ("CLAHE (adaptive contrast)…", "aq", EditCmd::Adjust(Clahe(0))),
         // Colour (k)
         ("saturation…", "ks", EditCmd::Adjust(Saturation(0))),
         ("vibrance…", "kv", EditCmd::Adjust(Vibrance(0))),
@@ -253,6 +257,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("graduated ND (from right)…", "xR", EditCmd::Adjust(GradND { dir: 3, strength: 0 })),
         // Edit stack (e)
         ("layers — overlay / compose images", "ey", EditCmd::Layers),
+        ("edit history (step / trim)…", "eh", EditCmd::History),
         ("copy edits (from this image)", "ec", EditCmd::CopyEdits),
         ("paste edits (to selection / cursor)", "ev", EditCmd::PasteEdits),
         ("save edits as preset…", "es", EditCmd::SavePreset),
@@ -385,6 +390,17 @@ struct App {
     // shown on a +/- bar with a live preview.
     adjust_mode: bool,
     adjust_op: Option<edit::EditOp>,
+    // Before/after: show the pristine original (backup) instead of the edited file (`\`).
+    show_original: bool,
+    // Edit-history scrubber: step through / trim the edit stack over a decoded pristine original.
+    history_mode: bool,
+    history_ops: Vec<hjson::EditEntry>,
+    history_pos: usize,
+    history_orig: Option<image::DynamicImage>,
+    // Interactive curves editor: 5 output points (input 0/64/128/192/255) + the selected point.
+    curve_mode: bool,
+    curve_pts: [i32; 5],
+    curve_sel: usize,
     // Interactive levels editor (from the Edit palette): black/white input points (0..255) + midtone
     // gamma (×100), with a live preview. `lv_sel` = which handle the ←/→ keys adjust (0/1/2).
     levels_mode: bool,
@@ -520,6 +536,14 @@ impl App {
             crop_rect: (0.1, 0.1, 0.8, 0.8),
             adjust_mode: false,
             adjust_op: None,
+            show_original: false,
+            history_mode: false,
+            history_ops: Vec::new(),
+            history_pos: 0,
+            history_orig: None,
+            curve_mode: false,
+            curve_pts: [0, 64, 128, 192, 255],
+            curve_sel: 0,
             levels_mode: false,
             lv_black: 0,
             lv_white: 255,
@@ -1403,6 +1427,8 @@ impl App {
             }
             EditCmd::Layers => self.enter_layers(),
             EditCmd::Levels => self.enter_levels(),
+            EditCmd::Curve => self.enter_curve(),
+            EditCmd::History => self.enter_history(),
             EditCmd::CopyEdits => self.copy_edits(),
             EditCmd::PasteEdits => self.paste_edits(),
             EditCmd::SavePreset => {
@@ -1474,9 +1500,10 @@ impl App {
     fn set_adjust_status(&mut self) {
         if let Some(op) = self.adjust_op {
             self.status = format!(
-                "{} {:+} · ←/→ adjust · [ ] fine · Enter apply · Esc cancel",
+                "{} {:+} · ←/→ fine ±1 · [/] jump ±{} · Enter apply · Esc cancel",
                 op.label(),
-                op.scalar().unwrap_or(0)
+                op.scalar().unwrap_or(0),
+                op.scalar_range().2,
             );
         }
     }
@@ -1499,6 +1526,186 @@ impl App {
         self.adjust_op = None;
         self.load_view();
         self.status = "adjustment cancelled".into();
+    }
+
+    // ---- Before/after --------------------------------------------------------------------------
+
+    /// Toggle showing the pristine original (the edit backup) vs the edited file.
+    fn toggle_before_after(&mut self) {
+        self.show_original = !self.show_original;
+        self.status = if self.show_original {
+            "showing ORIGINAL (before) · \\ back to edited".into()
+        } else {
+            "showing edited (after)".into()
+        };
+        self.load_view();
+    }
+
+    // ---- Interactive tone-curve editor ---------------------------------------------------------
+
+    fn enter_curve(&mut self) {
+        if self.cur_source().is_none() {
+            self.status = "open an image first".into();
+            return;
+        }
+        self.edit_menu = false;
+        self.curve_pts = [0, 64, 128, 192, 255];
+        self.curve_sel = 0;
+        self.curve_mode = true;
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_curve_status();
+    }
+
+    fn curve_op(&self) -> edit::EditOp {
+        edit::EditOp::Curve { pts: self.curve_pts }
+    }
+
+    /// Move the selected curve point's output value; refresh the live preview.
+    fn adjust_curve(&mut self, d: i32) {
+        self.curve_pts[self.curve_sel] = (self.curve_pts[self.curve_sel] + d).clamp(0, 255);
+        self.load_view();
+        self.set_curve_status();
+    }
+
+    /// Select the previous/next curve point (5 points, no wrap).
+    fn select_curve(&mut self, delta: i32) {
+        self.curve_sel = (self.curve_sel as i32 + delta).clamp(0, 4) as usize;
+        self.set_curve_status();
+    }
+
+    fn set_curve_status(&mut self) {
+        const IN: [i32; 5] = [0, 64, 128, 192, 255];
+        self.status = format!(
+            "curve · point {}/5 (in {}) → out {} · ←/→ pick · ↑/↓ move · [/] fine · Enter apply · Esc",
+            self.curve_sel + 1,
+            IN[self.curve_sel],
+            self.curve_pts[self.curve_sel]
+        );
+    }
+
+    fn apply_curve(&mut self) {
+        let op = self.curve_op();
+        self.curve_mode = false;
+        if self.curve_pts == [0, 64, 128, 192, 255] {
+            self.load_view();
+            self.status = "curve: no change".into();
+            return;
+        }
+        self.apply_edit(op);
+    }
+
+    fn cancel_curve(&mut self) {
+        self.curve_mode = false;
+        self.load_view();
+        self.status = "curve cancelled".into();
+    }
+
+    // ---- Edit-history scrubber -----------------------------------------------------------------
+
+    fn enter_history(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else {
+            self.status = "open an image first".into();
+            return;
+        };
+        let ops = self.cur_edit_entries();
+        if ops.is_empty() {
+            self.status = "this image has no edit history".into();
+            return;
+        }
+        // The scrubber replays over the pristine original (the edit backup, else the file itself).
+        let bak = edit::backup_path(&dir, &filename);
+        let src = if bak.exists() { bak } else { dir.join(&filename) };
+        let Some(orig) = loader::thumbnail(&src, 1400).ok() else {
+            self.status = "couldn't load the original".into();
+            return;
+        };
+        self.edit_menu = false;
+        self.history_orig = Some(orig);
+        self.history_ops = ops;
+        self.history_pos = self.history_ops.len(); // start on the final result
+        self.history_mode = true;
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_history_status();
+    }
+
+    /// The image at the current history position: replay the first `history_pos` ops on the original.
+    fn history_preview(&self) -> Option<image::DynamicImage> {
+        let base = self.history_orig.as_ref()?;
+        let ops: Vec<edit::EditOp> = self.history_ops[..self.history_pos.min(self.history_ops.len())]
+            .iter()
+            .filter_map(edit::EditOp::from_entry)
+            .collect();
+        Some(edit::replay(base, &ops))
+    }
+
+    fn move_history(&mut self, delta: i32) {
+        let n = self.history_ops.len() as i32;
+        self.history_pos = (self.history_pos as i32 + delta).clamp(0, n) as usize;
+        self.load_view();
+        self.set_history_status();
+    }
+
+    /// Delete the op currently shown (at `history_pos - 1`), rebuilding the preview.
+    fn delete_history_op(&mut self) {
+        if self.history_pos == 0 || self.history_ops.is_empty() {
+            self.status = "at the original — nothing to delete here".into();
+            return;
+        }
+        self.history_ops.remove(self.history_pos - 1);
+        self.history_pos -= 1;
+        self.load_view();
+        self.set_history_status();
+    }
+
+    fn set_history_status(&mut self) {
+        let n = self.history_ops.len();
+        if self.history_pos == 0 {
+            self.status = format!("history 0/{n}: original · →/↑ step forward · Enter apply · Esc");
+        } else {
+            let label = self
+                .history_ops
+                .get(self.history_pos - 1)
+                .and_then(edit::EditOp::from_entry)
+                .map(|o| o.label())
+                .unwrap_or_default();
+            self.status = format!(
+                "history {}/{n}: {label} · ←/→ step · d delete this edit · Enter apply · Esc",
+                self.history_pos
+            );
+        }
+    }
+
+    /// Commit the (possibly trimmed) history to the record and rebuild the file.
+    fn apply_history(&mut self) {
+        let Some((dir, filename)) = self.cur_source() else {
+            self.history_mode = false;
+            return;
+        };
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else {
+            self.history_mode = false;
+            return;
+        };
+        let ops = std::mem::take(&mut self.history_ops);
+        self.history_mode = false;
+        self.history_orig = None;
+        let full: Vec<edit::EditOp> = ops.iter().filter_map(edit::EditOp::from_entry).collect();
+        self.edit_record_at(&path, move |rec| rec.edits = ops);
+        match edit::rebuild_file(&dir, &filename, &full) {
+            Ok(()) => {
+                self.status = format!("history applied · {} edit(s)", full.len());
+                self.refresh_after_edit(&path);
+            }
+            Err(e) => self.status = format!("apply failed: {e:#}"),
+        }
+    }
+
+    fn cancel_history(&mut self) {
+        self.history_mode = false;
+        self.history_orig = None;
+        self.load_view();
+        self.status = "history closed (no change)".into();
     }
 
     /// Enter interactive free-form crop on the cursor image (a dimmed live preview in the image pane).
@@ -2951,14 +3158,34 @@ impl App {
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
         let zoom = self.zoom;
+        // History scrubber: the view is a replay over the decoded pristine original, not the file.
+        if self.history_mode {
+            let prev = self.history_preview();
+            self.view_spark = prev.as_ref().map(spark_of);
+            self.view_proto = prev.map(|img| self.picker.new_resize_protocol(img));
+            self.view_exif = None;
+            self.analysis = None;
+            return;
+        }
         // Decode proportionally to the zoom so the cropped centre stays ~1600 px and still fills the
         // pane sharply (cropping a fixed 1600 px thumbnail would shrink at higher zoom).
         let bound = (1600.0 * zoom).min(4096.0) as u32;
-        self.view_proto = path
+        // Before/after: decode the pristine backup (if any) instead of the edited file.
+        let decode = if self.show_original {
+            self.cur_source()
+                .map(|(d, f)| edit::backup_path(&d, &f))
+                .filter(|b| b.exists())
+                .or_else(|| path.clone())
+        } else {
+            path.clone()
+        };
+        self.view_proto = decode
             .as_ref()
             .and_then(|p| loader::thumbnail(p, bound).ok())
             .map(|img| {
-                let img = if self.adjust_mode {
+                let img = if self.curve_mode {
+                    self.curve_op().apply(img) // live curve preview
+                } else if self.adjust_mode {
                     self.adjust_op.map(|op| op.apply(img.clone())).unwrap_or(img) // live slider preview
                 } else if self.levels_mode {
                     self.levels_op().apply(img) // live levels preview
@@ -3514,6 +3741,14 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_tree_filter_key(app, k.code);
         return false;
     }
+    if app.curve_mode {
+        handle_curve_key(app, k.code);
+        return false;
+    }
+    if app.history_mode {
+        handle_history_key(app, k.code);
+        return false;
+    }
     if app.adjust_mode {
         handle_adjust_key(app, k.code);
         return false;
@@ -3585,10 +3820,44 @@ fn handle_adjust_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc => app.cancel_adjust(),
         KeyCode::Enter => app.apply_adjust(),
-        KeyCode::Left | KeyCode::Char('-') | KeyCode::Char('_') => app.nudge_adjust(-step),
-        KeyCode::Right | KeyCode::Char('+') | KeyCode::Char('=') => app.nudge_adjust(step),
-        KeyCode::Char('[') => app.nudge_adjust(-1),
-        KeyCode::Char(']') => app.nudge_adjust(1),
+        // Arrows = fine ±1 (the intuitive default); brackets / -+ / PageKeys = the coarse jump.
+        KeyCode::Left => app.nudge_adjust(-1),
+        KeyCode::Right => app.nudge_adjust(1),
+        KeyCode::Char('[') | KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::PageDown => {
+            app.nudge_adjust(-step)
+        }
+        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::PageUp => {
+            app.nudge_adjust(step)
+        }
+        _ => {}
+    }
+}
+
+/// Interactive tone-curve editor: ←/→ pick one of the 5 points, ↑/↓ move its output (live preview),
+/// `[`/`]` fine, Enter applies, Esc cancels.
+fn handle_curve_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => app.cancel_curve(),
+        KeyCode::Enter => app.apply_curve(),
+        KeyCode::Left => app.select_curve(-1),
+        KeyCode::Right => app.select_curve(1),
+        KeyCode::Up => app.adjust_curve(4),
+        KeyCode::Down => app.adjust_curve(-4),
+        KeyCode::Char('[') => app.adjust_curve(-1),
+        KeyCode::Char(']') => app.adjust_curve(1),
+        _ => {}
+    }
+}
+
+/// Edit-history scrubber: ←/→ step through the stack, `d` deletes the shown edit, Enter applies the
+/// (possibly trimmed) stack, Esc cancels.
+fn handle_history_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => app.cancel_history(),
+        KeyCode::Enter => app.apply_history(),
+        KeyCode::Left | KeyCode::Down => app.move_history(-1),
+        KeyCode::Right | KeyCode::Up => app.move_history(1),
+        KeyCode::Char('d') | KeyCode::Char('x') => app.delete_history_op(),
         _ => {}
     }
 }
@@ -4211,6 +4480,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
                 app.album_cursor += 1;
                 app.zoom = 1.0; // each image starts fit
                 app.edit_redo.clear(); // redo chain is per-image
+                app.show_original = false;
                 app.load_view();
             }
         }
@@ -4219,6 +4489,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
                 app.album_cursor -= 1;
                 app.zoom = 1.0;
                 app.edit_redo.clear();
+                app.show_original = false;
                 app.load_view();
             }
         }
@@ -4232,6 +4503,8 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         // Zoom: Z (Shift-z) in, z out.
         KeyCode::Char('Z') => app.zoom_by(1.5),
         KeyCode::Char('z') => app.zoom_by(1.0 / 1.5),
+        // Before/after: show the pristine original vs the edited file.
+        KeyCode::Char('\\') => app.toggle_before_after(),
         KeyCode::Char('H') => {
             app.show_analysis = !app.show_analysis;
             if app.show_analysis {
@@ -4344,6 +4617,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.adjust_mode {
         draw_adjust_bar(f, app, album_col);
     }
+    if app.curve_mode {
+        draw_curve_editor(f, app, album_col);
+    }
+    if app.history_mode {
+        draw_history_bar(f, app, album_col);
+    }
     if app.info_editor {
         let rows = [
             prow("n", "edit name"),
@@ -4408,11 +4687,123 @@ fn draw_adjust_bar(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(Span::styled(bar, Style::new().fg(Color::Cyan))),
         Line::from(Span::styled(
-            "←/→ adjust · [ ] fine · Enter apply · Esc",
+            "←/→ fine ±1 · [/] jump · Enter apply · Esc",
             Style::new().fg(Color::DarkGray),
         )),
     ];
     let w = (width as u16 + 4).min(area.width);
+    let h = 5.min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + area.height.saturating_sub(h + 1),
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+/// Interactive tone-curve editor overlay: a small graph of the 5-point curve with the selected point
+/// marked, plus the keys.
+fn draw_curve_editor(f: &mut Frame, app: &App, area: Rect) {
+    const IN: [i32; 5] = [0, 64, 128, 192, 255];
+    let pts = app.curve_pts;
+    // Build the 256-LUT (same math as edit::adjust::curve) then sample into a graph grid.
+    let xs = [0i32, 64, 128, 192, 255];
+    let lut = |i: i32| -> i32 {
+        let mut seg = 0;
+        while seg < 3 && i > xs[seg + 1] {
+            seg += 1;
+        }
+        let (x0, x1) = (xs[seg], xs[seg + 1]);
+        let (y0, y1) = (pts[seg], pts[seg + 1]);
+        let t = if x1 > x0 { (i - x0) as f32 / (x1 - x0) as f32 } else { 0.0 };
+        (y0 as f32 + t * (y1 - y0) as f32).round() as i32
+    };
+    const GW: usize = 24;
+    const GH: usize = 8;
+    let mut grid = vec![vec![' '; GW]; GH];
+    for gx in 0..GW {
+        let inp = (gx * 255 / (GW - 1)) as i32;
+        let out = lut(inp).clamp(0, 255);
+        let gy = (GH - 1) - (out as usize * (GH - 1) / 255);
+        grid[gy][gx] = '·';
+    }
+    // Mark the 5 control points ('#', the selected one '●').
+    for (i, &inp) in IN.iter().enumerate() {
+        let gx = (inp as usize * (GW - 1) / 255).min(GW - 1);
+        let gy = (GH - 1) - (pts[i].clamp(0, 255) as usize * (GH - 1) / 255);
+        grid[gy][gx] = if i == app.curve_sel { '●' } else { '#' };
+    }
+    let mut lines: Vec<Line> = grid
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row.into_iter().collect::<String>(), Style::new().fg(Color::Cyan))))
+        .collect();
+    lines.push(Line::from(Span::styled(
+        format!("pt {}/5  in {}  out {}", app.curve_sel + 1, IN[app.curve_sel], pts[app.curve_sel]),
+        Style::new().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "←/→ point · ↑/↓ move · Enter apply · Esc",
+        Style::new().fg(Color::DarkGray),
+    )));
+    let w = (GW as u16 + 4).min(area.width);
+    let h = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default().borders(Borders::ALL).title(" Curves ").border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+/// Edit-history scrubber overlay: a position bar over the edit stack + the current edit label.
+fn draw_history_bar(f: &mut Frame, app: &App, area: Rect) {
+    let n = app.history_ops.len();
+    let label = if app.history_pos == 0 {
+        "original".to_string()
+    } else {
+        app.history_ops
+            .get(app.history_pos - 1)
+            .and_then(edit::EditOp::from_entry)
+            .map(|o| o.label())
+            .unwrap_or_default()
+    };
+    // A dot per step: '○' original, '●' applied up to pos, '·' not-yet.
+    let mut bar = String::new();
+    for i in 0..=n {
+        bar.push(if i == app.history_pos {
+            '◉'
+        } else if i < app.history_pos {
+            '●'
+        } else {
+            '·'
+        });
+    }
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("history {}/{n}  ", app.history_pos), Style::new().add_modifier(Modifier::BOLD)),
+            Span::styled(label, Style::new().fg(Color::Cyan)),
+        ]),
+        Line::from(Span::styled(bar, Style::new().fg(Color::Cyan))),
+        Line::from(Span::styled(
+            "←/→ step · d delete this edit · Enter apply · Esc",
+            Style::new().fg(Color::DarkGray),
+        )),
+    ];
+    let w = (lines.iter().map(|l| l.width()).max().unwrap_or(30) as u16 + 4).min(area.width);
     let h = 5.min(area.height);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
@@ -4649,11 +5040,19 @@ fn crop_preview(img: &image::DynamicImage, rect: (f32, f32, f32, f32)) -> image:
     let (w, h) = (rgb.width() as f32, rgb.height() as f32);
     let (x0, y0) = (rect.0 * w, rect.1 * h);
     let (x1, y1) = ((rect.0 + rect.2) * w, (rect.1 + rect.3) * h);
+    // Rule-of-thirds guide lines inside the crop rect (±1px tolerance so they show at any scale).
+    let vt = [x0 + (x1 - x0) / 3.0, x0 + 2.0 * (x1 - x0) / 3.0];
+    let hz = [y0 + (y1 - y0) / 3.0, y0 + 2.0 * (y1 - y0) / 3.0];
     for (px, py, p) in rgb.enumerate_pixels_mut() {
         let (fx, fy) = (px as f32, py as f32);
         let inside = fx >= x0 && fx < x1 && fy >= y0 && fy < y1;
         if !inside {
             p.0 = [p.0[0] / 3, p.0[1] / 3, p.0[2] / 3];
+        } else if (vt.iter().any(|&v| (fx - v).abs() < 1.0) && fy >= y0 && fy < y1)
+            || (hz.iter().any(|&v| (fy - v).abs() < 1.0) && fx >= x0 && fx < x1)
+        {
+            // Subtle thirds guide: lighten toward white for composition.
+            p.0 = [p.0[0].max(200), p.0[1].max(200), p.0[2].max(200)];
         }
     }
     image::DynamicImage::ImageRgb8(rgb)
@@ -4932,10 +5331,16 @@ enum HelpCtx {
     Layers,
     Levels,
     Adjust,
+    Curve,
+    History,
 }
 
 fn help_ctx(app: &App) -> HelpCtx {
-    if app.adjust_mode {
+    if app.curve_mode {
+        HelpCtx::Curve
+    } else if app.history_mode {
+        HelpCtx::History
+    } else if app.adjust_mode {
         HelpCtx::Adjust
     } else if app.levels_mode {
         HelpCtx::Levels
@@ -4966,6 +5371,8 @@ fn ctx_name(ctx: &HelpCtx) -> &'static str {
         HelpCtx::Layers => "Layers",
         HelpCtx::Levels => "Levels",
         HelpCtx::Adjust => "Adjust",
+        HelpCtx::Curve => "Curves",
+        HelpCtx::History => "Edit history",
     }
 }
 
@@ -5152,11 +5559,27 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
                 let (min, max, step) = op.scalar_range();
                 l.push(state(format!("{}: {:+}  [{min}..{max}, step {step}]", op.label(), op.scalar().unwrap_or(0))));
             }
-            l.push(kv("← / →", "decrease / increase by the step"));
-            l.push(kv("[ / ]", "fine ±1  ·  − / + also adjust"));
+            l.push(kv("← / →", "fine ±1"));
+            l.push(kv("[ / ]", "jump by the coarse step  ·  − / + · PgUp/PgDn also jump"));
             l.push(kv("Enter", "apply as an edit · Esc cancel"));
             l.push(state("the bar's centre tick is 0 (no change); the dot is the current value"));
             return l; // adjust mode has no global chords
+        }
+        HelpCtx::Curve => {
+            l.push(hd("Curves"));
+            l.push(state("5 points: input 0 · 64 · 128 · 192 · 255, each with an output value"));
+            l.push(kv("← / →", "pick a point"));
+            l.push(kv("↑ / ↓", "move its output · [ / ] fine"));
+            l.push(kv("Enter", "apply as an edit · Esc cancel"));
+            return l;
+        }
+        HelpCtx::History => {
+            l.push(hd("Edit history"));
+            l.push(state("replays the edit stack over the pristine original"));
+            l.push(kv("← / →", "step back / forward through the edits"));
+            l.push(kv("d", "delete the edit shown at this step"));
+            l.push(kv("Enter", "apply the (trimmed) stack · Esc cancel"));
+            return l;
         }
     }
     l.push(hd("Anywhere"));
@@ -5177,7 +5600,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("open", "open the album (→) — then Ctrl-B H for its commands"));
         }
         HelpCtx::Grid | HelpCtx::Image | HelpCtx::Cull | HelpCtx::Compare | HelpCtx::Crop
-        | HelpCtx::Layers | HelpCtx::Levels | HelpCtx::Adjust => {
+        | HelpCtx::Layers | HelpCtx::Levels | HelpCtx::Adjust | HelpCtx::Curve | HelpCtx::History => {
             let provider = crate::prompt::vision::resolve_vision_provider("auto");
             let target = if app.selected.is_empty() { "the view" } else { "the selection" };
             l.extend(album_state_lines(app));
@@ -5666,7 +6089,33 @@ fn draw_analysis_panel(f: &mut Frame, app: &App, area: Rect) {
             .collect();
         lines.push(Line::from(sw));
     }
+
+    // Luma waveform (a per-column tonal scope) — brightest row at the top.
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Waveform", Style::new().fg(Color::Yellow))));
+    let wmax = a.waveform.iter().flatten().copied().max().unwrap_or(1).max(1) as f32;
+    for row in &a.waveform {
+        lines.push(Line::from(Span::styled(scope_row(row, wmax), Style::new().fg(Color::Gray))));
+    }
+
+    // RGB parade — the three channel waveforms side by side (R | G | B).
+    lines.push(Line::from(Span::styled("RGB parade", Style::new().fg(Color::Yellow))));
+    let pmax = a.parade.iter().flatten().flatten().copied().max().unwrap_or(1).max(1) as f32;
+    let third = analysis::WCOLS / 3;
+    let cols = [Color::Red, Color::Green, Color::Blue];
+    for r in 0..analysis::WROWS {
+        let spans: Vec<Span> = (0..3)
+            .map(|c| Span::styled(scope_row(&a.parade[c][r][..third], pmax), Style::new().fg(cols[c])))
+            .collect();
+        lines.push(Line::from(spans));
+    }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// One waveform row → a string of block-shaded cells scaled to `max`.
+fn scope_row(row: &[u16], max: f32) -> String {
+    const B: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    row.iter().map(|&v| B[((v as f32 / max) * 8.0).round().clamp(0.0, 8.0) as usize]).collect()
 }
 
 /// A compact luma-histogram sparkline of `img` (sampled, 28 columns) for the top bar.

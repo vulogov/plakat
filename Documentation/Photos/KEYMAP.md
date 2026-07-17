@@ -62,6 +62,8 @@ command's chord in its right column.
 | `Ctrl-B a s` | shadows… |
 | `Ctrl-B a k` | black point… |
 | `Ctrl-B a l` | levels (black / white / gamma)… |
+| `Ctrl-B a u` | curves (tone curve)… |
+| `Ctrl-B a q` | CLAHE (adaptive contrast)… |
 
 ### `k` — colour
 | Chord | Command |
@@ -93,6 +95,7 @@ command's chord in its right column.
 ### `e` — edit stack
 | Chord | Command |
 |-------|---------|
+| `Ctrl-B e h` | edit history (step / trim)… |
 | `Ctrl-B e y` | layers — overlay / compose images |
 | `Ctrl-B e c` | copy edits (from this image) |
 | `Ctrl-B e v` | paste edits (to selection / cursor) |
@@ -109,16 +112,18 @@ command's chord in its right column.
 | `Ctrl-B m g` | redact GPS only (keep other EXIF) |
 | `Ctrl-B m c` | convert format / resize (jpg·png·webp) |
 
-The scalar adjustments (`…`) open a live **slider**: `←`/`→` adjust, `[`/`]` fine, `Enter`
-apply, `Esc` cancel. Crop / levels / layers open their own interactive modes.
+The scalar adjustments (`…`) open a live **slider**: `←`/`→` = **fine ±1**, `[`/`]` (or
+`-`/`+`, PgUp/PgDn) = the **coarse jump**, `Enter` apply, `Esc` cancel. Curves, levels,
+layers, and the history scrubber open their own interactive modes (see `Ctrl-B h` in each).
 
 ## Image-view keys (no leader)
 | Key | Does |
 |-----|------|
 | `←` / `→` | previous / next image · `Esc` back to grid |
 | `Z` / `z` | zoom in / out |
+| `\` | before / after (pristine original vs edited) |
 | `i` / `I` | info panel: right / bottom |
-| `H` | analysis panel (histogram, RGB, colour/lighting balance, dominant colours) |
+| `H` | analysis panel (histogram, RGB, balance, dominant, waveform, RGB parade) |
 | `o` | overlay: clipping zebras → focus peaking → off |
 | `E` / `M` / `A` | edit palette / ML-edit / AI-vision menus |
 | `1`–`5` `0` `f` `x` `c` | rate / clear · flag · reject · colour |

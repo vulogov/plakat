@@ -31,7 +31,15 @@ pub struct Analysis {
     pub hist_rgb: [[u32; BINS]; 3],
     /// The most common colours (representative RGB), most-frequent first — a rough palette.
     pub dominant: Vec<[u8; 3]>,
+    /// Luma waveform: `[row][col]` counts, row 0 = brightest, `col` spans image width.
+    pub waveform: [[u16; WCOLS]; WROWS],
+    /// RGB parade: a waveform per channel (R, G, B).
+    pub parade: [[[u16; WCOLS]; WROWS]; 3],
 }
+
+/// Waveform-scope resolution (columns across the frame × tonal rows).
+pub const WCOLS: usize = 30;
+pub const WROWS: usize = 6;
 
 /// Rec. 601 luma of an 8-bit RGB pixel.
 fn luma(r: u8, g: u8, b: u8) -> f32 {
@@ -49,6 +57,8 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
     let mut chan = [0.0f64; 3];
     let mut zones = [0u64; 3]; // shadows / mids / highlights
     let mut hist_rgb = [[0u32; BINS]; 3];
+    let mut waveform = [[0u16; WCOLS]; WROWS];
+    let mut parade = [[[0u16; WCOLS]; WROWS]; 3];
     // Dominant-colour buckets: 4 bits/channel (12-bit key) → count + colour sum, for a rough palette.
     let mut buckets: std::collections::HashMap<u16, (u32, [u64; 3])> = std::collections::HashMap::new();
     // Precompute a luma plane for the Laplacian pass.
@@ -76,6 +86,13 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         for c in 0..3 {
             e.1[c] += px[c] as u64;
         }
+        // Waveform / parade: column = x across the frame, row = tonal band (row 0 = brightest).
+        let wc = (i % (w as usize)) * WCOLS / (w as usize).max(1);
+        let wr = |v: u8| (255 - v as usize) * WROWS / 256;
+        waveform[wr(yi)][wc] = waveform[wr(yi)][wc].saturating_add(1);
+        for c in 0..3 {
+            parade[c][wr(px[c])][wc] = parade[c][wr(px[c])][wc].saturating_add(1);
+        }
     }
     // Top colours: most-populated buckets, averaged to a representative RGB.
     let mut ranked: Vec<(u32, [u64; 3])> = buckets.into_values().collect();
@@ -102,6 +119,8 @@ pub fn analyze(img: &DynamicImage) -> Analysis {
         zones: [zones[0] as f32 / n, zones[1] as f32 / n, zones[2] as f32 / n],
         hist_rgb,
         dominant,
+        waveform,
+        parade,
     }
 }
 
@@ -145,6 +164,11 @@ mod tests {
         // Per-channel histograms each hold every pixel.
         for c in 0..3 {
             assert_eq!(a.hist_rgb[c].iter().sum::<u32>(), 32 * 32);
+        }
+        // Waveform + each parade channel account for every pixel.
+        assert_eq!(a.waveform.iter().flatten().map(|&v| v as u32).sum::<u32>(), 32 * 32);
+        for c in 0..3 {
+            assert_eq!(a.parade[c].iter().flatten().map(|&v| v as u32).sum::<u32>(), 32 * 32);
         }
     }
 

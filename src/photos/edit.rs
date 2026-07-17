@@ -81,6 +81,11 @@ pub enum EditOp {
     GradND { dir: i32, strength: i32 },
     /// Radial dodge/burn: darken the centre (positive = burn) or lighten it (negative = dodge).
     Radial(i32),
+    /// Tone curve: output values (0..255) at the five input points 0/64/128/192/255, linearly
+    /// interpolated into a 256-entry LUT applied to R, G, B.
+    Curve { pts: [i32; 5] },
+    /// CLAHE — contrast-limited adaptive histogram equalization, blended by `amount` (0..100).
+    Clahe(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -130,6 +135,8 @@ impl EditOp {
             EditOp::Despeckle(v) => adjust::despeckle(&img, v),
             EditOp::GradND { dir, strength } => adjust::grad_nd(&img, dir, strength),
             EditOp::Radial(v) => adjust::radial(&img, v),
+            EditOp::Curve { pts } => adjust::curve(&img, pts),
+            EditOp::Clahe(v) => adjust::clahe(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -161,7 +168,7 @@ impl EditOp {
             | EditOp::Saturation(v) | EditOp::Vibrance(v) | EditOp::Warmth(v) | EditOp::Tint(v)
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
-            | EditOp::Despeckle(v) | EditOp::Radial(v) => v,
+            | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) => v,
             EditOp::GradND { strength, .. } => strength,
             _ => return None,
         })
@@ -192,6 +199,7 @@ impl EditOp {
             EditOp::Grain(_) => EditOp::Grain(v),
             EditOp::Despeckle(_) => EditOp::Despeckle(v),
             EditOp::Radial(_) => EditOp::Radial(v),
+            EditOp::Clahe(_) => EditOp::Clahe(v),
             EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
             other => other,
         }
@@ -202,9 +210,8 @@ impl EditOp {
     pub fn scalar_range(self) -> (i32, i32, i32) {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
-            EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_) => {
-                (0, 100, 5)
-            }
+            EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
+            | EditOp::Clahe(_) => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -249,6 +256,8 @@ impl EditOp {
                 format!("grad ND {}", ["top", "bottom", "left", "right"].get(dir as usize).unwrap_or(&"top"))
             }
             EditOp::Radial(_) => "radial dodge/burn".into(),
+            EditOp::Curve { .. } => "curves".into(),
+            EditOp::Clahe(_) => "CLAHE".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -313,6 +322,13 @@ impl EditOp {
                 "grad_nd"
             }
             EditOp::Radial(v) => val_op(&mut params, v, "radial"),
+            EditOp::Curve { pts } => {
+                for (i, v) in pts.iter().enumerate() {
+                    params.insert(format!("p{i}"), serde_json::json!(v));
+                }
+                "curve"
+            }
+            EditOp::Clahe(v) => val_op(&mut params, v, "clahe"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -386,6 +402,7 @@ impl EditOp {
             "burn" => EditOp::Radial(30),
             "dodge" => EditOp::Radial(-30),
             "grad_nd" | "graduated_nd" | "nd_grad" => EditOp::GradND { dir: 0, strength: 30 },
+            "clahe" | "equalize" | "adaptive_contrast" => EditOp::Clahe(60),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
             "pop_greens" | "pop_green" | "boost_greens" => EditOp::SelectiveColor { hue: 120, sat: 45 },
@@ -470,6 +487,10 @@ impl EditOp {
             "despeckle" => EditOp::Despeckle(val()),
             "grad_nd" => EditOp::GradND { dir: iv("dir", 0), strength: iv("strength", 0) },
             "radial" => EditOp::Radial(val()),
+            "curve" => EditOp::Curve {
+                pts: [iv("p0", 0), iv("p1", 64), iv("p2", 128), iv("p3", 192), iv("p4", 255)],
+            },
+            "clahe" => EditOp::Clahe(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -809,6 +830,108 @@ mod adjust {
         DynamicImage::ImageRgb8(rgb)
     }
 
+    /// Tone curve: build a 256-entry LUT by linear interpolation between the five output points
+    /// (at inputs 0/64/128/192/255) and map R, G, B through it.
+    pub fn curve(img: &DynamicImage, pts: [i32; 5]) -> DynamicImage {
+        let xs = [0i32, 64, 128, 192, 255];
+        let mut lut = [0u8; 256];
+        for (i, l) in lut.iter_mut().enumerate() {
+            let iv = i as i32;
+            let mut seg = 0;
+            while seg < 3 && iv > xs[seg + 1] {
+                seg += 1;
+            }
+            let (x0, x1) = (xs[seg], xs[seg + 1]);
+            let (y0, y1) = (pts[seg] as f32, pts[seg + 1] as f32);
+            let t = if x1 > x0 { (iv - x0) as f32 / (x1 - x0) as f32 } else { 0.0 };
+            *l = (y0 + t * (y1 - y0)).clamp(0.0, 255.0) as u8;
+        }
+        let mut rgb = img.to_rgb8();
+        for p in rgb.pixels_mut() {
+            for c in 0..3 {
+                p.0[c] = lut[p.0[c] as usize];
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// CLAHE: contrast-limited adaptive histogram equalization on the luma channel (8×8 tiles,
+    /// clipped histograms, bilinearly-interpolated mappings), colour preserved by a luma ratio, then
+    /// blended with the original by `amount` (0..100).
+    pub fn clahe(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let t = (amount as f32 / 100.0).clamp(0.0, 1.0);
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+        if t <= 0.0 || w < 8 || h < 8 {
+            return DynamicImage::ImageRgb8(rgb);
+        }
+        const N: usize = 8; // tiles per axis
+        let (tw, th) = (w.div_ceil(N), h.div_ceil(N));
+        let mut lum = vec![0u8; w * h];
+        for (i, p) in rgb.pixels().enumerate() {
+            lum[i] = luma(p[0] as f32, p[1] as f32, p[2] as f32).round().clamp(0.0, 255.0) as u8;
+        }
+        // Per-tile clipped-CDF mapping.
+        let clip = ((tw * th) as f32 / 256.0 * 4.0).max(1.0) as u32;
+        let mut maps = vec![[0u8; 256]; N * N];
+        for ty in 0..N {
+            for tx in 0..N {
+                let (x0, y0) = (tx * tw, ty * th);
+                let (x1, y1) = ((x0 + tw).min(w), (y0 + th).min(h));
+                let mut hist = [0u32; 256];
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        hist[lum[y * w + x] as usize] += 1;
+                    }
+                }
+                let mut excess = 0u32;
+                for b in hist.iter_mut() {
+                    if *b > clip {
+                        excess += *b - clip;
+                        *b = clip;
+                    }
+                }
+                let add = excess / 256;
+                for b in hist.iter_mut() {
+                    *b += add;
+                }
+                let total = hist.iter().sum::<u32>().max(1);
+                let map = &mut maps[ty * N + tx];
+                let mut cdf = 0u32;
+                for i in 0..256 {
+                    cdf += hist[i];
+                    map[i] = (cdf * 255 / total).min(255) as u8;
+                }
+            }
+        }
+        // Bilinear blend of the four surrounding tile mappings per pixel.
+        let mut out = rgb.clone();
+        for y in 0..h {
+            let fy = (y as f32 / th as f32) - 0.5;
+            let ty0 = fy.floor().clamp(0.0, (N - 1) as f32) as usize;
+            let ty1 = (ty0 + 1).min(N - 1);
+            let dy = (fy - ty0 as f32).clamp(0.0, 1.0);
+            for x in 0..w {
+                let fx = (x as f32 / tw as f32) - 0.5;
+                let tx0 = fx.floor().clamp(0.0, (N - 1) as f32) as usize;
+                let tx1 = (tx0 + 1).min(N - 1);
+                let dx = (fx - tx0 as f32).clamp(0.0, 1.0);
+                let l = lum[y * w + x] as usize;
+                let (a, b) = (maps[ty0 * N + tx0][l] as f32, maps[ty0 * N + tx1][l] as f32);
+                let (c, d) = (maps[ty1 * N + tx0][l] as f32, maps[ty1 * N + tx1][l] as f32);
+                let newl = (a * (1.0 - dx) + b * dx) * (1.0 - dy) + (c * (1.0 - dx) + d * dx) * dy;
+                let oldl = lum[y * w + x] as f32;
+                let ratio = if oldl > 1.0 { newl / oldl } else { 1.0 };
+                let p = out.get_pixel_mut(x as u32, y as u32);
+                for ch in 0..3 {
+                    let orig = p.0[ch] as f32;
+                    p.0[ch] = (orig * (1.0 - t) + (orig * ratio).clamp(0.0, 255.0) * t) as u8;
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -1055,6 +1178,7 @@ mod tests {
             EditOp::Dehaze(30), EditOp::HueRotate(45), EditOp::SplitTone(-20),
             EditOp::SelectiveColor { hue: 120, sat: 45 }, EditOp::Grain(30), EditOp::Despeckle(55),
             EditOp::GradND { dir: 1, strength: 40 }, EditOp::Radial(-30),
+            EditOp::Curve { pts: [0, 50, 128, 205, 255] }, EditOp::Clahe(60),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1194,6 +1318,28 @@ mod tests {
         buf.put_pixel(4, 4, Rgb([255, 255, 255])); // a single speckle in a flat field
         let out = EditOp::Despeckle(100).apply(DynamicImage::ImageRgb8(buf)).to_rgb8();
         assert_eq!(out.get_pixel(4, 4).0, [100, 100, 100], "median wipes the lone speckle");
+    }
+
+    #[test]
+    fn curve_lut_maps_endpoints_and_identity() {
+        // Identity curve leaves a gradient unchanged; a lifted-mid curve brightens the midtone.
+        let grad = DynamicImage::ImageRgb8(ImageBuffer::from_fn(256, 1, |x, _| Rgb([x as u8; 3])));
+        let id = EditOp::Curve { pts: [0, 64, 128, 192, 255] }.apply(grad.clone()).to_rgb8();
+        assert_eq!(id.get_pixel(128, 0).0[0], 128);
+        assert_eq!(id.get_pixel(255, 0).0[0], 255);
+        let lift = EditOp::Curve { pts: [0, 64, 180, 192, 255] }.apply(grad).to_rgb8();
+        assert!(lift.get_pixel(128, 0).0[0] > 150, "mid lifted");
+    }
+
+    #[test]
+    fn clahe_changes_a_low_contrast_image_and_is_noop_at_zero() {
+        let src = DynamicImage::ImageRgb8(ImageBuffer::from_fn(32, 32, |x, y| {
+            Rgb([(100 + (x ^ y) % 40) as u8; 3]) // low-contrast texture
+        }));
+        let out = EditOp::Clahe(80).apply(src.clone()).to_rgb8();
+        assert_ne!(out, src.to_rgb8(), "CLAHE should change a flat image");
+        assert_eq!(EditOp::Clahe(0).apply(src.clone()).to_rgb8(), src.to_rgb8(), "0 = no-op");
+        assert_eq!(EditOp::from_tag("clahe"), Some(EditOp::Clahe(60)));
     }
 
     #[test]
