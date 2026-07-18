@@ -283,7 +283,7 @@ fn edit_op_word(s: &str) -> Option<String> {
         "chinese ink" | "ink wash" | "shan shui" => "chinese_ink",
         "russian icon" | "russian religious" | "tempera" | "icon" => "russian_icon",
         "emboss" => "emboss",
-        "blur" | "soft focus" | "gaussian blur" => "blur",
+        "blur" | "blur it" | "soft focus" | "gaussian blur" => "blur",
         "bloom" | "glow" | "orton" => "bloom",
         "charcoal" => "charcoal",
         "halftone" | "newsprint" => "halftone",
@@ -303,7 +303,7 @@ fn edit_op_word(s: &str) -> Option<String> {
         "mute blues" => "mute_blues",
         // Tonal / colour adjustments (canonical directional tags → edit::EditOp::from_tag).
         "sharpen" | "sharpen it" | "sharpen image" => "sharpen",
-        "soften" | "blur" | "blur it" => "soften",
+        "soften" => "soften",
         "denoise" | "reduce noise" | "noise reduction" | "remove noise" => "denoise",
         "clarity" | "definition" | "add clarity" | "add definition" => "definition",
         "brighter" | "brighten" | "brighten it" => "brighter",

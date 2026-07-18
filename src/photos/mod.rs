@@ -432,6 +432,10 @@ struct App {
     /// A compact luma-histogram sparkline of the currently-displayed image, for the top bar (updates
     /// live under the edit previews).
     view_spark: Option<String>,
+    /// Cached decoded working-resolution base for the image view, keyed by `(path, bound)`, so the
+    /// interactive edit modes re-apply the op to a cached image instead of re-decoding the (possibly
+    /// huge) file on every keypress.
+    view_base: Option<(PathBuf, u32, image::DynamicImage)>,
     thumbs: HashMap<PathBuf, StatefulProtocol>,
     cols: usize,
     thumb_px: u32,
@@ -587,6 +591,7 @@ impl App {
             view_proto: None,
             view_exif: None,
             view_spark: None,
+            view_base: None,
             thumbs: HashMap::new(),
             cols: 4,
             thumb_px,
@@ -3054,6 +3059,7 @@ impl App {
     /// full-pane image if it's on screen.
     fn refresh_after_edit(&mut self, path: &Path) {
         self.thumbs.remove(path);
+        self.view_base = None; // the file changed on disk — re-decode the working base
         if self.mode == AlbumMode::Image {
             self.load_view();
         }
@@ -3444,6 +3450,19 @@ impl App {
     /// Decode the cursor image (bounded to ~1600 px) into the full-pane view protocol + its EXIF,
     /// and (when the analysis panel is on) its histogram/exposure/focus stats. Honours the current
     /// zoom by centre-cropping the source before it's fit to the pane.
+    /// A clone of the decoded working-resolution base for `(path, bound)` — cached so the interactive
+    /// edit modes don't re-decode the file on every keypress.
+    fn working_base(&mut self, path: &Path, bound: u32) -> Option<image::DynamicImage> {
+        if let Some((p, b, img)) = &self.view_base {
+            if p == path && *b == bound {
+                return Some(img.clone());
+            }
+        }
+        let img = loader::thumbnail(path, bound).ok()?;
+        self.view_base = Some((path.to_path_buf(), bound, img.clone()));
+        Some(img)
+    }
+
     fn load_view(&mut self) {
         let path = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned();
         let zoom = self.zoom;
@@ -3456,9 +3475,15 @@ impl App {
             self.analysis = None;
             return;
         }
-        // Decode proportionally to the zoom so the cropped centre stays ~1600 px and still fills the
-        // pane sharply (cropping a fixed 1600 px thumbnail would shrink at higher zoom).
-        let bound = (1600.0 * zoom).min(4096.0) as u32;
+        // Interactive edit modes re-render on every keypress, so use a smaller working resolution for
+        // responsiveness (the final edit still applies at full resolution). Static viewing follows
+        // the zoom, capped so a big image still fills the pane sharply.
+        let interactive = self.adjust_mode
+            || self.curve_mode
+            || self.levels_mode
+            || self.layer_mode
+            || self.crop_mode;
+        let bound = if interactive { 1100 } else { (1600.0 * zoom).min(4096.0) as u32 };
         // Before/after: decode the pristine backup (if any) instead of the edited file.
         let decode = if self.show_original {
             self.cur_source()
@@ -3468,9 +3493,9 @@ impl App {
         } else {
             path.clone()
         };
-        self.view_proto = decode
-            .as_ref()
-            .and_then(|p| loader::thumbnail(p, bound).ok())
+        // Reuse the cached decoded base when the path + bound match (no re-decode while dragging).
+        let base = decode.as_ref().and_then(|p| self.working_base(p, bound));
+        self.view_proto = base
             .map(|img| {
                 let img = if self.curve_mode {
                     self.curve_op().apply(img) // live curve preview
