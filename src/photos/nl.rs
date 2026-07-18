@@ -50,6 +50,10 @@ pub enum Action {
     PutBack,
     /// Duplicate the target image(s) within their album.
     Duplicate,
+    /// Stitch the selected images into a panorama (`mode` 0 horizontal / 1 vertical / 2 grid).
+    Panorama { mode: i32 },
+    /// Build a collage from the selected images (or the whole album).
+    Collage,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -115,6 +119,8 @@ fn action_label(a: &Action) -> String {
         Action::Take => "take for processing".into(),
         Action::PutBack => "put back to parent".into(),
         Action::Duplicate => "duplicate".into(),
+        Action::Panorama { mode } => format!("panorama {}", ["horizontal", "vertical", "grid"].get(*mode as usize).unwrap_or(&"horizontal")),
+        Action::Collage => "collage".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -248,6 +254,10 @@ fn parse_action(stage: &str) -> Option<Action> {
         "take photo" | "take for processing" | "work copy" | "take copy" => Some(Action::Take),
         "put back" | "promote" | "copy to parent" | "put back to parent" => Some(Action::PutBack),
         "duplicate" | "make a copy" | "copy in album" | "duplicate image" => Some(Action::Duplicate),
+        "panorama" | "panorama horizontal" | "stitch" | "stitch horizontal" => Some(Action::Panorama { mode: 0 }),
+        "panorama vertical" | "stitch vertical" => Some(Action::Panorama { mode: 1 }),
+        "panorama grid" | "stitch grid" | "combined panorama" => Some(Action::Panorama { mode: 2 }),
+        "collage" | "make collage" | "create collage" => Some(Action::Collage),
         _ => None,
     }
 }
@@ -403,6 +413,8 @@ Schema: {\"select\": <string|null>, \"actions\": [<action>, ...]}
   {\"action\":\"take\"}  (copy the highest-res targets into a new nested working sub-album)
   {\"action\":\"put_back\"}  (copy the finished targets from a sub-album up to its parent album)
   {\"action\":\"duplicate\"}  (duplicate the target image(s) within their album)
+  {\"action\":\"panorama\",\"mode\":0-2}  (stitch selected images: 0 horizontal, 1 vertical, 2 grid)
+  {\"action\":\"collage\"}  (grid collage from the selected images / whole album)
   {\"action\":\"convert\",\"fmt\":\"jpg|png|webp\",\"max_px\":<int|null>}  (write NEW converted files in-album)
   {\"action\":\"export\",\"dir\":\"<destination directory>\",\"max_px\":<int|null>}  (copy OUT; write-only)
   {\"action\":\"rename\",\"pattern\":\"trip_###\"}  (a BARE in-album filename pattern, never a path)

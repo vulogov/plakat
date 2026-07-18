@@ -19,6 +19,7 @@ pub mod nl;
 pub mod portfolio;
 pub mod rename;
 pub mod scrub;
+pub mod stitch;
 pub mod versions;
 pub mod vision;
 pub mod visual_search;
@@ -116,6 +117,8 @@ enum PendingCmd {
     /// Materialize a smart album (saved search) into a portable album of file **copies** at the
     /// entered directory — no symlinks; curation travels in a fresh `album.hjson`.
     MaterializeSmart { name: String, query: String },
+    /// Stitch the selection into a panorama in the entered direction (`h` / `v` / `grid`).
+    Panorama,
     /// A natural-language command from the `:` pane — parse (deterministic, else LLM) then confirm.
     NlCommand,
     /// Confirm and run the pending parsed command plan.
@@ -2471,6 +2474,8 @@ impl App {
             Action::Take => self.take_photo(),
             Action::PutBack => self.promote_to_parent(),
             Action::Duplicate => self.duplicate_in_album(),
+            Action::Panorama { mode } => self.stitch_panorama(stitch::PanoMode::from_i32(mode)),
+            Action::Collage => self.make_collage(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -2683,6 +2688,74 @@ impl App {
         } else {
             format!("GPS redacted from {redacted} image(s) · {none} had none")
         };
+    }
+
+    /// Stitch the selected image(s) into a panorama (horizontal / vertical / grid) → a new
+    /// `panorama.png` in the album. Order follows the album's sort.
+    fn stitch_panorama(&mut self, mode: stitch::PanoMode) {
+        let files = self.target_sources();
+        if files.len() < 2 {
+            self.status = "select 2+ images (Space) for a panorama".into();
+            return;
+        }
+        let Some(dir) = self.album_dir.clone().or_else(|| files.first().map(|(d, _)| d.clone())) else {
+            self.status = "no album".into();
+            return;
+        };
+        let imgs: Vec<image::RgbImage> =
+            files.iter().filter_map(|(_, p)| loader::load(p).ok().map(|i| i.to_rgb8())).collect();
+        if imgs.len() < 2 {
+            self.status = "couldn't load enough images".into();
+            return;
+        }
+        match stitch::panorama(&imgs, mode) {
+            Ok(pano) => {
+                let dest = variant_path(&dir, "panorama", mode.label(), "png");
+                if pano.save(&dest).is_ok() {
+                    let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    self.rescan();
+                    self.select_by_name(&name);
+                    self.status = format!("stitched {} images → {} panorama '{name}'", imgs.len(), mode.label());
+                } else {
+                    self.status = "couldn't save the panorama".into();
+                }
+            }
+            Err(e) => self.status = format!("panorama failed: {e:#}"),
+        }
+    }
+
+    /// Build a collage from the workbench: the selected images, or the whole album if none are
+    /// selected. Auto-columned padded grid → a new `collage.png` in the album.
+    fn make_collage(&mut self) {
+        let paths: Vec<PathBuf> = if self.selected.is_empty() {
+            self.album_paths.clone()
+        } else {
+            self.target_sources().into_iter().map(|(_, p)| p).collect()
+        };
+        if paths.len() < 2 {
+            self.status = "need 2+ images for a collage".into();
+            return;
+        }
+        let Some(dir) = self.album_dir.clone() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        let imgs: Vec<image::RgbImage> =
+            paths.iter().filter_map(|p| loader::load(p).ok().map(|i| i.to_rgb8())).collect();
+        match stitch::collage(&imgs, 10) {
+            Ok(c) => {
+                let dest = variant_path(&dir, "collage", "grid", "png");
+                if c.save(&dest).is_ok() {
+                    let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    self.rescan();
+                    self.select_by_name(&name);
+                    self.status = format!("collaged {} images → '{name}'", imgs.len());
+                } else {
+                    self.status = "couldn't save the collage".into();
+                }
+            }
+            Err(e) => self.status = format!("collage failed: {e:#}"),
+        }
     }
 
     /// "Take photo for processing": copy the highest-resolution version of each target image into a
@@ -3418,6 +3491,15 @@ impl App {
                 }
                 Some(PendingCmd::RedactGps) if arg.eq_ignore_ascii_case("y") => {
                     self.redact_gps_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Panorama) if !arg.is_empty() => {
+                    let mode = match arg.trim().chars().next() {
+                        Some('v') | Some('V') => stitch::PanoMode::Vertical,
+                        Some('g') | Some('G') => stitch::PanoMode::Grid,
+                        _ => stitch::PanoMode::Horizontal,
+                    };
+                    self.stitch_panorama(mode);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Watermark) if !arg.is_empty() => {
@@ -4856,6 +4938,9 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('p') => app.promote_to_parent(),
         // Duplicate the selected image(s) within the album (a <stem>_copy).
         KeyCode::Char('d') if !ctrl => app.duplicate_in_album(),
+        // Collage from the selection (or the whole album); panorama prompts for a direction.
+        KeyCode::Char('w') => app.make_collage(),
+        KeyCode::Char('b') => app.prompt("panorama direction (h / v / grid): ", "h", PendingCmd::Panorama),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
         }
@@ -5957,7 +6042,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("E M A", "edit · ML-edit · AI-vision menus"));
             l.push(kv("# X r", "duplicates · export · batch-rename"));
             l.push(kv("P / p", "take → working sub-album  ·  put back → parent album"));
-            l.push(kv("d", "duplicate image(s) in the album"));
+            l.push(kv("d w b", "duplicate · collage · panorama (h/v/grid)"));
             l.push(kv("S @ F", "stack · timeline · save smart album"));
             l.push(kv("? V", "search metadata · visual (CLIP)"));
         }

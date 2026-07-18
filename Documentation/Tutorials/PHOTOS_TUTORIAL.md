@@ -355,6 +355,19 @@ type and `Enter`, or `Esc` to cancel.
 
 ---
 
+### Panorama & collage (`b` / `w`)
+
+Two ways to combine several images into one (deterministic layout — no AI alignment):
+
+- **Panorama (`b`)** — multi-select the frames (`Space`), press `b`, and choose a direction:
+  **h** places them left→right at a common height, **v** stacks them top→bottom at a common
+  width, **grid** tiles them edge-to-edge. Writes `panorama_….png` into the album. Best for
+  pre-cropped strips or steady tripod sequences.
+- **Collage (`w`)** — press `w` to arrange the selection (or the **whole album** if nothing is
+  selected) into a padded grid on a light background → `collage_grid.png`.
+
+Both are also `:` commands (`panorama vertical`, `collage`).
+
 ### Take photo for processing (`P`)
 
 Editing is destructive to *derivatives* — variants and artefacts can clutter (and "poison")
