@@ -296,35 +296,36 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
-        // Stylize — algorithmic filters (s). Numbered variants are palette-only (empty chord).
-        ("pencil sketch", "sk", EditCmd::Op(PencilSketch)),
-        ("cartoon / comic", "st", EditCmd::Op(Cartoon)),
-        ("emboss", "se", EditCmd::Op(Emboss)),
+        // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
+        // are palette-only (empty chord).
+        ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
+        ("cartoon / comic…", "st", EditCmd::Adjust(Cartoon(100))),
+        ("emboss…", "se", EditCmd::Adjust(Emboss(100))),
         ("pixelate / mosaic…", "sx", EditCmd::Adjust(Pixelate(0))),
-        ("ink: European", "si", EditCmd::Op(Ink(1))),
-        ("ink: Japanese sumi-e", "sj", EditCmd::Op(Ink(2))),
-        ("ink: Chinese wash", "sh", EditCmd::Op(Ink(3))),
-        ("ink: Russian icon (tempera)", "sr", EditCmd::Op(Ink(4))),
-        ("oil paint 1", "", EditCmd::Op(OilPaint(1))),
-        ("oil paint 2", "", EditCmd::Op(OilPaint(2))),
-        ("oil paint 3", "so", EditCmd::Op(OilPaint(3))),
-        ("oil paint 4", "", EditCmd::Op(OilPaint(4))),
-        ("oil paint 5", "", EditCmd::Op(OilPaint(5))),
-        ("oil paint 6", "", EditCmd::Op(OilPaint(6))),
-        ("oil paint 7", "", EditCmd::Op(OilPaint(7))),
-        ("oil paint 8", "", EditCmd::Op(OilPaint(8))),
-        ("oil paint 9", "", EditCmd::Op(OilPaint(9))),
-        ("oil paint 10", "", EditCmd::Op(OilPaint(10))),
-        ("watercolour 1", "", EditCmd::Op(Watercolor(1))),
-        ("watercolour 2", "", EditCmd::Op(Watercolor(2))),
-        ("watercolour 3", "", EditCmd::Op(Watercolor(3))),
-        ("watercolour 4", "", EditCmd::Op(Watercolor(4))),
-        ("watercolour 5", "sw", EditCmd::Op(Watercolor(5))),
-        ("watercolour 6", "", EditCmd::Op(Watercolor(6))),
-        ("watercolour 7", "", EditCmd::Op(Watercolor(7))),
-        ("watercolour 8", "", EditCmd::Op(Watercolor(8))),
-        ("watercolour 9", "", EditCmd::Op(Watercolor(9))),
-        ("watercolour 10", "", EditCmd::Op(Watercolor(10))),
+        ("ink: European…", "si", EditCmd::Adjust(Ink { style: 1, strength: 100 })),
+        ("ink: Japanese sumi-e…", "sj", EditCmd::Adjust(Ink { style: 2, strength: 100 })),
+        ("ink: Chinese wash…", "sh", EditCmd::Adjust(Ink { style: 3, strength: 100 })),
+        ("ink: Russian icon (tempera)…", "sr", EditCmd::Adjust(Ink { style: 4, strength: 100 })),
+        ("oil paint 1…", "", EditCmd::Adjust(OilPaint { style: 1, strength: 100 })),
+        ("oil paint 2…", "", EditCmd::Adjust(OilPaint { style: 2, strength: 100 })),
+        ("oil paint 3…", "so", EditCmd::Adjust(OilPaint { style: 3, strength: 100 })),
+        ("oil paint 4…", "", EditCmd::Adjust(OilPaint { style: 4, strength: 100 })),
+        ("oil paint 5…", "", EditCmd::Adjust(OilPaint { style: 5, strength: 100 })),
+        ("oil paint 6…", "", EditCmd::Adjust(OilPaint { style: 6, strength: 100 })),
+        ("oil paint 7…", "", EditCmd::Adjust(OilPaint { style: 7, strength: 100 })),
+        ("oil paint 8…", "", EditCmd::Adjust(OilPaint { style: 8, strength: 100 })),
+        ("oil paint 9…", "", EditCmd::Adjust(OilPaint { style: 9, strength: 100 })),
+        ("oil paint 10…", "", EditCmd::Adjust(OilPaint { style: 10, strength: 100 })),
+        ("watercolour 1…", "", EditCmd::Adjust(Watercolor { style: 1, strength: 100 })),
+        ("watercolour 2…", "", EditCmd::Adjust(Watercolor { style: 2, strength: 100 })),
+        ("watercolour 3…", "", EditCmd::Adjust(Watercolor { style: 3, strength: 100 })),
+        ("watercolour 4…", "", EditCmd::Adjust(Watercolor { style: 4, strength: 100 })),
+        ("watercolour 5…", "sw", EditCmd::Adjust(Watercolor { style: 5, strength: 100 })),
+        ("watercolour 6…", "", EditCmd::Adjust(Watercolor { style: 6, strength: 100 })),
+        ("watercolour 7…", "", EditCmd::Adjust(Watercolor { style: 7, strength: 100 })),
+        ("watercolour 8…", "", EditCmd::Adjust(Watercolor { style: 8, strength: 100 })),
+        ("watercolour 9…", "", EditCmd::Adjust(Watercolor { style: 9, strength: 100 })),
+        ("watercolour 10…", "", EditCmd::Adjust(Watercolor { style: 10, strength: 100 })),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -1543,7 +1544,9 @@ impl App {
             return;
         }
         self.edit_menu = false;
-        self.adjust_op = Some(op.with_scalar(0));
+        // Start at the op's own value: tonal adjustments pass 0 (neutral); filters pass their full
+        // strength so the slider opens on the full effect and can be dialled down.
+        self.adjust_op = Some(op);
         self.adjust_mode = true;
         self.mode = AlbumMode::Image;
         self.load_view();

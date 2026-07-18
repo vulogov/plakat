@@ -101,19 +101,20 @@ pub enum EditOp {
     Solarize(i32),
     /// Threshold to black & white at luma `level` (0..255).
     Threshold(i32),
-    /// Oil-paint / oilify filter — `style` 1..10 selects a brush/palette preset.
-    OilPaint(i32),
-    /// Pencil-sketch (grayscale colour-dodge of a blurred inverse).
-    PencilSketch,
-    /// Cartoon / comic (colour quantise + dark ink edges).
-    Cartoon,
-    /// Watercolour — `style` 1..10 selects a wash/palette preset.
-    Watercolor(i32),
+    /// Oil-paint / oilify filter — `style` 1..10 selects a brush/palette preset; `strength` 0..100
+    /// blends with the original.
+    OilPaint { style: i32, strength: i32 },
+    /// Pencil-sketch (grayscale colour-dodge of a blurred inverse); `strength` 0..100.
+    PencilSketch(i32),
+    /// Cartoon / comic (colour quantise + dark ink edges); `strength` 0..100.
+    Cartoon(i32),
+    /// Watercolour — `style` 1..10 selects a wash/palette preset; `strength` 0..100.
+    Watercolor { style: i32, strength: i32 },
     /// Ink / traditional painting — `style`: 1 European ink · 2 Japanese sumi-e · 3 Chinese wash ·
-    /// 4 Russian icon (tempera).
-    Ink(i32),
-    /// Emboss (directional gradient, grey relief).
-    Emboss,
+    /// 4 Russian icon (tempera); `strength` 0..100.
+    Ink { style: i32, strength: i32 },
+    /// Emboss (directional gradient, grey relief); `strength` 0..100.
+    Emboss(i32),
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
     /// Centered square (1:1) crop.
@@ -174,12 +175,30 @@ impl EditOp {
             EditOp::Posterize(v) => adjust::posterize(&img, v),
             EditOp::Solarize(v) => adjust::solarize(&img, v),
             EditOp::Threshold(v) => adjust::threshold(&img, v),
-            EditOp::OilPaint(v) => adjust::oil_paint(&img, v),
-            EditOp::PencilSketch => adjust::pencil_sketch(&img),
-            EditOp::Cartoon => adjust::cartoon(&img),
-            EditOp::Watercolor(v) => adjust::watercolor(&img, v),
-            EditOp::Ink(v) => adjust::ink(&img, v),
-            EditOp::Emboss => adjust::emboss(&img),
+            EditOp::OilPaint { style, strength } => {
+                let f = adjust::oil_paint(&img, style);
+                adjust::blend(&img, f, strength)
+            }
+            EditOp::PencilSketch(s) => {
+                let f = adjust::pencil_sketch(&img);
+                adjust::blend(&img, f, s)
+            }
+            EditOp::Cartoon(s) => {
+                let f = adjust::cartoon(&img);
+                adjust::blend(&img, f, s)
+            }
+            EditOp::Watercolor { style, strength } => {
+                let f = adjust::watercolor(&img, style);
+                adjust::blend(&img, f, strength)
+            }
+            EditOp::Ink { style, strength } => {
+                let f = adjust::ink(&img, style);
+                adjust::blend(&img, f, strength)
+            }
+            EditOp::Emboss(s) => {
+                let f = adjust::emboss(&img);
+                adjust::blend(&img, f, s)
+            }
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
@@ -213,8 +232,12 @@ impl EditOp {
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
-            | EditOp::Solarize(v) | EditOp::Pixelate(v) => v,
-            EditOp::GradND { strength, .. } => strength,
+            | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
+            | EditOp::Emboss(v) => v,
+            EditOp::GradND { strength, .. }
+            | EditOp::OilPaint { strength, .. }
+            | EditOp::Watercolor { strength, .. }
+            | EditOp::Ink { strength, .. } => strength,
             EditOp::Keystone { amount, .. } => amount,
             _ => return None,
         })
@@ -251,6 +274,12 @@ impl EditOp {
             EditOp::Pixelate(_) => EditOp::Pixelate(v),
             EditOp::GradND { dir, .. } => EditOp::GradND { dir, strength: v },
             EditOp::Keystone { axis, .. } => EditOp::Keystone { axis, amount: v },
+            EditOp::PencilSketch(_) => EditOp::PencilSketch(v),
+            EditOp::Cartoon(_) => EditOp::Cartoon(v),
+            EditOp::Emboss(_) => EditOp::Emboss(v),
+            EditOp::OilPaint { style, .. } => EditOp::OilPaint { style, strength: v },
+            EditOp::Watercolor { style, .. } => EditOp::Watercolor { style, strength: v },
+            EditOp::Ink { style, .. } => EditOp::Ink { style, strength: v },
             other => other,
         }
     }
@@ -261,9 +290,9 @@ impl EditOp {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
             EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
-            | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_) => {
-                (0, 100, 5)
-            }
+            | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_)
+            | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_)
+            | EditOp::OilPaint { .. } | EditOp::Watercolor { .. } | EditOp::Ink { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -319,12 +348,12 @@ impl EditOp {
             EditOp::Posterize(_) => "posterize".into(),
             EditOp::Solarize(_) => "solarize".into(),
             EditOp::Threshold(_) => "threshold".into(),
-            EditOp::OilPaint(v) => format!("oil paint {}", v.clamp(1, 10)),
-            EditOp::PencilSketch => "pencil sketch".into(),
-            EditOp::Cartoon => "cartoon".into(),
-            EditOp::Watercolor(v) => format!("watercolour {}", v.clamp(1, 10)),
-            EditOp::Ink(v) => format!("ink ({})", adjust::ink_name(v)),
-            EditOp::Emboss => "emboss".into(),
+            EditOp::OilPaint { style, .. } => format!("oil paint {}", style.clamp(1, 10)),
+            EditOp::PencilSketch(_) => "pencil sketch".into(),
+            EditOp::Cartoon(_) => "cartoon".into(),
+            EditOp::Watercolor { style, .. } => format!("watercolour {}", style.clamp(1, 10)),
+            EditOp::Ink { style, .. } => format!("ink ({})", adjust::ink_name(style)),
+            EditOp::Emboss(_) => "emboss".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
@@ -408,12 +437,12 @@ impl EditOp {
             EditOp::Posterize(v) => val_op(&mut params, v, "posterize"),
             EditOp::Solarize(v) => val_op(&mut params, v, "solarize"),
             EditOp::Threshold(v) => val_op(&mut params, v, "threshold"),
-            EditOp::OilPaint(v) => val_op(&mut params, v, "oil_paint"),
-            EditOp::PencilSketch => "pencil_sketch",
-            EditOp::Cartoon => "cartoon",
-            EditOp::Watercolor(v) => val_op(&mut params, v, "watercolor"),
-            EditOp::Ink(v) => val_op(&mut params, v, "ink"),
-            EditOp::Emboss => "emboss",
+            EditOp::OilPaint { style, strength } => style_op(&mut params, style, strength, "oil_paint"),
+            EditOp::PencilSketch(v) => val_op(&mut params, v, "pencil_sketch"),
+            EditOp::Cartoon(v) => val_op(&mut params, v, "cartoon"),
+            EditOp::Watercolor { style, strength } => style_op(&mut params, style, strength, "watercolor"),
+            EditOp::Ink { style, strength } => style_op(&mut params, style, strength, "ink"),
+            EditOp::Emboss(v) => val_op(&mut params, v, "emboss"),
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
@@ -497,15 +526,15 @@ impl EditOp {
             "posterize" => EditOp::Posterize(50),
             "solarize" => EditOp::Solarize(50),
             "threshold" | "black_white" => EditOp::Threshold(128),
-            "oil_paint" | "oilify" | "oil" => EditOp::OilPaint(3),
-            "pencil_sketch" | "sketch" | "pencil" => EditOp::PencilSketch,
-            "cartoon" | "comic" => EditOp::Cartoon,
-            "watercolor" | "watercolour" => EditOp::Watercolor(5),
-            "european_ink" | "ink" => EditOp::Ink(1),
-            "japanese_ink" | "sumie" | "sumi_e" => EditOp::Ink(2),
-            "chinese_ink" | "ink_wash" | "shanshui" => EditOp::Ink(3),
-            "russian_icon" | "icon" | "tempera" => EditOp::Ink(4),
-            "emboss" => EditOp::Emboss,
+            "oil_paint" | "oilify" | "oil" => EditOp::OilPaint { style: 3, strength: 100 },
+            "pencil_sketch" | "sketch" | "pencil" => EditOp::PencilSketch(100),
+            "cartoon" | "comic" => EditOp::Cartoon(100),
+            "watercolor" | "watercolour" => EditOp::Watercolor { style: 5, strength: 100 },
+            "european_ink" | "ink" => EditOp::Ink { style: 1, strength: 100 },
+            "japanese_ink" | "sumie" | "sumi_e" => EditOp::Ink { style: 2, strength: 100 },
+            "chinese_ink" | "ink_wash" | "shanshui" => EditOp::Ink { style: 3, strength: 100 },
+            "russian_icon" | "icon" | "tempera" => EditOp::Ink { style: 4, strength: 100 },
+            "emboss" => EditOp::Emboss(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
@@ -602,12 +631,12 @@ impl EditOp {
             "posterize" => EditOp::Posterize(val()),
             "solarize" => EditOp::Solarize(val()),
             "threshold" => EditOp::Threshold(val()),
-            "oil_paint" => EditOp::OilPaint(val()),
-            "pencil_sketch" => EditOp::PencilSketch,
-            "cartoon" => EditOp::Cartoon,
-            "watercolor" => EditOp::Watercolor(val()),
-            "ink" => EditOp::Ink(val()),
-            "emboss" => EditOp::Emboss,
+            "oil_paint" => EditOp::OilPaint { style: iv("style", 3), strength: iv("strength", 100) },
+            "pencil_sketch" => EditOp::PencilSketch(iv("value", 100)),
+            "cartoon" => EditOp::Cartoon(iv("value", 100)),
+            "watercolor" => EditOp::Watercolor { style: iv("style", 5), strength: iv("strength", 100) },
+            "ink" => EditOp::Ink { style: iv("style", 1), strength: iv("strength", 100) },
+            "emboss" => EditOp::Emboss(iv("value", 100)),
             "pixelate" => EditOp::Pixelate(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
@@ -622,6 +651,18 @@ impl EditOp {
 /// Serialise a value-carrying op: insert its `value` param and return the op tag.
 fn val_op(params: &mut std::collections::HashMap<String, serde_json::Value>, v: i32, tag: &'static str) -> &'static str {
     params.insert("value".into(), serde_json::json!(v));
+    tag
+}
+
+/// Serialise a `{style, strength}` filter op.
+fn style_op(
+    params: &mut std::collections::HashMap<String, serde_json::Value>,
+    style: i32,
+    strength: i32,
+    tag: &'static str,
+) -> &'static str {
+    params.insert("style".into(), serde_json::json!(style));
+    params.insert("strength".into(), serde_json::json!(strength));
     tag
 }
 
@@ -1259,6 +1300,26 @@ mod adjust {
         }
     }
 
+    /// Blend a filtered result back over the original by `strength` (0 = original … 100 = filtered).
+    /// Both must share dimensions (all filters preserve them).
+    pub fn blend(orig: &DynamicImage, filtered: DynamicImage, strength: i32) -> DynamicImage {
+        let t = strength.clamp(0, 100) as f32 / 100.0;
+        if t >= 1.0 {
+            return filtered;
+        }
+        if t <= 0.0 {
+            return orig.clone();
+        }
+        let o = orig.to_rgb8();
+        let mut f = filtered.to_rgb8();
+        for (fp, op) in f.pixels_mut().zip(o.pixels()) {
+            for c in 0..3 {
+                fp.0[c] = (op.0[c] as f32 * (1.0 - t) + fp.0[c] as f32 * t) as u8;
+            }
+        }
+        DynamicImage::ImageRgb8(f)
+    }
+
     fn to_gray(img: &DynamicImage) -> DynamicImage {
         map_rgb(img, |r, g, b| {
             let y = luma(r, g, b);
@@ -1681,8 +1742,9 @@ mod tests {
             EditOp::Keystone { axis: 0, amount: 30 }, EditOp::Keystone { axis: 1, amount: -20 },
             EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
-            EditOp::OilPaint(3), EditOp::PencilSketch, EditOp::Cartoon,
-            EditOp::Watercolor(5), EditOp::Ink(2), EditOp::Emboss, EditOp::Pixelate(40),
+            EditOp::OilPaint { style: 3, strength: 80 }, EditOp::PencilSketch(60), EditOp::Cartoon(70),
+            EditOp::Watercolor { style: 5, strength: 90 }, EditOp::Ink { style: 2, strength: 100 },
+            EditOp::Emboss(50), EditOp::Pixelate(40),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1843,18 +1905,22 @@ mod tests {
         }));
         let base = src.to_rgb8();
         for op in [
-            EditOp::OilPaint(1), EditOp::OilPaint(7), EditOp::PencilSketch, EditOp::Cartoon,
-            EditOp::Watercolor(1), EditOp::Watercolor(9),
-            EditOp::Ink(1), EditOp::Ink(2), EditOp::Ink(3), EditOp::Ink(4),
-            EditOp::Emboss, EditOp::Pixelate(50),
+            EditOp::OilPaint { style: 1, strength: 100 }, EditOp::OilPaint { style: 7, strength: 100 },
+            EditOp::PencilSketch(100), EditOp::Cartoon(100),
+            EditOp::Watercolor { style: 1, strength: 100 }, EditOp::Watercolor { style: 9, strength: 100 },
+            EditOp::Ink { style: 1, strength: 100 }, EditOp::Ink { style: 2, strength: 100 },
+            EditOp::Ink { style: 3, strength: 100 }, EditOp::Ink { style: 4, strength: 100 },
+            EditOp::Emboss(100), EditOp::Pixelate(50),
         ] {
             let out = op.apply(src.clone()).to_rgb8();
             assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());
             assert_ne!(out, base, "{} should change pixels", op.label());
         }
-        // Pixelate at strength 0 is identity; a block averages to a flat cell.
+        // Pixelate at strength 0 and any filter at strength 0 are identity (blend = original).
         assert_eq!(EditOp::Pixelate(0).apply(src.clone()).to_rgb8(), base);
-        assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch));
+        assert_eq!(EditOp::Cartoon(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::OilPaint { style: 5, strength: 0 }.apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch(100)));
     }
 
     #[test]
