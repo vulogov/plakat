@@ -467,6 +467,15 @@ brightens the mid-tones. `Ctrl-B h` shows these keys while you're in the editor.
 - **convert format / resize** — type `jpg 2048` (format + longest-side cap),
   `jpg 500kb` (target a JPEG file size), or just `png`/`webp`. Writes a **new** file
   next to the original (the source is untouched).
+- **watermark / caption** — burn text onto the image → a new `<stem>_wm.png`. Type just
+  the text, or `TEXT | /path/to/font.ttf` to **choose a font** (any TrueType/OpenType file);
+  otherwise the built-in font is used. Placed bottom-right with a halo so it reads on any
+  background.
+- **apply LUT** — point at a `.cube` 3D LUT file (Adobe/Resolve format) to apply a film-look
+  colour grade → a new `<stem>_lut.png`.
+
+(Watermark and LUT read a font / `.cube` **file you name at the prompt** — a deliberate action,
+so they're palette-only and not available to the `:` planner, which never reads outside the album.)
 
 Both act on the multi-selection if you have one, else the cursor image.
 

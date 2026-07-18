@@ -13,6 +13,7 @@ pub mod export;
 pub mod hjson;
 pub mod import;
 pub mod layers;
+pub mod lut;
 pub mod mledit;
 pub mod nl;
 pub mod portfolio;
@@ -102,6 +103,10 @@ enum PendingCmd {
     RedactGps,
     /// Convert the targets to the entered `fmt [Npx | NkB]`.
     Convert,
+    /// Burn a watermark/caption (`TEXT` or `TEXT | font.ttf`) onto the targets.
+    Watermark,
+    /// Apply the `.cube` LUT at the entered path to the targets.
+    Lut,
     /// Edit an album-level metadata field (from the tree info editor / tag keys).
     AlbumEdit { path: PathBuf, field: AlbumFieldKind },
     /// Export an album/folder's images (tree `e`) to the entered `DIR [MAXPX]`.
@@ -174,6 +179,8 @@ enum EditCmd {
     StripExif,  // strip file metadata (confirm)
     RedactGps,  // remove only GPS, keep the rest of the EXIF (confirm)
     Convert,    // prompts for format / size
+    Watermark,  // prompts for text (+ optional font)
+    Lut,        // prompts for a .cube path
     Undo,
     Redo,
     Revert,
@@ -316,6 +323,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
+        ("watermark / caption (burn in text)…", "mw", EditCmd::Watermark),
+        ("apply LUT (.cube colour grade)…", "mu", EditCmd::Lut),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -1558,6 +1567,14 @@ impl App {
             EditCmd::Convert => {
                 self.edit_menu = false;
                 self.prompt("convert to (fmt [Npx | NkB]): ", "", PendingCmd::Convert);
+            }
+            EditCmd::Watermark => {
+                self.edit_menu = false;
+                self.prompt("watermark text  (or: TEXT | /path/font.ttf): ", "", PendingCmd::Watermark);
+            }
+            EditCmd::Lut => {
+                self.edit_menu = false;
+                self.prompt("apply LUT — path to a .cube file: ", "", PendingCmd::Lut);
             }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
@@ -2868,6 +2885,108 @@ impl App {
             format!("put back {ok} image(s) → parent album{tail} — safe to delete this sub-album now");
     }
 
+    /// Burn a text watermark / caption onto the target image(s) → a new `<stem>_wm.png` variant
+    /// (the source is untouched). `spec` = `TEXT` or `TEXT | /path/font.ttf` to pick a font.
+    fn watermark_targets(&mut self, spec: &str) {
+        let (text, font) = match spec.split_once('|') {
+            Some((t, f)) => {
+                let p = expand_tilde(f.trim());
+                (t.trim().to_string(), p.exists().then_some(p))
+            }
+            None => (spec.trim().to_string(), None),
+        };
+        if text.is_empty() {
+            self.status = "enter watermark text  (optionally: TEXT | /path/font.ttf)".into();
+            return;
+        }
+        if let Some(fp) = &font {
+            if let Err(e) = crate::map::labels::shaped::load_font(fp) {
+                self.status = format!("font load failed: {e:#}");
+                return;
+            }
+        }
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to watermark".into();
+            return;
+        }
+        let (mut ok, mut err, mut last) = (0u32, 0u32, None);
+        for (dir, path) in &files {
+            let Ok(img) = loader::load(path) else {
+                err += 1;
+                continue;
+            };
+            let mut rgb = img.to_rgb8();
+            let (w, h) = (rgb.width(), rgb.height());
+            let scale = (h / 45).max(1);
+            let margin = (h / 40).max(6) as i32;
+            let approx_w = text.chars().count() as u32 * 6 * scale; // bitmap-ish estimate
+            let x = (w as i32 - approx_w as i32 - margin).max(margin);
+            let y = (h as i32 - (8 * scale) as i32 - margin).max(0);
+            crate::map::labels::draw_text_haloed(&mut rgb, x, y, &text, scale, [255, 255, 255], [0, 0, 0]);
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let dest = variant_path(dir, stem, "wm", "png");
+            if image::DynamicImage::ImageRgb8(rgb).save(&dest).is_ok() {
+                let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                self.record_variant(path, &name);
+                last = Some(name);
+                ok += 1;
+            } else {
+                err += 1;
+            }
+        }
+        if ok > 0 {
+            self.rescan();
+            if let Some(n) = &last {
+                self.select_by_name(n);
+            }
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("watermarked {ok} image(s) → *_wm.png{tail}");
+    }
+
+    /// Apply a `.cube` 3D LUT to the target image(s) → a new `<stem>_lut.png` variant per source.
+    fn apply_lut_targets(&mut self, cube: &str) {
+        let path = expand_tilde(cube.trim());
+        let lut = match lut::load_cube(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("LUT load failed: {e:#}");
+                return;
+            }
+        };
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to grade".into();
+            return;
+        }
+        let (mut ok, mut err, mut last) = (0u32, 0u32, None);
+        for (dir, path) in &files {
+            let Ok(img) = loader::load(path) else {
+                err += 1;
+                continue;
+            };
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let dest = variant_path(dir, stem, "lut", "png");
+            if lut::apply(&img, &lut).save(&dest).is_ok() {
+                let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                self.record_variant(path, &name);
+                last = Some(name);
+                ok += 1;
+            } else {
+                err += 1;
+            }
+        }
+        if ok > 0 {
+            self.rescan();
+            if let Some(n) = &last {
+                self.select_by_name(n);
+            }
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("graded {ok} image(s) with the LUT → *_lut.png{tail}");
+    }
+
     /// Convert the target images to `fmt`/`size`, landing a new file per source (deduped variant).
     fn convert_targets(&mut self, fmt: &str, size: scrub::ConvertSize) {
         let files = self.target_sources();
@@ -3299,6 +3418,14 @@ impl App {
                 }
                 Some(PendingCmd::RedactGps) if arg.eq_ignore_ascii_case("y") => {
                     self.redact_gps_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Watermark) if !arg.is_empty() => {
+                    self.watermark_targets(&arg);
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Lut) if !arg.is_empty() => {
+                    self.apply_lut_targets(&arg);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Convert) if !arg.is_empty() => match parse_convert(&arg) {
@@ -5476,6 +5603,21 @@ fn sort_paths(
 
 /// Parse a dimensions string: `"1200x800"` / `"1200×800"` / `"1200 800"` → `(1200, 800)`; a single
 /// `"1200"` → `(1200, 1200)`.
+/// `<dir>/<stem>_<suffix>.<ext>`, suffixing `-2`, `-3`, … on a collision.
+fn variant_path(dir: &Path, stem: &str, suffix: &str, ext: &str) -> PathBuf {
+    let cand = dir.join(format!("{stem}_{suffix}.{ext}"));
+    if !cand.exists() {
+        return cand;
+    }
+    for i in 2..10_000 {
+        let c = dir.join(format!("{stem}_{suffix}-{i}.{ext}"));
+        if !c.exists() {
+            return c;
+        }
+    }
+    dir.join(format!("{stem}_{suffix}-dup.{ext}"))
+}
+
 /// Filename-safe version of a derived album name (keeps alphanumerics + `- _ . space`).
 fn sanitize_name(s: &str) -> String {
     let out: String = s

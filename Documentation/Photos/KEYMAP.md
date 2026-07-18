@@ -125,6 +125,8 @@ command's chord in its right column.
 | `Ctrl-B m m` | strip metadata (EXIF / GPS) |
 | `Ctrl-B m g` | redact GPS only (keep other EXIF) |
 | `Ctrl-B m c` | convert format / resize (jpg·png·webp) |
+| `Ctrl-B m w` | watermark / caption (burn in text)… |
+| `Ctrl-B m u` | apply LUT (.cube colour grade)… |
 
 ### `s` — stylize (looks & filters)
 | Chord | Command |

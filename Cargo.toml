@@ -64,6 +64,8 @@ ui = ["dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "
 photos = [
   "dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "dep:uuid",
   "dep:rawloader", "dep:kamadak-exif", "dep:notify",
+  # Real TrueType/OpenType fonts for the watermark / caption burn-in (font selection).
+  "shaped-labels",
 ]
 cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
