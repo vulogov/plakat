@@ -2719,9 +2719,11 @@ impl App {
         if let Some(pos) = self.rows().iter().position(|r| r.path == subdir) {
             self.tree_cursor = pos;
         }
+        // Switch straight into the new workbench album so you can start editing there.
+        self.open_album(subdir);
         let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
         self.status =
-            format!("took {ok} photo(s) → sub-album '{subname}'{tail} — edit there, source stays clean");
+            format!("took {ok} photo(s) → workbench '{subname}'{tail} — edit here, source stays clean");
     }
 
     /// Duplicate the target image(s) **within their album** (a `<stem>_copy` next to the original),
