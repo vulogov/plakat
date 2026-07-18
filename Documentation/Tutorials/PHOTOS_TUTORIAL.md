@@ -434,6 +434,11 @@ highlights for a richer, deeper look. All are non-destructive and replayable.
 colour balance in one press) and **straighten** — pick it and type an angle in
 degrees (`3`, `-2.5`); the image rotates and auto-crops the empty corners.
 
+**Borders & framing.** *border* adds an even white/black frame; *letterbox N:M* pads the
+image to a target aspect (black, or a **blurred-extend** background) for print/social; *circle
+crop* masks to a centred circle (black or white surround). All are in the crop group of the
+palette. `:` verbs: `border`, `circle crop`.
+
 **Keystone / perspective.** *keystone vertical* and *keystone horizontal* open the slider
 and warp the frame to correct **converging lines** — the classic architecture fix for
 buildings that lean back. `←`/`→` to dial it (edges stretch to fill, so no black wedges;

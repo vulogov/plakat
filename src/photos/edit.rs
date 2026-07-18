@@ -127,6 +127,11 @@ pub enum EditOp {
     FalseColor { style: i32, strength: i32 },
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
+    /// Border / letterbox: pad to aspect `aspect_w:aspect_h` (0,0 = even frame) with `mode` 0 black,
+    /// 1 white, 2 blur-extend.
+    Border { aspect_w: i32, aspect_h: i32, mode: i32 },
+    /// Circle crop: keep a centred circle, fill outside (`mode` 0 black, 1 white).
+    CropCircle(i32),
     /// Centered square (1:1) crop.
     CropSquare,
     /// Centered crop to aspect ratio `w:h` (largest fitting rect).
@@ -224,6 +229,8 @@ impl EditOp {
                 adjust::blend(&img, f, strength)
             }
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
+            EditOp::Border { aspect_w, aspect_h, mode } => border(&img, aspect_w, aspect_h, mode),
+            EditOp::CropCircle(mode) => crop_circle(&img, mode),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
             EditOp::Crop { x, y, w, h } => {
@@ -392,6 +399,14 @@ impl EditOp {
             EditOp::Halftone(_) => "halftone".into(),
             EditOp::FalseColor { style, .. } => format!("false colour ({})", adjust::false_color_name(style)),
             EditOp::Pixelate(_) => "pixelate".into(),
+            EditOp::Border { aspect_w, aspect_h, .. } => {
+                if aspect_w <= 0 || aspect_h <= 0 {
+                    "border (frame)".into()
+                } else {
+                    format!("letterbox {aspect_w}:{aspect_h}")
+                }
+            }
+            EditOp::CropCircle(_) => "circle crop".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
             EditOp::Crop { .. } => "crop (free-form)".into(),
@@ -486,6 +501,13 @@ impl EditOp {
             EditOp::Halftone(v) => val_op(&mut params, v, "halftone"),
             EditOp::FalseColor { style, strength } => style_op(&mut params, style, strength, "false_color"),
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
+            EditOp::Border { aspect_w, aspect_h, mode } => {
+                params.insert("aspect_w".into(), serde_json::json!(aspect_w));
+                params.insert("aspect_h".into(), serde_json::json!(aspect_h));
+                params.insert("mode".into(), serde_json::json!(mode));
+                "border"
+            }
+            EditOp::CropCircle(v) => val_op(&mut params, v, "crop_circle"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
                 params.insert("w".into(), serde_json::json!(w));
@@ -560,6 +582,8 @@ impl EditOp {
             "dodge" => EditOp::Radial(-30),
             "grad_nd" | "graduated_nd" | "nd_grad" => EditOp::GradND { dir: 0, strength: 30 },
             "keystone" | "fix_verticals" | "keystone_v" => EditOp::Keystone { axis: 0, amount: 30 },
+            "border" | "frame" => EditOp::Border { aspect_w: 0, aspect_h: 0, mode: 1 },
+            "circle" | "circle_crop" => EditOp::CropCircle(0),
             "keystone_h" => EditOp::Keystone { axis: 1, amount: 30 },
             "clahe" | "equalize" | "adaptive_contrast" => EditOp::Clahe(60),
             "invert" | "negative" => EditOp::Invert,
@@ -692,6 +716,12 @@ impl EditOp {
             "halftone" => EditOp::Halftone(iv("value", 100)),
             "false_color" => EditOp::FalseColor { style: iv("style", 1), strength: iv("strength", 100) },
             "pixelate" => EditOp::Pixelate(val()),
+            "border" => EditOp::Border {
+                aspect_w: iv("aspect_w", 0),
+                aspect_h: iv("aspect_h", 0),
+                mode: iv("mode", 1),
+            },
+            "crop_circle" => EditOp::CropCircle(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
             "crop" => EditOp::Crop { x: fr("x"), y: fr("y"), w: fr("w"), h: fr("h") },
@@ -1814,6 +1844,49 @@ fn straighten(img: &DynamicImage, degrees: f32) -> DynamicImage {
     DynamicImage::ImageRgb8(out)
 }
 
+/// Border / letterbox: pad the image onto a larger canvas. `aw:ah` sets the target aspect (0,0 = an
+/// even frame ~6 %); `mode` 0 black, 1 white, 2 a blurred, scaled copy of the image.
+fn border(img: &DynamicImage, aw: i32, ah: i32, mode: i32) -> DynamicImage {
+    use image::{imageops, Rgb, RgbImage};
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let (cw, ch) = if aw <= 0 || ah <= 0 {
+        let b = (w.min(h) as f32 * 0.06).round() as u32;
+        (w + 2 * b, h + 2 * b)
+    } else {
+        let a = aw as f32 / ah as f32;
+        if (w as f32 / h as f32) > a {
+            (w, (w as f32 / a).round() as u32)
+        } else {
+            ((h as f32 * a).round() as u32, h)
+        }
+    };
+    let (cw, ch) = (cw.max(w), ch.max(h));
+    let mut canvas: RgbImage = match mode {
+        2 => imageops::blur(&imageops::resize(&rgb, cw, ch, imageops::FilterType::Triangle), 20.0),
+        1 => RgbImage::from_pixel(cw, ch, Rgb([255, 255, 255])),
+        _ => RgbImage::from_pixel(cw, ch, Rgb([0, 0, 0])),
+    };
+    imageops::overlay(&mut canvas, &rgb, ((cw - w) / 2) as i64, ((ch - h) / 2) as i64);
+    DynamicImage::ImageRgb8(canvas)
+}
+
+/// Circle crop: keep a centred circle (radius = half the shorter side), fill outside with `mode`
+/// 0 black / 1 white.
+fn crop_circle(img: &DynamicImage, mode: i32) -> DynamicImage {
+    let mut rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as f32, rgb.height() as f32);
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let r = (w.min(h) / 2.0).max(1.0);
+    let fill = if mode == 1 { [255u8, 255, 255] } else { [0, 0, 0] };
+    for (x, y, p) in rgb.enumerate_pixels_mut() {
+        if ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() > r {
+            p.0 = fill;
+        }
+    }
+    DynamicImage::ImageRgb8(rgb)
+}
+
 /// Largest centered rectangle of `img` with aspect ratio `aw:ah`.
 fn centered_aspect(img: &DynamicImage, aw: u32, ah: u32) -> DynamicImage {
     let (iw, ih) = (img.width(), img.height());
@@ -1922,6 +1995,7 @@ mod tests {
             EditOp::GradND { dir: 1, strength: 40 }, EditOp::Radial(-30),
             EditOp::Curve { pts: [0, 50, 128, 205, 255] }, EditOp::Clahe(60),
             EditOp::Keystone { axis: 0, amount: 30 }, EditOp::Keystone { axis: 1, amount: -20 },
+            EditOp::Border { aspect_w: 16, aspect_h: 9, mode: 0 }, EditOp::CropCircle(1),
             EditOp::Invert, EditOp::Sepia, EditOp::Duotone,
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
             EditOp::OilPaint { style: 3, strength: 80 }, EditOp::PencilSketch(60), EditOp::Cartoon(70),
@@ -2029,6 +2103,20 @@ mod tests {
         let out = EditOp::AutoEnhance.apply(src).to_rgb8();
         assert!(out.get_pixel(0, 0).0[0] < 20, "darkest stretched down");
         assert!(out.get_pixel(39, 0).0[0] > 235, "brightest stretched up");
+    }
+
+    #[test]
+    fn border_letterboxes_and_circle_crop_masks() {
+        // 16:9 letterbox of a 100×100 image → wider canvas, same height, black bars on the sides.
+        let out = EditOp::Border { aspect_w: 16, aspect_h: 9, mode: 0 }.apply(img(100, 100)).to_rgb8();
+        assert_eq!(out.height(), 100);
+        assert!(out.width() > 100, "canvas widened to 16:9");
+        assert_eq!(out.get_pixel(1, 50).0, [0, 0, 0], "left bar is black");
+        // Circle crop (white): a corner is white, the centre is the original pixel.
+        let cc = EditOp::CropCircle(1).apply(img(40, 40)).to_rgb8();
+        assert_eq!(cc.get_pixel(0, 0).0, [255, 255, 255], "corner outside the circle");
+        assert_ne!(cc.get_pixel(20, 20).0, [255, 255, 255], "centre kept");
+        assert_eq!(EditOp::from_tag("circle"), Some(EditOp::CropCircle(0)));
     }
 
     #[test]

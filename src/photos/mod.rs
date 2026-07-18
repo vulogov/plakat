@@ -248,6 +248,13 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("crop 2:3 (portrait)", "c2", EditCmd::Op(CropAspect { w: 2, h: 3 })),
         ("crop 16:9 (wide)", "cw", EditCmd::Op(CropAspect { w: 16, h: 9 })),
         ("crop 9:16 (tall)", "ct", EditCmd::Op(CropAspect { w: 9, h: 16 })),
+        ("border (white frame)", "cb", EditCmd::Op(Border { aspect_w: 0, aspect_h: 0, mode: 1 })),
+        ("border (black frame)", "", EditCmd::Op(Border { aspect_w: 0, aspect_h: 0, mode: 0 })),
+        ("letterbox 1:1 (black)", "", EditCmd::Op(Border { aspect_w: 1, aspect_h: 1, mode: 0 })),
+        ("letterbox 16:9 (black)", "", EditCmd::Op(Border { aspect_w: 16, aspect_h: 9, mode: 0 })),
+        ("letterbox 4:5 (blurred bg)", "", EditCmd::Op(Border { aspect_w: 4, aspect_h: 5, mode: 2 })),
+        ("circle crop (black)", "co", EditCmd::Op(CropCircle(0))),
+        ("circle crop (white)", "", EditCmd::Op(CropCircle(1))),
         // Adjust — light/tone (a); scalar sliders
         ("brightness…", "ab", EditCmd::Adjust(Brightness(0))),
         ("contrast…", "ac", EditCmd::Adjust(Contrast(0))),

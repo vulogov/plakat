@@ -54,6 +54,8 @@ command's chord in its right column.
 | `Ctrl-B c 2` | crop 2:3 (portrait) |
 | `Ctrl-B c w` | crop 16:9 (wide) |
 | `Ctrl-B c t` | crop 9:16 (tall) |
+| `Ctrl-B c b` | border (white frame) · `c o` circle crop (black) |
+| (palette) | border/letterbox black · 1:1 · 16:9 · 4:5 blurred · circle crop white |
 
 ### `a` — adjust (light / tone)
 | Chord | Command |
