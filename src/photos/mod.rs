@@ -207,6 +207,8 @@ fn look_presets() -> Vec<(&'static str, &'static str, Vec<edit::EditOp>)> {
         ("look: noir (b&w)", "sn", vec![Grayscale, Contrast(26), Vignette(34)]),
         ("look: pop-art", "sp", vec![Posterize(62), Saturation(55), Contrast(20)]),
         ("look: golden hour", "sd", vec![Warmth(30), Brilliance(16), Saturation(12), Vignette(14)]),
+        ("look: old photo", "sa", vec![Sepia, Contrast(-8), Curve { pts: [30, 78, 130, 186, 226] }, Vignette(28), Grain(22)]),
+        ("look: daguerreotype", "sq", vec![Grayscale, Clahe(40), Contrast(18), Vignette(40), Grain(16)]),
     ]
 }
 
@@ -264,6 +266,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("selective colour: mute blues", "kB", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
         // Effects / detail (x)
         ("definition (clarity)…", "xd", EditCmd::Adjust(Definition(0))),
+        ("blur (soft focus)…", "xf", EditCmd::Adjust(Blur(50))),
+        ("bloom / glow…", "xo", EditCmd::Adjust(Bloom(60))),
         ("sharpen / soften…", "xs", EditCmd::Adjust(Sharpen(0))),
         ("noise reduction…", "xn", EditCmd::Adjust(NoiseReduction(0))),
         ("film grain…", "xg", EditCmd::Adjust(Grain(0))),
@@ -299,9 +303,14 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
+        ("charcoal…", "sg", EditCmd::Adjust(Charcoal(100))),
         ("cartoon / comic…", "st", EditCmd::Adjust(Cartoon(100))),
         ("emboss…", "se", EditCmd::Adjust(Emboss(100))),
+        ("halftone / newsprint…", "sf", EditCmd::Adjust(Halftone(100))),
         ("pixelate / mosaic…", "sx", EditCmd::Adjust(Pixelate(0))),
+        ("false colour: thermal…", "sb", EditCmd::Adjust(FalseColor { style: 1, strength: 100 })),
+        ("false colour: infrared…", "", EditCmd::Adjust(FalseColor { style: 2, strength: 100 })),
+        ("false colour: night-vision…", "", EditCmd::Adjust(FalseColor { style: 3, strength: 100 })),
         ("ink: European…", "si", EditCmd::Adjust(Ink { style: 1, strength: 100 })),
         ("ink: Japanese sumi-e…", "sj", EditCmd::Adjust(Ink { style: 2, strength: 100 })),
         ("ink: Chinese wash…", "sh", EditCmd::Adjust(Ink { style: 3, strength: 100 })),

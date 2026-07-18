@@ -115,6 +115,16 @@ pub enum EditOp {
     Ink { style: i32, strength: i32 },
     /// Emboss (directional gradient, grey relief); `strength` 0..100.
     Emboss(i32),
+    /// Gaussian blur / soft focus; `strength` 0..100 → blur radius.
+    Blur(i32),
+    /// Bloom / glow (screen-blend the blurred highlights back); `strength` 0..100.
+    Bloom(i32),
+    /// Charcoal drawing (dark edge strokes on paper); `strength` 0..100.
+    Charcoal(i32),
+    /// Halftone / newsprint dots; `strength` 0..100 blends with the original.
+    Halftone(i32),
+    /// False colour — `style`: 1 thermal · 2 infrared · 3 night-vision; `strength` 0..100.
+    FalseColor { style: i32, strength: i32 },
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
     /// Centered square (1:1) crop.
@@ -199,6 +209,20 @@ impl EditOp {
                 let f = adjust::emboss(&img);
                 adjust::blend(&img, f, s)
             }
+            EditOp::Blur(s) => adjust::gaussian(&img, s),
+            EditOp::Bloom(s) => adjust::bloom(&img, s),
+            EditOp::Charcoal(s) => {
+                let f = adjust::charcoal(&img);
+                adjust::blend(&img, f, s)
+            }
+            EditOp::Halftone(s) => {
+                let f = adjust::halftone(&img);
+                adjust::blend(&img, f, s)
+            }
+            EditOp::FalseColor { style, strength } => {
+                let f = adjust::false_color(&img, style);
+                adjust::blend(&img, f, strength)
+            }
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::CropSquare => centered_aspect(&img, 1, 1),
             EditOp::CropAspect { w, h } => centered_aspect(&img, w, h),
@@ -233,11 +257,13 @@ impl EditOp {
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
-            | EditOp::Emboss(v) => v,
+            | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
+            | EditOp::Halftone(v) => v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
-            | EditOp::Ink { strength, .. } => strength,
+            | EditOp::Ink { strength, .. }
+            | EditOp::FalseColor { strength, .. } => strength,
             EditOp::Keystone { amount, .. } => amount,
             _ => return None,
         })
@@ -277,9 +303,14 @@ impl EditOp {
             EditOp::PencilSketch(_) => EditOp::PencilSketch(v),
             EditOp::Cartoon(_) => EditOp::Cartoon(v),
             EditOp::Emboss(_) => EditOp::Emboss(v),
+            EditOp::Blur(_) => EditOp::Blur(v),
+            EditOp::Bloom(_) => EditOp::Bloom(v),
+            EditOp::Charcoal(_) => EditOp::Charcoal(v),
+            EditOp::Halftone(_) => EditOp::Halftone(v),
             EditOp::OilPaint { style, .. } => EditOp::OilPaint { style, strength: v },
             EditOp::Watercolor { style, .. } => EditOp::Watercolor { style, strength: v },
             EditOp::Ink { style, .. } => EditOp::Ink { style, strength: v },
+            EditOp::FalseColor { style, .. } => EditOp::FalseColor { style, strength: v },
             other => other,
         }
     }
@@ -291,8 +322,9 @@ impl EditOp {
             EditOp::HueRotate(_) => (-180, 180, 5),
             EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
             | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_)
-            | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_)
-            | EditOp::OilPaint { .. } | EditOp::Watercolor { .. } | EditOp::Ink { .. } => (0, 100, 5),
+            | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_) | EditOp::Blur(_)
+            | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
+            | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -354,6 +386,11 @@ impl EditOp {
             EditOp::Watercolor { style, .. } => format!("watercolour {}", style.clamp(1, 10)),
             EditOp::Ink { style, .. } => format!("ink ({})", adjust::ink_name(style)),
             EditOp::Emboss(_) => "emboss".into(),
+            EditOp::Blur(_) => "blur (soft focus)".into(),
+            EditOp::Bloom(_) => "bloom / glow".into(),
+            EditOp::Charcoal(_) => "charcoal".into(),
+            EditOp::Halftone(_) => "halftone".into(),
+            EditOp::FalseColor { style, .. } => format!("false colour ({})", adjust::false_color_name(style)),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::CropSquare => "crop 1:1".into(),
             EditOp::CropAspect { w, h } => format!("crop {w}:{h}"),
@@ -443,6 +480,11 @@ impl EditOp {
             EditOp::Watercolor { style, strength } => style_op(&mut params, style, strength, "watercolor"),
             EditOp::Ink { style, strength } => style_op(&mut params, style, strength, "ink"),
             EditOp::Emboss(v) => val_op(&mut params, v, "emboss"),
+            EditOp::Blur(v) => val_op(&mut params, v, "blur"),
+            EditOp::Bloom(v) => val_op(&mut params, v, "bloom"),
+            EditOp::Charcoal(v) => val_op(&mut params, v, "charcoal"),
+            EditOp::Halftone(v) => val_op(&mut params, v, "halftone"),
+            EditOp::FalseColor { style, strength } => style_op(&mut params, style, strength, "false_color"),
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::CropSquare => "crop_square",
             EditOp::CropAspect { w, h } => {
@@ -535,6 +577,13 @@ impl EditOp {
             "chinese_ink" | "ink_wash" | "shanshui" => EditOp::Ink { style: 3, strength: 100 },
             "russian_icon" | "icon" | "tempera" => EditOp::Ink { style: 4, strength: 100 },
             "emboss" => EditOp::Emboss(100),
+            "blur" | "soft_focus" | "gaussian_blur" => EditOp::Blur(50),
+            "bloom" | "glow" | "orton" => EditOp::Bloom(60),
+            "charcoal" => EditOp::Charcoal(100),
+            "halftone" | "newsprint" => EditOp::Halftone(100),
+            "thermal" | "false_color" => EditOp::FalseColor { style: 1, strength: 100 },
+            "infrared" => EditOp::FalseColor { style: 2, strength: 100 },
+            "night_vision" | "nightvision" => EditOp::FalseColor { style: 3, strength: 100 },
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
@@ -543,7 +592,7 @@ impl EditOp {
             "pop_blues" | "pop_blue" | "boost_blues" => EditOp::SelectiveColor { hue: 240, sat: 45 },
             "mute_blues" | "mute_blue" => EditOp::SelectiveColor { hue: 240, sat: -55 },
             "sharpen" => EditOp::Sharpen(S),
-            "soften" | "blur" => EditOp::Sharpen(-S),
+            "soften" => EditOp::Sharpen(-S),
             "denoise" | "noise_reduction" | "reduce_noise" => EditOp::NoiseReduction(S + 8),
             "definition" | "clarity" => EditOp::Definition(S),
             "less_definition" => EditOp::Definition(-S),
@@ -637,6 +686,11 @@ impl EditOp {
             "watercolor" => EditOp::Watercolor { style: iv("style", 5), strength: iv("strength", 100) },
             "ink" => EditOp::Ink { style: iv("style", 1), strength: iv("strength", 100) },
             "emboss" => EditOp::Emboss(iv("value", 100)),
+            "blur" => EditOp::Blur(iv("value", 50)),
+            "bloom" => EditOp::Bloom(iv("value", 60)),
+            "charcoal" => EditOp::Charcoal(iv("value", 100)),
+            "halftone" => EditOp::Halftone(iv("value", 100)),
+            "false_color" => EditOp::FalseColor { style: iv("style", 1), strength: iv("strength", 100) },
             "pixelate" => EditOp::Pixelate(val()),
             "crop_square" => EditOp::CropSquare,
             "crop_aspect" => EditOp::CropAspect { w: u("w"), h: u("h") },
@@ -1463,6 +1517,134 @@ mod adjust {
         DynamicImage::ImageRgb8(rgb)
     }
 
+    /// Gaussian blur / soft focus; `strength` 0..100 → sigma.
+    pub fn gaussian(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s == 0 {
+            return img.clone();
+        }
+        DynamicImage::ImageRgb8(image::imageops::blur(&img.to_rgb8(), s as f32 / 100.0 * 8.0))
+    }
+
+    /// Bloom / glow: screen-blend the blurred bright areas back over the image.
+    pub fn bloom(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let t = strength.clamp(0, 100) as f32 / 100.0;
+        if t <= 0.0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        // Bright mask: keep only the highlights.
+        let mut bright = rgb.clone();
+        for p in bright.pixels_mut() {
+            for c in 0..3 {
+                let v = p.0[c] as f32 / 255.0;
+                p.0[c] = enc(((v - 0.6).max(0.0) / 0.4).min(1.0));
+            }
+        }
+        let glow = image::imageops::blur(&bright, 6.0);
+        let mut out = rgb.clone();
+        for (op, gp) in out.pixels_mut().zip(glow.pixels()) {
+            for c in 0..3 {
+                let a = op.0[c] as f32 / 255.0;
+                let b = (gp.0[c] as f32 / 255.0) * t;
+                op.0[c] = enc(1.0 - (1.0 - a) * (1.0 - b)); // screen
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Charcoal: dark edge strokes over a light paper, tone-shaded.
+    pub fn charcoal(img: &DynamicImage) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let p = rgb.get_pixel(x, y).0;
+                let yl = luma(p[0] as f32, p[1] as f32, p[2] as f32) / 255.0;
+                let e = edge_mag(&rgb, x, y);
+                // Paper white, darkened by edges and (a little) by tone.
+                let v = (1.0 - e * 1.3 - (1.0 - yl) * 0.25).clamp(0.0, 1.0);
+                out.put_pixel(x, y, Rgb([enc(v), enc(v), enc(v)]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Halftone / newsprint: grayscale dots whose size tracks local darkness.
+    pub fn halftone(img: &DynamicImage) -> DynamicImage {
+        const CELL: u32 = 5;
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        // Per-cell mean luma.
+        let mut out = RgbImage::new(w, h);
+        for cy in (0..h).step_by(CELL as usize) {
+            for cx in (0..w).step_by(CELL as usize) {
+                let (x1, y1) = ((cx + CELL).min(w), (cy + CELL).min(h));
+                let mut sum = 0.0f32;
+                let mut n = 0.0f32;
+                for y in cy..y1 {
+                    for x in cx..x1 {
+                        let p = rgb.get_pixel(x, y).0;
+                        sum += luma(p[0] as f32, p[1] as f32, p[2] as f32);
+                        n += 1.0;
+                    }
+                }
+                let dark = 1.0 - (sum / n.max(1.0)) / 255.0;
+                let r = dark.sqrt() * (CELL as f32 * 0.75); // dot radius from darkness
+                let (mx, my) = (cx as f32 + CELL as f32 / 2.0, cy as f32 + CELL as f32 / 2.0);
+                for y in cy..y1 {
+                    for x in cx..x1 {
+                        let d = ((x as f32 - mx).powi(2) + (y as f32 - my).powi(2)).sqrt();
+                        let v = if d < r { 0.0 } else { 1.0 };
+                        out.put_pixel(x, y, Rgb([enc(v), enc(v), enc(v)]));
+                    }
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    pub fn false_color_name(v: i32) -> &'static str {
+        match v {
+            1 => "thermal",
+            2 => "infrared",
+            _ => "night-vision",
+        }
+    }
+
+    /// Sample a colour ramp (stops evenly spaced) at `t` in 0..1.
+    fn ramp(stops: &[[f32; 3]], t: f32) -> [f32; 3] {
+        let t = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+        let i = (t.floor() as usize).min(stops.len() - 2);
+        let f = t - i as f32;
+        std::array::from_fn(|c| stops[i][c] + (stops[i + 1][c] - stops[i][c]) * f)
+    }
+
+    /// False-colour maps: 1 thermal, 2 infrared, 3 night-vision.
+    pub fn false_color(img: &DynamicImage, style: i32) -> DynamicImage {
+        match style {
+            1 => {
+                let stops = [[0.0, 0.0, 0.1], [0.2, 0.0, 0.5], [0.8, 0.0, 0.2], [1.0, 0.6, 0.0], [1.0, 1.0, 0.8]];
+                map_rgb(img, |r, g, b| ramp(&stops, luma(r, g, b)))
+            }
+            2 => {
+                // Infrared: foliage → warm pink/white, sky → deep blue (swap + boost red on greens).
+                map_rgb(img, |r, g, b| {
+                    let ir = (g * 1.2).min(1.0); // vegetation glows
+                    [ir, (r * 0.6 + b * 0.2), (b * 0.7).min(1.0)]
+                })
+            }
+            _ => {
+                // Night-vision: green monochrome, boosted, with faint scan darkening.
+                map_rgb(img, |r, g, b| {
+                    let y = (luma(r, g, b) * 1.4).min(1.0);
+                    [y * 0.1, y, y * 0.1]
+                })
+            }
+        }
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -1744,7 +1926,8 @@ mod tests {
             EditOp::Posterize(50), EditOp::Solarize(40), EditOp::Threshold(128),
             EditOp::OilPaint { style: 3, strength: 80 }, EditOp::PencilSketch(60), EditOp::Cartoon(70),
             EditOp::Watercolor { style: 5, strength: 90 }, EditOp::Ink { style: 2, strength: 100 },
-            EditOp::Emboss(50), EditOp::Pixelate(40),
+            EditOp::Emboss(50), EditOp::Pixelate(40), EditOp::Blur(60), EditOp::Bloom(70),
+            EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -1910,7 +2093,10 @@ mod tests {
             EditOp::Watercolor { style: 1, strength: 100 }, EditOp::Watercolor { style: 9, strength: 100 },
             EditOp::Ink { style: 1, strength: 100 }, EditOp::Ink { style: 2, strength: 100 },
             EditOp::Ink { style: 3, strength: 100 }, EditOp::Ink { style: 4, strength: 100 },
-            EditOp::Emboss(100), EditOp::Pixelate(50),
+            EditOp::Emboss(100), EditOp::Pixelate(50), EditOp::Blur(80), EditOp::Bloom(80),
+            EditOp::Charcoal(100), EditOp::Halftone(100),
+            EditOp::FalseColor { style: 1, strength: 100 }, EditOp::FalseColor { style: 2, strength: 100 },
+            EditOp::FalseColor { style: 3, strength: 100 },
         ] {
             let out = op.apply(src.clone()).to_rgb8();
             assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());

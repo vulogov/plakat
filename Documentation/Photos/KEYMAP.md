@@ -96,6 +96,7 @@ command's chord in its right column.
 | `Ctrl-B x r` | radial dodge / burn… |
 | `Ctrl-B x t` / `x b` | graduated ND from top / bottom |
 | `Ctrl-B x l` / `x R` | graduated ND from left / right |
+| `Ctrl-B x f` | blur (soft focus)… · `x o` bloom / glow… |
 | `Ctrl-B x i` | invert (negative) |
 | `Ctrl-B x e` | sepia |
 | `Ctrl-B x u` | duotone |
@@ -126,11 +127,14 @@ command's chord in its right column.
 ### `s` — stylize (looks & filters)
 | Chord | Command |
 |-------|---------|
-| `Ctrl-B s o` | oil paint (style 3) · `s k` pencil sketch · `s t` cartoon |
-| `Ctrl-B s w` | watercolour (style 5) · `s e` emboss · `s x` pixelate… |
+| `Ctrl-B s o` | oil paint (style 3) · `s k` pencil sketch · `s g` charcoal · `s t` cartoon |
+| `Ctrl-B s w` | watercolour (style 5) · `s e` emboss · `s f` halftone · `s x` pixelate… |
 | `Ctrl-B s i` | ink: European · `s j` Japanese sumi-e · `s h` Chinese wash · `s r` Russian icon |
+| `Ctrl-B s b` | false colour: thermal (infrared / night-vision palette-only) |
 | `Ctrl-B s v` | look: vintage · `s l` lomo · `s c` cross-process |
-| `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour |
+| `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour · `s a` old photo · `s q` daguerreotype |
+
+All filters open the **slider** (strength 0–100%); dial the intensity, `Enter` to apply.
 
 **Oil paint 1–10** and **watercolour 1–10** are palette-only (type "oil" or "water" in the
 Edit palette to pick a numbered style). Any Edit-palette command with no chord shown is
