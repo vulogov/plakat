@@ -209,6 +209,15 @@ fn look_presets() -> Vec<(&'static str, &'static str, Vec<edit::EditOp>)> {
         ("look: golden hour", "sd", vec![Warmth(30), Brilliance(16), Saturation(12), Vignette(14)]),
         ("look: old photo", "sa", vec![Sepia, Contrast(-8), Curve { pts: [30, 78, 130, 186, 226] }, Vignette(28), Grain(22)]),
         ("look: daguerreotype", "sq", vec![Grayscale, Clahe(40), Contrast(18), Vignette(40), Grain(16)]),
+        // Apple Photos–style looks (palette-only — search "vivid", "dramatic", "mono", "noir").
+        ("look: vivid", "", vec![Saturation(32), Contrast(12), Brilliance(10)]),
+        ("look: vivid warm", "", vec![Saturation(32), Contrast(12), Brilliance(10), Warmth(18)]),
+        ("look: vivid cool", "", vec![Saturation(32), Contrast(12), Brilliance(10), Warmth(-18)]),
+        ("look: dramatic", "", vec![Contrast(30), Saturation(-10), Highlights(-16), Shadows(-10), Definition(20)]),
+        ("look: dramatic warm", "", vec![Contrast(30), Saturation(-8), Highlights(-16), Shadows(-10), Definition(20), Warmth(16)]),
+        ("look: dramatic cool", "", vec![Contrast(30), Saturation(-8), Highlights(-16), Shadows(-10), Definition(20), Warmth(-16)]),
+        ("look: mono", "", vec![Grayscale, Contrast(10)]),
+        ("look: silvertone", "", vec![Grayscale, Contrast(8), Brilliance(14), Warmth(8)]),
     ]
 }
 
