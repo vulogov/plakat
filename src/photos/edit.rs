@@ -125,6 +125,13 @@ pub enum EditOp {
     Halftone(i32),
     /// False colour — `style`: 1 thermal · 2 infrared · 3 night-vision; `strength` 0..100.
     FalseColor { style: i32, strength: i32 },
+    /// Kelvin white balance — `amount` −100..100 (positive = warmer / lower Kelvin).
+    Kelvin(i32),
+    /// Gradient map — recolour by luma through a preset ramp; `style` 1 warm · 2 cyanotype · 3 fire ·
+    /// 4 teal-orange; `strength` 0..100.
+    GradientMap { style: i32, strength: i32 },
+    /// Cross-hatch (ink hatching by tone); `strength` 0..100.
+    Crosshatch(i32),
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
     /// Border / letterbox: pad to aspect `aspect_w:aspect_h` (0,0 = even frame) with `mode` 0 black,
@@ -228,6 +235,15 @@ impl EditOp {
                 let f = adjust::false_color(&img, style);
                 adjust::blend(&img, f, strength)
             }
+            EditOp::Kelvin(v) => adjust::kelvin(&img, v),
+            EditOp::GradientMap { style, strength } => {
+                let f = adjust::gradient_map(&img, style);
+                adjust::blend(&img, f, strength)
+            }
+            EditOp::Crosshatch(s) => {
+                let f = adjust::crosshatch(&img);
+                adjust::blend(&img, f, s)
+            }
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::Border { aspect_w, aspect_h, mode } => border(&img, aspect_w, aspect_h, mode),
             EditOp::CropCircle(mode) => crop_circle(&img, mode),
@@ -265,12 +281,13 @@ impl EditOp {
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
-            | EditOp::Halftone(v) => v,
+            | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v) => v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
             | EditOp::Ink { strength, .. }
-            | EditOp::FalseColor { strength, .. } => strength,
+            | EditOp::FalseColor { strength, .. }
+            | EditOp::GradientMap { strength, .. } => strength,
             EditOp::Keystone { amount, .. } => amount,
             _ => return None,
         })
@@ -318,6 +335,9 @@ impl EditOp {
             EditOp::Watercolor { style, .. } => EditOp::Watercolor { style, strength: v },
             EditOp::Ink { style, .. } => EditOp::Ink { style, strength: v },
             EditOp::FalseColor { style, .. } => EditOp::FalseColor { style, strength: v },
+            EditOp::Kelvin(_) => EditOp::Kelvin(v),
+            EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
+            EditOp::GradientMap { style, .. } => EditOp::GradientMap { style, strength: v },
             other => other,
         }
     }
@@ -331,7 +351,8 @@ impl EditOp {
             | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_)
             | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_) | EditOp::Blur(_)
             | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
-            | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. } => (0, 100, 5),
+            | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
+            | EditOp::Crosshatch(_) | EditOp::GradientMap { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -398,6 +419,9 @@ impl EditOp {
             EditOp::Charcoal(_) => "charcoal".into(),
             EditOp::Halftone(_) => "halftone".into(),
             EditOp::FalseColor { style, .. } => format!("false colour ({})", adjust::false_color_name(style)),
+            EditOp::Kelvin(_) => "Kelvin white balance".into(),
+            EditOp::GradientMap { .. } => "gradient map".into(),
+            EditOp::Crosshatch(_) => "cross-hatch".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::Border { aspect_w, aspect_h, .. } => {
                 if aspect_w <= 0 || aspect_h <= 0 {
@@ -500,6 +524,9 @@ impl EditOp {
             EditOp::Charcoal(v) => val_op(&mut params, v, "charcoal"),
             EditOp::Halftone(v) => val_op(&mut params, v, "halftone"),
             EditOp::FalseColor { style, strength } => style_op(&mut params, style, strength, "false_color"),
+            EditOp::Kelvin(v) => val_op(&mut params, v, "kelvin"),
+            EditOp::GradientMap { style, strength } => style_op(&mut params, style, strength, "gradient_map"),
+            EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::Border { aspect_w, aspect_h, mode } => {
                 params.insert("aspect_w".into(), serde_json::json!(aspect_w));
@@ -608,6 +635,9 @@ impl EditOp {
             "thermal" | "false_color" => EditOp::FalseColor { style: 1, strength: 100 },
             "infrared" => EditOp::FalseColor { style: 2, strength: 100 },
             "night_vision" | "nightvision" => EditOp::FalseColor { style: 3, strength: 100 },
+            "kelvin" | "temperature" | "white_balance" => EditOp::Kelvin(0),
+            "gradient_map" | "gradientmap" => EditOp::GradientMap { style: 1, strength: 100 },
+            "crosshatch" | "hatch" => EditOp::Crosshatch(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
@@ -715,6 +745,9 @@ impl EditOp {
             "charcoal" => EditOp::Charcoal(iv("value", 100)),
             "halftone" => EditOp::Halftone(iv("value", 100)),
             "false_color" => EditOp::FalseColor { style: iv("style", 1), strength: iv("strength", 100) },
+            "kelvin" => EditOp::Kelvin(val()),
+            "gradient_map" => EditOp::GradientMap { style: iv("style", 1), strength: iv("strength", 100) },
+            "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
             "pixelate" => EditOp::Pixelate(val()),
             "border" => EditOp::Border {
                 aspect_w: iv("aspect_w", 0),
@@ -1675,6 +1708,67 @@ mod adjust {
         }
     }
 
+    /// Approximate blackbody RGB (0..1) for a colour temperature in Kelvin (Tanner Helland).
+    fn kelvin_rgb(kelvin: f32) -> [f32; 3] {
+        let t = kelvin.clamp(1000.0, 40000.0) / 100.0;
+        let r = if t <= 66.0 { 1.0 } else { (1.292936 * (t - 60.0).powf(-0.1332047)).clamp(0.0, 1.0) };
+        let g = if t <= 66.0 {
+            (0.3900816 * t.ln() - 0.6318414).clamp(0.0, 1.0)
+        } else {
+            (1.129891 * (t - 60.0).powf(-0.0755148)).clamp(0.0, 1.0)
+        };
+        let b = if t >= 66.0 {
+            1.0
+        } else if t <= 19.0 {
+            0.0
+        } else {
+            (0.5432068 * (t - 10.0).ln() - 1.196254).clamp(0.0, 1.0)
+        };
+        [r, g, b]
+    }
+
+    /// Kelvin white balance: `amount` −100..100 (positive = warmer / lower Kelvin), applied as
+    /// per-channel gains relative to a 6500 K neutral.
+    pub fn kelvin(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let temp = (6500.0 - amount as f32 * 42.0).clamp(1500.0, 12000.0);
+        let target = kelvin_rgb(temp);
+        let neutral = kelvin_rgb(6500.0);
+        let gain: [f32; 3] = std::array::from_fn(|i| target[i] / neutral[i].max(1e-3));
+        map_rgb(img, |r, g, b| [r * gain[0], g * gain[1], b * gain[2]])
+    }
+
+    /// Gradient map: recolour by luma through a preset ramp.
+    pub fn gradient_map(img: &DynamicImage, style: i32) -> DynamicImage {
+        let stops: &[[f32; 3]] = match style {
+            2 => &[[0.02, 0.05, 0.16], [0.12, 0.34, 0.58], [0.72, 0.9, 1.0]], // cyanotype
+            3 => &[[0.0, 0.0, 0.0], [0.55, 0.08, 0.0], [1.0, 0.55, 0.0], [1.0, 1.0, 0.82]], // fire
+            4 => &[[0.05, 0.15, 0.2], [0.18, 0.42, 0.48], [0.9, 0.6, 0.32], [1.0, 0.86, 0.62]], // teal-orange
+            _ => &[[0.14, 0.09, 0.05], [0.6, 0.45, 0.3], [1.0, 0.96, 0.86]], // warm
+        };
+        map_rgb(img, |r, g, b| ramp(stops, luma(r, g, b)))
+    }
+
+    /// Cross-hatch: black ink lines whose density tracks tone (diagonal, anti-diagonal, then axes).
+    pub fn crosshatch(img: &DynamicImage) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let p = rgb.get_pixel(x, y).0;
+                let yl = luma(p[0] as f32, p[1] as f32, p[2] as f32) / 255.0;
+                let (xi, yi) = (x as i32, y as i32);
+                let ink = (yl < 0.85 && (xi + yi).rem_euclid(6) == 0)
+                    || (yl < 0.62 && (xi - yi).rem_euclid(6) == 0)
+                    || (yl < 0.4 && yi.rem_euclid(6) == 0)
+                    || (yl < 0.2 && xi.rem_euclid(6) == 0);
+                let v = if ink { 0.1 } else { 1.0 };
+                out.put_pixel(x, y, Rgb([enc(v), enc(v), enc(v)]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -2002,6 +2096,7 @@ mod tests {
             EditOp::Watercolor { style: 5, strength: 90 }, EditOp::Ink { style: 2, strength: 100 },
             EditOp::Emboss(50), EditOp::Pixelate(40), EditOp::Blur(60), EditOp::Bloom(70),
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
+            EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -2185,6 +2280,8 @@ mod tests {
             EditOp::Charcoal(100), EditOp::Halftone(100),
             EditOp::FalseColor { style: 1, strength: 100 }, EditOp::FalseColor { style: 2, strength: 100 },
             EditOp::FalseColor { style: 3, strength: 100 },
+            EditOp::GradientMap { style: 1, strength: 100 }, EditOp::GradientMap { style: 3, strength: 100 },
+            EditOp::Crosshatch(100),
         ] {
             let out = op.apply(src.clone()).to_rgb8();
             assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());
@@ -2195,6 +2292,10 @@ mod tests {
         assert_eq!(EditOp::Cartoon(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::OilPaint { style: 5, strength: 0 }.apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch(100)));
+        // Kelvin at 0 is (near) identity; warming shifts red above blue on grey.
+        let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(4, 4, Rgb([128, 128, 128])));
+        let warm = EditOp::Kelvin(60).apply(grey.clone()).to_rgb8().get_pixel(0, 0).0;
+        assert!(warm[0] >= warm[2], "warmer: red ≥ blue");
     }
 
     #[test]

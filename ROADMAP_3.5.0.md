@@ -26,8 +26,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       unblocks text/path-carrying ops in the edit log.
 - [ ] **True panorama stitch** (feature-matched alignment) as an optional upgrade to the current
       concatenation stitch; **mosaic/scrapbook collage** (varied cell sizes).
-- [ ] Quick creative leftovers: **gradient map / tritone**, **cross-hatch**, **Kelvin white balance**,
-      **crystallize (Voronoi)**.
+- [x] Quick creative leftovers: **gradient map** (warm/cyanotype/fire/teal-orange), **cross-hatch**,
+      **Kelvin white balance** — all adjustable 0–100 % (Kelvin bipolar −100..100), palette + chords
+      (`k k` / `s y` / `s m`) + NL verbs. `crystallize (Voronoi)` still open.
 
 ## Track C — distribution & housekeeping
 

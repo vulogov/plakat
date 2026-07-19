@@ -78,6 +78,7 @@ command's chord in its right column.
 | `Ctrl-B k s` | saturation… |
 | `Ctrl-B k v` | vibrance… |
 | `Ctrl-B k w` | warmth (warm / cool)… |
+| `Ctrl-B k k` | Kelvin white balance… |
 | `Ctrl-B k t` | tint (magenta / green)… |
 | `Ctrl-B k h` | hue rotate… |
 | `Ctrl-B k p` | split-tone… |
@@ -135,6 +136,7 @@ command's chord in its right column.
 | `Ctrl-B s w` | watercolour (style 5) · `s e` emboss · `s f` halftone · `s x` pixelate… |
 | `Ctrl-B s i` | ink: European · `s j` Japanese sumi-e · `s h` Chinese wash · `s r` Russian icon |
 | `Ctrl-B s b` | false colour: thermal (infrared / night-vision palette-only) |
+| `Ctrl-B s y` | cross-hatch · `s m` gradient map: warm (cyanotype / fire / teal-orange palette-only) |
 | `Ctrl-B s v` | look: vintage · `s l` lomo · `s c` cross-process |
 | `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour · `s a` old photo · `s q` daguerreotype |
 
