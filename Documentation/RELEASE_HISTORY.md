@@ -8,6 +8,28 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.6.0 — `plakat photos`: generation, and the true panorama
+
+3.5 brought the AI into the manager. **3.6 finishes the job** — the four big generation pipelines
+are now first-class in `plakat photos`, the panorama stitcher goes from "line them up" to real
+feature-matched perspective, and a long-wanted refactor makes watermark/LUT proper edits.
+
+**Generation, everywhere.** **generate** (txt2img), **img2img**, **portrait**, and **multiperson**
+are reachable three ways: the **`Ctrl-B n` "AI create" chords** + the searchable **edit palette**;
+the **ML menu** (`M`); and the plain-language **`:` command** (`generate a red fox in snow`,
+`portrait of a knight`, `scene of two friends at a cafe`, `img2img …`). Generate is prompt-only;
+portrait uses the current image as the identity face; multiperson turns each selected image into a
+person in the scene. Each lands a new `ai_*.png` in the album, guarded by the memory watchdog.
+
+**The true panorama.** A full **homography stitch** (`hm`): FAST corners are matched between frames
+and a RANSAC perspective transform is fit — corrects **rotation and perspective**, not just a shift,
+with a feathered seam and an automatic edge-to-edge fallback. **Mosaic / scrapbook collage** (`W`)
+and a **crystallize** filter round out the composites/filters.
+
+**Watermark & LUT are now real edits.** A refactor lets edit ops carry text and paths, so watermark /
+caption and `.cube` LUT grades move into the edit stack — they **undo, copy-paste, and save into
+presets** like any adjustment.
+
 ## What's new in 3.5.0 — `plakat photos`: AI comes to the manager
 
 3.4 filled out the non-AI studio. **3.5 brings the AI in** — the collection manager now loads

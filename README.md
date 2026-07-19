@@ -17,36 +17,32 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.6.0 — `plakat photos`: generation, and the true panorama
+## What's new in 3.7.0 — `plakat photos`: retouch, and the last non-AI gaps
 
-3.5 brought the AI into the manager. **3.6 finishes the job** — the four big generation pipelines
-are now first-class in `plakat photos`, the panorama stitcher goes from "line them up" to real
-feature-matched perspective, and a long-wanted refactor makes watermark/LUT proper edits.
+3.6 finished the generation story. **3.7 closes the remaining non-AI gaps** a serious photo
+editor/manager still had — an interactive retouch mode, creative effects, lens corrections, and two
+manager passes — all reusing the machinery already in the tree (replayable slider edits, the
+homography solver, the perceptual hash, the Laplacian).
 
-**Generation, everywhere.** **generate** (txt2img), **img2img**, **portrait**, and **multiperson**
-are wired into the manager and reachable three ways: the new **`Ctrl-B n` "AI create" chords**
-(`n g`/`n i`/`n p`/`n m`) and the searchable **edit palette**; the **ML menu** (`M`); and the
-plain-language **`:` command** (`generate a red fox in snow`, `portrait of a knight`, `scene of two
-friends at a cafe`, `img2img …`). Generate is prompt-only; **portrait** uses the current image as the
-identity face; **multiperson** turns each selected image into a person in the scene. Each lands a new
-`ai_*.png` in the album (sources untouched), guarded by the memory watchdog.
+**Interactive retouch (`Ctrl-B r`).** A live **crosshair pick-mode** unlocks the classic editor
+tools: **spot heal** (dust / blemishes), **clone stamp**, **red-eye removal**, a **dodge / burn**
+brush, and **4-point perspective rectify** (pick the corners of a plane → straighten it). Arrows move
+the crosshair, `+`/`-` size the brush, Enter sets each point; every result is a **replayable edit**.
 
-**The true panorama.** Alongside the edge-to-edge and overlap-aligned modes, a full **homography
-stitch** (`hm`): FAST corners are matched between frames and a RANSAC perspective transform is fit,
-so it corrects **rotation and perspective**, not just a shift — with a feathered seam and an
-automatic edge-to-edge fallback for frames it can't register.
+**Creative & tonal.** **Tilt-shift / miniature**, **motion / zoom / spin** blurs, a **B&W channel
+mixer** (red/green/blue/orange filters — a real mono conversion), and **film-negative → positive**
+(strips the orange C-41 mask on scanned negatives). All on the slider where it makes sense.
 
-**More composites & filters.** **Mosaic / scrapbook collage** (`W`) — a justified-rows layout where
-cell sizes vary with each image's aspect, unlike the uniform grid. **Crystallize** (Voronoi /
-low-poly), a new 0–100 % filter.
+**Lens corrections.** **Chromatic-aberration removal** (defringe) and **lens distortion** correction
+(barrel / pincushion).
 
-**Watermark & LUT are now real edits.** A refactor lets edit ops carry text and paths, so **watermark
-/ caption** and **`.cube` LUT** grades move from bake-a-file into the edit stack — they **undo,
-copy-paste, and save into presets** like any adjustment (a missing LUT file just replays as a no-op).
+**Manager passes.** A **duplicate finder** (perceptual hash, now on the palette / chord too) and a
+non-AI **quality cull** — flags soft (Laplacian-variance) and badly-exposed frames offline, the
+model-free complement to the aesthetic cull.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.5):
+**Earlier releases** (v0.13 – 3.6):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

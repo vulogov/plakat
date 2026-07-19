@@ -1,9 +1,10 @@
-# plakat 3.7.0 — roadmap (planning)
+# plakat 3.7.0 — roadmap (SHIPPED)
 
-Opening after 3.6.0 (generation in the manager + the true panorama). `plakat photos` is a deep
-studio; 3.7 fills the remaining **non-AI** gaps a serious photo editor/manager still has — creative
-effects, lens/geometry corrections, and two manager gaps — reusing the existing machinery (replayable
-slider `EditOp`s, the homography solver, the perceptual dHash, the Laplacian).
+**Shipped — retouch + the last non-AI gaps.** An interactive crosshair retouch pick-mode (spot heal /
+clone / red-eye / dodge-burn / 4-point perspective), creative effects (tilt-shift, motion/zoom/spin
+blur, B&W channel mixer, film-negative), lens corrections (chromatic aberration, distortion), and two
+manager passes (duplicate finder on the palette/chord, non-AI quality cull). All reuse existing
+machinery (replayable slider `EditOp`s, the homography solver, the perceptual dHash, the Laplacian).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
