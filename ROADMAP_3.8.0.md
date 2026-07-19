@@ -12,13 +12,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - [x] **Tree badge = an album's own image count** (not recursive) — the bug that opened this cycle
       (`fix 83928a2`). Mixed albums now read `[direct]`, sub-albums surface as `[1]` children.
-- [ ] **Recursive / flatten browse** — a per-view toggle (`R`) to show **all** images beneath a folder
-      or mixed album (across its sub-albums) in one grid, not just the direct ones. Curation writes
-      still route to each source album.
-- [ ] **Move / copy selected → album** — a general organizer (pick a destination album; move or copy),
-      beyond the take/put-back workbench.
-- [ ] **Trash / soft-delete + restore** — send rejects to a hidden `.trash` (per-library) instead of a
-      permanent delete; a restore path + an "empty trash" command.
+- [x] **Recursive / flatten browse** (`*` in tree/grid, `:flatten`) — `open_recursive` shows **all**
+      images beneath a folder / mixed album (across sub-albums) in one grid; curation routes to each
+      source album via the smart-view source map.
+- [x] **Move / copy selected → album** (`m o` / `m p`) — `move_targets` carries file + `.json` sidecar
+      + curation record to the destination album; move also removes the source record.
+- [x] **Trash / soft-delete + restore** (`m t` / `m b`, `:restore` / `:empty trash`) — soft-delete to a
+      hidden `<root>/.trash` with a `.manifest`, restore-to-origin, browse, and permanent empty.
 
 ## Track B — metadata
 

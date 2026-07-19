@@ -142,6 +142,11 @@ command's chord in its right column.
 | `Ctrl-B m u` | apply LUT (.cube colour grade)… |
 | `Ctrl-B m f` | find near-duplicates (perceptual hash → tag `dup`) |
 | `Ctrl-B m q` | cull soft / badly-exposed (non-AI → reject) |
+| `Ctrl-B m o` | move to album… · `m p` copy to album… |
+| `Ctrl-B m t` | move to trash (soft-delete) · `m b` browse trash (restore / empty palette-only) |
+
+Also, `*` (tree or grid) = **flatten browse** — show every image beneath a folder / mixed album in
+one grid; `:flatten` does the same.
 
 ### `s` — stylize (looks & filters)
 | Chord | Command |
