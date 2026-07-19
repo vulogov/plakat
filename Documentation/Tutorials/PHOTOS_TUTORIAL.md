@@ -364,8 +364,10 @@ Two ways to combine several images into one (deterministic layout — no AI alig
   width, **grid** tiles them edge-to-edge. Writes `panorama_….png` into the album. Best for
   pre-cropped strips or steady tripod sequences. Type **`ha`** (or **`va`**) for an **aligned**
   panorama: adjacent frames are registered by overlap (cross-correlation, translation) and the
-  seam is cross-faded — for actual overlapping pan shots. Frames that don't overlap fall back to
-  edge-to-edge automatically. (Translation only; it won't correct rotation or parallax.)
+  seam is cross-faded — for actual overlapping pan shots. Or **`hm`** for a full **homography**
+  stitch: FAST corners are matched between frames and a RANSAC perspective transform is fit, so it
+  corrects **rotation and perspective**, not just a shift (the "true" panorama). Both fall back to
+  edge-to-edge automatically for frames they can't register, so a bad pair never mangles the result.
 - **Collage (`w`)** — press `w` to arrange the selection (or the **whole album** if nothing is
   selected) into a padded grid on a light background → `collage_grid.png`.
 - **Mosaic (`W`)** — a **scrapbook** layout: a justified-rows gallery (like Flickr) where each

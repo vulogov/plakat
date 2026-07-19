@@ -62,10 +62,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **Mosaic / scrapbook collage** (varied cell sizes) — DONE (`stitch::mosaic`, grid `W`, NL
       "mosaic"). Justified-rows (Flickr-style) layout: images keep aspect, each row scaled to fill the
       width so cell sizes vary.
-- [x] **Aligned panorama** (`ha` / `va` in the `b` prompt, NL "panorama aligned") — DONE. Overlap
-      *registration* by cross-correlation (translation only) + cross-faded seam, with a confidence
-      guard that falls back to edge-to-edge for non-overlapping frames. The pragmatic 80 % of "true"
-      stitching; **full feature-matched homography** (rotation/parallax) remains the open stretch.
+- [x] **Aligned panorama** (`ha` / `va`) — overlap registration by cross-correlation (translation) +
+      cross-faded seam, with an edge-to-edge fallback.
+- [x] **Homography panorama** (`hm`, NL "panorama homography") — DONE. `src/photos/homography.rs`: FAST
+      corners → normalised-patch NCC matching (Lowe ratio, permissive → RANSAC filters) → RANSAC
+      homography (normalised 4-point DLT + Gaussian elimination, refit on inliers) → imageproc `warp`
+      + feathered (blurred-mask) blend. Corrects **rotation + perspective**. Per-pair confidence guard
+      (≥12 inliers, sane canvas bounds) → falls back to edge-to-edge concat. Own 3×3 linalg + LCG
+      (deterministic). Verified: recovers a known synthetic warp within tolerance.
 - [x] Quick creative leftovers: **gradient map** (warm/cyanotype/fire/teal-orange), **cross-hatch**,
       **Kelvin white balance**, **crystallize (Voronoi / low-poly)** (`stitch`-free pure filter, chord
       `s z`, NL "crystallize/voronoi") — all adjustable 0–100 % (Kelvin bipolar −100..100), palette +

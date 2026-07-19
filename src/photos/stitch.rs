@@ -17,6 +17,9 @@ pub enum PanoMode {
     HorizontalAligned,
     /// Vertical with overlap registration.
     VerticalAligned,
+    /// Feature-matched **homography** stitch: corrects rotation/perspective, not just translation
+    /// (the "true" panorama). Falls back to edge-to-edge for frames it can't register.
+    Homography,
 }
 
 impl PanoMode {
@@ -26,6 +29,7 @@ impl PanoMode {
             2 => PanoMode::Grid,
             3 => PanoMode::HorizontalAligned,
             4 => PanoMode::VerticalAligned,
+            5 => PanoMode::Homography,
             _ => PanoMode::Horizontal,
         }
     }
@@ -36,8 +40,21 @@ impl PanoMode {
             PanoMode::Grid => "grid",
             PanoMode::HorizontalAligned => "horizontal (aligned)",
             PanoMode::VerticalAligned => "vertical (aligned)",
+            PanoMode::Homography => "homography",
         }
     }
+}
+
+/// Edge-to-edge horizontal concatenation of two frames at their common (min) height — the fallback
+/// when a smarter stitch (homography / overlap alignment) can't register a pair.
+pub(crate) fn concat_h(a: &RgbImage, b: &RgbImage) -> RgbImage {
+    let h = a.height().min(b.height()).max(1);
+    let pa = resize_to_h(a, h);
+    let pb = resize_to_h(b, h);
+    let mut canvas = RgbImage::new(pa.width() + pb.width(), h);
+    imageops::overlay(&mut canvas, &pa, 0, 0);
+    imageops::overlay(&mut canvas, &pb, pa.width() as i64, 0);
+    canvas
 }
 
 fn resize_to_h(img: &RgbImage, h: u32) -> RgbImage {
@@ -93,6 +110,8 @@ pub fn panorama(imgs: &[RgbImage], mode: PanoMode) -> Result<RgbImage> {
             let parts: Vec<RgbImage> = rot.iter().map(|i| resize_to_h(i, w)).collect();
             Ok(imageops::rotate270(&stitch_aligned_h(&parts)))
         }
+        // Full feature-matched homography stitch (rotation/perspective; edge-to-edge fallback).
+        PanoMode::Homography => Ok(super::homography::stitch(imgs)),
     }
 }
 

@@ -16,6 +16,7 @@ pub mod layers;
 pub mod lut;
 pub mod cull;
 pub mod faces;
+pub mod homography;
 pub mod mledit;
 pub mod mlworker;
 pub mod nl;
@@ -3737,6 +3738,7 @@ impl App {
                     let mode = match a.as_str() {
                         "ha" => stitch::PanoMode::HorizontalAligned,
                         "va" => stitch::PanoMode::VerticalAligned,
+                        "hm" | "homography" => stitch::PanoMode::Homography,
                         _ => match a.chars().next() {
                             Some('v') => stitch::PanoMode::Vertical,
                             Some('g') => stitch::PanoMode::Grid,
@@ -5426,7 +5428,7 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         // panorama prompts for a direction.
         KeyCode::Char('w') => app.make_collage(),
         KeyCode::Char('W') => app.make_mosaic(),
-        KeyCode::Char('b') => app.prompt("panorama (h / v / grid · ha / va = aligned): ", "h", PendingCmd::Panorama),
+        KeyCode::Char('b') => app.prompt("panorama (h / v / grid · ha / va aligned · hm homography): ", "h", PendingCmd::Panorama),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
         }
