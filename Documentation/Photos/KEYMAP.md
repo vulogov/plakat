@@ -79,6 +79,7 @@ command's chord in its right column.
 | `Ctrl-B k v` | vibrance… |
 | `Ctrl-B k w` | warmth (warm / cool)… |
 | `Ctrl-B k k` | Kelvin white balance… |
+| `Ctrl-B k a` | auto white balance (gray-world)… |
 | `Ctrl-B k t` | tint (magenta / green)… |
 | `Ctrl-B k h` | hue rotate… |
 | `Ctrl-B k p` | split-tone… |
@@ -95,6 +96,7 @@ command's chord in its right column.
 | `Ctrl-B x g` | film grain… |
 | `Ctrl-B x k` | despeckle (median)… |
 | `Ctrl-B x z` | dehaze… |
+| `Ctrl-B x y` | enhance sky (auto-mask polarizer)… |
 | `Ctrl-B x v` | vignette… |
 | `Ctrl-B x r` | radial dodge / burn… |
 | `Ctrl-B x t` / `x b` | graduated ND from top / bottom |

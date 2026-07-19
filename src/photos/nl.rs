@@ -295,6 +295,8 @@ fn edit_op_word(s: &str) -> Option<String> {
         "chinese ink" | "ink wash" | "shan shui" => "chinese_ink",
         "russian icon" | "russian religious" | "tempera" | "icon" => "russian_icon",
         "cross-hatch" | "crosshatch" | "hatch" => "crosshatch",
+        "enhance sky" | "better sky" | "fix sky" | "sky" => "enhance_sky",
+        "auto white balance" | "auto wb" | "gray world" | "neutralize" | "neutralise" => "auto_wb",
         "gradient map" | "gradient-map" | "gradientmap" => "gradient_map",
         "kelvin" | "white balance" | "colour temperature" | "color temperature" => "kelvin",
         "emboss" => "emboss",

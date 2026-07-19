@@ -228,6 +228,16 @@ fn look_presets() -> Vec<(&'static str, &'static str, Vec<edit::EditOp>)> {
         ("look: dramatic cool", "", vec![Contrast(30), Saturation(-8), Highlights(-16), Shadows(-10), Definition(20), Warmth(-16)]),
         ("look: mono", "", vec![Grayscale, Contrast(10)]),
         ("look: silvertone", "", vec![Grayscale, Contrast(8), Brilliance(14), Warmth(8)]),
+        // iOS / Apple Photos classic filter names (palette-only — search "fade", "chrome", …).
+        ("look: fade", "", vec![Contrast(-14), Saturation(-22), Blackpoint(-24), Warmth(8)]),
+        ("look: chrome", "", vec![Brilliance(14), Contrast(14), Saturation(14), Highlights(-8)]),
+        ("look: process", "", vec![SplitTone(24), Saturation(10), Contrast(10), HueRotate(6)]),
+        ("look: transfer", "", vec![Warmth(24), Saturation(20), Contrast(12), Vignette(12)]),
+        ("look: instant", "", vec![Warmth(14), Tint(-10), Blackpoint(-18), Contrast(-8), Vignette(20)]),
+        ("look: tonal (soft b&w)", "", vec![Grayscale, Contrast(-6), Brilliance(10)]),
+        // Cinematic extras.
+        ("look: bleach bypass", "", vec![Saturation(-45), Contrast(28), Brilliance(-8), Definition(16)]),
+        ("look: teal & orange", "", vec![SplitTone(-26), Warmth(10), Saturation(16), Contrast(12)]),
     ]
 }
 
@@ -282,6 +292,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("vibrance…", "kv", EditCmd::Adjust(Vibrance(0))),
         ("warmth (warm / cool)…", "kw", EditCmd::Adjust(Warmth(0))),
         ("Kelvin white balance…", "kk", EditCmd::Adjust(Kelvin(0))),
+        ("auto white balance (gray-world)…", "ka", EditCmd::Adjust(AutoWhiteBalance(100))),
         ("tint (magenta / green)…", "kt", EditCmd::Adjust(Tint(0))),
         ("hue rotate…", "kh", EditCmd::Adjust(HueRotate(0))),
         ("split-tone…", "kp", EditCmd::Adjust(SplitTone(0))),
@@ -300,6 +311,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("film grain…", "xg", EditCmd::Adjust(Grain(0))),
         ("despeckle (median)…", "xk", EditCmd::Adjust(Despeckle(0))),
         ("dehaze…", "xz", EditCmd::Adjust(Dehaze(0))),
+        ("enhance sky (auto-mask polarizer)…", "xy", EditCmd::Adjust(EnhanceSky(100))),
         ("vignette…", "xv", EditCmd::Adjust(Vignette(0))),
         ("radial dodge / burn…", "xr", EditCmd::Adjust(Radial(0))),
         ("graduated ND (from top)…", "xt", EditCmd::Adjust(GradND { dir: 0, strength: 0 })),

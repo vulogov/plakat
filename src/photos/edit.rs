@@ -132,6 +132,12 @@ pub enum EditOp {
     GradientMap { style: i32, strength: i32 },
     /// Cross-hatch (ink hatching by tone); `strength` 0..100.
     Crosshatch(i32),
+    /// "Better sky" — build a soft sky mask (no AI/no manual masking) and apply a polarizer-like
+    /// enhancement (deepen & saturate blue, lift cloud contrast) weighted by it; `amount` 0..100.
+    EnhanceSky(i32),
+    /// Auto white balance (gray-world): neutralise a colour cast by scaling each channel toward the
+    /// overall grey; `amount` 0..100 blends toward the correction.
+    AutoWhiteBalance(i32),
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
     /// Border / letterbox: pad to aspect `aspect_w:aspect_h` (0,0 = even frame) with `mode` 0 black,
@@ -244,6 +250,8 @@ impl EditOp {
                 let f = adjust::crosshatch(&img);
                 adjust::blend(&img, f, s)
             }
+            EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
+            EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::Border { aspect_w, aspect_h, mode } => border(&img, aspect_w, aspect_h, mode),
             EditOp::CropCircle(mode) => crop_circle(&img, mode),
@@ -281,7 +289,8 @@ impl EditOp {
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
-            | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v) => v,
+            | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
+            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) => v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
@@ -337,6 +346,8 @@ impl EditOp {
             EditOp::FalseColor { style, .. } => EditOp::FalseColor { style, strength: v },
             EditOp::Kelvin(_) => EditOp::Kelvin(v),
             EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
+            EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
+            EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::GradientMap { style, .. } => EditOp::GradientMap { style, strength: v },
             other => other,
         }
@@ -352,7 +363,8 @@ impl EditOp {
             | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_) | EditOp::Blur(_)
             | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
             | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
-            | EditOp::Crosshatch(_) | EditOp::GradientMap { .. } => (0, 100, 5),
+            | EditOp::Crosshatch(_) | EditOp::GradientMap { .. }
+            | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -422,6 +434,8 @@ impl EditOp {
             EditOp::Kelvin(_) => "Kelvin white balance".into(),
             EditOp::GradientMap { .. } => "gradient map".into(),
             EditOp::Crosshatch(_) => "cross-hatch".into(),
+            EditOp::EnhanceSky(_) => "enhance sky".into(),
+            EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::Border { aspect_w, aspect_h, .. } => {
                 if aspect_w <= 0 || aspect_h <= 0 {
@@ -527,6 +541,8 @@ impl EditOp {
             EditOp::Kelvin(v) => val_op(&mut params, v, "kelvin"),
             EditOp::GradientMap { style, strength } => style_op(&mut params, style, strength, "gradient_map"),
             EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
+            EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
+            EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::Border { aspect_w, aspect_h, mode } => {
                 params.insert("aspect_w".into(), serde_json::json!(aspect_w));
@@ -638,6 +654,8 @@ impl EditOp {
             "kelvin" | "temperature" | "white_balance" => EditOp::Kelvin(0),
             "gradient_map" | "gradientmap" => EditOp::GradientMap { style: 1, strength: 100 },
             "crosshatch" | "hatch" => EditOp::Crosshatch(100),
+            "enhance_sky" | "better_sky" | "sky" => EditOp::EnhanceSky(100),
+            "auto_wb" | "auto_white_balance" | "gray_world" => EditOp::AutoWhiteBalance(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
             "pop_reds" | "pop_red" | "boost_reds" => EditOp::SelectiveColor { hue: 0, sat: 45 },
             "mute_reds" | "mute_red" => EditOp::SelectiveColor { hue: 0, sat: -55 },
@@ -748,6 +766,8 @@ impl EditOp {
             "kelvin" => EditOp::Kelvin(val()),
             "gradient_map" => EditOp::GradientMap { style: iv("style", 1), strength: iv("strength", 100) },
             "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
+            "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
+            "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "pixelate" => EditOp::Pixelate(val()),
             "border" => EditOp::Border {
                 aspect_w: iv("aspect_w", 0),
@@ -1769,6 +1789,68 @@ mod adjust {
         DynamicImage::ImageRgb8(out)
     }
 
+    /// "Better sky": a NO-AI, no-manual-mask sky enhancer. Builds a soft per-pixel sky mask from a
+    /// vertical prior (sky sits up top) combined with blue-dominance OR bright/near-neutral (overcast)
+    /// colour, then applies a polarizer-like effect — saturate & slightly deepen the blue, nudging it
+    /// richer — weighted by `mask × amount/100`. At `amount = 0` the mask is zero → byte-identical.
+    pub fn enhance_sky(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let strength = amount.clamp(0, 100) as f32 / 100.0;
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            let fy = if h > 1 { y as f32 / (h - 1) as f32 } else { 0.0 };
+            // Vertical prior: full weight in the top ~35 %, fading to 0 by ~90 % down.
+            let wy = 1.0 - smoothstep(0.35, 0.9, fy);
+            for x in 0..w {
+                let p = rgb.get_pixel(x, y).0;
+                let (r, g, b) = (p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0);
+                let yl = luma(r, g, b);
+                // Blue sky: blue channel clearly above the red/green mean.
+                let blue = smoothstep(0.01, 0.16, b - (r + g) * 0.5);
+                // Overcast / hazy sky: bright and near-neutral.
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+                let bright = smoothstep(0.72, 0.97, yl) * (1.0 - smoothstep(0.15, 0.4, sat));
+                let mask = (wy * blue.max(bright)).clamp(0.0, 1.0) * strength;
+                // Polarizer: push chroma out from luma, deepen a touch, keep the blue rich.
+                let k = 1.0 + 0.45 * mask;
+                let deepen = 1.0 - 0.12 * mask;
+                let nr = (yl + (r - yl) * k) * deepen;
+                let ng = (yl + (g - yl) * k) * deepen;
+                let nb = ((yl + (b - yl) * k) * deepen + 0.05 * mask).min(1.0);
+                out.put_pixel(x, y, Rgb([enc(nr), enc(ng), enc(nb)]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Gray-world auto white balance: scale each channel so its mean moves toward the overall grey,
+    /// neutralising a colour cast. `amount` 0..100 blends channel gains toward the full correction
+    /// (0 = identity).
+    pub fn auto_white_balance(img: &DynamicImage, amount: i32) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let n = rgb.width() as f64 * rgb.height() as f64;
+        if n == 0.0 {
+            return DynamicImage::ImageRgb8(rgb);
+        }
+        let (mut sr, mut sg, mut sb) = (0f64, 0f64, 0f64);
+        for p in rgb.pixels() {
+            sr += p.0[0] as f64;
+            sg += p.0[1] as f64;
+            sb += p.0[2] as f64;
+        }
+        let (mr, mg, mb) = (sr / n, sg / n, sb / n);
+        let gray = (mr + mg + mb) / 3.0;
+        let t = amount.clamp(0, 100) as f32 / 100.0;
+        let gain = |m: f64| -> f32 {
+            if m < 1.0 { 1.0 } else { (1.0 - t) + t * (gray / m) as f32 }
+        };
+        let (kr, kg, kb) = (gain(mr), gain(mg), gain(mb));
+        map_rgb(img, |r, g, b| [r * kr, g * kg, b * kb])
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -2097,6 +2179,7 @@ mod tests {
             EditOp::Emboss(50), EditOp::Pixelate(40), EditOp::Blur(60), EditOp::Bloom(70),
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
+            EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85),
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -2296,6 +2379,34 @@ mod tests {
         let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(4, 4, Rgb([128, 128, 128])));
         let warm = EditOp::Kelvin(60).apply(grey.clone()).to_rgb8().get_pixel(0, 0).0;
         assert!(warm[0] >= warm[2], "warmer: red ≥ blue");
+    }
+
+    #[test]
+    fn enhance_sky_masks_and_deepens_blue_top() {
+        // Blue sky up top, green grass at the bottom — the enhancer should touch the sky, not the grass.
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(20, 20, |_x, y| {
+            if y < 8 { Rgb([120u8, 160, 235]) } else { Rgb([60u8, 130, 50]) }
+        }));
+        let out = EditOp::EnhanceSky(100).apply(img.clone()).to_rgb8();
+        let sky = out.get_pixel(10, 1).0;
+        let grass = out.get_pixel(10, 18).0;
+        assert_ne!(sky, [120, 160, 235], "sky pixel changed");
+        assert!(sky[2] >= 235, "blue kept rich / deepened");
+        assert_eq!(grass, [60, 130, 50], "grass (low, non-blue) untouched");
+        // Strength 0 → byte-identical.
+        assert_eq!(EditOp::EnhanceSky(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
+    }
+
+    #[test]
+    fn auto_white_balance_neutralises_a_cast() {
+        // A red-cast grey: means R>G>B. Gray-world should pull them together.
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(8, 8, Rgb([180u8, 120, 90])));
+        let out = EditOp::AutoWhiteBalance(100).apply(img.clone()).to_rgb8().get_pixel(0, 0).0;
+        let spread_in = 180i32 - 90;
+        let spread_out = out[0].max(out[1]).max(out[2]) as i32 - out[0].min(out[1]).min(out[2]) as i32;
+        assert!(spread_out < spread_in, "cast reduced: {spread_out} < {spread_in}");
+        // Strength 0 → identity.
+        assert_eq!(EditOp::AutoWhiteBalance(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
     }
 
     #[test]
