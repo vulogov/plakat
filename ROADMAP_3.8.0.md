@@ -20,12 +20,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **Trash / soft-delete + restore** (`m t` / `m b`, `:restore` / `:empty trash`) — soft-delete to a
       hidden `<root>/.trash` with a `.manifest`, restore-to-origin, browse, and permanent empty.
 
-## Track B — metadata
+## Track B — metadata — DONE
 
-- [ ] **EXIF / IPTC editor** — edit **capture date** (timezone/clock fixes), **copyright / author /
-      title**, and **geotag** (lat/lon), written to the sidecar + (where lossless) the file.
-- [ ] **EXIF-based smart-album fields** — expose shot metadata (ISO, focal length, camera, date) to the
-      filter grammar so smart albums can select on them.
+- [x] **EXIF / IPTC editor** — edit **title / author / copyright** (new record fields) + **capture
+      date** and **geotag** (into the record's cached EXIF), via the new `d` metadata chord group
+      (`d t`/`d a`/`d c`/`d d`/`d g`/`d e`). Non-destructive (album.hjson); shown in the info panel
+      (record-preferred over the file's EXIF). *Writing back into the file's binary EXIF is a future
+      enhancement — the scrub GPS-redact machinery shows it's feasible.*
+- [x] **EXIF-based smart-album fields** — `matches_filter` now supports `iso`/`focal` (numeric
+      `>`/`>=`/`<`/`<=`/`=`), `camera:`/`lens:`, `date` (`>YYYY`/`<YYYY`/`:text`), `has-gps` /
+      `-has-gps`, and `author:`/`copyright:`/`title:` — all read from the cached record (no file I/O).
 
 ## Track C — editing
 

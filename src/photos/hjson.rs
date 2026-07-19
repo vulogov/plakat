@@ -148,6 +148,11 @@ pub struct ImageRecord {
     pub exif: Option<ExifRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// IPTC-style creator / rights (edited in the manager; stored non-destructively).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
     /// 0–5 (0 = unrated).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rating: u8,

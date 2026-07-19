@@ -148,6 +148,21 @@ command's chord in its right column.
 Also, `*` (tree or grid) = **flatten browse** — show every image beneath a folder / mixed album in
 one grid; `:flatten` does the same.
 
+### `d` — metadata (per-image, stored in the album record)
+| Chord | Command |
+|-------|---------|
+| `Ctrl-B d t` | set title… |
+| `Ctrl-B d a` | set author / creator… |
+| `Ctrl-B d c` | set copyright… |
+| `Ctrl-B d d` | set capture date… |
+| `Ctrl-B d g` | set geotag (lat, lon)… |
+| `Ctrl-B d e` | set caption… |
+
+Edited metadata (title / author / copyright / date / geotag) is stored non-destructively in
+`album.hjson` and shown in the info panel. It's **filterable** in the filter bar / smart albums:
+`iso>3200`, `focal=50`, `camera:canon`, `lens:35`, `date>2023` / `date:2024`, `has-gps` /
+`-has-gps`, `author:jane`, `copyright:acme`, `title:sunset` (all read from the cached record).
+
 ### `s` — stylize (looks & filters)
 | Chord | Command |
 |-------|---------|

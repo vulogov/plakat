@@ -216,6 +216,7 @@ enum EditCmd {
     RestoreTrash, // restore everything from .trash
     EmptyTrash,  // permanently purge .trash (confirms)
     Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
+    Meta(EditField), // edit a per-image metadata field (title / author / copyright / date / geotag)
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     // AI "create" ops (prompt-driven generation → a new album image). These load a model.
     Generate,     // txt2img from a prompt
@@ -230,7 +231,7 @@ enum EditCmd {
 /// The Edit palette's command list: `(searchable label, action)`.
 /// The category keys for the `Ctrl-B` edit chords (the first key after the leader, in image view).
 /// Each avoids the global leader keys (h/H/t/v/p/l/L).
-fn chord_categories() -> [(char, &'static str); 10] {
+fn chord_categories() -> [(char, &'static str); 11] {
     [
         ('g', "geometry"),
         ('c', "crop"),
@@ -242,6 +243,7 @@ fn chord_categories() -> [(char, &'static str); 10] {
         ('s', "stylize (looks & filters)"),
         ('n', "AI create (generate / portrait / scene)"),
         ('r', "retouch (heal / clone / dodge / perspective)"),
+        ('d', "metadata (title / author / copyright / date / geotag)"),
     ]
 }
 
@@ -470,6 +472,13 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("dodge (lighten) brush…", "rd", EditCmd::Retouch(PickOp::Dodge)),
         ("burn (darken) brush…", "rb", EditCmd::Retouch(PickOp::Burn)),
         ("perspective rectify (pick 4 corners)…", "rp", EditCmd::Retouch(PickOp::Perspective)),
+        // Metadata (d) — per-image, stored non-destructively in the album record.
+        ("set title…", "dt", EditCmd::Meta(EditField::Title)),
+        ("set author / creator…", "da", EditCmd::Meta(EditField::Author)),
+        ("set copyright…", "dc", EditCmd::Meta(EditField::Copyright)),
+        ("set capture date…", "dd", EditCmd::Meta(EditField::DateTaken)),
+        ("set geotag (lat, lon)…", "dg", EditCmd::Meta(EditField::Geotag)),
+        ("set caption…", "de", EditCmd::Meta(EditField::Caption)),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -499,6 +508,10 @@ enum EditField {
     Notes,
     Title,
     Tags,
+    Author,
+    Copyright,
+    DateTaken,
+    Geotag,
 }
 
 /// An album-level metadata field editable from the tree (info editor / `t`·`T`).
@@ -1860,6 +1873,10 @@ impl App {
                 self.quality_cull();
             }
             EditCmd::Retouch(op) => self.enter_pick(op),
+            EditCmd::Meta(field) => {
+                self.edit_menu = false;
+                self.begin_edit(field);
+            }
             EditCmd::MoveToAlbum { copy } => {
                 self.edit_menu = false;
                 let verb = if copy { "copy" } else { "move" };
@@ -4271,6 +4288,19 @@ impl App {
             EditField::Notes => ("notes: ", rec.and_then(|r| r.notes.clone()).unwrap_or_default()),
             EditField::Title => ("title: ", rec.and_then(|r| r.title.clone()).unwrap_or_default()),
             EditField::Tags => ("tags (comma-sep): ", rec.map(|r| r.tags.join(", ")).unwrap_or_default()),
+            EditField::Author => ("author / creator: ", rec.and_then(|r| r.author.clone()).unwrap_or_default()),
+            EditField::Copyright => ("copyright: ", rec.and_then(|r| r.copyright.clone()).unwrap_or_default()),
+            EditField::DateTaken => (
+                "capture date (YYYY-MM-DD or YYYY:MM:DD HH:MM:SS): ",
+                rec.and_then(|r| r.exif.as_ref()).and_then(|e| e.date_taken.clone()).unwrap_or_default(),
+            ),
+            EditField::Geotag => (
+                "geotag — lat, lon (decimal): ",
+                rec.and_then(|r| r.exif.as_ref())
+                    .and_then(|e| e.gps_lat.zip(e.gps_lon))
+                    .map(|(la, lo)| format!("{la}, {lo}"))
+                    .unwrap_or_default(),
+            ),
         };
         self.prompt(label, prefill, PendingCmd::EditMeta { path, field });
     }
@@ -4325,6 +4355,23 @@ impl App {
                         EditField::Notes => rec.notes = val,
                         EditField::Title => rec.title = val,
                         EditField::Tags => rec.tags = parse_tags(&arg),
+                        EditField::Author => rec.author = val,
+                        EditField::Copyright => rec.copyright = val,
+                        EditField::DateTaken => rec.exif.get_or_insert_with(Default::default).date_taken = val,
+                        EditField::Geotag => {
+                            let e = rec.exif.get_or_insert_with(Default::default);
+                            if arg.trim().is_empty() {
+                                e.gps_lat = None;
+                                e.gps_lon = None;
+                            } else {
+                                let nums: Vec<f64> =
+                                    arg.split([',', ' ']).filter_map(|t| t.trim().parse().ok()).collect();
+                                if nums.len() >= 2 {
+                                    e.gps_lat = Some(nums[0]);
+                                    e.gps_lon = Some(nums[1]);
+                                }
+                            }
+                        }
                     });
                     meta_changed = true;
                 }
@@ -7248,6 +7295,7 @@ fn tok_match(tok: &str, name: &str, rec: Option<&hjson::ImageRecord>) -> bool {
     let flagged = rec.map(|r| r.flagged).unwrap_or(false);
     let rejected = rec.map(|r| r.rejected).unwrap_or(false);
     let has_tag = |t: &str| rec.map(|r| r.tags.iter().any(|g| g.eq_ignore_ascii_case(t))).unwrap_or(false);
+    let exif = rec.and_then(|r| r.exif.as_ref());
     match tok {
         "unrated" => rating == 0,
         "flag" | "flagged" => flagged,
@@ -7260,8 +7308,66 @@ fn tok_match(tok: &str, name: &str, rec: Option<&hjson::ImageRecord>) -> bool {
         _ if tok.starts_with("rating=") => tok[7..].parse::<u8>().map(|n| rating == n).unwrap_or(true),
         _ if tok.starts_with("tag:") => has_tag(&tok[4..]),
         _ if tok.starts_with("-tag:") => !has_tag(&tok[5..]),
+        // EXIF / metadata predicates (read from the cached record — no file access).
+        "has-gps" | "geotagged" => exif.is_some_and(|e| e.gps_lat.is_some() && e.gps_lon.is_some()),
+        "-has-gps" => !exif.is_some_and(|e| e.gps_lat.is_some() && e.gps_lon.is_some()),
+        _ if tok.starts_with("iso") => cmp_num(exif.and_then(|e| e.iso).map(|v| v as f64), &tok[3..]),
+        _ if tok.starts_with("focal") => cmp_num(exif.and_then(|e| e.focal_length_mm), &tok[5..]),
+        _ if tok.starts_with("date") => cmp_date(exif.and_then(|e| e.date_taken.as_deref()), &tok[4..]),
+        _ if tok.starts_with("camera:") => exif.is_some_and(|e| {
+            format!("{} {}", e.camera_make.clone().unwrap_or_default(), e.camera_model.clone().unwrap_or_default())
+                .to_lowercase()
+                .contains(&tok[7..].to_lowercase())
+        }),
+        _ if tok.starts_with("lens:") => text_has(exif.and_then(|e| e.lens_model.as_ref()), &tok[5..]),
+        _ if tok.starts_with("author:") => text_has(rec.and_then(|r| r.author.as_ref()), &tok[7..]),
+        _ if tok.starts_with("copyright:") => text_has(rec.and_then(|r| r.copyright.as_ref()), &tok[10..]),
+        _ if tok.starts_with("title:") => text_has(rec.and_then(|r| r.title.as_ref()), &tok[6..]),
         _ => name.to_lowercase().contains(&tok.to_lowercase()),
     }
+}
+
+/// Case-insensitive "field contains query" (missing field → no match).
+fn text_has(field: Option<&String>, q: &str) -> bool {
+    field.is_some_and(|v| v.to_lowercase().contains(&q.to_lowercase()))
+}
+
+/// Numeric predicate `>N` / `>=N` / `<N` / `<=N` / `=N` / bare `N` (treated as `>=N`).
+fn cmp_num(val: Option<f64>, spec: &str) -> bool {
+    let Some(v) = val else { return false };
+    let (op, num) = if let Some(r) = spec.strip_prefix(">=") {
+        (">=", r)
+    } else if let Some(r) = spec.strip_prefix("<=") {
+        ("<=", r)
+    } else if let Some(r) = spec.strip_prefix('>') {
+        (">", r)
+    } else if let Some(r) = spec.strip_prefix('<') {
+        ("<", r)
+    } else if let Some(r) = spec.strip_prefix('=') {
+        ("=", r)
+    } else {
+        (">=", spec)
+    };
+    let Ok(n) = num.trim().parse::<f64>() else { return false };
+    match op {
+        ">" => v > n,
+        ">=" => v >= n,
+        "<" => v < n,
+        "<=" => v <= n,
+        _ => (v - n).abs() < 0.5,
+    }
+}
+
+/// Date predicate against the capture year: `>YYYY` / `<YYYY` / `=YYYY` / bare `YYYY`, or `:text`
+/// (the date string contains text).
+fn cmp_date(val: Option<&str>, spec: &str) -> bool {
+    let Some(d) = val else { return false };
+    if let Some(q) = spec.strip_prefix(':') {
+        return d.contains(q);
+    }
+    // EXIF dates are `YYYY:MM:DD …` or `YYYY-MM-DD` — the year is the first four chars.
+    let Some(year) = d.get(0..4).and_then(|s| s.parse::<i32>().ok()) else { return false };
+    cmp_num(Some(year as f64), spec)
 }
 
 fn label_color(l: &str) -> Color {
@@ -8190,7 +8296,10 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
         let path = app.cur_idx().and_then(|i| app.album_paths.get(i).cloned());
         let name = path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("").to_string();
         let mut lines: Vec<Line> = vec![Line::from(Span::styled(name.clone(), Style::new().add_modifier(Modifier::BOLD)))];
-        if let Some(e) = &app.view_exif {
+        let rec_ref = path.as_ref().and_then(|p| app.record(p));
+        // The record's EXIF carries any manual edits (date / geotag); fall back to the file's EXIF.
+        let exif_display = rec_ref.and_then(|r| r.exif.as_ref()).or(app.view_exif.as_ref());
+        if let Some(e) = exif_display {
             let mut kv = |k: &str, v: Option<String>| {
                 if let Some(v) = v {
                     lines.push(Line::from(format!("{k:<9}{v}")));
@@ -8215,6 +8324,17 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
                 (Some(la), Some(lo)) => Some(format!("{la:.4}, {lo:.4}")),
                 _ => None,
             });
+        }
+        // Editable metadata (title / author / copyright) from the record.
+        if let Some(r) = rec_ref {
+            let mut kv = |k: &str, v: Option<String>| {
+                if let Some(v) = v.filter(|s| !s.is_empty()) {
+                    lines.push(Line::from(format!("{k:<9}{v}")));
+                }
+            };
+            kv("Title", r.title.clone());
+            kv("Author", r.author.clone());
+            kv("©", r.copyright.clone());
         }
         if let Some(r) = path.as_ref().and_then(|p| app.record(p)) {
             lines.push(section("curation"));
@@ -8289,6 +8409,38 @@ fn edit_summary(edits: &[hjson::EditEntry]) -> String {
 mod tree_ops_tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
+
+    #[test]
+    fn exif_and_metadata_filter_predicates() {
+        let mut rec = hjson::ImageRecord::default();
+        rec.author = Some("Jane Roe".into());
+        rec.exif = Some(hjson::ExifRecord {
+            date_taken: Some("2024:07:14 12:00:00".into()),
+            camera_make: Some("Canon".into()),
+            camera_model: Some("EOS R5".into()),
+            focal_length_mm: Some(50.0),
+            iso: Some(6400),
+            gps_lat: Some(37.7),
+            gps_lon: Some(-122.4),
+            ..Default::default()
+        });
+        let r = Some(&rec);
+        assert!(matches_filter("x.jpg", r, "iso>3200"));
+        assert!(!matches_filter("x.jpg", r, "iso<3200"));
+        assert!(matches_filter("x.jpg", r, "focal=50"));
+        assert!(matches_filter("x.jpg", r, "camera:canon"));
+        assert!(matches_filter("x.jpg", r, "date>2023"));
+        assert!(!matches_filter("x.jpg", r, "date<2020"));
+        assert!(matches_filter("x.jpg", r, "date:2024"));
+        assert!(matches_filter("x.jpg", r, "has-gps"));
+        assert!(matches_filter("x.jpg", r, "author:jane"));
+        // ALL predicates must hold.
+        assert!(matches_filter("x.jpg", r, "iso>=6400 camera:canon has-gps"));
+        // No EXIF → the exif predicates fail (and -has-gps holds).
+        let empty = hjson::ImageRecord::default();
+        assert!(!matches_filter("y.jpg", Some(&empty), "iso>100"));
+        assert!(matches_filter("y.jpg", Some(&empty), "-has-gps"));
+    }
 
     #[test]
     fn gen_spec_parses_model_and_size() {
