@@ -31,11 +31,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       `>`/`>=`/`<`/`<=`/`=`), `camera:`/`lens:`, `date` (`>YYYY`/`<YYYY`/`:text`), `has-gps` /
       `-has-gps`, and `author:`/`copyright:`/`title:` — all read from the cached record (no file I/O).
 
-## Track C — editing
+## Track C — editing — DONE
 
-- [ ] **Local masked adjustments** — apply *any* tonal/colour adjustment through a **linear-gradient /
-      radial / brush** mask (the Lightroom local-adjust model), generalising the fixed graduated-ND /
-      radial dodge-burn ops. Interactive mask placement reuses the crop / pick-mode patterns.
+- [x] **Local masked adjustments** — `EditOp::LocalAdjust { adjust, amount, shape, dir }`: the base
+      adjustment (exposure / brightness / contrast / saturation / warmth / vibrance / definition /
+      blur) is applied globally then blended back through a **linear-gradient** (from an edge) or
+      **radial** (centre / edges) mask. Reuses every adjustment via `local_base_op` → the base op's own
+      `apply`, then `adjust::local_mask` + `blend_masked`. Slider = amount; curated palette set (`a g`
+      graduated exposure, `a i` radial exposure, + saturation/warmth/blur variants). *Parametric masks
+      only (linear/radial presets); interactive placement + freeform brush masks are a future
+      enhancement (they'd reuse the pick-mode + the layer image-matte).*
 
 ## Stretch
 

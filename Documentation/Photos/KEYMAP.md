@@ -72,6 +72,12 @@ command's chord in its right column.
 | `Ctrl-B a l` | levels (black / white / gamma)… |
 | `Ctrl-B a u` | curves (tone curve)… |
 | `Ctrl-B a q` | CLAHE (adaptive contrast)… |
+| `Ctrl-B a g` | local exposure — graduated (top)… (bottom / saturation / warmth graduated palette-only) |
+| `Ctrl-B a i` | local exposure — radial (centre)… (saturation / edges / radial-blur palette-only) |
+
+**Local (masked) adjustments** apply any base adjustment through a **linear gradient** (from an edge)
+or **radial** mask — the slider sets the amount; e.g. darken a bright sky, warm the foreground, or
+blur the edges for a focus effect.
 
 ### `k` — colour
 | Chord | Command |

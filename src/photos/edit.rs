@@ -161,6 +161,10 @@ pub enum EditOp {
     LensDistort(i32),
     /// Chromatic-aberration removal: rescale R/B channels radially to remove colour fringing; `strength` 0..100.
     ChromaticAberration(i32),
+    /// Local (masked) adjustment: the base adjustment `adjust` (0 exposure · 1 brightness · 2 contrast
+    /// · 3 saturation · 4 warmth · 5 vibrance · 6 definition · 7 blur) applied by `amount` through a
+    /// mask — `shape` 0 linear (from edge `dir` 0-3) or 1 radial (`dir` 1 = edges). Slider = `amount`.
+    LocalAdjust { adjust: i32, amount: i32, shape: i32, dir: i32 },
     /// Retouch (from the pick-mode): coordinates are per-mille of the image, radius per-mille of the
     /// min dimension — so each replays exactly on the pristine original.
     /// Spot heal: fill a disc from its surroundings (dust / blemish removal).
@@ -319,6 +323,7 @@ impl EditOp {
             EditOp::FilmNegative => adjust::film_negative(&img),
             EditOp::LensDistort(v) => lens_distort(&img, v),
             EditOp::ChromaticAberration(v) => chromatic_aberration(&img, v),
+            EditOp::LocalAdjust { adjust, amount, shape, dir } => local_adjust(&img, adjust, amount, shape, dir),
             EditOp::SpotHeal { x, y, radius } => adjust::spot_heal(&img, x, y, radius),
             EditOp::Clone { sx, sy, dx, dy, radius } => adjust::clone_stamp(&img, sx, sy, dx, dy, radius),
             EditOp::RedEye { x, y, radius } => adjust::red_eye(&img, x, y, radius),
@@ -380,6 +385,7 @@ impl EditOp {
             | EditOp::GradientMap { strength, .. }
             | EditOp::FacePolish { strength, .. }
             | EditOp::MotionBlur { strength, .. } => *strength,
+            EditOp::LocalAdjust { amount, .. } => *amount,
             EditOp::Keystone { amount, .. } => *amount,
             _ => return None,
         })
@@ -437,6 +443,7 @@ impl EditOp {
             EditOp::MotionBlur { angle, .. } => EditOp::MotionBlur { angle, strength: v },
             EditOp::LensDistort(_) => EditOp::LensDistort(v),
             EditOp::ChromaticAberration(_) => EditOp::ChromaticAberration(v),
+            EditOp::LocalAdjust { adjust, shape, dir, .. } => EditOp::LocalAdjust { adjust, amount: v, shape, dir },
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -460,6 +467,7 @@ impl EditOp {
             | EditOp::Bilateral(_) | EditOp::FacePolish { .. }
             | EditOp::TiltShift(_) | EditOp::ZoomBlur(_) | EditOp::SpinBlur(_)
             | EditOp::MotionBlur { .. } | EditOp::ChromaticAberration(_) => (0, 100, 5),
+            EditOp::LocalAdjust { adjust: 7, .. } => (0, 100, 5), // local blur is one-sided
             _ => (-100, 100, 5),
         }
     }
@@ -541,6 +549,14 @@ impl EditOp {
             EditOp::FilmNegative => "film negative".into(),
             EditOp::LensDistort(_) => "lens distortion".into(),
             EditOp::ChromaticAberration(_) => "chromatic aberration".into(),
+            EditOp::LocalAdjust { adjust, shape, dir, .. } => {
+                let m = if *shape == 1 {
+                    if *dir == 1 { "radial-edges" } else { "radial" }
+                } else {
+                    ["top", "bottom", "left", "right"].get(*dir as usize).copied().unwrap_or("top")
+                };
+                format!("local {} ({m})", local_adjust_name(*adjust))
+            }
             EditOp::SpotHeal { .. } => "spot heal".into(),
             EditOp::Clone { .. } => "clone stamp".into(),
             EditOp::RedEye { .. } => "red-eye removal".into(),
@@ -685,6 +701,13 @@ impl EditOp {
             EditOp::FilmNegative => "film_negative",
             EditOp::LensDistort(v) => val_op(&mut params, v, "lens_distort"),
             EditOp::ChromaticAberration(v) => val_op(&mut params, v, "chromatic_aberration"),
+            EditOp::LocalAdjust { adjust, amount, shape, dir } => {
+                params.insert("adjust".into(), serde_json::json!(adjust));
+                params.insert("amount".into(), serde_json::json!(amount));
+                params.insert("shape".into(), serde_json::json!(shape));
+                params.insert("dir".into(), serde_json::json!(dir));
+                "local_adjust"
+            }
             EditOp::SpotHeal { x, y, radius } => {
                 params.insert("x".into(), serde_json::json!(x));
                 params.insert("y".into(), serde_json::json!(y));
@@ -985,6 +1008,12 @@ impl EditOp {
             "film_negative" => EditOp::FilmNegative,
             "lens_distort" => EditOp::LensDistort(val()),
             "chromatic_aberration" => EditOp::ChromaticAberration(iv("value", 60)),
+            "local_adjust" => EditOp::LocalAdjust {
+                adjust: iv("adjust", 0),
+                amount: iv("amount", 0),
+                shape: iv("shape", 0),
+                dir: iv("dir", 0),
+            },
             "spot_heal" => EditOp::SpotHeal { x: iv("x", 500), y: iv("y", 500), radius: iv("radius", 60) },
             "clone" => EditOp::Clone {
                 sx: iv("sx", 400), sy: iv("sy", 500), dx: iv("dx", 600), dy: iv("dy", 500), radius: iv("radius", 60),
@@ -1898,6 +1927,53 @@ mod adjust {
         DynamicImage::ImageRgb8(image::imageops::blur(&img.to_rgb8(), s as f32 / 100.0 * 8.0))
     }
 
+    /// Build a per-pixel mask (0..1) for a local adjustment. `shape` 0 = linear gradient from edge
+    /// `dir` (0 top · 1 bottom · 2 left · 3 right); `shape` 1 = centred radial (`dir` 1 inverts it to
+    /// favour the edges, like a vignette region).
+    pub fn local_mask(img: &DynamicImage, shape: i32, dir: i32) -> Vec<f32> {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (wf, hf) = ((w.max(1) - 1) as f32, (h.max(1) - 1) as f32);
+        let mut m = vec![0f32; (w * h) as usize];
+        for y in 0..h {
+            let fy = y as f32 / hf;
+            for x in 0..w {
+                let fx = x as f32 / wf;
+                let v = if shape == 1 {
+                    let d = (((fx - 0.5) * 2.0).powi(2) + ((fy - 0.5) * 2.0).powi(2)).sqrt();
+                    let base = 1.0 - smoothstep(0.2, 0.95, d);
+                    if dir == 1 { 1.0 - base } else { base }
+                } else {
+                    match dir {
+                        1 => smoothstep(0.1, 0.9, fy),       // from bottom
+                        2 => 1.0 - smoothstep(0.1, 0.9, fx), // from left
+                        3 => smoothstep(0.1, 0.9, fx),       // from right
+                        _ => 1.0 - smoothstep(0.1, 0.9, fy), // from top
+                    }
+                };
+                m[(y * w + x) as usize] = v.clamp(0.0, 1.0);
+            }
+        }
+        m
+    }
+
+    /// Blend `adjusted` over `orig` per-pixel by `mask` (same-size RGB): `out = orig·(1−m) + adjusted·m`.
+    pub fn blend_masked(orig: &DynamicImage, adjusted: &DynamicImage, mask: &[f32]) -> DynamicImage {
+        let o = orig.to_rgb8();
+        let a = adjusted.to_rgb8();
+        let (w, h) = (o.width(), o.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let m = mask.get((y * w + x) as usize).copied().unwrap_or(0.0);
+                let op = o.get_pixel(x, y).0;
+                let ap = a.get_pixel(x, y).0;
+                out.put_pixel(x, y, Rgb(std::array::from_fn(|c| (op[c] as f32 * (1.0 - m) + ap[c] as f32 * m) as u8)));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Tilt-shift / miniature: keep a horizontal band in focus, blur increasingly toward the top and
     /// bottom, and add a saturation/contrast pop (the "toy model" look). `strength` 0..100.
     pub fn tilt_shift(img: &DynamicImage, strength: i32) -> DynamicImage {
@@ -2692,6 +2768,49 @@ fn watermark(img: &DynamicImage, text: &str, font: Option<&str>) -> DynamicImage
     DynamicImage::ImageRgb8(rgb)
 }
 
+/// Map a local-adjust `adjust` index to the base tonal/colour op it drives (reusing all the existing
+/// adjustment logic). Kept in sync with `local_adjust_name`.
+fn local_base_op(adjust: i32, amount: i32) -> EditOp {
+    match adjust {
+        1 => EditOp::Brightness(amount),
+        2 => EditOp::Contrast(amount),
+        3 => EditOp::Saturation(amount),
+        4 => EditOp::Warmth(amount),
+        5 => EditOp::Vibrance(amount),
+        6 => EditOp::Definition(amount),
+        7 => EditOp::Blur(amount),
+        _ => EditOp::Exposure(amount),
+    }
+}
+
+/// Human name for a local-adjust index.
+fn local_adjust_name(adjust: i32) -> &'static str {
+    match adjust {
+        1 => "brightness",
+        2 => "contrast",
+        3 => "saturation",
+        4 => "warmth",
+        5 => "vibrance",
+        6 => "definition",
+        7 => "blur",
+        _ => "exposure",
+    }
+}
+
+/// Local (masked) adjustment: apply the base adjustment globally, then blend it back through a linear
+/// or radial mask — a Lightroom-style graduated / radial local adjustment for *any* tonal/colour op.
+fn local_adjust(img: &DynamicImage, adjust: i32, amount: i32, shape: i32, dir: i32) -> DynamicImage {
+    if amount == 0 {
+        return img.clone();
+    }
+    let adjusted = local_base_op(adjust, amount).apply(img.clone());
+    if adjusted.width() != img.width() || adjusted.height() != img.height() {
+        return adjusted; // shouldn't happen (these ops keep dims) — fail open
+    }
+    let mask = adjust::local_mask(img, shape, dir);
+    adjust::blend_masked(img, &adjusted, &mask)
+}
+
 /// Lens distortion correction: a radial warp about the centre — `amount` > 0 corrects **barrel**
 /// (bulging) distortion, < 0 corrects **pincushion**. `r_src = r · (1 + k·r²)` with `r` normalised to
 /// the corner. Bilinear, edge-clamped. `amount` −100..100.
@@ -2961,6 +3080,7 @@ mod tests {
             EditOp::TiltShift(70), EditOp::MotionBlur { angle: 45, strength: 60 }, EditOp::ZoomBlur(50),
             EditOp::SpinBlur(40), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
             EditOp::LensDistort(-40), EditOp::ChromaticAberration(60),
+            EditOp::LocalAdjust { adjust: 4, amount: 30, shape: 0, dir: 2 },
             EditOp::SpotHeal { x: 400, y: 300, radius: 60 },
             EditOp::Clone { sx: 300, sy: 400, dx: 600, dy: 400, radius: 55 },
             EditOp::RedEye { x: 450, y: 350, radius: 40 },
@@ -3162,6 +3282,8 @@ mod tests {
             EditOp::TiltShift(80), EditOp::MotionBlur { angle: 0, strength: 80 }, EditOp::ZoomBlur(70),
             EditOp::SpinBlur(60), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
             EditOp::LensDistort(60), EditOp::ChromaticAberration(80),
+            EditOp::LocalAdjust { adjust: 0, amount: 50, shape: 0, dir: 0 },
+            EditOp::LocalAdjust { adjust: 3, amount: -40, shape: 1, dir: 1 },
         ] {
             let label = op.label();
             let out = op.apply(src.clone()).to_rgb8();
@@ -3198,6 +3320,19 @@ mod tests {
         assert_eq!(grass, [60, 130, 50], "grass (low, non-blue) untouched");
         // Strength 0 → byte-identical.
         assert_eq!(EditOp::EnhanceSky(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
+    }
+
+    #[test]
+    fn local_adjust_applies_through_the_mask_only() {
+        // A flat grey; local exposure +60 through a top gradient should lift the TOP much more than
+        // the bottom (which the mask barely reaches). Amount 0 is identity.
+        let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(20, 40, Rgb([120u8, 120, 120])));
+        let out = EditOp::LocalAdjust { adjust: 0, amount: 60, shape: 0, dir: 0 }.apply(grey.clone()).to_rgb8();
+        let top = out.get_pixel(10, 1).0[0];
+        let bottom = out.get_pixel(10, 38).0[0];
+        assert!(top > 120, "top lifted by the local exposure: {top}");
+        assert!(top > bottom + 20, "gradient localises the effect: top {top} >> bottom {bottom}");
+        assert_eq!(EditOp::LocalAdjust { adjust: 0, amount: 0, shape: 0, dir: 0 }.apply(grey.clone()).to_rgb8(), grey.to_rgb8());
     }
 
     #[test]

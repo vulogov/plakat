@@ -330,6 +330,15 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("levels (black / white / gamma)…", "al", EditCmd::Levels),
         ("curves (tone curve)…", "au", EditCmd::Curve),
         ("CLAHE (adaptive contrast)…", "aq", EditCmd::Adjust(Clahe(0))),
+        // Local (masked) adjustments — the base op applied through a linear / radial mask; slider = amount.
+        ("local exposure — graduated (top)…", "ag", EditCmd::Adjust(LocalAdjust { adjust: 0, amount: 0, shape: 0, dir: 0 })),
+        ("local exposure — graduated (bottom)…", "", EditCmd::Adjust(LocalAdjust { adjust: 0, amount: 0, shape: 0, dir: 1 })),
+        ("local saturation — graduated (top)…", "", EditCmd::Adjust(LocalAdjust { adjust: 3, amount: 0, shape: 0, dir: 0 })),
+        ("local warmth — graduated (top)…", "", EditCmd::Adjust(LocalAdjust { adjust: 4, amount: 0, shape: 0, dir: 0 })),
+        ("local exposure — radial (centre)…", "ai", EditCmd::Adjust(LocalAdjust { adjust: 0, amount: 0, shape: 1, dir: 0 })),
+        ("local saturation — radial (centre)…", "", EditCmd::Adjust(LocalAdjust { adjust: 3, amount: 0, shape: 1, dir: 0 })),
+        ("local exposure — radial (edges)…", "", EditCmd::Adjust(LocalAdjust { adjust: 0, amount: 0, shape: 1, dir: 1 })),
+        ("local blur — radial (edges → focus)…", "", EditCmd::Adjust(LocalAdjust { adjust: 7, amount: 0, shape: 1, dir: 1 })),
         // Colour (k)
         ("saturation…", "ks", EditCmd::Adjust(Saturation(0))),
         ("vibrance…", "kv", EditCmd::Adjust(Vibrance(0))),
