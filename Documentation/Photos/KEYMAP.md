@@ -140,6 +140,7 @@ command's chord in its right column.
 | `Ctrl-B s i` | ink: European · `s j` Japanese sumi-e · `s h` Chinese wash · `s r` Russian icon |
 | `Ctrl-B s b` | false colour: thermal (infrared / night-vision palette-only) |
 | `Ctrl-B s y` | cross-hatch · `s m` gradient map: warm (cyanotype / fire / teal-orange palette-only) |
+| `Ctrl-B s z` | crystallize (Voronoi / low-poly)… |
 | `Ctrl-B s v` | look: vintage · `s l` lomo · `s c` cross-process |
 | `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour · `s a` old photo · `s q` daguerreotype |
 

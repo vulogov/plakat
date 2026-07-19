@@ -132,6 +132,9 @@ pub enum EditOp {
     GradientMap { style: i32, strength: i32 },
     /// Cross-hatch (ink hatching by tone); `strength` 0..100.
     Crosshatch(i32),
+    /// Crystallize (Voronoi): flat-fill jittered polygonal cells with their average colour (a
+    /// stained-glass / low-poly look); `strength` 0..100 sets the cell size (0 = identity).
+    Crystallize(i32),
     /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
     /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
     /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
@@ -259,6 +262,7 @@ impl EditOp {
                 let k = (n.max(0) as usize).min(faces.len());
                 adjust::face_polish(&img, strength, &faces[..k])
             }
+            EditOp::Crystallize(v) => adjust::crystallize(&img, v),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
@@ -299,7 +303,7 @@ impl EditOp {
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
             | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
-            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) => v,
+            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v) => v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
@@ -356,6 +360,7 @@ impl EditOp {
             EditOp::FalseColor { style, .. } => EditOp::FalseColor { style, strength: v },
             EditOp::Kelvin(_) => EditOp::Kelvin(v),
             EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
+            EditOp::Crystallize(_) => EditOp::Crystallize(v),
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -375,7 +380,7 @@ impl EditOp {
             | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
             | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
             | EditOp::Crosshatch(_) | EditOp::GradientMap { .. }
-            | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_)
+            | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) | EditOp::Crystallize(_)
             | EditOp::FacePolish { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
@@ -446,6 +451,7 @@ impl EditOp {
             EditOp::Kelvin(_) => "Kelvin white balance".into(),
             EditOp::GradientMap { .. } => "gradient map".into(),
             EditOp::Crosshatch(_) => "cross-hatch".into(),
+            EditOp::Crystallize(_) => "crystallize".into(),
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
@@ -554,6 +560,7 @@ impl EditOp {
             EditOp::Kelvin(v) => val_op(&mut params, v, "kelvin"),
             EditOp::GradientMap { style, strength } => style_op(&mut params, style, strength, "gradient_map"),
             EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
+            EditOp::Crystallize(v) => val_op(&mut params, v, "crystallize"),
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::FacePolish { strength, faces, n } => {
@@ -675,6 +682,7 @@ impl EditOp {
             "kelvin" | "temperature" | "white_balance" => EditOp::Kelvin(0),
             "gradient_map" | "gradientmap" => EditOp::GradientMap { style: 1, strength: 100 },
             "crosshatch" | "hatch" => EditOp::Crosshatch(100),
+            "crystallize" | "voronoi" | "low_poly" | "stained_glass" => EditOp::Crystallize(100),
             "enhance_sky" | "better_sky" | "sky" => EditOp::EnhanceSky(100),
             "auto_wb" | "auto_white_balance" | "gray_world" => EditOp::AutoWhiteBalance(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
@@ -787,6 +795,7 @@ impl EditOp {
             "kelvin" => EditOp::Kelvin(val()),
             "gradient_map" => EditOp::GradientMap { style: iv("style", 1), strength: iv("strength", 100) },
             "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
+            "crystallize" => EditOp::Crystallize(iv("value", 100)),
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "face_polish" => {
@@ -1883,6 +1892,79 @@ mod adjust {
         map_rgb(img, |r, g, b| [r * kr, g * kg, b * kb])
     }
 
+    /// Crystallize (Voronoi): partition the image into jittered polygonal cells (a grid of seed
+    /// points nudged by a deterministic hash) and flat-fill each cell with its average colour — a
+    /// stained-glass / low-poly look. `strength` 0..100 sets the cell size (0 = identity). Fully
+    /// deterministic (grid + hash jitter), so it replays byte-identically.
+    pub fn crystallize(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s <= 0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let maxcell = (w.min(h) as f32 / 12.0).max(3.0);
+        let cell = (2.0 + (s as f32 / 100.0) * maxcell).max(2.0);
+        let cols = ((w as f32 / cell).ceil() as u32).max(1);
+        let rows = ((h as f32 / cell).ceil() as u32).max(1);
+        // Deterministic integer hash → per-seed jitter (replay-stable, no RNG).
+        let hash = |a: u32, b: u32| -> u32 {
+            let mut x = a.wrapping_mul(374761393).wrapping_add(b.wrapping_mul(668265263));
+            x = (x ^ (x >> 13)).wrapping_mul(1274126177);
+            x ^ (x >> 16)
+        };
+        let seed_pos = |gx: u32, gy: u32| -> (f32, f32) {
+            let jx = (hash(gx, gy) & 0xffff) as f32 / 65535.0 - 0.5;
+            let jy = (hash(gx.wrapping_add(7), gy.wrapping_add(31)) & 0xffff) as f32 / 65535.0 - 0.5;
+            ((gx as f32 + 0.5 + jx) * cell, (gy as f32 + 0.5 + jy) * cell)
+        };
+        let ncells = (cols * rows) as usize;
+        let mut sum = vec![[0u64; 3]; ncells];
+        let mut cnt = vec![0u32; ncells];
+        let mut cell_of = vec![0u32; (w * h) as usize];
+        for y in 0..h {
+            let gy = ((y as f32 / cell) as u32).min(rows - 1);
+            for x in 0..w {
+                let gx = ((x as f32 / cell) as u32).min(cols - 1);
+                // Nearest seed among the 3×3 neighbouring grid cells (jitter stays within one cell).
+                let mut best = gy * cols + gx;
+                let mut bestd = f32::MAX;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let sx = gx as i32 + dx;
+                        let sy = gy as i32 + dy;
+                        if sx < 0 || sy < 0 || sx >= cols as i32 || sy >= rows as i32 {
+                            continue;
+                        }
+                        let (px, py) = seed_pos(sx as u32, sy as u32);
+                        let d = (px - x as f32).powi(2) + (py - y as f32).powi(2);
+                        if d < bestd {
+                            bestd = d;
+                            best = sy as u32 * cols + sx as u32;
+                        }
+                    }
+                }
+                let idx = (y * w + x) as usize;
+                cell_of[idx] = best;
+                let p = rgb.get_pixel(x, y).0;
+                let c = best as usize;
+                sum[c][0] += p[0] as u64;
+                sum[c][1] += p[1] as u64;
+                sum[c][2] += p[2] as u64;
+                cnt[c] += 1;
+            }
+        }
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let c = cell_of[(y * w + x) as usize] as usize;
+                let n = cnt[c].max(1) as u64;
+                out.put_pixel(x, y, Rgb([(sum[c][0] / n) as u8, (sum[c][1] / n) as u8, (sum[c][2] / n) as u8]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Face polish: edge-preserving skin smoothing limited to the detected face `ellipses`
     /// (`(cx, cy, rx, ry)` in per-mille of the image), blended by `strength` 0..100. A selective
     /// Gaussian — smooth low-detail skin (cheeks/forehead) while keeping high-detail edges (eyes,
@@ -2269,7 +2351,7 @@ mod tests {
             EditOp::Emboss(50), EditOp::Pixelate(40), EditOp::Blur(60), EditOp::Bloom(70),
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
-            EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85),
+            EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85), EditOp::Crystallize(60),
             EditOp::FacePolish {
                 strength: 65,
                 faces: [[500, 400, 120, 150], [300, 350, 90, 110], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
@@ -2459,7 +2541,7 @@ mod tests {
             EditOp::FalseColor { style: 1, strength: 100 }, EditOp::FalseColor { style: 2, strength: 100 },
             EditOp::FalseColor { style: 3, strength: 100 },
             EditOp::GradientMap { style: 1, strength: 100 }, EditOp::GradientMap { style: 3, strength: 100 },
-            EditOp::Crosshatch(100),
+            EditOp::Crosshatch(100), EditOp::Crystallize(80),
         ] {
             let out = op.apply(src.clone()).to_rgb8();
             assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());
@@ -2468,6 +2550,7 @@ mod tests {
         // Pixelate at strength 0 and any filter at strength 0 are identity (blend = original).
         assert_eq!(EditOp::Pixelate(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::Cartoon(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::Crystallize(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::OilPaint { style: 5, strength: 0 }.apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch(100)));
         // Kelvin at 0 is (near) identity; warming shifts red above blue on grey.

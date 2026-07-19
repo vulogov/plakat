@@ -80,6 +80,58 @@ pub fn collage(imgs: &[RgbImage], pad: u32) -> Result<RgbImage> {
     crate::imaging::grid::compose_images(imgs, None, pad)
 }
 
+/// A **mosaic / scrapbook** collage: a *justified-rows* layout (like a Flickr gallery). Images keep
+/// their aspect ratios and are packed left→right into rows, each row then scaled so its images fill
+/// the canvas width exactly — so cell sizes **vary** (a wide panorama gets a big cell, a portrait a
+/// narrow one) instead of the uniform grid `collage` produces. `target_w` is the output width,
+/// `row_h` the nominal row height (the packing target before justification), `pad` the gap. Fully
+/// deterministic.
+pub fn mosaic(imgs: &[RgbImage], target_w: u32, row_h: u32, pad: u32) -> Result<RgbImage> {
+    ensure!(!imgs.is_empty(), "no images for a mosaic");
+    let target_w = target_w.max(64);
+    let row_h = row_h.clamp(48, target_w);
+    let aspect = |im: &RgbImage| im.width() as f32 / im.height().max(1) as f32;
+
+    // Greedily group images into rows: add until the aspect-scaled widths overflow the canvas.
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut cur: Vec<usize> = Vec::new();
+    let mut cur_w = 0f32;
+    for (i, im) in imgs.iter().enumerate() {
+        cur.push(i);
+        cur_w += aspect(im) * row_h as f32 + pad as f32;
+        if cur_w >= target_w as f32 {
+            rows.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+        }
+    }
+    if !cur.is_empty() {
+        rows.push(cur);
+    }
+
+    // Justify each row: pick the height so its scaled widths + gaps fill `target_w` exactly.
+    let mut placements: Vec<(usize, u32, u32, u32, u32)> = Vec::new(); // (idx, x, y, w, h)
+    let mut y = pad;
+    for row in &rows {
+        let sum_asp: f32 = row.iter().map(|&i| aspect(&imgs[i])).sum::<f32>().max(1e-3);
+        let inner = (target_w as f32 - pad as f32 * (row.len() as f32 + 1.0)).max(1.0);
+        let h = (inner / sum_asp).round().clamp(1.0, target_w as f32) as u32;
+        let mut x = pad;
+        for &i in row {
+            let w = (aspect(&imgs[i]) * h as f32).round().max(1.0) as u32;
+            placements.push((i, x, y, w, h));
+            x += w + pad;
+        }
+        y += h + pad;
+    }
+
+    let mut canvas = RgbImage::from_pixel(target_w, y.max(1), image::Rgb([245, 245, 245]));
+    for (i, x, py, w, h) in placements {
+        let scaled = imageops::resize(&imgs[i], w, h, imageops::FilterType::Lanczos3);
+        imageops::overlay(&mut canvas, &scaled, x as i64, py as i64);
+    }
+    Ok(canvas)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +163,14 @@ mod tests {
         let imgs = [solid(20, 20, 10), solid(20, 20, 20), solid(20, 20, 30)];
         assert!(collage(&imgs, 6).unwrap().width() > 0);
         assert!(panorama(&imgs, PanoMode::Grid).unwrap().width() > 0);
+    }
+
+    #[test]
+    fn mosaic_fills_the_target_width_with_varied_cells() {
+        // A wide, a tall, and a square image → a justified mosaic exactly `target_w` wide.
+        let imgs = [solid(80, 20, 10), solid(20, 60, 20), solid(30, 30, 30)];
+        let out = mosaic(&imgs, 400, 100, 8).unwrap();
+        assert_eq!(out.width(), 400, "canvas is exactly the target width");
+        assert!(out.height() > 0);
     }
 }

@@ -54,6 +54,7 @@ pub enum Action {
     Panorama { mode: i32 },
     /// Build a collage from the selected images (or the whole album).
     Collage,
+    Mosaic,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -121,6 +122,7 @@ fn action_label(a: &Action) -> String {
         Action::Duplicate => "duplicate".into(),
         Action::Panorama { mode } => format!("panorama {}", ["horizontal", "vertical", "grid"].get(*mode as usize).unwrap_or(&"horizontal")),
         Action::Collage => "collage".into(),
+        Action::Mosaic => "mosaic".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -258,6 +260,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "panorama vertical" | "stitch vertical" => Some(Action::Panorama { mode: 1 }),
         "panorama grid" | "stitch grid" | "combined panorama" => Some(Action::Panorama { mode: 2 }),
         "collage" | "make collage" | "create collage" => Some(Action::Collage),
+        "mosaic" | "scrapbook" | "make mosaic" | "create mosaic" => Some(Action::Mosaic),
         _ => None,
     }
 }
@@ -295,6 +298,7 @@ fn edit_op_word(s: &str) -> Option<String> {
         "chinese ink" | "ink wash" | "shan shui" => "chinese_ink",
         "russian icon" | "russian religious" | "tempera" | "icon" => "russian_icon",
         "cross-hatch" | "crosshatch" | "hatch" => "crosshatch",
+        "crystallize" | "voronoi" | "low poly" | "low-poly" | "stained glass" => "crystallize",
         "enhance sky" | "better sky" | "fix sky" | "sky" => "enhance_sky",
         "auto white balance" | "auto wb" | "gray world" | "neutralize" | "neutralise" => "auto_wb",
         "gradient map" | "gradient-map" | "gradientmap" => "gradient_map",

@@ -361,6 +361,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("halftone / newsprint…", "sf", EditCmd::Adjust(Halftone(100))),
         ("pixelate / mosaic…", "sx", EditCmd::Adjust(Pixelate(0))),
         ("cross-hatch…", "sy", EditCmd::Adjust(Crosshatch(100))),
+        ("crystallize (Voronoi / low-poly)…", "sz", EditCmd::Adjust(Crystallize(100))),
         ("gradient map: warm…", "sm", EditCmd::Adjust(GradientMap { style: 1, strength: 100 })),
         ("gradient map: cyanotype…", "", EditCmd::Adjust(GradientMap { style: 2, strength: 100 })),
         ("gradient map: fire…", "", EditCmd::Adjust(GradientMap { style: 3, strength: 100 })),
@@ -2738,6 +2739,7 @@ impl App {
             Action::Duplicate => self.duplicate_in_album(),
             Action::Panorama { mode } => self.stitch_panorama(stitch::PanoMode::from_i32(mode)),
             Action::Collage => self.make_collage(),
+            Action::Mosaic => self.make_mosaic(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -3018,6 +3020,40 @@ impl App {
                 }
             }
             Err(e) => self.status = format!("collage failed: {e:#}"),
+        }
+    }
+
+    /// Build a **mosaic / scrapbook** collage (justified rows — varied cell sizes) from the selected
+    /// images, or the whole album if none are selected → a new `mosaic.png` in the album.
+    fn make_mosaic(&mut self) {
+        let paths: Vec<PathBuf> = if self.selected.is_empty() {
+            self.album_paths.clone()
+        } else {
+            self.target_sources().into_iter().map(|(_, p)| p).collect()
+        };
+        if paths.len() < 2 {
+            self.status = "need 2+ images for a mosaic".into();
+            return;
+        }
+        let Some(dir) = self.album_dir.clone() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        let imgs: Vec<image::RgbImage> =
+            paths.iter().filter_map(|p| loader::load(p).ok().map(|i| i.to_rgb8())).collect();
+        match stitch::mosaic(&imgs, 1600, 340, 10) {
+            Ok(c) => {
+                let dest = variant_path(&dir, "mosaic", "scrapbook", "png");
+                if c.save(&dest).is_ok() {
+                    let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    self.rescan();
+                    self.select_by_name(&name);
+                    self.status = format!("mosaic of {} images → '{name}'", imgs.len());
+                } else {
+                    self.status = "couldn't save the mosaic".into();
+                }
+            }
+            Err(e) => self.status = format!("mosaic failed: {e:#}"),
         }
     }
 
@@ -5446,8 +5482,10 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('p') => app.promote_to_parent(),
         // Duplicate the selected image(s) within the album (a <stem>_copy).
         KeyCode::Char('d') if !ctrl => app.duplicate_in_album(),
-        // Collage from the selection (or the whole album); panorama prompts for a direction.
+        // Collage from the selection (or the whole album); mosaic = varied-cell justified rows;
+        // panorama prompts for a direction.
         KeyCode::Char('w') => app.make_collage(),
+        KeyCode::Char('W') => app.make_mosaic(),
         KeyCode::Char('b') => app.prompt("panorama direction (h / v / grid): ", "h", PendingCmd::Panorama),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);

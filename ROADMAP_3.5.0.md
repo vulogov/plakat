@@ -55,11 +55,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - [ ] **EditOp `Copy` refactor** → makes watermark/LUT replayable edits (currently file-ops) and
       unblocks text/path-carrying ops in the edit log.
-- [ ] **True panorama stitch** (feature-matched alignment) as an optional upgrade to the current
-      concatenation stitch; **mosaic/scrapbook collage** (varied cell sizes).
+- [x] **Mosaic / scrapbook collage** (varied cell sizes) — DONE (`stitch::mosaic`, grid `W`, NL
+      "mosaic"). Justified-rows (Flickr-style) layout: images keep aspect, each row scaled to fill the
+      width so cell sizes vary. (**True panorama stitch** with feature-matched alignment still open —
+      the bigger CV task.)
 - [x] Quick creative leftovers: **gradient map** (warm/cyanotype/fire/teal-orange), **cross-hatch**,
-      **Kelvin white balance** — all adjustable 0–100 % (Kelvin bipolar −100..100), palette + chords
-      (`k k` / `s y` / `s m`) + NL verbs. `crystallize (Voronoi)` still open.
+      **Kelvin white balance**, **crystallize (Voronoi / low-poly)** (`stitch`-free pure filter, chord
+      `s z`, NL "crystallize/voronoi") — all adjustable 0–100 % (Kelvin bipolar −100..100), palette +
+      chords + NL verbs.
 - [x] **"Better sky"** (`EnhanceSky`) — no-AI, no-manual-mask sky enhancer: soft sky mask (vertical
       prior × blue-dominance/overcast-brightness) + polarizer (deepen & saturate blue); adjustable
       0–100 %, chord `x y`, NL "enhance sky". **Auto white balance** (`AutoWhiteBalance`, gray-world),

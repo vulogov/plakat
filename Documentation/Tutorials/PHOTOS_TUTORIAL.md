@@ -365,8 +365,11 @@ Two ways to combine several images into one (deterministic layout — no AI alig
   pre-cropped strips or steady tripod sequences.
 - **Collage (`w`)** — press `w` to arrange the selection (or the **whole album** if nothing is
   selected) into a padded grid on a light background → `collage_grid.png`.
+- **Mosaic (`W`)** — a **scrapbook** layout: a justified-rows gallery (like Flickr) where each
+  image keeps its aspect ratio, so **cell sizes vary** — a wide panorama gets a big cell, a
+  portrait a narrow one → `mosaic_scrapbook.png`.
 
-Both are also `:` commands (`panorama vertical`, `collage`).
+All are also `:` commands (`panorama vertical`, `collage`, `mosaic`).
 
 ### Take photo for processing (`P`)
 
@@ -428,7 +431,7 @@ The adjustments:
 | Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **enhance sky** (auto-mask) · **face polish** (auto-detect) · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 | Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
-| Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus Apple-Photos-style **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone** |
+| Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **crystallize** (Voronoi / low-poly) · **cross-hatch** · **gradient map** (warm / cyanotype / fire / teal-orange) · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus the Apple-Photos / iOS set **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone · fade · chrome · process · transfer · instant · tonal · bleach-bypass · teal & orange** |
 
 Every stylize **filter opens the slider** — you dial the strength from **0 % (off) to 100 %
 (full)** and see it live, so effects can be as subtle or as strong as you like. (The *look*
