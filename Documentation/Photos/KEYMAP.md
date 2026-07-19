@@ -140,6 +140,8 @@ command's chord in its right column.
 | `Ctrl-B m c` | convert format / resize (jpg·png·webp) |
 | `Ctrl-B m w` | watermark / caption (burn in text)… |
 | `Ctrl-B m u` | apply LUT (.cube colour grade)… |
+| `Ctrl-B m f` | find near-duplicates (perceptual hash → tag `dup`) |
+| `Ctrl-B m q` | cull soft / badly-exposed (non-AI → reject) |
 
 ### `s` — stylize (looks & filters)
 | Chord | Command |

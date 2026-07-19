@@ -20,6 +20,7 @@ pub mod homography;
 pub mod mledit;
 pub mod mlworker;
 pub mod multishot;
+pub mod quality;
 pub mod nl;
 pub mod portfolio;
 pub mod rename;
@@ -203,6 +204,8 @@ enum EditCmd {
     Convert,    // prompts for format / size
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
+    FindDups,   // group near-duplicates (perceptual dHash) → a review smart view
+    QualityCull, // reject soft / badly-exposed frames (non-AI)
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     // AI "create" ops (prompt-driven generation → a new album image). These load a model.
     Generate,     // txt2img from a prompt
@@ -395,6 +398,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
         ("watermark / caption (burn in text)…", "mw", EditCmd::Watermark),
         ("apply LUT (.cube colour grade)…", "mu", EditCmd::Lut),
+        ("find near-duplicates (perceptual hash)", "mf", EditCmd::FindDups),
+        ("cull soft / badly-exposed (non-AI)", "mq", EditCmd::QualityCull),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -1747,6 +1752,14 @@ impl App {
                 self.edit_menu = false;
                 self.prompt("apply LUT — path to a .cube file: ", "", PendingCmd::Lut);
             }
+            EditCmd::FindDups => {
+                self.edit_menu = false;
+                self.dedup_scan();
+            }
+            EditCmd::QualityCull => {
+                self.edit_menu = false;
+                self.quality_cull();
+            }
             EditCmd::FacePolish => {
                 self.edit_menu = false;
                 if self.cur_source().is_none() {
@@ -2915,6 +2928,7 @@ impl App {
             Action::Mosaic => self.make_mosaic(),
             Action::Hdr => self.make_multishot(false),
             Action::FocusStack => self.make_multishot(true),
+            Action::QualityCull => self.quality_cull(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -3269,6 +3283,56 @@ impl App {
             }
             Err(e) => self.status = format!("{kind} failed: {e:#}"),
         }
+    }
+
+    /// Non-AI quality cull: score every image in the current view for **sharpness** (Laplacian
+    /// variance) and **exposure** (mean brightness), then reject the soft / badly-exposed ones
+    /// (metadata only, undoable via the curation snapshot).
+    fn quality_cull(&mut self) {
+        let paths: Vec<PathBuf> = self.album_paths.clone();
+        if paths.is_empty() {
+            self.status = "no images to check".into();
+            return;
+        }
+        // Adaptive sharpness floor: 35 % of the median sharpness (so it flags the genuinely-soft
+        // outliers for this shoot, not a fixed absolute that mis-fires on low-detail scenes).
+        let mut scores: Vec<(PathBuf, f32, f32)> = Vec::new();
+        for p in &paths {
+            if let Ok(img) = loader::load(p) {
+                scores.push((p.clone(), quality::sharpness(&img), quality::brightness(&img)));
+            }
+        }
+        if scores.is_empty() {
+            self.status = "couldn't read the images".into();
+            return;
+        }
+        let mut sharps: Vec<f32> = scores.iter().map(|s| s.1).collect();
+        sharps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sharps[sharps.len() / 2];
+        let floor = (median * 0.35).max(8.0);
+
+        self.snapshot_meta();
+        let (mut soft, mut under, mut over) = (0u32, 0u32, 0u32);
+        for (p, sharp, bright) in &scores {
+            match quality::judge(*sharp, *bright, floor) {
+                quality::Cull::Keep => {}
+                verdict => {
+                    match verdict {
+                        quality::Cull::Soft => soft += 1,
+                        quality::Cull::Underexposed => under += 1,
+                        quality::Cull::Overexposed => over += 1,
+                        quality::Cull::Keep => {}
+                    }
+                    self.edit_record_at(p, |rec| rec.rejected = true);
+                }
+            }
+        }
+        self.rebuild_view();
+        let total = soft + under + over;
+        self.status = format!(
+            "✓ quality cull: rejected {total} ({soft} soft · {under} dark · {over} bright) of {} — filter 'rejected' to review · undo with u",
+            scores.len()
+        );
     }
 
     /// "Take photo for processing": copy the highest-resolution version of each target image into a

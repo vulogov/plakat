@@ -22,12 +22,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [ ] **4-point perspective rectify** — needs an interactive corner-pick mode; folded into the
       pick-mode stretch below (shares UX with clone/heal), so it lands with that or later.
 
-## Track C — manager gaps (non-AI)
+## Track C — manager gaps (non-AI) — DONE
 
-- [ ] **Duplicate / near-duplicate finder** — a library-wide perceptual-dHash pass; group + flag the
-      dups for review (today the lookalike only compares against one image).
-- [ ] **Quality auto-cull (non-AI)** — Laplacian-variance **blur** score + under/over-exposure flags →
-      auto-reject soft / badly-exposed shots (offline complement to the AI aesthetic cull).
+- [x] **Duplicate / near-duplicate finder** — the `dedup_scan` (perceptual dHash, keep-best +
+      tag `dup`) was NL-only; now on the **edit palette + chord `m f`** too.
+- [x] **Quality auto-cull (non-AI)** (`src/photos/quality.rs`, chord `m q`, NL `cull blurry`) —
+      Laplacian-variance **sharpness** (adaptive floor = 35 % of the shoot's median) + **exposure**
+      bounds → reject soft / too-dark / too-bright frames (metadata, undoable). Offline complement to
+      the AI aesthetic cull.
 
 ## Stretch (needs a new interactive pick-mode)
 
