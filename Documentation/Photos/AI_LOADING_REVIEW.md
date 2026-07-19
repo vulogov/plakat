@@ -75,8 +75,10 @@ non-destructive (new variant file); default CLI output stays byte-identical.
 
 ## Concrete first steps (Track A)
 
-- [~] **CLIP visual search live-verify** — cache is reconnected; run
-  `cargo test --features photos -- --ignored clip_loads_and_embeds` to confirm the in-tree CLIP
-  path end-to-end (the one AI feature already wired into photos, `src/photos/visual_search.rs`).
+- [x] **CLIP visual search live-verify** — DONE. `cargo test --lib --features photos
+  clip_loads_and_embeds_into_joint_space -- --ignored` passes (18.4s): real
+  `openai/clip-vit-large-patch14` weights load from the reconnected cache and embed text+image into
+  the joint space. The in-tree CLIP path (`src/pipelines/clip_embed.rs` → `src/photos/visual_search.rs`)
+  is confirmed end-to-end.
 - [ ] Phase A above (resident `ModelService` for the existing ML ops) — the highest-leverage,
   lowest-risk reuse; unlocks inline progress + cancel + residency with no new model concepts.

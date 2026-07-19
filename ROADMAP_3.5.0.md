@@ -10,9 +10,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Track A — AI in the manager (cache now connected)
 
-- [ ] **CLIP visual search — live-verify.** The cache disk is back; run the ignored test and confirm
-      the in-tree CLIP path end-to-end: `cargo test --features photos -- --ignored clip_loads_and_embeds`.
-      Then exercise `V` (text→image) + `Ctrl-B L` (image→image) on a real album.
+- [x] **CLIP visual search — live-verify.** DONE — cache reconnected;
+      `cargo test --lib --features photos clip_loads_and_embeds_into_joint_space -- --ignored` passes
+      (1 passed, 18.4s): real `openai/clip-vit-large-patch14` weights load and embed text+image into
+      the joint space. The in-tree CLIP path is confirmed end-to-end. (Next: exercise `V` text→image +
+      `Ctrl-B L` image→image on a real album interactively.)
 - [ ] **Face-scan** — detect/group faces across the library (SCRFD + ArcFace are already in-tree);
       surface as a People view / smart grouping.
 - [ ] **Analyze-and-generate** — turn a reference image's analysis into a generation recipe (the
