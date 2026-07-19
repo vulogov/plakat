@@ -145,6 +145,18 @@ pub enum EditOp {
     /// Bilateral denoise: edge-preserving smoothing (a 5×5 range+spatial weighted average) that wipes
     /// noise while keeping edges crisp — cleaner than the median despeckle. `strength` 0..100.
     Bilateral(i32),
+    /// Tilt-shift / miniature: in-focus band + blur toward top/bottom + saturation pop. `strength` 0..100.
+    TiltShift(i32),
+    /// Motion blur: directional streak at `angle`° (0 = horizontal); `strength` 0..100 = length.
+    MotionBlur { angle: i32, strength: i32 },
+    /// Zoom blur: radial streak from the centre; `strength` 0..100.
+    ZoomBlur(i32),
+    /// Spin blur: rotational streak about the centre; `strength` 0..100.
+    SpinBlur(i32),
+    /// Channel-mixer black & white: weighted mono via `r/g/b` channel weights (normalised by sum).
+    ChannelMixerBW { r: i32, g: i32, b: i32 },
+    /// Film-negative conversion: invert + per-channel auto-stretch (removes the orange C-41 mask).
+    FilmNegative,
     /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
     /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
     /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
@@ -283,6 +295,12 @@ impl EditOp {
             }
             EditOp::Crystallize(v) => adjust::crystallize(&img, v),
             EditOp::Bilateral(v) => adjust::bilateral(&img, v),
+            EditOp::TiltShift(v) => adjust::tilt_shift(&img, v),
+            EditOp::MotionBlur { angle, strength } => adjust::motion_blur(&img, angle, strength),
+            EditOp::ZoomBlur(v) => adjust::zoom_blur(&img, v),
+            EditOp::SpinBlur(v) => adjust::spin_blur(&img, v),
+            EditOp::ChannelMixerBW { r, g, b } => adjust::channel_mixer_bw(&img, r, g, b),
+            EditOp::FilmNegative => adjust::film_negative(&img),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Watermark { text, font } => watermark(&img, &text, font.as_deref()),
@@ -329,14 +347,15 @@ impl EditOp {
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
             | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
             | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v)
-            | EditOp::Bilateral(v) => *v,
+            | EditOp::Bilateral(v) | EditOp::TiltShift(v) | EditOp::ZoomBlur(v) | EditOp::SpinBlur(v) => *v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
             | EditOp::Ink { strength, .. }
             | EditOp::FalseColor { strength, .. }
             | EditOp::GradientMap { strength, .. }
-            | EditOp::FacePolish { strength, .. } => *strength,
+            | EditOp::FacePolish { strength, .. }
+            | EditOp::MotionBlur { strength, .. } => *strength,
             EditOp::Keystone { amount, .. } => *amount,
             _ => return None,
         })
@@ -388,6 +407,10 @@ impl EditOp {
             EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
             EditOp::Crystallize(_) => EditOp::Crystallize(v),
             EditOp::Bilateral(_) => EditOp::Bilateral(v),
+            EditOp::TiltShift(_) => EditOp::TiltShift(v),
+            EditOp::ZoomBlur(_) => EditOp::ZoomBlur(v),
+            EditOp::SpinBlur(_) => EditOp::SpinBlur(v),
+            EditOp::MotionBlur { angle, .. } => EditOp::MotionBlur { angle, strength: v },
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -408,7 +431,9 @@ impl EditOp {
             | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
             | EditOp::Crosshatch(_) | EditOp::GradientMap { .. }
             | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) | EditOp::Crystallize(_)
-            | EditOp::Bilateral(_) | EditOp::FacePolish { .. } => (0, 100, 5),
+            | EditOp::Bilateral(_) | EditOp::FacePolish { .. }
+            | EditOp::TiltShift(_) | EditOp::ZoomBlur(_) | EditOp::SpinBlur(_)
+            | EditOp::MotionBlur { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -482,6 +507,12 @@ impl EditOp {
             EditOp::Crosshatch(_) => "cross-hatch".into(),
             EditOp::Crystallize(_) => "crystallize".into(),
             EditOp::Bilateral(_) => "bilateral denoise".into(),
+            EditOp::TiltShift(_) => "tilt-shift".into(),
+            EditOp::MotionBlur { angle, .. } => format!("motion blur {angle}°"),
+            EditOp::ZoomBlur(_) => "zoom blur".into(),
+            EditOp::SpinBlur(_) => "spin blur".into(),
+            EditOp::ChannelMixerBW { .. } => "B&W channel mixer".into(),
+            EditOp::FilmNegative => "film negative".into(),
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
@@ -604,6 +635,21 @@ impl EditOp {
             EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
             EditOp::Crystallize(v) => val_op(&mut params, v, "crystallize"),
             EditOp::Bilateral(v) => val_op(&mut params, v, "bilateral"),
+            EditOp::TiltShift(v) => val_op(&mut params, v, "tilt_shift"),
+            EditOp::ZoomBlur(v) => val_op(&mut params, v, "zoom_blur"),
+            EditOp::SpinBlur(v) => val_op(&mut params, v, "spin_blur"),
+            EditOp::MotionBlur { angle, strength } => {
+                params.insert("angle".into(), serde_json::json!(angle));
+                params.insert("strength".into(), serde_json::json!(strength));
+                "motion_blur"
+            }
+            EditOp::ChannelMixerBW { r, g, b } => {
+                params.insert("r".into(), serde_json::json!(r));
+                params.insert("g".into(), serde_json::json!(g));
+                params.insert("b".into(), serde_json::json!(b));
+                "channel_mixer_bw"
+            }
+            EditOp::FilmNegative => "film_negative",
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::Watermark { text, font } => {
@@ -739,6 +785,12 @@ impl EditOp {
             "crystallize" | "voronoi" | "low_poly" | "stained_glass" => EditOp::Crystallize(100),
             "bilateral" | "denoise_edge" | "smart_denoise" => EditOp::Bilateral(80),
             "gray_point_wb" | "eyedropper" | "neutral_point" => EditOp::GrayPointWB { x: 500, y: 500 },
+            "tilt_shift" | "tiltshift" | "miniature" => EditOp::TiltShift(70),
+            "motion_blur" | "motion" => EditOp::MotionBlur { angle: 0, strength: 60 },
+            "zoom_blur" | "zoom" => EditOp::ZoomBlur(60),
+            "spin_blur" | "spin" => EditOp::SpinBlur(60),
+            "bw_mixer" | "channel_mixer" | "mono_mixer" => EditOp::ChannelMixerBW { r: 60, g: 30, b: 10 },
+            "film_negative" | "c41" | "scan_negative" => EditOp::FilmNegative,
             "enhance_sky" | "better_sky" | "sky" => EditOp::EnhanceSky(100),
             "auto_wb" | "auto_white_balance" | "gray_world" => EditOp::AutoWhiteBalance(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
@@ -855,6 +907,12 @@ impl EditOp {
             "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
             "crystallize" => EditOp::Crystallize(iv("value", 100)),
             "bilateral" => EditOp::Bilateral(iv("value", 100)),
+            "tilt_shift" => EditOp::TiltShift(iv("value", 100)),
+            "zoom_blur" => EditOp::ZoomBlur(iv("value", 100)),
+            "spin_blur" => EditOp::SpinBlur(iv("value", 100)),
+            "motion_blur" => EditOp::MotionBlur { angle: iv("angle", 0), strength: iv("strength", 100) },
+            "channel_mixer_bw" => EditOp::ChannelMixerBW { r: iv("r", 40), g: iv("g", 40), b: iv("b", 20) },
+            "film_negative" => EditOp::FilmNegative,
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "watermark" => EditOp::Watermark {
@@ -1750,6 +1808,122 @@ mod adjust {
         DynamicImage::ImageRgb8(image::imageops::blur(&img.to_rgb8(), s as f32 / 100.0 * 8.0))
     }
 
+    /// Tilt-shift / miniature: keep a horizontal band in focus, blur increasingly toward the top and
+    /// bottom, and add a saturation/contrast pop (the "toy model" look). `strength` 0..100.
+    pub fn tilt_shift(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s == 0 {
+            return img.clone();
+        }
+        let t = s as f32 / 100.0;
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let blurred = image::imageops::blur(&rgb, 1.0 + t * 8.0);
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            let fy = if h > 1 { y as f32 / (h - 1) as f32 } else { 0.5 };
+            let m = smoothstep(0.12, 0.34, (fy - 0.5).abs()); // in-focus band ±12 %, full blur by 34 %
+            for x in 0..w {
+                let o = rgb.get_pixel(x, y).0;
+                let b = blurred.get_pixel(x, y).0;
+                let base: [f32; 3] = std::array::from_fn(|i| o[i] as f32 * (1.0 - m) + b[i] as f32 * m);
+                // Saturation pop for the miniature effect.
+                let yl = luma(base[0], base[1], base[2]);
+                let k = 1.0 + 0.22 * t;
+                out.put_pixel(x, y, Rgb(std::array::from_fn(|i| enc((yl + (base[i] - yl) * k) / 255.0))));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Average `taps` colour samples along a path: `pos(i)` returns the sample coordinate for tap `i`
+    /// (centred at 0). Edge-clamped bilinear-free (nearest) sampling — cheap, fine for creative blurs.
+    fn path_blur(rgb: &RgbImage, taps: i32, pos: impl Fn(u32, u32, i32) -> (f32, f32)) -> DynamicImage {
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0f32; 3];
+                let mut n = 0f32;
+                for i in -taps..=taps {
+                    let (sx, sy) = pos(x, y, i);
+                    let px = (sx.round() as i32).clamp(0, w as i32 - 1) as u32;
+                    let py = (sy.round() as i32).clamp(0, h as i32 - 1) as u32;
+                    let p = rgb.get_pixel(px, py).0;
+                    acc[0] += p[0] as f32;
+                    acc[1] += p[1] as f32;
+                    acc[2] += p[2] as f32;
+                    n += 1.0;
+                }
+                out.put_pixel(x, y, Rgb(std::array::from_fn(|c| (acc[c] / n) as u8)));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
+    /// Motion blur: directional streak at `angle` degrees; `strength` 0..100 sets the length.
+    pub fn motion_blur(img: &DynamicImage, angle: i32, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s == 0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let taps = (1.0 + s as f32 / 100.0 * (rgb.width().min(rgb.height()) as f32 / 40.0)).round() as i32;
+        let rad = (angle as f32).to_radians();
+        let (dx, dy) = (rad.cos(), rad.sin());
+        path_blur(&rgb, taps.max(1), |x, y, i| (x as f32 + i as f32 * dx, y as f32 + i as f32 * dy))
+    }
+
+    /// Zoom blur: radial streak toward / from the centre; `strength` 0..100 sets the reach.
+    pub fn zoom_blur(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s == 0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let (cx, cy) = (rgb.width() as f32 / 2.0, rgb.height() as f32 / 2.0);
+        let amt = s as f32 / 100.0 * 0.18;
+        let taps = 8;
+        path_blur(&rgb, taps, |x, y, i| {
+            let f = 1.0 + (i as f32 / taps as f32) * amt;
+            (cx + (x as f32 - cx) * f, cy + (y as f32 - cy) * f)
+        })
+    }
+
+    /// Spin blur: rotational streak about the centre; `strength` 0..100 sets the arc.
+    pub fn spin_blur(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s == 0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let (cx, cy) = (rgb.width() as f32 / 2.0, rgb.height() as f32 / 2.0);
+        let max_a = s as f32 / 100.0 * 0.20; // radians at the extreme tap
+        let taps = 8;
+        path_blur(&rgb, taps, |x, y, i| {
+            let a = (i as f32 / taps as f32) * max_a;
+            let (vx, vy) = (x as f32 - cx, y as f32 - cy);
+            (cx + vx * a.cos() - vy * a.sin(), cy + vx * a.sin() + vy * a.cos())
+        })
+    }
+
+    /// Channel-mixer black & white: a weighted mono conversion. Weights `wr/wg/wb` (any integers) are
+    /// normalised by their sum — e.g. a red-heavy mix darkens skies, a green-heavy mix flatters skin.
+    pub fn channel_mixer_bw(img: &DynamicImage, wr: i32, wg: i32, wb: i32) -> DynamicImage {
+        let sum = (wr + wg + wb).abs().max(1) as f32;
+        let (fr, fg, fb) = (wr as f32 / sum, wg as f32 / sum, wb as f32 / sum);
+        map_rgb(img, |r, g, b| {
+            let y = (fr * r + fg * g + fb * b).clamp(0.0, 1.0);
+            [y, y, y]
+        })
+    }
+
+    /// Film-negative conversion: invert, then per-channel auto-stretch — the independent channel
+    /// stretch removes the orange C-41 base mask, turning a scanned negative into a positive.
+    pub fn film_negative(img: &DynamicImage) -> DynamicImage {
+        auto_enhance(&invert(img))
+    }
+
     /// Bloom / glow: screen-blend the blurred bright areas back over the image.
     pub fn bloom(img: &DynamicImage, strength: i32) -> DynamicImage {
         let t = strength.clamp(0, 100) as f32 / 100.0;
@@ -2532,6 +2706,8 @@ mod tests {
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
             EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85), EditOp::Crystallize(60), EditOp::Bilateral(70),
             EditOp::SelectiveLum { hue: 240, lum: -40 }, EditOp::GrayPointWB { x: 500, y: 300 },
+            EditOp::TiltShift(70), EditOp::MotionBlur { angle: 45, strength: 60 }, EditOp::ZoomBlur(50),
+            EditOp::SpinBlur(40), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
             EditOp::Watermark { text: "© plakat".into(), font: None },
             EditOp::Watermark { text: "shot on film".into(), font: Some("/fonts/Foo.ttf".into()) },
             EditOp::Lut { path: "/grades/teal.cube".into() },
@@ -2725,6 +2901,8 @@ mod tests {
             EditOp::FalseColor { style: 3, strength: 100 },
             EditOp::GradientMap { style: 1, strength: 100 }, EditOp::GradientMap { style: 3, strength: 100 },
             EditOp::Crosshatch(100), EditOp::Crystallize(80), EditOp::Bilateral(90),
+            EditOp::TiltShift(80), EditOp::MotionBlur { angle: 0, strength: 80 }, EditOp::ZoomBlur(70),
+            EditOp::SpinBlur(60), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
         ] {
             let label = op.label();
             let out = op.apply(src.clone()).to_rgb8();
@@ -2736,6 +2914,9 @@ mod tests {
         assert_eq!(EditOp::Cartoon(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::Crystallize(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::Bilateral(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::TiltShift(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::ZoomBlur(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::MotionBlur { angle: 0, strength: 0 }.apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::OilPaint { style: 5, strength: 0 }.apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch(100)));
         // Kelvin at 0 is (near) identity; warming shifts red above blue on grey.

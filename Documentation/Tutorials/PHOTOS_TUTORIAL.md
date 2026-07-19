@@ -440,7 +440,8 @@ The adjustments:
 | Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · Kelvin / **auto** / **gray-point (eyedropper)** white balance · **hue rotate** · **split-tone** · **selective colour** (8 bands, boost/mute) · **HSL per-band** (brighten/darken reds/blues/greens) |
 | Detail | definition (clarity) · sharpen / soften · noise reduction · **bilateral denoise** (edge-preserving) · **dehaze** · **enhance sky** (auto-mask) · **face polish** (auto-detect) · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
-| Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
+| Looks | **invert** · **film negative→positive** · **B&W channel mixer** (red/green/blue/orange filters) · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
+| Creative blur | **tilt-shift / miniature** · **motion blur** (h/v/diagonal) · **zoom blur** (radial) · **spin blur** (rotational) |
 | Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **crystallize** (Voronoi / low-poly) · **cross-hatch** · **gradient map** (warm / cyanotype / fire / teal-orange) · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus the Apple-Photos / iOS set **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone · fade · chrome · process · transfer · instant · tonal · bleach-bypass · teal & orange** |
 
 Every stylize **filter opens the slider** — you dial the strength from **0 % (off) to 100 %

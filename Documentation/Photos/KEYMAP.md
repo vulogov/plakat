@@ -99,6 +99,10 @@ command's chord in its right column.
 | `Ctrl-B x k` | despeckle (median)… |
 | `Ctrl-B x z` | dehaze… |
 | `Ctrl-B x j` | bilateral denoise (edge-preserving)… |
+| `Ctrl-B x m` | tilt-shift / miniature… |
+| `Ctrl-B x C` | motion blur (horizontal; vertical/diagonal palette-only)… |
+| `Ctrl-B x w` | zoom blur (radial)… · `x q` spin blur (rotational)… |
+| `Ctrl-B x N` | film negative → positive · `x B` B&W red filter (more B&W mixes palette-only) |
 | `Ctrl-B x y` | enhance sky (auto-mask polarizer)… |
 | `Ctrl-B x c` | face polish — AI-detect faces, then 0–100 % skin smoothing… |
 | `Ctrl-B x v` | vignette… |
