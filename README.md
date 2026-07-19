@@ -17,36 +17,38 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.4.0 — `plakat photos`: the full studio (still no AI)
+## What's new in 3.5.0 — `plakat photos`: AI comes to the manager
 
-3.3 made the editor a pro darkroom. **3.4 fills out the studio** — a huge non-AI creative and
-finishing pass, a non-destructive editing *workflow*, image composites, and a big responsiveness
-win. Everything works from the **edit palette**, `Ctrl-B` chords, and the plain-language `:` command.
+3.4 filled out the non-AI studio. **3.5 brings the AI in** — the collection manager now loads
+models itself, alongside more non-AI filters and a hybrid retouch. Everything stays non-destructive
+and reachable from the **edit palette**, `Ctrl-B` chords, and the plain-language `:` command.
 
-**A deep filter library.** **Oil paint** and **watercolour** in ten numbered styles each; **ink**
-in four traditions — European pen-and-ink, Japanese sumi-e, Chinese wash, Russian icon; plus
-**pencil sketch, charcoal, cartoon, emboss, halftone, pixelate, blur, bloom** and a **false-colour**
-family (thermal / infrared / night-vision). Every filter is **adjustable 0–100 %** on the slider.
-On top: dozens of one-tap **look presets** — vintage, lomo, cross-process, noir, pop-art, golden
-hour, old-photo, daguerreotype, and the Apple-Photos set (vivid / dramatic / mono / silvertone).
+**AI in the manager.** A resident **ML worker** runs img2img / relight / Real-ESRGAN upscale on a
+background thread that keeps the model loaded between ops — progress shows **inline** (no more
+screen-flicker), a second edit reuses the loaded weights, and **`Esc` cancels**. New AI menu (`A`):
+**aesthetic auto-cull** (rank the album by the LAION quality model, keep the top *N*, reject the
+rest — metadata only, undoable), **analyze & generate** (describe a reference image, then img2img
+from that description), and **face-scan** (SCRFD detects faces across the library and tags them;
+groups into `person-N` when ArcFace weights are set). **CLIP visual search** is verified end-to-end.
 
-**Framing & finishing.** **Keystone / perspective** correction (fix converging verticals),
-**border / letterbox** to any aspect (black / white / blur-extend), **circle crop**, **watermark /
-caption** burn-in with **your choice of TrueType/OpenType font**, and **`.cube` LUT** colour grades.
+**Face polish** — a portrait retouch that normally needs a hand-painted mask, here **auto-masked by
+AI face detection** and dialled on the usual **0–100 % slider**: an edge-preserving smooth that
+softens skin while keeping eyes, lips and hairlines crisp, limited to the detected faces. The AI
+cost is paid once; the slider and every replay are instant.
 
-**A non-destructive workflow.** **Take** (`P`) copies the highest-res version into a fresh nested
-**workbench** sub-album so edits never poison the source; **duplicate** (`d`) for quick alternates;
-**put back** (`p`) promotes the keepers to the parent so the workbench can be deleted.
+**More non-AI filters.** **"Better sky"** (auto-masked polarizer — deepens and saturates blue with
+no manual masking), **Kelvin white balance**, **auto white balance** (gray-world), **gradient map**
+(warm / cyanotype / fire / teal-orange), **cross-hatch**, and the classic **Apple Photos / iOS
+looks** — fade, chrome, process, transfer, instant, tonal — plus cinematic bleach-bypass and
+teal & orange. All adjustable 0–100 %.
 
-**Composites.** **Panorama** stitching (horizontal / vertical / grid) and **collage** from a
-selection or the whole album.
-
-**Faster on big images.** Interactive edits now reuse a cached working-resolution base instead of
-re-decoding the full file on every keystroke — the slider stays smooth on 24 MP+.
+**Memory-aware.** A top-bar **memory indicator** steers you away from heavy AI ops when memory is
+low; every model load is guarded — under critical pressure the manager refuses the job cleanly, and
+a watchdog aborts safely (terminal restored) rather than stalling the host.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.3):
+**Earlier releases** (v0.13 – 3.4):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

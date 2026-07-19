@@ -1,4 +1,13 @@
-# plakat 3.5.0 — roadmap (planning)
+# plakat 3.5.0 — roadmap (SHIPPED)
+
+**Shipped — AI comes to the manager.** Resident ML worker (img2img/relight/upscale, inline progress
++ cancel + residency, OOM-guarded), memory indicator; AI menu: aesthetic auto-cull, analyze &
+generate, face-scan; CLIP visual-search verified. Hybrid **face polish** (AI-detected mask + non-AI
+skin smooth, 0–100 %). More non-AI: better-sky, Kelvin/auto white balance, gradient-map, cross-hatch,
+Apple/iOS look filters. Track B (below) + Track C distribution carry to 3.6.0.
+
+---
+
 
 Opening the cycle after 3.4.0 (the photos "full studio" — a deep non-AI creative/finishing pass +
 composites). The non-AI editing surface is now very complete. With the **models cache reconnected**,

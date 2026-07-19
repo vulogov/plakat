@@ -8,6 +8,30 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.4.0 — `plakat photos`: the full studio (still no AI)
+
+3.3 made the editor a pro darkroom. **3.4 fills out the studio** — a huge non-AI creative and
+finishing pass, a non-destructive editing *workflow*, image composites, and a big responsiveness
+win. Everything works from the **edit palette**, `Ctrl-B` chords, and the plain-language `:` command.
+
+**A deep filter library.** **Oil paint** and **watercolour** in ten numbered styles each; **ink**
+in four traditions — European pen-and-ink, Japanese sumi-e, Chinese wash, Russian icon; plus
+**pencil sketch, charcoal, cartoon, emboss, halftone, pixelate, blur, bloom** and a **false-colour**
+family (thermal / infrared / night-vision). Every filter is **adjustable 0–100 %** on the slider.
+On top: dozens of one-tap **look presets** — vintage, lomo, cross-process, noir, pop-art, golden
+hour, old-photo, daguerreotype, and the Apple-Photos set (vivid / dramatic / mono / silvertone).
+
+**Framing & finishing.** **Keystone / perspective** correction (fix converging verticals),
+**border / letterbox** to any aspect (black / white / blur-extend), **circle crop**, **watermark /
+caption** burn-in with **your choice of TrueType/OpenType font**, and **`.cube` LUT** colour grades.
+
+**A non-destructive workflow.** **Take** (`P`) copies the highest-res version into a fresh nested
+**workbench** sub-album so edits never poison the source; **duplicate** (`d`) for quick alternates;
+**put back** (`p`) promotes the keepers to the parent so the workbench can be deleted.
+
+**Composites.** **Panorama** stitching (horizontal / vertical / grid) and **collage** from a
+selection or the whole album. **Faster on big images** via a cached working-resolution base.
+
 ## What's new in 3.3.0 — `plakat photos`: the pro darkroom (still no AI)
 
 3.2 turned the editor into a darkroom. **3.3 made it a *pro* one** — a deep, non-AI editing and
