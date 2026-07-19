@@ -65,6 +65,10 @@ pub enum Action {
     FocusStack,
     QualityCull,
     Flatten,
+    Trash,
+    RestoreTrash,
+    EmptyTrash,
+    OpenTrash,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -140,6 +144,10 @@ fn action_label(a: &Action) -> String {
         Action::FocusStack => "focus stack".into(),
         Action::QualityCull => "quality cull".into(),
         Action::Flatten => "flatten".into(),
+        Action::Trash => "trash".into(),
+        Action::RestoreTrash => "restore trash".into(),
+        Action::EmptyTrash => "empty trash".into(),
+        Action::OpenTrash => "open trash".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -294,6 +302,10 @@ fn parse_action(stage: &str) -> Option<Action> {
         "focus stack" | "focus stacking" | "stack focus" => Some(Action::FocusStack),
         "quality cull" | "cull blurry" | "cull soft" | "flag soft" | "cull bad" => Some(Action::QualityCull),
         "flatten" | "recursive" | "show all" | "flatten browse" => Some(Action::Flatten),
+        "trash" | "move to trash" | "soft delete" => Some(Action::Trash),
+        "restore" | "restore trash" | "restore all" => Some(Action::RestoreTrash),
+        "empty trash" | "purge trash" => Some(Action::EmptyTrash),
+        "open trash" | "browse trash" | "show trash" => Some(Action::OpenTrash),
         _ => None,
     }
 }

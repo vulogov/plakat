@@ -100,6 +100,8 @@ enum PendingCmd {
     Multishot,
     /// Move (or copy, when `copy`) the target images into the album at the entered path.
     MoveToAlbum { copy: bool },
+    /// Confirm permanently emptying the trash.
+    EmptyTrash,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -209,6 +211,10 @@ enum EditCmd {
     FindDups,   // group near-duplicates (perceptual dHash) → a review smart view
     QualityCull, // reject soft / badly-exposed frames (non-AI)
     MoveToAlbum { copy: bool }, // move / copy the targets into another album (prompts for the path)
+    Trash,       // soft-delete the targets into .trash
+    OpenTrash,   // browse .trash
+    RestoreTrash, // restore everything from .trash
+    EmptyTrash,  // permanently purge .trash (confirms)
     Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     // AI "create" ops (prompt-driven generation → a new album image). These load a model.
@@ -407,6 +413,10 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("cull soft / badly-exposed (non-AI)", "mq", EditCmd::QualityCull),
         ("move to album (path)…", "mo", EditCmd::MoveToAlbum { copy: false }),
         ("copy to album (path)…", "mp", EditCmd::MoveToAlbum { copy: true }),
+        ("move to trash (soft-delete)", "mt", EditCmd::Trash),
+        ("browse trash", "mb", EditCmd::OpenTrash),
+        ("restore all from trash", "", EditCmd::RestoreTrash),
+        ("empty trash (permanent)…", "", EditCmd::EmptyTrash),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -1855,6 +1865,22 @@ impl App {
                 let verb = if copy { "copy" } else { "move" };
                 self.prompt(format!("{verb} to album — path: "), "", PendingCmd::MoveToAlbum { copy });
             }
+            EditCmd::Trash => {
+                self.edit_menu = false;
+                self.trash_targets();
+            }
+            EditCmd::OpenTrash => {
+                self.edit_menu = false;
+                self.open_trash();
+            }
+            EditCmd::RestoreTrash => {
+                self.edit_menu = false;
+                self.restore_trash();
+            }
+            EditCmd::EmptyTrash => {
+                self.edit_menu = false;
+                self.prompt("empty trash — permanently delete all? [y/N]: ", "", PendingCmd::EmptyTrash);
+            }
             EditCmd::FacePolish => {
                 self.edit_menu = false;
                 if self.cur_source().is_none() {
@@ -3121,6 +3147,10 @@ impl App {
                 let dir = self.album_dir.clone().unwrap_or_else(|| self.root.path.clone());
                 self.open_recursive(dir);
             }
+            Action::Trash => self.trash_targets(),
+            Action::RestoreTrash => self.restore_trash(),
+            Action::EmptyTrash => self.empty_trash(),
+            Action::OpenTrash => self.open_trash(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -3608,6 +3638,140 @@ impl App {
         let dname = dest.file_name().and_then(|n| n.to_str()).unwrap_or("album");
         let tail = if err > 0 { format!(", {err} skipped/failed") } else { String::new() };
         self.status = format!("{verb} {ok} image(s) → '{dname}'{tail}");
+    }
+
+    /// The library's hidden recycle bin (`<root>/.trash`). Skipped by the tree walk (dot-dir).
+    fn trash_dir(&self) -> PathBuf {
+        self.root.path.join(".trash")
+    }
+
+    /// Soft-delete: move the target images (+ sidecar) into `.trash`, recording each one's origin in
+    /// `.trash/.manifest` so it can be restored. The curation record is removed from the source album.
+    fn trash_targets(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "select image(s) to trash".into();
+            return;
+        }
+        let trash = self.trash_dir();
+        if std::fs::create_dir_all(&trash).is_err() {
+            self.status = "couldn't create the trash folder".into();
+            return;
+        }
+        let manifest = trash.join(".manifest");
+        let mut log = std::fs::read_to_string(&manifest).unwrap_or_default();
+        let (mut ok, mut err) = (0u32, 0u32);
+        for (src_dir, path) in &files {
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+                err += 1;
+                continue;
+            };
+            let mut name = fname.clone();
+            let mut i = 2;
+            while trash.join(&name).exists() {
+                name = format!("{i}_{fname}");
+                i += 1;
+            }
+            let dest = trash.join(&name);
+            let moved = std::fs::rename(path, &dest).is_ok()
+                || (std::fs::copy(path, &dest).is_ok() && std::fs::remove_file(path).is_ok());
+            if !moved {
+                err += 1;
+                continue;
+            }
+            let sc = path.with_extension("json");
+            if sc.exists() {
+                let dsc = dest.with_extension("json");
+                if std::fs::rename(&sc, &dsc).is_err() && std::fs::copy(&sc, &dsc).is_ok() {
+                    let _ = std::fs::remove_file(&sc);
+                }
+            }
+            // Manifest: trashed_name \t original_dir \t original_filename.
+            log.push_str(&format!("{name}\t{}\t{fname}\n", src_dir.display()));
+            self.edit_album_meta_at(src_dir, |m| {
+                m.images.remove(&fname);
+            });
+            ok += 1;
+        }
+        let _ = std::fs::write(&manifest, log);
+        self.selected.clear();
+        self.rescan();
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("🗑 trashed {ok} image(s){tail} · ':restore' / ':empty trash'");
+    }
+
+    /// Restore every image in `.trash` to its recorded origin (deduped if the name is taken).
+    fn restore_trash(&mut self) {
+        let trash = self.trash_dir();
+        let manifest = trash.join(".manifest");
+        let Ok(content) = std::fs::read_to_string(&manifest) else {
+            self.status = "trash is empty".into();
+            return;
+        };
+        let (mut ok, mut err) = (0u32, 0u32);
+        let mut remaining = String::new();
+        for line in content.lines() {
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            let [name, odir, ofname] = parts[..] else { continue };
+            let src = trash.join(name);
+            if !src.exists() {
+                continue; // manifest entry with no file — drop it
+            }
+            let odir = PathBuf::from(odir);
+            let _ = std::fs::create_dir_all(&odir);
+            let (stem, ext) = (
+                std::path::Path::new(ofname).file_stem().and_then(|s| s.to_str()).unwrap_or("image"),
+                std::path::Path::new(ofname).extension().and_then(|e| e.to_str()),
+            );
+            let make = |s: &str| match ext {
+                Some(e) => format!("{s}.{e}"),
+                None => s.to_string(),
+            };
+            let mut target = make(stem);
+            let mut i = 2;
+            while odir.join(&target).exists() {
+                target = make(&format!("{stem}-{i}"));
+                i += 1;
+            }
+            let dest = odir.join(&target);
+            if std::fs::rename(&src, &dest).is_ok()
+                || (std::fs::copy(&src, &dest).is_ok() && std::fs::remove_file(&src).is_ok())
+            {
+                let sc = src.with_extension("json");
+                if sc.exists() {
+                    let _ = std::fs::rename(&sc, dest.with_extension("json"));
+                }
+                ok += 1;
+            } else {
+                remaining.push_str(line);
+                remaining.push('\n');
+                err += 1;
+            }
+        }
+        let _ = std::fs::write(&manifest, remaining);
+        self.rescan();
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("♻ restored {ok} image(s) from trash{tail}");
+    }
+
+    /// Permanently delete everything in `.trash`.
+    fn empty_trash(&mut self) {
+        let trash = self.trash_dir();
+        match std::fs::remove_dir_all(&trash) {
+            Ok(_) | Err(_) if !trash.exists() => self.status = "🗑 trash emptied".into(),
+            _ => self.status = "couldn't empty the trash".into(),
+        }
+    }
+
+    /// Browse the trash (the hidden `.trash` folder the tree skips).
+    fn open_trash(&mut self) {
+        let trash = self.trash_dir();
+        if !trash.is_dir() || Self::gather_image_files(&trash, false).is_empty() {
+            self.status = "trash is empty".into();
+            return;
+        }
+        self.open_recursive(trash);
+        self.status = format!("{} · 🗑 trash · ':restore' to put back · ':empty trash' to purge", self.view.len());
     }
 
     /// "Take photo for processing": copy the highest-resolution version of each target image into a
@@ -4310,6 +4474,10 @@ impl App {
                 }
                 Some(PendingCmd::MoveToAlbum { copy }) if !arg.is_empty() => {
                     self.move_targets(&arg, copy);
+                    fs_changed = true;
+                }
+                Some(PendingCmd::EmptyTrash) if arg.eq_ignore_ascii_case("y") => {
+                    self.empty_trash();
                     fs_changed = true;
                 }
                 Some(PendingCmd::Watermark) if !arg.is_empty() => {
