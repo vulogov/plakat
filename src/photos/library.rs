@@ -163,6 +163,30 @@ mod tests {
     }
 
     #[test]
+    fn mixed_album_reports_direct_and_recursive_counts_separately() {
+        // A directory with BOTH loose images AND sub-album directories (the workbench `take` layout):
+        // its own `image_count` is the direct files, while `total_images()` folds in the sub-albums.
+        // The tree badge uses the former for albums so `[direct]` matches what opening it shows.
+        let tmp = std::env::temp_dir().join(format!("plakat-lib-mixed-{}", std::process::id()));
+        let test = tmp.join("test");
+        std::fs::create_dir_all(&test).unwrap();
+        std::fs::write(test.join("a.png"), b"x").unwrap();
+        std::fs::write(test.join("b.png"), b"x").unwrap();
+        for sub in ["a", "a-2", "b"] {
+            let d = test.join(format!("shot_{sub}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("hi.png"), b"x").unwrap();
+        }
+        let node = walk(&test).unwrap();
+        assert_eq!(node.kind, NodeKind::Album);
+        assert_eq!(node.image_count, 2, "direct images (what the grid shows)");
+        assert_eq!(node.total_images(), 5, "recursive incl. the 3 sub-albums");
+        assert_eq!(node.children.len(), 3, "three sub-albums are children");
+        assert!(node.children.iter().all(|c| c.image_count == 1));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn display_name_prefers_album_metadata_then_falls_back() {
         let tmp = std::env::temp_dir().join(format!("plakat-lib-name-{}", std::process::id()));
         let named = tmp.join("2024-07-14");

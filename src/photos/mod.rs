@@ -1015,7 +1015,11 @@ impl App {
                 path: node.path.clone(),
                 name: node.name.clone(),
                 kind: node.kind,
-                count: node.total_images(),
+                // An album's badge = its OWN images (what opening it shows); a folder has no images
+                // of its own, so it shows the recursive total beneath it. This keeps the badge honest:
+                // a mixed album (images + sub-albums) reads `[2]`, not the recursive `[5]`, and its
+                // sub-albums appear as expandable children with their own counts.
+                count: if node.kind == NodeKind::Album { node.image_count } else { node.total_images() },
                 depth,
                 expanded: is_open,
                 has_children: !node.children.is_empty(),
