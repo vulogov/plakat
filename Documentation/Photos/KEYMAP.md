@@ -144,6 +144,16 @@ command's chord in its right column.
 | `Ctrl-B s v` | look: vintage · `s l` lomo · `s c` cross-process |
 | `Ctrl-B s n` | look: noir · `s p` pop-art · `s d` golden hour · `s a` old photo · `s q` daguerreotype |
 
+### `n` — AI create (loads a model; prompt-driven → a new album image)
+| Chord | Command |
+|-------|---------|
+| `Ctrl-B n g` | AI generate (txt2img) — prompt… |
+| `Ctrl-B n i` | AI img2img — transform this image with a prompt… |
+| `Ctrl-B n p` | AI portrait — this image as the face + a prompt… |
+| `Ctrl-B n m` | AI multiperson scene — selected images as people + a scene prompt… |
+
+(Also on the ML menu `M` and as `:` commands — `generate …`, `portrait …`, `scene …`, `img2img …`.)
+
 All filters open the **slider** (strength 0–100%); dial the intensity, `Enter` to apply.
 
 **Oil paint 1–10** and **watercolour 1–10** are palette-only (type "oil" or "water" in the

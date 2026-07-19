@@ -623,6 +623,18 @@ to open the ML menu on the cursor image:
 | `u` | ML upscale ×4 (Real-ESRGAN) | — |
 | `i` | img2img transform | a prompt |
 | `l` | relight (IC-Light) | a lighting prompt |
+| `g` | **generate** (txt2img) — a new image | a prompt |
+| `p` | **portrait** — the cursor image as the identity face | a prompt |
+| `m` | **multiperson** — the **selected** images as the people | a scene prompt |
+
+The last three are **create** ops: they land a **new** `ai_*.png` in the album (the
+sources are untouched). They're also on the **edit palette** and the `Ctrl-B n`
+chords (`n g` / `n i` / `n p` / `n m`), and as `:` commands — `generate a red fox in
+snow`, `portrait of a knight`, `scene of two friends at a cafe`, `img2img …`. Generate
+is prompt-only; **portrait** uses the current image as an identity face (or is
+text-only if you're not on a photo of a person); **multiperson** turns each selected
+image into one person in the scene. All run SDXL (heavy) — the manager pauses while
+they load, and refuses cleanly if memory is low (watch the top-bar indicator).
 
 These run an actual pipeline (the same engine as `plakat generate` / `upscale` /
 `relight`), so they take a while and may download a model on first use. They run on

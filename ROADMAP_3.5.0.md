@@ -51,6 +51,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       paid once at creation; the slider preview + replay are pure geometry (op stays `Copy`, no model
       reload). Detection is TUI-suspended + OOM-guarded; identity at strength 0 / no faces.
 
+## Track A¾ — major generation features in the manager
+
+- [x] **generate / img2img / portrait / multiperson** integrated into `plakat photos` — DONE, via the
+      stable `crate::api` builders (`Generate`/`Img2img`/`Portrait`/`Multiperson`). Reachable from all
+      three surfaces: the **command palette** + **`Ctrl-B n` chords** (new "AI create" category:
+      `n g`/`n i`/`n p`/`n m`), the **ML menu** (`M` → `g`/`p`/`m`), and the **`:` cmd pane** (NL verbs
+      `generate …`/`portrait …`/`scene …`/`img2img …`). Generate is prompt-only; portrait uses the
+      cursor image as the identity face; multiperson uses the selected images as the people. Run
+      TUI-suspended with the OOM guard + critical-pressure refuse; land a new `ai_*.png` in the album.
+
 ## Track B — remaining non-AI polish
 
 - [x] **EditOp `Copy` refactor** — DONE. `EditOp`/`EditCmd` are now `Clone`-not-`Copy`, so ops can

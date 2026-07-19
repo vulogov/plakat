@@ -28,6 +28,12 @@ pub enum Action {
     Upscale,
     Img2img { prompt: String },
     Relight { prompt: String },
+    /// AI txt2img — generate a new image from a prompt into the album.
+    Generate { prompt: String },
+    /// AI portrait from a prompt (the cursor image is used as the identity face when it's a photo).
+    Portrait { prompt: String },
+    /// AI multi-person scene from a prompt (the selected images become the people).
+    Multiperson { prompt: String },
     /// A T1 pixel edit: `rotate_cw`/`rotate_ccw`/`rotate_180`/`flip_h`/`flip_v`/`grayscale`/`crop_square`.
     Edit { op: String },
     /// Export (copy) album images to a destination directory. Create-only — never reads or
@@ -104,6 +110,9 @@ fn action_label(a: &Action) -> String {
         Action::Describe => "describe".into(),
         Action::Upscale => "upscale".into(),
         Action::Img2img { prompt } => format!("img2img '{prompt}'"),
+        Action::Generate { prompt } => format!("generate '{prompt}'"),
+        Action::Portrait { prompt } => format!("portrait '{prompt}'"),
+        Action::Multiperson { prompt } => format!("multiperson '{prompt}'"),
         Action::Relight { prompt } => format!("relight '{prompt}'"),
         Action::Edit { op } => format!("edit {op}"),
         Action::Export { dir, max_px } => match max_px {
@@ -203,6 +212,15 @@ fn parse_action(stage: &str) -> Option<Action> {
     }
     if let Some(r) = strip_any(s, &["img2img ", "transform to ", "turn into "]) {
         return Some(Action::Img2img { prompt: r.trim().to_string() });
+    }
+    if let Some(r) = strip_any(s, &["generate ", "txt2img ", "dream "]) {
+        return Some(Action::Generate { prompt: r.trim().to_string() });
+    }
+    if let Some(r) = strip_any(s, &["portrait of ", "portrait "]) {
+        return Some(Action::Portrait { prompt: r.trim().to_string() });
+    }
+    if let Some(r) = strip_any(s, &["multiperson ", "scene of ", "scene "]) {
+        return Some(Action::Multiperson { prompt: r.trim().to_string() });
     }
     if let Some(r) = strip_any(s, &["relight "]) {
         return Some(Action::Relight { prompt: r.trim().to_string() });
@@ -530,6 +548,22 @@ mod tests {
         assert_eq!(p.actions, vec![Action::Upscale]);
         // Bare "upscale" with no selector.
         assert_eq!(parse_deterministic("upscale").unwrap().actions, vec![Action::Upscale]);
+    }
+
+    #[test]
+    fn ai_create_verbs_parse() {
+        assert_eq!(
+            parse_deterministic("generate a red fox in snow").unwrap().actions,
+            vec![Action::Generate { prompt: "a red fox in snow".into() }]
+        );
+        assert_eq!(
+            parse_deterministic("portrait of a knight in armour").unwrap().actions,
+            vec![Action::Portrait { prompt: "a knight in armour".into() }]
+        );
+        assert_eq!(
+            parse_deterministic("scene of two friends at a cafe").unwrap().actions,
+            vec![Action::Multiperson { prompt: "two friends at a cafe".into() }]
+        );
     }
 
     #[test]

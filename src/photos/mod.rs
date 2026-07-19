@@ -88,6 +88,12 @@ enum PendingCmd {
     VisualSearch,
     /// Aesthetic auto-cull: rank the album and keep the entered top-N (flag keepers, reject the rest).
     AutoCull,
+    /// AI generate (txt2img) from the entered prompt → a new album image.
+    Generate,
+    /// AI portrait from the entered prompt (+ the cursor image as an optional identity face).
+    Portrait,
+    /// AI multiperson scene from the entered prompt (the selected images become the people).
+    Multiperson,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -195,6 +201,11 @@ enum EditCmd {
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
+    // AI "create" ops (prompt-driven generation → a new album image). These load a model.
+    Generate,     // txt2img from a prompt
+    Img2imgCreate, // img2img: transform the cursor image under a prompt (resident worker)
+    Portrait,     // portrait from a prompt (+ the cursor image as an optional identity face)
+    Multiperson,  // multi-person scene from a prompt + the selected images as people
     Undo,
     Redo,
     Revert,
@@ -203,7 +214,7 @@ enum EditCmd {
 /// The Edit palette's command list: `(searchable label, action)`.
 /// The category keys for the `Ctrl-B` edit chords (the first key after the leader, in image view).
 /// Each avoids the global leader keys (h/H/t/v/p/l/L).
-fn chord_categories() -> [(char, &'static str); 8] {
+fn chord_categories() -> [(char, &'static str); 9] {
     [
         ('g', "geometry"),
         ('c', "crop"),
@@ -213,6 +224,7 @@ fn chord_categories() -> [(char, &'static str); 8] {
         ('e', "edit stack"),
         ('m', "manage"),
         ('s', "stylize (looks & filters)"),
+        ('n', "AI create (generate / portrait / scene)"),
     ]
 }
 
@@ -394,6 +406,11 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("watercolour 8…", "", EditCmd::Adjust(Watercolor { style: 8, strength: 100 })),
         ("watercolour 9…", "", EditCmd::Adjust(Watercolor { style: 9, strength: 100 })),
         ("watercolour 10…", "", EditCmd::Adjust(Watercolor { style: 10, strength: 100 })),
+        // AI create (n) — prompt-driven generation, landing a new image in the album.
+        ("AI generate (txt2img)…", "ng", EditCmd::Generate),
+        ("AI img2img (transform this image)…", "ni", EditCmd::Img2imgCreate),
+        ("AI portrait (this image as the face)…", "np", EditCmd::Portrait),
+        ("AI multiperson scene (selected = people)…", "nm", EditCmd::Multiperson),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -566,6 +583,8 @@ struct App {
     pending_face_scan: bool,
     // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
     pending_face_polish: bool,
+    // AI "create" op (generate / portrait / multiperson), run TUI-suspended → a new album image.
+    pending_create: Option<(CreateOp, PathBuf)>,
     // Natural-language command pipeline (`:`): a raw query awaiting the LLM planner, and a parsed
     // plan awaiting the user's y/N confirmation.
     pending_nl: Option<String>,
@@ -636,6 +655,18 @@ struct App {
     mem_free_gb: f64,
     mem_total_gb: f64,
     mem_checked: Option<Instant>,
+}
+
+/// A prompt-driven AI "create" op — generation that lands a **new** image in the album (as opposed to
+/// the [`mledit`] ops that transform an existing one). Run TUI-suspended via the `crate::api` builders.
+#[derive(Clone)]
+enum CreateOp {
+    /// txt2img from a prompt.
+    Generate { prompt: String },
+    /// Portrait from a prompt, optionally using `photo` (the cursor image) as the identity face.
+    Portrait { prompt: String, photo: Option<PathBuf> },
+    /// Multi-person scene from a prompt; `people` are the selected images' identity faces.
+    Multiperson { prompt: String, people: Vec<PathBuf> },
 }
 
 /// An ML edit running on the resident worker, watched by the event loop.
@@ -725,6 +756,7 @@ impl App {
             pending_analyze: None,
             pending_face_scan: false,
             pending_face_polish: false,
+            pending_create: None,
             clip_cache: HashMap::new(),
             pending_nl: None,
             pending_plan: None,
@@ -1661,6 +1693,26 @@ impl App {
                     self.status = "face polish — detecting faces … (the UI will pause)".into();
                 }
             }
+            EditCmd::Generate => {
+                self.edit_menu = false;
+                self.prompt("AI generate (txt2img) — prompt: ", "", PendingCmd::Generate);
+            }
+            EditCmd::Img2imgCreate => {
+                self.edit_menu = false;
+                if self.cur_source().is_none() {
+                    self.status = "open an image first".into();
+                } else {
+                    self.prompt("AI img2img — prompt: ", "", PendingCmd::MlPrompt { relight: false });
+                }
+            }
+            EditCmd::Portrait => {
+                self.edit_menu = false;
+                self.prompt("AI portrait — prompt: ", "", PendingCmd::Portrait);
+            }
+            EditCmd::Multiperson => {
+                self.edit_menu = false;
+                self.prompt("AI multiperson — scene prompt: ", "", PendingCmd::Multiperson);
+            }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
             EditCmd::Revert => self.revert_edits(),
@@ -2441,6 +2493,26 @@ impl App {
         self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
     }
 
+    /// Queue an AI "create" op (generate / portrait / multiperson) — the event loop runs it
+    /// TUI-suspended, landing a new image in the current album (or the cursor's source album).
+    fn queue_create(&mut self, op: CreateOp) {
+        let Some(dir) = self.album_dir.clone().or_else(|| self.cur_source().map(|(d, _)| d)) else {
+            self.status = "open an album first".into();
+            return;
+        };
+        if self.mem_low() {
+            self.status = "⚠ memory low — free RAM before generating".into();
+            return;
+        }
+        let label = match &op {
+            CreateOp::Generate { .. } => "generate",
+            CreateOp::Portrait { .. } => "portrait",
+            CreateOp::Multiperson { .. } => "multiperson",
+        };
+        self.pending_create = Some((op, dir));
+        self.status = format!("AI {label} — loading model … (the UI will pause)");
+    }
+
     /// Analyze-and-generate (Track A): queue the cursor image to be described by the configured LLM,
     /// then img2img'd from that description into a fresh "reimagined" variant (event loop runs it).
     fn analyze_and_generate(&mut self) {
@@ -2716,6 +2788,15 @@ impl App {
             Action::Upscale => self.enqueue_ml_over_targets(mledit::MlOp::Upscale),
             Action::Img2img { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Img2img { prompt }),
             Action::Relight { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Relight { prompt }),
+            Action::Generate { prompt } => self.queue_create(CreateOp::Generate { prompt }),
+            Action::Portrait { prompt } => {
+                let photo = self.cur_source().map(|(d, f)| d.join(f));
+                self.queue_create(CreateOp::Portrait { prompt, photo });
+            }
+            Action::Multiperson { prompt } => {
+                let people: Vec<PathBuf> = self.target_sources().into_iter().map(|(_, p)| p).collect();
+                self.queue_create(CreateOp::Multiperson { prompt, people });
+            }
             Action::Edit { op } => match edit::EditOp::from_tag(&op) {
                 Some(eop) => self.batch_edit(eop),
                 None => self.status = format!("unknown edit op: {op}"),
@@ -3632,6 +3713,18 @@ impl App {
                     self.pending_cull = Some(n);
                     self.status = format!("aesthetic auto-cull — keep top {n} … (the UI will pause)");
                 }
+                Some(PendingCmd::Generate) if !arg.is_empty() => {
+                    self.queue_create(CreateOp::Generate { prompt: arg.clone() });
+                }
+                Some(PendingCmd::Portrait) if !arg.is_empty() => {
+                    let photo = self.cur_source().map(|(d, f)| d.join(f));
+                    self.queue_create(CreateOp::Portrait { prompt: arg.clone(), photo });
+                }
+                Some(PendingCmd::Multiperson) if !arg.is_empty() => {
+                    let people: Vec<PathBuf> =
+                        self.target_sources().into_iter().map(|(_, p)| p).collect();
+                    self.queue_create(CreateOp::Multiperson { prompt: arg.clone(), people });
+                }
                 Some(PendingCmd::MlPrompt { relight }) if !arg.is_empty() => {
                     let op = if relight {
                         mledit::MlOp::Relight { prompt: arg.clone() }
@@ -4138,6 +4231,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
             run_face_polish(terminal, app)?;
             continue;
+        } else if let Some((op, dir)) = app.pending_create.take() {
+            // AI create (generate / portrait / multiperson): prompt-driven generation → new image.
+            run_create_job(terminal, app, op, dir)?;
+            continue;
         } else if let Some(text) = app.pending_nl.take() {
             // A natural-language command the deterministic parser couldn't handle → LLM planner.
             run_nl_planner(terminal, app, text)?;
@@ -4428,6 +4525,85 @@ fn run_face_polish(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, a
                 format!("face polish · {n} face(s) · ←/→ fine · [/] jump · Enter apply · Esc cancel");
         }
         Err(e) => app.status = format!("✗ face polish failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Run a queued AI "create" op (generate / portrait / multiperson) TUI-suspended, via the stable
+/// `crate::api` builders, landing a new image in `dir`. Mirrors the other heavy-job runners (own
+/// runtime thread, OOM guard, critical-pressure refuse); the source images are never modified.
+fn run_create_job(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    op: CreateOp,
+    dir: PathBuf,
+) -> Result<()> {
+    let label = match &op {
+        CreateOp::Generate { .. } => "generate",
+        CreateOp::Portrait { .. } => "portrait",
+        CreateOp::Multiperson { .. } => "multiperson",
+    };
+    if crate::hw::mem_pressure() == crate::hw::Pressure::Critical {
+        app.status = "⛔ memory low — free RAM before generating".into();
+        return Ok(());
+    }
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ AI {label}: loading model (SDXL) — this can take a while…\n");
+
+    let result = std::thread::spawn(move || -> Result<crate::api::Image> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(async {
+            let device = crate::api::device("auto")?;
+            let _guard = crate::memwatch::MemoryGuard::start(&device, "plakat photos create");
+            let imgs = match op {
+                CreateOp::Generate { prompt } => {
+                    crate::api::Generate::new("sdxl").prompt(prompt).device("auto").run().await?
+                }
+                CreateOp::Portrait { prompt, photo } => {
+                    let mut b = crate::api::Portrait::new("sdxl").prompt(prompt).device("auto");
+                    if let Some(p) = photo {
+                        b = b.photo(p, 1.0).identity(crate::api::IdentityKind::PlusFaceSdxl);
+                    }
+                    b.run().await?
+                }
+                CreateOp::Multiperson { prompt, people } => {
+                    if people.is_empty() {
+                        anyhow::bail!("select the people images first (Space to select in the grid)");
+                    }
+                    let mut b = crate::api::Multiperson::new(prompt)
+                        .model("sdxl")
+                        .identity(crate::api::IdentityKind::PlusFaceSdxl)
+                        .device("auto");
+                    for (i, p) in people.into_iter().enumerate() {
+                        b = b.person(crate::api::Person::new(format!("person{}", i + 1)).photo(p, 1.0));
+                    }
+                    b.run().await?
+                }
+            };
+            imgs.into_iter().next().ok_or_else(|| anyhow::anyhow!("no image produced"))
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("create thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(img) => {
+            let dest = variant_path(&dir, "ai", label, "png");
+            if img.save(&dest).is_ok() {
+                let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                app.rescan();
+                app.select_by_name(&name);
+                app.status = format!("✓ AI {label} → {name}");
+            } else {
+                app.status = format!("AI {label}: couldn't save the image");
+            }
+        }
+        Err(e) => app.status = format!("✗ AI {label} failed: {e:#}"),
     }
     Ok(())
 }
@@ -5108,6 +5284,18 @@ fn handle_ml_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('l') => {
             app.ml_menu = false;
             app.prompt("relight prompt: ", "", PendingCmd::MlPrompt { relight: true });
+        }
+        KeyCode::Char('g') => {
+            app.ml_menu = false;
+            app.prompt("AI generate (txt2img) — prompt: ", "", PendingCmd::Generate);
+        }
+        KeyCode::Char('p') => {
+            app.ml_menu = false;
+            app.prompt("AI portrait — prompt: ", "", PendingCmd::Portrait);
+        }
+        KeyCode::Char('m') => {
+            app.ml_menu = false;
+            app.prompt("AI multiperson — scene prompt: ", "", PendingCmd::Multiperson);
         }
         _ => {}
     }
@@ -6792,7 +6980,10 @@ fn ml_palette() -> Vec<(String, String)> {
         prow("u", "ML upscale ×4 (Real-ESRGAN)"),
         prow("i", "img2img — transform with a prompt"),
         prow("l", "relight — re-illuminate with a prompt"),
-        prow("Esc", "close  (runs a model in the background; Esc cancels)"),
+        prow("g", "generate — txt2img from a prompt"),
+        prow("p", "portrait — this image as the face + a prompt"),
+        prow("m", "multiperson — selected images as people + a scene"),
+        prow("Esc", "close  (runs a model; Esc cancels the inline ops)"),
     ]
 }
 
