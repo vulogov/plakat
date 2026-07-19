@@ -53,8 +53,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Track B — remaining non-AI polish
 
-- [ ] **EditOp `Copy` refactor** → makes watermark/LUT replayable edits (currently file-ops) and
-      unblocks text/path-carrying ops in the edit log.
+- [x] **EditOp `Copy` refactor** — DONE. `EditOp`/`EditCmd` are now `Clone`-not-`Copy`, so ops can
+      carry `String`/`Option<String>` payloads. **Watermark** (`EditOp::Watermark { text, font }`) and
+      **LUT** (`EditOp::Lut { path }`) are now **replayable edits** in the stack (undo / copy-paste /
+      presets), re-rendered on rebuild — replacing the old bake-a-new-file path. A missing font falls
+      back to the bitmap font; a missing `.cube` replays as a no-op, so the stack never breaks. Still
+      palette-only (they name an external file → out of the `:` planner).
 - [x] **Mosaic / scrapbook collage** (varied cell sizes) — DONE (`stitch::mosaic`, grid `W`, NL
       "mosaic"). Justified-rows (Flickr-style) layout: images keep aspect, each row scaled to fill the
       width so cell sizes vary.

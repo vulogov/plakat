@@ -169,7 +169,7 @@ enum HelpKind {
 }
 
 /// A command in the Edit palette (a pixel op, undo/redo/revert, or the interactive free-form crop).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum EditCmd {
     Op(edit::EditOp),
     /// Open the interactive +/- slider for a scalar adjustment (the op carries the template value).
@@ -1686,7 +1686,7 @@ impl App {
 
     /// Change the slider value by `delta`, clamped to the op's range; refresh the live preview.
     fn nudge_adjust(&mut self, delta: i32) {
-        let Some(op) = self.adjust_op else { return };
+        let Some(op) = self.adjust_op.clone() else { return };
         let (min, max, _) = op.scalar_range();
         let v = (op.scalar().unwrap_or(0) + delta).clamp(min, max);
         self.adjust_op = Some(op.with_scalar(v));
@@ -1695,7 +1695,7 @@ impl App {
     }
 
     fn set_adjust_status(&mut self) {
-        if let Some(op) = self.adjust_op {
+        if let Some(op) = &self.adjust_op {
             self.status = format!(
                 "{} {:+} · ←/→ fine ±1 · [/] jump ±{} · Enter apply · Esc cancel",
                 op.label(),
@@ -2359,7 +2359,7 @@ impl App {
             return;
         }
         self.edit_redo.clear(); // a fresh edit invalidates the redo chain
-        self.edit_record_at(&path, |rec| rec.edits.push(op.to_entry()));
+        self.edit_record_at(&path, |rec| rec.edits.push(op.clone().to_entry()));
         let ops = self.cur_edit_ops();
         match edit::rebuild_file(&dir, &filename, &ops) {
             Ok(()) => {
@@ -2400,7 +2400,7 @@ impl App {
             self.status = "nothing to redo".into();
             return;
         };
-        self.edit_record_at(&path, |rec| rec.edits.push(op.to_entry()));
+        self.edit_record_at(&path, |rec| rec.edits.push(op.clone().to_entry()));
         let ops = self.cur_edit_ops();
         if let Err(e) = edit::rebuild_file(&dir, &filename, &ops) {
             self.status = format!("redo failed: {e:#}");
@@ -2768,7 +2768,7 @@ impl App {
         for p in paths {
             let Some((dir, filename)) = self.source_of(&p) else { continue };
             let _ = edit::ensure_backup(&dir, &filename);
-            self.edit_record_at(&p, |r| r.edits.push(op.to_entry()));
+            self.edit_record_at(&p, |r| r.edits.push(op.clone().to_entry()));
             let ops: Vec<edit::EditOp> = self
                 .record(&p)
                 .map(|r| r.edits.iter().filter_map(edit::EditOp::from_entry).collect())
@@ -3257,13 +3257,14 @@ impl App {
             format!("put back {ok} image(s) → parent album{tail} — safe to delete this sub-album now");
     }
 
-    /// Burn a text watermark / caption onto the target image(s) → a new `<stem>_wm.png` variant
-    /// (the source is untouched). `spec` = `TEXT` or `TEXT | /path/font.ttf` to pick a font.
-    fn watermark_targets(&mut self, spec: &str) {
+    /// Add a watermark / caption as a **replayable** edit on the target image(s). `spec` = `TEXT` or
+    /// `TEXT | /path/font.ttf` to pick a font. Non-destructive (rebuilds from the pristine backup),
+    /// undoable, and re-rendered on every replay.
+    fn watermark_edit(&mut self, spec: &str) {
         let (text, font) = match spec.split_once('|') {
             Some((t, f)) => {
                 let p = expand_tilde(f.trim());
-                (t.trim().to_string(), p.exists().then_some(p))
+                (t.trim().to_string(), p.exists().then(|| p.to_string_lossy().into_owned()))
             }
             None => (spec.trim().to_string(), None),
         };
@@ -3271,92 +3272,25 @@ impl App {
             self.status = "enter watermark text  (optionally: TEXT | /path/font.ttf)".into();
             return;
         }
-        if let Some(fp) = &font {
-            if let Err(e) = crate::map::labels::shaped::load_font(fp) {
-                self.status = format!("font load failed: {e:#}");
-                return;
-            }
-        }
-        let files = self.target_sources();
-        if files.is_empty() {
-            self.status = "nothing to watermark".into();
-            return;
-        }
-        let (mut ok, mut err, mut last) = (0u32, 0u32, None);
-        for (dir, path) in &files {
-            let Ok(img) = loader::load(path) else {
-                err += 1;
-                continue;
-            };
-            let mut rgb = img.to_rgb8();
-            let (w, h) = (rgb.width(), rgb.height());
-            let scale = (h / 45).max(1);
-            let margin = (h / 40).max(6) as i32;
-            let approx_w = text.chars().count() as u32 * 6 * scale; // bitmap-ish estimate
-            let x = (w as i32 - approx_w as i32 - margin).max(margin);
-            let y = (h as i32 - (8 * scale) as i32 - margin).max(0);
-            crate::map::labels::draw_text_haloed(&mut rgb, x, y, &text, scale, [255, 255, 255], [0, 0, 0]);
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
-            let dest = variant_path(dir, stem, "wm", "png");
-            if image::DynamicImage::ImageRgb8(rgb).save(&dest).is_ok() {
-                let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                self.record_variant(path, &name);
-                last = Some(name);
-                ok += 1;
-            } else {
-                err += 1;
-            }
-        }
-        if ok > 0 {
-            self.rescan();
-            if let Some(n) = &last {
-                self.select_by_name(n);
-            }
-        }
-        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
-        self.status = format!("watermarked {ok} image(s) → *_wm.png{tail}");
+        let entry = edit::EditOp::Watermark { text, font }.to_entry();
+        self.apply_edit_ops_to_targets(&[entry], "watermarked");
     }
 
-    /// Apply a `.cube` 3D LUT to the target image(s) → a new `<stem>_lut.png` variant per source.
-    fn apply_lut_targets(&mut self, cube: &str) {
+    /// Add a `.cube` 3D LUT grade as a **replayable** edit on the target image(s). Non-destructive;
+    /// a missing/invalid file replays as a no-op so the stack never breaks.
+    fn lut_edit(&mut self, cube: &str) {
         let path = expand_tilde(cube.trim());
-        let lut = match lut::load_cube(&path) {
-            Ok(l) => l,
-            Err(e) => {
-                self.status = format!("LUT load failed: {e:#}");
-                return;
-            }
-        };
-        let files = self.target_sources();
-        if files.is_empty() {
-            self.status = "nothing to grade".into();
+        if !path.exists() {
+            self.status = format!("no LUT file at {}", path.display());
             return;
         }
-        let (mut ok, mut err, mut last) = (0u32, 0u32, None);
-        for (dir, path) in &files {
-            let Ok(img) = loader::load(path) else {
-                err += 1;
-                continue;
-            };
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
-            let dest = variant_path(dir, stem, "lut", "png");
-            if lut::apply(&img, &lut).save(&dest).is_ok() {
-                let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                self.record_variant(path, &name);
-                last = Some(name);
-                ok += 1;
-            } else {
-                err += 1;
-            }
+        // Validate up front so a typo is reported now rather than silently no-op'ing later.
+        if let Err(e) = lut::load_cube(&path) {
+            self.status = format!("LUT load failed: {e:#}");
+            return;
         }
-        if ok > 0 {
-            self.rescan();
-            if let Some(n) = &last {
-                self.select_by_name(n);
-            }
-        }
-        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
-        self.status = format!("graded {ok} image(s) with the LUT → *_lut.png{tail}");
+        let entry = edit::EditOp::Lut { path: path.to_string_lossy().into_owned() }.to_entry();
+        self.apply_edit_ops_to_targets(&[entry], "graded (LUT)");
     }
 
     /// Convert the target images to `fmt`/`size`, landing a new file per source (deduped variant).
@@ -3466,7 +3400,7 @@ impl App {
     /// Apply a built-in look preset (a fixed edit sequence) to the target image(s).
     fn apply_look(&mut self, i: usize) {
         let Some((label, _, ops)) = look_presets().into_iter().nth(i) else { return };
-        let entries: Vec<hjson::EditEntry> = ops.iter().map(|o| o.to_entry()).collect();
+        let entries: Vec<hjson::EditEntry> = ops.into_iter().map(|o| o.to_entry()).collect();
         self.apply_edit_ops_to_targets(&entries, "applied");
         // Overwrite the generic status with the look name.
         if !self.status.starts_with("no ") {
@@ -3813,11 +3747,11 @@ impl App {
                     fs_changed = true;
                 }
                 Some(PendingCmd::Watermark) if !arg.is_empty() => {
-                    self.watermark_targets(&arg);
+                    self.watermark_edit(&arg);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Lut) if !arg.is_empty() => {
-                    self.apply_lut_targets(&arg);
+                    self.lut_edit(&arg);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Convert) if !arg.is_empty() => match parse_convert(&arg) {
@@ -4035,7 +3969,7 @@ impl App {
                 let img = if self.curve_mode {
                     self.curve_op().apply(img) // live curve preview
                 } else if self.adjust_mode {
-                    self.adjust_op.map(|op| op.apply(img.clone())).unwrap_or(img) // live slider preview
+                    self.adjust_op.clone().map(|op| op.apply(img.clone())).unwrap_or(img) // live slider preview
                 } else if self.levels_mode {
                     self.levels_op().apply(img) // live levels preview
                 } else if self.layer_mode {
@@ -4893,7 +4827,7 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
 /// Interactive scalar-adjustment slider: ←/→ change the value by the op's step, `[`/`]` fine ±1,
 /// live preview, Enter commits, Esc cancels.
 fn handle_adjust_key(app: &mut App, code: KeyCode) {
-    let step = app.adjust_op.map(|o| o.scalar_range().2).unwrap_or(5);
+    let step = app.adjust_op.as_ref().map(|o| o.scalar_range().2).unwrap_or(5);
     match code {
         KeyCode::Esc => app.cancel_adjust(),
         KeyCode::Enter => app.apply_adjust(),
@@ -5032,7 +4966,7 @@ fn handle_edit_key(app: &mut App, code: KeyCode) {
         KeyCode::Home => app.edit_cursor = 0,
         KeyCode::End => app.edit_cursor = last,
         KeyCode::Enter => {
-            if let Some((_, _, cmd)) = filtered_edit_commands(&app.edit_query).get(app.edit_cursor).copied() {
+            if let Some((_, _, cmd)) = filtered_edit_commands(&app.edit_query).get(app.edit_cursor).cloned() {
                 app.run_edit_cmd(cmd);
             }
         }
@@ -5768,7 +5702,7 @@ fn draw(f: &mut Frame, app: &mut App) {
 /// Interactive scalar-adjustment slider overlay: the op name, a `─┼───●──` bar (center tick at 0,
 /// dot at the value), the numeric value, and the keys.
 fn draw_adjust_bar(f: &mut Frame, app: &App, area: Rect) {
-    let Some(op) = app.adjust_op else { return };
+    let Some(op) = app.adjust_op.as_ref() else { return };
     let (min, max, _) = op.scalar_range();
     let v = op.scalar().unwrap_or(0);
     let width = 40usize.min(area.width.saturating_sub(6).max(10) as usize).max(10);
@@ -6685,7 +6619,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
         }
         HelpCtx::Adjust => {
             l.push(hd("Adjust"));
-            if let Some(op) = app.adjust_op {
+            if let Some(op) = &app.adjust_op {
                 let (min, max, step) = op.scalar_range();
                 l.push(state(format!("{}: {:+}  [{min}..{max}, step {step}]", op.label(), op.scalar().unwrap_or(0))));
             }

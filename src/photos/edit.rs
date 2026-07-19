@@ -16,7 +16,7 @@ use image::DynamicImage;
 use super::hjson::EditEntry;
 
 /// One replayable pixel operation. Serialised to/from an [`EditEntry`] for `album.hjson`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EditOp {
     RotateCw,
     RotateCcw,
@@ -146,6 +146,13 @@ pub enum EditOp {
     /// Auto white balance (gray-world): neutralise a colour cast by scaling each channel toward the
     /// overall grey; `amount` 0..100 blends toward the correction.
     AutoWhiteBalance(i32),
+    /// Watermark / caption burn-in: draw `text` in the lower-right corner. `font` is an optional path
+    /// to a TrueType/OpenType file (else the built-in bitmap font). A **replayable** edit — re-rendered
+    /// on rebuild; a missing font file just falls back to the default font (never breaks the replay).
+    Watermark { text: String, font: Option<String> },
+    /// Apply a `.cube` 3D LUT from `path` (a film-look colour grade). Replayable; a missing / invalid
+    /// file is a no-op (identity) so the edit stack never breaks.
+    Lut { path: String },
     /// Pixelate / mosaic. `strength` 0 = none … 100 = large blocks.
     Pixelate(i32),
     /// Border / letterbox: pad to aspect `aspect_w:aspect_h` (0,0 = even frame) with `mode` 0 black,
@@ -265,6 +272,11 @@ impl EditOp {
             EditOp::Crystallize(v) => adjust::crystallize(&img, v),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
+            EditOp::Watermark { text, font } => watermark(&img, &text, font.as_deref()),
+            EditOp::Lut { path } => match super::lut::load_cube(std::path::Path::new(&path)) {
+                Ok(l) => super::lut::apply(&img, &l),
+                Err(_) => img,
+            },
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
             EditOp::Border { aspect_w, aspect_h, mode } => border(&img, aspect_w, aspect_h, mode),
             EditOp::CropCircle(mode) => crop_circle(&img, mode),
@@ -292,7 +304,7 @@ impl EditOp {
 
     /// The single scalar amount for slider-style adjustments (`None` for structural / multi-param
     /// ops, which use a prompt or their own mode instead).
-    pub fn scalar(self) -> Option<i32> {
+    pub fn scalar(&self) -> Option<i32> {
         Some(match self {
             EditOp::Brightness(v) | EditOp::Contrast(v) | EditOp::Exposure(v) | EditOp::Brilliance(v)
             | EditOp::Highlights(v) | EditOp::Midrange(v) | EditOp::Shadows(v) | EditOp::Blackpoint(v)
@@ -303,15 +315,15 @@ impl EditOp {
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
             | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
-            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v) => v,
+            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v) => *v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
             | EditOp::Ink { strength, .. }
             | EditOp::FalseColor { strength, .. }
             | EditOp::GradientMap { strength, .. }
-            | EditOp::FacePolish { strength, .. } => strength,
-            EditOp::Keystone { amount, .. } => amount,
+            | EditOp::FacePolish { strength, .. } => *strength,
+            EditOp::Keystone { amount, .. } => *amount,
             _ => return None,
         })
     }
@@ -371,7 +383,7 @@ impl EditOp {
 
     /// `(min, max, step)` for the slider — most tonal/colour ops are bipolar ±100; hue is ±180;
     /// the effect-only ops (grain/denoise/despeckle/dehaze) are one-sided 0..100.
-    pub fn scalar_range(self) -> (i32, i32, i32) {
+    pub fn scalar_range(&self) -> (i32, i32, i32) {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
             EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
@@ -387,7 +399,7 @@ impl EditOp {
     }
 
     /// A short human label for the status line / edit menu.
-    pub fn label(self) -> String {
+    pub fn label(&self) -> String {
         match self {
             EditOp::RotateCw => "rotate ⟳".into(),
             EditOp::RotateCcw => "rotate ⟲".into(),
@@ -411,13 +423,13 @@ impl EditOp {
             EditOp::Sharpen(_) => "sharpen".into(),
             EditOp::NoiseReduction(_) => "noise reduction".into(),
             EditOp::AutoEnhance => "auto-enhance".into(),
-            EditOp::Straighten(t) => format!("straighten {:.1}°", t as f32 / 10.0),
+            EditOp::Straighten(t) => format!("straighten {:.1}°", *t as f32 / 10.0),
             EditOp::Keystone { axis, .. } => {
-                format!("keystone {}", if axis == 0 { "vertical" } else { "horizontal" })
+                format!("keystone {}", if *axis == 0 { "vertical" } else { "horizontal" })
             }
             EditOp::Vignette(_) => "vignette".into(),
             EditOp::Levels { black, white, gamma } => {
-                format!("levels {black}/{white}·γ{:.2}", gamma as f32 / 100.0)
+                format!("levels {black}/{white}·γ{:.2}", *gamma as f32 / 100.0)
             }
             EditOp::Dehaze(_) => "dehaze".into(),
             EditOp::HueRotate(d) => format!("hue {d:+}°"),
@@ -426,7 +438,7 @@ impl EditOp {
             EditOp::Grain(_) => "film grain".into(),
             EditOp::Despeckle(_) => "despeckle".into(),
             EditOp::GradND { dir, .. } => {
-                format!("grad ND {}", ["top", "bottom", "left", "right"].get(dir as usize).unwrap_or(&"top"))
+                format!("grad ND {}", ["top", "bottom", "left", "right"].get(*dir as usize).unwrap_or(&"top"))
             }
             EditOp::Radial(_) => "radial dodge/burn".into(),
             EditOp::Curve { .. } => "curves".into(),
@@ -437,17 +449,17 @@ impl EditOp {
             EditOp::Posterize(_) => "posterize".into(),
             EditOp::Solarize(_) => "solarize".into(),
             EditOp::Threshold(_) => "threshold".into(),
-            EditOp::OilPaint { style, .. } => format!("oil paint {}", style.clamp(1, 10)),
+            EditOp::OilPaint { style, .. } => format!("oil paint {}", (*style).clamp(1, 10)),
             EditOp::PencilSketch(_) => "pencil sketch".into(),
             EditOp::Cartoon(_) => "cartoon".into(),
-            EditOp::Watercolor { style, .. } => format!("watercolour {}", style.clamp(1, 10)),
-            EditOp::Ink { style, .. } => format!("ink ({})", adjust::ink_name(style)),
+            EditOp::Watercolor { style, .. } => format!("watercolour {}", (*style).clamp(1, 10)),
+            EditOp::Ink { style, .. } => format!("ink ({})", adjust::ink_name(*style)),
             EditOp::Emboss(_) => "emboss".into(),
             EditOp::Blur(_) => "blur (soft focus)".into(),
             EditOp::Bloom(_) => "bloom / glow".into(),
             EditOp::Charcoal(_) => "charcoal".into(),
             EditOp::Halftone(_) => "halftone".into(),
-            EditOp::FalseColor { style, .. } => format!("false colour ({})", adjust::false_color_name(style)),
+            EditOp::FalseColor { style, .. } => format!("false colour ({})", adjust::false_color_name(*style)),
             EditOp::Kelvin(_) => "Kelvin white balance".into(),
             EditOp::GradientMap { .. } => "gradient map".into(),
             EditOp::Crosshatch(_) => "cross-hatch".into(),
@@ -455,9 +467,11 @@ impl EditOp {
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
+            EditOp::Watermark { .. } => "watermark".into(),
+            EditOp::Lut { .. } => "LUT grade".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
             EditOp::Border { aspect_w, aspect_h, .. } => {
-                if aspect_w <= 0 || aspect_h <= 0 {
+                if *aspect_w <= 0 || *aspect_h <= 0 {
                     "border (frame)".into()
                 } else {
                     format!("letterbox {aspect_w}:{aspect_h}")
@@ -563,6 +577,17 @@ impl EditOp {
             EditOp::Crystallize(v) => val_op(&mut params, v, "crystallize"),
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
+            EditOp::Watermark { text, font } => {
+                params.insert("text".into(), serde_json::json!(text));
+                if let Some(f) = font {
+                    params.insert("font".into(), serde_json::json!(f));
+                }
+                "watermark"
+            }
+            EditOp::Lut { path } => {
+                params.insert("path".into(), serde_json::json!(path));
+                "lut"
+            }
             EditOp::FacePolish { strength, faces, n } => {
                 params.insert("strength".into(), serde_json::json!(strength));
                 params.insert("n".into(), serde_json::json!(n));
@@ -798,6 +823,13 @@ impl EditOp {
             "crystallize" => EditOp::Crystallize(iv("value", 100)),
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
+            "watermark" => EditOp::Watermark {
+                text: e.params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                font: e.params.get("font").and_then(|v| v.as_str()).map(String::from),
+            },
+            "lut" => EditOp::Lut {
+                path: e.params.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            },
             "face_polish" => {
                 let mut faces = [[0i32; 4]; 6];
                 for (i, face) in faces.iter_mut().enumerate() {
@@ -2136,6 +2168,28 @@ fn bilinear(src: &image::RgbImage, x: f32, y: f32) -> image::Rgb<u8> {
     image::Rgb(o)
 }
 
+/// Burn `text` into the lower-right of `img`. `font` is an optional TrueType/OpenType path; a failed
+/// load (or `None`) falls back to the built-in bitmap font. Non-destructive at the pixel level — the
+/// caller keeps the original; this returns a new image. Empty text is a no-op.
+fn watermark(img: &DynamicImage, text: &str, font: Option<&str>) -> DynamicImage {
+    if text.trim().is_empty() {
+        return img.clone();
+    }
+    if let Some(fp) = font {
+        // Best-effort: a bad path just leaves the previously-loaded / default font in place.
+        let _ = crate::map::labels::shaped::load_font(std::path::Path::new(fp));
+    }
+    let mut rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let scale = (h / 45).max(1);
+    let margin = (h / 40).max(6) as i32;
+    let approx_w = text.chars().count() as u32 * 6 * scale; // bitmap-ish width estimate
+    let x = (w as i32 - approx_w as i32 - margin).max(margin);
+    let y = (h as i32 - (8 * scale) as i32 - margin).max(0);
+    crate::map::labels::draw_text_haloed(&mut rgb, x, y, text, scale, [255, 255, 255], [0, 0, 0]);
+    DynamicImage::ImageRgb8(rgb)
+}
+
 /// Keystone / perspective correction: a trapezoidal warp (bilinear, edge-clamped so there are no
 /// black wedges). `axis` 0 scales width per row (vertical keystone — converging verticals), 1 scales
 /// height per column (horizontal keystone); `amount` −100..100.
@@ -2255,7 +2309,7 @@ fn centered_aspect(img: &DynamicImage, aw: u32, ah: u32) -> DynamicImage {
 pub fn replay(original: &DynamicImage, ops: &[EditOp]) -> DynamicImage {
     let mut img = original.clone();
     for op in ops {
-        img = op.apply(img);
+        img = op.clone().apply(img);
     }
     img
 }
@@ -2352,13 +2406,16 @@ mod tests {
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
             EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85), EditOp::Crystallize(60),
+            EditOp::Watermark { text: "© plakat".into(), font: None },
+            EditOp::Watermark { text: "shot on film".into(), font: Some("/fonts/Foo.ttf".into()) },
+            EditOp::Lut { path: "/grades/teal.cube".into() },
             EditOp::FacePolish {
                 strength: 65,
                 faces: [[500, 400, 120, 150], [300, 350, 90, 110], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
                 n: 2,
             },
         ] {
-            assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
+            assert_eq!(EditOp::from_entry(&op.clone().to_entry()), Some(op));
         }
         // Unknown op → None (skipped, not a crash).
         let unknown = EditEntry { op: "warp_drive".into(), params: Default::default(), ts: None };
@@ -2543,9 +2600,10 @@ mod tests {
             EditOp::GradientMap { style: 1, strength: 100 }, EditOp::GradientMap { style: 3, strength: 100 },
             EditOp::Crosshatch(100), EditOp::Crystallize(80),
         ] {
+            let label = op.label();
             let out = op.apply(src.clone()).to_rgb8();
-            assert_eq!((out.width(), out.height()), (24, 24), "{} keeps dims", op.label());
-            assert_ne!(out, base, "{} should change pixels", op.label());
+            assert_eq!((out.width(), out.height()), (24, 24), "{label} keeps dims");
+            assert_ne!(out, base, "{label} should change pixels");
         }
         // Pixelate at strength 0 and any filter at strength 0 are identity (blend = original).
         assert_eq!(EditOp::Pixelate(0).apply(src.clone()).to_rgb8(), base);
@@ -2573,6 +2631,18 @@ mod tests {
         assert_eq!(grass, [60, 130, 50], "grass (low, non-blue) untouched");
         // Strength 0 → byte-identical.
         assert_eq!(EditOp::EnhanceSky(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
+    }
+
+    #[test]
+    fn watermark_edit_is_replayable_and_draws_text() {
+        // Watermark is now a normal replayable op: it burns text (changes pixels) and its serialised
+        // form round-trips. Empty text is identity.
+        let white = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(120, 60, Rgb([255, 255, 255])));
+        let out = EditOp::Watermark { text: "PLAKAT".into(), font: None }.apply(white.clone()).to_rgb8();
+        assert_ne!(out, white.to_rgb8(), "watermark drew pixels");
+        assert_eq!(EditOp::Watermark { text: "".into(), font: None }.apply(white.clone()).to_rgb8(), white.to_rgb8());
+        // A LUT pointing at a missing file replays as identity (never breaks the stack).
+        assert_eq!(EditOp::Lut { path: "/no/such.cube".into() }.apply(white.clone()).to_rgb8(), white.to_rgb8());
     }
 
     #[test]
