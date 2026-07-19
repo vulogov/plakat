@@ -17,38 +17,36 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.5.0 — `plakat photos`: AI comes to the manager
+## What's new in 3.6.0 — `plakat photos`: generation, and the true panorama
 
-3.4 filled out the non-AI studio. **3.5 brings the AI in** — the collection manager now loads
-models itself, alongside more non-AI filters and a hybrid retouch. Everything stays non-destructive
-and reachable from the **edit palette**, `Ctrl-B` chords, and the plain-language `:` command.
+3.5 brought the AI into the manager. **3.6 finishes the job** — the four big generation pipelines
+are now first-class in `plakat photos`, the panorama stitcher goes from "line them up" to real
+feature-matched perspective, and a long-wanted refactor makes watermark/LUT proper edits.
 
-**AI in the manager.** A resident **ML worker** runs img2img / relight / Real-ESRGAN upscale on a
-background thread that keeps the model loaded between ops — progress shows **inline** (no more
-screen-flicker), a second edit reuses the loaded weights, and **`Esc` cancels**. New AI menu (`A`):
-**aesthetic auto-cull** (rank the album by the LAION quality model, keep the top *N*, reject the
-rest — metadata only, undoable), **analyze & generate** (describe a reference image, then img2img
-from that description), and **face-scan** (SCRFD detects faces across the library and tags them;
-groups into `person-N` when ArcFace weights are set). **CLIP visual search** is verified end-to-end.
+**Generation, everywhere.** **generate** (txt2img), **img2img**, **portrait**, and **multiperson**
+are wired into the manager and reachable three ways: the new **`Ctrl-B n` "AI create" chords**
+(`n g`/`n i`/`n p`/`n m`) and the searchable **edit palette**; the **ML menu** (`M`); and the
+plain-language **`:` command** (`generate a red fox in snow`, `portrait of a knight`, `scene of two
+friends at a cafe`, `img2img …`). Generate is prompt-only; **portrait** uses the current image as the
+identity face; **multiperson** turns each selected image into a person in the scene. Each lands a new
+`ai_*.png` in the album (sources untouched), guarded by the memory watchdog.
 
-**Face polish** — a portrait retouch that normally needs a hand-painted mask, here **auto-masked by
-AI face detection** and dialled on the usual **0–100 % slider**: an edge-preserving smooth that
-softens skin while keeping eyes, lips and hairlines crisp, limited to the detected faces. The AI
-cost is paid once; the slider and every replay are instant.
+**The true panorama.** Alongside the edge-to-edge and overlap-aligned modes, a full **homography
+stitch** (`hm`): FAST corners are matched between frames and a RANSAC perspective transform is fit,
+so it corrects **rotation and perspective**, not just a shift — with a feathered seam and an
+automatic edge-to-edge fallback for frames it can't register.
 
-**More non-AI filters.** **"Better sky"** (auto-masked polarizer — deepens and saturates blue with
-no manual masking), **Kelvin white balance**, **auto white balance** (gray-world), **gradient map**
-(warm / cyanotype / fire / teal-orange), **cross-hatch**, and the classic **Apple Photos / iOS
-looks** — fade, chrome, process, transfer, instant, tonal — plus cinematic bleach-bypass and
-teal & orange. All adjustable 0–100 %.
+**More composites & filters.** **Mosaic / scrapbook collage** (`W`) — a justified-rows layout where
+cell sizes vary with each image's aspect, unlike the uniform grid. **Crystallize** (Voronoi /
+low-poly), a new 0–100 % filter.
 
-**Memory-aware.** A top-bar **memory indicator** steers you away from heavy AI ops when memory is
-low; every model load is guarded — under critical pressure the manager refuses the job cleanly, and
-a watchdog aborts safely (terminal restored) rather than stalling the host.
+**Watermark & LUT are now real edits.** A refactor lets edit ops carry text and paths, so **watermark
+/ caption** and **`.cube` LUT** grades move from bake-a-file into the edit stack — they **undo,
+copy-paste, and save into presets** like any adjustment (a missing LUT file just replays as a no-op).
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.4):
+**Earlier releases** (v0.13 – 3.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
