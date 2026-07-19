@@ -165,6 +165,19 @@ command's chord in its right column.
 
 (Also on the ML menu `M` and as `:` commands — `generate …`, `portrait …`, `scene …`, `img2img …`.)
 
+### `r` — retouch (interactive crosshair pick-mode)
+| Chord | Command |
+|-------|---------|
+| `Ctrl-B r h` | spot heal (remove blemish / dust)… |
+| `Ctrl-B r c` | clone stamp (copy a region — pick source then destination)… |
+| `Ctrl-B r e` | red-eye removal… |
+| `Ctrl-B r d` | dodge (lighten) brush · `r b` burn (darken) brush… |
+| `Ctrl-B r p` | perspective rectify (pick 4 corners TL→TR→BR→BL)… |
+
+In the pick-mode a **crosshair** appears on the image: **arrows** move it (fine), **h/j/k/l** jump,
+**`+`/`-`** resize the brush, **Enter** sets the next point (the op applies once all its points are
+picked), **Esc** cancels. Each is a normal replayable edit (undo with `u`).
+
 All filters open the **slider** (strength 0–100%); dial the intensity, `Enter` to apply.
 
 **Oil paint 1–10** and **watercolour 1–10** are palette-only (type "oil" or "water" in the

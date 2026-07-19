@@ -442,6 +442,7 @@ The adjustments:
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 | Looks | **invert** · **film negative→positive** · **B&W channel mixer** (red/green/blue/orange filters) · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
 | Creative blur | **tilt-shift / miniature** · **motion blur** (h/v/diagonal) · **zoom blur** (radial) · **spin blur** (rotational) |
+| Retouch (`Ctrl-B r`) | **spot heal** · **clone stamp** · **red-eye** · **dodge / burn** brush · **perspective rectify** — an interactive crosshair pick-mode (arrows move, `+`/`-` brush size, Enter sets each point, Esc cancels) |
 | Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **crystallize** (Voronoi / low-poly) · **cross-hatch** · **gradient map** (warm / cyanotype / fire / teal-orange) · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus the Apple-Photos / iOS set **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone · fade · chrome · process · transfer · instant · tonal · bleach-bypass · teal & orange** |
 
 Every stylize **filter opens the slider** — you dial the strength from **0 % (off) to 100 %

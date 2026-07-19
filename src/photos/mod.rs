@@ -206,6 +206,7 @@ enum EditCmd {
     Lut,        // prompts for a .cube path
     FindDups,   // group near-duplicates (perceptual dHash) → a review smart view
     QualityCull, // reject soft / badly-exposed frames (non-AI)
+    Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     // AI "create" ops (prompt-driven generation → a new album image). These load a model.
     Generate,     // txt2img from a prompt
@@ -220,7 +221,7 @@ enum EditCmd {
 /// The Edit palette's command list: `(searchable label, action)`.
 /// The category keys for the `Ctrl-B` edit chords (the first key after the leader, in image view).
 /// Each avoids the global leader keys (h/H/t/v/p/l/L).
-fn chord_categories() -> [(char, &'static str); 9] {
+fn chord_categories() -> [(char, &'static str); 10] {
     [
         ('g', "geometry"),
         ('c', "crop"),
@@ -231,6 +232,7 @@ fn chord_categories() -> [(char, &'static str); 9] {
         ('m', "manage"),
         ('s', "stylize (looks & filters)"),
         ('n', "AI create (generate / portrait / scene)"),
+        ('r', "retouch (heal / clone / dodge / perspective)"),
     ]
 }
 
@@ -446,6 +448,13 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("AI img2img (transform this image)…", "ni", EditCmd::Img2imgCreate),
         ("AI portrait (this image as the face)…", "np", EditCmd::Portrait),
         ("AI multiperson scene (selected = people)…", "nm", EditCmd::Multiperson),
+        // Retouch (r) — interactive crosshair pick-mode.
+        ("spot heal (remove blemish / dust)…", "rh", EditCmd::Retouch(PickOp::SpotHeal)),
+        ("clone stamp (copy a region)…", "rc", EditCmd::Retouch(PickOp::Clone)),
+        ("red-eye removal…", "re", EditCmd::Retouch(PickOp::RedEye)),
+        ("dodge (lighten) brush…", "rd", EditCmd::Retouch(PickOp::Dodge)),
+        ("burn (darken) brush…", "rb", EditCmd::Retouch(PickOp::Burn)),
+        ("perspective rectify (pick 4 corners)…", "rp", EditCmd::Retouch(PickOp::Perspective)),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -572,6 +581,8 @@ struct App {
     // Interactive free-form crop (from the Edit palette): rect in [0,1] fractions (x, y, w, h).
     crop_mode: bool,
     crop_rect: (f32, f32, f32, f32),
+    // Interactive retouch pick-mode (heal / clone / red-eye / dodge-burn / perspective).
+    pick: Option<PickState>,
     // Interactive scalar-adjustment slider (brightness/contrast/…): the op carries the live value,
     // shown on a +/- bar with a live preview.
     adjust_mode: bool,
@@ -739,6 +750,49 @@ fn identity_for_model(model: &str) -> crate::api::IdentityKind {
     }
 }
 
+/// A retouch operation driven by the interactive crosshair pick-mode.
+#[derive(Clone, Copy, PartialEq)]
+enum PickOp {
+    SpotHeal,
+    Clone,
+    RedEye,
+    Dodge,
+    Burn,
+    Perspective,
+}
+
+impl PickOp {
+    /// How many points the user confirms before the op applies.
+    fn points_needed(self) -> usize {
+        match self {
+            PickOp::Clone => 2,       // source, then destination
+            PickOp::Perspective => 4, // TL, TR, BR, BL
+            _ => 1,
+        }
+    }
+    fn uses_radius(self) -> bool {
+        self != PickOp::Perspective
+    }
+    fn label(self) -> &'static str {
+        match self {
+            PickOp::SpotHeal => "spot heal",
+            PickOp::Clone => "clone stamp",
+            PickOp::RedEye => "red-eye",
+            PickOp::Dodge => "dodge (lighten)",
+            PickOp::Burn => "burn (darken)",
+            PickOp::Perspective => "perspective rectify",
+        }
+    }
+}
+
+/// Interactive pick-mode state: the live crosshair, confirmed points, and the brush radius.
+struct PickState {
+    op: PickOp,
+    pos: (f32, f32),            // crosshair in [0,1]
+    points: Vec<(f32, f32)>,    // confirmed points
+    radius: f32,                // brush radius as a fraction of the min dimension
+}
+
 /// An ML edit running on the resident worker, watched by the event loop.
 struct ActiveMl {
     label: String,
@@ -799,6 +853,7 @@ impl App {
             edit_visible: 10,
             crop_mode: false,
             crop_rect: (0.1, 0.1, 0.8, 0.8),
+            pick: None,
             adjust_mode: false,
             adjust_op: None,
             show_original: false,
@@ -1760,6 +1815,7 @@ impl App {
                 self.edit_menu = false;
                 self.quality_cull();
             }
+            EditCmd::Retouch(op) => self.enter_pick(op),
             EditCmd::FacePolish => {
                 self.edit_menu = false;
                 if self.cur_source().is_none() {
@@ -2097,6 +2153,99 @@ impl App {
         self.crop_mode = false;
         self.load_view();
         self.status = "crop cancelled".into();
+    }
+
+    // ---- Interactive retouch pick-mode -------------------------------------------------------------
+
+    /// Enter the crosshair pick-mode for a retouch op (heal / clone / red-eye / dodge-burn / perspective).
+    fn enter_pick(&mut self, op: PickOp) {
+        if self.cur_source().is_none() {
+            self.status = "open an image first".into();
+            return;
+        }
+        self.edit_menu = false;
+        self.pick = Some(PickState { op, pos: (0.5, 0.5), points: Vec::new(), radius: 0.06 });
+        self.mode = AlbumMode::Image;
+        self.load_view();
+        self.set_pick_status();
+    }
+
+    fn set_pick_status(&mut self) {
+        let Some(p) = &self.pick else { return };
+        let step = p.points.len() + 1;
+        let total = p.op.points_needed();
+        let hint = match p.op {
+            PickOp::Clone if p.points.is_empty() => " (source)",
+            PickOp::Clone => " (destination)",
+            PickOp::Perspective => " (corner TL→TR→BR→BL)",
+            _ => "",
+        };
+        let rad = if p.op.uses_radius() { " · +/- size" } else { "" };
+        self.status = format!(
+            "{} · point {step}/{total}{hint} · arrows move{rad} · Enter set · Esc cancel",
+            p.op.label()
+        );
+    }
+
+    /// Move the crosshair by `(dx, dy)` fractions, clamped to the image.
+    fn pick_move(&mut self, dx: f32, dy: f32) {
+        if let Some(p) = &mut self.pick {
+            p.pos.0 = (p.pos.0 + dx).clamp(0.0, 1.0);
+            p.pos.1 = (p.pos.1 + dy).clamp(0.0, 1.0);
+            self.load_view();
+            self.set_pick_status();
+        }
+    }
+
+    /// Grow / shrink the brush radius.
+    fn pick_radius(&mut self, d: f32) {
+        if let Some(p) = &mut self.pick {
+            if p.op.uses_radius() {
+                p.radius = (p.radius + d).clamp(0.01, 0.4);
+                self.load_view();
+                self.set_pick_status();
+            }
+        }
+    }
+
+    /// Confirm the crosshair as the next point; apply the op once enough points are collected.
+    fn pick_confirm(&mut self) {
+        let Some(p) = &mut self.pick else { return };
+        p.points.push(p.pos);
+        if p.points.len() < p.op.points_needed() {
+            self.load_view();
+            self.set_pick_status();
+            return;
+        }
+        // Enough points — build the replayable edit and leave pick-mode.
+        let PickState { op, points, radius, .. } = self.pick.take().unwrap();
+        let pm = |f: f32| (f * 1000.0).round() as i32;
+        let rad = pm(radius);
+        let edit = match op {
+            PickOp::SpotHeal => edit::EditOp::SpotHeal { x: pm(points[0].0), y: pm(points[0].1), radius: rad },
+            PickOp::Clone => edit::EditOp::Clone {
+                sx: pm(points[0].0), sy: pm(points[0].1),
+                dx: pm(points[1].0), dy: pm(points[1].1), radius: rad,
+            },
+            PickOp::RedEye => edit::EditOp::RedEye { x: pm(points[0].0), y: pm(points[0].1), radius: rad },
+            PickOp::Dodge => edit::EditOp::DodgeBurn { x: pm(points[0].0), y: pm(points[0].1), radius: rad, amount: 35 },
+            PickOp::Burn => edit::EditOp::DodgeBurn { x: pm(points[0].0), y: pm(points[0].1), radius: rad, amount: -35 },
+            PickOp::Perspective => {
+                let mut pts = [[0i32; 2]; 4];
+                for (i, pt) in points.iter().enumerate().take(4) {
+                    pts[i] = [pm(pt.0), pm(pt.1)];
+                }
+                edit::EditOp::Perspective4 { pts }
+            }
+        };
+        self.apply_edit(edit);
+    }
+
+    /// Leave pick-mode without applying.
+    fn cancel_pick(&mut self) {
+        self.pick = None;
+        self.load_view();
+        self.status = "retouch cancelled".into();
     }
 
     // ---- Interactive levels editor -----------------------------------------------------------------
@@ -4238,7 +4387,8 @@ impl App {
             || self.curve_mode
             || self.levels_mode
             || self.layer_mode
-            || self.crop_mode;
+            || self.crop_mode
+            || self.pick.is_some();
         let bound = if interactive { 1100 } else { (1600.0 * zoom).min(4096.0) as u32 };
         // Before/after: decode the pristine backup (if any) instead of the edited file.
         let decode = if self.show_original {
@@ -4263,6 +4413,8 @@ impl App {
                     layers::composite(&img, &self.layers, Some(self.layer_active)) // live composite
                 } else if self.crop_mode {
                     crop_preview(&img, self.crop_rect) // full image, dimmed outside the crop rect
+                } else if let Some(pk) = &self.pick {
+                    pick_preview(&img, pk) // crosshair + confirmed points + brush circle
                 } else if zoom > 1.01 {
                     apply_overlay(crop_center(&img, zoom), self.overlay)
                 } else {
@@ -5155,6 +5307,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_crop_key(app, k.code);
         return false;
     }
+    if app.pick.is_some() {
+        handle_pick_key(app, k.code);
+        return false;
+    }
     if app.edit_menu {
         handle_edit_key(app, k.code);
         return false;
@@ -5199,6 +5355,27 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
         KeyCode::Char(']') => app.adjust_crop(0.0, 0.0, s, 0.0),
         KeyCode::Char(',') => app.adjust_crop(0.0, 0.0, 0.0, -s),
         KeyCode::Char('.') => app.adjust_crop(0.0, 0.0, 0.0, s),
+        _ => {}
+    }
+}
+
+/// Retouch pick-mode: arrows move the crosshair (fine), h/j/k/l coarse, +/- brush size, Enter sets
+/// the next point (applies once enough are collected), Esc cancels.
+fn handle_pick_key(app: &mut App, code: KeyCode) {
+    let (fine, coarse) = (0.004, 0.03);
+    match code {
+        KeyCode::Esc => app.cancel_pick(),
+        KeyCode::Enter => app.pick_confirm(),
+        KeyCode::Left => app.pick_move(-fine, 0.0),
+        KeyCode::Right => app.pick_move(fine, 0.0),
+        KeyCode::Up => app.pick_move(0.0, -fine),
+        KeyCode::Down => app.pick_move(0.0, fine),
+        KeyCode::Char('h') => app.pick_move(-coarse, 0.0),
+        KeyCode::Char('l') => app.pick_move(coarse, 0.0),
+        KeyCode::Char('k') => app.pick_move(0.0, -coarse),
+        KeyCode::Char('j') => app.pick_move(0.0, coarse),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.pick_radius(0.01),
+        KeyCode::Char('-') | KeyCode::Char('_') => app.pick_radius(-0.01),
         _ => {}
     }
 }
@@ -6482,6 +6659,44 @@ fn crop_preview(img: &image::DynamicImage, rect: (f32, f32, f32, f32)) -> image:
         {
             // Subtle thirds guide: lighten toward white for composition.
             p.0 = [p.0[0].max(200), p.0[1].max(200), p.0[2].max(200)];
+        }
+    }
+    image::DynamicImage::ImageRgb8(rgb)
+}
+
+/// Draw the retouch pick-mode overlay: confirmed points (amber ×), the live crosshair (cyan), and —
+/// for brush ops — the brush circle at the crosshair, all baked into the displayed image.
+fn pick_preview(img: &image::DynamicImage, pk: &PickState) -> image::DynamicImage {
+    let mut rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as i32, rgb.height() as i32);
+    let put = |rgb: &mut image::RgbImage, x: i32, y: i32, c: [u8; 3]| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            rgb.put_pixel(x as u32, y as u32, image::Rgb(c));
+        }
+    };
+    // Confirmed points → amber ×.
+    for &(fx, fy) in &pk.points {
+        let (cx, cy) = ((fx * w as f32) as i32, (fy * h as f32) as i32);
+        for d in -4..=4 {
+            put(&mut rgb, cx + d, cy + d, [255, 190, 40]);
+            put(&mut rgb, cx + d, cy - d, [255, 190, 40]);
+        }
+    }
+    // Live crosshair → cyan full-width/height lines.
+    let (cx, cy) = ((pk.pos.0 * w as f32) as i32, (pk.pos.1 * h as f32) as i32);
+    for x in 0..w {
+        put(&mut rgb, x, cy, [0, 230, 230]);
+    }
+    for y in 0..h {
+        put(&mut rgb, cx, y, [0, 230, 230]);
+    }
+    // Brush circle at the crosshair (radius as a fraction of the min dimension).
+    if pk.op.uses_radius() {
+        let r = (pk.radius * w.min(h) as f32).max(1.0);
+        let steps = ((2.0 * std::f32::consts::PI * r) as i32).clamp(24, 720);
+        for i in 0..steps {
+            let a = i as f32 / steps as f32 * std::f32::consts::TAU;
+            put(&mut rgb, cx + (r * a.cos()) as i32, cy + (r * a.sin()) as i32, [255, 255, 0]);
         }
     }
     image::DynamicImage::ImageRgb8(rgb)

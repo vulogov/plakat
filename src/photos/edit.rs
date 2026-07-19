@@ -161,6 +161,18 @@ pub enum EditOp {
     LensDistort(i32),
     /// Chromatic-aberration removal: rescale R/B channels radially to remove colour fringing; `strength` 0..100.
     ChromaticAberration(i32),
+    /// Retouch (from the pick-mode): coordinates are per-mille of the image, radius per-mille of the
+    /// min dimension — so each replays exactly on the pristine original.
+    /// Spot heal: fill a disc from its surroundings (dust / blemish removal).
+    SpotHeal { x: i32, y: i32, radius: i32 },
+    /// Clone stamp: copy a disc from source `(sx, sy)` to destination `(dx, dy)`.
+    Clone { sx: i32, sy: i32, dx: i32, dy: i32, radius: i32 },
+    /// Red-eye removal: neutralise the red pupil glare inside a disc.
+    RedEye { x: i32, y: i32, radius: i32 },
+    /// Dodge / burn brush: lighten (`amount` > 0) or darken a soft disc.
+    DodgeBurn { x: i32, y: i32, radius: i32, amount: i32 },
+    /// 4-point perspective rectify: warp the picked quad (TL, TR, BR, BL per-mille) to fill the frame.
+    Perspective4 { pts: [[i32; 2]; 4] },
     /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
     /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
     /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
@@ -307,6 +319,11 @@ impl EditOp {
             EditOp::FilmNegative => adjust::film_negative(&img),
             EditOp::LensDistort(v) => lens_distort(&img, v),
             EditOp::ChromaticAberration(v) => chromatic_aberration(&img, v),
+            EditOp::SpotHeal { x, y, radius } => adjust::spot_heal(&img, x, y, radius),
+            EditOp::Clone { sx, sy, dx, dy, radius } => adjust::clone_stamp(&img, sx, sy, dx, dy, radius),
+            EditOp::RedEye { x, y, radius } => adjust::red_eye(&img, x, y, radius),
+            EditOp::DodgeBurn { x, y, radius, amount } => adjust::dodge_burn(&img, x, y, radius, amount),
+            EditOp::Perspective4 { pts } => super::homography::rectify(&img, pts),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Watermark { text, font } => watermark(&img, &text, font.as_deref()),
@@ -524,6 +541,11 @@ impl EditOp {
             EditOp::FilmNegative => "film negative".into(),
             EditOp::LensDistort(_) => "lens distortion".into(),
             EditOp::ChromaticAberration(_) => "chromatic aberration".into(),
+            EditOp::SpotHeal { .. } => "spot heal".into(),
+            EditOp::Clone { .. } => "clone stamp".into(),
+            EditOp::RedEye { .. } => "red-eye removal".into(),
+            EditOp::DodgeBurn { amount, .. } => if *amount >= 0 { "dodge".into() } else { "burn".into() },
+            EditOp::Perspective4 { .. } => "perspective rectify".into(),
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
@@ -663,6 +685,39 @@ impl EditOp {
             EditOp::FilmNegative => "film_negative",
             EditOp::LensDistort(v) => val_op(&mut params, v, "lens_distort"),
             EditOp::ChromaticAberration(v) => val_op(&mut params, v, "chromatic_aberration"),
+            EditOp::SpotHeal { x, y, radius } => {
+                params.insert("x".into(), serde_json::json!(x));
+                params.insert("y".into(), serde_json::json!(y));
+                params.insert("radius".into(), serde_json::json!(radius));
+                "spot_heal"
+            }
+            EditOp::Clone { sx, sy, dx, dy, radius } => {
+                params.insert("sx".into(), serde_json::json!(sx));
+                params.insert("sy".into(), serde_json::json!(sy));
+                params.insert("dx".into(), serde_json::json!(dx));
+                params.insert("dy".into(), serde_json::json!(dy));
+                params.insert("radius".into(), serde_json::json!(radius));
+                "clone"
+            }
+            EditOp::RedEye { x, y, radius } => {
+                params.insert("x".into(), serde_json::json!(x));
+                params.insert("y".into(), serde_json::json!(y));
+                params.insert("radius".into(), serde_json::json!(radius));
+                "red_eye"
+            }
+            EditOp::DodgeBurn { x, y, radius, amount } => {
+                params.insert("x".into(), serde_json::json!(x));
+                params.insert("y".into(), serde_json::json!(y));
+                params.insert("radius".into(), serde_json::json!(radius));
+                params.insert("amount".into(), serde_json::json!(amount));
+                "dodge_burn"
+            }
+            EditOp::Perspective4 { pts } => {
+                for (i, p) in pts.iter().enumerate() {
+                    params.insert(format!("p{i}"), serde_json::json!(p));
+                }
+                "perspective4"
+            }
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::Watermark { text, font } => {
@@ -930,6 +985,24 @@ impl EditOp {
             "film_negative" => EditOp::FilmNegative,
             "lens_distort" => EditOp::LensDistort(val()),
             "chromatic_aberration" => EditOp::ChromaticAberration(iv("value", 60)),
+            "spot_heal" => EditOp::SpotHeal { x: iv("x", 500), y: iv("y", 500), radius: iv("radius", 60) },
+            "clone" => EditOp::Clone {
+                sx: iv("sx", 400), sy: iv("sy", 500), dx: iv("dx", 600), dy: iv("dy", 500), radius: iv("radius", 60),
+            },
+            "red_eye" => EditOp::RedEye { x: iv("x", 500), y: iv("y", 500), radius: iv("radius", 40) },
+            "dodge_burn" => EditOp::DodgeBurn {
+                x: iv("x", 500), y: iv("y", 500), radius: iv("radius", 120), amount: iv("amount", 30),
+            },
+            "perspective4" => {
+                let mut pts = [[0i32; 2]; 4];
+                for (i, pt) in pts.iter_mut().enumerate() {
+                    if let Some(arr) = e.params.get(&format!("p{i}")).and_then(|v| v.as_array()) {
+                        pt[0] = arr.first().and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+                        pt[1] = arr.get(1).and_then(|y| y.as_i64()).unwrap_or(0) as i32;
+                    }
+                }
+                EditOp::Perspective4 { pts }
+            }
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "watermark" => EditOp::Watermark {
@@ -1941,6 +2014,119 @@ mod adjust {
         auto_enhance(&invert(img))
     }
 
+    /// Map per-mille `(x, y)` + per-mille `radius` (of the min dimension) to pixel geometry.
+    fn disc_geom(w: u32, h: u32, x: i32, y: i32, radius: i32) -> (f32, f32, f32) {
+        let cx = x as f32 / 1000.0 * (w.max(1) - 1) as f32;
+        let cy = y as f32 / 1000.0 * (h.max(1) - 1) as f32;
+        let r = (radius.max(1) as f32 / 1000.0 * w.min(h) as f32).max(1.0);
+        (cx, cy, r)
+    }
+
+    /// Spot heal: fill a disc at `(x, y)` (per-mille) of `radius` by interpolating the colour from its
+    /// four boundary points — removes dust / blemishes on reasonably smooth areas. Feathered edge.
+    pub fn spot_heal(img: &DynamicImage, x: i32, y: i32, radius: i32) -> DynamicImage {
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (cx, cy, r) = disc_geom(w, h, x, y, radius);
+        let samp = |xx: f32, yy: f32| super::bilinear(&rgb, xx, yy).0;
+        let (bt, bb, bl, br) = (samp(cx, cy - r), samp(cx, cy + r), samp(cx - r, cy), samp(cx + r, cy));
+        let (x0, y0) = ((cx - r).floor().max(0.0) as u32, (cy - r).floor().max(0.0) as u32);
+        let (x1, y1) = (((cx + r).ceil() as u32).min(w - 1), ((cy + r).ceil() as u32).min(h - 1));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (dx, dy) = (px as f32 - cx, py as f32 - cy);
+                let d = (dx * dx + dy * dy).sqrt() / r;
+                if d >= 1.0 {
+                    continue;
+                }
+                let fx = ((px as f32 - (cx - r)) / (2.0 * r)).clamp(0.0, 1.0);
+                let fy = ((py as f32 - (cy - r)) / (2.0 * r)).clamp(0.0, 1.0);
+                let feather = smoothstep(1.0, 0.8, d); // 1 in the middle, fades to 0 at the rim
+                let o = rgb.get_pixel(px, py).0;
+                let np = std::array::from_fn(|c| {
+                    let fill = (bl[c] as f32 * (1.0 - fx) + br[c] as f32 * fx + bt[c] as f32 * (1.0 - fy) + bb[c] as f32 * fy) / 2.0;
+                    (o[c] as f32 * (1.0 - feather) + fill * feather) as u8
+                });
+                rgb.put_pixel(px, py, Rgb(np));
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Clone stamp: copy a disc from source `(sx, sy)` to destination `(dx, dy)` (all per-mille) with a
+    /// feathered edge.
+    pub fn clone_stamp(img: &DynamicImage, sx: i32, sy: i32, dx: i32, dy: i32, radius: i32) -> DynamicImage {
+        let src = img.to_rgb8();
+        let mut rgb = src.clone();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (dcx, dcy, r) = disc_geom(w, h, dx, dy, radius);
+        let (scx, scy, _) = disc_geom(w, h, sx, sy, radius);
+        let (x0, y0) = ((dcx - r).floor().max(0.0) as u32, (dcy - r).floor().max(0.0) as u32);
+        let (x1, y1) = (((dcx + r).ceil() as u32).min(w - 1), ((dcy + r).ceil() as u32).min(h - 1));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (ox, oy) = (px as f32 - dcx, py as f32 - dcy);
+                let d = (ox * ox + oy * oy).sqrt() / r;
+                if d >= 1.0 {
+                    continue;
+                }
+                let s = super::bilinear(&src, scx + ox, scy + oy).0;
+                let feather = smoothstep(1.0, 0.75, d);
+                let o = rgb.get_pixel(px, py).0;
+                rgb.put_pixel(px, py, Rgb(std::array::from_fn(|c| (o[c] as f32 * (1.0 - feather) + s[c] as f32 * feather) as u8)));
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Red-eye removal: within a disc, desaturate + darken pixels where red strongly dominates.
+    pub fn red_eye(img: &DynamicImage, x: i32, y: i32, radius: i32) -> DynamicImage {
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (cx, cy, r) = disc_geom(w, h, x, y, radius);
+        let (x0, y0) = ((cx - r).floor().max(0.0) as u32, (cy - r).floor().max(0.0) as u32);
+        let (x1, y1) = (((cx + r).ceil() as u32).min(w - 1), ((cy + r).ceil() as u32).min(h - 1));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (dx, dy) = (px as f32 - cx, py as f32 - cy);
+                if (dx * dx + dy * dy).sqrt() >= r {
+                    continue;
+                }
+                let p = rgb.get_pixel(px, py).0;
+                let (rr, gg, bb) = (p[0] as f32, p[1] as f32, p[2] as f32);
+                // Redness: red clearly above the green/blue average → the pupil glare.
+                if rr > (gg + bb) * 0.7 + 20.0 {
+                    let g = ((gg + bb) / 2.0 * 0.6) as u8;
+                    rgb.put_pixel(px, py, Rgb([g, g, g]));
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
+    /// Dodge / burn brush: lighten (`amount` > 0) or darken a disc with a soft radial falloff.
+    pub fn dodge_burn(img: &DynamicImage, x: i32, y: i32, radius: i32, amount: i32) -> DynamicImage {
+        let mut rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let (cx, cy, r) = disc_geom(w, h, x, y, radius);
+        let amt = amount.clamp(-100, 100) as f32 / 100.0;
+        let (x0, y0) = ((cx - r).floor().max(0.0) as u32, (cy - r).floor().max(0.0) as u32);
+        let (x1, y1) = (((cx + r).ceil() as u32).min(w - 1), ((cy + r).ceil() as u32).min(h - 1));
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (dx, dy) = (px as f32 - cx, py as f32 - cy);
+                let d = (dx * dx + dy * dy).sqrt() / r;
+                if d >= 1.0 {
+                    continue;
+                }
+                let wgt = smoothstep(1.0, 0.0, d) * amt * 0.6; // soft, full at centre
+                let o = rgb.get_pixel(px, py).0;
+                rgb.put_pixel(px, py, Rgb(std::array::from_fn(|c| enc(o[c] as f32 / 255.0 + wgt))));
+            }
+        }
+        DynamicImage::ImageRgb8(rgb)
+    }
+
     /// Bloom / glow: screen-blend the blurred bright areas back over the image.
     pub fn bloom(img: &DynamicImage, strength: i32) -> DynamicImage {
         let t = strength.clamp(0, 100) as f32 / 100.0;
@@ -2775,6 +2961,11 @@ mod tests {
             EditOp::TiltShift(70), EditOp::MotionBlur { angle: 45, strength: 60 }, EditOp::ZoomBlur(50),
             EditOp::SpinBlur(40), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
             EditOp::LensDistort(-40), EditOp::ChromaticAberration(60),
+            EditOp::SpotHeal { x: 400, y: 300, radius: 60 },
+            EditOp::Clone { sx: 300, sy: 400, dx: 600, dy: 400, radius: 55 },
+            EditOp::RedEye { x: 450, y: 350, radius: 40 },
+            EditOp::DodgeBurn { x: 500, y: 500, radius: 120, amount: -35 },
+            EditOp::Perspective4 { pts: [[80, 90], [910, 70], [940, 930], [60, 950]] },
             EditOp::Watermark { text: "© plakat".into(), font: None },
             EditOp::Watermark { text: "shot on film".into(), font: Some("/fonts/Foo.ttf".into()) },
             EditOp::Lut { path: "/grades/teal.cube".into() },
@@ -3007,6 +3198,33 @@ mod tests {
         assert_eq!(grass, [60, 130, 50], "grass (low, non-blue) untouched");
         // Strength 0 → byte-identical.
         assert_eq!(EditOp::EnhanceSky(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
+    }
+
+    #[test]
+    fn retouch_ops_heal_dodge_and_redeye() {
+        // Spot heal fills a red blemish on a grey field with the surrounding grey.
+        let mut buf = ImageBuffer::from_pixel(60, 60, Rgb([130u8, 130, 130]));
+        for y in 27..33 {
+            for x in 27..33 {
+                buf.put_pixel(x, y, Rgb([230, 20, 20]));
+            }
+        }
+        let img = DynamicImage::ImageRgb8(buf);
+        let healed = EditOp::SpotHeal { x: 500, y: 500, radius: 120 }.apply(img.clone()).to_rgb8();
+        let c = healed.get_pixel(30, 30).0;
+        assert!(c[0] < 180 && c[1] > 80, "blemish healed toward grey (was 230,20,20): {c:?}");
+
+        // Dodge lightens the centre; burn darkens it.
+        let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(40, 40, Rgb([120u8, 120, 120])));
+        let dodged = EditOp::DodgeBurn { x: 500, y: 500, radius: 300, amount: 60 }.apply(grey.clone()).to_rgb8();
+        let burned = EditOp::DodgeBurn { x: 500, y: 500, radius: 300, amount: -60 }.apply(grey.clone()).to_rgb8();
+        assert!(dodged.get_pixel(20, 20).0[0] > 120, "dodge lightened");
+        assert!(burned.get_pixel(20, 20).0[0] < 120, "burn darkened");
+
+        // Red-eye neutralises a red disc.
+        let eye = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(30, 30, Rgb([220u8, 30, 30])));
+        let fixed = EditOp::RedEye { x: 500, y: 500, radius: 600 }.apply(eye).to_rgb8().get_pixel(15, 15).0;
+        assert!(fixed[0] < 120 && fixed[0] == fixed[1], "red-eye neutralised to grey: {fixed:?}");
     }
 
     #[test]

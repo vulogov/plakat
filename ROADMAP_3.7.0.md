@@ -31,10 +31,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       bounds → reject soft / too-dark / too-bright frames (metadata, undoable). Offline complement to
       the AI aesthetic cull.
 
-## Stretch (needs a new interactive pick-mode)
+## Stretch — interactive pick-mode — DONE
 
-- [ ] **Spot heal / clone stamp** (+ red-eye, dodge/burn brush) — the biggest "real editor" gap; a
-      crosshair pick-mode would unlock all three. Deferred unless we invest in the UX this cut.
+- [x] **Crosshair pick-mode** (`src/photos/mod.rs` `PickState`/`handle_pick_key`/`pick_preview`; chord
+      category `r`) — one interactive mode (arrows move, `+/-` brush size, Enter sets each point, Esc
+      cancels) that unlocks all of:
+  - [x] **Spot heal** (`r h`) — fill a disc from its boundary (dust / blemish removal).
+  - [x] **Clone stamp** (`r c`) — pick source then destination; feathered copy.
+  - [x] **Red-eye removal** (`r e`) — neutralise the red pupil glare in a disc.
+  - [x] **Dodge / burn brush** (`r d` / `r b`) — soft lighten / darken.
+  - [x] **4-point perspective rectify** (`r p`) — pick the corners → warp to fill the frame (reuses
+        `homography::solve_homography`). Closes the deferred Track B item.
+  - All five are **replayable EditOps** carrying per-mille coordinates.
 
 ## Deferred (need explicit go-ahead)
 

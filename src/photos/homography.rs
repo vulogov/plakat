@@ -8,7 +8,7 @@
 //! `None` when it can't find a confident model, so the caller falls back to the simpler stitchers
 //! rather than emitting a mangled canvas.
 
-use image::{GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
+use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgb, RgbImage};
 use imageproc::corners::corners_fast9;
 use imageproc::geometric_transformations::{warp_into, Interpolation, Projection};
 
@@ -289,6 +289,27 @@ pub fn estimate(base: &RgbImage, add: &RgbImage) -> Option<[f32; 9]> {
     let s_base = [sb, 0.0, 0.0, 0.0, sb, 0.0, 0.0, 0.0, 1.0];
     let _ = s_add;
     Some(mat3_mul(&mat3_mul(&s_base, &h), &s_add_inv))
+}
+
+/// 4-point perspective rectify: warp the picked quad (`pts` = TL, TR, BR, BL in per-mille of the
+/// image) so it fills the frame — straightens a photographed plane (a document, a painting, a wall).
+/// A degenerate quad returns the image unchanged.
+pub fn rectify(img: &DynamicImage, pts: [[i32; 2]; 4]) -> DynamicImage {
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let (wf, hf) = ((w.max(1) - 1) as f32, (h.max(1) - 1) as f32);
+    let src: Vec<(f32, f32)> =
+        pts.iter().map(|p| (p[0] as f32 / 1000.0 * wf, p[1] as f32 / 1000.0 * hf)).collect();
+    let dst = vec![(0.0, 0.0), (wf, 0.0), (wf, hf), (0.0, hf)];
+    let Some(hm) = solve_homography(&src, &dst) else {
+        return img.clone();
+    };
+    let Some(proj) = Projection::from_matrix(hm) else {
+        return img.clone();
+    };
+    let mut out = ImageBuffer::from_pixel(w, h, Rgb([0u8, 0, 0]));
+    warp_into(&rgb, &proj, Interpolation::Bilinear, Rgb([0u8, 0, 0]), &mut out);
+    DynamicImage::ImageRgb8(out)
 }
 
 /// Warp a same-size white mask through `proj` into a canvas the size of `out`, returning coverage.
