@@ -98,6 +98,8 @@ enum PendingCmd {
     Multiperson,
     /// Multi-shot composite over the selection: `hdr` (exposure fusion) or `focus` (focus stacking).
     Multishot,
+    /// Move (or copy, when `copy`) the target images into the album at the entered path.
+    MoveToAlbum { copy: bool },
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -206,6 +208,7 @@ enum EditCmd {
     Lut,        // prompts for a .cube path
     FindDups,   // group near-duplicates (perceptual dHash) → a review smart view
     QualityCull, // reject soft / badly-exposed frames (non-AI)
+    MoveToAlbum { copy: bool }, // move / copy the targets into another album (prompts for the path)
     Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     // AI "create" ops (prompt-driven generation → a new album image). These load a model.
@@ -402,6 +405,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("apply LUT (.cube colour grade)…", "mu", EditCmd::Lut),
         ("find near-duplicates (perceptual hash)", "mf", EditCmd::FindDups),
         ("cull soft / badly-exposed (non-AI)", "mq", EditCmd::QualityCull),
+        ("move to album (path)…", "mo", EditCmd::MoveToAlbum { copy: false }),
+        ("copy to album (path)…", "mp", EditCmd::MoveToAlbum { copy: true }),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -1845,6 +1850,11 @@ impl App {
                 self.quality_cull();
             }
             EditCmd::Retouch(op) => self.enter_pick(op),
+            EditCmd::MoveToAlbum { copy } => {
+                self.edit_menu = false;
+                let verb = if copy { "copy" } else { "move" };
+                self.prompt(format!("{verb} to album — path: "), "", PendingCmd::MoveToAlbum { copy });
+            }
             EditCmd::FacePolish => {
                 self.edit_menu = false;
                 if self.cur_source().is_none() {
@@ -3517,6 +3527,89 @@ impl App {
         );
     }
 
+    /// Move (or copy) the target images into the album at `dest_arg` — the file, its `.json` sidecar,
+    /// and its curation record all go along; on a move the record is removed from the source album.
+    /// (Edit-undo history in `.plakat_edits/` is not carried — the moved file is its current state.)
+    fn move_targets(&mut self, dest_arg: &str, copy: bool) {
+        let dest = expand_tilde(dest_arg.trim());
+        if !dest.is_dir() {
+            self.status = format!("no album directory at {}", dest.display());
+            return;
+        }
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "select image(s) first".into();
+            return;
+        }
+        let verb = if copy { "copied" } else { "moved" };
+        let (mut ok, mut err) = (0u32, 0u32);
+        let mut last = None;
+        for (src_dir, path) in &files {
+            if src_dir == &dest {
+                err += 1; // no-op: already in the destination album
+                continue;
+            }
+            let Some(fname) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+                err += 1;
+                continue;
+            };
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let ext = path.extension().and_then(|e| e.to_str());
+            let make = |s: &str| match ext {
+                Some(e) => format!("{s}.{e}"),
+                None => s.to_string(),
+            };
+            let mut name = make(stem);
+            let mut i = 2;
+            while dest.join(&name).exists() {
+                name = make(&format!("{stem}-{i}"));
+                i += 1;
+            }
+            let dest_path = dest.join(&name);
+            let moved = if copy {
+                std::fs::copy(path, &dest_path).is_ok()
+            } else {
+                std::fs::rename(path, &dest_path).is_ok()
+                    || (std::fs::copy(path, &dest_path).is_ok() && std::fs::remove_file(path).is_ok())
+            };
+            if !moved {
+                err += 1;
+                continue;
+            }
+            let sc = path.with_extension("json");
+            if sc.exists() {
+                let dsc = dest_path.with_extension("json");
+                if copy {
+                    let _ = std::fs::copy(&sc, &dsc);
+                } else if std::fs::rename(&sc, &dsc).is_err() && std::fs::copy(&sc, &dsc).is_ok() {
+                    let _ = std::fs::remove_file(&sc);
+                }
+            }
+            let rec = self.record(path).cloned();
+            if let Some(r) = rec {
+                let key = name.clone();
+                self.edit_album_meta_at(&dest, |m| {
+                    m.images.insert(key, r);
+                });
+            }
+            if !copy {
+                self.edit_album_meta_at(src_dir, |m| {
+                    m.images.remove(&fname);
+                });
+            }
+            last = Some(name);
+            ok += 1;
+        }
+        self.selected.clear();
+        self.rescan();
+        if let Some(n) = &last {
+            self.select_by_name(n);
+        }
+        let dname = dest.file_name().and_then(|n| n.to_str()).unwrap_or("album");
+        let tail = if err > 0 { format!(", {err} skipped/failed") } else { String::new() };
+        self.status = format!("{verb} {ok} image(s) → '{dname}'{tail}");
+    }
+
     /// "Take photo for processing": copy the highest-resolution version of each target image into a
     /// new **nested sub-album** (named from the image), so destructive edits + artefacts stay
     /// isolated from the source album. Multi-select aware.
@@ -4213,6 +4306,10 @@ impl App {
                 Some(PendingCmd::Multishot) if !arg.is_empty() => {
                     let focus = arg.trim().to_ascii_lowercase().starts_with('f');
                     self.make_multishot(focus);
+                    fs_changed = true;
+                }
+                Some(PendingCmd::MoveToAlbum { copy }) if !arg.is_empty() => {
+                    self.move_targets(&arg, copy);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Watermark) if !arg.is_empty() => {
