@@ -22,6 +22,17 @@
   copy-paste / presets), re-rendered on rebuild; missing font → bitmap fallback, missing `.cube` →
   no-op.
 
+## Post-3.6.0 (on the branch, for the next cut)
+
+- [x] **Generation model/size picker** — `generate`/`portrait`/`multiperson` take `prompt | model
+      [WxH]` (e.g. `| sd15 512`), off the SDXL-only default; `identity_for_model` matches the family.
+- [x] **Bilateral denoise** — edge-preserving 5×5 range+spatial filter (chord `x j`), cleaner than the
+      median despeckle.
+- [x] **Multi-shot composites** (`src/photos/multishot.rs`, grid `H`, NL `hdr`/`focus stack`) — HDR
+      **exposure fusion** (single-scale Mertens) + **focus stacking** (per-pixel sharpest).
+- [x] **HSL per-band** — `SelectiveLum` (per-band lightness) + selective-colour expanded to 8 bands.
+- [x] **Gray-point white balance** (eyedropper, chord `k e`) — sample a neutral point → remove the cast.
+
 ## Not done (deferred — need explicit go-ahead)
 
 - **Track C distribution** — `cargo publish` (crates.io) + GitHub release assets + merge to `main`.

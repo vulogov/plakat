@@ -373,8 +373,13 @@ Two ways to combine several images into one (deterministic layout — no AI alig
 - **Mosaic (`W`)** — a **scrapbook** layout: a justified-rows gallery (like Flickr) where each
   image keeps its aspect ratio, so **cell sizes vary** — a wide panorama gets a big cell, a
   portrait a narrow one → `mosaic_scrapbook.png`.
+- **Multi-shot (`H`)** — merge a **burst / bracket** of the same scene (best from a tripod):
+  **`hdr`** = exposure fusion (blends bracketed exposures weighted by contrast / saturation /
+  well-exposedness → recovers shadow + highlight detail) → `hdr_stack.png`; **`focus`** = focus
+  stacking (takes each pixel from whichever frame is locally sharpest → extends depth-of-field) →
+  `focus_stack.png`. Frames are resized to the first — align your burst first.
 
-All are also `:` commands (`panorama vertical`, `collage`, `mosaic`).
+All are also `:` commands (`panorama vertical`, `collage`, `mosaic`, `hdr`, `focus stack`).
 
 ### Take photo for processing (`P`)
 
@@ -432,8 +437,8 @@ The adjustments:
 |-------|----------|
 | Light | brightness · exposure · brilliance · contrast |
 | Tone bands | highlights · midrange · shadows · black point |
-| Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · **hue rotate** · **split-tone** (warm/cool highlights) · **selective colour** (boost/mute reds/greens/blues) |
-| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **enhance sky** (auto-mask) · **face polish** (auto-detect) · **vignette** · **film grain** · **despeckle** (median) |
+| Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · Kelvin / **auto** / **gray-point (eyedropper)** white balance · **hue rotate** · **split-tone** · **selective colour** (8 bands, boost/mute) · **HSL per-band** (brighten/darken reds/blues/greens) |
+| Detail | definition (clarity) · sharpen / soften · noise reduction · **bilateral denoise** (edge-preserving) · **dehaze** · **enhance sky** (auto-mask) · **face polish** (auto-detect) · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 | Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
 | Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **crystallize** (Voronoi / low-poly) · **cross-hatch** · **gradient map** (warm / cyanotype / fire / teal-orange) · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus the Apple-Photos / iOS set **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone · fade · chrome · process · transfer · instant · tonal · bleach-bypass · teal & orange** |

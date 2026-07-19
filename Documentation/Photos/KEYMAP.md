@@ -80,6 +80,8 @@ command's chord in its right column.
 | `Ctrl-B k w` | warmth (warm / cool)… |
 | `Ctrl-B k k` | Kelvin white balance… |
 | `Ctrl-B k a` | auto white balance (gray-world)… |
+| `Ctrl-B k e` | gray-point white balance (eyedropper — sample centre) |
+| `Ctrl-B k d` | HSL: darken blues (sky) · more selective-colour / HSL bands are palette-only |
 | `Ctrl-B k t` | tint (magenta / green)… |
 | `Ctrl-B k h` | hue rotate… |
 | `Ctrl-B k p` | split-tone… |
@@ -96,6 +98,7 @@ command's chord in its right column.
 | `Ctrl-B x g` | film grain… |
 | `Ctrl-B x k` | despeckle (median)… |
 | `Ctrl-B x z` | dehaze… |
+| `Ctrl-B x j` | bilateral denoise (edge-preserving)… |
 | `Ctrl-B x y` | enhance sky (auto-mask polarizer)… |
 | `Ctrl-B x c` | face polish — AI-detect faces, then 0–100 % skin smoothing… |
 | `Ctrl-B x v` | vignette… |

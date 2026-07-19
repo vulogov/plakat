@@ -19,6 +19,7 @@ pub mod faces;
 pub mod homography;
 pub mod mledit;
 pub mod mlworker;
+pub mod multishot;
 pub mod nl;
 pub mod portfolio;
 pub mod rename;
@@ -94,6 +95,8 @@ enum PendingCmd {
     Portrait,
     /// AI multiperson scene from the entered prompt (the selected images become the people).
     Multiperson,
+    /// Multi-shot composite over the selection: `hdr` (exposure fusion) or `focus` (focus stacking).
+    Multishot,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -316,6 +319,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("warmth (warm / cool)…", "kw", EditCmd::Adjust(Warmth(0))),
         ("Kelvin white balance…", "kk", EditCmd::Adjust(Kelvin(0))),
         ("auto white balance (gray-world)…", "ka", EditCmd::Adjust(AutoWhiteBalance(100))),
+        ("gray-point white balance (sample centre)", "ke", EditCmd::Op(GrayPointWB { x: 500, y: 500 })),
         ("tint (magenta / green)…", "kt", EditCmd::Adjust(Tint(0))),
         ("hue rotate…", "kh", EditCmd::Adjust(HueRotate(0))),
         ("split-tone…", "kp", EditCmd::Adjust(SplitTone(0))),
@@ -325,12 +329,24 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("selective colour: mute greens", "kG", EditCmd::Op(SelectiveColor { hue: 120, sat: -55 })),
         ("selective colour: boost blues", "kb", EditCmd::Op(SelectiveColor { hue: 240, sat: 45 })),
         ("selective colour: mute blues", "kB", EditCmd::Op(SelectiveColor { hue: 240, sat: -55 })),
+        // HSL per-band: the other five bands (palette-only) + per-band lightness.
+        ("selective colour: boost oranges", "", EditCmd::Op(SelectiveColor { hue: 30, sat: 45 })),
+        ("selective colour: boost yellows", "", EditCmd::Op(SelectiveColor { hue: 60, sat: 45 })),
+        ("selective colour: boost aquas", "", EditCmd::Op(SelectiveColor { hue: 180, sat: 45 })),
+        ("selective colour: boost purples", "", EditCmd::Op(SelectiveColor { hue: 270, sat: 45 })),
+        ("selective colour: boost magentas", "", EditCmd::Op(SelectiveColor { hue: 300, sat: 45 })),
+        ("HSL: brighten reds", "", EditCmd::Op(SelectiveLum { hue: 0, lum: 40 })),
+        ("HSL: darken reds", "", EditCmd::Op(SelectiveLum { hue: 0, lum: -40 })),
+        ("HSL: brighten blues (sky)", "", EditCmd::Op(SelectiveLum { hue: 240, lum: 40 })),
+        ("HSL: darken blues (sky)", "kd", EditCmd::Op(SelectiveLum { hue: 240, lum: -40 })),
+        ("HSL: darken greens (foliage)", "", EditCmd::Op(SelectiveLum { hue: 120, lum: -35 })),
         // Effects / detail (x)
         ("definition (clarity)…", "xd", EditCmd::Adjust(Definition(0))),
         ("blur (soft focus)…", "xf", EditCmd::Adjust(Blur(50))),
         ("bloom / glow…", "xo", EditCmd::Adjust(Bloom(60))),
         ("sharpen / soften…", "xs", EditCmd::Adjust(Sharpen(0))),
         ("noise reduction…", "xn", EditCmd::Adjust(NoiseReduction(0))),
+        ("bilateral denoise (edge-preserving)…", "xj", EditCmd::Adjust(Bilateral(80))),
         ("film grain…", "xg", EditCmd::Adjust(Grain(0))),
         ("despeckle (median)…", "xk", EditCmd::Adjust(Despeckle(0))),
         ("dehaze…", "xz", EditCmd::Adjust(Dehaze(0))),
@@ -2883,6 +2899,8 @@ impl App {
             Action::Panorama { mode } => self.stitch_panorama(stitch::PanoMode::from_i32(mode)),
             Action::Collage => self.make_collage(),
             Action::Mosaic => self.make_mosaic(),
+            Action::Hdr => self.make_multishot(false),
+            Action::FocusStack => self.make_multishot(true),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -3197,6 +3215,45 @@ impl App {
                 }
             }
             Err(e) => self.status = format!("mosaic failed: {e:#}"),
+        }
+    }
+
+    /// Multi-shot composite over the selection (or whole album): `hdr` = exposure fusion, `focus` =
+    /// focus stacking → a new `hdr.png` / `focus.png` in the album. Best for tripod bursts/brackets.
+    fn make_multishot(&mut self, focus: bool) {
+        let paths: Vec<PathBuf> = if self.selected.is_empty() {
+            self.album_paths.clone()
+        } else {
+            self.target_sources().into_iter().map(|(_, p)| p).collect()
+        };
+        if paths.len() < 2 {
+            self.status = "need 2+ frames (select a burst / bracket with Space)".into();
+            return;
+        }
+        let Some(dir) = self.album_dir.clone() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        let imgs: Vec<image::RgbImage> =
+            paths.iter().filter_map(|p| loader::load(p).ok().map(|i| i.to_rgb8())).collect();
+        let (res, kind) = if focus {
+            (multishot::focus_stack(&imgs), "focus")
+        } else {
+            (multishot::exposure_fusion(&imgs), "hdr")
+        };
+        match res {
+            Ok(c) => {
+                let dest = variant_path(&dir, kind, "stack", "png");
+                if c.save(&dest).is_ok() {
+                    let name = dest.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    self.rescan();
+                    self.select_by_name(&name);
+                    self.status = format!("{kind} of {} frames → '{name}'", imgs.len());
+                } else {
+                    self.status = format!("couldn't save the {kind} result");
+                }
+            }
+            Err(e) => self.status = format!("{kind} failed: {e:#}"),
         }
     }
 
@@ -3891,6 +3948,11 @@ impl App {
                         },
                     };
                     self.stitch_panorama(mode);
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Multishot) if !arg.is_empty() => {
+                    let focus = arg.trim().to_ascii_lowercase().starts_with('f');
+                    self.make_multishot(focus);
                     fs_changed = true;
                 }
                 Some(PendingCmd::Watermark) if !arg.is_empty() => {
@@ -5677,6 +5739,7 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         // panorama prompts for a direction.
         KeyCode::Char('w') => app.make_collage(),
         KeyCode::Char('W') => app.make_mosaic(),
+        KeyCode::Char('H') => app.prompt("multi-shot (hdr = exposure blend · focus = focus stack): ", "hdr", PendingCmd::Multishot),
         KeyCode::Char('b') => app.prompt("panorama (h / v / grid · ha / va aligned · hm homography): ", "h", PendingCmd::Panorama),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);

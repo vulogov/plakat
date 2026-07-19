@@ -75,6 +75,13 @@ pub enum EditOp {
     SplitTone(i32),
     /// Selective colour: change the saturation of pixels near `hue` (degrees) by `sat` (−100..100).
     SelectiveColor { hue: i32, sat: i32 },
+    /// Selective luminance (HSL per-band): brighten / darken pixels near `hue` by `lum` (−100..100),
+    /// gated by saturation so neutral tones aren't shifted.
+    SelectiveLum { hue: i32, lum: i32 },
+    /// Gray-point white balance (eyedropper): sample the pixel at (`x`, `y`) in per-mille of the
+    /// image and scale each channel so that pixel becomes neutral grey. Replayable (re-samples the
+    /// pristine image on rebuild).
+    GrayPointWB { x: i32, y: i32 },
     /// Film grain: add deterministic monochrome noise (positive only).
     Grain(i32),
     /// Median despeckle: blend toward a 3×3 per-channel median (positive only).
@@ -135,6 +142,9 @@ pub enum EditOp {
     /// Crystallize (Voronoi): flat-fill jittered polygonal cells with their average colour (a
     /// stained-glass / low-poly look); `strength` 0..100 sets the cell size (0 = identity).
     Crystallize(i32),
+    /// Bilateral denoise: edge-preserving smoothing (a 5×5 range+spatial weighted average) that wipes
+    /// noise while keeping edges crisp — cleaner than the median despeckle. `strength` 0..100.
+    Bilateral(i32),
     /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
     /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
     /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
@@ -206,6 +216,8 @@ impl EditOp {
             EditOp::HueRotate(v) => adjust::hue_rotate(&img, v),
             EditOp::SplitTone(v) => adjust::split_tone(&img, v),
             EditOp::SelectiveColor { hue, sat } => adjust::selective_color(&img, hue, sat),
+            EditOp::SelectiveLum { hue, lum } => adjust::selective_lum(&img, hue, lum),
+            EditOp::GrayPointWB { x, y } => adjust::gray_point_wb(&img, x, y),
             EditOp::Grain(v) => adjust::grain(&img, v),
             EditOp::Despeckle(v) => adjust::despeckle(&img, v),
             EditOp::GradND { dir, strength } => adjust::grad_nd(&img, dir, strength),
@@ -270,6 +282,7 @@ impl EditOp {
                 adjust::face_polish(&img, strength, &faces[..k])
             }
             EditOp::Crystallize(v) => adjust::crystallize(&img, v),
+            EditOp::Bilateral(v) => adjust::bilateral(&img, v),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Watermark { text, font } => watermark(&img, &text, font.as_deref()),
@@ -315,7 +328,8 @@ impl EditOp {
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
             | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
-            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v) => *v,
+            | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v)
+            | EditOp::Bilateral(v) => *v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
@@ -373,6 +387,7 @@ impl EditOp {
             EditOp::Kelvin(_) => EditOp::Kelvin(v),
             EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
             EditOp::Crystallize(_) => EditOp::Crystallize(v),
+            EditOp::Bilateral(_) => EditOp::Bilateral(v),
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -393,7 +408,7 @@ impl EditOp {
             | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
             | EditOp::Crosshatch(_) | EditOp::GradientMap { .. }
             | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) | EditOp::Crystallize(_)
-            | EditOp::FacePolish { .. } => (0, 100, 5),
+            | EditOp::Bilateral(_) | EditOp::FacePolish { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -435,6 +450,8 @@ impl EditOp {
             EditOp::HueRotate(d) => format!("hue {d:+}°"),
             EditOp::SplitTone(_) => "split-tone".into(),
             EditOp::SelectiveColor { hue, sat } => format!("selective colour {hue}°·{sat:+}"),
+            EditOp::SelectiveLum { hue, lum } => format!("selective lum {hue}°·{lum:+}"),
+            EditOp::GrayPointWB { .. } => "gray-point WB".into(),
             EditOp::Grain(_) => "film grain".into(),
             EditOp::Despeckle(_) => "despeckle".into(),
             EditOp::GradND { dir, .. } => {
@@ -464,6 +481,7 @@ impl EditOp {
             EditOp::GradientMap { .. } => "gradient map".into(),
             EditOp::Crosshatch(_) => "cross-hatch".into(),
             EditOp::Crystallize(_) => "crystallize".into(),
+            EditOp::Bilateral(_) => "bilateral denoise".into(),
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
@@ -539,6 +557,16 @@ impl EditOp {
                 params.insert("sat".into(), serde_json::json!(sat));
                 "selective_color"
             }
+            EditOp::SelectiveLum { hue, lum } => {
+                params.insert("hue".into(), serde_json::json!(hue));
+                params.insert("lum".into(), serde_json::json!(lum));
+                "selective_lum"
+            }
+            EditOp::GrayPointWB { x, y } => {
+                params.insert("x".into(), serde_json::json!(x));
+                params.insert("y".into(), serde_json::json!(y));
+                "gray_point_wb"
+            }
             EditOp::Grain(v) => val_op(&mut params, v, "grain"),
             EditOp::Despeckle(v) => val_op(&mut params, v, "despeckle"),
             EditOp::GradND { dir, strength } => {
@@ -575,6 +603,7 @@ impl EditOp {
             EditOp::GradientMap { style, strength } => style_op(&mut params, style, strength, "gradient_map"),
             EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
             EditOp::Crystallize(v) => val_op(&mut params, v, "crystallize"),
+            EditOp::Bilateral(v) => val_op(&mut params, v, "bilateral"),
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::Watermark { text, font } => {
@@ -708,6 +737,8 @@ impl EditOp {
             "gradient_map" | "gradientmap" => EditOp::GradientMap { style: 1, strength: 100 },
             "crosshatch" | "hatch" => EditOp::Crosshatch(100),
             "crystallize" | "voronoi" | "low_poly" | "stained_glass" => EditOp::Crystallize(100),
+            "bilateral" | "denoise_edge" | "smart_denoise" => EditOp::Bilateral(80),
+            "gray_point_wb" | "eyedropper" | "neutral_point" => EditOp::GrayPointWB { x: 500, y: 500 },
             "enhance_sky" | "better_sky" | "sky" => EditOp::EnhanceSky(100),
             "auto_wb" | "auto_white_balance" | "gray_world" => EditOp::AutoWhiteBalance(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
@@ -792,6 +823,8 @@ impl EditOp {
             "hue_rotate" => EditOp::HueRotate(val()),
             "split_tone" => EditOp::SplitTone(val()),
             "selective_color" => EditOp::SelectiveColor { hue: iv("hue", 0), sat: iv("sat", 0) },
+            "selective_lum" => EditOp::SelectiveLum { hue: iv("hue", 0), lum: iv("lum", 0) },
+            "gray_point_wb" => EditOp::GrayPointWB { x: iv("x", 500), y: iv("y", 500) },
             "grain" => EditOp::Grain(val()),
             "despeckle" => EditOp::Despeckle(val()),
             "grad_nd" => EditOp::GradND { dir: iv("dir", 0), strength: iv("strength", 0) },
@@ -821,6 +854,7 @@ impl EditOp {
             "gradient_map" => EditOp::GradientMap { style: iv("style", 1), strength: iv("strength", 100) },
             "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
             "crystallize" => EditOp::Crystallize(iv("value", 100)),
+            "bilateral" => EditOp::Bilateral(iv("value", 100)),
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "watermark" => EditOp::Watermark {
@@ -1107,6 +1141,40 @@ mod adjust {
             let w = 1.0 - smoothstep(20.0, 80.0, dh); // full within 20°, gone by 80°
             hsv_to_rgb(h, (s * (1.0 + amt * w)).clamp(0.0, 1.0), v)
         })
+    }
+
+    /// Selective luminance (HSL per-band): brighten (`lum > 0`) / darken pixels near `hue`, gated by
+    /// both hue proximity and saturation so neutral tones stay put.
+    pub fn selective_lum(img: &DynamicImage, hue: i32, lum: i32) -> DynamicImage {
+        let target = hue as f32;
+        let amt = lum as f32 / 100.0;
+        map_rgb(img, |r, g, b| {
+            let (h, s, v) = rgb_to_hsv(r, g, b);
+            let mut dh = (h - target).abs() % 360.0;
+            if dh > 180.0 {
+                dh = 360.0 - dh;
+            }
+            let wh = 1.0 - smoothstep(20.0, 80.0, dh);
+            let ws = smoothstep(0.12, 0.35, s); // ignore near-grey pixels
+            let nv = (v + amt * wh * ws * 0.5).clamp(0.0, 1.0);
+            hsv_to_rgb(h, s, nv)
+        })
+    }
+
+    /// Gray-point white balance: sample the pixel at (`x`, `y`) per-mille and scale each channel so it
+    /// becomes neutral grey (its own luma). A grey point picked on a neutral surface removes the cast.
+    pub fn gray_point_wb(img: &DynamicImage, x: i32, y: i32) -> DynamicImage {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let px = ((x.clamp(0, 1000) as u32 * (w - 1).max(1)) / 1000).min(w - 1);
+        let py = ((y.clamp(0, 1000) as u32 * (h - 1).max(1)) / 1000).min(h - 1);
+        let s = rgb.get_pixel(px, py).0;
+        let (sr, sg, sb) = (s[0] as f32, s[1] as f32, s[2] as f32);
+        let gray = (sr + sg + sb) / 3.0;
+        // Gains that map the sampled colour to its grey; guard against a black/blown sample.
+        let gain = |c: f32| if c < 1.0 { 1.0 } else { (gray / c).clamp(0.3, 3.0) };
+        let (kr, kg, kb) = (gain(sr), gain(sg), gain(sb));
+        map_rgb(img, |r, g, b| [r * kr, g * kg, b * kb])
     }
 
     /// Film grain: add deterministic monochrome noise (same pattern on replay — seeded by position).
@@ -1997,6 +2065,63 @@ mod adjust {
         DynamicImage::ImageRgb8(out)
     }
 
+    /// Bilateral denoise: an edge-preserving 5×5 filter — each pixel is a weighted average of its
+    /// neighbours, weighted by both spatial distance and luma similarity, so flat noise is averaged
+    /// out while edges (large luma jumps) are preserved. `strength` 0..100 widens the range kernel
+    /// (smooths across bigger differences) and blends toward the result; 0 = identity.
+    pub fn bilateral(img: &DynamicImage, strength: i32) -> DynamicImage {
+        let s = strength.clamp(0, 100);
+        if s <= 0 {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let t = s as f32 / 100.0;
+        // Precompute the 5×5 spatial (Gaussian) weights.
+        const R: i32 = 2;
+        let sigma_s = 2.0f32;
+        let mut sw = [[0f32; 5]; 5];
+        for dy in -R..=R {
+            for dx in -R..=R {
+                sw[(dy + R) as usize][(dx + R) as usize] =
+                    (-((dx * dx + dy * dy) as f32) / (2.0 * sigma_s * sigma_s)).exp();
+            }
+        }
+        // Range sigma grows with strength: 12 (subtle) → 60 (aggressive) luma units.
+        let sigma_r = 12.0 + t * 48.0;
+        let inv_2sr2 = 1.0 / (2.0 * sigma_r * sigma_r);
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let c = rgb.get_pixel(x, y).0;
+                let cl = luma(c[0] as f32, c[1] as f32, c[2] as f32);
+                let (mut acc, mut wsum) = ([0f32; 3], 0f32);
+                for dy in -R..=R {
+                    let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as u32;
+                    for dx in -R..=R {
+                        let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
+                        let p = rgb.get_pixel(nx, ny).0;
+                        let pl = luma(p[0] as f32, p[1] as f32, p[2] as f32);
+                        let dr = pl - cl;
+                        let wgt = sw[(dy + R) as usize][(dx + R) as usize] * (-dr * dr * inv_2sr2).exp();
+                        acc[0] += p[0] as f32 * wgt;
+                        acc[1] += p[1] as f32 * wgt;
+                        acc[2] += p[2] as f32 * wgt;
+                        wsum += wgt;
+                    }
+                }
+                let inv = 1.0 / wsum.max(1e-6);
+                // Blend the filtered value toward the original by `t` (so low strength stays subtle).
+                let px = std::array::from_fn(|i| {
+                    let f = acc[i] * inv;
+                    (c[i] as f32 * (1.0 - t) + f * t).round().clamp(0.0, 255.0) as u8
+                });
+                out.put_pixel(x, y, Rgb(px));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Face polish: edge-preserving skin smoothing limited to the detected face `ellipses`
     /// (`(cx, cy, rx, ry)` in per-mille of the image), blended by `strength` 0..100. A selective
     /// Gaussian — smooth low-detail skin (cheeks/forehead) while keeping high-detail edges (eyes,
@@ -2405,7 +2530,8 @@ mod tests {
             EditOp::Emboss(50), EditOp::Pixelate(40), EditOp::Blur(60), EditOp::Bloom(70),
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
-            EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85), EditOp::Crystallize(60),
+            EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85), EditOp::Crystallize(60), EditOp::Bilateral(70),
+            EditOp::SelectiveLum { hue: 240, lum: -40 }, EditOp::GrayPointWB { x: 500, y: 300 },
             EditOp::Watermark { text: "© plakat".into(), font: None },
             EditOp::Watermark { text: "shot on film".into(), font: Some("/fonts/Foo.ttf".into()) },
             EditOp::Lut { path: "/grades/teal.cube".into() },
@@ -2598,7 +2724,7 @@ mod tests {
             EditOp::FalseColor { style: 1, strength: 100 }, EditOp::FalseColor { style: 2, strength: 100 },
             EditOp::FalseColor { style: 3, strength: 100 },
             EditOp::GradientMap { style: 1, strength: 100 }, EditOp::GradientMap { style: 3, strength: 100 },
-            EditOp::Crosshatch(100), EditOp::Crystallize(80),
+            EditOp::Crosshatch(100), EditOp::Crystallize(80), EditOp::Bilateral(90),
         ] {
             let label = op.label();
             let out = op.apply(src.clone()).to_rgb8();
@@ -2609,6 +2735,7 @@ mod tests {
         assert_eq!(EditOp::Pixelate(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::Cartoon(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::Crystallize(0).apply(src.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::Bilateral(0).apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::OilPaint { style: 5, strength: 0 }.apply(src.clone()).to_rgb8(), base);
         assert_eq!(EditOp::from_tag("sketch"), Some(EditOp::PencilSketch(100)));
         // Kelvin at 0 is (near) identity; warming shifts red above blue on grey.
