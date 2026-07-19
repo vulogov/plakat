@@ -132,6 +132,11 @@ pub enum EditOp {
     GradientMap { style: i32, strength: i32 },
     /// Cross-hatch (ink hatching by tone); `strength` 0..100.
     Crosshatch(i32),
+    /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
+    /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
+    /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
+    /// creation, so replay is pure geometry — no model reload); `n` is the valid count (`0` = identity).
+    FacePolish { strength: i32, faces: [[i32; 4]; 6], n: i32 },
     /// "Better sky" — build a soft sky mask (no AI/no manual masking) and apply a polarizer-like
     /// enhancement (deepen & saturate blue, lift cloud contrast) weighted by it; `amount` 0..100.
     EnhanceSky(i32),
@@ -250,6 +255,10 @@ impl EditOp {
                 let f = adjust::crosshatch(&img);
                 adjust::blend(&img, f, s)
             }
+            EditOp::FacePolish { strength, faces, n } => {
+                let k = (n.max(0) as usize).min(faces.len());
+                adjust::face_polish(&img, strength, &faces[..k])
+            }
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Pixelate(v) => adjust::pixelate(&img, v),
@@ -296,7 +305,8 @@ impl EditOp {
             | EditOp::Watercolor { strength, .. }
             | EditOp::Ink { strength, .. }
             | EditOp::FalseColor { strength, .. }
-            | EditOp::GradientMap { strength, .. } => strength,
+            | EditOp::GradientMap { strength, .. }
+            | EditOp::FacePolish { strength, .. } => strength,
             EditOp::Keystone { amount, .. } => amount,
             _ => return None,
         })
@@ -348,6 +358,7 @@ impl EditOp {
             EditOp::Crosshatch(_) => EditOp::Crosshatch(v),
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
+            EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
             EditOp::GradientMap { style, .. } => EditOp::GradientMap { style, strength: v },
             other => other,
         }
@@ -364,7 +375,8 @@ impl EditOp {
             | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
             | EditOp::Watercolor { .. } | EditOp::Ink { .. } | EditOp::FalseColor { .. }
             | EditOp::Crosshatch(_) | EditOp::GradientMap { .. }
-            | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) => (0, 100, 5),
+            | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_)
+            | EditOp::FacePolish { .. } => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -434,6 +446,7 @@ impl EditOp {
             EditOp::Kelvin(_) => "Kelvin white balance".into(),
             EditOp::GradientMap { .. } => "gradient map".into(),
             EditOp::Crosshatch(_) => "cross-hatch".into(),
+            EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
             EditOp::Pixelate(_) => "pixelate".into(),
@@ -543,6 +556,14 @@ impl EditOp {
             EditOp::Crosshatch(v) => val_op(&mut params, v, "crosshatch"),
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
+            EditOp::FacePolish { strength, faces, n } => {
+                params.insert("strength".into(), serde_json::json!(strength));
+                params.insert("n".into(), serde_json::json!(n));
+                for (i, f) in faces.iter().enumerate() {
+                    params.insert(format!("f{i}"), serde_json::json!(f));
+                }
+                "face_polish"
+            }
             EditOp::Pixelate(v) => val_op(&mut params, v, "pixelate"),
             EditOp::Border { aspect_w, aspect_h, mode } => {
                 params.insert("aspect_w".into(), serde_json::json!(aspect_w));
@@ -768,6 +789,17 @@ impl EditOp {
             "crosshatch" => EditOp::Crosshatch(iv("value", 100)),
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
+            "face_polish" => {
+                let mut faces = [[0i32; 4]; 6];
+                for (i, face) in faces.iter_mut().enumerate() {
+                    if let Some(arr) = e.params.get(&format!("f{i}")).and_then(|v| v.as_array()) {
+                        for (j, slot) in face.iter_mut().enumerate() {
+                            *slot = arr.get(j).and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+                        }
+                    }
+                }
+                EditOp::FacePolish { strength: iv("strength", 100), n: iv("n", 0), faces }
+            }
             "pixelate" => EditOp::Pixelate(val()),
             "border" => EditOp::Border {
                 aspect_w: iv("aspect_w", 0),
@@ -1851,6 +1883,64 @@ mod adjust {
         map_rgb(img, |r, g, b| [r * kr, g * kg, b * kb])
     }
 
+    /// Face polish: edge-preserving skin smoothing limited to the detected face `ellipses`
+    /// (`(cx, cy, rx, ry)` in per-mille of the image), blended by `strength` 0..100. A selective
+    /// Gaussian — smooth low-detail skin (cheeks/forehead) while keeping high-detail edges (eyes,
+    /// lips, hair, glasses) crisp — so it reads as a retouch, not a blur. At `strength = 0` or with no
+    /// faces it returns the input unchanged.
+    pub fn face_polish(img: &DynamicImage, strength: i32, ellipses: &[[i32; 4]]) -> DynamicImage {
+        let s = strength.clamp(0, 100) as f32 / 100.0;
+        if s <= 0.0 || ellipses.is_empty() {
+            return img.clone();
+        }
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        // Smoothing radius scales with the image so it reads the same at any resolution.
+        let sigma = (w.min(h) as f32 / 200.0).clamp(1.5, 6.0);
+        let blurred = image::imageops::blur(&rgb, sigma);
+        let (wf, hf) = (w as f32, h as f32);
+        let mut out = RgbImage::new(w, h);
+        for y in 0..h {
+            let py = y as f32 / hf;
+            for x in 0..w {
+                let px = x as f32 / wf;
+                // Soft face mask = max over the ellipses of a smooth radial falloff (full inside,
+                // fading to 0 just past the ellipse edge).
+                let mut mask = 0f32;
+                for e in ellipses {
+                    let (cx, cy) = (e[0] as f32 / 1000.0, e[1] as f32 / 1000.0);
+                    let (rx, ry) = (e[2] as f32 / 1000.0, e[3] as f32 / 1000.0);
+                    if rx <= 0.0 || ry <= 0.0 {
+                        continue;
+                    }
+                    let dx = (px - cx) / rx;
+                    let dy = (py - cy) / ry;
+                    let d = (dx * dx + dy * dy).sqrt(); // 1.0 on the ellipse boundary
+                    let fm = 1.0 - smoothstep(0.7, 1.05, d);
+                    if fm > mask {
+                        mask = fm;
+                    }
+                }
+                let o = rgb.get_pixel(x, y).0;
+                if mask <= 0.0 {
+                    out.put_pixel(x, y, Rgb(o));
+                    continue;
+                }
+                let b = blurred.get_pixel(x, y).0;
+                // Edge preservation: keep the original where local detail (orig vs blurred luma) is
+                // high — that's eyes, lips, hairlines — and smooth only the flat skin.
+                let od = luma(o[0] as f32, o[1] as f32, o[2] as f32);
+                let bd = luma(b[0] as f32, b[1] as f32, b[2] as f32);
+                let detail = (od - bd).abs() / 255.0;
+                let keep_edge = smoothstep(0.06, 0.16, detail);
+                let wgt = mask * s * (1.0 - keep_edge);
+                let mix = |a: u8, c: u8| enc((a as f32 / 255.0) * (1.0 - wgt) + (c as f32 / 255.0) * wgt);
+                out.put_pixel(x, y, Rgb([mix(o[0], b[0]), mix(o[1], b[1]), mix(o[2], b[2])]));
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+
     /// Vignette: multiply each pixel by a radial falloff — positive `amount` darkens the frame edges
     /// (a smooth ramp from the centre out to the corners), negative lightens them.
     pub fn vignette(img: &DynamicImage, amount: i32) -> DynamicImage {
@@ -2180,6 +2270,11 @@ mod tests {
             EditOp::Charcoal(80), EditOp::Halftone(90), EditOp::FalseColor { style: 1, strength: 100 },
             EditOp::Kelvin(-30), EditOp::GradientMap { style: 3, strength: 80 }, EditOp::Crosshatch(90),
             EditOp::EnhanceSky(70), EditOp::AutoWhiteBalance(85),
+            EditOp::FacePolish {
+                strength: 65,
+                faces: [[500, 400, 120, 150], [300, 350, 90, 110], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
+                n: 2,
+            },
         ] {
             assert_eq!(EditOp::from_entry(&op.to_entry()), Some(op));
         }
@@ -2395,6 +2490,23 @@ mod tests {
         assert_eq!(grass, [60, 130, 50], "grass (low, non-blue) untouched");
         // Strength 0 → byte-identical.
         assert_eq!(EditOp::EnhanceSky(0).apply(img.clone()).to_rgb8(), img.to_rgb8());
+    }
+
+    #[test]
+    fn face_polish_smooths_only_inside_the_face_ellipse() {
+        // A noisy field: a face ellipse centred at (0.5,0.5) should get smoothed; a far corner not.
+        let img = DynamicImage::ImageRgb8(ImageBuffer::from_fn(40, 40, |x, y| {
+            let n = (((x * 7 + y * 13) % 2) as u8) * 40; // 0/40 checker → high-frequency "skin texture"
+            Rgb([150 + n, 120 + n, 110 + n])
+        }));
+        let faces = [[500, 500, 250, 300], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+        let out = EditOp::FacePolish { strength: 100, faces, n: 1 }.apply(img.clone()).to_rgb8();
+        let base = img.to_rgb8();
+        assert_ne!(out.get_pixel(20, 20).0, base.get_pixel(20, 20).0, "centre of face smoothed");
+        assert_eq!(out.get_pixel(0, 0).0, base.get_pixel(0, 0).0, "corner outside the face untouched");
+        // Strength 0 or no faces → byte-identical.
+        assert_eq!(EditOp::FacePolish { strength: 0, faces, n: 1 }.apply(img.clone()).to_rgb8(), base);
+        assert_eq!(EditOp::FacePolish { strength: 100, faces, n: 0 }.apply(img.clone()).to_rgb8(), base);
     }
 
     #[test]

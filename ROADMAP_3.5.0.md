@@ -34,6 +34,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       only, undoable), writes scores to the `.json` sidecars. All three arm the OOM guard + refuse on
       critical memory pressure.
 
+## Track A½ — hybrid (AI-assist for a non-AI filter)
+
+- [x] **Face polish** (edit palette / chord `x c`, 0–100 % slider). SCRFD detects the faces (the mask
+      you'd normally paint by hand), converts each to a compact ellipse stored *in* the `FacePolish`
+      edit op, then a non-AI edge-preserving skin smooth runs limited to those regions. The AI cost is
+      paid once at creation; the slider preview + replay are pure geometry (op stays `Copy`, no model
+      reload). Detection is TUI-suspended + OOM-guarded; identity at strength 0 / no faces.
+
 ## Track B — remaining non-AI polish
 
 - [ ] **EditOp `Copy` refactor** → makes watermark/LUT replayable edits (currently file-ops) and

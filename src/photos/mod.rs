@@ -193,6 +193,7 @@ enum EditCmd {
     Convert,    // prompts for format / size
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
+    FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
     Undo,
     Redo,
     Revert,
@@ -321,6 +322,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("despeckle (median)…", "xk", EditCmd::Adjust(Despeckle(0))),
         ("dehaze…", "xz", EditCmd::Adjust(Dehaze(0))),
         ("enhance sky (auto-mask polarizer)…", "xy", EditCmd::Adjust(EnhanceSky(100))),
+        ("face polish (auto-detect + smooth)…", "xc", EditCmd::FacePolish),
         ("vignette…", "xv", EditCmd::Adjust(Vignette(0))),
         ("radial dodge / burn…", "xr", EditCmd::Adjust(Radial(0))),
         ("graduated ND (from top)…", "xt", EditCmd::Adjust(GradND { dir: 0, strength: 0 })),
@@ -560,6 +562,8 @@ struct App {
     pending_cull: Option<usize>,
     pending_analyze: Option<PathBuf>,
     pending_face_scan: bool,
+    // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
+    pending_face_polish: bool,
     // Natural-language command pipeline (`:`): a raw query awaiting the LLM planner, and a parsed
     // plan awaiting the user's y/N confirmation.
     pending_nl: Option<String>,
@@ -718,6 +722,7 @@ impl App {
             pending_cull: None,
             pending_analyze: None,
             pending_face_scan: false,
+            pending_face_polish: false,
             clip_cache: HashMap::new(),
             pending_nl: None,
             pending_plan: None,
@@ -1642,6 +1647,17 @@ impl App {
             EditCmd::Lut => {
                 self.edit_menu = false;
                 self.prompt("apply LUT — path to a .cube file: ", "", PendingCmd::Lut);
+            }
+            EditCmd::FacePolish => {
+                self.edit_menu = false;
+                if self.cur_source().is_none() {
+                    self.status = "open an image first".into();
+                } else if self.mem_low() {
+                    self.status = "⚠ memory low — free RAM before face detection".into();
+                } else {
+                    self.pending_face_polish = true;
+                    self.status = "face polish — detecting faces … (the UI will pause)".into();
+                }
             }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
@@ -4140,6 +4156,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             // Face-scan (Track A): detect + (when ArcFace is available) group faces across the library.
             run_face_scan(terminal, app)?;
             continue;
+        } else if std::mem::take(&mut app.pending_face_polish) {
+            // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
+            run_face_polish(terminal, app)?;
+            continue;
         } else if let Some(text) = app.pending_nl.take() {
             // A natural-language command the deterministic parser couldn't handle → LLM planner.
             run_nl_planner(terminal, app, text)?;
@@ -4379,6 +4399,57 @@ fn run_face_scan(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app
             app.status = scan.summary();
         }
         Err(e) => app.status = format!("✗ face-scan failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Face-polish, TUI-suspended: detect faces on the cursor image with SCRFD, then open the 0–100 %
+/// skin-smoothing slider pre-loaded with a `FacePolish` op carrying the detected face ellipses (so
+/// the AI cost is paid once — the slider preview + replay are pure geometry, no model).
+fn run_face_polish(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+    let Some((album, filename)) = app.cur_source() else {
+        app.status = "open an image first".into();
+        return Ok(());
+    };
+    let path = album.join(&filename);
+    if crate::hw::mem_pressure() == crate::hw::Pressure::Critical {
+        app.status = "⛔ memory low — free RAM before face detection".into();
+        return Ok(());
+    }
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ face polish: detecting faces (loading SCRFD…)\n");
+
+    let job_path = path.clone();
+    let result = std::thread::spawn(move || -> Result<Vec<[i32; 4]>> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(async {
+            let device = crate::device::select("auto")?;
+            let _guard = crate::memwatch::MemoryGuard::start(&device, "plakat photos face-polish");
+            faces::detect_ellipses(&device, &job_path, 6).await
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("face-detect thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(ellipses) if ellipses.is_empty() => {
+            app.status = "face polish: no faces detected".into();
+        }
+        Ok(ellipses) => {
+            let n = ellipses.len().min(6);
+            let mut faces = [[0i32; 4]; 6];
+            faces[..n].copy_from_slice(&ellipses[..n]);
+            // Open the standard slider on the pre-built op (starts at full strength; dial down).
+            app.enter_adjust(edit::EditOp::FacePolish { strength: 100, faces, n: n as i32 });
+            app.status =
+                format!("face polish · {n} face(s) · ←/→ fine · [/] jump · Enter apply · Esc cancel");
+        }
+        Err(e) => app.status = format!("✗ face polish failed: {e:#}"),
     }
     Ok(())
 }

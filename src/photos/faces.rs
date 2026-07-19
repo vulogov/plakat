@@ -4,7 +4,7 @@
 //! present) so the existing tag filter / smart albums surface people. Detection-only (counts) when
 //! ArcFace isn't provisioned — SCRFD auto-downloads, ArcFace needs a user-supplied safetensors file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use candle_core::{DType, Device};
@@ -45,6 +45,34 @@ impl ScanResult {
             )
         }
     }
+}
+
+/// Detect faces in one image and return them as `(cx, cy, rx, ry)` ellipses in **per-mille** of the
+/// image dimensions (the compact form the `FacePolish` edit stores, so the op stays `Copy` and its
+/// replay needs no model). Each face's bbox becomes an ellipse a little wider/taller than the tight
+/// box (to cover cheeks/forehead). Returns at most `max` faces, score-descending. SCRFD auto-downloads.
+pub async fn detect_ellipses(device: &Device, path: &Path, max: usize) -> Result<Vec<[i32; 4]>> {
+    let scrfd_path = resolve_scrfd_weights()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("SCRFD weights unavailable — set PLAKAT_SCRFD_HF or PLAKAT_SCRFD_WEIGHTS"))?;
+    let detector = SCRFDDetector::load(&scrfd_path, SCRFDConfig::default(), device, DType::F32)?;
+    let (w, h) = image::image_dimensions(path)?;
+    let (wf, hf) = (w as f32, h as f32);
+    let mut out = Vec::new();
+    for f in detector.detect(path)?.iter().take(max) {
+        let [x1, y1, x2, y2] = f.bbox;
+        let cx = ((x1 + x2) * 0.5 / wf).clamp(0.0, 1.0);
+        let cy = ((y1 + y2) * 0.5 / hf).clamp(0.0, 1.0);
+        let rx = ((x2 - x1) * 0.60 / wf).clamp(0.0, 0.9);
+        let ry = ((y2 - y1) * 0.72 / hf).clamp(0.0, 0.9);
+        out.push([
+            (cx * 1000.0) as i32,
+            (cy * 1000.0) as i32,
+            (rx * 1000.0) as i32,
+            (ry * 1000.0) as i32,
+        ]);
+    }
+    Ok(out)
 }
 
 /// Dot product of two L2-normalised vectors == cosine similarity.

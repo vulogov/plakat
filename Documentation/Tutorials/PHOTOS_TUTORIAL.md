@@ -425,7 +425,7 @@ The adjustments:
 | Light | brightness · exposure · brilliance · contrast |
 | Tone bands | highlights · midrange · shadows · black point |
 | Colour | saturation · vibrance · warmth (warmer/cooler) · tint (magenta/green) · **hue rotate** · **split-tone** (warm/cool highlights) · **selective colour** (boost/mute reds/greens/blues) |
-| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **vignette** · **film grain** · **despeckle** (median) |
+| Detail | definition (clarity) · sharpen / soften · noise reduction · **dehaze** · **enhance sky** (auto-mask) · **face polish** (auto-detect) · **vignette** · **film grain** · **despeckle** (median) |
 | Local | **radial dodge / burn** (centre) · **graduated ND** (from top/bottom/left/right — grad filter for skies) |
 | Looks | **invert** · **sepia** · **duotone** · **posterize** · **solarize** · **threshold** (b&w) |
 | Stylize | **oil paint 1–10** · **watercolour 1–10** · pencil sketch · charcoal · cartoon · emboss · halftone · pixelate · **blur / bloom** · **false colour** (thermal / infrared / night-vision); **ink** — European / Japanese sumi-e / Chinese wash / Russian icon; look presets **vintage · lomo · cross-process · noir · pop-art · golden-hour · old-photo · daguerreotype**, plus Apple-Photos-style **vivid (warm/cool) · dramatic (warm/cool) · mono · silvertone** |
@@ -433,6 +433,14 @@ The adjustments:
 Every stylize **filter opens the slider** — you dial the strength from **0 % (off) to 100 %
 (full)** and see it live, so effects can be as subtle or as strong as you like. (The *look*
 presets apply their fixed recipe directly.)
+
+**Face polish** (`Ctrl-B x c`, or "face polish" in the palette) is a portrait retouch that
+normally needs a hand-painted mask — here the **SCRFD face detector** finds the faces for you.
+It briefly loads the detector (the UI pauses, and it refuses if memory is low), then opens the
+usual **0–100 % slider**: an edge-preserving smooth that softens skin texture on the cheeks and
+forehead while keeping eyes, lips and hairlines crisp, limited to the detected faces. The
+detected regions are baked into the edit as plain numbers, so — unlike the detection itself — the
+slider preview and every later replay are instant (no model). Detects up to six faces.
 
 Oil paint and watercolour come in **ten numbered styles** each — type `oil` or `water` in the
 palette to browse them. The **ink** family gives four traditional looks: **European** pen-and-ink

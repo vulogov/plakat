@@ -97,6 +97,7 @@ command's chord in its right column.
 | `Ctrl-B x k` | despeckle (median)… |
 | `Ctrl-B x z` | dehaze… |
 | `Ctrl-B x y` | enhance sky (auto-mask polarizer)… |
+| `Ctrl-B x c` | face polish — AI-detect faces, then 0–100 % skin smoothing… |
 | `Ctrl-B x v` | vignette… |
 | `Ctrl-B x r` | radial dodge / burn… |
 | `Ctrl-B x t` / `x b` | graduated ND from top / bottom |
