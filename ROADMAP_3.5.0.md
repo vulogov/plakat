@@ -22,12 +22,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       (1 passed, 18.4s): real `openai/clip-vit-large-patch14` weights load and embed text+image into
       the joint space. The in-tree CLIP path is confirmed end-to-end. (Next: exercise `V` text→image +
       `Ctrl-B L` image→image on a real album interactively.)
-- [ ] **Face-scan** — detect/group faces across the library (SCRFD + ArcFace are already in-tree);
-      surface as a People view / smart grouping.
-- [ ] **Analyze-and-generate** — turn a reference image's analysis into a generation recipe (the
-      last Phase-7 item).
-- [ ] **Aesthetic auto-cull** — already have `rank`/`--keep-best`; wire a one-key "rank + keep top N"
-      curation pass into the manager.
+- [x] **Face-scan** — DONE (`src/photos/faces.rs`, AI menu `f`). SCRFD (auto-download) detects faces
+      across the library; when `PLAKAT_ARCFACE_WEIGHTS` is set, ArcFace embeds + greedy-clusters into
+      `person-N`. Tags each image (`has-face` / `faces-N` / `person-K`) so the tag filter + smart
+      albums surface people. Degrades to detection-only counts without ArcFace weights.
+- [x] **Analyze-and-generate** — DONE (AI menu `n`). Describes the reference with the configured LLM
+      vision provider → a compact prompt → img2img on the resident worker into a "reimagined" variant
+      (also stored as the image's caption).
+- [x] **Aesthetic auto-cull** — DONE (`src/photos/cull.rs`, AI menu `r`). Ranks the album with the
+      LAION predictor (CLIP ViT-L + MLP), flags the top-N (you type N), rejects the rest (metadata
+      only, undoable), writes scores to the `.json` sidecars. All three arm the OOM guard + refuse on
+      critical memory pressure.
 
 ## Track B — remaining non-AI polish
 

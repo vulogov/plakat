@@ -636,6 +636,18 @@ image:
 |-----|--------|
 | `t` | **autotag** — 5–12 content/style tags merged into the image's `tags` |
 | `d` | **describe** — a one-sentence `caption` |
+| `g` | **recipe-tag** AI images (offline — tags from the generation recipe) |
+| `r` | **aesthetic auto-cull** — rank the album by the LAION quality model, then flag the top *N* (you type N) and reject the rest (metadata only, `u` undoes) |
+| `n` | **analyze & generate** — describe the cursor image, then img2img from that description into a fresh "reimagined" variant |
+| `f` | **face-scan** — detect faces across the library and tag them (`has-face`, `faces-N`; groups into `person-N` when ArcFace weights are set) |
+
+The last three load real models (CLIP + LAION predictor for cull; SCRFD for
+face-scan; your img2img model for analyze-and-generate). Auto-cull and face-scan
+briefly suspend the UI to show progress; both refuse cleanly if memory is low
+(watch the top-bar memory indicator). After a cull, `filter rejected` (or `/`)
+reviews the discards; after a face-scan, filter by the `person-N` / `has-face`
+tags. Face grouping needs `PLAKAT_ARCFACE_WEIGHTS` (a converted ArcFace
+safetensors); without it you still get per-image face **counts**.
 
 This makes an otherwise unlabeled library *searchable*: run autotag on a shoot,
 then `/ tag:...` or `?` metadata-search finds images by what's actually in them.

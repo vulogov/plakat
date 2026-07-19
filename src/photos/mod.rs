@@ -14,6 +14,8 @@ pub mod hjson;
 pub mod import;
 pub mod layers;
 pub mod lut;
+pub mod cull;
+pub mod faces;
 pub mod mledit;
 pub mod mlworker;
 pub mod nl;
@@ -83,6 +85,8 @@ enum PendingCmd {
     Search,
     /// Run a library-wide CLIP *visual* search for the entered free-text query.
     VisualSearch,
+    /// Aesthetic auto-cull: rank the album and keep the entered top-N (flag keepers, reject the rest).
+    AutoCull,
     /// Collect a prompt for a T2 ML edit (`relight` when true, else `img2img`), then queue the job.
     MlPrompt { relight: bool },
     /// Export the current targets to the entered `DIR [MAXPX]`.
@@ -551,6 +555,11 @@ struct App {
     // CLIP visual search (RFC §Phase 7): a queued text query + the in-session embedding cache.
     pending_visual: Option<String>,
     clip_cache: visual_search::Cache,
+    // Track A AI jobs, run TUI-suspended by the event loop: aesthetic auto-cull (keep top N),
+    // analyze-and-generate (describe → img2img), and face-scan (detect + group).
+    pending_cull: Option<usize>,
+    pending_analyze: Option<PathBuf>,
+    pending_face_scan: bool,
     // Natural-language command pipeline (`:`): a raw query awaiting the LLM planner, and a parsed
     // plan awaiting the user's y/N confirmation.
     pending_nl: Option<String>,
@@ -706,6 +715,9 @@ impl App {
             ai_menu: false,
             jobs: VecDeque::new(),
             pending_visual: None,
+            pending_cull: None,
+            pending_analyze: None,
+            pending_face_scan: false,
             clip_cache: HashMap::new(),
             pending_nl: None,
             pending_plan: None,
@@ -2411,6 +2423,27 @@ impl App {
         self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
     }
 
+    /// Analyze-and-generate (Track A): queue the cursor image to be described by the configured LLM,
+    /// then img2img'd from that description into a fresh "reimagined" variant (event loop runs it).
+    fn analyze_and_generate(&mut self) {
+        let Some((album, filename)) = self.cur_source() else {
+            self.status = "open an album first".into();
+            return;
+        };
+        self.pending_analyze = Some(album.join(&filename));
+        self.status = "analyze & generate — describing the reference … (the UI will pause)".into();
+    }
+
+    /// Face-scan (Track A): queue a library-wide face detect + group (event loop runs it suspended).
+    fn request_face_scan(&mut self) {
+        if self.mem_low() {
+            self.status = "⚠ memory low — free RAM before a face scan".into();
+            return;
+        }
+        self.pending_face_scan = true;
+        self.status = "face-scan — detecting faces across the library … (the UI will pause)".into();
+    }
+
     /// Hand a queued ML edit to the background resident worker (spawned lazily on first use), and set
     /// it as the in-flight job the event loop drains inline. Non-blocking: the manager keeps drawing.
     fn dispatch_ml(&mut self, job: mledit::MlJob) {
@@ -3607,6 +3640,11 @@ impl App {
                     self.pending_visual = Some(arg.clone());
                     self.status = format!("visual search '{arg}' … (the UI will pause)");
                 }
+                Some(PendingCmd::AutoCull) => {
+                    let n: usize = arg.trim().parse().unwrap_or(10).max(1);
+                    self.pending_cull = Some(n);
+                    self.status = format!("aesthetic auto-cull — keep top {n} … (the UI will pause)");
+                }
                 Some(PendingCmd::MlPrompt { relight }) if !arg.is_empty() => {
                     let op = if relight {
                         mledit::MlOp::Relight { prompt: arg.clone() }
@@ -4090,6 +4128,18 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             // A queued CLIP semantic lookalike (Phase 7): heavy (embeddings), run TUI-suspended.
             run_clip_lookalike(terminal, app, qpath)?;
             continue;
+        } else if let Some(keep) = app.pending_cull.take() {
+            // Aesthetic auto-cull (Track A): rank the album, keep top N.
+            run_auto_cull(terminal, app, keep)?;
+            continue;
+        } else if let Some(path) = app.pending_analyze.take() {
+            // Analyze-and-generate (Track A): describe the reference → img2img from the description.
+            run_analyze_generate(terminal, app, path)?;
+            continue;
+        } else if std::mem::take(&mut app.pending_face_scan) {
+            // Face-scan (Track A): detect + (when ArcFace is available) group faces across the library.
+            run_face_scan(terminal, app)?;
+            continue;
         } else if let Some(text) = app.pending_nl.take() {
             // A natural-language command the deterministic parser couldn't handle → LLM planner.
             run_nl_planner(terminal, app, text)?;
@@ -4160,6 +4210,175 @@ fn run_nl_planner(
         }
         Ok(plan) => app.confirm_plan(plan),
         Err(e) => app.status = format!("planner failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Aesthetic auto-cull (Track A), TUI-suspended: rank every image in the current view with the LAION
+/// aesthetic scorer, then flag the top `keep` and reject the rest (metadata only, undoable). Scores
+/// are also written to each image's `.json` sidecar.
+fn run_auto_cull(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    keep: usize,
+) -> Result<()> {
+    use std::io::Write as _;
+    let paths: Vec<PathBuf> = app.album_paths.clone();
+    if paths.is_empty() {
+        app.status = "no images to rank".into();
+        return Ok(());
+    }
+    if crate::hw::mem_pressure() == crate::hw::Pressure::Critical {
+        app.status = "⛔ memory low — free RAM before ranking".into();
+        return Ok(());
+    }
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ aesthetic auto-cull: scoring {} images (loading CLIP + LAION predictor…)\n", paths.len());
+
+    let result = std::thread::spawn(move || -> Result<Vec<(PathBuf, f32)>> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(async {
+            let device = crate::device::select("auto")?;
+            let _guard = crate::memwatch::MemoryGuard::start(&device, "plakat photos cull");
+            cull::rank(&device, paths, |done, tot| {
+                if done % 10 == 0 || done == tot {
+                    print!("\r  scoring {done}/{tot}…   ");
+                    let _ = std::io::stdout().flush();
+                }
+            })
+            .await
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("auto-cull thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(ranked) => {
+            let total = ranked.len();
+            let keep = keep.min(total);
+            app.snapshot_meta();
+            for (i, (p, score)) in ranked.iter().enumerate() {
+                let is_keeper = i < keep;
+                app.edit_record_at(p, |rec| {
+                    rec.flagged = is_keeper;
+                    rec.rejected = !is_keeper;
+                });
+                let _ = crate::imaging::io::patch_sidecar_score(p, *score as f64);
+            }
+            app.rebuild_view();
+            app.status = format!(
+                "✓ auto-cull: kept top {keep} of {total} (⚑ flagged); {} rejected — filter 'rejected' to review/delete · undo with u",
+                total - keep
+            );
+        }
+        Err(e) => app.status = format!("✗ auto-cull failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Analyze-and-generate (Track A), TUI-suspended: describe the reference image with the configured
+/// LLM vision provider, then queue an img2img from that description — a fresh "reimagined" variant.
+fn run_analyze_generate(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+    path: PathBuf,
+) -> Result<()> {
+    let provider = crate::prompt::vision::resolve_vision_provider("auto");
+    app.status = format!("analyze & generate — describing with {provider} …");
+    terminal.draw(|f| draw(f, app))?;
+
+    const INSTR: &str = "Describe this image as a concise text-to-image prompt: the subject, style, \
+        lighting, colour palette and mood, in one comma-separated line. No preamble.";
+    let job_path = path.clone();
+    let prov = provider.clone();
+    let result = std::thread::spawn(move || -> Result<String> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(crate::prompt::vision::describe_image(&prov, &job_path, INSTR))
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("describe thread panicked")));
+
+    match result {
+        Ok(prompt) => {
+            let prompt = prompt.trim().to_string();
+            if prompt.is_empty() {
+                app.status = "analyze & generate: the description came back empty".into();
+                return Ok(());
+            }
+            // Record the derived prompt as the image's caption (useful even on its own), then queue
+            // the img2img on the *known* reference path — the resident worker runs it inline.
+            app.edit_record_at(&path, |rec| rec.caption = Some(prompt.clone()));
+            app.status = format!("analyzed → “{prompt}” · generating…");
+            if let Some(album) = path.parent() {
+                app.jobs.push_back(Job::Ml(mledit::MlJob {
+                    op: mledit::MlOp::Img2img { prompt },
+                    input: path.clone(),
+                    album: album.to_path_buf(),
+                }));
+            }
+        }
+        Err(e) => app.status = format!("✗ analyze & generate failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// Face-scan (Track A), TUI-suspended: detect faces across the library with SCRFD and, when ArcFace
+/// weights are available, group them into `person-N` clusters — tagging each image so the existing
+/// tag filter / smart albums surface people. Detection-only (face counts) when ArcFace isn't present.
+fn run_face_scan(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+    use std::io::Write as _;
+    let lib = app.collect_library();
+    if lib.is_empty() {
+        app.status = "no images to scan".into();
+        return Ok(());
+    }
+    let items: Vec<PathBuf> = lib.iter().map(|(p, _, _)| p.clone()).collect();
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ face-scan: detecting faces in {} images (loading SCRFD…)\n", items.len());
+
+    let result = std::thread::spawn(move || -> Result<faces::ScanResult> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        rt.block_on(async {
+            let device = crate::device::select("auto")?;
+            let _guard = crate::memwatch::MemoryGuard::start(&device, "plakat photos face-scan");
+            faces::scan(&device, items, |done, tot| {
+                if done % 5 == 0 || done == tot {
+                    print!("\r  scanning {done}/{tot}…   ");
+                    let _ = std::io::stdout().flush();
+                }
+            })
+            .await
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("face-scan thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(scan) => {
+            app.snapshot_meta();
+            for (path, tags) in &scan.tags {
+                app.edit_record_at(path, |rec| {
+                    for t in tags {
+                        if !rec.tags.contains(t) {
+                            rec.tags.push(t.clone());
+                        }
+                    }
+                });
+            }
+            app.rebuild_view();
+            app.status = scan.summary();
+        }
+        Err(e) => app.status = format!("✗ face-scan failed: {e:#}"),
     }
     Ok(())
 }
@@ -4723,6 +4942,18 @@ fn handle_ai_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('t') => app.queue_vision(vision::VisionOp::Autotag),
         KeyCode::Char('d') => app.queue_vision(vision::VisionOp::Describe),
         KeyCode::Char('g') => app.ai_tag_from_recipe(),
+        KeyCode::Char('r') => {
+            app.ai_menu = false;
+            app.prompt("aesthetic auto-cull — keep top N: ", "10", PendingCmd::AutoCull);
+        }
+        KeyCode::Char('n') => {
+            app.ai_menu = false;
+            app.analyze_and_generate();
+        }
+        KeyCode::Char('f') => {
+            app.ai_menu = false;
+            app.request_face_scan();
+        }
         _ => {}
     }
 }
@@ -6510,7 +6741,7 @@ fn ml_palette() -> Vec<(String, String)> {
         prow("u", "ML upscale ×4 (Real-ESRGAN)"),
         prow("i", "img2img — transform with a prompt"),
         prow("l", "relight — re-illuminate with a prompt"),
-        prow("Esc", "close  (runs a model; the UI pauses)"),
+        prow("Esc", "close  (runs a model in the background; Esc cancels)"),
     ]
 }
 
@@ -6519,6 +6750,9 @@ fn ai_palette() -> Vec<(String, String)> {
         prow("t", "autotag — LLM vision → tags"),
         prow("d", "describe — LLM vision → caption"),
         prow("g", "recipe-tag AI images (offline)"),
+        prow("r", "aesthetic auto-cull — rank + keep top N"),
+        prow("n", "analyze & generate — describe → img2img"),
+        prow("f", "face-scan — detect + group faces"),
         prow("Esc", "close"),
     ]
 }
