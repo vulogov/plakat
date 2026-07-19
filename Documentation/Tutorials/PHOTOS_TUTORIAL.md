@@ -633,8 +633,14 @@ chords (`n g` / `n i` / `n p` / `n m`), and as `:` commands — `generate a red 
 snow`, `portrait of a knight`, `scene of two friends at a cafe`, `img2img …`. Generate
 is prompt-only; **portrait** uses the current image as an identity face (or is
 text-only if you're not on a photo of a person); **multiperson** turns each selected
-image into one person in the scene. All run SDXL (heavy) — the manager pauses while
-they load, and refuses cleanly if memory is low (watch the top-bar indicator).
+image into one person in the scene. The manager pauses while the model loads, and
+refuses cleanly if memory is low (watch the top-bar indicator).
+
+**Pick the model & size.** Append `| model [WxH]` to any create prompt to choose the
+pipeline and output size — e.g. `a red fox in snow | sd15 512` (light + fast, good on
+low memory) or `a portrait | sdxl 1024`. Default is **SDXL**; `sd15` is the safe pick
+when memory is tight (SDXL at large sizes is the most OOM-prone). Portrait/multiperson
+pick the matching identity strategy automatically for the family you name.
 
 These run an actual pipeline (the same engine as `plakat generate` / `upscale` /
 `relight`), so they take a while and may download a model on first use. They run on

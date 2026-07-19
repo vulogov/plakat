@@ -662,11 +662,46 @@ struct App {
 #[derive(Clone)]
 enum CreateOp {
     /// txt2img from a prompt.
-    Generate { prompt: String },
+    Generate { prompt: String, model: String, size: Option<(u32, u32)> },
     /// Portrait from a prompt, optionally using `photo` (the cursor image) as the identity face.
-    Portrait { prompt: String, photo: Option<PathBuf> },
+    Portrait { prompt: String, model: String, size: Option<(u32, u32)>, photo: Option<PathBuf> },
     /// Multi-person scene from a prompt; `people` are the selected images' identity faces.
-    Multiperson { prompt: String, people: Vec<PathBuf> },
+    Multiperson { prompt: String, model: String, size: Option<(u32, u32)>, people: Vec<PathBuf> },
+}
+
+/// Parse an AI-create prompt spec: `prompt [| model [WxH | N]]`. The part after `|` picks the model
+/// (an SD-family alias) and, optionally, the output size. Defaults: model `sdxl`, pipeline-default
+/// size. So `a red fox | sd15 512` → ("a red fox", "sd15", 640×… no — (512,512)).
+fn parse_gen_spec(arg: &str) -> (String, String, Option<(u32, u32)>) {
+    match arg.split_once('|') {
+        Some((p, rest)) => {
+            let mut it = rest.split_whitespace();
+            let model = it.next().map(|m| m.to_lowercase()).unwrap_or_else(|| "sdxl".into());
+            let size = it.next().and_then(parse_gen_size_tok);
+            (p.trim().to_string(), model, size)
+        }
+        None => (arg.trim().to_string(), "sdxl".into(), None),
+    }
+}
+
+/// `WxH` or a single `N` (square) → pixel size, clamped to a sane range.
+fn parse_gen_size_tok(tok: &str) -> Option<(u32, u32)> {
+    let clamp = |n: u32| n.clamp(256, 2048);
+    if let Some((w, h)) = tok.split_once(['x', 'X', '×']) {
+        Some((clamp(w.trim().parse().ok()?), clamp(h.trim().parse().ok()?)))
+    } else {
+        let n = clamp(tok.trim().parse().ok()?);
+        Some((n, n))
+    }
+}
+
+/// The IP-Adapter identity strategy that matches a model family (SDXL vs SD 1.5).
+fn identity_for_model(model: &str) -> crate::api::IdentityKind {
+    if model.contains("xl") {
+        crate::api::IdentityKind::PlusFaceSdxl
+    } else {
+        crate::api::IdentityKind::PlusFace
+    }
 }
 
 /// An ML edit running on the resident worker, watched by the event loop.
@@ -1695,7 +1730,7 @@ impl App {
             }
             EditCmd::Generate => {
                 self.edit_menu = false;
-                self.prompt("AI generate (txt2img) — prompt: ", "", PendingCmd::Generate);
+                self.prompt("AI generate — prompt (| model [WxH], e.g. | sd15 512): ", "", PendingCmd::Generate);
             }
             EditCmd::Img2imgCreate => {
                 self.edit_menu = false;
@@ -1707,11 +1742,11 @@ impl App {
             }
             EditCmd::Portrait => {
                 self.edit_menu = false;
-                self.prompt("AI portrait — prompt: ", "", PendingCmd::Portrait);
+                self.prompt("AI portrait — prompt (| model [WxH]): ", "", PendingCmd::Portrait);
             }
             EditCmd::Multiperson => {
                 self.edit_menu = false;
-                self.prompt("AI multiperson — scene prompt: ", "", PendingCmd::Multiperson);
+                self.prompt("AI multiperson — scene (| model [WxH]): ", "", PendingCmd::Multiperson);
             }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
@@ -2493,6 +2528,38 @@ impl App {
         self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
     }
 
+    /// AI generate (txt2img): `arg` is `prompt [| model [WxH]]`.
+    fn ai_generate(&mut self, arg: &str) {
+        let (prompt, model, size) = parse_gen_spec(arg);
+        if prompt.is_empty() {
+            self.status = "enter a prompt".into();
+            return;
+        }
+        self.queue_create(CreateOp::Generate { prompt, model, size });
+    }
+
+    /// AI portrait: `arg` is `prompt [| model [WxH]]`; the cursor image becomes the identity face.
+    fn ai_portrait(&mut self, arg: &str) {
+        let (prompt, model, size) = parse_gen_spec(arg);
+        if prompt.is_empty() {
+            self.status = "enter a prompt".into();
+            return;
+        }
+        let photo = self.cur_source().map(|(d, f)| d.join(f));
+        self.queue_create(CreateOp::Portrait { prompt, model, size, photo });
+    }
+
+    /// AI multiperson: `arg` is `scene [| model [WxH]]`; the selected images become the people.
+    fn ai_multiperson(&mut self, arg: &str) {
+        let (prompt, model, size) = parse_gen_spec(arg);
+        if prompt.is_empty() {
+            self.status = "enter a scene prompt".into();
+            return;
+        }
+        let people: Vec<PathBuf> = self.target_sources().into_iter().map(|(_, p)| p).collect();
+        self.queue_create(CreateOp::Multiperson { prompt, model, size, people });
+    }
+
     /// Queue an AI "create" op (generate / portrait / multiperson) — the event loop runs it
     /// TUI-suspended, landing a new image in the current album (or the cursor's source album).
     fn queue_create(&mut self, op: CreateOp) {
@@ -2504,13 +2571,13 @@ impl App {
             self.status = "⚠ memory low — free RAM before generating".into();
             return;
         }
-        let label = match &op {
-            CreateOp::Generate { .. } => "generate",
-            CreateOp::Portrait { .. } => "portrait",
-            CreateOp::Multiperson { .. } => "multiperson",
+        let (label, model) = match &op {
+            CreateOp::Generate { model, .. } => ("generate", model.clone()),
+            CreateOp::Portrait { model, .. } => ("portrait", model.clone()),
+            CreateOp::Multiperson { model, .. } => ("multiperson", model.clone()),
         };
         self.pending_create = Some((op, dir));
-        self.status = format!("AI {label} — loading model … (the UI will pause)");
+        self.status = format!("AI {label} ({model}) — loading model … (the UI will pause)");
     }
 
     /// Analyze-and-generate (Track A): queue the cursor image to be described by the configured LLM,
@@ -2788,15 +2855,9 @@ impl App {
             Action::Upscale => self.enqueue_ml_over_targets(mledit::MlOp::Upscale),
             Action::Img2img { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Img2img { prompt }),
             Action::Relight { prompt } => self.enqueue_ml_over_targets(mledit::MlOp::Relight { prompt }),
-            Action::Generate { prompt } => self.queue_create(CreateOp::Generate { prompt }),
-            Action::Portrait { prompt } => {
-                let photo = self.cur_source().map(|(d, f)| d.join(f));
-                self.queue_create(CreateOp::Portrait { prompt, photo });
-            }
-            Action::Multiperson { prompt } => {
-                let people: Vec<PathBuf> = self.target_sources().into_iter().map(|(_, p)| p).collect();
-                self.queue_create(CreateOp::Multiperson { prompt, people });
-            }
+            Action::Generate { prompt } => self.ai_generate(&prompt),
+            Action::Portrait { prompt } => self.ai_portrait(&prompt),
+            Action::Multiperson { prompt } => self.ai_multiperson(&prompt),
             Action::Edit { op } => match edit::EditOp::from_tag(&op) {
                 Some(eop) => self.batch_edit(eop),
                 None => self.status = format!("unknown edit op: {op}"),
@@ -3713,18 +3774,9 @@ impl App {
                     self.pending_cull = Some(n);
                     self.status = format!("aesthetic auto-cull — keep top {n} … (the UI will pause)");
                 }
-                Some(PendingCmd::Generate) if !arg.is_empty() => {
-                    self.queue_create(CreateOp::Generate { prompt: arg.clone() });
-                }
-                Some(PendingCmd::Portrait) if !arg.is_empty() => {
-                    let photo = self.cur_source().map(|(d, f)| d.join(f));
-                    self.queue_create(CreateOp::Portrait { prompt: arg.clone(), photo });
-                }
-                Some(PendingCmd::Multiperson) if !arg.is_empty() => {
-                    let people: Vec<PathBuf> =
-                        self.target_sources().into_iter().map(|(_, p)| p).collect();
-                    self.queue_create(CreateOp::Multiperson { prompt: arg.clone(), people });
-                }
+                Some(PendingCmd::Generate) if !arg.is_empty() => self.ai_generate(&arg),
+                Some(PendingCmd::Portrait) if !arg.is_empty() => self.ai_portrait(&arg),
+                Some(PendingCmd::Multiperson) if !arg.is_empty() => self.ai_multiperson(&arg),
                 Some(PendingCmd::MlPrompt { relight }) if !arg.is_empty() => {
                     let op = if relight {
                         mledit::MlOp::Relight { prompt: arg.clone() }
@@ -4550,7 +4602,7 @@ fn run_create_job(
 
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
-    println!("\n▶ AI {label}: loading model (SDXL) — this can take a while…\n");
+    println!("\n▶ AI {label}: loading model — this can take a while…\n");
 
     let result = std::thread::spawn(move || -> Result<crate::api::Image> {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -4558,24 +4610,33 @@ fn run_create_job(
             let device = crate::api::device("auto")?;
             let _guard = crate::memwatch::MemoryGuard::start(&device, "plakat photos create");
             let imgs = match op {
-                CreateOp::Generate { prompt } => {
-                    crate::api::Generate::new("sdxl").prompt(prompt).device("auto").run().await?
-                }
-                CreateOp::Portrait { prompt, photo } => {
-                    let mut b = crate::api::Portrait::new("sdxl").prompt(prompt).device("auto");
-                    if let Some(p) = photo {
-                        b = b.photo(p, 1.0).identity(crate::api::IdentityKind::PlusFaceSdxl);
+                CreateOp::Generate { prompt, model, size } => {
+                    let mut b = crate::api::Generate::new(model).prompt(prompt).device("auto");
+                    if let Some((w, h)) = size {
+                        b = b.size(w, h);
                     }
                     b.run().await?
                 }
-                CreateOp::Multiperson { prompt, people } => {
+                CreateOp::Portrait { prompt, model, size, photo } => {
+                    let id = identity_for_model(&model);
+                    let mut b = crate::api::Portrait::new(model).prompt(prompt).device("auto");
+                    if let Some((w, h)) = size {
+                        b = b.size(w, h);
+                    }
+                    if let Some(p) = photo {
+                        b = b.photo(p, 1.0).identity(id);
+                    }
+                    b.run().await?
+                }
+                CreateOp::Multiperson { prompt, model, size, people } => {
                     if people.is_empty() {
                         anyhow::bail!("select the people images first (Space to select in the grid)");
                     }
-                    let mut b = crate::api::Multiperson::new(prompt)
-                        .model("sdxl")
-                        .identity(crate::api::IdentityKind::PlusFaceSdxl)
-                        .device("auto");
+                    let id = identity_for_model(&model);
+                    let mut b = crate::api::Multiperson::new(prompt).model(model).identity(id).device("auto");
+                    if let Some((w, h)) = size {
+                        b = b.size(w, h);
+                    }
                     for (i, p) in people.into_iter().enumerate() {
                         b = b.person(crate::api::Person::new(format!("person{}", i + 1)).photo(p, 1.0));
                     }
@@ -5287,15 +5348,15 @@ fn handle_ml_key(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('g') => {
             app.ml_menu = false;
-            app.prompt("AI generate (txt2img) — prompt: ", "", PendingCmd::Generate);
+            app.prompt("AI generate — prompt (| model [WxH], e.g. | sd15 512): ", "", PendingCmd::Generate);
         }
         KeyCode::Char('p') => {
             app.ml_menu = false;
-            app.prompt("AI portrait — prompt: ", "", PendingCmd::Portrait);
+            app.prompt("AI portrait — prompt (| model [WxH]): ", "", PendingCmd::Portrait);
         }
         KeyCode::Char('m') => {
             app.ml_menu = false;
-            app.prompt("AI multiperson — scene prompt: ", "", PendingCmd::Multiperson);
+            app.prompt("AI multiperson — scene (| model [WxH]): ", "", PendingCmd::Multiperson);
         }
         _ => {}
     }
@@ -7560,6 +7621,22 @@ fn edit_summary(edits: &[hjson::EditEntry]) -> String {
 mod tree_ops_tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
+
+    #[test]
+    fn gen_spec_parses_model_and_size() {
+        // No spec → default model, pipeline-default size.
+        assert_eq!(parse_gen_spec("a red fox in snow"), ("a red fox in snow".into(), "sdxl".into(), None));
+        // model only.
+        assert_eq!(parse_gen_spec("a knight | sd15"), ("a knight".into(), "sd15".into(), None));
+        // model + square size.
+        assert_eq!(parse_gen_spec("a fox | sd15 512"), ("a fox".into(), "sd15".into(), Some((512, 512))));
+        // model + WxH, case/×-insensitive; clamped.
+        assert_eq!(parse_gen_spec("x | sdxl 1024x768"), ("x".into(), "sdxl".into(), Some((1024, 768))));
+        assert_eq!(parse_gen_size_tok("99"), Some((256, 256))); // clamped up
+        // Identity strategy tracks the family.
+        assert!(matches!(identity_for_model("sdxl"), crate::api::IdentityKind::PlusFaceSdxl));
+        assert!(matches!(identity_for_model("sd15"), crate::api::IdentityKind::PlusFace));
+    }
 
     #[test]
     fn gather_image_files_album_and_recursive() {
