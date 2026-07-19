@@ -64,6 +64,7 @@ pub enum Action {
     Hdr,
     FocusStack,
     QualityCull,
+    Flatten,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -138,6 +139,7 @@ fn action_label(a: &Action) -> String {
         Action::Hdr => "hdr".into(),
         Action::FocusStack => "focus stack".into(),
         Action::QualityCull => "quality cull".into(),
+        Action::Flatten => "flatten".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -291,6 +293,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "hdr" | "exposure blend" | "exposure fusion" | "merge exposures" => Some(Action::Hdr),
         "focus stack" | "focus stacking" | "stack focus" => Some(Action::FocusStack),
         "quality cull" | "cull blurry" | "cull soft" | "flag soft" | "cull bad" => Some(Action::QualityCull),
+        "flatten" | "recursive" | "show all" | "flatten browse" => Some(Action::Flatten),
         _ => None,
     }
 }

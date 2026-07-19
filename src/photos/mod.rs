@@ -1383,6 +1383,31 @@ impl App {
         out
     }
 
+    /// Flatten browse: show **every** image beneath `dir` (across its sub-albums) in one grid — the
+    /// recursive view a mixed album / folder can't show directly. Each image's curation still routes
+    /// to its own source album (via the smart-view's per-image source map).
+    fn open_recursive(&mut self, dir: PathBuf) {
+        let paths = Self::gather_image_files(&dir, true);
+        if paths.is_empty() {
+            self.status = "no images under here".into();
+            return;
+        }
+        let mut meta_cache: HashMap<PathBuf, hjson::AlbumMeta> = HashMap::new();
+        let mut items = Vec::with_capacity(paths.len());
+        for p in paths {
+            let Some(parent) = p.parent().map(|x| x.to_path_buf()) else { continue };
+            let meta = meta_cache
+                .entry(parent.clone())
+                .or_insert_with(|| hjson::read_album(&parent).unwrap_or_default());
+            let rec = p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n)).cloned();
+            items.push((p, parent, rec));
+        }
+        let count = items.len();
+        let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("subtree").to_string();
+        self.enter_smart_view(format!("all under {name}"), String::new(), false, items, false);
+        self.status = format!("▤ {count} images under '{name}' (recursive) · curation routes to each album");
+    }
+
     /// Commit a collected result set as the active smart view (shared tail of smart-album / search).
     /// `paths` is already in display order; pass `presorted` to keep it (search ranks by relevance).
     fn enter_smart_view(
@@ -3082,6 +3107,10 @@ impl App {
             Action::Hdr => self.make_multishot(false),
             Action::FocusStack => self.make_multishot(true),
             Action::QualityCull => self.quality_cull(),
+            Action::Flatten => {
+                let dir = self.album_dir.clone().unwrap_or_else(|| self.root.path.clone());
+                self.open_recursive(dir);
+            }
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -5814,6 +5843,14 @@ fn handle_tree_key(app: &mut App, code: KeyCode) -> bool {
             app.tree_filter_active = true;
             app.status = "filter tree: type to match names · Enter keep · Esc clear".into();
         }
+        // Flatten browse: every image beneath this folder/album in one grid.
+        KeyCode::Char('*') => {
+            if let Some((path, kind, ..)) = cur.clone() {
+                if kind != NodeKind::SmartAlbum {
+                    app.open_recursive(path);
+                }
+            }
+        }
         // Album operations on the cursor node.
         KeyCode::Char('t') => {
             if let Some((path, kind, ..)) = cur.clone() {
@@ -5996,6 +6033,12 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         KeyCode::Char('d') if !ctrl => app.duplicate_in_album(),
         // Collage from the selection (or the whole album); mosaic = varied-cell justified rows;
         // panorama prompts for a direction.
+        // Flatten browse: show every image beneath the open album (incl. its sub-albums).
+        KeyCode::Char('*') => {
+            if let Some(dir) = app.album_dir.clone() {
+                app.open_recursive(dir);
+            }
+        }
         KeyCode::Char('w') => app.make_collage(),
         KeyCode::Char('W') => app.make_mosaic(),
         KeyCode::Char('H') => app.prompt("multi-shot (hdr = exposure blend · focus = focus stack): ", "hdr", PendingCmd::Multishot),
