@@ -45,9 +45,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
         `homography::solve_homography`). Closes the deferred Track B item.
   - All five are **replayable EditOps** carrying per-mille coordinates.
 
-## Deferred (need explicit go-ahead)
+## Track C — distribution — DONE
 
-- [ ] **Track C distribution** — publish 3.6.0/3.7.0 to crates.io + GitHub release + merge to `main`.
+- [x] **crates.io** — `plakat v3.7.0` published (supersedes the 3.3–3.6 cycles that stayed on branches).
+- [x] **GitHub release** — `v3.7.0` with 6 cross-platform assets (macOS arm64, Linux x86_64/aarch64,
+      Linux CUDA, Windows) + `SHA256SUMS`, built by the tag-triggered CI pipeline.
+- [x] **Merge to `main`** — fast-forwarded `origin/main` → `v3.7.0`.
 
 ## Ground rules (unchanged)
 
