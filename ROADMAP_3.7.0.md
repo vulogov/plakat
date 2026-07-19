@@ -7,23 +7,20 @@ slider `EditOp`s, the homography solver, the perceptual dHash, the Laplacian).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
-## Track A — creative & tonal (replayable slider EditOps)
+## Track A — creative & tonal (replayable slider EditOps) — DONE
 
-- [ ] **Tilt-shift / miniature** — graduated blur above/below an in-focus band + a saturation/contrast
-      pop. Single slider (blur amount).
-- [ ] **Creative blurs** — **motion** (directional, angle presets), **zoom** (radial from centre),
-      **spin** (rotational). Sample-along-a-path averaging; slider = amount.
-- [ ] **Channel-mixer B&W** — weighted mono (red/green/blue/orange filter presets) — a real mono
-      conversion, not the flat desaturate.
-- [ ] **Film-negative conversion** — invert + per-channel auto-stretch to remove the orange C-41 mask
-      (scanned negative → positive).
+- [x] **Tilt-shift / miniature** (chord `x m`) — in-focus band + graduated blur + saturation pop.
+- [x] **Creative blurs** — **motion** (`x C`, h/v/diagonal), **zoom** (`x w`), **spin** (`x q`); a
+      shared `path_blur` samples & averages along a line / radial / arc.
+- [x] **Channel-mixer B&W** (`x B` + presets) — weighted mono (red/green/blue/orange/luminance).
+- [x] **Film-negative conversion** (`x N`) — invert + per-channel auto-stretch (orange-mask removal).
 
 ## Track B — lens & geometry
 
-- [ ] **Chromatic-aberration removal** — per-channel radial scale about the centre + fringe desaturate.
-- [ ] **Lens distortion correction** — barrel / pincushion warp (manual amount).
-- [ ] **4-point perspective rectify** — pick the corners of a plane → rectify (reuses
-      `homography::solve_homography` from the panorama stitcher).
+- [x] **Chromatic-aberration removal** (`x A`) — rescale R/B channels radially about the centre.
+- [x] **Lens distortion correction** (`g d`) — barrel / pincushion radial warp (bipolar).
+- [ ] **4-point perspective rectify** — needs an interactive corner-pick mode; folded into the
+      pick-mode stretch below (shares UX with clone/heal), so it lands with that or later.
 
 ## Track C — manager gaps (non-AI)
 

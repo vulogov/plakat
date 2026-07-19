@@ -283,6 +283,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("straighten (rotate by degrees)", "gs", EditCmd::Straighten),
         ("keystone vertical (fix verticals)…", "gk", EditCmd::Adjust(Keystone { axis: 0, amount: 0 })),
         ("keystone horizontal…", "gK", EditCmd::Adjust(Keystone { axis: 1, amount: 0 })),
+        ("lens distortion (barrel / pincushion)…", "gd", EditCmd::Adjust(LensDistort(0))),
         // Crop (c)
         ("crop free-form (interactive)", "cf", EditCmd::FreeCrop),
         ("crop to exact size (WxH px)", "cx", EditCmd::CropExact),
@@ -347,6 +348,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("sharpen / soften…", "xs", EditCmd::Adjust(Sharpen(0))),
         ("noise reduction…", "xn", EditCmd::Adjust(NoiseReduction(0))),
         ("bilateral denoise (edge-preserving)…", "xj", EditCmd::Adjust(Bilateral(80))),
+        ("chromatic aberration removal (defringe)…", "xA", EditCmd::Adjust(ChromaticAberration(60))),
         ("tilt-shift / miniature…", "xm", EditCmd::Adjust(TiltShift(70))),
         ("motion blur — horizontal…", "xC", EditCmd::Adjust(MotionBlur { angle: 0, strength: 60 })),
         ("motion blur — vertical…", "", EditCmd::Adjust(MotionBlur { angle: 90, strength: 60 })),

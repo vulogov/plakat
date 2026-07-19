@@ -334,6 +334,8 @@ fn edit_op_word(s: &str) -> Option<String> {
         "spin blur" | "spin" => "spin_blur",
         "bw mixer" | "black and white mixer" | "channel mixer" | "mono mixer" => "bw_mixer",
         "film negative" | "negative to positive" | "c41" => "film_negative",
+        "lens distortion" | "distortion" | "defish" => "lens_distort",
+        "chromatic aberration" | "defringe" | "remove fringing" => "chromatic_aberration",
         "enhance sky" | "better sky" | "fix sky" | "sky" => "enhance_sky",
         "auto white balance" | "auto wb" | "gray world" | "neutralize" | "neutralise" => "auto_wb",
         "gradient map" | "gradient-map" | "gradientmap" => "gradient_map",

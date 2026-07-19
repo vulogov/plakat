@@ -38,6 +38,7 @@ command's chord in its right column.
 | `Ctrl-B g g` | grayscale / desaturate |
 | `Ctrl-B g a` | auto-enhance (auto levels + colour) |
 | `Ctrl-B g s` | straighten (rotate by degrees) |
+| `Ctrl-B g d` | lens distortion (barrel / pincushion)… |
 | `Ctrl-B g k` | keystone vertical (fix verticals)… |
 | `Ctrl-B g K` | keystone horizontal… |
 
@@ -99,6 +100,7 @@ command's chord in its right column.
 | `Ctrl-B x k` | despeckle (median)… |
 | `Ctrl-B x z` | dehaze… |
 | `Ctrl-B x j` | bilateral denoise (edge-preserving)… |
+| `Ctrl-B x A` | chromatic aberration removal (defringe)… |
 | `Ctrl-B x m` | tilt-shift / miniature… |
 | `Ctrl-B x C` | motion blur (horizontal; vertical/diagonal palette-only)… |
 | `Ctrl-B x w` | zoom blur (radial)… · `x q` spin blur (rotational)… |

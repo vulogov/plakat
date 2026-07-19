@@ -157,6 +157,10 @@ pub enum EditOp {
     ChannelMixerBW { r: i32, g: i32, b: i32 },
     /// Film-negative conversion: invert + per-channel auto-stretch (removes the orange C-41 mask).
     FilmNegative,
+    /// Lens distortion correction: radial warp; `amount` > 0 fixes barrel, < 0 fixes pincushion (−100..100).
+    LensDistort(i32),
+    /// Chromatic-aberration removal: rescale R/B channels radially to remove colour fringing; `strength` 0..100.
+    ChromaticAberration(i32),
     /// Face polish (auto-retouch): edge-preserving skin smoothing limited to detected face regions —
     /// the mask normally painted by hand, here supplied by the SCRFD face detector. `strength` 0..100;
     /// `faces` holds up to 6 ellipses `(cx, cy, rx, ry)` in per-mille of the image dims (filled once at
@@ -301,6 +305,8 @@ impl EditOp {
             EditOp::SpinBlur(v) => adjust::spin_blur(&img, v),
             EditOp::ChannelMixerBW { r, g, b } => adjust::channel_mixer_bw(&img, r, g, b),
             EditOp::FilmNegative => adjust::film_negative(&img),
+            EditOp::LensDistort(v) => lens_distort(&img, v),
+            EditOp::ChromaticAberration(v) => chromatic_aberration(&img, v),
             EditOp::EnhanceSky(v) => adjust::enhance_sky(&img, v),
             EditOp::AutoWhiteBalance(v) => adjust::auto_white_balance(&img, v),
             EditOp::Watermark { text, font } => watermark(&img, &text, font.as_deref()),
@@ -347,7 +353,8 @@ impl EditOp {
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
             | EditOp::Halftone(v) | EditOp::Kelvin(v) | EditOp::Crosshatch(v)
             | EditOp::EnhanceSky(v) | EditOp::AutoWhiteBalance(v) | EditOp::Crystallize(v)
-            | EditOp::Bilateral(v) | EditOp::TiltShift(v) | EditOp::ZoomBlur(v) | EditOp::SpinBlur(v) => *v,
+            | EditOp::Bilateral(v) | EditOp::TiltShift(v) | EditOp::ZoomBlur(v) | EditOp::SpinBlur(v)
+            | EditOp::LensDistort(v) | EditOp::ChromaticAberration(v) => *v,
             EditOp::GradND { strength, .. }
             | EditOp::OilPaint { strength, .. }
             | EditOp::Watercolor { strength, .. }
@@ -411,6 +418,8 @@ impl EditOp {
             EditOp::ZoomBlur(_) => EditOp::ZoomBlur(v),
             EditOp::SpinBlur(_) => EditOp::SpinBlur(v),
             EditOp::MotionBlur { angle, .. } => EditOp::MotionBlur { angle, strength: v },
+            EditOp::LensDistort(_) => EditOp::LensDistort(v),
+            EditOp::ChromaticAberration(_) => EditOp::ChromaticAberration(v),
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -433,7 +442,7 @@ impl EditOp {
             | EditOp::EnhanceSky(_) | EditOp::AutoWhiteBalance(_) | EditOp::Crystallize(_)
             | EditOp::Bilateral(_) | EditOp::FacePolish { .. }
             | EditOp::TiltShift(_) | EditOp::ZoomBlur(_) | EditOp::SpinBlur(_)
-            | EditOp::MotionBlur { .. } => (0, 100, 5),
+            | EditOp::MotionBlur { .. } | EditOp::ChromaticAberration(_) => (0, 100, 5),
             _ => (-100, 100, 5),
         }
     }
@@ -513,6 +522,8 @@ impl EditOp {
             EditOp::SpinBlur(_) => "spin blur".into(),
             EditOp::ChannelMixerBW { .. } => "B&W channel mixer".into(),
             EditOp::FilmNegative => "film negative".into(),
+            EditOp::LensDistort(_) => "lens distortion".into(),
+            EditOp::ChromaticAberration(_) => "chromatic aberration".into(),
             EditOp::FacePolish { .. } => "face polish".into(),
             EditOp::EnhanceSky(_) => "enhance sky".into(),
             EditOp::AutoWhiteBalance(_) => "auto white balance".into(),
@@ -650,6 +661,8 @@ impl EditOp {
                 "channel_mixer_bw"
             }
             EditOp::FilmNegative => "film_negative",
+            EditOp::LensDistort(v) => val_op(&mut params, v, "lens_distort"),
+            EditOp::ChromaticAberration(v) => val_op(&mut params, v, "chromatic_aberration"),
             EditOp::EnhanceSky(v) => val_op(&mut params, v, "enhance_sky"),
             EditOp::AutoWhiteBalance(v) => val_op(&mut params, v, "auto_wb"),
             EditOp::Watermark { text, font } => {
@@ -791,6 +804,8 @@ impl EditOp {
             "spin_blur" | "spin" => EditOp::SpinBlur(60),
             "bw_mixer" | "channel_mixer" | "mono_mixer" => EditOp::ChannelMixerBW { r: 60, g: 30, b: 10 },
             "film_negative" | "c41" | "scan_negative" => EditOp::FilmNegative,
+            "lens_distort" | "distortion" | "defish" => EditOp::LensDistort(0),
+            "chromatic_aberration" | "defringe" | "ca" => EditOp::ChromaticAberration(60),
             "enhance_sky" | "better_sky" | "sky" => EditOp::EnhanceSky(100),
             "auto_wb" | "auto_white_balance" | "gray_world" => EditOp::AutoWhiteBalance(100),
             "pixelate" | "mosaic" | "pixelize" => EditOp::Pixelate(40),
@@ -913,6 +928,8 @@ impl EditOp {
             "motion_blur" => EditOp::MotionBlur { angle: iv("angle", 0), strength: iv("strength", 100) },
             "channel_mixer_bw" => EditOp::ChannelMixerBW { r: iv("r", 40), g: iv("g", 40), b: iv("b", 20) },
             "film_negative" => EditOp::FilmNegative,
+            "lens_distort" => EditOp::LensDistort(val()),
+            "chromatic_aberration" => EditOp::ChromaticAberration(iv("value", 60)),
             "enhance_sky" => EditOp::EnhanceSky(iv("value", 100)),
             "auto_wb" => EditOp::AutoWhiteBalance(iv("value", 100)),
             "watermark" => EditOp::Watermark {
@@ -2489,6 +2506,55 @@ fn watermark(img: &DynamicImage, text: &str, font: Option<&str>) -> DynamicImage
     DynamicImage::ImageRgb8(rgb)
 }
 
+/// Lens distortion correction: a radial warp about the centre — `amount` > 0 corrects **barrel**
+/// (bulging) distortion, < 0 corrects **pincushion**. `r_src = r · (1 + k·r²)` with `r` normalised to
+/// the corner. Bilinear, edge-clamped. `amount` −100..100.
+fn lens_distort(img: &DynamicImage, amount: i32) -> DynamicImage {
+    let k = amount as f32 / 100.0 * 0.35;
+    if k.abs() < 1e-4 {
+        return img.clone();
+    }
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let (cx, cy) = ((w - 1) as f32 / 2.0, (h - 1) as f32 / 2.0);
+    let norm = (cx * cx + cy * cy).sqrt().max(1.0);
+    let mut out = image::RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (vx, vy) = (x as f32 - cx, y as f32 - cy);
+            let r = (vx * vx + vy * vy).sqrt() / norm;
+            let f = 1.0 + k * r * r;
+            out.put_pixel(x, y, bilinear(&rgb, cx + vx * f, cy + vy * f));
+        }
+    }
+    DynamicImage::ImageRgb8(out)
+}
+
+/// Chromatic-aberration removal: rescale the red and blue channels radially about the centre (green
+/// fixed) to pull colour fringes back into register. `strength` 0..100 sets the correction; dial it
+/// until the coloured edges disappear.
+fn chromatic_aberration(img: &DynamicImage, strength: i32) -> DynamicImage {
+    let s = strength.clamp(0, 100);
+    if s == 0 {
+        return img.clone();
+    }
+    let k = s as f32 / 100.0 * 0.008;
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width(), rgb.height());
+    let (cx, cy) = ((w - 1) as f32 / 2.0, (h - 1) as f32 / 2.0);
+    let mut out = image::RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (vx, vy) = (x as f32 - cx, y as f32 - cy);
+            let r = bilinear(&rgb, cx + vx * (1.0 - k), cy + vy * (1.0 - k)).0[0];
+            let g = rgb.get_pixel(x, y).0[1];
+            let b = bilinear(&rgb, cx + vx * (1.0 + k), cy + vy * (1.0 + k)).0[2];
+            out.put_pixel(x, y, image::Rgb([r, g, b]));
+        }
+    }
+    DynamicImage::ImageRgb8(out)
+}
+
 /// Keystone / perspective correction: a trapezoidal warp (bilinear, edge-clamped so there are no
 /// black wedges). `axis` 0 scales width per row (vertical keystone — converging verticals), 1 scales
 /// height per column (horizontal keystone); `amount` −100..100.
@@ -2708,6 +2774,7 @@ mod tests {
             EditOp::SelectiveLum { hue: 240, lum: -40 }, EditOp::GrayPointWB { x: 500, y: 300 },
             EditOp::TiltShift(70), EditOp::MotionBlur { angle: 45, strength: 60 }, EditOp::ZoomBlur(50),
             EditOp::SpinBlur(40), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
+            EditOp::LensDistort(-40), EditOp::ChromaticAberration(60),
             EditOp::Watermark { text: "© plakat".into(), font: None },
             EditOp::Watermark { text: "shot on film".into(), font: Some("/fonts/Foo.ttf".into()) },
             EditOp::Lut { path: "/grades/teal.cube".into() },
@@ -2903,6 +2970,7 @@ mod tests {
             EditOp::Crosshatch(100), EditOp::Crystallize(80), EditOp::Bilateral(90),
             EditOp::TiltShift(80), EditOp::MotionBlur { angle: 0, strength: 80 }, EditOp::ZoomBlur(70),
             EditOp::SpinBlur(60), EditOp::ChannelMixerBW { r: 75, g: 20, b: 5 }, EditOp::FilmNegative,
+            EditOp::LensDistort(60), EditOp::ChromaticAberration(80),
         ] {
             let label = op.label();
             let out = op.apply(src.clone()).to_rgb8();
