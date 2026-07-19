@@ -120,7 +120,7 @@ fn action_label(a: &Action) -> String {
         Action::Take => "take for processing".into(),
         Action::PutBack => "put back to parent".into(),
         Action::Duplicate => "duplicate".into(),
-        Action::Panorama { mode } => format!("panorama {}", ["horizontal", "vertical", "grid"].get(*mode as usize).unwrap_or(&"horizontal")),
+        Action::Panorama { mode } => format!("panorama {}", ["horizontal", "vertical", "grid", "horizontal aligned", "vertical aligned"].get(*mode as usize).unwrap_or(&"horizontal")),
         Action::Collage => "collage".into(),
         Action::Mosaic => "mosaic".into(),
         Action::Convert { fmt, max_px } => match max_px {
@@ -259,6 +259,8 @@ fn parse_action(stage: &str) -> Option<Action> {
         "panorama" | "panorama horizontal" | "stitch" | "stitch horizontal" => Some(Action::Panorama { mode: 0 }),
         "panorama vertical" | "stitch vertical" => Some(Action::Panorama { mode: 1 }),
         "panorama grid" | "stitch grid" | "combined panorama" => Some(Action::Panorama { mode: 2 }),
+        "panorama aligned" | "align panorama" | "stitch aligned" | "panorama horizontal aligned" => Some(Action::Panorama { mode: 3 }),
+        "panorama vertical aligned" => Some(Action::Panorama { mode: 4 }),
         "collage" | "make collage" | "create collage" => Some(Action::Collage),
         "mosaic" | "scrapbook" | "make mosaic" | "create mosaic" => Some(Action::Mosaic),
         _ => None,

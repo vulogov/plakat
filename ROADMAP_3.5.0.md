@@ -57,8 +57,11 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       unblocks text/path-carrying ops in the edit log.
 - [x] **Mosaic / scrapbook collage** (varied cell sizes) — DONE (`stitch::mosaic`, grid `W`, NL
       "mosaic"). Justified-rows (Flickr-style) layout: images keep aspect, each row scaled to fill the
-      width so cell sizes vary. (**True panorama stitch** with feature-matched alignment still open —
-      the bigger CV task.)
+      width so cell sizes vary.
+- [x] **Aligned panorama** (`ha` / `va` in the `b` prompt, NL "panorama aligned") — DONE. Overlap
+      *registration* by cross-correlation (translation only) + cross-faded seam, with a confidence
+      guard that falls back to edge-to-edge for non-overlapping frames. The pragmatic 80 % of "true"
+      stitching; **full feature-matched homography** (rotation/parallax) remains the open stretch.
 - [x] Quick creative leftovers: **gradient map** (warm/cyanotype/fire/teal-orange), **cross-hatch**,
       **Kelvin white balance**, **crystallize (Voronoi / low-poly)** (`stitch`-free pure filter, chord
       `s z`, NL "crystallize/voronoi") — all adjustable 0–100 % (Kelvin bipolar −100..100), palette +

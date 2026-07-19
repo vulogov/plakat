@@ -362,7 +362,10 @@ Two ways to combine several images into one (deterministic layout — no AI alig
 - **Panorama (`b`)** — multi-select the frames (`Space`), press `b`, and choose a direction:
   **h** places them left→right at a common height, **v** stacks them top→bottom at a common
   width, **grid** tiles them edge-to-edge. Writes `panorama_….png` into the album. Best for
-  pre-cropped strips or steady tripod sequences.
+  pre-cropped strips or steady tripod sequences. Type **`ha`** (or **`va`**) for an **aligned**
+  panorama: adjacent frames are registered by overlap (cross-correlation, translation) and the
+  seam is cross-faded — for actual overlapping pan shots. Frames that don't overlap fall back to
+  edge-to-edge automatically. (Translation only; it won't correct rotation or parallax.)
 - **Collage (`w`)** — press `w` to arrange the selection (or the **whole album** if nothing is
   selected) into a padded grid on a light background → `collage_grid.png`.
 - **Mosaic (`W`)** — a **scrapbook** layout: a justified-rows gallery (like Flickr) where each

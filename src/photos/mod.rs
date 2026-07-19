@@ -3798,10 +3798,16 @@ impl App {
                     fs_changed = true;
                 }
                 Some(PendingCmd::Panorama) if !arg.is_empty() => {
-                    let mode = match arg.trim().chars().next() {
-                        Some('v') | Some('V') => stitch::PanoMode::Vertical,
-                        Some('g') | Some('G') => stitch::PanoMode::Grid,
-                        _ => stitch::PanoMode::Horizontal,
+                    // `ha` / `va` = aligned (overlap registration); `h` / `v` = edge-to-edge; `g` = grid.
+                    let a = arg.trim().to_ascii_lowercase();
+                    let mode = match a.as_str() {
+                        "ha" => stitch::PanoMode::HorizontalAligned,
+                        "va" => stitch::PanoMode::VerticalAligned,
+                        _ => match a.chars().next() {
+                            Some('v') => stitch::PanoMode::Vertical,
+                            Some('g') => stitch::PanoMode::Grid,
+                            _ => stitch::PanoMode::Horizontal,
+                        },
                     };
                     self.stitch_panorama(mode);
                     fs_changed = true;
@@ -5486,7 +5492,7 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
         // panorama prompts for a direction.
         KeyCode::Char('w') => app.make_collage(),
         KeyCode::Char('W') => app.make_mosaic(),
-        KeyCode::Char('b') => app.prompt("panorama direction (h / v / grid): ", "h", PendingCmd::Panorama),
+        KeyCode::Char('b') => app.prompt("panorama (h / v / grid · ha / va = aligned): ", "h", PendingCmd::Panorama),
         KeyCode::Char('X') => {
             app.prompt("export to (DIR [MAXPX]): ", "", PendingCmd::Export);
         }
