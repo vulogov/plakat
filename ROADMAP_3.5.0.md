@@ -10,6 +10,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Track A — AI in the manager (cache now connected)
 
+- [x] **Phase A — resident ML worker (photos-local).** `src/photos/mlworker.rs`: img2img / relight /
+      upscale run on a background thread that holds the pipelines **resident** across ops; progress +
+      cancel drain **inline** (no TUI suspend). OOM-safe (MemoryGuard + pressure preflight + panic
+      catch + abort hook) and a top-bar memory indicator with "avoid AI when low" guidance. `plakat ui`
+      untouched. See `Documentation/Photos/AI_LOADING_REVIEW.md`.
+
+
 - [x] **CLIP visual search — live-verify.** DONE — cache reconnected;
       `cargo test --lib --features photos clip_loads_and_embeds_into_joint_space -- --ignored` passes
       (1 passed, 18.4s): real `openai/clip-vit-large-patch14` weights load and embed text+image into

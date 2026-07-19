@@ -80,5 +80,12 @@ non-destructive (new variant file); default CLI output stays byte-identical.
   `openai/clip-vit-large-patch14` weights load from the reconnected cache and embed text+image into
   the joint space. The in-tree CLIP path (`src/pipelines/clip_embed.rs` → `src/photos/visual_search.rs`)
   is confirmed end-to-end.
-- [ ] Phase A above (resident `ModelService` for the existing ML ops) — the highest-leverage,
-  lowest-risk reuse; unlocks inline progress + cancel + residency with no new model concepts.
+- [x] **Phase A — DONE (photos-local worker).** `src/photos/mlworker.rs`: a dedicated background
+  thread holds the img2img backbone (SDXL), IC-Light, and Real-ESRGAN pipelines **resident** across
+  ops, driven off the event loop. Progress + cancel flow back over a `GenMessage` channel the manager
+  drains **inline** (no more TUI suspend); `Esc` cancels (img2img stops at the next denoise step),
+  `q` cancels-then-quits. Owner-chosen isolated design — **`src/ui/tui` untouched**. OOM-safe: the
+  worker arms a `MemoryGuard` for its lifetime, a soft preflight refuses-and-reports via `Error` when
+  kernel pressure is already `Critical`, pipeline panics are caught and reported (models freed), and a
+  terminal-restore abort hook keeps the shell clean on a guard hard-exit. A top-bar **memory
+  indicator** (kernel pressure on macOS; free GB elsewhere) steers users away from AI ops when low.

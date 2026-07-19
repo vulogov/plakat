@@ -15,6 +15,7 @@ pub mod import;
 pub mod layers;
 pub mod lut;
 pub mod mledit;
+pub mod mlworker;
 pub mod nl;
 pub mod portfolio;
 pub mod rename;
@@ -43,6 +44,10 @@ use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::{Resize, StatefulImage};
 
 use library::{LibraryNode, NodeKind};
+
+use std::sync::mpsc::Receiver;
+use tokio::runtime::Handle;
+use crate::pipelines::gen_channel::{CancelFlag, GenMessage};
 
 /// Which pane has focus (RFC §6).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -602,6 +607,28 @@ struct App {
     // Live filesystem watch (RFC §23) + debounce.
     watch: Option<watcher::Watch>,
     dirty_since: Option<Instant>,
+
+    // AI-track Phase A: a background resident ML worker + the in-flight job the event loop drains
+    // inline. `rt` is the manager's tokio handle (captured in `run_with`) so the worker can block_on
+    // async pipeline loads. The worker is spawned lazily on the first ML op.
+    rt: Option<Handle>,
+    ml_worker: Option<mlworker::MlWorker>,
+    active_ml: Option<ActiveMl>,
+
+    // Memory status indicator (throttled ~1 Hz): the kernel pressure level (trustworthy on macOS)
+    // plus free/total RAM, shown in the top bar to steer the user away from AI-heavy ops when low.
+    mem_pressure: crate::hw::Pressure,
+    mem_free_gb: f64,
+    mem_total_gb: f64,
+    mem_checked: Option<Instant>,
+}
+
+/// An ML edit running on the resident worker, watched by the event loop.
+struct ActiveMl {
+    label: String,
+    src: PathBuf,
+    rx: Receiver<GenMessage>,
+    cancel: CancelFlag,
 }
 
 impl App {
@@ -713,6 +740,13 @@ impl App {
             status: String::from("↑/↓ move · →/Enter open · h collapse · Tab pane · q quit"),
             watch: None,
             dirty_since: None,
+            rt: None,
+            ml_worker: None,
+            active_ml: None,
+            mem_pressure: crate::hw::Pressure::Unknown,
+            mem_free_gb: 0.0,
+            mem_total_gb: 0.0,
+            mem_checked: None,
         }
     }
 
@@ -2364,7 +2398,7 @@ impl App {
         self.refresh_after_edit(&path);
     }
 
-    /// Queue a T2 ML edit on the cursor image (the event loop runs it with the TUI suspended).
+    /// Queue a T2 ML edit on the cursor image (the event loop hands it to the resident worker).
     fn queue_ml(&mut self, op: mledit::MlOp) {
         self.ml_menu = false;
         let Some((album, filename)) = self.cur_source() else {
@@ -2372,8 +2406,169 @@ impl App {
             return;
         };
         let input = album.join(&filename);
-        self.status = format!("running {} … (the UI will pause)", op.label());
+        let warn = if self.mem_low() { "  ⚠ memory low — this may be refused" } else { "" };
+        self.status = format!("queued {} …{warn}", op.label());
         self.jobs.push_back(Job::Ml(mledit::MlJob { op, input, album }));
+    }
+
+    /// Hand a queued ML edit to the background resident worker (spawned lazily on first use), and set
+    /// it as the in-flight job the event loop drains inline. Non-blocking: the manager keeps drawing.
+    fn dispatch_ml(&mut self, job: mledit::MlJob) {
+        if self.ml_worker.is_none() {
+            let Some(rt) = self.rt.clone() else {
+                self.status = "ML worker unavailable (no async runtime)".into();
+                return;
+            };
+            self.ml_worker = Some(mlworker::MlWorker::spawn(rt));
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = CancelFlag::new();
+        let label = job.op.label();
+        let src = job.input.clone();
+        let wjob = mlworker::Job { op: job.op, input: job.input, album: job.album, tx, cancel: cancel.clone() };
+        if self.ml_worker.as_ref().unwrap().submit(wjob) {
+            self.status = format!("⟳ {label} — loading model… · Esc cancels");
+            self.active_ml = Some(ActiveMl { label, src, rx, cancel });
+        } else {
+            self.status = format!("✗ {label}: worker unavailable");
+            self.ml_worker = None; // let the next attempt re-spawn
+        }
+    }
+
+    /// Drain the in-flight ML job's progress channel (called each tick while one is active). Updates
+    /// the status line from `Progress`, and on `Done`/`Error` finalizes: link the new variant, rescan,
+    /// select it, and clear the in-flight slot.
+    fn poll_active_ml(&mut self) {
+        enum Outcome {
+            None,
+            Done { output: PathBuf, cancelled: bool },
+            Failed(String),
+        }
+        let (status, outcome, label, src) = {
+            let Some(active) = self.active_ml.as_ref() else { return };
+            let label = active.label.clone();
+            let src = active.src.clone();
+            let mut status: Option<String> = None;
+            let mut outcome = Outcome::None;
+            loop {
+                match active.rx.try_recv() {
+                    Ok(GenMessage::Progress { step, total, steps_per_sec, .. }) => {
+                        status = Some(if total > 1 {
+                            format!(
+                                "⟳ {label} — step {}/{} ({steps_per_sec:.1} it/s) · Esc cancels",
+                                step + 1,
+                                total
+                            )
+                        } else {
+                            format!("⟳ {label} — working… · Esc cancels")
+                        });
+                    }
+                    Ok(GenMessage::Preview { .. }) | Ok(GenMessage::Enhanced { .. }) => {}
+                    Ok(GenMessage::Done { output, cancelled }) => {
+                        outcome = Outcome::Done { output, cancelled };
+                        break;
+                    }
+                    Ok(GenMessage::Error { message }) => {
+                        outcome = Outcome::Failed(message);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        outcome = Outcome::Failed("worker stopped unexpectedly".into());
+                        break;
+                    }
+                }
+            }
+            (status, outcome, label, src)
+        };
+        if let Some(s) = status {
+            self.status = s;
+        }
+        match outcome {
+            Outcome::None => {}
+            Outcome::Done { output, cancelled } => {
+                self.active_ml = None;
+                if cancelled {
+                    self.status = format!("⚠ {label} cancelled");
+                    self.rescan();
+                } else {
+                    let name = output.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    self.record_variant(&src, &name); // link the derivative before the rescan
+                    self.rescan();
+                    self.select_by_name(&name);
+                    self.status = format!("✓ {label} → {name}");
+                }
+            }
+            Outcome::Failed(e) => {
+                self.active_ml = None;
+                self.status = format!("✗ {label} failed: {e}");
+            }
+        }
+    }
+
+    /// Refresh the cached memory-status figures (self-throttled to ~1 Hz — `available_ram_gb` builds
+    /// and refreshes a `sysinfo::System`, too heavy for every 80 ms draw tick). Called each event-loop
+    /// tick; the top bar reads the cached values.
+    fn refresh_mem(&mut self) {
+        let now = Instant::now();
+        if self.mem_checked.map(|t| now.duration_since(t) < Duration::from_millis(1000)).unwrap_or(false) {
+            return;
+        }
+        self.mem_checked = Some(now);
+        self.mem_pressure = crate::hw::mem_pressure();
+        self.mem_free_gb = crate::hw::available_ram_gb();
+        if self.mem_total_gb == 0.0 {
+            self.mem_total_gb = crate::hw::total_ram_gb();
+        }
+    }
+
+    /// Whether AI-heavy ops are risky right now — the kernel pressure signal on macOS, else a
+    /// free-RAM floor (accurate off-macOS, where pressure is `Unknown`). Used to warn before load.
+    fn mem_low(&self) -> bool {
+        use crate::hw::Pressure;
+        match self.mem_pressure {
+            Pressure::Warning | Pressure::Critical => true,
+            Pressure::Unknown => self.mem_free_gb > 0.0 && self.mem_free_gb < 3.0,
+            Pressure::Normal => false,
+        }
+    }
+
+    /// The top-bar memory indicator: `(text, colour)`. On macOS the kernel pressure level is the
+    /// honest signal (free-RAM under-reports reclaimable pages), so it drives the words; off-macOS we
+    /// show free GB. Red/amber carry the "avoid AI" guidance.
+    fn mem_hint(&self) -> (String, Color) {
+        use crate::hw::Pressure;
+        match self.mem_pressure {
+            Pressure::Critical => ("  ⛔ memory low — avoid AI ops  ".into(), Color::Red),
+            Pressure::Warning => ("  ⚠ memory tight — heavy AI risky  ".into(), Color::Yellow),
+            Pressure::Normal => (format!("  ● memory ok · {:.0} GB  ", self.mem_total_gb), Color::Green),
+            Pressure::Unknown => {
+                let col = if self.mem_free_gb <= 0.0 {
+                    Color::DarkGray
+                } else if self.mem_free_gb < 3.0 {
+                    Color::Red
+                } else if self.mem_free_gb < 6.0 {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                };
+                let tail = if self.mem_low() { " — avoid AI ops" } else { "" };
+                (format!("  ● {:.0}/{:.0} GB free{tail}  ", self.mem_free_gb, self.mem_total_gb), col)
+            }
+        }
+    }
+
+    /// Request cancellation of the in-flight ML job (Esc). img2img stops at the next denoise step;
+    /// relight/upscale have no mid-run hook, so they run to completion (the flag still prevents the
+    /// result from being adopted).
+    fn cancel_active_ml(&mut self) -> bool {
+        if let Some(active) = self.active_ml.as_ref() {
+            active.cancel.cancel();
+            self.status = format!("cancelling {} …", active.label);
+            true
+        } else {
+            false
+        }
     }
 
     /// Offline auto-tag: for every browse target that has a generation recipe (AI-made / `--import`ed),
@@ -2546,7 +2741,8 @@ impl App {
                 n += 1;
             }
         }
-        self.status = format!("queued {n} × {} (the UI will pause per image)", op.label());
+        let warn = if self.mem_low() { "  ⚠ memory low — may be refused" } else { "" };
+        self.status = format!("queued {n} × {} — runs in the background{warn}", op.label());
     }
 
     /// Enqueue a vision job per browse target (batch autotag / describe).
@@ -3833,11 +4029,20 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
     })?;
     let root = library::walk(&root_dir)?;
     let mut app = App::new(root, root_dir.clone(), picker, thumb_px);
+    // Capture the async runtime handle so the resident ML worker can block_on pipeline loads.
+    app.rt = Handle::try_current().ok();
     // Live watch (best-effort — the manager still works statically if it can't be started).
     app.watch = watcher::spawn(&root_dir).ok();
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+    // If the OOM watchdog (armed by the ML worker) has to hard-exit, it skips Drop — so restore the
+    // terminal here too, or the shell is left in raw mode / the alt screen. Best-effort; runs on the
+    // watchdog thread just before the process exits.
+    crate::memwatch::set_abort_hook(|| {
+        let _ = disable_raw_mode();
+        let _ = stdout().execute(LeaveAlternateScreen);
+    });
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     let res = event_loop(&mut terminal, &mut app);
     disable_raw_mode()?;
@@ -3865,30 +4070,32 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
                 }
             }
         }
-        // Drain one heavy job per tick (ML edits suspend the TUI; vision is a quick blocking call).
-        // A batch pipeline (`:`) enqueues many — they run in sequence, redrawing between each.
-        if let Some(job) = app.jobs.pop_front() {
+        // An ML edit in flight on the resident worker: drain its progress inline (no TUI suspend) and
+        // finalize on Done. No new heavy work starts until it finishes.
+        if app.active_ml.is_some() {
+            app.poll_active_ml();
+        } else if let Some(job) = app.jobs.pop_front() {
+            // Drain one heavy job per tick. ML edits go to the background worker (inline progress);
+            // vision is a quick blocking call. A batch pipeline (`:`) enqueues many — they sequence.
             match job {
-                Job::Ml(j) => run_ml_job(terminal, app, j)?,
+                Job::Ml(j) => app.dispatch_ml(j),
                 Job::Vision(op, path) => run_vision_job(terminal, app, op, path)?,
             }
             continue;
-        }
-        // A queued CLIP visual search (Phase 7): heavy (model load + embed), run TUI-suspended.
-        if let Some(query) = app.pending_visual.take() {
+        } else if let Some(query) = app.pending_visual.take() {
+            // A queued CLIP visual search (Phase 7): heavy (model load + embed), run TUI-suspended.
             run_visual_search(terminal, app, query)?;
             continue;
-        }
-        // A queued CLIP semantic lookalike (Phase 7): heavy (embeddings), run TUI-suspended.
-        if let Some(qpath) = app.pending_clip_lookalike.take() {
+        } else if let Some(qpath) = app.pending_clip_lookalike.take() {
+            // A queued CLIP semantic lookalike (Phase 7): heavy (embeddings), run TUI-suspended.
             run_clip_lookalike(terminal, app, qpath)?;
             continue;
-        }
-        // A natural-language command the deterministic parser couldn't handle → LLM planner.
-        if let Some(text) = app.pending_nl.take() {
+        } else if let Some(text) = app.pending_nl.take() {
+            // A natural-language command the deterministic parser couldn't handle → LLM planner.
             run_nl_planner(terminal, app, text)?;
             continue;
         }
+        app.refresh_mem();
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
         }
@@ -3912,41 +4119,6 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
     Ok(())
 }
 
-/// Run a queued T2 ML edit with the TUI suspended, then resume. The job runs on a dedicated thread
-/// with its own runtime (avoiding a `block_on` on the async event-loop thread); the `join` blocks
-/// here on purpose while the manager is paused and the pipeline's progress shows on the real screen.
-fn run_ml_job(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
-    job: mledit::MlJob,
-) -> Result<()> {
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
-    println!("\n▶ {}\n   {}\n", job.op.label(), job.input.display());
-    let label = job.op.label();
-    let src = job.input.clone();
-    let result = std::thread::spawn(move || -> Result<PathBuf> {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-        rt.block_on(job.run())
-    })
-    .join()
-    .unwrap_or_else(|_| Err(anyhow::anyhow!("ML edit thread panicked")));
-
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    terminal.clear()?;
-    match result {
-        Ok(out) => {
-            let name = out.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-            app.record_variant(&src, &name); // link the derivative before the rescan
-            app.rescan();
-            app.select_by_name(&name);
-            app.status = format!("✓ {label} → {name}");
-        }
-        Err(e) => app.status = format!("✗ ML edit failed: {e:#}"),
-    }
-    Ok(())
-}
 
 /// Ask the configured LLM to turn `text` into a command plan, grounded with the album's HJSON, then
 /// open the y/N confirmation. Runs off a dedicated-runtime thread (a quick network call), drawing a
@@ -4192,6 +4364,22 @@ fn run_clip_lookalike(
 /// Returns true to quit.
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
     use crossterm::event::KeyModifiers;
+    // While an ML edit runs on the worker, Esc requests cancellation and `q` cancels-then-quits;
+    // every other key is ignored so a stray keypress can't disturb the in-flight job. (img2img stops
+    // at the next denoise step; relight/upscale have no mid-run hook, so quit may wait for them.)
+    if app.active_ml.is_some() {
+        match k.code {
+            KeyCode::Esc => {
+                app.cancel_active_ml();
+                return false;
+            }
+            KeyCode::Char('q') => {
+                app.cancel_active_ml();
+                return true;
+            }
+            _ => return false,
+        }
+    }
     // A quickhelp overlay swallows the next key (dismiss).
     if app.help.is_some() {
         app.help = None;
@@ -5152,6 +5340,9 @@ fn draw(f: &mut Frame, app: &mut App) {
             top.push(Span::styled(format!("  {sp}  "), base.fg(Color::DarkGray)));
         }
     }
+    // Memory-status indicator: steers the user away from AI-heavy ops when memory is low.
+    let (mem_txt, mem_col) = app.mem_hint();
+    top.push(Span::styled(mem_txt, base.fg(mem_col).add_modifier(Modifier::BOLD)));
     f.render_widget(Paragraph::new(Line::from(top)).style(base), status_bar);
 
     let [tree_col, album_col] =

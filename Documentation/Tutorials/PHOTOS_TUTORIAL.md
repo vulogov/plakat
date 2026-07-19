@@ -606,18 +606,26 @@ to open the ML menu on the cursor image:
 | `l` | relight (IC-Light) | a lighting prompt |
 
 These run an actual pipeline (the same engine as `plakat generate` / `upscale` /
-`relight`), so they take a while and may download a model on first use. The
-manager **pauses** while a job runs — the alternate screen drops so you see the
-familiar plakat download/denoise progress bars, then it resumes automatically.
+`relight`), so they take a while and may download a model on first use. They run on
+a **background worker** that stays loaded between ops — so the manager keeps drawing
+and the progress shows **inline** in the status line (no screen flicker), and a
+second img2img reuses the already-loaded model. Press **`Esc`** to cancel (img2img
+stops at the next denoise step; upscale/relight finish the current pass), or **`q`**
+to cancel and quit.
 
 The result is a **new** image (your source is never touched): it lands in the same
 album as `<name>_upscale.png` / `_img2img.png` / `_relight.png`, is linked as a
 `variant` of the source, and the cursor jumps to it. Generate → edit → keep, all
 inside the library.
 
-> First-run notes: img2img/relight load SDXL (heavy — the manager runs one job at a
-> time with everything else freed). Interactive crop/mask painting to steer inpaint
-> is a later step.
+> Memory: the top bar shows a **memory indicator** (`● memory ok` / `⚠ memory tight`
+> / `⛔ memory low`). When it's amber/red, avoid the AI ops — if the system is under
+> **critical** memory pressure the worker refuses the job cleanly (rather than risk
+> an out-of-memory host stall), and a memory watchdog will abort plakat safely if a
+> load ever crosses the cliff mid-run.
+>
+> First-run notes: img2img/relight load SDXL (heavy — the worker runs one job at a
+> time). Interactive crop/mask painting to steer inpaint is a later step.
 
 ## 10. AI metadata — autotag & describe (`A`)
 
