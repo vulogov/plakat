@@ -1,4 +1,13 @@
-# plakat 3.4.0 — roadmap (planning)
+# plakat 3.4.0 — roadmap (shipped)
+
+**Shipped — a huge non-AI "full studio" cut.** Creative looks (invert/sepia/duotone/posterize/
+solarize/threshold); a deep filter library (oil-paint ×10, watercolour ×10, ink Euro/JP/CN/RU,
+pencil/charcoal/cartoon/emboss/halftone/pixelate/blur/bloom, false-colour thermal/IR/night-vision)
+all **adjustable 0–100 %**; look presets (vintage/lomo/cross-process/noir/pop-art/golden-hour/
+old-photo/daguerreotype + Apple vivid/dramatic/mono/silvertone). Framing: keystone/perspective,
+border/letterbox, circle crop, watermark/caption (font selection), `.cube` LUT. Workflow:
+take/duplicate/put-back working sub-albums. Composites: panorama + collage. Perf: cached
+working-resolution preview (base caching). See README for the cut.
 
 Opening the cycle after 3.3.0 (the photos "pro darkroom" — non-AI editing/analysis + a full
 tree-pane album manager). `plakat photos` is now a deep, non-destructive editor; 3.4 has room to

@@ -17,35 +17,36 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.3.0 — `plakat photos`: the pro darkroom (still no AI)
+## What's new in 3.4.0 — `plakat photos`: the full studio (still no AI)
 
-3.2 turned the editor into a darkroom. **3.3 makes it a *pro* one** — a deep, non-AI editing and
-analysis pass, a full album-management surface, and a faster, clearer UI. Everything stays
-non-destructive and works from the **edit palette**, the plain-language `:` command, and now
-**`Ctrl-B` chords**.
+3.3 made the editor a pro darkroom. **3.4 fills out the studio** — a huge non-AI creative and
+finishing pass, a non-destructive editing *workflow*, image composites, and a big responsiveness
+win. Everything works from the **edit palette**, `Ctrl-B` chords, and the plain-language `:` command.
 
-**Editing, on a live slider.** Every tonal/colour adjustment opens an interactive **+/- slider with
-a live preview** (a `─┼──●─` bar). Alongside them: **curves** (a 5-point tone-curve editor),
-**levels**, **CLAHE** (adaptive local contrast), **dehaze**, **hue rotate**, **split-tone**,
-**selective colour** (per-hue), **film grain**, **despeckle**, **vignette**, **graduated ND**, and
-**radial dodge/burn** — plus **before/after** (`\`), an **edit-history scrubber** (step through and
-trim any edit), and **copy/paste edits + named presets** to sync a look across a shoot.
+**A deep filter library.** **Oil paint** and **watercolour** in ten numbered styles each; **ink**
+in four traditions — European pen-and-ink, Japanese sumi-e, Chinese wash, Russian icon; plus
+**pencil sketch, charcoal, cartoon, emboss, halftone, pixelate, blur, bloom** and a **false-colour**
+family (thermal / infrared / night-vision). Every filter is **adjustable 0–100 %** on the slider.
+On top: dozens of one-tap **look presets** — vintage, lomo, cross-process, noir, pop-art, golden
+hour, old-photo, daguerreotype, and the Apple-Photos set (vivid / dramatic / mono / silvertone).
 
-**Read the image.** Diagnostic **overlays** (`o`): clipping "zebras" and focus peaking, baked onto
-the picture. The analysis panel (`H`) now shows per-channel **RGB histograms**, **colour & lighting
-balance**, **dominant colours**, and pro **waveform + RGB parade** scopes.
+**Framing & finishing.** **Keystone / perspective** correction (fix converging verticals),
+**border / letterbox** to any aspect (black / white / blur-extend), **circle crop**, **watermark /
+caption** burn-in with **your choice of TrueType/OpenType font**, and **`.cube` LUT** colour grades.
 
-**Manage the library.** The tree pane became a real manager: album **info panel & editor**, album
-**tags**, **export** / export-and-convert, **thumbnail regen**, **tree search**, and proper **nested
-albums**. Albums show a **display name** (metadata, with a directory fallback), and a smart album can
-be **materialized into a portable folder of copies** — no symlinks.
+**A non-destructive workflow.** **Take** (`P`) copies the highest-res version into a fresh nested
+**workbench** sub-album so edits never poison the source; **duplicate** (`d`) for quick alternates;
+**put back** (`p`) promotes the keepers to the parent so the workbench can be deleted.
 
-**Faster & clearer.** A live **histogram in the top bar** (it tracks the edit preview), a cleaner
-**info panel**, and a full **`Ctrl-B` edit-chord map** ([`Documentation/Photos/KEYMAP.md`](Documentation/Photos/KEYMAP.md)).
+**Composites.** **Panorama** stitching (horizontal / vertical / grid) and **collage** from a
+selection or the whole album.
+
+**Faster on big images.** Interactive edits now reuse a cached working-resolution base instead of
+re-decoding the full file on every keystroke — the slider stays smooth on 24 MP+.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.2):
+**Earlier releases** (v0.13 – 3.3):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

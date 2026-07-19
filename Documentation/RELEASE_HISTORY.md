@@ -8,6 +8,20 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.3.0 — `plakat photos`: the pro darkroom (still no AI)
+
+3.2 turned the editor into a darkroom. **3.3 made it a *pro* one** — a deep, non-AI editing and
+analysis pass, a full album-management surface, and a faster, clearer UI, all non-destructive and
+reachable from the edit palette, `Ctrl-B` chords, and the `:` command.
+
+**Editing** on a live +/- slider (with curves, levels, CLAHE, dehaze, hue, split-tone, selective
+colour, grain, despeckle, vignette, graduated ND, radial dodge/burn), plus before/after, an
+edit-history scrubber, and copy/paste-edits + named presets. **Analysis**: clipping/focus overlays,
+RGB histograms, colour/lighting balance, dominant colours, waveform + RGB parade scopes.
+**Management**: a full tree-pane album manager (info/editor, tags, export/convert, thumb-regen,
+search, nesting), display names, portable smart albums. Plus a live-histogram top bar and the
+`Ctrl-B` edit-chord map.
+
 ## What's new in 3.2.0 — `plakat photos`: a real darkroom in the terminal
 
 3.1 made the collection manager a workbench. **3.2 turned the editor into a darkroom** — layers,
