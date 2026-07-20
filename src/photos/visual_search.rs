@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use candle_core::Device;
 
 use crate::pipelines::clip_embed::ClipEmbedder;
 
@@ -121,15 +120,15 @@ fn mtime_secs(p: &Path) -> u64 {
 
 /// Rank `items` (image path + its source-album dir) by CLIP similarity to `query`, best first.
 /// Reuses/updates `cache`, embedding only images not already cached at their current mtime. Returns
-/// `(ranked (path, dir, score), updated cache)`. `progress(done, total)` is called per image.
-pub async fn search(
-    device: &Device,
+/// `(ranked (path, dir, score), updated cache)`. `progress(done, total)` is called per image. Takes a
+/// **pre-loaded** `embedder` (kept resident by the caller, so repeat searches don't reload the model).
+pub fn search(
+    embedder: &ClipEmbedder,
     items: Vec<(PathBuf, PathBuf)>,
     query: &str,
     mut cache: Cache,
     progress: impl Fn(usize, usize),
 ) -> Result<(Vec<(PathBuf, PathBuf, f32)>, Cache)> {
-    let embedder = ClipEmbedder::load(device).await?;
     let q = quantize(&embedder.embed_text(query)?);
     let total = items.len();
     let mut scored: Vec<(PathBuf, PathBuf, f32)> = Vec::with_capacity(total);
@@ -153,16 +152,21 @@ pub async fn search(
     Ok((scored, cache))
 }
 
-/// Proactively embed every image in `items` that isn't already cached at its current mtime, returning
-/// the updated cache. **Lazy model load** — if everything is already embedded, the model never loads
-/// (the whole call is offline). This pre-persists the vector store so the first visual search is fast.
-pub async fn embed_all(
-    device: &Device,
+/// Whether any of `items` (or the optional `query_path`) still needs embedding — lets the caller load
+/// the (resident) model only when there's a miss, so a fully-cached library stays offline.
+pub fn any_missing(items: &[(PathBuf, PathBuf)], query_path: Option<&Path>, cache: &Cache) -> bool {
+    let miss = |p: &Path| !matches!(cache.get(p), Some((m, _)) if *m == mtime_secs(p));
+    query_path.map(miss).unwrap_or(false) || items.iter().any(|(p, _)| miss(p))
+}
+
+/// Proactively embed every image in `items` not already cached at its mtime, returning the updated
+/// cache. `embedder` is `None` when the caller determined nothing needs embedding (fully offline).
+pub fn embed_all(
+    embedder: Option<&ClipEmbedder>,
     items: Vec<(PathBuf, PathBuf)>,
     mut cache: Cache,
     progress: impl Fn(usize, usize),
 ) -> Result<Cache> {
-    let mut embedder: Option<ClipEmbedder> = None;
     let total = items.len();
     for (i, (path, _dir)) in items.into_iter().enumerate() {
         progress(i + 1, total);
@@ -170,37 +174,32 @@ pub async fn embed_all(
         if matches!(cache.get(&path), Some((m, _)) if *m == mt) {
             continue; // already embedded at this version
         }
-        if embedder.is_none() {
-            embedder = Some(ClipEmbedder::load(device).await?);
-        }
-        if let Ok(v) = embedder.as_ref().unwrap().embed_image(&path) {
+        let Some(em) = embedder else { continue };
+        if let Ok(v) = em.embed_image(&path) {
             cache.insert(path, (mt, quantize(&v)));
         }
     }
     Ok(cache)
 }
 
-/// CLIP semantic lookalike: rank `items` by embedding similarity to the image at `query_path`.
-/// **Lazy model load** — the CLIP model is only loaded if *some* embedding isn't already cached, so a
-/// fully-cached library ranks entirely offline (no model, no cache disk).
-pub async fn search_by_image(
-    device: &Device,
+/// CLIP semantic lookalike: rank `items` by embedding similarity to the image at `query_path`. A
+/// fully-cached library ranks entirely offline (`embedder` = `None`); otherwise the caller passes the
+/// resident model.
+pub fn search_by_image(
+    embedder: Option<&ClipEmbedder>,
     items: Vec<(PathBuf, PathBuf)>,
     query_path: &Path,
     mut cache: Cache,
     progress: impl Fn(usize, usize),
 ) -> Result<(Vec<(PathBuf, PathBuf, f32)>, Cache)> {
-    let mut embedder: Option<ClipEmbedder> = None;
-
-    // Query embedding (cache-first; loads the model only on a miss).
+    // Query embedding (cache-first; needs the model only on a miss).
     let qmt = mtime_secs(query_path);
     let q = match cache.get(query_path) {
         Some((m, e)) if *m == qmt => e.clone(),
         _ => {
-            let em = ClipEmbedder::load(device).await?;
+            let em = embedder.ok_or_else(|| anyhow::anyhow!("query image not embedded"))?;
             let e = quantize(&em.embed_image(query_path)?);
             cache.insert(query_path.to_path_buf(), (qmt, e.clone()));
-            embedder = Some(em);
             e
         }
     };
@@ -213,10 +212,8 @@ pub async fn search_by_image(
         let emb = match cache.get(&path) {
             Some((m, e)) if *m == mt => e.clone(),
             _ => {
-                if embedder.is_none() {
-                    embedder = Some(ClipEmbedder::load(device).await?);
-                }
-                match embedder.as_ref().unwrap().embed_image(&path) {
+                let Some(em) = embedder else { continue }; // no model → skip un-embedded items
+                match em.embed_image(&path) {
                     Ok(v) => {
                         let e = quantize(&v);
                         cache.insert(path.clone(), (mt, e.clone()));
@@ -294,10 +291,9 @@ mod tests {
             cache.insert(p.clone(), (mtime_secs(&p), quantize(&vec![0.1_f32; DIM])));
             items.push((p, dir.clone()));
         }
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let out = rt
-            .block_on(embed_all(&Device::Cpu, items, cache, |_, _| {}))
-            .expect("fully-cached embed_all is offline");
+        // Fully cached → pass no embedder; the call is entirely offline.
+        assert!(!any_missing(&items, None, &cache), "all items cached");
+        let out = embed_all(None, items, cache, |_, _| {}).expect("fully-cached embed_all is offline");
         assert_eq!(out.len(), 2, "cache returned unchanged, model never loaded");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -731,6 +731,9 @@ struct App {
     pending_visual: Option<String>,
     /// `:embed` requested — pre-compute + persist CLIP embeddings for the whole library.
     pending_embed: bool,
+    /// The resident CLIP model — loaded once (lazily) and kept, so repeat visual searches / lookalikes
+    /// skip the multi-second reload.
+    clip: Option<crate::pipelines::clip_embed::ClipEmbedder>,
     clip_cache: visual_search::Cache,
     // Track A AI jobs, run TUI-suspended by the event loop: aesthetic auto-cull (keep top N),
     // analyze-and-generate (describe → img2img), and face-scan (detect + group).
@@ -1039,6 +1042,7 @@ impl App {
             jobs: VecDeque::new(),
             pending_visual: None,
             pending_embed: false,
+            clip: None,
             pending_cull: None,
             pending_analyze: None,
             pending_face_scan: false,
@@ -6084,6 +6088,28 @@ fn run_vision_job(
 
 /// Run a queued CLIP visual search with the TUI suspended (model load + per-image embed is heavy).
 /// Reuses/updates the in-session embedding cache, then shows the top matches as a relevance view.
+impl App {
+    /// Load the CLIP model once and keep it resident (so repeat searches skip the reload). The load
+    /// (async HF fetch + a big tensor build) runs off the event-loop thread; the loaded embedder is
+    /// then moved onto `self` and reused. No-op once loaded.
+    fn ensure_clip(&mut self) -> Result<()> {
+        if self.clip.is_some() {
+            return Ok(());
+        }
+        let embedder = std::thread::spawn(|| -> Result<crate::pipelines::clip_embed::ClipEmbedder> {
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+            rt.block_on(async {
+                let device = crate::device::select("auto")?;
+                crate::pipelines::clip_embed::ClipEmbedder::load(&device).await
+            })
+        })
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("CLIP load thread panicked")))?;
+        self.clip = Some(embedder);
+        Ok(())
+    }
+}
+
 fn run_visual_search(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
@@ -6113,27 +6139,23 @@ fn run_visual_search(
         cache.entry(k).or_insert(v);
     }
 
-    let q = query.clone();
-    let result = std::thread::spawn(
-        move || -> Result<(Vec<(PathBuf, PathBuf, f32)>, visual_search::Cache)> {
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            let out = rt.block_on(async {
-                let device = crate::device::select("auto")?;
-                visual_search::search(&device, items, &q, cache, |done, tot| {
-                    if done % 10 == 0 || done == tot {
-                        print!("\r  embedding {done}/{tot}…   ");
-                        let _ = std::io::stdout().flush();
-                    }
-                })
-                .await
-            })?;
-            // Persist embeddings to disk so the next session's search is fast.
-            visual_search::save_cache(&out.1);
-            Ok(out)
-        },
-    )
-    .join()
-    .unwrap_or_else(|_| Err(anyhow::anyhow!("visual-search thread panicked")));
+    // A text query always needs the model; load it resident (reused on the next search).
+    let result = match app.ensure_clip() {
+        Ok(()) => {
+            let em = app.clip.as_ref().unwrap();
+            let out = visual_search::search(em, items, &query, cache, |done, tot| {
+                if done % 10 == 0 || done == tot {
+                    print!("\r  embedding {done}/{tot}…   ");
+                    let _ = std::io::stdout().flush();
+                }
+            });
+            if let Ok((_, c)) = &out {
+                visual_search::save_cache(c); // persist so the next session is fast
+            }
+            out
+        }
+        Err(e) => Err(e),
+    };
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -6192,23 +6214,27 @@ fn run_embed_library(
         cache.entry(k).or_insert(v);
     }
 
-    let result = std::thread::spawn(move || -> Result<visual_search::Cache> {
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-        let out = rt.block_on(async {
-            let device = crate::device::select("auto")?;
-            visual_search::embed_all(&device, items, cache, |done, tot| {
-                if done % 10 == 0 || done == tot {
-                    print!("\r  embedding {done}/{tot}…   ");
-                    let _ = std::io::stdout().flush();
+    // Load the model only if something still needs embedding (fully cached → offline).
+    let result = if visual_search::any_missing(&items, None, &cache) {
+        match app.ensure_clip() {
+            Ok(()) => {
+                let em = app.clip.as_ref().unwrap();
+                let out = visual_search::embed_all(Some(em), items, cache, |done, tot| {
+                    if done % 10 == 0 || done == tot {
+                        print!("\r  embedding {done}/{tot}…   ");
+                        let _ = std::io::stdout().flush();
+                    }
+                });
+                if let Ok(c) = &out {
+                    visual_search::save_cache(c);
                 }
-            })
-            .await
-        })?;
-        visual_search::save_cache(&out); // persist to each album's .plakat_clip
-        Ok(out)
-    })
-    .join()
-    .unwrap_or_else(|_| Err(anyhow::anyhow!("embed thread panicked")));
+                out
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        Ok(cache) // already fully embedded
+    };
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -6256,26 +6282,27 @@ fn run_clip_lookalike(
         cache.entry(k).or_insert(v);
     }
 
-    let qp = query_path.clone();
-    let result = std::thread::spawn(
-        move || -> Result<(Vec<(PathBuf, PathBuf, f32)>, visual_search::Cache)> {
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-            let out = rt.block_on(async {
-                let device = crate::device::select("auto")?;
-                visual_search::search_by_image(&device, items, &qp, cache, |done, tot| {
+    // Load the model only if the query or some image isn't embedded yet (else rank offline).
+    let result = if visual_search::any_missing(&items, Some(&query_path), &cache) {
+        match app.ensure_clip() {
+            Ok(()) => {
+                let em = app.clip.as_ref().unwrap();
+                let out = visual_search::search_by_image(Some(em), items, &query_path, cache, |done, tot| {
                     if done % 10 == 0 || done == tot {
                         print!("\r  embedding {done}/{tot}…   ");
                         let _ = std::io::stdout().flush();
                     }
-                })
-                .await
-            })?;
-            visual_search::save_cache(&out.1);
-            Ok(out)
-        },
-    )
-    .join()
-    .unwrap_or_else(|_| Err(anyhow::anyhow!("lookalike thread panicked")));
+                });
+                if let Ok((_, c)) = &out {
+                    visual_search::save_cache(c);
+                }
+                out
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        visual_search::search_by_image(None, items, &query_path, cache, |_, _| {}) // fully cached → offline
+    };
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;

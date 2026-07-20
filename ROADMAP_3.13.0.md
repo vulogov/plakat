@@ -21,9 +21,12 @@ optimization below that, and it adds a dependency.
 
 ## Tracks (value order)
 
-- [ ] **A — Resident CLIP embedder** — keep the model loaded between searches (like the ML worker), so
-      the 2nd+ visual search / lookalike skips the multi-second reload. Dependency-free. *Highest
-      interactive win.*
+- [x] **A — Resident CLIP embedder** — `App.clip: Option<ClipEmbedder>`, loaded once by `ensure_clip`
+      (the async HF fetch + tensor build runs off the event-loop thread, then the embedder — `Send`
+      via candle — is kept resident) and reused, so the **2nd+ visual search / lookalike skips the
+      multi-second reload**. `visual_search::{search, search_by_image, embed_all}` now take a pre-loaded
+      embedder and are **synchronous** (run on the main thread, TUI-suspended, same UX). The
+      offline-when-fully-cached path is preserved via `any_missing` (load the model only on a miss).
 - [x] **B — int8 vector store** — CLIP embeddings are L2-normalized, so they quantize cleanly to i8 +
       a per-vector scale (`visual_search::Embedding` / `quantize` / `qdot`). Cache, the per-album
       `.plakat_clip` (magic v2), and the index `.vec` sidecar (v2) all store i8 — **4× less RAM +
