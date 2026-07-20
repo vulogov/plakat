@@ -1977,7 +1977,7 @@ impl App {
                 self.edit_menu = false;
                 let n = self.targets().len();
                 self.prompt(
-                    format!("write metadata into {n} file(s)' EXIF (JPEG/PNG, in place)? [y/N]: "),
+                    format!("write metadata into {n} file(s)' EXIF (JPEG/PNG/WebP, in place)? [y/N]: "),
                     "",
                     PendingCmd::WriteExif,
                 );
@@ -3565,9 +3565,9 @@ impl App {
         };
     }
 
-    /// Write each target's album-record metadata (title/author/copyright/date/geotag) into the file's
-    /// binary EXIF, in place (JPEG/PNG). Non-record images are skipped; records with no writable
-    /// fields count as "no metadata". Thumbnails are dropped so the info panel re-reads the file.
+    /// Write each target's album-record metadata (title/author/copyright/date/geotag/tags) into the
+    /// file's binary EXIF, in place (JPEG/PNG/WebP). Non-record images are skipped; records with no
+    /// writable fields count as "no metadata". Thumbnails are dropped so the info panel re-reads.
     fn write_exif_targets(&mut self) {
         let files = self.target_sources();
         if files.is_empty() {
@@ -4332,13 +4332,29 @@ impl App {
             self.status = "nothing to export".into();
             return;
         }
+        // Gather each image's curation + shot metadata to embed in the page.
+        let photos: Vec<webgallery::Photo> = files
+            .iter()
+            .map(|p| {
+                let rec = self.record(p);
+                let ex = rec.and_then(|r| r.exif.clone()).or_else(|| exif::read_exif(p).ok());
+                webgallery::Photo {
+                    path: p.clone(),
+                    title: rec.and_then(|r| r.title.clone().or_else(|| r.caption.clone())),
+                    rating: rec.map(|r| r.rating).unwrap_or(0),
+                    tags: rec.map(|r| r.tags.clone()).unwrap_or_default(),
+                    date: ex.as_ref().and_then(|e| e.date_taken.clone()),
+                    exif: ex.as_ref().and_then(exif_summary_line),
+                }
+            })
+            .collect();
         let dest = expand_tilde(dir);
         let title = title
             .map(str::to_string)
             .or_else(|| self.album_dir.as_ref().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "Gallery".into());
         let opts = webgallery::Options { title: &title, thumb_px: 400, full_px };
-        match webgallery::export(&files, &dest, &opts) {
+        match webgallery::export(&photos, &dest, &opts) {
             Ok(n) => self.status = format!("web gallery: {n} image(s) → {}/index.html", dest.display()),
             Err(e) => self.status = format!("web gallery failed: {e:#}"),
         }
@@ -8129,6 +8145,36 @@ fn folder_hjson_stamp(dir: &Path) -> Option<(std::time::SystemTime, u64)> {
 fn hjson_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     let md = std::fs::metadata(path).ok()?;
     Some((md.modified().ok()?, md.len()))
+}
+
+/// A one-line EXIF summary (`camera · lens · 50mm · f/2.8 · 1/200s · ISO400`) for the web gallery.
+/// `None` when the record carries no shot metadata.
+fn exif_summary_line(ex: &hjson::ExifRecord) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let camera = match (&ex.camera_make, &ex.camera_model) {
+        (_, Some(m)) => Some(m.clone()),
+        (Some(mk), None) => Some(mk.clone()),
+        _ => None,
+    };
+    if let Some(c) = camera {
+        parts.push(c);
+    }
+    if let Some(l) = &ex.lens_model {
+        parts.push(l.clone());
+    }
+    if let Some(f) = ex.focal_length_mm {
+        parts.push(format!("{}mm", (f.round() as i64)));
+    }
+    if let Some(a) = &ex.aperture {
+        parts.push(a.clone());
+    }
+    if let Some(s) = &ex.shutter {
+        parts.push(s.clone());
+    }
+    if let Some(iso) = ex.iso {
+        parts.push(format!("ISO{iso}"));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// This instance's editor identity for record stamps: `$PLAKAT_EDITOR` if set, else `user@host`.

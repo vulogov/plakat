@@ -24,28 +24,63 @@ impl Default for Options<'_> {
     }
 }
 
-/// One image's place in the gallery: its full and thumbnail relative paths + a display caption.
+/// One image to publish, with the curation / shot metadata to embed in the page.
+#[derive(Default, Clone)]
+pub struct Photo {
+    pub path: PathBuf,
+    /// Display caption (title / caption); defaults to the file stem when empty.
+    pub title: Option<String>,
+    /// 0–5 stars (0 hides the rating).
+    pub rating: u8,
+    pub tags: Vec<String>,
+    /// A short capture-date string.
+    pub date: Option<String>,
+    /// A pre-formatted EXIF summary line (camera · lens · exposure · ISO).
+    pub exif: Option<String>,
+}
+
+/// One image's place in the gallery: its full/thumbnail relative paths + the embedded metadata.
 struct Item {
     full: String,
     thumb: String,
     caption: String,
+    rating: u8,
+    tags: Vec<String>,
+    date: String,
+    exif: String,
 }
 
-/// Build a static gallery of `files` under `dest` (created if missing): `dest/full/NNN.ext`,
-/// `dest/thumbs/NNN.jpg`, and `dest/index.html`. Returns the number of images included. Best-effort
-/// per file (a source that won't decode is skipped with a note).
-pub fn export(files: &[PathBuf], dest: &Path, opts: &Options) -> Result<usize> {
+/// Build a static gallery of `photos` under `dest` (created if missing): `dest/full/NNN.ext`,
+/// `dest/thumbs/NNN.jpg`, and `dest/index.html` — with captions, ratings, tags and an EXIF summary
+/// embedded in each lightbox entry. Returns the number of images included. Best-effort per file (a
+/// source that won't decode is skipped with a note).
+pub fn export(photos: &[Photo], dest: &Path, opts: &Options) -> Result<usize> {
     let full_dir = dest.join("full");
     let thumb_dir = dest.join("thumbs");
     std::fs::create_dir_all(&full_dir).with_context(|| format!("creating {}", full_dir.display()))?;
     std::fs::create_dir_all(&thumb_dir).with_context(|| format!("creating {}", thumb_dir.display()))?;
 
     let mut items: Vec<Item> = Vec::new();
-    for src in files {
-        match one(src, &full_dir, &thumb_dir, items.len(), opts) {
-            Ok(item) => items.push(item),
+    for photo in photos {
+        match one(&photo.path, &full_dir, &thumb_dir, items.len(), opts) {
+            Ok((full, thumb)) => {
+                let caption = photo
+                    .title
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| photo.path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string());
+                items.push(Item {
+                    full,
+                    thumb,
+                    caption,
+                    rating: photo.rating.min(5),
+                    tags: photo.tags.clone(),
+                    date: photo.date.clone().unwrap_or_default(),
+                    exif: photo.exif.clone().unwrap_or_default(),
+                });
+            }
             Err(e) => {
-                crate::ui::progress::println(&format!("  gallery skipped {}: {e:#}", src.display()))
+                crate::ui::progress::println(&format!("  gallery skipped {}: {e:#}", photo.path.display()))
             }
         }
     }
@@ -56,8 +91,9 @@ pub fn export(files: &[PathBuf], dest: &Path, opts: &Options) -> Result<usize> {
     Ok(items.len())
 }
 
-/// Emit `full/NNN.ext` (down-sized to `full_px` if set) and `thumbs/NNN.jpg` for one source.
-fn one(src: &Path, full_dir: &Path, thumb_dir: &Path, idx: usize, opts: &Options) -> Result<Item> {
+/// Emit `full/NNN.ext` (down-sized to `full_px` if set) and `thumbs/NNN.jpg` for one source; returns
+/// their album-relative paths.
+fn one(src: &Path, full_dir: &Path, thumb_dir: &Path, idx: usize, opts: &Options) -> Result<(String, String)> {
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
@@ -87,12 +123,17 @@ fn one(src: &Path, full_dir: &Path, thumb_dir: &Path, idx: usize, opts: &Options
     let thumb = img.resize(opts.thumb_px, opts.thumb_px, image::imageops::FilterType::Lanczos3);
     thumb.to_rgb8().save(&thumb_out).with_context(|| format!("writing {}", thumb_out.display()))?;
 
-    let caption = src.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-    Ok(Item {
-        full: format!("full/{full_name}"),
-        thumb: format!("thumbs/{thumb_name}"),
-        caption,
-    })
+    Ok((format!("full/{full_name}"), format!("thumbs/{thumb_name}")))
+}
+
+/// Rating as filled/empty stars (`★★★☆☆`), empty when unrated.
+fn stars(rating: u8) -> String {
+    let r = rating.min(5) as usize;
+    if r == 0 {
+        String::new()
+    } else {
+        format!("{}{}", "★".repeat(r), "☆".repeat(5 - r))
+    }
 }
 
 /// Escape a string for safe inclusion in HTML text / attribute contexts.
@@ -111,21 +152,32 @@ fn esc(s: &str) -> String {
     out
 }
 
-/// Assemble the self-contained `index.html`: inline CSS (responsive dark grid) + a keyboard lightbox.
+/// Assemble the self-contained `index.html`: inline CSS (responsive dark grid) + a keyboard lightbox
+/// that shows each image's caption, rating, EXIF summary and tags — all embedded as data attributes.
 fn render_html(title: &str, items: &[Item]) -> String {
     let t = esc(title);
     let mut cells = String::new();
-    for (i, it) in items.iter().enumerate() {
+    for it in items.iter() {
+        let star_overlay = if it.rating > 0 {
+            format!("<span class=\"stars\">{}</span>", esc(&stars(it.rating)))
+        } else {
+            String::new()
+        };
         cells.push_str(&format!(
-            "<a class=\"cell\" href=\"{full}\" data-i=\"{i}\" title=\"{cap}\">\
-             <img loading=\"lazy\" src=\"{thumb}\" alt=\"{cap}\"></a>\n",
+            "<a class=\"cell\" href=\"{full}\" title=\"{cap}\" \
+             data-rating=\"{rating}\" data-date=\"{date}\" data-exif=\"{exif}\" data-tags=\"{tags}\">\
+             <img loading=\"lazy\" src=\"{thumb}\" alt=\"{cap}\">{star_overlay}</a>\n",
             full = esc(&it.full),
             thumb = esc(&it.thumb),
             cap = esc(&it.caption),
+            rating = it.rating,
+            date = esc(&it.date),
+            exif = esc(&it.exif),
+            tags = esc(&it.tags.join(", ")),
         ));
     }
-    // The lightbox reads href/caption straight off the clicked <a>, so the data model is the DOM —
-    // no image list duplicated into JS.
+    // The lightbox reads caption/rating/exif/tags straight off the clicked <a>, so the data model is
+    // the DOM — no image list duplicated into JS.
     format!(
         r##"<!doctype html>
 <html lang="en">
@@ -143,18 +195,25 @@ header h1 {{ margin: 0; font-size: 22px; font-weight: 600; }}
 header .sub {{ color: #8b93a3; font-size: 13px; margin-top: 4px; }}
 .grid {{ display: grid; gap: 6px; padding: 16px 24px 40px;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }}
-.cell {{ display: block; overflow: hidden; border-radius: 6px; background: #1d2027; aspect-ratio: 1;
-  cursor: zoom-in; }}
+.cell {{ position: relative; display: block; overflow: hidden; border-radius: 6px; background: #1d2027;
+  aspect-ratio: 1; cursor: zoom-in; }}
 .cell img {{ width: 100%; height: 100%; object-fit: cover; display: block;
   transition: transform .18s ease; }}
 .cell:hover img {{ transform: scale(1.05); }}
+.cell .stars {{ position: absolute; left: 6px; bottom: 6px; font-size: 12px; color: #ffd24a;
+  text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; }}
 #lb {{ position: fixed; inset: 0; background: rgba(6,7,9,.94); display: none;
-  align-items: center; justify-content: center; cursor: zoom-out; }}
+  flex-direction: column; align-items: center; justify-content: center; cursor: zoom-out; }}
 #lb.open {{ display: flex; }}
-#lb img {{ max-width: 94vw; max-height: 88vh; object-fit: contain; border-radius: 4px;
+#lb img {{ max-width: 94vw; max-height: 80vh; object-fit: contain; border-radius: 4px;
   box-shadow: 0 10px 60px rgba(0,0,0,.6); }}
-#lb .cap {{ position: fixed; bottom: 16px; left: 0; right: 0; text-align: center;
-  color: #c7cdda; font-size: 13px; pointer-events: none; }}
+#lb .meta {{ margin-top: 12px; max-width: 90vw; text-align: center; pointer-events: none; }}
+#lb .meta .cap {{ font-size: 16px; font-weight: 600; color: #eef1f6; }}
+#lb .meta .stars {{ color: #ffd24a; font-size: 14px; margin-left: 8px; }}
+#lb .meta .exif {{ color: #9aa3b2; font-size: 12px; margin-top: 3px; font-variant-numeric: tabular-nums; }}
+#lb .meta .tags {{ margin-top: 5px; }}
+#lb .meta .tag {{ display: inline-block; background: #262a33; color: #c7cdda; border-radius: 10px;
+  padding: 1px 9px; font-size: 11px; margin: 2px; }}
 #lb .nav {{ position: fixed; top: 0; bottom: 0; width: 22vw; cursor: pointer; }}
 #lb .prev {{ left: 0; }} #lb .next {{ right: 0; }}
 .empty {{ padding: 40px 24px; color: #8b93a3; }}
@@ -163,18 +222,31 @@ header .sub {{ color: #8b93a3; font-size: 13px; margin-top: 4px; }}
 <body>
 <header><h1>{t}</h1><div class="sub">{n} image{plural} · plakat</div></header>
 {body}
-<div id="lb"><img alt=""><div class="cap"></div>
+<div id="lb"><img alt="">
+  <div class="meta"><div class="cap"></div><div class="exif"></div><div class="tags"></div></div>
   <div class="nav prev"></div><div class="nav next"></div></div>
 <script>
 (function() {{
   var cells = Array.prototype.slice.call(document.querySelectorAll('.cell'));
-  var lb = document.getElementById('lb'), img = lb.querySelector('img'), cap = lb.querySelector('.cap');
+  var lb = document.getElementById('lb'), img = lb.querySelector('img');
+  var elCap = lb.querySelector('.cap'), elExif = lb.querySelector('.exif'), elTags = lb.querySelector('.tags');
   var cur = -1;
+  function starStr(n) {{ n = n|0; return n > 0 ? '★'.repeat(n) + '☆'.repeat(5 - n) : ''; }}
   function show(i) {{
     if (i < 0 || i >= cells.length) return;
     cur = i;
-    img.src = cells[i].getAttribute('href');
-    cap.textContent = cells[i].getAttribute('title') || '';
+    var c = cells[i];
+    img.src = c.getAttribute('href');
+    var cap = c.getAttribute('title') || '';
+    var st = starStr(c.getAttribute('data-rating'));
+    elCap.innerHTML = '';
+    elCap.appendChild(document.createTextNode(cap));
+    if (st) {{ var s = document.createElement('span'); s.className = 'stars'; s.textContent = st; elCap.appendChild(s); }}
+    var exif = c.getAttribute('data-exif') || '', date = c.getAttribute('data-date') || '';
+    elExif.textContent = [date, exif].filter(Boolean).join('  ·  ');
+    elTags.innerHTML = '';
+    (c.getAttribute('data-tags') || '').split(',').map(function(s) {{ return s.trim(); }}).filter(Boolean)
+      .forEach(function(tag) {{ var e = document.createElement('span'); e.className = 'tag'; e.textContent = tag; elTags.appendChild(e); }});
     lb.classList.add('open');
   }}
   function close() {{ lb.classList.remove('open'); img.src = ''; cur = -1; }}
@@ -218,18 +290,25 @@ mod tests {
         let src = base.join("src");
         let dst = base.join("out");
         std::fs::create_dir_all(&src).unwrap();
-        let files: Vec<PathBuf> = (0..3)
+        let photos: Vec<Photo> = (0..3)
             .map(|i| {
                 let p = src.join(format!("shot{i}.png"));
                 DynamicImage::ImageRgb8(ImageBuffer::from_pixel(300, 200, Rgb([i * 60, 20, 20])))
                     .save(&p)
                     .unwrap();
-                p
+                Photo {
+                    path: p,
+                    title: Some(format!("Shot {i}")),
+                    rating: (i as u8 % 6),
+                    tags: vec!["trip".into(), "test".into()],
+                    date: Some("2024-07-14".into()),
+                    exif: Some("Canon EOS R5 · 50mm · f/2.8".into()),
+                }
             })
             .collect();
 
         let opts = Options { title: "My <Trip>", thumb_px: 120, full_px: Some(150) };
-        let n = export(&files, &dst, &opts).unwrap();
+        let n = export(&photos, &dst, &opts).unwrap();
         assert_eq!(n, 3);
 
         // Structure: an index, three thumbs, three full images.
@@ -247,6 +326,13 @@ mod tests {
         assert!(!html.contains("http://") && !html.contains("https://"), "no network refs");
         assert!(html.contains("thumbs/0000.jpg") && html.contains("full/0000.png"));
         assert_eq!(html.matches("class=\"cell\"").count(), 3);
+
+        // Metadata is embedded: caption, rating, EXIF summary, tags.
+        assert!(html.contains("Shot 2"), "caption present");
+        assert!(html.contains("data-rating=\"2\""), "rating embedded");
+        assert!(html.contains("Canon EOS R5 · 50mm · f/2.8"), "EXIF summary embedded");
+        assert!(html.contains("data-tags=\"trip, test\""), "tags embedded");
+        assert!(html.contains("class=\"stars\""), "grid star overlay for rated images");
 
         let _ = std::fs::remove_dir_all(&base);
     }

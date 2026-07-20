@@ -16,6 +16,23 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       cleared when the slideshow stops or you leave the image view. Pure crop-rect / easing math in
       `kb_lerp` + `kb_crop_rect`; 1 test.
 
+## Track B — richer web gallery
+
+- [x] **Embed captions / ratings / EXIF / tags in the exported HTML** — `webgallery::export` now takes
+      `Photo` items (title, rating, tags, date, EXIF summary). The grid shows a `★` overlay on rated
+      images; the lightbox shows the caption + stars, a `date · camera · lens · exposure · ISO` line
+      (`exif_summary_line`), and tag chips — all embedded as `data-*` attributes, still self-contained
+      (inline CSS/JS, no network). 2 tests.
+
+## Track C — WebP / TIFF EXIF write-back
+
+- [x] **WebP EXIF** — `exifwrite::embed_webp` extends the `d w` write-back to WebP: a simple
+      `RIFF/WEBP/VP8|VP8L` file is upgraded to the extended `VP8X` form (EXIF flag + canvas size) and an
+      `EXIF` chunk appended; an extended file has its flag set + stale `EXIF` replaced. Round-trips
+      through the `kamadak-exif` reader (date + GPS). 1 test.
+- [ ] **TIFF EXIF** — append a merged IFD (little-endian) at EOF and repoint the header, keeping the
+      image strips in place. (In progress / may defer if the IFD-offset surgery proves too fiddly.)
+
 ## Ground rules (unchanged)
 
 - Non-destructive; the effect is view-only (never alters the file or the edit stack).

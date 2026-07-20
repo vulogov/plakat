@@ -397,7 +397,86 @@ fn embed_png(data: &[u8], tiff: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Write `fields` into `path`'s binary EXIF, in place (atomic temp → rename). JPEG and PNG only.
+/// Replace/insert the EXIF in a WebP (RIFF container). A simple `RIFF/WEBP/VP8|VP8L` file is upgraded
+/// to the extended `VP8X` form (with the EXIF flag set + the canvas size) and an `EXIF` chunk is
+/// appended; an already-extended file has its `VP8X` EXIF flag set and any stale `EXIF` chunk
+/// replaced. Returns `None` if not a walkable WebP.
+fn embed_webp(data: &[u8], tiff: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 12 || &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" {
+        return None;
+    }
+    // Walk the chunks after the 12-byte RIFF/WEBP header.
+    let mut chunks: Vec<(&[u8], &[u8])> = Vec::new();
+    let mut i = 12;
+    while i + 8 <= data.len() {
+        let fourcc = &data[i..i + 4];
+        let size = u32::from_le_bytes([data[i + 4], data[i + 5], data[i + 6], data[i + 7]]) as usize;
+        let start = i + 8;
+        let end = start + size;
+        if end > data.len() {
+            break;
+        }
+        chunks.push((fourcc, &data[start..end]));
+        i = end + (size & 1); // chunks are padded to an even length
+    }
+    if chunks.is_empty() {
+        return None;
+    }
+    // Canvas dimensions (for a fresh VP8X).
+    let img = image::load_from_memory(data).ok()?;
+    let (cw, ch) = (img.width(), img.height());
+    if cw == 0 || ch == 0 || cw > (1 << 24) || ch > (1 << 24) {
+        return None;
+    }
+
+    let has_vp8x = chunks.iter().any(|(f, _)| *f == b"VP8X");
+    let has_alpha = chunks.iter().any(|(f, _)| *f == b"ALPH");
+    let mut out_chunks: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    if has_vp8x {
+        for (f, p) in &chunks {
+            if *f == b"EXIF" {
+                continue; // drop the stale EXIF
+            }
+            if *f == b"VP8X" {
+                let mut vp = p.to_vec();
+                if !vp.is_empty() {
+                    vp[0] |= 0x08; // set the EXIF flag
+                }
+                out_chunks.push((f.to_vec(), vp));
+            } else {
+                out_chunks.push((f.to_vec(), p.to_vec()));
+            }
+        }
+    } else {
+        // Upgrade to extended: a VP8X (EXIF flag, optional alpha, canvas size) must come first.
+        let flags = 0x08u8 | if has_alpha { 0x10 } else { 0 };
+        let mut vp = vec![flags, 0, 0, 0];
+        vp.extend_from_slice(&(cw - 1).to_le_bytes()[0..3]);
+        vp.extend_from_slice(&(ch - 1).to_le_bytes()[0..3]);
+        out_chunks.push((b"VP8X".to_vec(), vp));
+        for (f, p) in &chunks {
+            out_chunks.push((f.to_vec(), p.to_vec()));
+        }
+    }
+    out_chunks.push((b"EXIF".to_vec(), tiff.to_vec()));
+
+    // Reassemble: RIFF + size + WEBP + padded chunks.
+    let mut body = b"WEBP".to_vec();
+    for (f, p) in &out_chunks {
+        body.extend_from_slice(f);
+        body.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        body.extend_from_slice(p);
+        if p.len() & 1 == 1 {
+            body.push(0);
+        }
+    }
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend_from_slice(&body);
+    Some(out)
+}
+
+/// Write `fields` into `path`'s binary EXIF, in place (atomic temp → rename). JPEG, PNG and WebP.
 /// Returns `Ok(false)` when there was nothing to write; errors on an unsupported format or I/O
 /// failure. Never touches the pixel stream.
 pub fn write_metadata(path: &Path, fields: &MetaFields) -> Result<bool> {
@@ -409,10 +488,11 @@ pub fn write_metadata(path: &Path, fields: &MetaFields) -> Result<bool> {
     let out = match ext_lower(path).as_str() {
         "jpg" | "jpeg" => embed_jpeg(&data, &tiff),
         "png" => embed_png(&data, &tiff),
-        other => anyhow::bail!("EXIF write-back supports JPEG/PNG (got {other})"),
+        "webp" => embed_webp(&data, &tiff),
+        other => anyhow::bail!("EXIF write-back supports JPEG/PNG/WebP (got {other})"),
     };
     let Some(bytes) = out else {
-        anyhow::bail!("{} is not a well-formed JPEG/PNG", path.display());
+        anyhow::bail!("{} is not a well-formed JPEG/PNG/WebP", path.display());
     };
     let tmp = path.with_extension(format!("{}.plakat_tmp", ext_lower(path)));
     std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
@@ -507,6 +587,29 @@ mod tests {
         let img = image::open(&p).unwrap();
         assert_eq!((img.width(), img.height()), (20, 20));
         assert_roundtrips(&p);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_and_reads_back_webp() {
+        let dir = tmpdir("webp");
+        let p = dir.join("shot.webp");
+        // Encode a WebP via the image crate (lossless); skip gracefully if unsupported in this build.
+        if DynamicImage::ImageRgb8(ImageBuffer::from_pixel(24, 18, Rgb([60u8, 140, 200])))
+            .save(&p)
+            .is_err()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(write_metadata(&p, &fields()).unwrap());
+        // Still a valid, same-size WebP.
+        let img = image::open(&p).unwrap();
+        assert_eq!((img.width(), img.height()), (24, 18));
+        // The project reader recovers date + GPS from the WebP EXIF chunk.
+        let rec = super::super::exif::read_exif(&p).unwrap();
+        assert_eq!(rec.date_taken.as_deref(), Some("2024-07-14T12:34:56"));
+        assert!((rec.gps_lat.unwrap() - 37.7749).abs() < 1e-3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
