@@ -116,6 +116,19 @@ impl LibraryIndex {
         changed
     }
 
+    /// Incrementally refresh one album's entries in place from a just-saved `meta` + its known image
+    /// file list — no directory scan. Records the album.hjson stamp as current (so the next sync won't
+    /// re-read it for this edit) but **leaves the directory stamp** so a later file add/remove still
+    /// re-syncs. Used after an in-app edit so the index reflects it immediately.
+    pub fn update_album(&mut self, dir: &Path, image_files: &[PathBuf], meta: &super::hjson::AlbumMeta) {
+        self.entries.retain(|e| e.album != dir);
+        for p in image_files {
+            let rec = p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n)).cloned();
+            self.entries.push(Entry { path: p.clone(), album: dir.to_path_buf(), rec });
+        }
+        self.hjson_stamps.insert(dir.to_path_buf(), file_stamp(&dir.join(hjson::ALBUM_FILE)));
+    }
+
     /// All entries as `(path, album, record)` — the shape `collect_library` returns.
     pub fn rows(&self) -> Vec<(PathBuf, PathBuf, Option<ImageRecord>)> {
         self.entries.iter().map(|e| (e.path.clone(), e.album.clone(), e.rec.clone())).collect()
@@ -219,6 +232,71 @@ impl LibraryIndex {
             .unwrap_or_default()
     }
 
+    /// The CLIP vector store lives beside the JSON snapshot as a compact **binary** sidecar (768 f32
+    /// per image would bloat JSON), so the whole library's embeddings load in one read at startup
+    /// rather than walking every album's `.plakat_clip`.
+    fn vec_path(root: &Path) -> PathBuf {
+        Self::snapshot_path(root).with_extension("vec")
+    }
+
+    /// Persist the CLIP embedding store (path → (mtime, unit vector)) for `root`. Best-effort.
+    pub fn save_vectors(root: &Path, vectors: &super::visual_search::Cache) {
+        let path = Self::vec_path(root);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut buf = Vec::with_capacity(12 + vectors.len() * (768 * 4 + 24));
+        buf.extend_from_slice(b"PKIVEC1\n");
+        buf.extend_from_slice(&(vectors.len() as u32).to_le_bytes());
+        for (p, (mt, v)) in vectors {
+            let name = p.to_string_lossy();
+            let nb = name.as_bytes();
+            if nb.len() > u16::MAX as usize || v.len() > u16::MAX as usize {
+                continue;
+            }
+            buf.extend_from_slice(&(nb.len() as u16).to_le_bytes());
+            buf.extend_from_slice(nb);
+            buf.extend_from_slice(&mt.to_le_bytes());
+            buf.extend_from_slice(&(v.len() as u16).to_le_bytes());
+            for f in v {
+                buf.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+        let _ = std::fs::write(path, buf);
+    }
+
+    /// Load the CLIP embedding store for `root` (empty on absence / corruption — never fatal).
+    pub fn load_vectors(root: &Path) -> super::visual_search::Cache {
+        let mut out = super::visual_search::Cache::new();
+        let Ok(b) = std::fs::read(Self::vec_path(root)) else { return out };
+        if b.len() < 12 || &b[..8] != b"PKIVEC1\n" {
+            return out;
+        }
+        let count = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
+        let mut o = 12;
+        for _ in 0..count {
+            let get = |o: usize, n: usize| b.get(o..o + n);
+            let Some(nlb) = get(o, 2) else { break };
+            let nl = u16::from_le_bytes(nlb.try_into().unwrap()) as usize;
+            o += 2;
+            let Some(nameb) = get(o, nl) else { break };
+            let Ok(name) = std::str::from_utf8(nameb) else { break };
+            let name = name.to_string();
+            o += nl;
+            let Some(mtb) = get(o, 8) else { break };
+            let mt = u64::from_le_bytes(mtb.try_into().unwrap());
+            o += 8;
+            let Some(db) = get(o, 2) else { break };
+            let dim = u16::from_le_bytes(db.try_into().unwrap()) as usize;
+            o += 2;
+            let Some(vb) = get(o, dim * 4) else { break };
+            let v: Vec<f32> = vb.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+            o += dim * 4;
+            out.insert(PathBuf::from(name), (mt, v));
+        }
+        out
+    }
+
     /// Persist the snapshot for `root` (best-effort).
     pub fn save(&self, root: &Path) {
         let path = Self::snapshot_path(root);
@@ -284,18 +362,50 @@ mod tests {
         assert_eq!(rated.len(), 1);
         assert!(rated[0].0.ends_with("1.png"));
 
-        // stats(): 2 images in album a, one rated 5, one unrated.
+        // update_album: reflect an in-app edit (rate 2.png = 3) into the index without a re-scan,
+        // and record the album.hjson stamp so a follow-up sync doesn't re-read it.
+        let mut m2 = hjson::read_album(&a).unwrap_or_default();
+        m2.images.insert("2.png".into(), hjson::ImageRecord { rating: 3, ..Default::default() });
+        hjson::write_album(&a, &m2).unwrap();
+        let files = vec![a.join("1.png"), a.join("2.png")];
+        idx.update_album(&a, &files, &m2);
+        let two = idx.entries.iter().find(|e| e.path.ends_with("2.png")).unwrap();
+        assert_eq!(two.rec.as_ref().map(|r| r.rating), Some(3), "edit reflected immediately");
+        assert!(!idx.sync(&[a.clone()]), "stamp bumped → no re-read needed");
+
+        // stats(): 2 images in album a, one rated 5, one now rated 3.
         let st = idx.stats();
         assert_eq!(st.total, 2);
         assert_eq!(st.albums, 1);
         assert_eq!(st.rating[5], 1);
-        assert_eq!(st.rating[0], 1);
+        assert_eq!(st.rating[3], 1);
+        assert_eq!(st.rating[0], 0);
 
         // Snapshot round-trips.
         idx.save(&root);
         let loaded = LibraryIndex::load(&root);
         assert_eq!(loaded.entries.len(), 2);
         let _ = std::fs::remove_file(LibraryIndex::snapshot_path(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn vector_sidecar_roundtrips() {
+        let root = std::env::temp_dir().join(format!("plakat-idxvec-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut vecs = super::super::visual_search::Cache::new();
+        vecs.insert(root.join("a/1.png"), (111, vec![0.5_f32; 768]));
+        vecs.insert(root.join("b/2.png"), (222, vec![-0.25_f32; 768]));
+        LibraryIndex::save_vectors(&root, &vecs);
+        let back = LibraryIndex::load_vectors(&root);
+        assert_eq!(back.len(), 2);
+        let (mt, v) = back.get(&root.join("a/1.png")).expect("vector present");
+        assert_eq!(*mt, 111);
+        assert_eq!(v.len(), 768);
+        assert!((v[0] - 0.5).abs() < 1e-6);
+        // Corrupt file → empty, not a panic.
+        std::fs::write(LibraryIndex::vec_path(&root), b"junk").unwrap();
+        assert!(LibraryIndex::load_vectors(&root).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

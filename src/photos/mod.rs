@@ -941,6 +941,7 @@ impl App {
         let smart_albums = hjson::read_folder(&root_dir).unwrap_or_default().smart_albums;
         let folder_stamp = folder_hjson_stamp(&root_dir);
         let index = index::LibraryIndex::load(&root_dir);
+        let clip_cache = index::LibraryIndex::load_vectors(&root_dir); // fast one-file vector load
         Self {
             root,
             root_dir,
@@ -1044,7 +1045,7 @@ impl App {
             pending_face_polish: false,
             pending_geocode: false,
             pending_create: None,
-            clip_cache: HashMap::new(),
+            clip_cache,
             pending_nl: None,
             pending_plan: None,
             compare: Vec::new(),
@@ -4583,6 +4584,12 @@ impl App {
                 self.album_meta = merged.clone();
                 self.album_baseline = merged;
                 self.album_stamp = album_hjson_stamp(&dir);
+                // Keep the derived index hot: reflect this edit right away (no re-scan on the next
+                // smart-album / search build). Only for a real open album (smart views edit per-album).
+                if self.smart.is_none() {
+                    let files = self.album_paths.clone();
+                    self.index.update_album(&dir, &files, &self.album_meta);
+                }
                 if !conflicts.is_empty() {
                     // Another instance changed the same record(s) since we loaded; we kept ours.
                     self.last_shared_change = Some(Instant::now());
@@ -5486,9 +5493,11 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    // Remove our presence heartbeat so peers see us leave promptly; persist the derived index.
+    // Remove our presence heartbeat so peers see us leave promptly; persist the derived index +
+    // its CLIP vector sidecar so the next launch starts warm.
     presence::depart(&app.root_dir, &app.editor_id, std::process::id());
     app.index.save(&app.root_dir);
+    index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache);
     res
 }
 
@@ -6112,6 +6121,7 @@ fn run_visual_search(
     match result {
         Ok((ranked, cache)) => {
             app.clip_cache = cache;
+            index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
             let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
                 lib.into_iter().map(|(p, _, r)| (p, r)).collect();
             let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked
@@ -6187,6 +6197,7 @@ fn run_embed_library(
         Ok(cache) => {
             let n = cache.len();
             app.clip_cache = cache;
+            index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
             app.status = format!("✓ embedded {total} image(s) · {n} vectors cached — visual search is now fast");
         }
         Err(e) => app.status = format!("✗ embed failed: {e:#}"),
@@ -6252,6 +6263,7 @@ fn run_clip_lookalike(
     match result {
         Ok((ranked, cache)) => {
             app.clip_cache = cache;
+            index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
             let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
                 lib.into_iter().map(|(p, _, r)| (p, r)).collect();
             let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked

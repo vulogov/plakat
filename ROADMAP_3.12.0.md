@@ -46,6 +46,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       pre-computes + persists them for the **whole library** up front (`visual_search::embed_all`,
       lazy model load — fully-embedded → offline), so the first visual search / lookalike is instant.
       Reuses the seed-from-disk + save-to-disk path; TUI-suspended with progress. 1 offline-path test.
+- [x] **CLIP vectors folded into the index store** — a compact **binary** vector sidecar
+      (`<snapshot>.vec`, `LibraryIndex::save_vectors` / `load_vectors`) beside the JSON snapshot (768
+      f32/image would bloat JSON). The whole library's embeddings load in **one read at startup** (seeds
+      `clip_cache`), and are re-persisted on exit + after `:embed`/search. 1 round-trip test.
+
+## Track D — keep the index hot
+
+- [x] **Incremental update on save** — `LibraryIndex::update_album` refreshes just the edited album's
+      entries in place from the merged `album.hjson` (no directory scan) and records the album.hjson
+      stamp, so an in-app edit is reflected in the index **immediately** and the next smart-album /
+      search build doesn't re-read that album. Wired into `save_album` (open albums; smart views edit
+      per-album). Leaves the directory stamp so a later file add/remove still re-syncs. 1 test.
 
 ## Ground rules
 
