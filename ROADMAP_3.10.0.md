@@ -13,18 +13,21 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       with the disk record's (so a concurrent editor's entries survive), appends our new entry, sorts
       by time and caps. Shown in the info panel (latest + up to 3 recent `↳ who · when`). 1 test.
 
-## Track B — review conflicts
+## Track B — review conflicts — DONE
 
-- [ ] **Conflict review pane** — accumulate conflicts surfaced by the merge; a modal list (file +
-      "also edited by …" + when) reachable from the status warning. Enter jumps to the image; a
-      "take theirs" action adopts the disk record for that file; Esc closes.
+- [x] **Conflict review pane** (`:conflicts`) — `save_album` records each merge conflict (path +
+      other editor) into `App::conflicts`; a modal list shows "file ← also edited by … (time)".
+      **Enter** jumps to the image (opening its album), **`t`** takes theirs (adopts the on-disk
+      record via `conflict_take_theirs`), **`c`** clears, **Esc** closes. The save warning now points
+      to `:conflicts`.
 
-## Track C — presence
+## Track C — presence — DONE
 
-- [ ] **Presence heartbeat** — each instance writes a small `<root>/.plakat_presence/<id>.json`
-      heartbeat (editor id + pid + time), refreshed periodically and removed on exit. Live peers
-      (fresh heartbeats) are counted in the status bar and listable (`:who`). Stale entries (crashed
-      instances) age out.
+- [x] **Presence heartbeat** — `src/photos/presence.rs`: each instance writes
+      `<root>/.plakat_presence/<pid>-<who>.json` (`Presence{who,pid,at}`), refreshed every ~30 s
+      (`tick_presence`) and removed on exit (`depart`). `live()` returns peers whose heartbeat is
+      within `TTL_SECS` (90 s) — stale ones (crashed instances) age out and are cleaned up. Other
+      instances are counted in the status bar (`👥 N`) and listed by `:who`. 2 tests.
 
 ## Ground rules (unchanged)
 

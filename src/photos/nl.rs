@@ -71,6 +71,10 @@ pub enum Action {
     OpenTrash,
     Map,
     Geocode,
+    /// Open the shared-volume conflict-review pane.
+    Conflicts,
+    /// List the live `plakat photos` instances sharing this library (presence heartbeats).
+    Who,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -152,6 +156,8 @@ fn action_label(a: &Action) -> String {
         Action::OpenTrash => "open trash".into(),
         Action::Map => "map".into(),
         Action::Geocode => "geocode".into(),
+        Action::Conflicts => "conflicts".into(),
+        Action::Who => "who".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -312,6 +318,8 @@ fn parse_action(stage: &str) -> Option<Action> {
         "open trash" | "browse trash" | "show trash" => Some(Action::OpenTrash),
         "map" | "geo" | "atlas" | "geo map" | "show map" => Some(Action::Map),
         "geocode" | "reverse geocode" | "place tags" | "geotag places" => Some(Action::Geocode),
+        "conflicts" | "review conflicts" | "show conflicts" => Some(Action::Conflicts),
+        "who" | "whoami" | "instances" | "presence" | "peers" => Some(Action::Who),
         _ => None,
     }
 }

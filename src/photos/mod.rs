@@ -22,6 +22,7 @@ pub mod homography;
 pub mod mledit;
 pub mod mlworker;
 pub mod multishot;
+pub mod presence;
 pub mod quality;
 pub mod nl;
 pub mod portfolio;
@@ -603,6 +604,14 @@ struct App {
     /// This instance's identity (`$PLAKAT_EDITOR` or `user@host`), stamped onto records we change for
     /// shared-volume conflict visibility.
     editor_id: String,
+    /// Save-time conflicts accumulated this session (most recent first) for the review pane.
+    conflicts: Vec<ConflictNote>,
+    /// The conflict-review modal (`:conflicts`) is open.
+    conflict_review: bool,
+    conflict_cursor: usize,
+    /// Presence heartbeat throttle + the last-seen live peer list (other instances on this library).
+    presence_last: Option<Instant>,
+    live_peers: Vec<presence::Presence>,
     album_paths: Vec<PathBuf>,
     /// Filtered view: indices into `album_paths` that pass `filter` (all when empty). `album_cursor`
     /// indexes into this, so navigation/rendering operate on the filtered set.
@@ -883,6 +892,15 @@ struct PickState {
     dabs: Vec<[f32; 3]>,        // painted brush dabs (x, y, radius) — brush mode only
 }
 
+/// A recorded save-time conflict for the review pane: an image we saved that another instance had
+/// also changed since our load. We kept ours; this lets the user find it and optionally take theirs.
+#[derive(Clone)]
+struct ConflictNote {
+    path: PathBuf,
+    other_editor: Option<String>,
+    when: String,
+}
+
 /// An ML edit running on the resident worker, watched by the event loop.
 struct ActiveMl {
     label: String,
@@ -916,6 +934,11 @@ impl App {
             folder_stamp,
             last_shared_change: None,
             editor_id: editor_identity(),
+            conflicts: Vec::new(),
+            conflict_review: false,
+            conflict_cursor: 0,
+            presence_last: None,
+            live_peers: Vec::new(),
             album_paths: Vec::new(),
             view: Vec::new(),
             filter: String::new(),
@@ -3306,6 +3329,8 @@ impl App {
                 self.pending_geocode = true;
                 self.status = "reverse-geocoding … (fetches the gazetteer once)".into();
             }
+            Action::Conflicts => self.open_conflict_review(),
+            Action::Who => self.show_presence(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -4476,11 +4501,66 @@ impl App {
                     self.last_shared_change = Some(Instant::now());
                     let who = conflicts.iter().find_map(|c| c.other_editor.clone());
                     let by = who.map(|w| format!(" (also edited by {w})")).unwrap_or_default();
-                    self.status =
-                        format!("⚠ saved — {} record(s) also changed elsewhere, kept yours{by}", conflicts.len());
+                    let n = conflicts.len();
+                    for c in conflicts {
+                        // Record for the review pane (dedup by path — keep the latest).
+                        let path = dir.join(&c.file);
+                        self.conflicts.retain(|x| x.path != path);
+                        self.conflicts.insert(0, ConflictNote { path, other_editor: c.other_editor, when: hjson::now_iso() });
+                    }
+                    self.status = format!("⚠ saved — {n} record(s) also changed elsewhere, kept yours{by} · :conflicts to review");
                 }
             }
             Err(e) => self.status = format!("save failed: {e}"),
+        }
+    }
+
+    /// Open the shared-volume conflict-review pane (a modal list of this session's save conflicts).
+    fn open_conflict_review(&mut self) {
+        if self.conflicts.is_empty() {
+            self.status = "no conflicts this session".into();
+            return;
+        }
+        self.conflict_review = true;
+        self.conflict_cursor = self.conflict_cursor.min(self.conflicts.len() - 1);
+    }
+
+    /// Jump the album view to a conflicted image (opening its album if needed).
+    fn conflict_goto(&mut self, path: &Path) {
+        let Some(dir) = path.parent().map(|p| p.to_path_buf()) else { return };
+        if self.album_dir.as_deref() != Some(&dir) {
+            self.open_album(dir);
+        }
+        if let Some(vi) = self.view.iter().position(|&i| self.album_paths.get(i) == Some(&path.to_path_buf())) {
+            self.album_cursor = vi;
+            self.mode = AlbumMode::Image;
+            self.load_view();
+        }
+        self.conflict_review = false;
+    }
+
+    /// "Take theirs" for a conflicted image: adopt the on-disk record (the other instance's version),
+    /// overwriting our kept-local copy. Merge-safe: writes through `save_album`.
+    fn conflict_take_theirs(&mut self, path: &Path) {
+        let Some(dir) = path.parent() else { return };
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return };
+        let disk = hjson::read_album(dir).unwrap_or_default();
+        match disk.images.get(name) {
+            Some(their) => {
+                let their = their.clone();
+                self.edit_record_at(path, |r| *r = their);
+                self.status = format!("took theirs for {name}");
+            }
+            None => {
+                self.edit_record_at(path, |r| *r = hjson::ImageRecord::default());
+                self.status = format!("their copy had no record — reset {name}");
+            }
+        }
+        self.conflicts.retain(|c| c.path != path);
+        if self.conflicts.is_empty() {
+            self.conflict_review = false;
+        } else {
+            self.conflict_cursor = self.conflict_cursor.min(self.conflicts.len() - 1);
         }
     }
 
@@ -4555,6 +4635,35 @@ impl App {
     /// externally-driven reload (so frequent concurrent edits keep it lit).
     fn others_editing_active(&self) -> bool {
         self.last_shared_change.map(|t| t.elapsed() < Duration::from_secs(12)).unwrap_or(false)
+    }
+
+    /// Refresh our presence heartbeat and the live-peer list (throttled ~30 s). Cheap file writes.
+    fn tick_presence(&mut self) {
+        let due = self.presence_last.map(|t| t.elapsed() >= Duration::from_secs(30)).unwrap_or(true);
+        if !due {
+            return;
+        }
+        self.presence_last = Some(Instant::now());
+        presence::heartbeat(&self.root_dir, &self.editor_id, std::process::id());
+        self.live_peers = presence::live(&self.root_dir);
+    }
+
+    /// Other live instances (excluding ourselves) sharing this library.
+    fn peers(&self) -> Vec<&presence::Presence> {
+        let me = std::process::id();
+        self.live_peers.iter().filter(|p| !(p.pid == me && p.who == self.editor_id)).collect()
+    }
+
+    /// List the live instances sharing this library (`:who`).
+    fn show_presence(&mut self) {
+        self.live_peers = presence::live(&self.root_dir);
+        let peers = self.peers();
+        self.status = if peers.is_empty() {
+            format!("you ({}) — no other instances on this library", self.editor_id)
+        } else {
+            let who: Vec<String> = peers.iter().map(|p| p.who.clone()).collect();
+            format!("{} other instance(s): {}", who.len(), who.join(", "))
+        };
     }
 
     /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`). Rating/score
@@ -5228,6 +5337,8 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+    // Remove our presence heartbeat so peers see us leave promptly.
+    presence::depart(&app.root_dir, &app.editor_id, std::process::id());
     res
 }
 
@@ -5305,6 +5416,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
         if !app.cmd_active {
             app.poll_shared_changes();
         }
+        app.tick_presence();
         app.refresh_mem();
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
@@ -6025,6 +6137,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         }
         return false;
     }
+    if app.conflict_review {
+        handle_conflict_key(app, k.code);
+        return false;
+    }
     if app.tag_browser {
         handle_tag_key(app, k.code);
         return false;
@@ -6362,6 +6478,34 @@ fn handle_tag_key(app: &mut App, code: KeyCode) {
             app.tag_cursor = (app.tag_cursor + 1).min(app.tags_list.len().saturating_sub(1));
         }
         KeyCode::Enter | KeyCode::Char('l') => app.pick_tag(),
+        _ => {}
+    }
+}
+
+/// Conflict-review pane: navigate the session's save conflicts, jump to one (Enter), or adopt the
+/// other instance's version (`t` take theirs). `c` clears the list; Esc/`q` closes.
+fn handle_conflict_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.conflict_review = false,
+        KeyCode::Up | KeyCode::Char('k') => app.conflict_cursor = app.conflict_cursor.saturating_sub(1),
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.conflict_cursor = (app.conflict_cursor + 1).min(app.conflicts.len().saturating_sub(1));
+        }
+        KeyCode::Enter | KeyCode::Char('l') => {
+            if let Some(c) = app.conflicts.get(app.conflict_cursor).cloned() {
+                app.conflict_goto(&c.path);
+            }
+        }
+        KeyCode::Char('t') => {
+            if let Some(c) = app.conflicts.get(app.conflict_cursor).cloned() {
+                app.conflict_take_theirs(&c.path);
+            }
+        }
+        KeyCode::Char('c') => {
+            app.conflicts.clear();
+            app.conflict_review = false;
+            app.status = "cleared conflict list".into();
+        }
         _ => {}
     }
 }
@@ -7071,6 +7215,14 @@ fn draw(f: &mut Frame, app: &mut App) {
             ));
         }
     }
+    // Presence: how many other live instances share this library (`:who` lists them).
+    let peer_n = app.peers().len();
+    if peer_n > 0 {
+        top.push(Span::styled(
+            format!(" 👥 {peer_n} "),
+            base.fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    }
     // "Others editing" indicator: shown for a short window after we adopt an external change on a
     // shared volume, so it's clear another instance / a sync is touching the same library.
     if app.others_editing_active() {
@@ -7097,6 +7249,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.tag_browser {
         draw_tag_browser(f, app, album_col);
+    }
+    if app.conflict_review {
+        draw_conflict_review(f, app, album_col);
     }
     if app.version_browser {
         draw_version_browser(f, app, album_col);
@@ -8540,6 +8695,51 @@ fn draw_preset_browser(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(" Apply preset · Enter · Esc ")
                 .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup,
+    );
+}
+
+/// Conflict-review popup (`:conflicts`): images we saved that another instance had also changed.
+fn draw_conflict_review(f: &mut Frame, app: &App, area: Rect) {
+    let rows: Vec<String> = app
+        .conflicts
+        .iter()
+        .map(|c| {
+            let name = c.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let who = c.other_editor.as_deref().unwrap_or("someone");
+            let at = c.when.split('T').nth(1).map(|t| t.trim_end_matches('Z')).unwrap_or("");
+            format!("{name}   ← also edited by {who}  ({at})")
+        })
+        .collect();
+    let w = (rows.iter().map(|r| r.len()).max().unwrap_or(30) as u16 + 4).clamp(32, 72).min(area.width);
+    let h = (rows.len() as u16 + 3).clamp(4, area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, popup);
+    let inner_h = (popup.height.saturating_sub(2) as usize).max(1);
+    let start = app.conflict_cursor.saturating_sub(inner_h.saturating_sub(1));
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(inner_h.saturating_sub(1))
+        .map(|(i, r)| row_line(r, i == app.conflict_cursor))
+        .collect();
+    lines.push(Line::from(Span::styled(
+        " Enter jump · t take theirs · c clear · Esc",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" ⚠ Conflicts (kept yours) ")
+                .border_style(Style::default().fg(Color::Yellow)),
         ),
         popup,
     );

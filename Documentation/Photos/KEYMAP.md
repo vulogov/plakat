@@ -274,6 +274,12 @@ instances change the *same* image at once, the later save keeps yours and warns
 (defaults to `user@host`). On a local disk an advisory `flock` additionally serializes writers; on
 network volumes the merge alone keeps things consistent.
 
+Each record also keeps a small **edit history** (a few recent "↳ who · when" lines in the info
+panel). **`:conflicts`** opens a review pane of same-image conflicts this session — **Enter** jumps to
+the image, **`t`** takes the other version, **`c`** clears. A **`👥 N`** badge in the status bar counts
+other live instances; **`:who`** lists them (a `.plakat_presence/` heartbeat that ages out on exit or
+crash).
+
 ---
 *This file is the reference; the running app's Edit palette (`E`) and `Ctrl-B h`/`H` cards are
 generated from the same table, so they always agree.*
