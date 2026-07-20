@@ -31,10 +31,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       updates the tree badges from the index after each full `collect_library` sync, so counts reflect
       images added/removed (import, generate, move) without a fresh directory scan.
 
-## Track C — (stretch) fast visual search
+## Track C — fast visual search (persist CLIP)
 
-- [ ] Persist CLIP embeddings alongside the index (a compact binary vector store keyed by path), so
-      visual / semantic search doesn't re-embed the library each time. (May slip to a later cycle.)
+- [x] **Proactive library embed** (`:embed`) — CLIP image embeddings are already persisted per album
+      (`.plakat_clip`) + reloaded across sessions, but only computed *lazily on first search*. `:embed`
+      pre-computes + persists them for the **whole library** up front (`visual_search::embed_all`,
+      lazy model load — fully-embedded → offline), so the first visual search / lookalike is instant.
+      Reuses the seed-from-disk + save-to-disk path; TUI-suspended with progress. 1 offline-path test.
 
 ## Ground rules
 

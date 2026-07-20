@@ -126,6 +126,33 @@ pub async fn search(
     Ok((scored, cache))
 }
 
+/// Proactively embed every image in `items` that isn't already cached at its current mtime, returning
+/// the updated cache. **Lazy model load** — if everything is already embedded, the model never loads
+/// (the whole call is offline). This pre-persists the vector store so the first visual search is fast.
+pub async fn embed_all(
+    device: &Device,
+    items: Vec<(PathBuf, PathBuf)>,
+    mut cache: Cache,
+    progress: impl Fn(usize, usize),
+) -> Result<Cache> {
+    let mut embedder: Option<ClipEmbedder> = None;
+    let total = items.len();
+    for (i, (path, _dir)) in items.into_iter().enumerate() {
+        progress(i + 1, total);
+        let mt = mtime_secs(&path);
+        if matches!(cache.get(&path), Some((m, _)) if *m == mt) {
+            continue; // already embedded at this version
+        }
+        if embedder.is_none() {
+            embedder = Some(ClipEmbedder::load(device).await?);
+        }
+        if let Ok(v) = embedder.as_ref().unwrap().embed_image(&path) {
+            cache.insert(path, (mt, v));
+        }
+    }
+    Ok(cache)
+}
+
 /// CLIP semantic lookalike: rank `items` by embedding similarity to the image at `query_path`.
 /// **Lazy model load** — the CLIP model is only loaded if *some* embedding isn't already cached, so a
 /// fully-cached library ranks entirely offline (no model, no cache disk).
@@ -206,5 +233,27 @@ mod tests {
         std::fs::write(dir.join(CACHE_FILE), b"not a cache").unwrap();
         assert!(load_cache(&[dir.clone()]).is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn embed_all_is_offline_when_fully_cached() {
+        // When every image is already embedded at its current mtime, embed_all loads no model
+        // (so no device/network) and returns the cache unchanged.
+        let dir = std::env::temp_dir().join(format!("plakat-embedall-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cache = Cache::new();
+        let mut items = Vec::new();
+        for name in ["a.png", "b.png"] {
+            let p = dir.join(name);
+            std::fs::write(&p, b"x").unwrap();
+            cache.insert(p.clone(), (mtime_secs(&p), vec![0.1_f32; DIM]));
+            items.push((p, dir.clone()));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let out = rt
+            .block_on(embed_all(&Device::Cpu, items, cache, |_, _| {}))
+            .expect("fully-cached embed_all is offline");
+        assert_eq!(out.len(), 2, "cache returned unchanged, model never loaded");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

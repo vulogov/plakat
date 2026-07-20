@@ -77,6 +77,8 @@ pub enum Action {
     Who,
     /// Rebuild the derived library index from scratch.
     Reindex,
+    /// Pre-compute + persist CLIP embeddings for the whole library (fast visual search afterwards).
+    Embed,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -161,6 +163,7 @@ fn action_label(a: &Action) -> String {
         Action::Conflicts => "conflicts".into(),
         Action::Who => "who".into(),
         Action::Reindex => "reindex".into(),
+        Action::Embed => "embed".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -324,6 +327,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "conflicts" | "review conflicts" | "show conflicts" => Some(Action::Conflicts),
         "who" | "whoami" | "instances" | "presence" | "peers" => Some(Action::Who),
         "reindex" | "rebuild index" | "rebuild-index" => Some(Action::Reindex),
+        "embed" | "embed library" | "index visual" | "precompute clip" => Some(Action::Embed),
         _ => None,
     }
 }

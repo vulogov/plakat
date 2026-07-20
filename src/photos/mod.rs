@@ -727,6 +727,8 @@ struct App {
     jobs: VecDeque<Job>,
     // CLIP visual search (RFC §Phase 7): a queued text query + the in-session embedding cache.
     pending_visual: Option<String>,
+    /// `:embed` requested — pre-compute + persist CLIP embeddings for the whole library.
+    pending_embed: bool,
     clip_cache: visual_search::Cache,
     // Track A AI jobs, run TUI-suspended by the event loop: aesthetic auto-cull (keep top N),
     // analyze-and-generate (describe → img2img), and face-scan (detect + group).
@@ -1032,6 +1034,7 @@ impl App {
             ai_menu: false,
             jobs: VecDeque::new(),
             pending_visual: None,
+            pending_embed: false,
             pending_cull: None,
             pending_analyze: None,
             pending_face_scan: false,
@@ -3391,6 +3394,10 @@ impl App {
             Action::Conflicts => self.open_conflict_review(),
             Action::Who => self.show_presence(),
             Action::Reindex => self.reindex(),
+            Action::Embed => {
+                self.pending_embed = true;
+                self.status = "embedding the library for visual search … (the UI will pause)".into();
+            }
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -5474,6 +5481,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             // A queued CLIP visual search (Phase 7): heavy (model load + embed), run TUI-suspended.
             run_visual_search(terminal, app, query)?;
             continue;
+        } else if std::mem::take(&mut app.pending_embed) {
+            // `:embed` — pre-compute + persist CLIP embeddings for the whole library.
+            run_embed_library(terminal, app)?;
+            continue;
         } else if let Some(qpath) = app.pending_clip_lookalike.take() {
             // A queued CLIP semantic lookalike (Phase 7): heavy (embeddings), run TUI-suspended.
             run_clip_lookalike(terminal, app, qpath)?;
@@ -6070,6 +6081,69 @@ fn run_visual_search(
             app.status = format!("🔍 visual '{query}' · top {count} by CLIP similarity");
         }
         Err(e) => app.status = format!("✗ visual search failed: {e:#}"),
+    }
+    Ok(())
+}
+
+/// `:embed` — pre-compute + persist CLIP embeddings for the whole library so the first visual search
+/// is fast. TUI-suspended (heavy model load + per-image embed); everything already embedded → offline.
+fn run_embed_library(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut App,
+) -> Result<()> {
+    use std::io::Write as _;
+    let lib = app.collect_library();
+    if lib.is_empty() {
+        app.status = "no images to embed".into();
+        return Ok(());
+    }
+    let items: Vec<(PathBuf, PathBuf)> = lib.iter().map(|(p, d, _)| (p.clone(), d.clone())).collect();
+    let total = items.len();
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+    println!("\n▶ embedding {total} images for visual search (persists to .plakat_clip)…\n");
+
+    // Seed from the persisted per-album caches + the in-session cache before embedding the rest.
+    let mut cache = std::mem::take(&mut app.clip_cache);
+    let dirs: Vec<PathBuf> = {
+        let mut d: Vec<PathBuf> = lib.iter().map(|(_, dir, _)| dir.clone()).collect();
+        d.sort();
+        d.dedup();
+        d
+    };
+    for (k, v) in visual_search::load_cache(&dirs) {
+        cache.entry(k).or_insert(v);
+    }
+
+    let result = std::thread::spawn(move || -> Result<visual_search::Cache> {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        let out = rt.block_on(async {
+            let device = crate::device::select("auto")?;
+            visual_search::embed_all(&device, items, cache, |done, tot| {
+                if done % 10 == 0 || done == tot {
+                    print!("\r  embedding {done}/{tot}…   ");
+                    let _ = std::io::stdout().flush();
+                }
+            })
+            .await
+        })?;
+        visual_search::save_cache(&out); // persist to each album's .plakat_clip
+        Ok(out)
+    })
+    .join()
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("embed thread panicked")));
+
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+    match result {
+        Ok(cache) => {
+            let n = cache.len();
+            app.clip_cache = cache;
+            app.status = format!("✓ embedded {total} image(s) · {n} vectors cached — visual search is now fast");
+        }
+        Err(e) => app.status = format!("✗ embed failed: {e:#}"),
     }
     Ok(())
 }
