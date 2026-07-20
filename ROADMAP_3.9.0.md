@@ -35,9 +35,20 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       geotag → GPS IFD. Round-trips through the `kamadak-exif` reader (5 tests, JPEG + PNG). Closes
       the deferred 3.8 metadata gap (only records with writable fields are touched; JPEG/PNG only).
 
+## Track D — editing: interactive brush masks
+
+- [x] **Brush-mask local adjustments** (`Ctrl-B r x/k/s/w/u`) — the freeform companion to 3.8's
+      parametric (graduated/radial) local adjustments. New `EditOp::BrushAdjust { adjust, amount,
+      dabs }`: paint soft dabs in the pick-mode (Space stamps, `+`/`-` sizes, a magenta tint previews
+      the mask), Enter applies the chosen adjustment (exposure ±, saturation, warmth, blur) through the
+      painted mask. Reuses `local_base_op` + a new `adjust::brush_mask` (union of cosine-falloff
+      circles) + `blend_masked`. The dabs are stored in the op (per-mille), so it's a single
+      **replayable** edit that re-applies exactly on the pristine original — closes the deferred 3.8
+      Track-C follow-up. Serde round-trips the dab list; 1 test.
+
 ## Docs
 
-- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back.
+- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back + brush.
 - [~] README what's-new + PHOTOS_TUTORIAL note.
 
 ## Distribution
@@ -53,7 +64,7 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Candidate follow-ups (not committed)
 
-- Single-file HTML gallery (data-URI embedded) — one emailable file for small sets.
 - Slideshow: random order, inter-image fade, per-slide dwell from rating.
-- Interactive / brush masks for local adjustments (the deferred 3.8 Track-C follow-up).
 - EXIF write-back for WebP/TIFF (currently JPEG/PNG); XPKeywords for tags.
+- **Shared-volume / concurrent multi-instance access** (next — the important one): safe concurrent
+  `album.hjson` access when the library lives on Dropbox/NFS and several `plakat photos` run at once.

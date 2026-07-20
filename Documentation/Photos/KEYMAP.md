@@ -208,10 +208,19 @@ date→DateTime/DateTimeOriginal, geotag→GPS IFD. It confirms first and never 
 | `Ctrl-B r e` | red-eye removal… |
 | `Ctrl-B r d` | dodge (lighten) brush · `r b` burn (darken) brush… |
 | `Ctrl-B r p` | perspective rectify (pick 4 corners TL→TR→BR→BL)… |
+| `Ctrl-B r x` | **brush mask: lighten** (paint exposure) · `r k` darken |
+| `Ctrl-B r s` | **brush mask: saturation** · `r w` warmth · `r u` blur/soften |
 
 In the pick-mode a **crosshair** appears on the image: **arrows** move it (fine), **h/j/k/l** jump,
 **`+`/`-`** resize the brush, **Enter** sets the next point (the op applies once all its points are
 picked), **Esc** cancels. Each is a normal replayable edit (undo with `u`).
+
+The **brush-mask** ops (`r x/k/s/w/u`) paint a freeform local adjustment: move the crosshair,
+**`+`/`-`** the brush size, **Space** to stamp a dab (paint as many as you like — a magenta tint
+shows the mask), then **Enter** applies the chosen adjustment through the painted mask (**Esc**
+cancels). It's a single replayable `BrushAdjust` edit (the dabs are stored, so it re-applies exactly
+on the original) — the Lightroom-style *brush* companion to the *graduated/radial* local adjustments
+(`a g`/`a i`).
 
 All filters open the **slider** (strength 0–100%); dial the intensity, `Enter` to apply.
 

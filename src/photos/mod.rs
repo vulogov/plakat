@@ -494,6 +494,12 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("dodge (lighten) brush…", "rd", EditCmd::Retouch(PickOp::Dodge)),
         ("burn (darken) brush…", "rb", EditCmd::Retouch(PickOp::Burn)),
         ("perspective rectify (pick 4 corners)…", "rp", EditCmd::Retouch(PickOp::Perspective)),
+        // Brush-mask local adjustments: paint dabs, then the adjustment applies through the mask.
+        ("brush: exposure (paint to lighten)…", "rx", EditCmd::Retouch(PickOp::Brush { adjust: 0, amount: 45 })),
+        ("brush: darken exposure…", "rk", EditCmd::Retouch(PickOp::Brush { adjust: 0, amount: -45 })),
+        ("brush: saturation…", "rs", EditCmd::Retouch(PickOp::Brush { adjust: 3, amount: 50 })),
+        ("brush: warmth…", "rw", EditCmd::Retouch(PickOp::Brush { adjust: 4, amount: 40 })),
+        ("brush: blur (paint to soften)…", "ru", EditCmd::Retouch(PickOp::Brush { adjust: 7, amount: 60 })),
         // Metadata (d) — per-image, stored non-destructively in the album record.
         ("set title…", "dt", EditCmd::Meta(EditField::Title)),
         ("set author / creator…", "da", EditCmd::Meta(EditField::Author)),
@@ -818,19 +824,26 @@ enum PickOp {
     Dodge,
     Burn,
     Perspective,
+    /// Paint a freeform mask (many dabs) and apply the `adjust`/`amount` local adjustment through it.
+    Brush { adjust: i32, amount: i32 },
 }
 
 impl PickOp {
-    /// How many points the user confirms before the op applies.
+    /// How many points the user confirms before the op applies. Brush is open-ended (finished by the
+    /// user), so it reports 0 and never auto-applies.
     fn points_needed(self) -> usize {
         match self {
             PickOp::Clone => 2,       // source, then destination
             PickOp::Perspective => 4, // TL, TR, BR, BL
+            PickOp::Brush { .. } => 0,
             _ => 1,
         }
     }
     fn uses_radius(self) -> bool {
-        self != PickOp::Perspective
+        !matches!(self, PickOp::Perspective)
+    }
+    fn is_brush(self) -> bool {
+        matches!(self, PickOp::Brush { .. })
     }
     fn label(self) -> &'static str {
         match self {
@@ -840,6 +853,7 @@ impl PickOp {
             PickOp::Dodge => "dodge (lighten)",
             PickOp::Burn => "burn (darken)",
             PickOp::Perspective => "perspective rectify",
+            PickOp::Brush { .. } => "brush mask",
         }
     }
 }
@@ -850,6 +864,7 @@ struct PickState {
     pos: (f32, f32),            // crosshair in [0,1]
     points: Vec<(f32, f32)>,    // confirmed points
     radius: f32,                // brush radius as a fraction of the min dimension
+    dabs: Vec<[f32; 3]>,        // painted brush dabs (x, y, radius) — brush mode only
 }
 
 /// An ML edit running on the resident worker, watched by the event loop.
@@ -2300,7 +2315,7 @@ impl App {
             return;
         }
         self.edit_menu = false;
-        self.pick = Some(PickState { op, pos: (0.5, 0.5), points: Vec::new(), radius: 0.06 });
+        self.pick = Some(PickState { op, pos: (0.5, 0.5), points: Vec::new(), radius: 0.06, dabs: Vec::new() });
         self.mode = AlbumMode::Image;
         self.load_view();
         self.set_pick_status();
@@ -2308,6 +2323,14 @@ impl App {
 
     fn set_pick_status(&mut self) {
         let Some(p) = &self.pick else { return };
+        if p.op.is_brush() {
+            self.status = format!(
+                "{} · {} dab(s) · arrows move · +/- size · Space paint · Enter apply · Esc cancel",
+                p.op.label(),
+                p.dabs.len()
+            );
+            return;
+        }
         let step = p.points.len() + 1;
         let total = p.op.points_needed();
         let hint = match p.op {
@@ -2321,6 +2344,31 @@ impl App {
             "{} · point {step}/{total}{hint} · arrows move{rad} · Enter set · Esc cancel",
             p.op.label()
         );
+    }
+
+    /// Brush mode: stamp a dab at the crosshair (current radius) into the painted mask.
+    fn brush_stamp(&mut self) {
+        if let Some(p) = &mut self.pick {
+            if p.op.is_brush() {
+                p.dabs.push([p.pos.0, p.pos.1, p.radius]);
+                self.load_view();
+                self.set_pick_status();
+            }
+        }
+    }
+
+    /// Brush mode: finish painting — build the replayable [`edit::EditOp::BrushAdjust`] and apply it.
+    fn brush_finish(&mut self) {
+        let Some(p) = &self.pick else { return };
+        let PickOp::Brush { adjust, amount } = p.op else { return };
+        if p.dabs.is_empty() {
+            self.cancel_pick();
+            return;
+        }
+        let pm = |f: f32| (f * 1000.0).round() as i32;
+        let dabs: Vec<[i32; 3]> = p.dabs.iter().map(|d| [pm(d[0]), pm(d[1]), pm(d[2])]).collect();
+        self.pick = None;
+        self.apply_edit(edit::EditOp::BrushAdjust { adjust, amount, dabs });
     }
 
     /// Move the crosshair by `(dx, dy)` fractions, clamped to the image.
@@ -2347,6 +2395,9 @@ impl App {
     /// Confirm the crosshair as the next point; apply the op once enough points are collected.
     fn pick_confirm(&mut self) {
         let Some(p) = &mut self.pick else { return };
+        if p.op.is_brush() {
+            return; // brush stamps via Space and finishes via Enter (brush_finish)
+        }
         p.points.push(p.pos);
         if p.points.len() < p.op.points_needed() {
             self.load_view();
@@ -2373,6 +2424,7 @@ impl App {
                 }
                 edit::EditOp::Perspective4 { pts }
             }
+            PickOp::Brush { .. } => return, // handled by brush_finish, never reached here
         };
         self.apply_edit(edit);
     }
@@ -5986,8 +6038,11 @@ fn handle_crop_key(app: &mut App, code: KeyCode) {
 /// the next point (applies once enough are collected), Esc cancels.
 fn handle_pick_key(app: &mut App, code: KeyCode) {
     let (fine, coarse) = (0.004, 0.03);
+    let brush = app.pick.as_ref().map(|p| p.op.is_brush()).unwrap_or(false);
     match code {
         KeyCode::Esc => app.cancel_pick(),
+        KeyCode::Char(' ') if brush => app.brush_stamp(),
+        KeyCode::Enter if brush => app.brush_finish(),
         KeyCode::Enter => app.pick_confirm(),
         KeyCode::Left => app.pick_move(-fine, 0.0),
         KeyCode::Right => app.pick_move(fine, 0.0),
@@ -7390,6 +7445,25 @@ fn pick_preview(img: &image::DynamicImage, pk: &PickState) -> image::DynamicImag
             rgb.put_pixel(x as u32, y as u32, image::Rgb(c));
         }
     };
+    // Painted brush dabs → a translucent magenta tint so the mask is visible as it builds.
+    let (wf, hf, mind) = (w as f32, h as f32, w.min(h) as f32);
+    for d in &pk.dabs {
+        let (cx, cy) = (d[0] * wf, d[1] * hf);
+        let r = (d[2] * mind).max(1.0);
+        let (x0, x1) = ((cx - r).floor().max(0.0) as i32, (cx + r).ceil().min(wf) as i32);
+        let (y0, y1) = ((cy - r).floor().max(0.0) as i32, (cy + r).ceil().min(hf) as i32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let dist = (((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt()) / r;
+                if dist < 1.0 && x >= 0 && y >= 0 && x < w && y < h {
+                    let a = 0.35 * 0.5 * (1.0 + (dist * std::f32::consts::PI).cos());
+                    let px = rgb.get_pixel(x as u32, y as u32).0;
+                    let blend = |c: usize, tint: f32| (px[c] as f32 * (1.0 - a) + tint * a) as u8;
+                    put(&mut rgb, x, y, [blend(0, 255.0), blend(1, 40.0), blend(2, 220.0)]);
+                }
+            }
+        }
+    }
     // Confirmed points → amber ×.
     for &(fx, fy) in &pk.points {
         let (cx, cy) = ((fx * w as f32) as i32, (fy * h as f32) as i32);

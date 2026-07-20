@@ -165,6 +165,11 @@ pub enum EditOp {
     /// · 3 saturation · 4 warmth · 5 vibrance · 6 definition · 7 blur) applied by `amount` through a
     /// mask — `shape` 0 linear (from edge `dir` 0-3) or 1 radial (`dir` 1 = edges). Slider = `amount`.
     LocalAdjust { adjust: i32, amount: i32, shape: i32, dir: i32 },
+    /// Brush (masked) adjustment: like [`EditOp::LocalAdjust`] but the mask is **painted** — a union of
+    /// soft dabs collected in the pick-mode. `adjust`/`amount` match `LocalAdjust`; each dab is
+    /// `[x, y, radius]` in per-mille (x/y of the image, radius of the min dimension), so it replays
+    /// exactly on the pristine original. Slider = `amount`.
+    BrushAdjust { adjust: i32, amount: i32, dabs: Vec<[i32; 3]> },
     /// Retouch (from the pick-mode): coordinates are per-mille of the image, radius per-mille of the
     /// min dimension — so each replays exactly on the pristine original.
     /// Spot heal: fill a disc from its surroundings (dust / blemish removal).
@@ -324,6 +329,7 @@ impl EditOp {
             EditOp::LensDistort(v) => lens_distort(&img, v),
             EditOp::ChromaticAberration(v) => chromatic_aberration(&img, v),
             EditOp::LocalAdjust { adjust, amount, shape, dir } => local_adjust(&img, adjust, amount, shape, dir),
+            EditOp::BrushAdjust { adjust, amount, dabs } => brush_adjust(&img, adjust, amount, &dabs),
             EditOp::SpotHeal { x, y, radius } => adjust::spot_heal(&img, x, y, radius),
             EditOp::Clone { sx, sy, dx, dy, radius } => adjust::clone_stamp(&img, sx, sy, dx, dy, radius),
             EditOp::RedEye { x, y, radius } => adjust::red_eye(&img, x, y, radius),
@@ -386,6 +392,7 @@ impl EditOp {
             | EditOp::FacePolish { strength, .. }
             | EditOp::MotionBlur { strength, .. } => *strength,
             EditOp::LocalAdjust { amount, .. } => *amount,
+            EditOp::BrushAdjust { amount, .. } => *amount,
             EditOp::Keystone { amount, .. } => *amount,
             _ => return None,
         })
@@ -444,6 +451,7 @@ impl EditOp {
             EditOp::LensDistort(_) => EditOp::LensDistort(v),
             EditOp::ChromaticAberration(_) => EditOp::ChromaticAberration(v),
             EditOp::LocalAdjust { adjust, shape, dir, .. } => EditOp::LocalAdjust { adjust, amount: v, shape, dir },
+            EditOp::BrushAdjust { adjust, dabs, .. } => EditOp::BrushAdjust { adjust, amount: v, dabs },
             EditOp::EnhanceSky(_) => EditOp::EnhanceSky(v),
             EditOp::AutoWhiteBalance(_) => EditOp::AutoWhiteBalance(v),
             EditOp::FacePolish { faces, n, .. } => EditOp::FacePolish { strength: v, faces, n },
@@ -468,6 +476,7 @@ impl EditOp {
             | EditOp::TiltShift(_) | EditOp::ZoomBlur(_) | EditOp::SpinBlur(_)
             | EditOp::MotionBlur { .. } | EditOp::ChromaticAberration(_) => (0, 100, 5),
             EditOp::LocalAdjust { adjust: 7, .. } => (0, 100, 5), // local blur is one-sided
+            EditOp::BrushAdjust { adjust: 7, .. } => (0, 100, 5), // brushed blur is one-sided
             _ => (-100, 100, 5),
         }
     }
@@ -556,6 +565,9 @@ impl EditOp {
                     ["top", "bottom", "left", "right"].get(*dir as usize).copied().unwrap_or("top")
                 };
                 format!("local {} ({m})", local_adjust_name(*adjust))
+            }
+            EditOp::BrushAdjust { adjust, dabs, .. } => {
+                format!("brush {} ({} dab{})", local_adjust_name(*adjust), dabs.len(), if dabs.len() == 1 { "" } else { "s" })
             }
             EditOp::SpotHeal { .. } => "spot heal".into(),
             EditOp::Clone { .. } => "clone stamp".into(),
@@ -707,6 +719,12 @@ impl EditOp {
                 params.insert("shape".into(), serde_json::json!(shape));
                 params.insert("dir".into(), serde_json::json!(dir));
                 "local_adjust"
+            }
+            EditOp::BrushAdjust { adjust, amount, dabs } => {
+                params.insert("adjust".into(), serde_json::json!(adjust));
+                params.insert("amount".into(), serde_json::json!(amount));
+                params.insert("dabs".into(), serde_json::json!(dabs));
+                "brush_adjust"
             }
             EditOp::SpotHeal { x, y, radius } => {
                 params.insert("x".into(), serde_json::json!(x));
@@ -1014,6 +1032,23 @@ impl EditOp {
                 shape: iv("shape", 0),
                 dir: iv("dir", 0),
             },
+            "brush_adjust" => {
+                let dabs = e
+                    .params
+                    .get("dabs")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|d| d.as_array())
+                            .map(|d| {
+                                let g = |i: usize| d.get(i).and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+                                [g(0), g(1), g(2)]
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                EditOp::BrushAdjust { adjust: iv("adjust", 0), amount: iv("amount", 0), dabs }
+            }
             "spot_heal" => EditOp::SpotHeal { x: iv("x", 500), y: iv("y", 500), radius: iv("radius", 60) },
             "clone" => EditOp::Clone {
                 sx: iv("sx", 400), sy: iv("sy", 500), dx: iv("dx", 600), dy: iv("dy", 500), radius: iv("radius", 60),
@@ -1957,6 +1992,38 @@ mod adjust {
         m
     }
 
+    /// Painted-brush mask: the union of soft circular dabs. Each dab is `[x, y, radius]` in per-mille
+    /// (x/y of the width/height, radius of the min dimension). The falloff is a smooth cosine from the
+    /// centre (full) to the edge (zero); overlapping dabs take the max. Returns a `w·h` mask in [0,1].
+    pub fn brush_mask(img: &DynamicImage, dabs: &[[i32; 3]]) -> Vec<f32> {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width(), rgb.height());
+        let mut m = vec![0f32; (w * h) as usize];
+        let mind = w.min(h).max(1) as f32;
+        for d in dabs {
+            let cx = d[0] as f32 / 1000.0 * w as f32;
+            let cy = d[1] as f32 / 1000.0 * h as f32;
+            let r = (d[2] as f32 / 1000.0 * mind).max(1.0);
+            // Bound the work to the dab's box.
+            let (x0, x1) = ((cx - r).floor().max(0.0) as u32, (cx + r).ceil().min(w as f32) as u32);
+            let (y0, y1) = ((cy - r).floor().max(0.0) as u32, (cy + r).ceil().min(h as f32) as u32);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let dist = (((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt()) / r;
+                    if dist < 1.0 {
+                        // Cosine falloff: 1 at centre, 0 at the edge (smooth, no hard rim).
+                        let v = 0.5 * (1.0 + (dist * std::f32::consts::PI).cos());
+                        let idx = (y * w + x) as usize;
+                        if v > m[idx] {
+                            m[idx] = v;
+                        }
+                    }
+                }
+            }
+        }
+        m
+    }
+
     /// Blend `adjusted` over `orig` per-pixel by `mask` (same-size RGB): `out = orig·(1−m) + adjusted·m`.
     pub fn blend_masked(orig: &DynamicImage, adjusted: &DynamicImage, mask: &[f32]) -> DynamicImage {
         let o = orig.to_rgb8();
@@ -2811,6 +2878,20 @@ fn local_adjust(img: &DynamicImage, adjust: i32, amount: i32, shape: i32, dir: i
     adjust::blend_masked(img, &adjusted, &mask)
 }
 
+/// Brushed (painted-mask) adjustment: apply the base adjustment globally, then blend it back through
+/// the union of the painted dabs. Identity when `amount == 0` or no dabs were painted.
+fn brush_adjust(img: &DynamicImage, adjust: i32, amount: i32, dabs: &[[i32; 3]]) -> DynamicImage {
+    if amount == 0 || dabs.is_empty() {
+        return img.clone();
+    }
+    let adjusted = local_base_op(adjust, amount).apply(img.clone());
+    if adjusted.width() != img.width() || adjusted.height() != img.height() {
+        return adjusted; // these ops keep dims — fail open if not
+    }
+    let mask = adjust::brush_mask(img, dabs);
+    adjust::blend_masked(img, &adjusted, &mask)
+}
+
 /// Lens distortion correction: a radial warp about the centre — `amount` > 0 corrects **barrel**
 /// (bulging) distortion, < 0 corrects **pincushion**. `r_src = r · (1 + k·r²)` with `r` normalised to
 /// the corner. Bilinear, edge-clamped. `amount` −100..100.
@@ -3333,6 +3414,31 @@ mod tests {
         assert!(top > 120, "top lifted by the local exposure: {top}");
         assert!(top > bottom + 20, "gradient localises the effect: top {top} >> bottom {bottom}");
         assert_eq!(EditOp::LocalAdjust { adjust: 0, amount: 0, shape: 0, dir: 0 }.apply(grey.clone()).to_rgb8(), grey.to_rgb8());
+    }
+
+    #[test]
+    fn brush_adjust_only_affects_painted_dabs() {
+        // Flat grey; a single dab centred near the top-left lifts exposure there but leaves a far
+        // corner untouched. No dabs or amount 0 → identity. Serde round-trips the dab list.
+        let grey = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(40, 40, Rgb([120u8, 120, 120])));
+        let dabs = vec![[250, 250, 200]]; // x=25%, y=25%, r=20% of min dim
+        let op = EditOp::BrushAdjust { adjust: 0, amount: 80, dabs: dabs.clone() };
+        let out = op.clone().apply(grey.clone()).to_rgb8();
+        let inside = out.get_pixel(10, 10).0[0]; // under the dab
+        let outside = out.get_pixel(38, 38).0[0]; // opposite corner, unpainted
+        assert!(inside > 130, "dab lifted exposure: {inside}");
+        assert_eq!(outside, 120, "far corner untouched: {outside}");
+        // Empty dabs and amount 0 are identity.
+        assert_eq!(
+            EditOp::BrushAdjust { adjust: 0, amount: 80, dabs: vec![] }.apply(grey.clone()).to_rgb8(),
+            grey.to_rgb8()
+        );
+        assert_eq!(
+            EditOp::BrushAdjust { adjust: 0, amount: 0, dabs: dabs.clone() }.apply(grey.clone()).to_rgb8(),
+            grey.to_rgb8()
+        );
+        // Serde round-trip preserves the dabs.
+        assert_eq!(EditOp::from_entry(&op.clone().to_entry()), Some(op));
     }
 
     #[test]
