@@ -4653,7 +4653,10 @@ impl App {
             return;
         }
         self.presence_last = Some(Instant::now());
-        presence::heartbeat(&self.root_dir, &self.editor_id, std::process::id());
+        let album = self.album_dir.as_ref().map(|d| {
+            d.strip_prefix(&self.root_dir).unwrap_or(d).to_string_lossy().into_owned()
+        });
+        presence::heartbeat(&self.root_dir, &self.editor_id, std::process::id(), album);
         self.live_peers = presence::live(&self.root_dir);
     }
 
@@ -4670,7 +4673,13 @@ impl App {
         self.status = if peers.is_empty() {
             format!("you ({}) — no other instances on this library", self.editor_id)
         } else {
-            let who: Vec<String> = peers.iter().map(|p| p.who.clone()).collect();
+            let who: Vec<String> = peers
+                .iter()
+                .map(|p| match &p.album {
+                    Some(a) if !a.is_empty() => format!("{} (in {a})", p.who),
+                    _ => p.who.clone(),
+                })
+                .collect();
             format!("{} other instance(s): {}", who.len(), who.join(", "))
         };
     }

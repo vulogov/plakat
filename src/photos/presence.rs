@@ -20,6 +20,9 @@ pub struct Presence {
     pub pid: u32,
     /// Unix epoch seconds of the last refresh.
     pub at: u64,
+    /// The album this instance currently has open (relative to the library root), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
 }
 
 fn now_epoch() -> u64 {
@@ -40,13 +43,13 @@ fn file_name(who: &str, pid: u32) -> String {
     format!("{pid}-{safe}.json")
 }
 
-/// Write / refresh this instance's heartbeat. Best-effort (ignores I/O errors).
-pub fn heartbeat(root: &Path, who: &str, pid: u32) {
+/// Write / refresh this instance's heartbeat (with the open album, relative to root). Best-effort.
+pub fn heartbeat(root: &Path, who: &str, pid: u32, album: Option<String>) {
     let d = dir(root);
     if std::fs::create_dir_all(&d).is_err() {
         return;
     }
-    let p = Presence { who: who.to_string(), pid, at: now_epoch() };
+    let p = Presence { who: who.to_string(), pid, at: now_epoch(), album };
     if let Ok(json) = serde_json::to_string(&p) {
         let _ = std::fs::write(d.join(file_name(who, pid)), json);
     }
@@ -89,10 +92,16 @@ mod tests {
         let root = std::env::temp_dir().join(format!("plakat-presence-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
 
-        heartbeat(&root, "alice@box", 111);
-        heartbeat(&root, "bob@box", 222);
-        let names: Vec<String> = live(&root).into_iter().map(|p| p.who).collect();
+        heartbeat(&root, "alice@box", 111, Some("Iceland".into()));
+        heartbeat(&root, "bob@box", 222, None);
+        let live_now = live(&root);
+        let names: Vec<String> = live_now.iter().map(|p| p.who.clone()).collect();
         assert!(names.iter().any(|n| n == "alice@box") && names.iter().any(|n| n == "bob@box"), "both live: {names:?}");
+        assert_eq!(
+            live_now.iter().find(|p| p.who == "alice@box").unwrap().album.as_deref(),
+            Some("Iceland"),
+            "album context carried"
+        );
 
         depart(&root, "alice@box", 111);
         let after: Vec<String> = live(&root).into_iter().map(|p| p.who).collect();
@@ -107,7 +116,7 @@ mod tests {
         let d = dir(&root);
         std::fs::create_dir_all(&d).unwrap();
         // Hand-write a heartbeat well outside the TTL.
-        let old = Presence { who: "ghost@box".into(), pid: 9, at: now_epoch().saturating_sub(TTL_SECS + 60) };
+        let old = Presence { who: "ghost@box".into(), pid: 9, at: now_epoch().saturating_sub(TTL_SECS + 60), album: None };
         std::fs::write(d.join(file_name("ghost@box", 9)), serde_json::to_string(&old).unwrap()).unwrap();
         assert!(live(&root).is_empty(), "stale entry is not live");
         let _ = std::fs::remove_dir_all(&root);

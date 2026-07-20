@@ -37,6 +37,8 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **EXIF write-back: keyword tags** — the record's `tags` are written as **XPKeywords** (0x9C9E,
       UTF-16LE, `;`-separated) alongside the other fields in `d w`, so tags travel to other tools.
       (WebP/TIFF EXIF write-back stays deferred — those need container/IFD rewrites.)
+- [x] **Presence album context** — each heartbeat carries the open album (relative to root); `:who`
+      now reads e.g. `alice@box (in Iceland)`, so you can see not just who's here but where.
 
 ## Ground rules (unchanged)
 
