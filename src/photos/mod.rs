@@ -16,6 +16,7 @@ pub mod layers;
 pub mod lut;
 pub mod cull;
 pub mod faces;
+pub mod geomap;
 pub mod homography;
 pub mod mledit;
 pub mod mlworker;
@@ -688,6 +689,9 @@ struct App {
 
     // Stacking (RFC §Phase 5): when on, derivative variants collapse under their base in the grid.
     stack_view: bool,
+    // Geo map (3.8): plot geotagged photos on the built-in world map; select clusters → smart view.
+    geomap: Option<geomap::GeoView>,
+    geo_items: Vec<(f64, f64, PathBuf, PathBuf, Option<hjson::ImageRecord>)>, // lon, lat, path, dir, rec
     // Timeline (RFC §Phase 5): a modal list of date buckets over the current view.
     timeline: bool,
     tl_buckets: Vec<(String, usize, usize)>, // (label, first view-position, count)
@@ -930,6 +934,8 @@ impl App {
             redo_stack: Vec::new(),
             edit_redo: Vec::new(),
             stack_view: false,
+            geomap: None,
+            geo_items: Vec::new(),
             timeline: false,
             tl_buckets: Vec::new(),
             tl_cursor: 0,
@@ -3183,6 +3189,7 @@ impl App {
             Action::RestoreTrash => self.restore_trash(),
             Action::EmptyTrash => self.empty_trash(),
             Action::OpenTrash => self.open_trash(),
+            Action::Map => self.open_geomap(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -4690,6 +4697,46 @@ impl App {
     }
 
     /// Open the timeline: date-sort the view, then bucket it by capture month so you can jump.
+    /// Open the geo map: collect every geotagged image in the library and fit the view to them.
+    fn open_geomap(&mut self) {
+        self.geo_items = self
+            .collect_library()
+            .into_iter()
+            .filter_map(|(p, d, r)| {
+                let e = r.as_ref().and_then(|r| r.exif.as_ref())?;
+                Some((e.gps_lon?, e.gps_lat?, p, d, r))
+            })
+            .collect();
+        if self.geo_items.is_empty() {
+            self.status = "no geotagged images (set a geotag with Ctrl-B d g)".into();
+            return;
+        }
+        let pts: Vec<(f64, f64)> = self.geo_items.iter().map(|(x, y, ..)| (*x, *y)).collect();
+        self.geomap = Some(geomap::GeoView::fit(&pts));
+        self.status = format!(
+            "🌍 {} geotagged · arrows pan · +/- zoom · Enter open cluster at centre · Esc close",
+            self.geo_items.len()
+        );
+    }
+
+    /// Open the photos near the map's centre crosshair as a geo-filtered smart view.
+    fn geomap_select(&mut self) {
+        let Some(view) = self.geomap else { return };
+        let pts: Vec<(f64, f64)> = self.geo_items.iter().map(|(x, y, ..)| (*x, *y)).collect();
+        // Selection radius scales with the zoom (a fraction of the visible span).
+        let idx = geomap::near(&pts, view.lon_c, view.lat_c, view.span * 0.25);
+        if idx.is_empty() {
+            self.status = "no photos near the centre — pan / zoom onto a cluster".into();
+            return;
+        }
+        let items: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> =
+            idx.iter().map(|&i| { let (_, _, p, d, r) = &self.geo_items[i]; (p.clone(), d.clone(), r.clone()) }).collect();
+        let count = items.len();
+        self.geomap = None;
+        self.enter_smart_view(format!("map: {count} nearby"), String::new(), false, items, false);
+        self.status = format!("🌍 {count} photos near {:.2}, {:.2} · curation routes to each album", view.lat_c, view.lon_c);
+    }
+
     fn enter_timeline(&mut self) {
         if self.view.is_empty() {
             self.status = "no images to place on a timeline".into();
@@ -5700,6 +5747,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         handle_timeline_key(app, k.code);
         return false;
     }
+    if app.geomap.is_some() {
+        handle_geomap_key(app, k.code);
+        return false;
+    }
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match app.focus {
         Focus::Tree => handle_tree_key(app, k.code),
@@ -5989,6 +6040,23 @@ fn handle_timeline_key(app: &mut App, code: KeyCode) {
             app.tl_cursor = (app.tl_cursor + 1).min(app.tl_buckets.len().saturating_sub(1));
         }
         KeyCode::Enter | KeyCode::Char('l') => app.jump_timeline(),
+        _ => {}
+    }
+}
+
+/// Geo map modal: arrows pan, `+`/`-` zoom, Enter opens the cluster at the centre, Esc closes.
+fn handle_geomap_key(app: &mut App, code: KeyCode) {
+    let Some(v) = app.geomap.as_mut() else { return };
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => app.geomap = None,
+        KeyCode::Left | KeyCode::Char('h') => v.pan(-0.3, 0.0),
+        KeyCode::Right | KeyCode::Char('l') => v.pan(0.3, 0.0),
+        KeyCode::Up | KeyCode::Char('k') => v.pan(0.0, 0.3),
+        KeyCode::Down | KeyCode::Char('j') => v.pan(0.0, -0.3),
+        KeyCode::Char('+') | KeyCode::Char('=') => v.zoom(0.7),
+        KeyCode::Char('-') | KeyCode::Char('_') => v.zoom(1.4),
+        KeyCode::Char('0') => *v = geomap::GeoView::world(),
+        KeyCode::Enter => app.geomap_select(),
         _ => {}
     }
 }
@@ -6379,6 +6447,8 @@ fn handle_grid_key(app: &mut App, code: KeyCode, ctrl: bool) -> bool {
                 app.open_recursive(dir);
             }
         }
+        // Geo map of the geotagged library.
+        KeyCode::Char('m') => app.open_geomap(),
         KeyCode::Char('w') => app.make_collage(),
         KeyCode::Char('W') => app.make_mosaic(),
         KeyCode::Char('H') => app.prompt("multi-shot (hdr = exposure blend · focus = focus stack): ", "hdr", PendingCmd::Multishot),
@@ -6588,6 +6658,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     draw_album(f, app, album_col);
     if app.timeline {
         draw_timeline(f, app, album_col);
+    }
+    if app.geomap.is_some() {
+        draw_geomap(f, app, album_col);
     }
     if app.tag_browser {
         draw_tag_browser(f, app, album_col);
@@ -8004,6 +8077,47 @@ fn draw_tag_browser(f: &mut Frame, app: &App, area: Rect) {
         ),
         popup,
     );
+}
+
+/// Geo map: ratatui's built-in vector world map (offline) with the geotagged photos clustered on top
+/// and a centre crosshair. Fills the album pane.
+fn draw_geomap(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::symbols::Marker;
+    use ratatui::widgets::canvas::{Canvas, Context, Map, MapResolution, Points};
+    let Some(view) = app.geomap else { return };
+    f.render_widget(Clear, area);
+    // Pane aspect (a terminal cell is ~twice as tall as wide, so ×0.5 keeps the map un-stretched).
+    let aspect = if area.width > 0 { area.height as f64 / area.width as f64 } else { 0.5 } * 1.0;
+    let xb = view.x_bounds();
+    let yb = view.y_bounds(aspect);
+    let clusters = geomap::cluster(
+        &app.geo_items.iter().map(|(x, y, ..)| (*x, *y)).collect::<Vec<_>>(),
+        &view,
+        aspect,
+        (area.width as usize).max(8),
+        (area.height as usize * 2).max(8),
+    );
+    let pts: Vec<(f64, f64)> = clusters.iter().map(|&(x, y, _)| (x, y)).collect();
+    let title = format!(" 🌍 map · {} geotagged · arrows pan · +/- zoom · 0 world · Enter open · Esc ", app.geo_items.len());
+    let canvas = Canvas::default()
+        .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::Cyan)))
+        .marker(Marker::Braille)
+        .x_bounds(xb)
+        .y_bounds(yb)
+        .paint(move |ctx: &mut Context| {
+            ctx.draw(&Map { resolution: MapResolution::High, color: Color::DarkGray });
+            ctx.layer();
+            ctx.draw(&Points { coords: &pts, color: Color::Yellow });
+            // Count labels for multi-photo clusters.
+            for &(x, y, n) in &clusters {
+                if n > 1 {
+                    ctx.print(x, y, Span::styled(format!("{n}"), Style::default().fg(Color::LightYellow)));
+                }
+            }
+            // Centre crosshair (the selection point).
+            ctx.print(view.lon_c, view.lat_c, Span::styled("+", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)));
+        });
+    f.render_widget(canvas, area);
 }
 
 /// Timeline popup (Phase 5): a scrollable list of capture-month buckets with counts, over the right

@@ -69,6 +69,7 @@ pub enum Action {
     RestoreTrash,
     EmptyTrash,
     OpenTrash,
+    Map,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -148,6 +149,7 @@ fn action_label(a: &Action) -> String {
         Action::RestoreTrash => "restore trash".into(),
         Action::EmptyTrash => "empty trash".into(),
         Action::OpenTrash => "open trash".into(),
+        Action::Map => "map".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -306,6 +308,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "restore" | "restore trash" | "restore all" => Some(Action::RestoreTrash),
         "empty trash" | "purge trash" => Some(Action::EmptyTrash),
         "open trash" | "browse trash" | "show trash" => Some(Action::OpenTrash),
+        "map" | "geo" | "atlas" | "geo map" | "show map" => Some(Action::Map),
         _ => None,
     }
 }
