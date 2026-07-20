@@ -1373,14 +1373,7 @@ impl App {
     /// de-duplicated across source albums; the replay-only fields (edits/variants/layers, which point
     /// at files that aren't copied) are cleared so each copy is a clean baseline.
     fn materialize_smart(&mut self, name: &str, query: &str, dest: &str) {
-        let items: Vec<_> = self
-            .collect_library()
-            .into_iter()
-            .filter(|(p, _, rec)| {
-                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                matches_filter(fname, rec.as_ref(), query)
-            })
-            .collect();
+        let items = self.query_library(query);
         if items.is_empty() {
             self.status = "no matches to materialize".into();
             return;
@@ -1558,6 +1551,19 @@ impl App {
         self.index.rows()
     }
 
+    /// Sync the index, then return only the rows matching the filter `query` — the matched-only
+    /// counterpart to `collect_library().filter(...)`, so a selective smart album doesn't clone the
+    /// whole library just to discard most of it.
+    fn query_library(&mut self, query: &str) -> Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> {
+        let mut dirs = Vec::new();
+        collect_album_dirs(&self.root, &mut dirs);
+        if self.index.sync(&dirs) {
+            self.refresh_tree_counts();
+            self.index.save(&self.root_dir);
+        }
+        self.index.filter(|fname, rec| matches_filter(fname, rec, query))
+    }
+
     /// Update the tree's per-album image badges from the index (a full `collect_library` sync just
     /// ran, so index counts are current — this reflects images added / removed since the last walk
     /// without a fresh directory scan). Albums not in the index keep their walk count.
@@ -1649,14 +1655,7 @@ impl App {
     /// Open a smart album: evaluate `query` (filter grammar) against every album, collecting matches
     /// into one grid. Curation writes route back to each image's own album (see [`edit_record_at`]).
     fn open_smart(&mut self, name: String, query: String) {
-        let items: Vec<_> = self
-            .collect_library()
-            .into_iter()
-            .filter(|(p, _, rec)| {
-                let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                matches_filter(fname, rec.as_ref(), &query)
-            })
-            .collect();
+        let items = self.query_library(&query);
         let count = items.len();
         self.enter_smart_view(name.clone(), query.clone(), false, items, false);
         self.status =

@@ -30,6 +30,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       bottleneck. `LibraryIndex::counts()` gives the per-album image count; `refresh_tree_counts`
       updates the tree badges from the index after each full `collect_library` sync, so counts reflect
       images added/removed (import, generate, move) without a fresh directory scan.
+- [x] **Matched-only query** — `LibraryIndex::filter(pred)` clones **only the matching rows** (a smart
+      album matching 200 of 50k images clones 200, not the whole library); `App::query_library(q)`
+      syncs then filters in place. `open_smart` + `materialize_smart` route through it (search /
+      lookalike still take all rows, as they rank everything).
 
 ## Track C — fast visual search (persist CLIP)
 

@@ -103,6 +103,22 @@ impl LibraryIndex {
         self.entries.iter().map(|e| (e.path.clone(), e.album.clone(), e.rec.clone())).collect()
     }
 
+    /// Filter entries in place by `(filename, record) → keep`, cloning **only the matches** (a smart
+    /// album matching 200 of 50k images clones 200 rows, not 50k). Returns the `collect_library` shape.
+    pub fn filter(
+        &self,
+        pred: impl Fn(&str, Option<&ImageRecord>) -> bool,
+    ) -> Vec<(PathBuf, PathBuf, Option<ImageRecord>)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let fname = e.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                pred(fname, e.rec.as_ref())
+                    .then(|| (e.path.clone(), e.album.clone(), e.rec.clone()))
+            })
+            .collect()
+    }
+
     /// Direct image count per **synced** album directory (including 0 for a synced-but-empty album),
     /// for refreshing the tree badges from the index without re-scanning.
     pub fn counts(&self) -> HashMap<PathBuf, usize> {
@@ -194,6 +210,11 @@ mod tests {
         // Per-album counts reflect the synced state (a is 2 after b was dropped).
         let counts = idx.counts();
         assert_eq!(counts.get(&a).copied(), Some(2));
+
+        // filter() clones only the matches (here: the one 5-star record).
+        let rated = idx.filter(|_, rec| rec.map(|r| r.rating).unwrap_or(0) >= 5);
+        assert_eq!(rated.len(), 1);
+        assert!(rated[0].0.ends_with("1.png"));
 
         // Snapshot round-trips.
         idx.save(&root);
