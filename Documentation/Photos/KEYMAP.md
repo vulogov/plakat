@@ -242,7 +242,7 @@ layers, and the history scrubber open their own interactive modes (see `Ctrl-B h
 | `i` / `I` | info panel: right / bottom |
 | `H` | analysis panel (histogram, RGB, balance, dominant, waveform, RGB parade) |
 | `o` | overlay: clipping zebras → focus peaking → off |
-| `S` | slideshow ▶ auto-advance · `[` slower · `]` faster · `r` 🔀 shuffle · `S`/`Esc` stop (higher-rated linger longer) |
+| `S` | slideshow ▶ auto-advance · `[` slower · `]` faster · `r` 🔀 shuffle · `k` 🎥 Ken Burns · `S`/`Esc` stop (higher-rated linger longer) |
 | `E` / `M` / `A` | edit palette / ML-edit / AI-vision menus |
 | `1`–`5` `0` `f` `x` `c` | rate / clear · flag · reject · colour |
 

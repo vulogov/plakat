@@ -632,6 +632,13 @@ struct App {
     /// The shuffled advance order (view-cursor positions) + our place in it, when shuffling.
     slide_order: Vec<usize>,
     slide_pos: usize,
+    /// Ken Burns: slowly pan/zoom each slide. Animation runs from `kb_from` to `kb_to` (each a
+    /// `(center_x, center_y, scale)` crop framing, normalized) over `kb_dwell`, starting at `kb_start`.
+    ken_burns: bool,
+    kb_from: (f32, f32, f32),
+    kb_to: (f32, f32, f32),
+    kb_start: Instant,
+    kb_dwell: Duration,
     /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
     zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
@@ -958,6 +965,11 @@ impl App {
             slide_shuffle: false,
             slide_order: Vec::new(),
             slide_pos: 0,
+            ken_burns: false,
+            kb_from: (0.5, 0.5, 1.0),
+            kb_to: (0.5, 0.5, 1.0),
+            kb_start: Instant::now(),
+            kb_dwell: Duration::from_secs(4),
             zoom: 1.0,
             show_analysis: false,
             analysis: None,
@@ -5429,6 +5441,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             continue;
         }
         app.tick_slideshow();
+        app.tick_ken_burns();
         // Shared-volume: pick up another instance's / a sync's metadata changes (throttled). Skipped
         // while a prompt is open so it can't clobber the input line.
         if !app.cmd_active {
@@ -7067,6 +7080,10 @@ impl App {
     fn toggle_slideshow(&mut self) {
         const DEFAULT: Duration = Duration::from_secs(4);
         if self.slideshow.take().is_some() {
+            if self.ken_burns {
+                self.ken_burns = false;
+                self.load_view(); // restore the static (fit) framing
+            }
             self.status = "slideshow off".into();
         } else {
             self.slideshow = Some(DEFAULT);
@@ -7095,8 +7112,9 @@ impl App {
     fn set_slide_status(&mut self) {
         if let Some(iv) = self.slideshow {
             let mode = if self.slide_shuffle { "🔀 shuffle" } else { "order" };
+            let kb = if self.ken_burns { " · 🎥 ken-burns" } else { "" };
             self.status = format!(
-                "slideshow ▶ {}s · {mode} · [ slower · ] faster · r shuffle · S stop",
+                "slideshow ▶ {}s · {mode}{kb} · [ ] pace · r shuffle · k ken-burns · S stop",
                 iv.as_secs()
             );
         }
@@ -7159,6 +7177,67 @@ impl App {
         self.edit_redo.clear();
         self.show_original = false;
         self.load_view();
+        if self.ken_burns {
+            self.start_kb_slide(base);
+        }
+    }
+
+    /// Toggle the Ken Burns effect (pan/zoom) for the running slideshow.
+    fn toggle_ken_burns(&mut self) {
+        self.ken_burns = !self.ken_burns;
+        if self.ken_burns {
+            let base = self.slideshow.unwrap_or(Duration::from_secs(4));
+            self.start_kb_slide(base);
+        } else {
+            self.load_view(); // restore the static (fit) framing
+        }
+        self.set_slide_status();
+    }
+
+    /// Choose a fresh random from→to framing for the current slide and render its first frame.
+    fn start_kb_slide(&mut self, base: Duration) {
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        // A framing whose window stays inside the image: scale in [0.72,0.95], center within margins.
+        let framing = |rng: &mut rand::rngs::ThreadRng| {
+            let s: f32 = rng.gen_range(0.72..0.95);
+            let m = s / 2.0;
+            (rng.gen_range(m..1.0 - m), rng.gen_range(m..1.0 - m), s)
+        };
+        self.kb_from = framing(&mut rng);
+        self.kb_to = framing(&mut rng);
+        self.kb_dwell = base.mul_f32(self.slide_dwell_factor());
+        self.kb_start = Instant::now();
+        self.render_ken_burns();
+    }
+
+    /// Render the current Ken Burns frame: crop the cached working-base by the interpolated framing.
+    fn render_ken_burns(&mut self) {
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned() else { return };
+        let Some(base) = self.working_base(&path, 1600) else { return };
+        let t = if self.kb_dwell.is_zero() {
+            1.0
+        } else {
+            (self.kb_start.elapsed().as_secs_f32() / self.kb_dwell.as_secs_f32()).clamp(0.0, 1.0)
+        };
+        let (cx, cy, s) = kb_lerp(self.kb_from, self.kb_to, t);
+        let (x, y, cw, ch) = kb_crop_rect(base.width(), base.height(), cx, cy, s);
+        let framed = base.crop_imm(x, y, cw, ch);
+        self.view_spark = Some(spark_of(&framed));
+        self.view_proto = Some(self.picker.new_resize_protocol(framed));
+    }
+
+    /// Advance the Ken Burns animation a frame (called each event-loop tick while it's active).
+    fn tick_ken_burns(&mut self) {
+        if self.ken_burns
+            && self.slideshow.is_some()
+            && self.mode == AlbumMode::Image
+            && self.pick.is_none()
+            && !self.adjust_mode
+            && !self.crop_mode
+        {
+            self.render_ken_burns();
+        }
     }
 }
 
@@ -7170,6 +7249,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             app.mode = AlbumMode::Grid;
             app.view_proto = None;
             app.slideshow = None; // leaving the image view stops any slideshow
+            app.ken_burns = false;
         }
         KeyCode::Char('l') | KeyCode::Right => {
             if app.album_cursor + 1 < n {
@@ -7229,6 +7309,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char(']') if app.slideshow.is_some() => app.nudge_slideshow(-1),
         KeyCode::Char('[') if app.slideshow.is_some() => app.nudge_slideshow(1),
         KeyCode::Char('r') if app.slideshow.is_some() => app.toggle_slide_shuffle(),
+        KeyCode::Char('k') if app.slideshow.is_some() => app.toggle_ken_burns(),
         _ => return apply_curation(app, code),
     }
     false
@@ -7288,8 +7369,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         }
         if let Some(iv) = app.slideshow {
             let sh = if app.slide_shuffle { " 🔀" } else { "" };
+            let kb = if app.ken_burns { " 🎥" } else { "" };
             top.push(Span::styled(
-                format!(" ▶ {}s{sh} ", iv.as_secs()),
+                format!(" ▶ {}s{sh}{kb} ", iv.as_secs()),
                 base.fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
             ));
         }
@@ -7895,6 +7977,24 @@ fn crop_center(img: &image::DynamicImage, zoom: f32) -> image::DynamicImage {
     let cw = ((w as f32 / zoom) as u32).max(1);
     let ch = ((h as f32 / zoom) as u32).max(1);
     img.crop_imm((w - cw) / 2, (h - ch) / 2, cw, ch)
+}
+
+/// Ease + interpolate a Ken Burns framing `(center_x, center_y, scale)` at `t` in `0..=1` (smoothstep).
+fn kb_lerp(from: (f32, f32, f32), to: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
+    let e = { let t = t.clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+    let l = |a: f32, b: f32| a + (b - a) * e;
+    (l(from.0, to.0), l(from.1, to.1), l(from.2, to.2))
+}
+
+/// Pixel crop rect `(x, y, w, h)` for a Ken Burns framing: a window of size `scale`·(w,h) centered at
+/// `(cx, cy)` (normalized), clamped so it stays fully inside the image.
+fn kb_crop_rect(w: u32, h: u32, cx: f32, cy: f32, scale: f32) -> (u32, u32, u32, u32) {
+    let s = scale.clamp(0.05, 1.0);
+    let cw = ((w as f32 * s) as u32).max(1).min(w);
+    let ch = ((h as f32 * s) as u32).max(1).min(h);
+    let x = ((cx * w as f32) - cw as f32 / 2.0).round().clamp(0.0, (w - cw) as f32) as u32;
+    let y = ((cy * h as f32) - ch as f32 / 2.0).round().clamp(0.0, (h - ch) as f32) as u32;
+    (x, y, cw, ch)
 }
 
 /// File modified time, `UNIX_EPOCH` when unavailable (used as the `date-*` sort key — always
@@ -9392,6 +9492,24 @@ mod tree_ops_tests {
         assert_eq!(clamp_slide_secs(4, -1), 3); // faster
         assert_eq!(clamp_slide_secs(1, -5), 1); // floor
         assert_eq!(clamp_slide_secs(30, 10), 30); // ceiling
+    }
+
+    #[test]
+    fn ken_burns_lerp_and_crop_stay_in_bounds() {
+        // Easing endpoints land exactly on from/to.
+        let from = (0.3, 0.4, 0.8);
+        let to = (0.7, 0.6, 0.9);
+        assert_eq!(kb_lerp(from, to, 0.0), from);
+        assert_eq!(kb_lerp(from, to, 1.0), to);
+        let mid = kb_lerp(from, to, 0.5);
+        assert!((mid.0 - 0.5).abs() < 1e-6, "midpoint centered: {}", mid.0);
+
+        // The crop window always fits inside the image, whatever the framing.
+        for &(cx, cy, s) in &[(0.0, 0.0, 0.8), (1.0, 1.0, 0.72), (0.5, 0.5, 0.95), (0.9, 0.1, 0.9)] {
+            let (x, y, w, h) = kb_crop_rect(1600, 900, cx, cy, s);
+            assert!(x + w <= 1600 && y + h <= 900, "rect in bounds: {x}+{w}, {y}+{h}");
+            assert!(w > 0 && h > 0);
+        }
     }
 
     #[test]
