@@ -17,32 +17,35 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.7.0 — `plakat photos`: retouch, and the last non-AI gaps
+## What's new in 3.8.0 — `plakat photos`: the manager grows up
 
-3.6 finished the generation story. **3.7 closes the remaining non-AI gaps** a serious photo
-editor/manager still had — an interactive retouch mode, creative effects, lens corrections, and two
-manager passes — all reusing the machinery already in the tree (replayable slider edits, the
-homography solver, the perceptual hash, the Laplacian).
+3.7 finished the editing surface. **3.8 turns to the manager** — browsing, organizing, metadata,
+local adjustments, and a **map** — with a bug fix that started it all: a mixed album (loose images +
+sub-albums) showed its recursive count in the tree, hiding what "open" actually shows. Fixing that
+pointed straight at the browsing gaps.
 
-**Interactive retouch (`Ctrl-B r`).** A live **crosshair pick-mode** unlocks the classic editor
-tools: **spot heal** (dust / blemishes), **clone stamp**, **red-eye removal**, a **dodge / burn**
-brush, and **4-point perspective rectify** (pick the corners of a plane → straighten it). Arrows move
-the crosshair, `+`/`-` size the brush, Enter sets each point; every result is a **replayable edit**.
+**Browse & organize.** **Flatten browse** (`*`) shows *every* image beneath a folder / mixed album in
+one grid. **Move / copy → album** (`Ctrl-B m o` / `m p`) carries the file, sidecar, and record.
+**Trash** (`m t`) — a real recycle bin with restore and empty, instead of a permanent delete.
 
-**Creative & tonal.** **Tilt-shift / miniature**, **motion / zoom / spin** blurs, a **B&W channel
-mixer** (red/green/blue/orange filters — a real mono conversion), and **film-negative → positive**
-(strips the orange C-41 mask on scanned negatives). All on the slider where it makes sense.
+**Metadata.** A **title / author / copyright / capture-date / geotag** editor (`Ctrl-B d`), stored
+non-destructively. And the filter bar / smart albums now understand **shot metadata** —
+`iso>3200`, `focal=50`, `camera:canon`, `date>2023`, `has-gps`, `author:jane` — all from the cached
+record.
 
-**Lens corrections.** **Chromatic-aberration removal** (defringe) and **lens distortion** correction
-(barrel / pincushion).
+**Local (masked) adjustments.** Apply *any* adjustment — exposure, saturation, warmth, blur — through
+a **linear-gradient** or **radial** mask: darken a bright sky, warm the foreground, blur the edges.
 
-**Manager passes.** A **duplicate finder** (perceptual hash, now on the palette / chord too) and a
-non-AI **quality cull** — flags soft (Laplacian-variance) and badly-exposed frames offline, the
-model-free complement to the aesthetic cull.
+**Map.** A **geo view** (`m`) plots your geotagged photos on an offline world map — pan, zoom, and
+open a cluster; **reverse-geocode** (`:geocode`) tags them with `place:<city>` (fetches a small place
+gazetteer once, then works offline).
+
+**Faster & tidier.** The persistent thumbnail cache gained a global **clear**; the tree badge now
+tells the truth about what each album holds.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.6):
+**Earlier releases** (v0.13 – 3.7):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

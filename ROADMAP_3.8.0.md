@@ -1,10 +1,9 @@
-# plakat 3.8.0 — roadmap (planning)
+# plakat 3.8.0 — roadmap (SHIPPED)
 
-Opening after 3.7.0 (retouch + the last non-AI editing gaps). The **editing** surface is deep; 3.8
-turns to the **manager** side — browsing, organizing, metadata — plus one substantial editing feature
-(local masked adjustments). Kicked off by a real bug the tree surfaced: a mixed album (loose images +
-sub-albums) read its recursive count, hiding what "open" actually shows. Fixing that pointed straight
-at the browsing gaps below.
+**Shipped — the manager grows up.** Browse & organize (flatten browse, move/copy, trash), metadata
+(title/author/copyright/date/geotag editor + EXIF smart-album filters), local masked adjustments, a
+geo map + reverse-geocoding, a global thumbnail-cache clear, and the tree-count bugfix that opened the
+cycle. Distribution handled per-cut (crates.io + GH release via the tag-triggered CI + FF `main`).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 

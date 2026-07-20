@@ -8,6 +8,22 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.7.0 — `plakat photos`: retouch, and the last non-AI gaps
+
+3.6 finished the generation story. **3.7 closes the remaining non-AI gaps** — an interactive retouch
+mode, creative effects, lens corrections, and two manager passes.
+
+**Interactive retouch (`Ctrl-B r`).** A live **crosshair pick-mode**: **spot heal**, **clone stamp**,
+**red-eye**, a **dodge / burn** brush, and **4-point perspective rectify** — all replayable edits.
+
+**Creative & tonal.** **Tilt-shift / miniature**, **motion / zoom / spin** blurs, a **B&W channel
+mixer**, and **film-negative → positive** (strips the orange C-41 mask).
+
+**Lens corrections.** **Chromatic-aberration removal** and **lens distortion** (barrel / pincushion).
+
+**Manager passes.** A **duplicate finder** (perceptual hash) and a non-AI **quality cull** (flags soft
+/ badly-exposed frames offline).
+
 ## What's new in 3.6.0 — `plakat photos`: generation, and the true panorama
 
 3.5 brought the AI into the manager. **3.6 finishes the job** — the four big generation pipelines
