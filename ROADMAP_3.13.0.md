@@ -32,9 +32,13 @@ optimization below that, and it adds a dependency.
       `.plakat_clip` (magic v2), and the index `.vec` sidecar (v2) all store i8 — **4× less RAM +
       disk**, a faster int dot product, and `qdot` tracks true cosine within ~0.02 (tested). Search /
       lookalike / `:embed` all go through it.
-- [ ] **C — HNSW ANN index** — a pure-Rust HNSW over the (quantized) vectors for sub-linear search +
-      cheap incremental add. Persist / rebuild from the sidecar. *Adds a pure-Rust dependency; the win
-      shows at very large libraries.*
+- [x] **C — HNSW ANN index** — `src/photos/ann.rs`: `AnnIndex` wraps a pure-Rust HNSW
+      (`instant-distance`, optional dep gated under `photos`) over the int8 vectors — distance
+      `1 − qdot` (angular). Built from the vector cache (rebuilt on size change), it gives **sub-linear**
+      ranking. Text visual search routes through it above `ANN_THRESHOLD` (20k images: `App::ann_search`
+      after `embed_all`); below that the resident-model linear scan is already fast, so it's used
+      directly (no index-build overhead). 1 ANN test (nearest-vector). *Lookalike keeps the linear path
+      (fine to ~1M); ANN there is a follow-up.*
 
 ## Ground rules
 

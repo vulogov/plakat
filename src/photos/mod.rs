@@ -6,6 +6,7 @@
 //! phases (RFC §29) add the image view, editing, browse, and vision features.
 
 pub mod analysis;
+pub mod ann;
 pub mod dedup;
 pub mod edit;
 pub mod exif;
@@ -734,6 +735,9 @@ struct App {
     /// The resident CLIP model — loaded once (lazily) and kept, so repeat visual searches / lookalikes
     /// skip the multi-second reload.
     clip: Option<crate::pipelines::clip_embed::ClipEmbedder>,
+    /// HNSW ANN over the CLIP vectors — built lazily for **large** libraries so search is sub-linear;
+    /// rebuilt when the embedding cache size changes.
+    ann: Option<ann::AnnIndex>,
     clip_cache: visual_search::Cache,
     // Track A AI jobs, run TUI-suspended by the event loop: aesthetic auto-cull (keep top N),
     // analyze-and-generate (describe → img2img), and face-scan (detect + group).
@@ -1043,6 +1047,7 @@ impl App {
             pending_visual: None,
             pending_embed: false,
             clip: None,
+            ann: None,
             pending_cull: None,
             pending_analyze: None,
             pending_face_scan: false,
@@ -6108,7 +6113,21 @@ impl App {
         self.clip = Some(embedder);
         Ok(())
     }
+
+    /// Rank the whole embedded library against `query` with the HNSW ANN (sub-linear), rebuilding the
+    /// index when the cache size changed. Returns `(path, similarity)` best-first. Assumes every image
+    /// is already embedded in `clip_cache` (the caller runs `embed_all` first).
+    fn ann_search(&mut self, query: &visual_search::Embedding, k: usize) -> Vec<(PathBuf, f32)> {
+        if self.ann.as_ref().map(|a| a.len()) != Some(self.clip_cache.len()) {
+            self.ann = ann::AnnIndex::build(&self.clip_cache);
+        }
+        self.ann.as_ref().map(|a| a.search(query, k)).unwrap_or_default()
+    }
 }
+
+/// Above this library size, visual search uses the HNSW ANN (sub-linear); below it, the plain linear
+/// cosine scan is already fast and skips the index-build overhead.
+const ANN_THRESHOLD: usize = 20_000;
 
 fn run_visual_search(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -6140,29 +6159,48 @@ fn run_visual_search(
     }
 
     // A text query always needs the model; load it resident (reused on the next search).
-    let result = match app.ensure_clip() {
-        Ok(()) => {
-            let em = app.clip.as_ref().unwrap();
-            let out = visual_search::search(em, items, &query, cache, |done, tot| {
-                if done % 10 == 0 || done == tot {
-                    print!("\r  embedding {done}/{tot}…   ");
-                    let _ = std::io::stdout().flush();
-                }
-            });
-            if let Ok((_, c)) = &out {
-                visual_search::save_cache(c); // persist so the next session is fast
-            }
-            out
+    let progress = |done: usize, tot: usize| {
+        if done % 10 == 0 || done == tot {
+            print!("\r  embedding {done}/{tot}…   ");
+            let _ = std::io::stdout().flush();
         }
-        Err(e) => Err(e),
+    };
+    let ranked: Result<Vec<(PathBuf, PathBuf, f32)>> = if let Err(e) = app.ensure_clip() {
+        Err(e)
+    } else if items.len() >= ANN_THRESHOLD {
+        // Large library: embed everything (+ the query), then rank with the HNSW ANN (sub-linear).
+        let dir_of: HashMap<PathBuf, PathBuf> = items.iter().cloned().collect();
+        let embedded = {
+            let em = app.clip.as_ref().unwrap();
+            visual_search::embed_all(Some(em), items, cache, &progress)
+                .and_then(|c| Ok((c, visual_search::quantize(&em.embed_text(&query)?))))
+        };
+        embedded.map(|(c, q)| {
+            visual_search::save_cache(&c);
+            app.clip_cache = c;
+            app.ann_search(&q, 200)
+                .into_iter()
+                .filter_map(|(p, s)| dir_of.get(&p).map(|d| (p.clone(), d.clone(), s)))
+                .collect()
+        })
+    } else {
+        // Typical library: the resident-model linear scan is already fast.
+        let out = {
+            let em = app.clip.as_ref().unwrap();
+            visual_search::search(em, items, &query, cache, &progress)
+        };
+        out.map(|(r, c)| {
+            visual_search::save_cache(&c);
+            app.clip_cache = c;
+            r
+        })
     };
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     terminal.clear()?;
-    match result {
-        Ok((ranked, cache)) => {
-            app.clip_cache = cache;
+    match ranked {
+        Ok(ranked) => {
             index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
             let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
                 lib.into_iter().map(|(p, _, r)| (p, r)).collect();
