@@ -46,10 +46,29 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       **replayable** edit that re-applies exactly on the pristine original — closes the deferred 3.8
       Track-C follow-up. Serde round-trips the dab list; 1 test.
 
+## Track E — shared volumes & concurrent instances (the important one)
+
+- [x] **Concurrency-safe `album.hjson` on shared volumes** (Dropbox / NFS) — the library can live on a
+      synced/shared volume with **multiple `plakat photos` instances** open at once without losing
+      curation. Two lock-free mechanisms (cross-machine file locks are unreliable, so we don't rely on
+      them):
+  - **Merge-on-write** (`hjson::merge_album` / `write_album_merged`): every save of the open album
+    re-reads the current on-disk copy and overlays only the records/fields *this* instance changed
+    (three-way merge against a `album_baseline` captured at load). A concurrent instance editing
+    *other* images is never clobbered; same-record conflicts resolve last-writer-wins. `save_album`
+    and the open-album path of `edit_album_meta_at` route through it.
+  - **External-change reload** (`reload_album_if_changed`): a throttled `(mtime, len)` stamp on the
+    open album's `album.hjson`; when another instance / a sync changes it, we adopt those changes
+    (merging in any of our own not-yet-saved edits) and refresh the view — a metadata-only reload that
+    keeps the file list + cursor.
+  - 4 merge tests (concurrent different-image edits both survive; adds/deletes/conflicts; album-level
+    fields; end-to-end `write_album_merged`). *Note: `folder.hjson`/smart-album concurrency is
+    read-fresh-then-write (low contention) — a full merge there is a follow-up.*
+
 ## Docs
 
 - [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back + brush.
-- [~] README what's-new + PHOTOS_TUTORIAL note.
+- [~] README what's-new + PHOTOS_TUTORIAL note + a shared-volume section.
 
 ## Distribution
 
@@ -66,5 +85,5 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - Slideshow: random order, inter-image fade, per-slide dwell from rating.
 - EXIF write-back for WebP/TIFF (currently JPEG/PNG); XPKeywords for tags.
-- **Shared-volume / concurrent multi-instance access** (next — the important one): safe concurrent
-  `album.hjson` access when the library lives on Dropbox/NFS and several `plakat photos` run at once.
+- Shared-volume: extend the three-way merge to `folder.hjson` (smart albums) + optional same-machine
+  advisory lock; surface a small "⟳ others editing" indicator when reloads are frequent.

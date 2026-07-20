@@ -587,6 +587,14 @@ struct App {
     // Album grid.
     album_dir: Option<PathBuf>,
     album_meta: hjson::AlbumMeta,
+    /// The open album's metadata exactly as last loaded/saved from disk — the baseline for the
+    /// shared-volume three-way merge (so concurrent instances editing other images aren't clobbered).
+    album_baseline: hjson::AlbumMeta,
+    /// `(mtime, len)` of the open album's `album.hjson` when we last read/wrote it. A mismatch means
+    /// another instance (or Dropbox/NFS) changed it → reload.
+    album_stamp: Option<(std::time::SystemTime, u64)>,
+    /// Throttle for the shared-volume external-change poll (a `stat` can be slow on a network FS).
+    album_check: Instant,
     album_paths: Vec<PathBuf>,
     /// Filtered view: indices into `album_paths` that pass `filter` (all when empty). `album_cursor`
     /// indexes into this, so navigation/rendering operate on the filtered set.
@@ -893,6 +901,9 @@ impl App {
             info_target: None,
             album_dir: None,
             album_meta: hjson::AlbumMeta::default(),
+            album_baseline: hjson::AlbumMeta::default(),
+            album_stamp: None,
+            album_check: Instant::now(),
             album_paths: Vec::new(),
             view: Vec::new(),
             filter: String::new(),
@@ -1162,16 +1173,18 @@ impl App {
         }
     }
 
-    /// Mutate an album's metadata on disk (and in memory if it's the open album).
+    /// Mutate an album's metadata on disk (and in memory if it's the open album). The open album goes
+    /// through the shared-volume merge ([`Self::save_album`]); other albums are read-fresh-then-write.
     fn edit_album_meta_at(&mut self, dir: &Path, f: impl FnOnce(&mut hjson::AlbumMeta)) {
-        let mut meta = self.album_meta_at(dir);
+        if self.album_dir.as_deref() == Some(dir) {
+            f(&mut self.album_meta);
+            self.save_album();
+            return;
+        }
+        let mut meta = hjson::read_album(dir).unwrap_or_default();
         f(&mut meta);
         if let Err(e) = hjson::write_album(dir, &meta) {
             self.status = format!("save failed: {e}");
-            return;
-        }
-        if self.album_dir.as_deref() == Some(dir) {
-            self.album_meta = meta;
         }
     }
 
@@ -1425,6 +1438,8 @@ impl App {
         self.smart_src.clear();
         self.smart_rec.clear();
         self.album_meta = hjson::read_album(&dir).unwrap_or_default();
+        self.album_baseline = self.album_meta.clone();
+        self.album_stamp = album_hjson_stamp(&dir);
         self.album_dir = Some(dir);
         self.album_paths = paths;
         self.sort_album(); // honour the album's persisted sort order
@@ -4436,12 +4451,49 @@ impl App {
         }
     }
 
+    /// Persist the open album's metadata using a **shared-volume-safe three-way merge**: re-read the
+    /// current on-disk copy and overlay only the records/fields this instance changed, so a concurrent
+    /// `plakat photos` (or Dropbox/NFS sync) editing *other* images isn't clobbered. Adopts the merged
+    /// result as the new in-memory + baseline state and refreshes the change-detection stamp.
     fn save_album(&mut self) {
-        if let Some(dir) = &self.album_dir {
-            if let Err(e) = hjson::write_album(dir, &self.album_meta) {
-                self.status = format!("save failed: {e}");
+        let Some(dir) = self.album_dir.clone() else { return };
+        match hjson::write_album_merged(&dir, &self.album_baseline, &self.album_meta) {
+            Ok(merged) => {
+                self.album_meta = merged.clone();
+                self.album_baseline = merged;
+                self.album_stamp = album_hjson_stamp(&dir);
             }
+            Err(e) => self.status = format!("save failed: {e}"),
         }
+    }
+
+    /// Shared-volume watch: if the open album's `album.hjson` changed on disk since we last touched it
+    /// (another `plakat photos` instance, or a Dropbox/NFS sync), adopt those changes — merging in any
+    /// of our own not-yet-saved edits so nothing is lost. Throttled; a metadata-only reload that keeps
+    /// the file list and cursor. No-op in a smart/search view (those re-read on demand).
+    fn reload_album_if_changed(&mut self) {
+        if self.smart.is_some() || self.album_dir.is_none() {
+            return;
+        }
+        if self.album_check.elapsed() < Duration::from_millis(1500) {
+            return;
+        }
+        self.album_check = Instant::now();
+        let dir = self.album_dir.clone().unwrap();
+        let cur = album_hjson_stamp(&dir);
+        if cur == self.album_stamp {
+            return; // unchanged since we last read/wrote it
+        }
+        let disk = hjson::read_album(&dir).unwrap_or_default();
+        // Keep our in-memory edits (rare — each edit saves immediately) and adopt everything else.
+        let merged = hjson::merge_album(&self.album_baseline, &self.album_meta, &disk);
+        self.album_meta = merged;
+        self.album_baseline = disk;
+        self.album_stamp = cur;
+        if self.mode == AlbumMode::Image {
+            self.load_view(); // refresh the info panel / edit state for the current image
+        }
+        self.status = "album reloaded — metadata changed on disk (shared volume)".into();
     }
 
     /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`). Rating/score
@@ -5191,6 +5243,11 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             continue;
         }
         app.tick_slideshow();
+        // Shared-volume: pick up another instance's / a sync's metadata changes (throttled). Skipped
+        // while a prompt is open so it can't clobber the input line.
+        if !app.cmd_active {
+            app.reload_album_if_changed();
+        }
         app.refresh_mem();
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
@@ -7657,6 +7714,13 @@ fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+/// `(mtime, len)` of `<dir>/album.hjson` for cheap external-change detection on a shared volume.
+/// `None` when the file is absent or unstatable — a transition to/from `None` also counts as a change.
+fn album_hjson_stamp(dir: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let md = std::fs::metadata(dir.join(hjson::ALBUM_FILE)).ok()?;
+    Some((md.modified().ok()?, md.len()))
 }
 
 /// Collect every album directory under `node` (depth-first) — the search space for a smart album.

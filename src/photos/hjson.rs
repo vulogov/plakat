@@ -4,7 +4,7 @@
 //! all fields default, so old files parse and new fields are additive. Writes are atomic
 //! (`.album.hjson.tmp` → rename).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -249,6 +249,73 @@ pub fn write_album(dir: &Path, meta: &AlbumMeta) -> Result<()> {
     write_atomic(dir, ALBUM_FILE, meta)
 }
 
+// ---- Concurrency-safe (shared-volume) merge -----------------------------------------------------
+
+/// Two records (or their absence) differ. Compared structurally via JSON so we don't need `PartialEq`
+/// on every nested type (e.g. the external `GenerationMetadata`).
+fn record_changed(a: Option<&ImageRecord>, b: Option<&ImageRecord>) -> bool {
+    let to_val = |r: Option<&ImageRecord>| r.map(|x| serde_json::to_value(x).unwrap_or(serde_json::Value::Null));
+    to_val(a) != to_val(b)
+}
+
+/// Three-way merge of album metadata for safe concurrent access on a **shared volume** (Dropbox / NFS),
+/// where cross-machine file locks are unreliable. `baseline` is what this instance originally loaded,
+/// `ours` is its current in-memory copy, `disk` is the latest on-disk copy (possibly changed by another
+/// instance). The result keeps **our** value for every record/field we actually changed (vs baseline)
+/// and the **disk** value for everything we didn't touch — so a concurrent instance editing *other*
+/// images is never clobbered. Same-record conflicts resolve last-writer-wins (ours, since we're saving).
+pub fn merge_album(baseline: &AlbumMeta, ours: &AlbumMeta, disk: &AlbumMeta) -> AlbumMeta {
+    let mut merged = disk.clone();
+
+    // Album-level scalar fields: take ours only where we changed them relative to baseline.
+    if ours.name != baseline.name {
+        merged.name = ours.name.clone();
+    }
+    if ours.description != baseline.description {
+        merged.description = ours.description.clone();
+    }
+    if ours.tags != baseline.tags {
+        merged.tags = ours.tags.clone();
+    }
+    if ours.cover != baseline.cover {
+        merged.cover = ours.cover.clone();
+    }
+    if ours.sort != baseline.sort {
+        merged.sort = ours.sort.clone();
+    }
+    if ours.thumb_size != baseline.thumb_size {
+        merged.thumb_size = ours.thumb_size.clone();
+    }
+
+    // Per-image records: for every key we know about, apply our change (add / update / delete) if we
+    // made one; otherwise leave whatever disk has (records only on disk stay via the clone above).
+    let keys: HashSet<&String> = ours.images.keys().chain(baseline.images.keys()).collect();
+    for k in keys {
+        let ours_r = ours.images.get(k);
+        if record_changed(ours_r, baseline.images.get(k)) {
+            match ours_r {
+                Some(r) => {
+                    merged.images.insert(k.clone(), r.clone());
+                }
+                None => {
+                    merged.images.remove(k); // we deleted it → respect that
+                }
+            }
+        }
+    }
+    merged
+}
+
+/// Concurrency-safe write of the open album: re-read the current on-disk copy, [`merge_album`] our
+/// changes onto it, then write atomically. Returns the merged metadata (the caller adopts it as its
+/// new in-memory + baseline state so subsequent diffs are relative to it).
+pub fn write_album_merged(dir: &Path, baseline: &AlbumMeta, ours: &AlbumMeta) -> Result<AlbumMeta> {
+    let disk = read_album(dir).unwrap_or_default();
+    let merged = merge_album(baseline, ours, &disk);
+    write_album(dir, &merged)?;
+    Ok(merged)
+}
+
 pub fn write_folder(dir: &Path, meta: &FolderMeta) -> Result<()> {
     write_atomic(dir, FOLDER_FILE, meta)
 }
@@ -319,6 +386,91 @@ mod tests {
         assert_eq!(r.generation.as_ref().map(|g| g.seed), Some(42));
         assert_eq!(r.edits.len(), 1);
         assert_eq!(r.edits[0].op, "rotate_cw");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn rec(rating: u8, tags: &[&str]) -> ImageRecord {
+        ImageRecord { rating, tags: tags.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+    }
+
+    #[test]
+    fn merge_keeps_concurrent_edits_to_different_images() {
+        // Baseline: two images, unrated. This instance rated A; another instance (disk) tagged B.
+        let mut baseline = AlbumMeta::default();
+        baseline.images.insert("a.jpg".into(), rec(0, &[]));
+        baseline.images.insert("b.jpg".into(), rec(0, &[]));
+
+        let mut ours = baseline.clone();
+        ours.images.insert("a.jpg".into(), rec(5, &[])); // we rated A
+
+        let mut disk = baseline.clone();
+        disk.images.insert("b.jpg".into(), rec(0, &["keeper"])); // other instance tagged B
+
+        let merged = merge_album(&baseline, &ours, &disk);
+        assert_eq!(merged.images["a.jpg"].rating, 5, "our rating on A survives");
+        assert_eq!(merged.images["b.jpg"].tags, vec!["keeper".to_string()], "other instance's tag on B survives");
+    }
+
+    #[test]
+    fn merge_respects_additions_deletions_and_conflicts() {
+        let mut baseline = AlbumMeta::default();
+        baseline.images.insert("keep.jpg".into(), rec(0, &[]));
+        baseline.images.insert("gone.jpg".into(), rec(3, &[]));
+        baseline.images.insert("conflict.jpg".into(), rec(1, &[]));
+
+        // Ours: added new.jpg, deleted gone.jpg, bumped conflict.jpg to 4.
+        let mut ours = baseline.clone();
+        ours.images.insert("new.jpg".into(), rec(2, &[]));
+        ours.images.remove("gone.jpg");
+        ours.images.insert("conflict.jpg".into(), rec(4, &[]));
+
+        // Disk (another instance): added other.jpg, set conflict.jpg to 5.
+        let mut disk = baseline.clone();
+        disk.images.insert("other.jpg".into(), rec(1, &[]));
+        disk.images.insert("conflict.jpg".into(), rec(5, &[]));
+
+        let merged = merge_album(&baseline, &ours, &disk);
+        assert_eq!(merged.images["new.jpg"].rating, 2, "our addition present");
+        assert_eq!(merged.images["other.jpg"].rating, 1, "their addition present");
+        assert!(!merged.images.contains_key("gone.jpg"), "our deletion respected");
+        assert_eq!(merged.images["conflict.jpg"].rating, 4, "same-record conflict → ours (we're saving)");
+        assert!(merged.images.contains_key("keep.jpg"), "untouched record kept");
+    }
+
+    #[test]
+    fn merge_album_level_fields_and_untouched_defer_to_disk() {
+        let baseline = AlbumMeta { name: Some("Trip".into()), sort: Some("name-asc".into()), ..Default::default() };
+        // We changed the sort; another instance renamed the album on disk.
+        let ours = AlbumMeta { name: Some("Trip".into()), sort: Some("date-desc".into()), ..Default::default() };
+        let disk = AlbumMeta { name: Some("Iceland Trip".into()), sort: Some("name-asc".into()), ..Default::default() };
+        let merged = merge_album(&baseline, &ours, &disk);
+        assert_eq!(merged.sort.as_deref(), Some("date-desc"), "our sort change wins");
+        assert_eq!(merged.name.as_deref(), Some("Iceland Trip"), "their rename (we didn't touch name) survives");
+    }
+
+    #[test]
+    fn write_album_merged_persists_the_merge() {
+        let dir = std::env::temp_dir().join(format!("plakat-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Baseline on disk.
+        let mut baseline = AlbumMeta::default();
+        baseline.images.insert("a.jpg".into(), rec(0, &[]));
+        baseline.images.insert("b.jpg".into(), rec(0, &[]));
+        write_album(&dir, &baseline).unwrap();
+        // Another instance tags B on disk while we hold the baseline.
+        let mut disk = baseline.clone();
+        disk.images.insert("b.jpg".into(), rec(0, &["keeper"]));
+        write_album(&dir, &disk).unwrap();
+        // We rated A and save via the merge.
+        let mut ours = baseline.clone();
+        ours.images.insert("a.jpg".into(), rec(5, &[]));
+        let merged = write_album_merged(&dir, &baseline, &ours).unwrap();
+        assert_eq!(merged.images["a.jpg"].rating, 5);
+        assert_eq!(merged.images["b.jpg"].tags, vec!["keeper".to_string()]);
+        // And it's on disk.
+        let back = read_album(&dir).unwrap();
+        assert_eq!(back.images["a.jpg"].rating, 5);
+        assert_eq!(back.images["b.jpg"].tags, vec!["keeper".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
