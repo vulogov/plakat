@@ -17,31 +17,26 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.12.0 — `plakat photos`: scale (the derived index)
+## What's new in 3.13.0 — `plakat photos`: visual search at scale
 
-`album.hjson` stays the human-editable source of truth. **3.12 adds a derived, rebuildable index** so
-the manager stays fast on large libraries — a persisted snapshot of every image's curation + EXIF,
-synced incrementally, that browse / smart albums / search read from instead of re-walking every album.
+3.12 made the manager fast on large libraries. **3.13 makes visual search itself scale** — three
+layers, so finding "images that look like this" stays fast whether you have 10k photos or a million.
 
-**All Photos, instantly.** `:all` opens the whole library in one grid straight from the index — and on
-a warm launch it opens automatically, so a big collection is browsable **the moment you start**. `/`
-filters it live.
+**No model reload between searches.** The CLIP model is now kept **resident** — loaded once, then
+reused, so the second and later visual searches / lookalikes skip the multi-second reload.
 
-**Smart albums at scale.** Filters run over the index and clone only the **matching** rows (a smart
-album matching 200 of 50k images touches 200, not the whole library); an edit is reflected in the index
-immediately, without re-reading its album.
+**4× smaller embeddings.** CLIP vectors are stored **int8-quantized** (with a per-vector scale) in
+memory, the per-album cache, and the index sidecar — a quarter of the RAM and disk, a faster dot
+product, and similarity that tracks the true cosine within a rounding error.
 
-**Fast visual search.** `:embed` pre-computes + persists CLIP embeddings for the whole library, and the
-vectors are **folded into the index** (a compact binary sidecar) so they load in one read at startup —
-the first visual search is instant.
+**Sub-linear search on huge libraries.** For very large collections, text search runs through a
+pure-Rust **HNSW** approximate-nearest-neighbour index over the vectors, so ranking doesn't scan every
+image. Below that size the (already fast) resident-model scan is used directly.
 
-**`:stats`.** Aggregate library facets — a rating histogram, flagged / tagged / geotagged counts, top
-cameras, and the capture-year span — computed from the index in one pass, at any scale.
+Once embedded, visual search stays offline; the ANN is derived and rebuilds from the vectors.
+Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-The index is non-authoritative: delete it (`:reindex`) and it rebuilds from `album.hjson`. Everything
-from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
-
-**Earlier releases** (v0.13 – 3.11):
+**Earlier releases** (v0.13 – 3.12):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

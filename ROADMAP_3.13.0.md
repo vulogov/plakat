@@ -1,7 +1,8 @@
-# plakat 3.13.0 — roadmap (in progress)
+# plakat 3.13.0 — roadmap (SHIPPED)
 
 **Theme — visual search at scale.** 3.12 made CLIP embeddings persist + load fast. 3.13 makes the
-*search itself* scale.
+*search itself* scale: a **resident** CLIP model (no reload), **int8** vectors (4× less RAM/disk), and
+a pure-Rust **HNSW** ANN for sub-linear text search on very large libraries.
 
 ## Honest sizing note (read first)
 

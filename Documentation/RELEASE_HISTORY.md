@@ -8,6 +8,29 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.12.0 — `plakat photos`: scale (the derived index)
+
+`album.hjson` stays the human-editable source of truth. **3.12 adds a derived, rebuildable index** so
+the manager stays fast on large libraries — a persisted snapshot of every image's curation + EXIF,
+synced incrementally, that browse / smart albums / search read from instead of re-walking every album.
+
+**All Photos, instantly.** `:all` opens the whole library in one grid straight from the index — and on
+a warm launch it opens automatically, so a big collection is browsable **the moment you start**. `/`
+filters it live.
+
+**Smart albums at scale.** Filters run over the index and clone only the **matching** rows (a smart
+album matching 200 of 50k images touches 200, not the whole library); an edit is reflected in the index
+immediately, without re-reading its album.
+
+**Fast visual search.** `:embed` pre-computes + persists CLIP embeddings for the whole library, and the
+vectors are **folded into the index** (a compact binary sidecar) so they load in one read at startup —
+the first visual search is instant.
+
+**`:stats`.** Aggregate library facets — a rating histogram, flagged / tagged / geotagged counts, top
+cameras, and the capture-year span — computed from the index in one pass, at any scale.
+
+The index is non-authoritative: delete it (`:reindex`) and it rebuilds from `album.hjson`.
+
 ## What's new in 3.11.0 — `plakat photos`: motion, formats & scale
 
 3.10 deepened collaboration. **3.11 polishes presentation, broadens the formats, and speeds things up.**
