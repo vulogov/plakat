@@ -1,7 +1,9 @@
-# plakat 3.14.0 — roadmap (in progress)
+# plakat 4.0.0 — roadmap (in progress)
 
-**Theme — polish & consolidate (toward 4.0).** Two threads: finish the visual-search-at-scale story
-(3.13 follow-ups), and a stability / polish / docs pass to harden the 3.x flagship.
+**The major cut — `plakat photos` is done.** The 3.x line built the flagship TUI photo/image manager
+end to end (organize · edit · AI · collaborate · output · maps · formats · scale). 4.0 is the
+**confidence** release: the visual-search-at-scale follow-ups, then a hardening / consistency / docs
+pass — no new pillars, just making the flagship solid enough to put a "1.0-grade" 4.0 stamp on.
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
@@ -26,6 +28,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **Docs currency** — KEYMAP carries the 3.10–3.13 additions (the "Library commands" `:` section
       for `:all`/`:stats`/`:reindex`/`:embed`/`:conflicts`/`:who`, the "Shared volumes & multiple
       instances" section, HEIC + EXIF-write-back notes, brush masks, slideshow), maintained each cycle.
+
+## Track R — 4.0 readiness (hardening + consistency + docs)
+
+- [ ] **Robustness soak** — lock in graceful handling of adversarial / edge inputs with tests: corrupt
+      / truncated images, an empty or missing library, malformed `album.hjson` / index snapshot /
+      `.plakat_clip` / `.hnsw`, weird filenames, zero-byte files. Fix any panic found.
+- [ ] **Command-surface consistency audit** — every `nl::Action` has a dispatch arm and a parseable
+      verb; no orphaned commands / dead ends. Programmatic check + spot review.
+- [ ] **Tutorial + feature tour** — a complete `Documentation/Photos/TUTORIAL.md` walking the whole
+      manager (organize → edit → AI → collaborate → output → search-at-scale), current through 4.0.
+- [ ] **The 4.0 stamp** — README "what's new" tells the flagship's story; RELEASE_HISTORY archives
+      3.13; full suite + clippy-clean gate; declare 4.0.
 
 ## Ground rules
 
