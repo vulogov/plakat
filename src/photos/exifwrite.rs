@@ -26,6 +26,8 @@ pub struct MetaFields {
     pub date: Option<String>,
     /// `(lat, lon)` in signed decimal degrees.
     pub gps: Option<(f64, f64)>,
+    /// Keyword tags → EXIF `XPKeywords` (0x9C9E, UTF-16LE, `;`-separated) so other tools see them.
+    pub keywords: Vec<String>,
 }
 
 impl MetaFields {
@@ -36,6 +38,7 @@ impl MetaFields {
             && self.copyright.is_none()
             && self.date.is_none()
             && self.gps.is_none()
+            && self.keywords.is_empty()
     }
 }
 
@@ -119,6 +122,24 @@ fn long_field(tag: u16, v: u32) -> Field {
     Field { tag, typ: 4, count: 1, val: Val::Inline(v.to_le_bytes()) }
 }
 
+/// `XPKeywords`-style BYTE field: the string as UTF-16LE bytes + a UTF-16 NUL terminator.
+fn xp_field(tag: u16, s: &str) -> Field {
+    let mut bytes = Vec::with_capacity(s.len() * 2 + 2);
+    for u in s.encode_utf16() {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    bytes.extend_from_slice(&[0, 0]); // UTF-16 terminator
+    let count = bytes.len() as u32;
+    let val = if bytes.len() <= 4 {
+        let mut b = [0u8; 4];
+        b[..bytes.len()].copy_from_slice(&bytes);
+        Val::Inline(b)
+    } else {
+        Val::Ext(bytes)
+    };
+    Field { tag, typ: 1, count, val } // BYTE
+}
+
 /// Serialize one little-endian IFD (its 2+n·12+4 structure followed by its out-of-line data) sitting
 /// at absolute offset `ifd_off`. Ext values get offsets relative to `ifd_off`.
 fn serialize_ifd(fields: &[Field], ifd_off: u32) -> Vec<u8> {
@@ -180,6 +201,11 @@ fn build_tiff(f: &MetaFields) -> Option<Vec<u8>> {
     }
     if has_gps {
         ifd0.push(long_field(0x8825, 0)); // GPSInfoIFDPointer
+    }
+    // XPKeywords (0x9C9E) is the highest tag → must come after the pointers to keep IFD0 ascending.
+    let kw: Vec<&str> = f.keywords.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if !kw.is_empty() {
+        ifd0.push(xp_field(0x9C9E, &kw.join(";")));
     }
     if ifd0.is_empty() {
         return None;
@@ -420,6 +446,7 @@ mod tests {
             copyright: Some("© 2024 Jane Roe".into()),
             date: Some("2024-07-14T12:34:56".into()),
             gps: Some((37.7749, -122.4194)),
+            keywords: vec!["sunset".into(), "ocean".into()],
         }
     }
 
@@ -443,6 +470,11 @@ mod tests {
         assert!(get(exif::Tag::ImageDescription).unwrap().contains("Sunset over the bay"));
         assert!(get(exif::Tag::Artist).unwrap().contains("Jane Roe"));
         assert!(get(exif::Tag::Copyright).unwrap().contains("Jane Roe"));
+
+        // XPKeywords is a UTF-16LE BYTE array; verify our ";"-joined keywords are embedded verbatim.
+        let raw = std::fs::read(path).unwrap();
+        let utf16: Vec<u8> = "sunset;ocean".encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        assert!(raw.windows(utf16.len()).any(|w| w == utf16), "XPKeywords bytes present");
     }
 
     #[test]

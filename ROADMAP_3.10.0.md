@@ -29,6 +29,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       within `TTL_SECS` (90 s) — stale ones (crashed instances) age out and are cleaned up. Other
       instances are counted in the status bar (`👥 N`) and listed by `:who`. 2 tests.
 
+## Track D — polish (backlog)
+
+- [x] **Slideshow: shuffle + rating-weighted dwell** — `r` toggles random order while the slideshow
+      runs (a fresh permutation each loop, `rand`), and higher-rated images linger longer
+      (`slide_dwell_factor`: 0★ = 1×, 5★ = 2.5×). A `🔀` marker in the `▶` badge.
+- [x] **EXIF write-back: keyword tags** — the record's `tags` are written as **XPKeywords** (0x9C9E,
+      UTF-16LE, `;`-separated) alongside the other fields in `d w`, so tags travel to other tools.
+      (WebP/TIFF EXIF write-back stays deferred — those need container/IFD rewrites.)
+
 ## Ground rules (unchanged)
 
 - Non-destructive by default; per-album `album.hjson` authoritative + additive.

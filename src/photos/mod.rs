@@ -627,6 +627,11 @@ struct App {
     /// Slideshow: `Some(interval)` auto-advances the image view; the last advance instant paces it.
     slideshow: Option<Duration>,
     slide_last: Instant,
+    /// Slideshow: advance in a random permutation instead of file order.
+    slide_shuffle: bool,
+    /// The shuffled advance order (view-cursor positions) + our place in it, when shuffling.
+    slide_order: Vec<usize>,
+    slide_pos: usize,
     /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
     zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
@@ -950,6 +955,9 @@ impl App {
             overlay: OverlayMode::Off,
             slideshow: None,
             slide_last: Instant::now(),
+            slide_shuffle: false,
+            slide_order: Vec::new(),
+            slide_pos: 0,
             zoom: 1.0,
             show_analysis: false,
             analysis: None,
@@ -3594,6 +3602,7 @@ impl App {
             copyright: some(&rec.copyright),
             date: ex.and_then(|e| some(&e.date_taken)),
             gps: ex.and_then(|e| e.gps_lat.zip(e.gps_lon)),
+            keywords: rec.tags.clone(),
         }
     }
 
@@ -7053,7 +7062,8 @@ impl App {
         } else {
             self.slideshow = Some(DEFAULT);
             self.slide_last = Instant::now();
-            self.status = "slideshow ▶ 4.0s · [ slower · ] faster · S stop".into();
+            self.rebuild_slide_order();
+            self.set_slide_status();
         }
     }
 
@@ -7062,22 +7072,80 @@ impl App {
         if let Some(cur) = self.slideshow {
             let next = clamp_slide_secs(cur.as_secs(), secs);
             self.slideshow = Some(Duration::from_secs(next));
-            self.status = format!("slideshow ▶ {next}.0s · [ slower · ] faster · S stop");
+            self.set_slide_status();
         }
     }
 
-    /// If the slideshow is running and its interval has elapsed, advance one image (wrapping to the
-    /// start at the end). Called each event-loop tick; a no-op outside the image view.
+    /// Toggle random (shuffled) order while the slideshow runs.
+    fn toggle_slide_shuffle(&mut self) {
+        self.slide_shuffle = !self.slide_shuffle;
+        self.rebuild_slide_order();
+        self.set_slide_status();
+    }
+
+    fn set_slide_status(&mut self) {
+        if let Some(iv) = self.slideshow {
+            let mode = if self.slide_shuffle { "🔀 shuffle" } else { "order" };
+            self.status = format!(
+                "slideshow ▶ {}s · {mode} · [ slower · ] faster · r shuffle · S stop",
+                iv.as_secs()
+            );
+        }
+    }
+
+    /// (Re)build the shuffled advance order over the current view, starting at the current image.
+    fn rebuild_slide_order(&mut self) {
+        let n = self.view.len();
+        self.slide_order = (0..n).collect();
+        if self.slide_shuffle {
+            use rand::seq::SliceRandom;
+            self.slide_order.shuffle(&mut rand::thread_rng());
+            // Put the current image first so shuffle starts from where we are.
+            if let Some(p) = self.slide_order.iter().position(|&i| i == self.album_cursor) {
+                self.slide_order.swap(0, p);
+            }
+        }
+        self.slide_pos = 0;
+    }
+
+    /// The dwell multiplier for a slide: higher-rated images linger longer (0★ = 1×, 5★ = 2.5×).
+    fn slide_dwell_factor(&self) -> f32 {
+        let rating = self
+            .cur_idx()
+            .and_then(|i| self.album_paths.get(i))
+            .and_then(|p| self.record(p))
+            .map(|r| r.rating)
+            .unwrap_or(0);
+        1.0 + 0.3 * rating as f32
+    }
+
+    /// If the slideshow is running and this slide's dwell has elapsed, advance to the next image
+    /// (shuffled or in order, wrapping at the end). Called each event-loop tick; a no-op outside the
+    /// image view. Higher-rated images are shown longer.
     fn tick_slideshow(&mut self) {
-        let Some(interval) = self.slideshow else { return };
+        let Some(base) = self.slideshow else { return };
         if self.mode != AlbumMode::Image || self.view.is_empty() {
             return;
         }
-        if self.slide_last.elapsed() < interval {
+        let dwell = base.mul_f32(self.slide_dwell_factor());
+        if self.slide_last.elapsed() < dwell {
             return;
         }
         self.slide_last = Instant::now();
-        self.album_cursor = (self.album_cursor + 1) % self.view.len();
+        // Keep the order in step with the view length (it can change under filters).
+        if self.slide_order.len() != self.view.len() {
+            self.rebuild_slide_order();
+        }
+        if self.slide_shuffle && !self.slide_order.is_empty() {
+            self.slide_pos += 1;
+            if self.slide_pos >= self.slide_order.len() {
+                self.rebuild_slide_order(); // wrap → a fresh shuffle for variety
+                self.slide_pos = if self.slide_order.is_empty() { 0 } else { 1.min(self.slide_order.len() - 1) };
+            }
+            self.album_cursor = self.slide_order.get(self.slide_pos).copied().unwrap_or(0);
+        } else {
+            self.album_cursor = (self.album_cursor + 1) % self.view.len();
+        }
         self.zoom = 1.0;
         self.edit_redo.clear();
         self.show_original = false;
@@ -7151,6 +7219,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('S') => app.toggle_slideshow(),
         KeyCode::Char(']') if app.slideshow.is_some() => app.nudge_slideshow(-1),
         KeyCode::Char('[') if app.slideshow.is_some() => app.nudge_slideshow(1),
+        KeyCode::Char('r') if app.slideshow.is_some() => app.toggle_slide_shuffle(),
         _ => return apply_curation(app, code),
     }
     false
@@ -7209,8 +7278,9 @@ fn draw(f: &mut Frame, app: &mut App) {
             top.push(Span::styled(format!("  {sp}  "), base.fg(Color::DarkGray)));
         }
         if let Some(iv) = app.slideshow {
+            let sh = if app.slide_shuffle { " 🔀" } else { "" };
             top.push(Span::styled(
-                format!(" ▶ {}s ", iv.as_secs()),
+                format!(" ▶ {}s{sh} ", iv.as_secs()),
                 base.fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
             ));
         }
