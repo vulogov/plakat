@@ -16,6 +16,7 @@ pub mod layers;
 pub mod lut;
 pub mod cull;
 pub mod faces;
+pub mod geodata;
 pub mod geomap;
 pub mod homography;
 pub mod mledit;
@@ -217,6 +218,7 @@ enum EditCmd {
     RestoreTrash, // restore everything from .trash
     EmptyTrash,  // permanently purge .trash (confirms)
     ClearThumbs, // purge the whole persistent thumbnail cache
+    Geocode,     // reverse-geocode geotagged images → place: tags
     Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
     Meta(EditField), // edit a per-image metadata field (title / author / copyright / date / geotag)
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
@@ -431,6 +433,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("restore all from trash", "", EditCmd::RestoreTrash),
         ("empty trash (permanent)…", "", EditCmd::EmptyTrash),
         ("clear thumbnail cache (all — reclaims disk)", "", EditCmd::ClearThumbs),
+        ("reverse-geocode → place tags (fetches gazetteer once)", "", EditCmd::Geocode),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -669,6 +672,8 @@ struct App {
     pending_face_scan: bool,
     // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
     pending_face_polish: bool,
+    // Reverse-geocode: tag geotagged images with their nearest place (may fetch the gazetteer once).
+    pending_geocode: bool,
     // AI "create" op (generate / portrait / multiperson), run TUI-suspended → a new album image.
     pending_create: Option<(CreateOp, PathBuf)>,
     // Natural-language command pipeline (`:`): a raw query awaiting the LLM planner, and a parsed
@@ -924,6 +929,7 @@ impl App {
             pending_analyze: None,
             pending_face_scan: false,
             pending_face_polish: false,
+            pending_geocode: false,
             pending_create: None,
             clip_cache: HashMap::new(),
             pending_nl: None,
@@ -1918,6 +1924,11 @@ impl App {
             EditCmd::ClearThumbs => {
                 self.edit_menu = false;
                 self.clear_thumb_cache();
+            }
+            EditCmd::Geocode => {
+                self.edit_menu = false;
+                self.pending_geocode = true;
+                self.status = "reverse-geocoding … (fetches the gazetteer once, then cached)".into();
             }
             EditCmd::FacePolish => {
                 self.edit_menu = false;
@@ -3190,6 +3201,10 @@ impl App {
             Action::EmptyTrash => self.empty_trash(),
             Action::OpenTrash => self.open_trash(),
             Action::Map => self.open_geomap(),
+            Action::Geocode => {
+                self.pending_geocode = true;
+                self.status = "reverse-geocoding … (fetches the gazetteer once)".into();
+            }
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -4995,6 +5010,10 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             // Face-polish: detect faces on the cursor image, then open the skin-smoothing slider.
             run_face_polish(terminal, app)?;
             continue;
+        } else if std::mem::take(&mut app.pending_geocode) {
+            // Reverse-geocode geotagged images → place tags (fetches the gazetteer on first use).
+            run_geocode(terminal, app)?;
+            continue;
         } else if let Some((op, dir)) = app.pending_create.take() {
             // AI create (generate / portrait / multiperson): prompt-driven generation → new image.
             run_create_job(terminal, app, op, dir)?;
@@ -5290,6 +5309,67 @@ fn run_face_polish(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, a
         }
         Err(e) => app.status = format!("✗ face polish failed: {e:#}"),
     }
+    Ok(())
+}
+
+/// Reverse-geocode every geotagged image → a `place:<city>` tag (nearest populated place). Loads the
+/// cached gazetteer, downloading it once if absent (the only network step; TUI-suspended for that).
+fn run_geocode(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &mut App) -> Result<()> {
+    // Collect geotagged images across the library.
+    let targets: Vec<(PathBuf, f64, f64)> = app
+        .collect_library()
+        .into_iter()
+        .filter_map(|(p, _, r)| {
+            let e = r.as_ref().and_then(|r| r.exif.as_ref())?;
+            Some((p, e.gps_lon?, e.gps_lat?))
+        })
+        .collect();
+    if targets.is_empty() {
+        app.status = "no geotagged images to place".into();
+        return Ok(());
+    }
+
+    // Load the cached gazetteer, or fetch it once (suspend for the download).
+    let places = match geodata::load_gazetteer() {
+        Some(p) => p,
+        None => {
+            disable_raw_mode()?;
+            stdout().execute(LeaveAlternateScreen)?;
+            println!("\n▶ reverse-geocode: fetching the place gazetteer (once, then cached)…\n");
+            let res = std::thread::spawn(|| -> Result<Vec<geodata::Place>> {
+                let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+                rt.block_on(geodata::fetch_gazetteer())
+            })
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("gazetteer fetch thread panicked")));
+            enable_raw_mode()?;
+            stdout().execute(EnterAlternateScreen)?;
+            terminal.clear()?;
+            match res {
+                Ok(p) => p,
+                Err(e) => {
+                    app.status = format!("✗ couldn't fetch the gazetteer (needs network once): {e:#}");
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    app.snapshot_meta();
+    let mut tagged = 0u32;
+    for (path, lon, lat) in &targets {
+        if let Some(place) = geodata::nearest(&places, *lon, *lat) {
+            let tag = format!("place:{}", place.name.to_lowercase().replace(' ', "-"));
+            app.edit_record_at(path, |rec| {
+                if !rec.tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+                    rec.tags.push(tag.clone());
+                }
+            });
+            tagged += 1;
+        }
+    }
+    app.rebuild_view();
+    app.status = format!("🌍 geocoded {tagged} image(s) → place:<city> tags · filter e.g. 'place:tokyo'");
     Ok(())
 }
 

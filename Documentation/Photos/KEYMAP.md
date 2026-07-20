@@ -152,7 +152,10 @@ blur the edges for a focus effect.
 | `Ctrl-B m t` | move to trash (soft-delete) · `m b` browse trash (restore / empty palette-only) |
 
 Also, `*` (tree or grid) = **flatten browse** — show every image beneath a folder / mixed album in
-one grid; `:flatten` does the same.
+one grid; `:flatten` does the same. `m` (grid) = **geo map** — plot geotagged photos on an offline
+world map (arrows pan · `+`/`-` zoom · `0` world · Enter → nearby photos · Esc); `:map` too.
+**Reverse-geocode** to `place:<city>` tags via the manage palette / `:geocode` (fetches a place
+gazetteer once, then offline).
 
 ### `d` — metadata (per-image, stored in the album record)
 | Chord | Command |

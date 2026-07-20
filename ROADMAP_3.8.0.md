@@ -48,8 +48,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       `<cache>/plakat/photos/thumbs`, keyed by `sha256(path + size + mtime + byte-len)` so any on-disk
       change auto-invalidates — the byte-size disambiguates same-second in-place edits). Added a
       **global clear** (`clear_thumb_cache`) to reclaim disk (per-album `regen` already existed).
-- [ ] **Map / geo view** — cluster photos by GPS; reverse-geocode to place tags. The "wow" manager
-      feature, fully non-AI. *(Plan drafted — see notes.)*
+- [x] **Map / geo view** — DONE. `src/photos/geomap.rs`: plot geotagged photos on ratatui's built-in
+      vector world map (`canvas::Map`, **fully offline** — no tiles/network), grid `m` / `:map`;
+      pan/zoom, grid-bin clustering with counts, centre crosshair, Enter → geo-filtered smart view.
+      **Reverse-geocode** (`src/photos/geodata.rs`, manage palette / `:geocode`): downloads a Natural
+      Earth populated-places gazetteer **once**, caches it (XDG), then works offline — tags each
+      geotagged image with `place:<nearest-city>` (filter e.g. `place:tokyo`). Runtime stays offline;
+      the only network step is the one-time gazetteer fetch, exactly like model weights.
 
 ## Deferred
 
