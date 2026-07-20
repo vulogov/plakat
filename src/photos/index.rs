@@ -103,6 +103,16 @@ impl LibraryIndex {
         self.entries.iter().map(|e| (e.path.clone(), e.album.clone(), e.rec.clone())).collect()
     }
 
+    /// Direct image count per **synced** album directory (including 0 for a synced-but-empty album),
+    /// for refreshing the tree badges from the index without re-scanning.
+    pub fn counts(&self) -> HashMap<PathBuf, usize> {
+        let mut m: HashMap<PathBuf, usize> = self.dir_stamps.keys().map(|d| (d.clone(), 0)).collect();
+        for e in &self.entries {
+            *m.entry(e.album.clone()).or_insert(0) += 1;
+        }
+        m
+    }
+
     /// Snapshot path for a library root: `<cache>/plakat/photos/index/<sha256(root)>.json`.
     pub fn snapshot_path(root: &Path) -> PathBuf {
         use sha2::{Digest, Sha256};
@@ -180,6 +190,10 @@ mod tests {
         assert!(idx.sync(&[a.clone()]));
         assert_eq!(idx.entries.len(), 2);
         assert!(idx.entries.iter().all(|e| e.album == a));
+
+        // Per-album counts reflect the synced state (a is 2 after b was dropped).
+        let counts = idx.counts();
+        assert_eq!(counts.get(&a).copied(), Some(2));
 
         // Snapshot round-trips.
         idx.save(&root);

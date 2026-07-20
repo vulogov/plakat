@@ -1549,9 +1549,26 @@ impl App {
         // The derived index does the walk once and syncs only changed albums thereafter (persisted
         // across sessions), so smart albums / search don't re-read every album.hjson each build.
         if self.index.sync(&dirs) {
+            self.refresh_tree_counts();
             self.index.save(&self.root_dir);
         }
         self.index.rows()
+    }
+
+    /// Update the tree's per-album image badges from the index (a full `collect_library` sync just
+    /// ran, so index counts are current — this reflects images added / removed since the last walk
+    /// without a fresh directory scan). Albums not in the index keep their walk count.
+    fn refresh_tree_counts(&mut self) {
+        let counts = self.index.counts();
+        fn apply(node: &mut LibraryNode, counts: &HashMap<PathBuf, usize>) {
+            if let Some(&c) = counts.get(&node.path) {
+                node.image_count = c;
+            }
+            for ch in &mut node.children {
+                apply(ch, counts);
+            }
+        }
+        apply(&mut self.root, &counts);
     }
 
     /// Flatten browse: show **every** image beneath `dir` (across its sub-albums) in one grid — the

@@ -23,8 +23,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [ ] **Load on startup + incremental sync** — the app loads the snapshot (fast cold start) then syncs
       only changed albums; `collect_library` reads from the index instead of walking + parsing every
       `album.hjson` on each smart-album / search build. Snapshot saved on exit.
-- [ ] **`:reindex`** — force a full rebuild from the authoritative `album.hjson` files (the index is
+- [x] **`:reindex`** — force a full rebuild from the authoritative `album.hjson` files (the index is
       always safe to delete + rebuild).
+- [x] **Tree counts from the index + faster cold-start walk** — `library::walk` now does **one
+      `read_dir` per directory** (was three: count + subdir-probe + child-list) — the cold-start
+      bottleneck. `LibraryIndex::counts()` gives the per-album image count; `refresh_tree_counts`
+      updates the tree badges from the index after each full `collect_library` sync, so counts reflect
+      images added/removed (import, generate, move) without a fresh directory scan.
 
 ## Track C — (stretch) fast visual search
 

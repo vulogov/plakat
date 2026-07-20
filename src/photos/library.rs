@@ -71,15 +71,6 @@ fn count_images(dir: &Path) -> usize {
         .count()
 }
 
-/// Does `dir` contain at least one sub-directory?
-fn has_subdirs(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.path().is_dir())
-}
-
 /// Classify a single directory from its contents (RFC §4.1): an Album if it holds any image, else
 /// a Folder. (An empty dir is a Folder.)
 pub fn classify(dir: &Path) -> NodeKind {
@@ -96,8 +87,28 @@ pub fn classify(dir: &Path) -> NodeKind {
 pub fn walk(root: &Path) -> std::io::Result<LibraryNode> {
     let basename = root.file_name().and_then(|n| n.to_str()).unwrap_or("/").to_string();
 
-    let images = count_images(root);
-    let subdirs = has_subdirs(root);
+    // One read_dir per directory: count images + collect child dirs in a single pass (the cold-start
+    // bottleneck was three separate scans per directory). `file_type()` avoids a stat per entry where
+    // the platform provides it.
+    let mut images = 0usize;
+    let mut child_dirs: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(root)?.flatten() {
+        let p = e.path();
+        let (is_dir, is_file) = match e.file_type() {
+            Ok(t) => (t.is_dir(), t.is_file()),
+            Err(_) => (p.is_dir(), p.is_file()),
+        };
+        if is_file {
+            if is_image(&p) {
+                images += 1;
+            }
+        } else if is_dir {
+            let hidden = p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with('.')).unwrap_or(false);
+            if !hidden {
+                child_dirs.push(p);
+            }
+        }
+    }
     // Album = holds images. Folder = only sub-dirs (or empty). A dir with BOTH images and subdirs
     // is treated as an Album (its own images shown; subdirs still walked as children).
     let kind = if images > 0 { NodeKind::Album } else { NodeKind::Folder };
@@ -112,24 +123,10 @@ pub fn walk(root: &Path) -> std::io::Result<LibraryNode> {
     };
     let name = meta_name.filter(|n| !n.trim().is_empty()).unwrap_or(basename);
 
-    let mut children = Vec::new();
-    if subdirs {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(root)?
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_dir()
-                    && !p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|n| n.starts_with('.'))
-                        .unwrap_or(false)
-            })
-            .collect();
-        entries.sort();
-        for sub in entries {
-            children.push(walk(&sub)?);
-        }
+    child_dirs.sort();
+    let mut children = Vec::with_capacity(child_dirs.len());
+    for sub in child_dirs {
+        children.push(walk(&sub)?);
     }
 
     Ok(LibraryNode { path: root.to_path_buf(), kind, name, image_count: images, children })
