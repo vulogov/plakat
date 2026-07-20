@@ -261,6 +261,18 @@ layers, and the history scrubber open their own interactive modes (see `Ctrl-B h
 
 `Tab` toggles focus between the tree and the grid. `q` quits.
 
+## Library commands (`:`)
+
+Beyond edits and smart-album filters, the `:` command pane has library-wide verbs backed by the
+**derived index** (a rebuildable snapshot of every image's curation + EXIF, synced incrementally):
+
+| Command | Does |
+|---------|------|
+| `:stats` | aggregate library facets — rating histogram, flagged/tagged/geotagged, cameras, years |
+| `:reindex` | rebuild the derived index from scratch (always safe; it's non-authoritative) |
+| `:embed` | pre-compute + persist CLIP embeddings for the whole library (fast visual search after) |
+| `:conflicts` | review shared-volume save conflicts · `:who` list live instances · `:map` / `:geocode` |
+
 ## Shared volumes & multiple instances
 
 The library is safe to keep on a **shared / synced volume** (Dropbox, iCloud Drive, NFS) and to open
