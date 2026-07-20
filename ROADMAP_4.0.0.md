@@ -37,8 +37,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       gracefully (Err / None / default) — **no panics found**. +5 tests.
 - [x] **Command-surface consistency audit** — all **45** `nl::Action` variants have a dispatch arm in
       `mod.rs` (0 orphaned); the `label_for` match is exhaustive by construction (compile-checked).
-- [ ] **Tutorial + feature tour** — a complete `Documentation/Photos/TUTORIAL.md` walking the whole
-      manager (organize → edit → AI → collaborate → output → search-at-scale), current through 4.0.
+- [x] **Tutorial + feature tour** — `Documentation/Photos/TUTORIAL.md`: a narrative walk through the
+      whole manager (getting around → organize → edit → metadata + write-back → AI → collaborate →
+      present → search-at-scale), current through 4.0, cross-linked to KEYMAP + the RFC.
 - [ ] **The 4.0 stamp** — README "what's new" tells the flagship's story; RELEASE_HISTORY archives
       3.13; full suite + clippy-clean gate; declare 4.0.
 
