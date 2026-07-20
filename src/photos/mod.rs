@@ -28,6 +28,7 @@ pub mod portfolio;
 pub mod rename;
 pub mod scrub;
 pub mod stitch;
+pub mod exifwrite;
 pub mod versions;
 pub mod webgallery;
 pub mod vision;
@@ -131,6 +132,8 @@ enum PendingCmd {
     StripExif,
     /// Confirm redacting only GPS from the target images (keeps the rest of the EXIF).
     RedactGps,
+    /// Confirm writing each target's record metadata (title/author/©/date/geotag) into its EXIF.
+    WriteExif,
     /// Convert the targets to the entered `fmt [Npx | NkB]`.
     Convert,
     /// Burn a watermark/caption (`TEXT` or `TEXT | font.ttf`) onto the targets.
@@ -210,6 +213,7 @@ enum EditCmd {
     Straighten, // prompts for degrees
     StripExif,  // strip file metadata (confirm)
     RedactGps,  // remove only GPS, keep the rest of the EXIF (confirm)
+    WriteExif,  // write the record's title/author/©/date/geotag into the file's binary EXIF (confirm)
     Convert,    // prompts for format / size
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
@@ -497,6 +501,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("set capture date…", "dd", EditCmd::Meta(EditField::DateTaken)),
         ("set geotag (lat, lon)…", "dg", EditCmd::Meta(EditField::Geotag)),
         ("set caption…", "de", EditCmd::Meta(EditField::Caption)),
+        ("write metadata → file EXIF (title/author/©/date/geo)…", "dw", EditCmd::WriteExif),
     ];
     // Stylize (s): built-in look presets appended after the filters.
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
@@ -1881,6 +1886,15 @@ impl App {
                     format!("redact GPS from {n} image(s)? [y/N]: "),
                     "",
                     PendingCmd::RedactGps,
+                );
+            }
+            EditCmd::WriteExif => {
+                self.edit_menu = false;
+                let n = self.targets().len();
+                self.prompt(
+                    format!("write metadata into {n} file(s)' EXIF (JPEG/PNG, in place)? [y/N]: "),
+                    "",
+                    PendingCmd::WriteExif,
                 );
             }
             EditCmd::Convert => {
@@ -3428,6 +3442,58 @@ impl App {
         };
     }
 
+    /// Write each target's album-record metadata (title/author/copyright/date/geotag) into the file's
+    /// binary EXIF, in place (JPEG/PNG). Non-record images are skipped; records with no writable
+    /// fields count as "no metadata". Thumbnails are dropped so the info panel re-reads the file.
+    fn write_exif_targets(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to write".into();
+            return;
+        }
+        let (mut ok, mut empty, mut err) = (0, 0, 0);
+        for (dir, path) in &files {
+            let fields = self.exif_fields_for(dir, path);
+            if fields.is_empty() {
+                empty += 1;
+                continue;
+            }
+            match exifwrite::write_metadata(path, &fields) {
+                Ok(true) => {
+                    ok += 1;
+                    self.thumbs.remove(path);
+                }
+                Ok(false) => empty += 1,
+                Err(_) => err += 1,
+            }
+        }
+        if self.mode == AlbumMode::Image {
+            self.load_view();
+        }
+        self.status = if err > 0 {
+            format!("EXIF written to {ok} · {empty} had no metadata · {err} unsupported/failed")
+        } else {
+            format!("EXIF written to {ok} file(s) · {empty} had no metadata")
+        };
+    }
+
+    /// Collect the writable EXIF fields from an image's album record (title/author/copyright/date +
+    /// geotag from the cached EXIF sub-record). Empty strings are treated as unset.
+    fn exif_fields_for(&self, dir: &Path, path: &Path) -> exifwrite::MetaFields {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let meta = self.album_meta_at(dir);
+        let Some(rec) = meta.images.get(name) else { return exifwrite::MetaFields::default() };
+        let some = |o: &Option<String>| o.clone().filter(|s| !s.trim().is_empty());
+        let ex = rec.exif.as_ref();
+        exifwrite::MetaFields {
+            title: some(&rec.title),
+            author: some(&rec.author),
+            copyright: some(&rec.copyright),
+            date: ex.and_then(|e| some(&e.date_taken)),
+            gps: ex.and_then(|e| e.gps_lat.zip(e.gps_lon)),
+        }
+    }
+
     /// Stitch the selected image(s) into a panorama (horizontal / vertical / grid) → a new
     /// `panorama.png` in the album. Order follows the album's sort.
     fn stitch_panorama(&mut self, mode: stitch::PanoMode) {
@@ -4574,6 +4640,10 @@ impl App {
                 }
                 Some(PendingCmd::RedactGps) if arg.eq_ignore_ascii_case("y") => {
                     self.redact_gps_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::WriteExif) if arg.eq_ignore_ascii_case("y") => {
+                    self.write_exif_targets();
                     fs_changed = true;
                 }
                 Some(PendingCmd::Panorama) if !arg.is_empty() => {

@@ -23,9 +23,21 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       stops it. A green `▶ Ns` badge in the top bar shows it running. Paced off the event-loop tick,
       so thumbnails keep decoding and input stays responsive.
 
+## Track C — metadata write-back
+
+- [x] **Binary-EXIF write-back** (`Ctrl-B d w`, confirms) — `src/photos/exifwrite.rs` writes an
+      image's album-record metadata (title / author / copyright / capture-date / geotag) into the
+      **file's own EXIF**, in place, so it travels with the file. Hand-rolled + dependency-free like
+      `scrub`: builds a little-endian TIFF/EXIF block from scratch (IFD0 + Exif SubIFD for
+      DateTimeOriginal + a GPS IFD) and splices it into a JPEG (`APP1 "Exif\0\0"`) or PNG (`eXIf`
+      chunk), replacing any existing EXIF; the pixel stream is never touched. Tag map: title →
+      ImageDescription, author → Artist, copyright → Copyright, date → DateTime + DateTimeOriginal,
+      geotag → GPS IFD. Round-trips through the `kamadak-exif` reader (5 tests, JPEG + PNG). Closes
+      the deferred 3.8 metadata gap (only records with writable fields are touched; JPEG/PNG only).
+
 ## Docs
 
-- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow.
+- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back.
 - [~] README what's-new + PHOTOS_TUTORIAL note.
 
 ## Distribution
@@ -43,5 +55,5 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - Single-file HTML gallery (data-URI embedded) — one emailable file for small sets.
 - Slideshow: random order, inter-image fade, per-slide dwell from rating.
-- Write metadata back into the file's binary EXIF (the deferred 3.8 item).
 - Interactive / brush masks for local adjustments (the deferred 3.8 Track-C follow-up).
+- EXIF write-back for WebP/TIFF (currently JPEG/PNG); XPKeywords for tags.
