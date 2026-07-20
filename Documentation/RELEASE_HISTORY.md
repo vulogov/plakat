@@ -8,6 +8,27 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.11.0 — `plakat photos`: motion, formats & scale
+
+3.10 deepened collaboration. **3.11 polishes presentation, broadens the formats, and speeds things up.**
+
+**Ken Burns slideshow.** `k` in the slideshow adds the documentary **pan-and-zoom**: each slide drifts
+slowly across the frame between random framings, dwelling longer on higher-rated images.
+
+**Richer web gallery.** The exported gallery (`Ctrl-B w`) now embeds **captions, star ratings, an EXIF
+summary** (camera · lens · exposure · ISO) **and tag chips** — a `★` overlay on the grid, a full info
+panel in the lightbox — still a single self-contained, offline page.
+
+**HEIC / HEIF.** The manager now reads **`.heic` / `.heif` / `.avif`** (the iPhone format): browse,
+thumbnail, view, filter by EXIF, and export them — decoded via `sips` (built into macOS), `heif-convert`,
+or ImageMagick.
+
+**Metadata to more formats.** The binary-EXIF write-back (`Ctrl-B d w`) now covers **WebP and TIFF** in
+addition to JPEG/PNG — title, author, copyright, date, geotag and tags travel with the file.
+
+**Faster at scale.** A metadata parse-cache means smart albums and search no longer re-read every
+`album.hjson` on each build — a real speed-up on large libraries.
+
 ## What's new in 3.10.0 — `plakat photos`: collaboration, deepened
 
 3.9 made a shared library safe. **3.10 builds on it** — with the tools a team actually needs once

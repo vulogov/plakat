@@ -17,30 +17,31 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.11.0 — `plakat photos`: motion, formats & scale
+## What's new in 3.12.0 — `plakat photos`: scale (the derived index)
 
-3.10 deepened collaboration. **3.11 polishes presentation, broadens the formats, and speeds things up.**
+`album.hjson` stays the human-editable source of truth. **3.12 adds a derived, rebuildable index** so
+the manager stays fast on large libraries — a persisted snapshot of every image's curation + EXIF,
+synced incrementally, that browse / smart albums / search read from instead of re-walking every album.
 
-**Ken Burns slideshow.** `k` in the slideshow adds the documentary **pan-and-zoom**: each slide drifts
-slowly across the frame between random framings, dwelling longer on higher-rated images.
+**All Photos, instantly.** `:all` opens the whole library in one grid straight from the index — and on
+a warm launch it opens automatically, so a big collection is browsable **the moment you start**. `/`
+filters it live.
 
-**Richer web gallery.** The exported gallery (`Ctrl-B w`) now embeds **captions, star ratings, an EXIF
-summary** (camera · lens · exposure · ISO) **and tag chips** — a `★` overlay on the grid, a full info
-panel in the lightbox — still a single self-contained, offline page.
+**Smart albums at scale.** Filters run over the index and clone only the **matching** rows (a smart
+album matching 200 of 50k images touches 200, not the whole library); an edit is reflected in the index
+immediately, without re-reading its album.
 
-**HEIC / HEIF.** The manager now reads **`.heic` / `.heif` / `.avif`** (the iPhone format): browse,
-thumbnail, view, filter by EXIF, and export them — decoded via `sips` (built into macOS), `heif-convert`,
-or ImageMagick.
+**Fast visual search.** `:embed` pre-computes + persists CLIP embeddings for the whole library, and the
+vectors are **folded into the index** (a compact binary sidecar) so they load in one read at startup —
+the first visual search is instant.
 
-**Metadata to more formats.** The binary-EXIF write-back (`Ctrl-B d w`) now covers **WebP and TIFF** in
-addition to JPEG/PNG — title, author, copyright, date, geotag and tags travel with the file.
+**`:stats`.** Aggregate library facets — a rating histogram, flagged / tagged / geotagged counts, top
+cameras, and the capture-year span — computed from the index in one pass, at any scale.
 
-**Faster at scale.** A metadata parse-cache means smart albums and search no longer re-read every
-`album.hjson` on each build — a real speed-up on large libraries.
+The index is non-authoritative: delete it (`:reindex`) and it rebuilds from `album.hjson`. Everything
+from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
-
-**Earlier releases** (v0.13 – 3.10):
+**Earlier releases** (v0.13 – 3.11):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

@@ -1,14 +1,11 @@
-# plakat 3.12.0 — roadmap (in progress)
+# plakat 3.12.0 — roadmap (SHIPPED)
 
 **Theme — scale: the derived index.** `album.hjson` stays the authoritative, human-editable source of
-truth. 3.12 adds a **derived, rebuildable index** so the manager stays fast on large libraries: a
-persisted snapshot of every image's curation + EXIF, incrementally synced against disk, with
-smart-albums and search running over the in-memory index instead of re-walking every album each time.
+truth. 3.12 adds a **derived, rebuildable index** (pure-Rust in-memory + serde snapshot + a binary
+vector sidecar) so the manager stays fast on large libraries: incremental sync, matched-only smart
+queries, persisted CLIP vectors, an instant All-Photos grid, and `:stats`.
 
-Backend: **pure-Rust in-memory + a serde snapshot** (no new C dependency, no release-CI risk). A
-SQLite backend could slot in later behind the same query surface if out-of-core storage is ever needed.
-
-Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
+Status: `[x]` done. Distribution: crates.io + GH release (tag CI) + FF `main`.
 
 ## Track A — the index core
 
