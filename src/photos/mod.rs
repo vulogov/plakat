@@ -594,6 +594,9 @@ struct App {
     /// `(mtime, len)` of the open album's `album.hjson` when we last read/wrote it. A mismatch means
     /// another instance (or Dropbox/NFS) changed it → reload.
     album_stamp: Option<(std::time::SystemTime, u64)>,
+    /// Parse cache for other albums' `album.hjson` (keyed by file stamp) — avoids re-parsing every
+    /// album on each smart-album / search build. Interior-mutable so read paths (`&self`) can fill it.
+    meta_cache: std::cell::RefCell<HashMap<PathBuf, ((std::time::SystemTime, u64), hjson::AlbumMeta)>>,
     /// Throttle for the shared-volume external-change poll (a `stat` can be slow on a network FS).
     album_check: Instant,
     /// `(mtime, len)` of the root `folder.hjson` (smart albums / presets) for external-change detection.
@@ -639,6 +642,8 @@ struct App {
     kb_to: (f32, f32, f32),
     kb_start: Instant,
     kb_dwell: Duration,
+    /// The current slide's decoded base, cached so each animation frame crops it (not a full re-clone).
+    kb_base: Option<(PathBuf, image::DynamicImage)>,
     /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
     zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
@@ -942,6 +947,7 @@ impl App {
             album_meta: hjson::AlbumMeta::default(),
             album_baseline: hjson::AlbumMeta::default(),
             album_stamp: None,
+            meta_cache: std::cell::RefCell::new(HashMap::new()),
             album_check: Instant::now(),
             folder_stamp,
             last_shared_change: None,
@@ -970,6 +976,7 @@ impl App {
             kb_to: (0.5, 0.5, 1.0),
             kb_start: Instant::now(),
             kb_dwell: Duration::from_secs(4),
+            kb_base: None,
             zoom: 1.0,
             show_analysis: false,
             analysis: None,
@@ -1220,11 +1227,31 @@ impl App {
     }
 
     /// An album's metadata (the open album's live copy if it matches, else read from disk).
+    /// Read another album's metadata through the stamp-keyed parse cache (unchanged `album.hjson`
+    /// returns a clone without re-reading/parsing). Files with no `album.hjson` are cheap defaults.
+    fn read_album_cached(&self, dir: &Path) -> hjson::AlbumMeta {
+        let Some(stamp) = album_hjson_stamp(dir) else {
+            return hjson::AlbumMeta::default();
+        };
+        if let Some((s, meta)) = self.meta_cache.borrow().get(dir) {
+            if *s == stamp {
+                return meta.clone();
+            }
+        }
+        let meta = hjson::read_album(dir).unwrap_or_default();
+        let mut cache = self.meta_cache.borrow_mut();
+        if cache.len() > 8192 {
+            cache.clear(); // bound memory on very large libraries
+        }
+        cache.insert(dir.to_path_buf(), (stamp, meta.clone()));
+        meta
+    }
+
     fn album_meta_at(&self, dir: &Path) -> hjson::AlbumMeta {
         if self.album_dir.as_deref() == Some(dir) {
             self.album_meta.clone()
         } else {
-            hjson::read_album(dir).unwrap_or_default()
+            self.read_album_cached(dir)
         }
     }
 
@@ -1515,7 +1542,7 @@ impl App {
         collect_album_dirs(&self.root, &mut dirs);
         let mut out = Vec::new();
         for dir in dirs {
-            let meta = hjson::read_album(&dir).unwrap_or_default();
+            let meta = self.read_album_cached(&dir);
             let mut imgs: Vec<PathBuf> = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -7098,6 +7125,7 @@ impl App {
         if self.slideshow.take().is_some() {
             if self.ken_burns {
                 self.ken_burns = false;
+                self.kb_base = None;
                 self.load_view(); // restore the static (fit) framing
             }
             self.status = "slideshow off".into();
@@ -7205,6 +7233,7 @@ impl App {
             let base = self.slideshow.unwrap_or(Duration::from_secs(4));
             self.start_kb_slide(base);
         } else {
+            self.kb_base = None;
             self.load_view(); // restore the static (fit) framing
         }
         self.set_slide_status();
@@ -7224,13 +7253,17 @@ impl App {
         self.kb_to = framing(&mut rng);
         self.kb_dwell = base.mul_f32(self.slide_dwell_factor());
         self.kb_start = Instant::now();
+        // Decode + cache the base once for this slide (each frame crops it, no per-frame re-clone).
+        self.kb_base = self
+            .cur_idx()
+            .and_then(|i| self.album_paths.get(i).cloned())
+            .and_then(|p| self.working_base(&p, 1600).map(|img| (p, img)));
         self.render_ken_burns();
     }
 
-    /// Render the current Ken Burns frame: crop the cached working-base by the interpolated framing.
+    /// Render the current Ken Burns frame: crop the per-slide cached base by the interpolated framing.
     fn render_ken_burns(&mut self) {
-        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i)).cloned() else { return };
-        let Some(base) = self.working_base(&path, 1600) else { return };
+        let Some((_, base)) = &self.kb_base else { return };
         let t = if self.kb_dwell.is_zero() {
             1.0
         } else {
@@ -7266,6 +7299,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
             app.view_proto = None;
             app.slideshow = None; // leaving the image view stops any slideshow
             app.ken_burns = false;
+            app.kb_base = None;
         }
         KeyCode::Char('l') | KeyCode::Right => {
             if app.album_cursor + 1 < n {

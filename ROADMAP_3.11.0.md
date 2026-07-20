@@ -47,6 +47,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       pages always display. (EXIF *write-back* to HEIC stays unsupported — it needs HEIF container
       surgery; the write path bails with a clear message.) 1 test + graceful "install a decoder" error.
 
+## Track E — stability & performance
+
+- [x] **Album-metadata parse cache** — `read_album_cached` caches parsed `album.hjson` keyed by its
+      `(mtime, len)` stamp, so `collect_library` (every smart-album / search / library scan) no longer
+      re-reads + re-parses every album on each build — a real win at scale. Self-invalidating (a stamp
+      change re-reads), shared-volume-safe, and bounded (clears past 8192 entries). `album_meta_at`
+      routes non-open albums through it too.
+- [x] **Ken Burns per-frame allocation** — the animation cached its decoded base per *slide*
+      (`kb_base`) instead of cloning a full ~1600² image every ~80 ms tick; freed when the effect /
+      slideshow stops or you leave the view.
+
 ## Ground rules (unchanged)
 
 - Non-destructive; the effect is view-only (never alters the file or the edit stack).
