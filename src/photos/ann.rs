@@ -123,6 +123,10 @@ mod tests {
         assert_eq!(loaded.len(), 3);
         assert!(loaded.search(&quantize(&q), 1)[0].0.ends_with("a.png"));
         assert!(AnnIndex::load(&path, 999).is_none(), "stale length rejected");
+        // Corrupt graph bytes / missing file → None (never a panic).
+        std::fs::write(&path, b"not a valid bincode graph").unwrap();
+        assert!(AnnIndex::load(&path, 3).is_none(), "corrupt graph rejected");
+        assert!(AnnIndex::load(&dir.join("nope.hnsw"), 3).is_none(), "missing graph → None");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -753,6 +753,28 @@ mod tests {
     }
 
     #[test]
+    fn malformed_inputs_error_not_panic() {
+        let dir = tmpdir("bad");
+        // A .jpg that isn't a JPEG → declined, not corrupted / panicked.
+        let p = dir.join("x.jpg");
+        std::fs::write(&p, b"definitely not a jpeg").unwrap();
+        assert!(write_metadata(&p, &fields()).is_err());
+        // Zero-byte PNG.
+        let z = dir.join("z.png");
+        std::fs::write(&z, b"").unwrap();
+        assert!(write_metadata(&z, &fields()).is_err());
+        // Truncated little-endian TIFF header (II + magic, no IFD) → declined.
+        let t = dir.join("t.tiff");
+        std::fs::write(&t, [b'I', b'I', 42, 0, 8, 0, 0, 0]).unwrap();
+        assert!(write_metadata(&t, &fields()).is_err());
+        // Unsupported extension → clear error.
+        let g = dir.join("x.bmp");
+        std::fs::write(&g, b"anything").unwrap();
+        assert!(write_metadata(&g, &fields()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn nothing_to_write_is_a_noop() {
         let dir = tmpdir("noop");
         let p = dir.join("x.png");

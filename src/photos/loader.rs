@@ -275,4 +275,26 @@ mod tests {
         assert!(is_heif_ext("heic") && is_heif_ext("heif") && is_heif_ext("hif") && is_heif_ext("avif"));
         assert!(!is_heif_ext("jpg") && !is_heif_ext("png") && !is_heif_ext("cr2"));
     }
+
+    #[test]
+    fn corrupt_and_empty_files_error_not_panic() {
+        let dir = std::env::temp_dir().join(format!("plakat-loader-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Zero-byte file with an image extension.
+        let z = dir.join("z.png");
+        std::fs::write(&z, b"").unwrap();
+        assert!(load(&z).is_err());
+        assert!(thumbnail(&z, 16).is_err());
+        assert!(get_or_render_thumb(&z, 16).is_err());
+        // Garbage bytes claiming to be a JPEG.
+        let g = dir.join("g.jpg");
+        std::fs::write(&g, b"this is not an image at all").unwrap();
+        assert!(load(&g).is_err());
+        assert!(thumbnail(&g, 32).is_err());
+        // A truncated PNG header.
+        let t = dir.join("t.png");
+        std::fs::write(&t, [137, 80, 78, 71, 13, 10, 26, 10, 0, 0]).unwrap();
+        assert!(load(&t).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

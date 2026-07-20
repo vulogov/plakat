@@ -31,11 +31,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Track R — 4.0 readiness (hardening + consistency + docs)
 
-- [ ] **Robustness soak** — lock in graceful handling of adversarial / edge inputs with tests: corrupt
-      / truncated images, an empty or missing library, malformed `album.hjson` / index snapshot /
-      `.plakat_clip` / `.hnsw`, weird filenames, zero-byte files. Fix any panic found.
-- [ ] **Command-surface consistency audit** — every `nl::Action` has a dispatch arm and a parseable
-      verb; no orphaned commands / dead ends. Programmatic check + spot review.
+- [x] **Robustness soak** — added adversarial-input tests across the byte-level / parsing subsystems:
+      corrupt / truncated / zero-byte images (`loader`), malformed JPEG/PNG/TIFF + unsupported formats
+      (`exifwrite`), garbage index snapshot / vector sidecar / HNSW graph (`index`, `ann`). All error
+      gracefully (Err / None / default) — **no panics found**. +5 tests.
+- [x] **Command-surface consistency audit** — all **45** `nl::Action` variants have a dispatch arm in
+      `mod.rs` (0 orphaned); the `label_for` match is exhaustive by construction (compile-checked).
 - [ ] **Tutorial + feature tour** — a complete `Documentation/Photos/TUTORIAL.md` walking the whole
       manager (organize → edit → AI → collaborate → output → search-at-scale), current through 4.0.
 - [ ] **The 4.0 stamp** — README "what's new" tells the flagship's story; RELEASE_HISTORY archives

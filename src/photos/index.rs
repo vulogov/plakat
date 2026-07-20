@@ -392,6 +392,24 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_persisted_state_loads_as_empty_not_panic() {
+        let root = std::env::temp_dir().join(format!("plakat-idx-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // Garbage JSON snapshot → empty index (never a panic).
+        let snap = LibraryIndex::snapshot_path(&root);
+        std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+        std::fs::write(&snap, b"{ not valid json").unwrap();
+        assert!(LibraryIndex::load(&root).entries.is_empty());
+        // Garbage / truncated vector sidecar → empty.
+        std::fs::write(LibraryIndex::vec_path(&root), b"PKIVEC2\n\xff\xff\xff\xffgarbage").unwrap();
+        assert!(LibraryIndex::load_vectors(&root).is_empty());
+        // Wrong magic → empty.
+        std::fs::write(LibraryIndex::vec_path(&root), b"OTHER!!!\x00\x00\x00\x00").unwrap();
+        assert!(LibraryIndex::load_vectors(&root).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn vector_sidecar_roundtrips() {
         let root = std::env::temp_dir().join(format!("plakat-idxvec-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
