@@ -17,36 +17,31 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.9.0 — `plakat photos`: present, share & work together
+## What's new in 3.10.0 — `plakat photos`: collaboration, deepened
 
-3.8 grew the manager; **3.9 gets your work *out*, and lets a team share a library.**
+3.9 made a shared library safe. **3.10 builds on it** — with the tools a team actually needs once
+several people share one collection.
 
-**Web gallery.** `Ctrl-B w` writes a portable, **fully-offline** HTML gallery — a responsive
-thumbnail grid + a keyboard lightbox, self-contained (no CDN, no network) — that you can open locally
-or drop on any static host. It sits beside the print-oriented **portfolio** (`Ctrl-B p`).
+**Edit history.** Every record now keeps a rolling log of **who changed it and when**, unioned across
+instances so a shared album shows a combined timeline (a few recent `↳ who · when` lines in the info
+panel).
 
-**Slideshow.** `S` in the image view auto-advances through the current view; `[` / `]` change the
-pace, a green `▶` badge shows it running.
+**Review conflicts.** When two people change the same image, your save is kept and **`:conflicts`**
+opens a review pane — **Enter** jumps to the image, **`t`** takes the other version, **`c`** clears.
 
-**Metadata → the file.** `Ctrl-B d w` writes your edited **title / author / copyright / date /
-geotag** into the image's own **binary EXIF** (JPEG/PNG, in place, pixels untouched), so it travels
-with the file to other tools.
+**Presence.** A **`👥 N`** badge counts the other live `plakat photos` on the library; **`:who`** lists
+them *and which album each has open* (`alice@box (in Iceland)`). A tiny heartbeat under
+`.plakat_presence/` powers it and ages out when an instance leaves or crashes.
 
-**Brush masks.** The freeform companion to 3.8's graduated/radial local adjustments: `Ctrl-B r x/k/s/w/u`
-paint soft dabs (Space to stamp, `+`/`-` to size) and apply exposure / saturation / warmth / blur
-through the painted mask — a single, replayable edit.
+**Slideshow, richer.** `r` shuffles the order (a fresh permutation each loop), and higher-rated
+images **linger longer** — a hands-free review that dwells on your best frames.
 
-**Shared volumes & multiple instances.** The headline: keep the library on **Dropbox / iCloud / NFS**
-and open it in **several `plakat photos` at once** without losing curation. Saves use a **three-way
-merge** — only the records *you* changed are written, so a colleague rating *other* photos is never
-clobbered. Changes elsewhere are picked up **live** (a smart album added in one window appears in the
-others), a **`⟳ others editing`** badge lights up when they do, and each record shows **who edited it**
-last (with a `⚠` warning if two people touch the same image). A local-disk `flock` fast-path and
-lock-free merge keep it consistent on any volume.
+**Tags → the file.** The EXIF write-back (`Ctrl-B d w`) now also writes your image **tags** as
+XPKeywords, so they travel to other tools alongside title / author / copyright / date / geotag.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.8):
+**Earlier releases** (v0.13 – 3.9):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

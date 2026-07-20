@@ -1,10 +1,11 @@
-# plakat 3.10.0 — roadmap (in progress)
+# plakat 3.10.0 — roadmap (SHIPPED)
 
 **Theme — collaboration, deepened.** 3.9 made a shared library safe and showed *who* last touched a
 record. 3.10 builds on that: a rolling **edit history** per image, an interactive **conflict review**
-pane, and a **presence** heartbeat so you can see which instances are live.
+pane (`:conflicts`), a **presence** heartbeat (`:who`, with the open album), plus slideshow shuffle /
+rating-dwell and EXIF **keyword** write-back.
 
-Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
+Status: `[x]` done. Distribution: crates.io + GH release (tag CI) + FF `main`.
 
 ## Track A — per-image edit history
 

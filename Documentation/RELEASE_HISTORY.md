@@ -8,6 +8,33 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.9.0 — `plakat photos`: present, share & work together
+
+3.8 grew the manager; **3.9 gets your work *out*, and lets a team share a library.**
+
+**Web gallery.** `Ctrl-B w` writes a portable, **fully-offline** HTML gallery — a responsive
+thumbnail grid + a keyboard lightbox, self-contained (no CDN, no network) — that you can open locally
+or drop on any static host. It sits beside the print-oriented **portfolio** (`Ctrl-B p`).
+
+**Slideshow.** `S` in the image view auto-advances through the current view; `[` / `]` change the
+pace, a green `▶` badge shows it running.
+
+**Metadata → the file.** `Ctrl-B d w` writes your edited **title / author / copyright / date /
+geotag** into the image's own **binary EXIF** (JPEG/PNG, in place, pixels untouched), so it travels
+with the file to other tools.
+
+**Brush masks.** The freeform companion to 3.8's graduated/radial local adjustments: `Ctrl-B r x/k/s/w/u`
+paint soft dabs (Space to stamp, `+`/`-` to size) and apply exposure / saturation / warmth / blur
+through the painted mask — a single, replayable edit.
+
+**Shared volumes & multiple instances.** The headline: keep the library on **Dropbox / iCloud / NFS**
+and open it in **several `plakat photos` at once** without losing curation. Saves use a **three-way
+merge** — only the records *you* changed are written, so a colleague rating *other* photos is never
+clobbered. Changes elsewhere are picked up **live** (a smart album added in one window appears in the
+others), a **`⟳ others editing`** badge lights up when they do, and each record shows **who edited it**
+last (with a `⚠` warning if two people touch the same image). A local-disk `flock` fast-path and
+lock-free merge keep it consistent on any volume.
+
 ## What's new in 3.8.0 — `plakat photos`: the manager grows up
 
 3.7 finished the editing surface. **3.8 turns to the manager** — browsing, organizing, metadata,
