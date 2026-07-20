@@ -213,7 +213,7 @@ fn stitch_aligned_h(parts: &[RgbImage]) -> RgbImage {
                     continue;
                 }
                 let src = b.get_pixel(bx, by).0;
-                let px = if (bx as u32) < overlap && ox < cw as i64 {
+                let px = if bx < overlap && ox < cw as i64 {
                     // Linear cross-fade: 0 at the seam start (keep canvas) → 1 at overlap end (take b).
                     let t = (bx as f32 + 1.0) / (overlap as f32 + 1.0);
                     let dst = out.get_pixel(ox as u32, oy as u32).0;

@@ -47,6 +47,11 @@ impl AnnIndex {
         self.len
     }
 
+    /// Whether the index is empty (it never is once built — `build` returns `None` for an empty cache).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// The top-`k` nearest image paths to `query`, each with a similarity score (higher = closer).
     pub fn search(&self, query: &Embedding, k: usize) -> Vec<(PathBuf, f32)> {
         let mut s = Search::default();

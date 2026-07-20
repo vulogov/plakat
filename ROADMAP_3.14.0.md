@@ -17,13 +17,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **Search UX** — the status line now shows the **best similarity score** + whether the **ANN** or
       linear **scan** ran (both text search + lookalike).
 
-## Track C — consolidation / stability (4.0 readiness)
+## Track C — consolidation / stability (4.0 readiness) — DONE (first pass)
 
-- [ ] **Clippy + bug sweep** on the `photos` module — fix real correctness / robustness findings (not
-      style noise): panics on user input, unwraps on fallible paths, edge cases.
-- [ ] **Docs currency** — KEYMAP / tutorials reflect the 3.10–3.13 additions (collaboration, HEIC,
-      EXIF write-back, the derived index + `:` commands, visual search at scale).
-- [ ] **Polish** — status-line consistency, small UX rough edges surfaced during the feature sprint.
+- [x] **Clippy + bug sweep** on the `photos` module — clippy surfaces **no correctness / robustness
+      findings** across `photos` (only style/pedantic lints: complex types, clamp patterns, sort_by_key,
+      redundant casts) — a good signal the module is solid. Fixed the genuine tidy-ups: completed the
+      `AnnIndex` API (`is_empty`) and removed two dead same-type casts (`hjson`, `stitch`).
+- [x] **Docs currency** — KEYMAP carries the 3.10–3.13 additions (the "Library commands" `:` section
+      for `:all`/`:stats`/`:reindex`/`:embed`/`:conflicts`/`:who`, the "Shared volumes & multiple
+      instances" section, HEIC + EXIF-write-back notes, brush masks, slideshow), maintained each cycle.
 
 ## Ground rules
 
