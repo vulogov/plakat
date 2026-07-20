@@ -8,6 +8,28 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.10.0 — `plakat photos`: collaboration, deepened
+
+3.9 made a shared library safe. **3.10 builds on it** — with the tools a team actually needs once
+several people share one collection.
+
+**Edit history.** Every record now keeps a rolling log of **who changed it and when**, unioned across
+instances so a shared album shows a combined timeline (a few recent `↳ who · when` lines in the info
+panel).
+
+**Review conflicts.** When two people change the same image, your save is kept and **`:conflicts`**
+opens a review pane — **Enter** jumps to the image, **`t`** takes the other version, **`c`** clears.
+
+**Presence.** A **`👥 N`** badge counts the other live `plakat photos` on the library; **`:who`** lists
+them *and which album each has open* (`alice@box (in Iceland)`). A tiny heartbeat under
+`.plakat_presence/` powers it and ages out when an instance leaves or crashes.
+
+**Slideshow, richer.** `r` shuffles the order (a fresh permutation each loop), and higher-rated
+images **linger longer** — a hands-free review that dwells on your best frames.
+
+**Tags → the file.** The EXIF write-back (`Ctrl-B d w`) now also writes your image **tags** as
+XPKeywords, so they travel to other tools alongside title / author / copyright / date / geotag.
+
 ## What's new in 3.9.0 — `plakat photos`: present, share & work together
 
 3.8 grew the manager; **3.9 gets your work *out*, and lets a team share a library.**

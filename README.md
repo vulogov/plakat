@@ -17,31 +17,30 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.10.0 — `plakat photos`: collaboration, deepened
+## What's new in 3.11.0 — `plakat photos`: motion, formats & scale
 
-3.9 made a shared library safe. **3.10 builds on it** — with the tools a team actually needs once
-several people share one collection.
+3.10 deepened collaboration. **3.11 polishes presentation, broadens the formats, and speeds things up.**
 
-**Edit history.** Every record now keeps a rolling log of **who changed it and when**, unioned across
-instances so a shared album shows a combined timeline (a few recent `↳ who · when` lines in the info
-panel).
+**Ken Burns slideshow.** `k` in the slideshow adds the documentary **pan-and-zoom**: each slide drifts
+slowly across the frame between random framings, dwelling longer on higher-rated images.
 
-**Review conflicts.** When two people change the same image, your save is kept and **`:conflicts`**
-opens a review pane — **Enter** jumps to the image, **`t`** takes the other version, **`c`** clears.
+**Richer web gallery.** The exported gallery (`Ctrl-B w`) now embeds **captions, star ratings, an EXIF
+summary** (camera · lens · exposure · ISO) **and tag chips** — a `★` overlay on the grid, a full info
+panel in the lightbox — still a single self-contained, offline page.
 
-**Presence.** A **`👥 N`** badge counts the other live `plakat photos` on the library; **`:who`** lists
-them *and which album each has open* (`alice@box (in Iceland)`). A tiny heartbeat under
-`.plakat_presence/` powers it and ages out when an instance leaves or crashes.
+**HEIC / HEIF.** The manager now reads **`.heic` / `.heif` / `.avif`** (the iPhone format): browse,
+thumbnail, view, filter by EXIF, and export them — decoded via `sips` (built into macOS), `heif-convert`,
+or ImageMagick.
 
-**Slideshow, richer.** `r` shuffles the order (a fresh permutation each loop), and higher-rated
-images **linger longer** — a hands-free review that dwells on your best frames.
+**Metadata to more formats.** The binary-EXIF write-back (`Ctrl-B d w`) now covers **WebP and TIFF** in
+addition to JPEG/PNG — title, author, copyright, date, geotag and tags travel with the file.
 
-**Tags → the file.** The EXIF write-back (`Ctrl-B d w`) now also writes your image **tags** as
-XPKeywords, so they travel to other tools alongside title / author / copyright / date / geotag.
+**Faster at scale.** A metadata parse-cache means smart albums and search no longer re-read every
+`album.hjson` on each build — a real speed-up on large libraries.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.9):
+**Earlier releases** (v0.13 – 3.10):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

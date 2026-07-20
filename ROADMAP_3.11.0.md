@@ -1,10 +1,10 @@
-# plakat 3.11.0 — roadmap (in progress)
+# plakat 3.11.0 — roadmap (SHIPPED)
 
-**Theme — the Ken Burns slideshow.** 3.10 gave the slideshow shuffle + rating-weighted dwell. 3.11
-adds the documentary **Ken Burns** effect: each slide slowly pans and zooms across the frame, turning
-a still review into gentle motion.
+**Theme — motion, formats & scale.** The documentary **Ken Burns** slideshow, a **richer web gallery**
+(captions/ratings/EXIF/tags), **HEIC/HEIF** support, **WebP/TIFF** EXIF write-back, and a
+**metadata parse-cache** speed-up for large libraries.
 
-Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
+Status: `[x]` done. Distribution: crates.io + GH release (tag CI) + FF `main`.
 
 ## Track A — Ken Burns pan/zoom
 
