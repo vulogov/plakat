@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 pub const IMAGE_EXTS: &[&str] = &[
     // standard raster
     "png", "jpg", "jpeg", "webp", "gif", "tiff", "tif", "bmp", "tga", "qoi", "ppm", "pgm", "pbm",
-    "pnm", "ff", "ico", "avif", // camera RAW (rawloader)
+    "pnm", "ff", "ico", "avif", "heic", "heif", "hif", // HEIF family (external decode fallback)
+    // camera RAW (rawloader)
     "arw", "srf", "sr2", "nef", "nrw", "cr2", "crw", "raf", "orf", "rw2", "pef", "srw", "erf",
     "kdc", "dcr", "dng", "iiq", "mos", "3fr", "mef", "ari", "raw",
 ];

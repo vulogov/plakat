@@ -15,26 +15,126 @@ fn ext_lower(path: &Path) -> String {
     path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
 }
 
-/// Decode any supported image to an RGB `DynamicImage`. RAW files are fully demosaiced (2×2-quad).
+/// HEIF-family extensions the `image` crate can't decode natively (HEIC/HEIF/AVIF) — handled via an
+/// external transcode fallback ([`decode_heif`]).
+fn is_heif_ext(ext: &str) -> bool {
+    matches!(ext, "heic" | "heif" | "hif" | "avif")
+}
+
+/// Decode any supported image to an RGB `DynamicImage`. RAW files are fully demosaiced (2×2-quad);
+/// HEIF-family files transcode through an external tool.
 pub fn load(path: &Path) -> Result<DynamicImage> {
-    if is_raw_ext(&ext_lower(path)) {
+    let ext = ext_lower(path);
+    if is_raw_ext(&ext) {
         Ok(DynamicImage::ImageRgb8(demosaic_raw(path, usize::MAX)?))
+    } else if is_heif_ext(&ext) {
+        decode_heif(path, None)
     } else {
         Ok(image::open(path).with_context(|| format!("decoding {}", path.display()))?)
     }
 }
 
 /// Decode a thumbnail (longest side ≈ `size`). For RAW, the demosaic is strided so only ~`size`
-/// output pixels are computed (the RFC's fast path) — full debayer is reserved for `load`.
+/// output pixels are computed (the RFC's fast path) — full debayer is reserved for `load`. HEIF
+/// transcodes at a reduced size when the external tool supports it.
 pub fn thumbnail(path: &Path, size: u32) -> Result<DynamicImage> {
-    if is_raw_ext(&ext_lower(path)) {
+    let ext = ext_lower(path);
+    if is_raw_ext(&ext) {
         let img = demosaic_raw(path, size as usize)?;
         Ok(DynamicImage::ImageRgb8(img).thumbnail(size, size))
+    } else if is_heif_ext(&ext) {
+        Ok(decode_heif(path, Some(size))?.thumbnail(size, size))
     } else {
         Ok(image::open(path)
             .with_context(|| format!("decoding {}", path.display()))?
             .thumbnail(size, size))
     }
+}
+
+/// An available external HEIF→PNG transcoder, detected once. `sips` ships with macOS; `heif-convert`
+/// comes with libheif-tools; `magick`/`convert` is ImageMagick (with a HEIC delegate).
+#[derive(Clone, Copy)]
+enum HeifTool {
+    Sips,
+    HeifConvert,
+    Magick,
+    Convert,
+}
+
+fn heif_tool() -> Option<HeifTool> {
+    use std::sync::OnceLock;
+    static TOOL: OnceLock<Option<HeifTool>> = OnceLock::new();
+    fn have(bin: &str) -> bool {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok() // Ok means the binary launched (found); a non-zero exit is fine
+    }
+    *TOOL.get_or_init(|| {
+        if cfg!(target_os = "macos") && have("sips") {
+            Some(HeifTool::Sips)
+        } else if have("heif-convert") {
+            Some(HeifTool::HeifConvert)
+        } else if have("magick") {
+            Some(HeifTool::Magick)
+        } else if have("convert") {
+            Some(HeifTool::Convert)
+        } else {
+            None
+        }
+    })
+}
+
+/// Transcode a HEIF-family file to a temporary PNG via an external tool, then decode that. `max_dim`,
+/// when set + supported, downsizes during transcode (cheaper thumbnails). Best-effort temp cleanup.
+fn decode_heif(path: &Path, max_dim: Option<u32>) -> Result<DynamicImage> {
+    use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let tool = heif_tool().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no HEIF/HEIC decoder found for {} — install libheif-tools (heif-convert) or ImageMagick \
+             (macOS has sips built in)",
+            path.display()
+        )
+    })?;
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("plakat-heif-{}-{n}.png", std::process::id()));
+
+    let status = match tool {
+        HeifTool::Sips => {
+            let mut c = Command::new("sips");
+            c.args(["-s", "format", "png"]);
+            if let Some(m) = max_dim {
+                c.arg("-Z").arg(m.to_string());
+            }
+            c.arg(path).arg("--out").arg(&tmp).stdout(std::process::Stdio::null()).status()
+        }
+        HeifTool::HeifConvert => {
+            Command::new("heif-convert").arg(path).arg(&tmp).stdout(std::process::Stdio::null()).status()
+        }
+        HeifTool::Magick | HeifTool::Convert => {
+            let bin = if matches!(tool, HeifTool::Magick) { "magick" } else { "convert" };
+            let mut c = Command::new(bin);
+            c.arg(path);
+            if let Some(m) = max_dim {
+                c.arg("-resize").arg(format!("{m}x{m}"));
+            }
+            c.arg(&tmp).status()
+        }
+    }
+    .with_context(|| format!("running the HEIF decoder for {}", path.display()))?;
+
+    if !status.success() || !tmp.exists() {
+        let _ = std::fs::remove_file(&tmp);
+        anyhow::bail!("HEIF decode failed for {}", path.display());
+    }
+    let img = image::open(&tmp).with_context(|| format!("reading transcoded {}", tmp.display()));
+    let _ = std::fs::remove_file(&tmp);
+    img
 }
 
 /// 2×2-quad demosaic of a RAW file → half-resolution (or strided) RGB. `target_long` bounds the
@@ -168,5 +268,11 @@ mod tests {
         assert_eq!(thumb_cache_path(&p, 16), thumb_cache_path(&p, 16));
         assert_ne!(thumb_cache_path(&p, 16), thumb_cache_path(&p, 32));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heif_extensions_recognized() {
+        assert!(is_heif_ext("heic") && is_heif_ext("heif") && is_heif_ext("hif") && is_heif_ext("avif"));
+        assert!(!is_heif_ext("jpg") && !is_heif_ext("png") && !is_heif_ext("cr2"));
     }
 }

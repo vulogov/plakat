@@ -37,6 +37,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       GPS + title); big-endian (`MM`) is declined, not corrupted. 1 test. *Limitation: a pre-existing
       Exif sub-IFD is superseded (its extra sub-tags not carried) when a date/geotag is written.*
 
+## Track D — HEIC / HEIF support
+
+- [x] **HEIF-family decode** — `heic` / `heif` / `hif` / `avif` are recognized image types, decoded via
+      an external transcode fallback (`loader::decode_heif`): `sips` (macOS built-in), else
+      `heif-convert` (libheif-tools), else ImageMagick `magick`/`convert` — detected once. Thumbnails
+      transcode at reduced size where the tool supports it. Browse / thumbnail / view / EXIF metadata
+      (kamadak already reads HEIF) all work; the web-gallery export re-encodes them to a web format so
+      pages always display. (EXIF *write-back* to HEIC stays unsupported — it needs HEIF container
+      surgery; the write path bails with a clear message.) 1 test + graceful "install a decoder" error.
+
 ## Ground rules (unchanged)
 
 - Non-destructive; the effect is view-only (never alters the file or the edit stack).

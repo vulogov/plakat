@@ -92,35 +92,40 @@ pub fn export(photos: &[Photo], dest: &Path, opts: &Options) -> Result<usize> {
 }
 
 /// Emit `full/NNN.ext` (down-sized to `full_px` if set) and `thumbs/NNN.jpg` for one source; returns
-/// their album-relative paths.
+/// their album-relative paths. Sources the browser can display directly (and that need no resize) are
+/// copied verbatim; everything else (HEIC / RAW / TIFF, or when down-sizing) is decoded via the shared
+/// loader and re-encoded to a web-friendly format so the page always shows.
 fn one(src: &Path, full_dir: &Path, thumb_dir: &Path, idx: usize, opts: &Options) -> Result<(String, String)> {
-    let ext = src
+    let web_ext = src
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"))
-        .unwrap_or_else(|| "png".into());
-    let full_name = format!("{idx:04}.{ext}");
+        .filter(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif"));
     let thumb_name = format!("{idx:04}.jpg");
-    let full_out = full_dir.join(&full_name);
     let thumb_out = thumb_dir.join(&thumb_name);
 
-    let img = image::open(src).with_context(|| format!("reading {}", src.display()))?;
-
-    // Full image: copy verbatim when small enough / no cap, else down-size and re-encode.
-    match opts.full_px {
-        Some(px) if img.width().max(img.height()) > px => {
-            img.resize(px, px, image::imageops::FilterType::Lanczos3)
-                .save(&full_out)
-                .with_context(|| format!("writing {}", full_out.display()))?;
-        }
-        _ => {
-            std::fs::copy(src, &full_out).with_context(|| format!("copying {}", src.display()))?;
-        }
+    // Full image.
+    let (full_ext, verbatim) = match (&web_ext, opts.full_px) {
+        (Some(e), None) => (e.clone(), true),
+        _ => ("jpg".into(), false),
+    };
+    let full_name = format!("{idx:04}.{full_ext}");
+    let full_out = full_dir.join(&full_name);
+    if verbatim {
+        std::fs::copy(src, &full_out).with_context(|| format!("copying {}", src.display()))?;
+    } else {
+        let img = super::loader::load(src).with_context(|| format!("reading {}", src.display()))?;
+        let img = match opts.full_px {
+            Some(px) if img.width().max(img.height()) > px => {
+                img.resize(px, px, image::imageops::FilterType::Lanczos3)
+            }
+            _ => img,
+        };
+        img.to_rgb8().save(&full_out).with_context(|| format!("writing {}", full_out.display()))?;
     }
 
-    // Thumbnail: always a bounded JPEG for a light, fast grid.
-    let thumb = img.resize(opts.thumb_px, opts.thumb_px, image::imageops::FilterType::Lanczos3);
+    // Thumbnail: always a bounded JPEG for a light, fast grid (loader handles HEIC/RAW).
+    let thumb = super::loader::thumbnail(src, opts.thumb_px).with_context(|| format!("thumb {}", src.display()))?;
     thumb.to_rgb8().save(&thumb_out).with_context(|| format!("writing {}", thumb_out.display()))?;
 
     Ok((format!("full/{full_name}"), format!("thumbs/{thumb_name}")))
@@ -311,20 +316,20 @@ mod tests {
         let n = export(&photos, &dst, &opts).unwrap();
         assert_eq!(n, 3);
 
-        // Structure: an index, three thumbs, three full images.
+        // Structure: an index, three thumbs, three full images (re-encoded to jpg since down-sized).
         assert!(dst.join("index.html").exists());
         assert!(dst.join("thumbs/0000.jpg").exists());
-        assert!(dst.join("full/0002.png").exists());
+        assert!(dst.join("full/0002.jpg").exists());
 
         // The full image was down-sized to ≤150.
-        let full = image::open(dst.join("full/0000.png")).unwrap();
+        let full = image::open(dst.join("full/0000.jpg")).unwrap();
         assert!(full.width().max(full.height()) <= 150, "full sized to {}x{}", full.width(), full.height());
 
         // The HTML is self-contained (no external URLs) and escapes the title.
         let html = std::fs::read_to_string(dst.join("index.html")).unwrap();
         assert!(html.contains("My &lt;Trip&gt;"), "title escaped");
         assert!(!html.contains("http://") && !html.contains("https://"), "no network refs");
-        assert!(html.contains("thumbs/0000.jpg") && html.contains("full/0000.png"));
+        assert!(html.contains("thumbs/0000.jpg") && html.contains("full/0000.jpg"));
         assert_eq!(html.matches("class=\"cell\"").count(), 3);
 
         // Metadata is embedded: caption, rating, EXIF summary, tags.
