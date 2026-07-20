@@ -73,6 +73,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 - [x] **"Others editing" indicator** — a yellow `⟳ others editing` badge in the top status bar,
       shown for ~12 s after each externally-driven reload (`last_shared_change`), so frequent
       concurrent edits keep it lit — a clear signal another instance / a sync is touching the library.
+- [x] **Same-machine `flock` fast-path** — `hjson::FileLock` takes a best-effort `flock(LOCK_EX)` on a
+      `.lock` sibling around each merge-write, so concurrent writers on one machine serialize (no
+      interleaved read-modify-write at all) on local disks. Bounded spin then give-up (never stalls the
+      UI); a no-op where `flock` is unsupported — the merge still guarantees correctness, so the lock
+      only ever *adds* safety. `libc::flock`, no new dependency. 1 test (mutual exclusion).
+- [x] **Per-record "last editor" note** — each record we change is stamped `last_editor`
+      (`$PLAKAT_EDITOR` or `user@host`) + `last_edited` (ISO-8601 UTC via a dependency-free `now_iso`).
+      Shown in the info panel ("Edited by …"). On a same-record **conflict** (we and another instance
+      both changed the same image since our load) the merge reports it and the save status warns
+      `⚠ saved — N record(s) also changed elsewhere, kept yours (also edited by <who>)`. 2 tests.
 
 ## Docs
 
@@ -94,5 +104,5 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - Slideshow: random order, inter-image fade, per-slide dwell from rating.
 - EXIF write-back for WebP/TIFF (currently JPEG/PNG); XPKeywords for tags.
-- Shared-volume: optional same-machine advisory lock (`flock`) as a fast-path on local disks; a
-  per-record "last editor" note; conflict surfacing when two instances hit the same record.
+- Shared-volume: a per-image edit-history (append last N editors) rather than just the latest; an
+  interactive "review conflicts" pane; presence heartbeat (`.plakat_presence`) listing live instances.

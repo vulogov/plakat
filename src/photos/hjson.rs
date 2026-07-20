@@ -185,6 +185,28 @@ pub struct ImageRecord {
     /// variant on demand. Non-destructive — the stack stays editable across sessions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers: Vec<LayerEntry>,
+    /// Who last changed this record (`user@host` or `$PLAKAT_EDITOR`) — set on write for shared-volume
+    /// conflict visibility, so you can see when another instance / person touched an image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_editor: Option<String>,
+    /// When this record was last changed (ISO-8601 UTC), paired with [`Self::last_editor`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_edited: Option<String>,
+}
+
+/// A "who + when" stamp applied to the records an instance changes, for conflict visibility.
+#[derive(Debug, Clone)]
+pub struct EditorStamp {
+    pub who: String,
+    pub when: String,
+}
+
+/// A same-record conflict surfaced by the merge: a record we changed that another instance *also*
+/// changed since our baseline. `other_editor` is who last touched it on disk (if known).
+#[derive(Debug, Clone)]
+pub struct Conflict {
+    pub file: String,
+    pub other_editor: Option<String>,
 }
 
 /// `album.hjson` — album metadata + sparse per-image records.
@@ -249,6 +271,68 @@ pub fn write_album(dir: &Path, meta: &AlbumMeta) -> Result<()> {
     write_atomic(dir, ALBUM_FILE, meta)
 }
 
+/// Current time as an ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SSZ`). Dependency-free (Howard Hinnant's
+/// `civil_from_days`), so no `chrono`.
+pub fn now_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{year:04}-{month:02}-{day:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+/// A best-effort **same-machine** advisory lock (a fast-path on local disks) — a `flock(LOCK_EX)` on a
+/// `.lock` sibling that serializes concurrent writers so no two interleave a read-modify-write. On a
+/// shared/network volume `flock` may be a no-op or unsupported; that's fine — [`merge_album`] /
+/// [`merge_folder`] still guarantee correctness, so this only ever *adds* safety, never gates it.
+/// Released automatically when dropped (the fd closes). Bounded spin so it can never stall the UI.
+pub struct FileLock {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    /// Try to take the lock at `lock_path`, spinning briefly under contention then giving up (returns
+    /// `None`) rather than blocking indefinitely. `None` also on any platform without `flock`.
+    pub fn acquire(lock_path: &Path) -> Option<FileLock> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(lock_path).ok()?;
+            for _ in 0..25 {
+                let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+                if rc == 0 {
+                    return Some(FileLock { _file: file });
+                }
+                // EWOULDBLOCK → someone holds it; brief backoff. Any other errno → unsupported, bail.
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EWOULDBLOCK) {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            None
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = lock_path;
+            None
+        }
+    }
+}
+
 // ---- Concurrency-safe (shared-volume) merge -----------------------------------------------------
 
 /// Two records (or their absence) differ. Compared structurally via JSON so we don't need `PartialEq`
@@ -265,7 +349,20 @@ fn record_changed(a: Option<&ImageRecord>, b: Option<&ImageRecord>) -> bool {
 /// and the **disk** value for everything we didn't touch — so a concurrent instance editing *other*
 /// images is never clobbered. Same-record conflicts resolve last-writer-wins (ours, since we're saving).
 pub fn merge_album(baseline: &AlbumMeta, ours: &AlbumMeta, disk: &AlbumMeta) -> AlbumMeta {
+    merge_album_stamped(baseline, ours, disk, None).0
+}
+
+/// [`merge_album`] plus, when `stamp` is set, tagging every record we changed with its editor/time,
+/// and reporting **conflicts** — records we changed that another instance *also* changed since our
+/// baseline (we keep ours, but the caller can surface it).
+pub fn merge_album_stamped(
+    baseline: &AlbumMeta,
+    ours: &AlbumMeta,
+    disk: &AlbumMeta,
+    stamp: Option<&EditorStamp>,
+) -> (AlbumMeta, Vec<Conflict>) {
     let mut merged = disk.clone();
+    let mut conflicts: Vec<Conflict> = Vec::new();
 
     // Album-level scalar fields: take ours only where we changed them relative to baseline.
     if ours.name != baseline.name {
@@ -293,9 +390,22 @@ pub fn merge_album(baseline: &AlbumMeta, ours: &AlbumMeta, disk: &AlbumMeta) -> 
     for k in keys {
         let ours_r = ours.images.get(k);
         if record_changed(ours_r, baseline.images.get(k)) {
+            // A true conflict: the disk copy also diverged from our baseline for this record. Note who
+            // touched it on disk (the *other* editor) so the caller can surface it.
+            if record_changed(disk.images.get(k), baseline.images.get(k)) {
+                conflicts.push(Conflict {
+                    file: k.clone(),
+                    other_editor: disk.images.get(k).and_then(|r| r.last_editor.clone()),
+                });
+            }
             match ours_r {
                 Some(r) => {
-                    merged.images.insert(k.clone(), r.clone());
+                    let mut r = r.clone();
+                    if let Some(st) = stamp {
+                        r.last_editor = Some(st.who.clone());
+                        r.last_edited = Some(st.when.clone());
+                    }
+                    merged.images.insert(k.clone(), r);
                 }
                 None => {
                     merged.images.remove(k); // we deleted it → respect that
@@ -303,17 +413,24 @@ pub fn merge_album(baseline: &AlbumMeta, ours: &AlbumMeta, disk: &AlbumMeta) -> 
             }
         }
     }
-    merged
+    (merged, conflicts)
 }
 
-/// Concurrency-safe write of the open album: re-read the current on-disk copy, [`merge_album`] our
-/// changes onto it, then write atomically. Returns the merged metadata (the caller adopts it as its
-/// new in-memory + baseline state so subsequent diffs are relative to it).
-pub fn write_album_merged(dir: &Path, baseline: &AlbumMeta, ours: &AlbumMeta) -> Result<AlbumMeta> {
+/// Concurrency-safe write of the open album: take the same-machine lock (best-effort), re-read the
+/// current on-disk copy, [`merge_album_stamped`] our changes onto it (tagging changed records with
+/// `stamp`), then write atomically. Returns the merged metadata (the caller adopts it as its new
+/// in-memory + baseline state) plus any conflicting record keys.
+pub fn write_album_merged(
+    dir: &Path,
+    baseline: &AlbumMeta,
+    ours: &AlbumMeta,
+    stamp: Option<&EditorStamp>,
+) -> Result<(AlbumMeta, Vec<Conflict>)> {
+    let _lock = FileLock::acquire(&dir.join(".album.hjson.lock"));
     let disk = read_album(dir).unwrap_or_default();
-    let merged = merge_album(baseline, ours, &disk);
+    let (merged, conflicts) = merge_album_stamped(baseline, ours, &disk, stamp);
     write_album(dir, &merged)?;
-    Ok(merged)
+    Ok((merged, conflicts))
 }
 
 pub fn write_folder(dir: &Path, meta: &FolderMeta) -> Result<()> {
@@ -372,6 +489,7 @@ pub fn merge_folder(baseline: &FolderMeta, ours: &FolderMeta, disk: &FolderMeta)
 /// Concurrency-safe write of `folder.hjson`: re-read the current on-disk copy, [`merge_folder`] our
 /// changes onto it, write atomically, and return the merged result (the caller adopts its lists).
 pub fn write_folder_merged(dir: &Path, baseline: &FolderMeta, ours: &FolderMeta) -> Result<FolderMeta> {
+    let _lock = FileLock::acquire(&dir.join(".folder.hjson.lock"));
     let disk = read_folder(dir).unwrap_or_default();
     let merged = merge_folder(baseline, ours, &disk);
     write_folder(dir, &merged)?;
@@ -522,14 +640,61 @@ mod tests {
         // We rated A and save via the merge.
         let mut ours = baseline.clone();
         ours.images.insert("a.jpg".into(), rec(5, &[]));
-        let merged = write_album_merged(&dir, &baseline, &ours).unwrap();
+        let stamp = EditorStamp { who: "alice@host".into(), when: "2024-07-14T12:00:00Z".into() };
+        let (merged, conflicts) = write_album_merged(&dir, &baseline, &ours, Some(&stamp)).unwrap();
         assert_eq!(merged.images["a.jpg"].rating, 5);
         assert_eq!(merged.images["b.jpg"].tags, vec!["keeper".to_string()]);
+        // The record we changed is stamped; the untouched (disk) one is not; no conflict here.
+        assert_eq!(merged.images["a.jpg"].last_editor.as_deref(), Some("alice@host"));
+        assert!(merged.images["b.jpg"].last_editor.is_none());
+        assert!(conflicts.is_empty());
         // And it's on disk.
         let back = read_album(&dir).unwrap();
         assert_eq!(back.images["a.jpg"].rating, 5);
         assert_eq!(back.images["b.jpg"].tags, vec!["keeper".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_reports_same_record_conflicts_and_stamps() {
+        let mut baseline = AlbumMeta::default();
+        baseline.images.insert("x.jpg".into(), rec(1, &[]));
+        baseline.images.insert("y.jpg".into(), rec(1, &[]));
+        // We bumped x to 5; another instance (disk) bumped the SAME x to 3 and left y alone.
+        let mut ours = baseline.clone();
+        ours.images.insert("x.jpg".into(), rec(5, &[]));
+        let mut disk = baseline.clone();
+        disk.images.insert("x.jpg".into(), rec(3, &[]));
+
+        let stamp = EditorStamp { who: "me@box".into(), when: "2024-01-01T00:00:00Z".into() };
+        let (merged, conflicts) = merge_album_stamped(&baseline, &ours, &disk, Some(&stamp));
+        assert_eq!(conflicts.len(), 1, "x is a real conflict");
+        assert_eq!(conflicts[0].file, "x.jpg");
+        assert_eq!(merged.images["x.jpg"].rating, 5, "we keep ours");
+        assert_eq!(merged.images["x.jpg"].last_editor.as_deref(), Some("me@box"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_lock_is_mutually_exclusive() {
+        let dir = std::env::temp_dir().join(format!("plakat-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(".album.hjson.lock");
+        let held = FileLock::acquire(&p).expect("first acquire");
+        // A second acquire while held spins then gives up (best-effort → None).
+        assert!(FileLock::acquire(&p).is_none(), "contended acquire yields None");
+        drop(held);
+        // Once released it can be taken again.
+        assert!(FileLock::acquire(&p).is_some(), "re-acquire after release");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn now_iso_is_well_formed() {
+        let s = now_iso();
+        assert_eq!(s.len(), 20, "YYYY-MM-DDTHH:MM:SSZ ({s})");
+        assert!(s.ends_with('Z') && s.as_bytes()[4] == b'-' && s.as_bytes()[10] == b'T');
+        assert!(s.starts_with("20"), "plausible year: {s}");
     }
 
     #[test]

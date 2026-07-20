@@ -260,6 +260,20 @@ layers, and the history scrubber open their own interactive modes (see `Ctrl-B h
 
 `Tab` toggles focus between the tree and the grid. `q` quits.
 
+## Shared volumes & multiple instances
+
+The library is safe to keep on a **shared / synced volume** (Dropbox, iCloud Drive, NFS) and to open
+in **several `plakat photos` at once**. Curation is stored in `album.hjson` / `folder.hjson`, and
+those are written with a **three-way merge**: each save re-reads the current file and overlays only
+the records/fields *you* changed, so a colleague (or another window) rating *other* photos is never
+clobbered. Changes made elsewhere are **picked up automatically** — a smart album added in one
+instance appears in the others, and a yellow **`⟳ others editing`** badge lights up briefly when that
+happens. Each record you touch is stamped **"Edited by "** (shown in the info panel `i`); if two
+instances change the *same* image at once, the later save keeps yours and warns
+`⚠ … also changed elsewhere`. Set `PLAKAT_EDITOR` to control the name that appears in the stamp
+(defaults to `user@host`). On a local disk an advisory `flock` additionally serializes writers; on
+network volumes the merge alone keeps things consistent.
+
 ---
 *This file is the reference; the running app's Edit palette (`E`) and `Ctrl-B h`/`H` cards are
 generated from the same table, so they always agree.*

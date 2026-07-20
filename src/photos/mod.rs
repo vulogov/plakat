@@ -600,6 +600,9 @@ struct App {
     /// When another instance / a sync last changed shared state we adopted — drives the "others
     /// editing" status indicator (shown for a short window after each external change).
     last_shared_change: Option<Instant>,
+    /// This instance's identity (`$PLAKAT_EDITOR` or `user@host`), stamped onto records we change for
+    /// shared-volume conflict visibility.
+    editor_id: String,
     album_paths: Vec<PathBuf>,
     /// Filtered view: indices into `album_paths` that pass `filter` (all when empty). `album_cursor`
     /// indexes into this, so navigation/rendering operate on the filtered set.
@@ -912,6 +915,7 @@ impl App {
             album_check: Instant::now(),
             folder_stamp,
             last_shared_change: None,
+            editor_id: editor_identity(),
             album_paths: Vec::new(),
             view: Vec::new(),
             filter: String::new(),
@@ -4461,11 +4465,20 @@ impl App {
     /// result as the new in-memory + baseline state and refreshes the change-detection stamp.
     fn save_album(&mut self) {
         let Some(dir) = self.album_dir.clone() else { return };
-        match hjson::write_album_merged(&dir, &self.album_baseline, &self.album_meta) {
-            Ok(merged) => {
+        let stamp = hjson::EditorStamp { who: self.editor_id.clone(), when: hjson::now_iso() };
+        match hjson::write_album_merged(&dir, &self.album_baseline, &self.album_meta, Some(&stamp)) {
+            Ok((merged, conflicts)) => {
                 self.album_meta = merged.clone();
                 self.album_baseline = merged;
                 self.album_stamp = album_hjson_stamp(&dir);
+                if !conflicts.is_empty() {
+                    // Another instance changed the same record(s) since we loaded; we kept ours.
+                    self.last_shared_change = Some(Instant::now());
+                    let who = conflicts.iter().find_map(|c| c.other_editor.clone());
+                    let by = who.map(|w| format!(" (also edited by {w})")).unwrap_or_default();
+                    self.status =
+                        format!("⚠ saved — {} record(s) also changed elsewhere, kept yours{by}", conflicts.len());
+                }
             }
             Err(e) => self.status = format!("save failed: {e}"),
         }
@@ -7784,6 +7797,41 @@ fn hjson_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
     Some((md.modified().ok()?, md.len()))
 }
 
+/// This instance's editor identity for record stamps: `$PLAKAT_EDITOR` if set, else `user@host`.
+fn editor_identity() -> String {
+    if let Ok(v) = std::env::var("PLAKAT_EDITOR") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into());
+    format!("{user}@{}", hostname())
+}
+
+/// Best-effort short hostname (env first, then `libc::gethostname`), for [`editor_identity`].
+fn hostname() -> String {
+    if let Ok(h) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
+        if !h.trim().is_empty() {
+            return h.split('.').next().unwrap_or(&h).to_string();
+        }
+    }
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if rc == 0 {
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if let Ok(s) = std::str::from_utf8(&buf[..end]) {
+                if !s.is_empty() {
+                    return s.split('.').next().unwrap_or(s).to_string();
+                }
+            }
+        }
+    }
+    "host".to_string()
+}
+
 /// Collect every album directory under `node` (depth-first) — the search space for a smart album.
 fn collect_album_dirs(node: &LibraryNode, out: &mut Vec<PathBuf>) {
     if node.kind == NodeKind::Album {
@@ -8934,6 +8982,15 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             kv("Title", r.title.clone());
             kv("Author", r.author.clone());
             kv("©", r.copyright.clone());
+            // Shared-volume conflict visibility: who last changed this record + when.
+            if let Some(who) = r.last_editor.clone() {
+                let when = r.last_edited.as_deref().map(|w| w.replace('T', " ").trim_end_matches('Z').to_string());
+                let val = match when {
+                    Some(w) => format!("{who} · {w}"),
+                    None => who,
+                };
+                lines.push(Line::from(format!("{:<9}{val}", "Edited by")));
+            }
         }
         if let Some(r) = path.as_ref().and_then(|p| app.record(p)) {
             lines.push(section("curation"));
