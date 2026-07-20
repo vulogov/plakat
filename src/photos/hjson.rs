@@ -15,14 +15,14 @@ pub const FOLDER_FILE: &str = "folder.hjson";
 
 /// A saved filter query (root `folder.hjson`) — a library-wide "smart album" (RFC §8): its `query`
 /// is evaluated across every album on open, collecting the matching images into one grid.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SmartAlbum {
     pub name: String,
     pub query: String,
 }
 
 /// A named, reusable edit stack (a saved sequence of pixel edits) — applied to any image.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EditPreset {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -82,7 +82,7 @@ pub struct ExifRecord {
 }
 
 /// One append-only edit-log entry (op + free-form params + timestamp).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EditEntry {
     pub op: String,
     #[serde(default, flatten)]
@@ -320,6 +320,64 @@ pub fn write_folder(dir: &Path, meta: &FolderMeta) -> Result<()> {
     write_atomic(dir, FOLDER_FILE, meta)
 }
 
+/// Merge a name-keyed list (smart albums / edit presets) three ways: start from `disk` (preserving its
+/// order) and apply only the entries this instance added / changed / removed relative to `baseline`
+/// (by name). Entries only on disk (added by another instance) are preserved.
+fn merge_named<T: Clone + PartialEq>(
+    baseline: &[T],
+    ours: &[T],
+    disk: &[T],
+    name: impl Fn(&T) -> String,
+) -> Vec<T> {
+    let find = |v: &[T], n: &str| v.iter().find(|x| name(x) == n).cloned();
+    let mut result: Vec<T> = disk.to_vec();
+    let mut names: Vec<String> = ours.iter().chain(baseline.iter()).map(&name).collect();
+    names.sort();
+    names.dedup();
+    for n in names {
+        let ours_e = find(ours, &n);
+        if ours_e != find(baseline, &n) {
+            // We changed this entry vs baseline — apply our version (upsert) or removal.
+            result.retain(|x| name(x) != n);
+            if let Some(e) = ours_e {
+                result.push(e);
+            }
+        }
+    }
+    result
+}
+
+/// Three-way merge of root `folder.hjson` — the shared-volume-safe counterpart to [`merge_album`] for
+/// library-wide smart albums + edit presets. Our added/changed/removed entries (by name) win;
+/// everything else defers to `disk`, so a concurrent instance's new smart albums / presets survive.
+pub fn merge_folder(baseline: &FolderMeta, ours: &FolderMeta, disk: &FolderMeta) -> FolderMeta {
+    let mut merged = disk.clone();
+    if ours.name != baseline.name {
+        merged.name = ours.name.clone();
+    }
+    if ours.description != baseline.description {
+        merged.description = ours.description.clone();
+    }
+    if ours.thumb_workers != baseline.thumb_workers {
+        merged.thumb_workers = ours.thumb_workers;
+    }
+    if ours.expanded != baseline.expanded {
+        merged.expanded = ours.expanded.clone(); // tree expand state is this instance's UI
+    }
+    merged.smart_albums = merge_named(&baseline.smart_albums, &ours.smart_albums, &disk.smart_albums, |s| s.name.clone());
+    merged.edit_presets = merge_named(&baseline.edit_presets, &ours.edit_presets, &disk.edit_presets, |p| p.name.clone());
+    merged
+}
+
+/// Concurrency-safe write of `folder.hjson`: re-read the current on-disk copy, [`merge_folder`] our
+/// changes onto it, write atomically, and return the merged result (the caller adopts its lists).
+pub fn write_folder_merged(dir: &Path, baseline: &FolderMeta, ours: &FolderMeta) -> Result<FolderMeta> {
+    let disk = read_folder(dir).unwrap_or_default();
+    let merged = merge_folder(baseline, ours, &disk);
+    write_folder(dir, &merged)?;
+    Ok(merged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +530,30 @@ mod tests {
         assert_eq!(back.images["a.jpg"].rating, 5);
         assert_eq!(back.images["b.jpg"].tags, vec!["keeper".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_folder_keeps_concurrent_smart_albums() {
+        let sa = |n: &str, q: &str| SmartAlbum { name: n.into(), query: q.into() };
+        // Baseline: one smart album. We add "Mine"; another instance (disk) adds "Theirs".
+        let baseline = FolderMeta { smart_albums: vec![sa("Keepers", "rating>=4")], ..Default::default() };
+        let mut ours = baseline.clone();
+        ours.smart_albums.push(sa("Mine", "flag"));
+        let mut disk = baseline.clone();
+        disk.smart_albums.push(sa("Theirs", "reject"));
+
+        let merged = merge_folder(&baseline, &ours, &disk);
+        let names: Vec<&str> = merged.smart_albums.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Keepers") && names.contains(&"Mine") && names.contains(&"Theirs"),
+            "all three survive: {names:?}");
+
+        // We edit an existing album's query while another instance deletes a different one.
+        let base2 = FolderMeta { smart_albums: vec![sa("A", "x"), sa("B", "y")], ..Default::default() };
+        let ours2 = FolderMeta { smart_albums: vec![sa("A", "x2"), sa("B", "y")], ..Default::default() }; // edited A
+        let disk2 = FolderMeta { smart_albums: vec![sa("A", "x")], ..Default::default() }; // they deleted B
+        let m2 = merge_folder(&base2, &ours2, &disk2);
+        assert_eq!(m2.smart_albums.iter().find(|s| s.name == "A").unwrap().query, "x2", "our edit to A wins");
+        assert!(!m2.smart_albums.iter().any(|s| s.name == "B"), "their deletion of B respected");
     }
 
     #[test]

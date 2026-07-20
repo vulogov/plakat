@@ -62,8 +62,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
     (merging in any of our own not-yet-saved edits) and refresh the view — a metadata-only reload that
     keeps the file list + cursor.
   - 4 merge tests (concurrent different-image edits both survive; adds/deletes/conflicts; album-level
-    fields; end-to-end `write_album_merged`). *Note: `folder.hjson`/smart-album concurrency is
-    read-fresh-then-write (low contention) — a full merge there is a follow-up.*
+    fields; end-to-end `write_album_merged`).
+- [x] **`folder.hjson` (smart albums / presets) merge + cross-instance sync** — `hjson::merge_folder`
+      / `write_folder_merged` extend the same three-way merge to the root folder's name-keyed lists
+      (a shared `merge_named` helper). All smart-album/preset writes route through a new
+      `App::edit_folder` (read fresh baseline → apply delta → merge-write → refresh the live list), so
+      concurrent instances adding different smart albums both survive. The throttled poll now also
+      watches `folder.hjson`, so a smart album added by one instance **appears in the others'** tree
+      without a restart. 1 merge test.
+- [x] **"Others editing" indicator** — a yellow `⟳ others editing` badge in the top status bar,
+      shown for ~12 s after each externally-driven reload (`last_shared_change`), so frequent
+      concurrent edits keep it lit — a clear signal another instance / a sync is touching the library.
 
 ## Docs
 
@@ -85,5 +94,5 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 - Slideshow: random order, inter-image fade, per-slide dwell from rating.
 - EXIF write-back for WebP/TIFF (currently JPEG/PNG); XPKeywords for tags.
-- Shared-volume: extend the three-way merge to `folder.hjson` (smart albums) + optional same-machine
-  advisory lock; surface a small "⟳ others editing" indicator when reloads are frequent.
+- Shared-volume: optional same-machine advisory lock (`flock`) as a fast-path on local disks; a
+  per-record "last editor" note; conflict surfacing when two instances hit the same record.

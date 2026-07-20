@@ -595,6 +595,11 @@ struct App {
     album_stamp: Option<(std::time::SystemTime, u64)>,
     /// Throttle for the shared-volume external-change poll (a `stat` can be slow on a network FS).
     album_check: Instant,
+    /// `(mtime, len)` of the root `folder.hjson` (smart albums / presets) for external-change detection.
+    folder_stamp: Option<(std::time::SystemTime, u64)>,
+    /// When another instance / a sync last changed shared state we adopted — drives the "others
+    /// editing" status indicator (shown for a short window after each external change).
+    last_shared_change: Option<Instant>,
     album_paths: Vec<PathBuf>,
     /// Filtered view: indices into `album_paths` that pass `filter` (all when empty). `album_cursor`
     /// indexes into this, so navigation/rendering operate on the filtered set.
@@ -888,6 +893,7 @@ impl App {
         let mut expanded = HashSet::new();
         expanded.insert(root.path.clone());
         let smart_albums = hjson::read_folder(&root_dir).unwrap_or_default().smart_albums;
+        let folder_stamp = folder_hjson_stamp(&root_dir);
         Self {
             root,
             root_dir,
@@ -904,6 +910,8 @@ impl App {
             album_baseline: hjson::AlbumMeta::default(),
             album_stamp: None,
             album_check: Instant::now(),
+            folder_stamp,
+            last_shared_change: None,
             album_paths: Vec::new(),
             view: Vec::new(),
             filter: String::new(),
@@ -3303,11 +3311,10 @@ impl App {
                 if query.is_empty() {
                     self.status = "smart album needs a filter/selector".into();
                 } else {
-                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
-                    fm.smart_albums.retain(|s| s.name != name);
-                    fm.smart_albums.push(hjson::SmartAlbum { name: name.clone(), query });
-                    let _ = hjson::write_folder(&self.root_dir, &fm);
-                    self.smart_albums = fm.smart_albums;
+                    self.edit_folder(|fm| {
+                        fm.smart_albums.retain(|s| s.name != name);
+                        fm.smart_albums.push(hjson::SmartAlbum { name: name.clone(), query });
+                    });
                     self.status = format!("saved smart album '{name}'");
                 }
             }
@@ -4418,14 +4425,11 @@ impl App {
             self.status = "this image has no edits to save".into();
             return;
         }
-        let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
-        fm.edit_presets.retain(|p| p.name != name);
         let count = ops.len();
-        fm.edit_presets.push(hjson::EditPreset { name: name.to_string(), ops });
-        if let Err(e) = hjson::write_folder(&self.root_dir, &fm) {
-            self.status = format!("save failed: {e}");
-            return;
-        }
+        self.edit_folder(|fm| {
+            fm.edit_presets.retain(|p| p.name != name);
+            fm.edit_presets.push(hjson::EditPreset { name: name.to_string(), ops });
+        });
         self.status = format!("saved preset '{name}' ({count} edits)");
     }
 
@@ -4467,33 +4471,77 @@ impl App {
         }
     }
 
-    /// Shared-volume watch: if the open album's `album.hjson` changed on disk since we last touched it
-    /// (another `plakat photos` instance, or a Dropbox/NFS sync), adopt those changes — merging in any
-    /// of our own not-yet-saved edits so nothing is lost. Throttled; a metadata-only reload that keeps
-    /// the file list and cursor. No-op in a smart/search view (those re-read on demand).
-    fn reload_album_if_changed(&mut self) {
-        if self.smart.is_some() || self.album_dir.is_none() {
-            return;
-        }
+    /// Concurrency-safe edit of the root `folder.hjson` (smart albums / presets): read a fresh
+    /// baseline, apply `f`, then merge-write against the latest disk copy so a concurrent instance's
+    /// smart albums / presets aren't clobbered. Refreshes the in-memory smart-album list + stamp.
+    fn edit_folder(&mut self, f: impl FnOnce(&mut hjson::FolderMeta)) -> hjson::FolderMeta {
+        let baseline = hjson::read_folder(&self.root_dir).unwrap_or_default();
+        let mut ours = baseline.clone();
+        f(&mut ours);
+        let merged = match hjson::write_folder_merged(&self.root_dir, &baseline, &ours) {
+            Ok(m) => m,
+            Err(e) => {
+                self.status = format!("save failed: {e}");
+                ours
+            }
+        };
+        self.smart_albums = merged.smart_albums.clone();
+        self.folder_stamp = folder_hjson_stamp(&self.root_dir);
+        merged
+    }
+
+    /// Shared-volume watch (throttled): if the open album's `album.hjson` or the root `folder.hjson`
+    /// changed on disk since we last touched them (another `plakat photos` instance, or a Dropbox/NFS
+    /// sync), adopt those changes — merging in any of our own not-yet-saved edits so nothing is lost.
+    /// Metadata-only reloads that keep the file list + cursor. Records the event for the "others
+    /// editing" indicator.
+    fn poll_shared_changes(&mut self) {
         if self.album_check.elapsed() < Duration::from_millis(1500) {
             return;
         }
         self.album_check = Instant::now();
-        let dir = self.album_dir.clone().unwrap();
-        let cur = album_hjson_stamp(&dir);
-        if cur == self.album_stamp {
-            return; // unchanged since we last read/wrote it
+        let mut changed = false;
+
+        // Root folder.hjson — library-wide smart albums. Our own edits are merge-written immediately
+        // (edit_folder), so on an external change we simply adopt the disk list into our live cache.
+        let folder_cur = folder_hjson_stamp(&self.root_dir);
+        if folder_cur != self.folder_stamp {
+            let disk = hjson::read_folder(&self.root_dir).unwrap_or_default();
+            if disk.smart_albums != self.smart_albums {
+                self.smart_albums = disk.smart_albums;
+                changed = true;
+            }
+            self.folder_stamp = folder_cur;
         }
-        let disk = hjson::read_album(&dir).unwrap_or_default();
-        // Keep our in-memory edits (rare — each edit saves immediately) and adopt everything else.
-        let merged = hjson::merge_album(&self.album_baseline, &self.album_meta, &disk);
-        self.album_meta = merged;
-        self.album_baseline = disk;
-        self.album_stamp = cur;
-        if self.mode == AlbumMode::Image {
-            self.load_view(); // refresh the info panel / edit state for the current image
+
+        // Open album's album.hjson (skip in a smart/search view — those re-read on demand).
+        if self.smart.is_none() {
+            if let Some(dir) = self.album_dir.clone() {
+                let cur = album_hjson_stamp(&dir);
+                if cur != self.album_stamp {
+                    let disk = hjson::read_album(&dir).unwrap_or_default();
+                    let merged = hjson::merge_album(&self.album_baseline, &self.album_meta, &disk);
+                    self.album_meta = merged;
+                    self.album_baseline = disk;
+                    self.album_stamp = cur;
+                    if self.mode == AlbumMode::Image {
+                        self.load_view();
+                    }
+                    changed = true;
+                }
+            }
         }
-        self.status = "album reloaded — metadata changed on disk (shared volume)".into();
+
+        if changed {
+            self.last_shared_change = Some(Instant::now());
+            self.status = "reloaded — shared state changed on disk (another instance / sync)".into();
+        }
+    }
+
+    /// Whether to show the "others editing" indicator — true for a short window after the most recent
+    /// externally-driven reload (so frequent concurrent edits keep it lit).
+    fn others_editing_active(&self) -> bool {
+        self.last_shared_change.map(|t| t.elapsed() < Duration::from_secs(12)).unwrap_or(false)
     }
 
     /// Re-order `album_paths` per the album's persisted `sort` (default `name-asc`). Rating/score
@@ -4624,11 +4672,10 @@ impl App {
                     meta_changed = true;
                 }
                 Some(PendingCmd::SaveSmart { query }) if !arg.is_empty() => {
-                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
-                    fm.smart_albums.retain(|s| s.name != arg); // upsert by name
-                    fm.smart_albums.push(hjson::SmartAlbum { name: arg.clone(), query });
-                    hjson::write_folder(&self.root_dir, &fm)?;
-                    self.smart_albums = fm.smart_albums;
+                    self.edit_folder(|fm| {
+                        fm.smart_albums.retain(|s| s.name != arg); // upsert by name
+                        fm.smart_albums.push(hjson::SmartAlbum { name: arg.clone(), query });
+                    });
                     self.status = format!("saved smart album '{arg}'");
                 }
                 Some(PendingCmd::Search) if !arg.is_empty() => {
@@ -4846,10 +4893,7 @@ impl App {
                     }
                 }
                 Some(PendingCmd::DeleteSmart { name }) if arg.eq_ignore_ascii_case("y") => {
-                    let mut fm = hjson::read_folder(&self.root_dir).unwrap_or_default();
-                    fm.smart_albums.retain(|s| s.name != name);
-                    hjson::write_folder(&self.root_dir, &fm)?;
-                    self.smart_albums = fm.smart_albums;
+                    self.edit_folder(|fm| fm.smart_albums.retain(|s| s.name != name));
                     if self.smart.as_deref() == Some(name.as_str()) {
                         self.smart = None; // the open view was just deleted
                     }
@@ -5246,7 +5290,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
         // Shared-volume: pick up another instance's / a sync's metadata changes (throttled). Skipped
         // while a prompt is open so it can't clobber the input line.
         if !app.cmd_active {
-            app.reload_album_if_changed();
+            app.poll_shared_changes();
         }
         app.refresh_mem();
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
@@ -7014,6 +7058,14 @@ fn draw(f: &mut Frame, app: &mut App) {
             ));
         }
     }
+    // "Others editing" indicator: shown for a short window after we adopt an external change on a
+    // shared volume, so it's clear another instance / a sync is touching the same library.
+    if app.others_editing_active() {
+        top.push(Span::styled(
+            " ⟳ others editing ",
+            base.fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
     // Memory-status indicator: steers the user away from AI-heavy ops when memory is low.
     let (mem_txt, mem_col) = app.mem_hint();
     top.push(Span::styled(mem_txt, base.fg(mem_col).add_modifier(Modifier::BOLD)));
@@ -7719,7 +7771,16 @@ fn expand_tilde(path: &str) -> PathBuf {
 /// `(mtime, len)` of `<dir>/album.hjson` for cheap external-change detection on a shared volume.
 /// `None` when the file is absent or unstatable — a transition to/from `None` also counts as a change.
 fn album_hjson_stamp(dir: &Path) -> Option<(std::time::SystemTime, u64)> {
-    let md = std::fs::metadata(dir.join(hjson::ALBUM_FILE)).ok()?;
+    hjson_stamp(&dir.join(hjson::ALBUM_FILE))
+}
+
+/// `(mtime, len)` of the root `<dir>/folder.hjson` (smart albums / presets).
+fn folder_hjson_stamp(dir: &Path) -> Option<(std::time::SystemTime, u64)> {
+    hjson_stamp(&dir.join(hjson::FOLDER_FILE))
+}
+
+fn hjson_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let md = std::fs::metadata(path).ok()?;
     Some((md.modified().ok()?, md.len()))
 }
 
