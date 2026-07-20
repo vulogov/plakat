@@ -16,7 +16,8 @@ Categories after `Ctrl-B` (image view): `g` geometry · `c` crop · `a` adjust �
 | `h` / `H` | quickhelp: key chords / commands (contextual) | anywhere |
 | `t` | tag browser | anywhere |
 | `v` | version browser | anywhere |
-| `p` | portfolio export | anywhere |
+| `p` | portfolio export (watermarked copies + contact sheet) | anywhere |
+| `w` | web gallery export (offline HTML + lightbox) | anywhere |
 | `l` / `L` | lookalike: perceptual / CLIP | anywhere |
 | `g c a k x e m` | **edit category** → then an item key (below) | **image view** |
 
@@ -226,6 +227,7 @@ layers, and the history scrubber open their own interactive modes (see `Ctrl-B h
 | `i` / `I` | info panel: right / bottom |
 | `H` | analysis panel (histogram, RGB, balance, dominant, waveform, RGB parade) |
 | `o` | overlay: clipping zebras → focus peaking → off |
+| `S` | slideshow ▶ auto-advance · `[` slower · `]` faster (1–30 s) · `S`/`Esc` stop |
 | `E` / `M` / `A` | edit palette / ML-edit / AI-vision menus |
 | `1`–`5` `0` `f` `x` `c` | rate / clear · flag · reject · colour |
 

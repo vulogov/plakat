@@ -29,6 +29,7 @@ pub mod rename;
 pub mod scrub;
 pub mod stitch;
 pub mod versions;
+pub mod webgallery;
 pub mod vision;
 pub mod visual_search;
 pub mod library;
@@ -112,6 +113,8 @@ enum PendingCmd {
     BatchRename,
     /// Export the current targets as a portfolio to the entered `DIR [MAXPX] [| watermark text]`.
     Portfolio,
+    /// Export the current targets as a static web gallery to the entered `DIR [MAXPX] [| title]`.
+    WebGallery,
     /// Crop the cursor image to the entered exact `WxH` pixels (centered).
     CropExact,
     /// Resize the cursor image to fit the entered `WxH` (or single `N`) pixels.
@@ -585,6 +588,9 @@ struct App {
     mode: AlbumMode,
     info: InfoPos,
     overlay: OverlayMode,
+    /// Slideshow: `Some(interval)` auto-advances the image view; the last advance instant paces it.
+    slideshow: Option<Duration>,
+    slide_last: Instant,
     /// Image-view zoom (1.0 = fit; center crop-zoom). Resets to fit on navigation.
     zoom: f32,
     // View analysis (RFC §Phase 6): histogram + exposure/focus stats panel in the image view (`H`).
@@ -876,6 +882,8 @@ impl App {
             mode: AlbumMode::Grid,
             info: InfoPos::Off,
             overlay: OverlayMode::Off,
+            slideshow: None,
+            slide_last: Instant::now(),
             zoom: 1.0,
             show_analysis: false,
             analysis: None,
@@ -4126,6 +4134,26 @@ impl App {
         }
     }
 
+    /// Export the browse targets as a self-contained offline web gallery (index.html + thumbs/full).
+    fn export_web_gallery(&mut self, dir: &str, full_px: Option<u32>, title: Option<&str>) {
+        let files: Vec<PathBuf> =
+            self.browse_targets().iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
+        if files.is_empty() {
+            self.status = "nothing to export".into();
+            return;
+        }
+        let dest = expand_tilde(dir);
+        let title = title
+            .map(str::to_string)
+            .or_else(|| self.album_dir.as_ref().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "Gallery".into());
+        let opts = webgallery::Options { title: &title, thumb_px: 400, full_px };
+        match webgallery::export(&files, &dest, &opts) {
+            Ok(n) => self.status = format!("web gallery: {n} image(s) → {}/index.html", dest.display()),
+            Err(e) => self.status = format!("web gallery failed: {e:#}"),
+        }
+    }
+
     /// Batch-rename the browse targets in the open album with `pattern` (`#` runs → sequence number).
     /// Album-local only (not in a smart/search view). Two-phase (→ hidden temp → final) so intra-set
     /// name swaps can't clobber, and each image's `album.hjson` record + edit backup migrate with it.
@@ -4611,6 +4639,23 @@ impl App {
                     };
                     self.export_portfolio(&dir, max_px, mark.as_deref());
                 }
+                Some(PendingCmd::WebGallery) if !arg.is_empty() => {
+                    // `DIR [MAXPX] | title` — `|` splits off the optional gallery title.
+                    let (left, title) = match arg.split_once('|') {
+                        Some((l, r)) => {
+                            let t = r.trim();
+                            (l.trim().to_string(), (!t.is_empty()).then(|| t.to_string()))
+                        }
+                        None => (arg.clone(), None),
+                    };
+                    let (dir, full_px) = match left.trim().rsplit_once(char::is_whitespace) {
+                        Some((h, last)) if last.parse::<u32>().is_ok() => {
+                            (h.trim().to_string(), last.parse::<u32>().ok())
+                        }
+                        _ => (left.trim().to_string(), None),
+                    };
+                    self.export_web_gallery(&dir, full_px, title.as_deref());
+                }
                 Some(PendingCmd::NlCommand) if !arg.is_empty() => {
                     // Deterministic fast-path first; otherwise hand off to the LLM planner.
                     match nl::parse_deterministic(&arg) {
@@ -5023,6 +5068,7 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>, app: &
             run_nl_planner(terminal, app, text)?;
             continue;
         }
+        app.tick_slideshow();
         app.refresh_mem();
         if app.focus == Focus::Album && !app.album_paths.is_empty() {
             app.build_thumbs(2);
@@ -5736,6 +5782,9 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
             KeyCode::Char('p') => {
                 app.prompt("portfolio to (DIR [MAXPX] | watermark): ", "", PendingCmd::Portfolio)
             }
+            KeyCode::Char('w') => {
+                app.prompt("web gallery to (DIR [MAXPX] | title): ", "", PendingCmd::WebGallery)
+            }
             _ => {}
         }
         return false;
@@ -5760,7 +5809,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
             ""
         };
         app.status =
-            format!("Ctrl-B · h/H help · t tags · v versions · p portfolio · l/L lookalike{edits}");
+            format!("Ctrl-B · h/H help · t tags · v versions · p portfolio · w web · l/L lookalike{edits}");
         return false;
     }
     if app.cmd_active {
@@ -6607,6 +6656,52 @@ fn handle_cull_key(app: &mut App, code: KeyCode) -> bool {
     false
 }
 
+/// Clamp a slideshow cadence (seconds) after applying `delta`, bounded to the usable 1–30 s range.
+fn clamp_slide_secs(cur: u64, delta: i64) -> u64 {
+    (cur as i64 + delta).clamp(1, 30) as u64
+}
+
+impl App {
+    /// Toggle the image-view slideshow. Starts at the default 4 s cadence; any second press stops it.
+    fn toggle_slideshow(&mut self) {
+        const DEFAULT: Duration = Duration::from_secs(4);
+        if self.slideshow.take().is_some() {
+            self.status = "slideshow off".into();
+        } else {
+            self.slideshow = Some(DEFAULT);
+            self.slide_last = Instant::now();
+            self.status = "slideshow ▶ 4.0s · [ slower · ] faster · S stop".into();
+        }
+    }
+
+    /// Adjust the slideshow cadence by `secs` (clamped to 1–30 s). Positive = slower.
+    fn nudge_slideshow(&mut self, secs: i64) {
+        if let Some(cur) = self.slideshow {
+            let next = clamp_slide_secs(cur.as_secs(), secs);
+            self.slideshow = Some(Duration::from_secs(next));
+            self.status = format!("slideshow ▶ {next}.0s · [ slower · ] faster · S stop");
+        }
+    }
+
+    /// If the slideshow is running and its interval has elapsed, advance one image (wrapping to the
+    /// start at the end). Called each event-loop tick; a no-op outside the image view.
+    fn tick_slideshow(&mut self) {
+        let Some(interval) = self.slideshow else { return };
+        if self.mode != AlbumMode::Image || self.view.is_empty() {
+            return;
+        }
+        if self.slide_last.elapsed() < interval {
+            return;
+        }
+        self.slide_last = Instant::now();
+        self.album_cursor = (self.album_cursor + 1) % self.view.len();
+        self.zoom = 1.0;
+        self.edit_redo.clear();
+        self.show_original = false;
+        self.load_view();
+    }
+}
+
 fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
     let n = app.view.len();
     match code {
@@ -6614,6 +6709,7 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Esc => {
             app.mode = AlbumMode::Grid;
             app.view_proto = None;
+            app.slideshow = None; // leaving the image view stops any slideshow
         }
         KeyCode::Char('l') | KeyCode::Right => {
             if app.album_cursor + 1 < n {
@@ -6668,6 +6764,10 @@ fn handle_image_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char('E') => app.open_edit_menu(),
         KeyCode::Char('M') => app.ml_menu = true,   // open the ML-edit menu
         KeyCode::Char('A') => app.ai_menu = true,   // open the vision/AI menu
+        // Slideshow: S toggles auto-advance; [ / ] slow down / speed up (only while running).
+        KeyCode::Char('S') => app.toggle_slideshow(),
+        KeyCode::Char(']') if app.slideshow.is_some() => app.nudge_slideshow(-1),
+        KeyCode::Char('[') if app.slideshow.is_some() => app.nudge_slideshow(1),
         _ => return apply_curation(app, code),
     }
     false
@@ -6724,6 +6824,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == AlbumMode::Image {
         if let Some(sp) = &app.view_spark {
             top.push(Span::styled(format!("  {sp}  "), base.fg(Color::DarkGray)));
+        }
+        if let Some(iv) = app.slideshow {
+            top.push(Span::styled(
+                format!(" ▶ {}s ", iv.as_secs()),
+                base.fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
         }
     }
     // Memory-status indicator: steers the user away from AI-heavy ops when memory is low.
@@ -7748,6 +7854,7 @@ fn chords_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("i / I", "info panel: right / bottom"));
             l.push(kv("H", format!("analysis panel{}", if app.show_analysis { " (on)" } else { "" })));
             l.push(kv("o", "overlay: clipping zebras → focus peaking → off"));
+            l.push(kv("S", "slideshow ▶ auto-advance · [ slower · ] faster"));
             l.push(hd("Edit"));
             l.push(kv("E", "edit palette (search + Enter)"));
             l.push(kv("Ctrl-B", "edit chord → category g/c/a/k/x/e/m → item (see KEYMAP.md)"));
@@ -7890,6 +7997,7 @@ fn commands_help(app: &App, ctx: &HelpCtx) -> Vec<Line<'static>> {
             l.push(kv("layers", "overlay/compose images → flatten (E → layers)"));
             l.push(kv("export", format!("copy {target} out, optional resize (X)")));
             l.push(kv("portfolio", "Ctrl-B p: watermarked copies + contact sheet"));
+            l.push(kv("web gallery", "Ctrl-B w: offline HTML gallery + lightbox"));
             l.push(kv("rename", "batch-rename with a #-pattern (r)"));
             l.push(hd("Natural language  (:)"));
             l.push(kv(":", "album-scoped command — pipe with 'then'"));
@@ -8662,6 +8770,14 @@ mod tree_ops_tests {
         let empty = hjson::ImageRecord::default();
         assert!(!matches_filter("y.jpg", Some(&empty), "iso>100"));
         assert!(matches_filter("y.jpg", Some(&empty), "-has-gps"));
+    }
+
+    #[test]
+    fn slideshow_cadence_clamps() {
+        assert_eq!(clamp_slide_secs(4, 1), 5); // slower
+        assert_eq!(clamp_slide_secs(4, -1), 3); // faster
+        assert_eq!(clamp_slide_secs(1, -5), 1); // floor
+        assert_eq!(clamp_slide_secs(30, 10), 30); // ceiling
     }
 
     #[test]
