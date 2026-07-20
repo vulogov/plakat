@@ -8983,13 +8983,22 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
             kv("Author", r.author.clone());
             kv("©", r.copyright.clone());
             // Shared-volume conflict visibility: who last changed this record + when.
+            let short = |w: &str| w.replace('T', " ").trim_end_matches('Z').to_string();
             if let Some(who) = r.last_editor.clone() {
-                let when = r.last_edited.as_deref().map(|w| w.replace('T', " ").trim_end_matches('Z').to_string());
-                let val = match when {
-                    Some(w) => format!("{who} · {w}"),
+                let val = match r.last_edited.as_deref() {
+                    Some(w) => format!("{who} · {}", short(w)),
                     None => who,
                 };
                 lines.push(Line::from(format!("{:<9}{val}", "Edited by")));
+            }
+            // A few recent history entries (most recent first), when there's more than the latest.
+            if r.history.len() > 1 {
+                for n in r.history.iter().rev().take(3) {
+                    lines.push(Line::from(format!("  ↳ {} · {}", n.by, short(&n.at))));
+                }
+                if r.history.len() > 3 {
+                    lines.push(Line::from(format!("  … {} edits total", r.history.len())));
+                }
             }
         }
         if let Some(r) = path.as_ref().and_then(|p| app.record(p)) {

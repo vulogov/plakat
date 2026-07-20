@@ -192,7 +192,21 @@ pub struct ImageRecord {
     /// When this record was last changed (ISO-8601 UTC), paired with [`Self::last_editor`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_edited: Option<String>,
+    /// A bounded rolling log of who changed this record and when — unioned across instances on merge,
+    /// so a shared album shows a combined edit timeline. Capped to the most recent [`HISTORY_CAP`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<EditNote>,
 }
+
+/// One entry in a record's rolling edit history: who (`user@host`) and when (ISO-8601 UTC).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EditNote {
+    pub by: String,
+    pub at: String,
+}
+
+/// How many recent [`EditNote`]s a record keeps.
+pub const HISTORY_CAP: usize = 12;
 
 /// A "who + when" stamp applied to the records an instance changes, for conflict visibility.
 #[derive(Debug, Clone)]
@@ -402,6 +416,24 @@ pub fn merge_album_stamped(
                 Some(r) => {
                     let mut r = r.clone();
                     if let Some(st) = stamp {
+                        // Union our history with the disk record's (so a concurrent editor's entries
+                        // survive), append this edit, sort by time, and cap to the most recent.
+                        let mut hist = r.history.clone();
+                        if let Some(dr) = disk.images.get(k) {
+                            for n in &dr.history {
+                                if !hist.contains(n) {
+                                    hist.push(n.clone());
+                                }
+                            }
+                        }
+                        hist.push(EditNote { by: st.who.clone(), at: st.when.clone() });
+                        hist.sort_by(|a, b| a.at.cmp(&b.at));
+                        hist.dedup();
+                        let n = hist.len();
+                        if n > HISTORY_CAP {
+                            hist.drain(0..n - HISTORY_CAP);
+                        }
+                        r.history = hist;
                         r.last_editor = Some(st.who.clone());
                         r.last_edited = Some(st.when.clone());
                     }
@@ -687,6 +719,35 @@ mod tests {
         // Once released it can be taken again.
         assert!(FileLock::acquire(&p).is_some(), "re-acquire after release");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_history_unions_across_instances_and_caps() {
+        // Baseline record with one prior history entry.
+        let mut base_rec = rec(1, &[]);
+        base_rec.history = vec![EditNote { by: "carol@a".into(), at: "2024-01-01T00:00:00Z".into() }];
+        let mut baseline = AlbumMeta::default();
+        baseline.images.insert("x.jpg".into(), base_rec.clone());
+
+        // We changed the rating (our history == baseline's so far).
+        let mut ours = baseline.clone();
+        ours.images.insert("x.jpg".into(), rec_with(5, base_rec.history.clone()));
+
+        // Meanwhile another instance appended its own entry on disk.
+        let mut disk_rec = base_rec.clone();
+        disk_rec.history.push(EditNote { by: "dave@b".into(), at: "2024-01-02T00:00:00Z".into() });
+        let mut disk = baseline.clone();
+        disk.images.insert("x.jpg".into(), disk_rec);
+
+        let stamp = EditorStamp { who: "me@c".into(), when: "2024-01-03T00:00:00Z".into() };
+        let (merged, _) = merge_album_stamped(&baseline, &ours, &disk, Some(&stamp));
+        let h = &merged.images["x.jpg"].history;
+        let names: Vec<&str> = h.iter().map(|n| n.by.as_str()).collect();
+        assert_eq!(names, vec!["carol@a", "dave@b", "me@c"], "all three, time-ordered: {names:?}");
+    }
+
+    fn rec_with(rating: u8, history: Vec<EditNote>) -> ImageRecord {
+        ImageRecord { rating, history, ..Default::default() }
     }
 
     #[test]
