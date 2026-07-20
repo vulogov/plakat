@@ -75,6 +75,8 @@ pub enum Action {
     Conflicts,
     /// List the live `plakat photos` instances sharing this library (presence heartbeats).
     Who,
+    /// Rebuild the derived library index from scratch.
+    Reindex,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -158,6 +160,7 @@ fn action_label(a: &Action) -> String {
         Action::Geocode => "geocode".into(),
         Action::Conflicts => "conflicts".into(),
         Action::Who => "who".into(),
+        Action::Reindex => "reindex".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -320,6 +323,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "geocode" | "reverse geocode" | "place tags" | "geotag places" => Some(Action::Geocode),
         "conflicts" | "review conflicts" | "show conflicts" => Some(Action::Conflicts),
         "who" | "whoami" | "instances" | "presence" | "peers" => Some(Action::Who),
+        "reindex" | "rebuild index" | "rebuild-index" => Some(Action::Reindex),
         _ => None,
     }
 }

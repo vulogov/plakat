@@ -19,6 +19,7 @@ pub mod faces;
 pub mod geodata;
 pub mod geomap;
 pub mod homography;
+pub mod index;
 pub mod mledit;
 pub mod mlworker;
 pub mod multishot;
@@ -597,6 +598,9 @@ struct App {
     /// Parse cache for other albums' `album.hjson` (keyed by file stamp) — avoids re-parsing every
     /// album on each smart-album / search build. Interior-mutable so read paths (`&self`) can fill it.
     meta_cache: std::cell::RefCell<HashMap<PathBuf, ((std::time::SystemTime, u64), hjson::AlbumMeta)>>,
+    /// Derived, persisted library index (scale): a snapshot of every image's curation + EXIF,
+    /// incrementally synced. Backs `collect_library` (smart albums / search) without re-walking.
+    index: index::LibraryIndex,
     /// Throttle for the shared-volume external-change poll (a `stat` can be slow on a network FS).
     album_check: Instant,
     /// `(mtime, len)` of the root `folder.hjson` (smart albums / presets) for external-change detection.
@@ -932,6 +936,7 @@ impl App {
         expanded.insert(root.path.clone());
         let smart_albums = hjson::read_folder(&root_dir).unwrap_or_default().smart_albums;
         let folder_stamp = folder_hjson_stamp(&root_dir);
+        let index = index::LibraryIndex::load(&root_dir);
         Self {
             root,
             root_dir,
@@ -948,6 +953,7 @@ impl App {
             album_baseline: hjson::AlbumMeta::default(),
             album_stamp: None,
             meta_cache: std::cell::RefCell::new(HashMap::new()),
+            index,
             album_check: Instant::now(),
             folder_stamp,
             last_shared_change: None,
@@ -1537,26 +1543,15 @@ impl App {
 
     /// Every image in the library with its source album dir + record (each album.hjson read once).
     /// The shared collection step behind smart albums and metadata search.
-    fn collect_library(&self) -> Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> {
+    fn collect_library(&mut self) -> Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> {
         let mut dirs = Vec::new();
         collect_album_dirs(&self.root, &mut dirs);
-        let mut out = Vec::new();
-        for dir in dirs {
-            let meta = self.read_album_cached(&dir);
-            let mut imgs: Vec<PathBuf> = std::fs::read_dir(&dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && library::is_image(p))
-                .collect();
-            imgs.sort();
-            for p in imgs {
-                let rec = p.file_name().and_then(|n| n.to_str()).and_then(|n| meta.images.get(n)).cloned();
-                out.push((p, dir.clone(), rec));
-            }
+        // The derived index does the walk once and syncs only changed albums thereafter (persisted
+        // across sessions), so smart albums / search don't re-read every album.hjson each build.
+        if self.index.sync(&dirs) {
+            self.index.save(&self.root_dir);
         }
-        out
+        self.index.rows()
     }
 
     /// Flatten browse: show **every** image beneath `dir` (across its sub-albums) in one grid — the
@@ -3378,6 +3373,7 @@ impl App {
             }
             Action::Conflicts => self.open_conflict_review(),
             Action::Who => self.show_presence(),
+            Action::Reindex => self.reindex(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -4721,6 +4717,16 @@ impl App {
         self.live_peers.iter().filter(|p| !(p.pid == me && p.who == self.editor_id)).collect()
     }
 
+    /// Rebuild the derived index from scratch (`:reindex`) — always safe; the index is non-authoritative.
+    fn reindex(&mut self) {
+        let mut dirs = Vec::new();
+        collect_album_dirs(&self.root, &mut dirs);
+        self.index = index::LibraryIndex::default();
+        self.index.sync(&dirs);
+        self.index.save(&self.root_dir);
+        self.status = format!("reindexed — {} image(s) across {} album(s)", self.index.entries.len(), dirs.len());
+    }
+
     /// List the live instances sharing this library (`:who`).
     fn show_presence(&mut self) {
         self.live_peers = presence::live(&self.root_dir);
@@ -5410,8 +5416,9 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
     terminal.show_cursor()?;
-    // Remove our presence heartbeat so peers see us leave promptly.
+    // Remove our presence heartbeat so peers see us leave promptly; persist the derived index.
     presence::depart(&app.root_dir, &app.editor_id, std::process::id());
+    app.index.save(&app.root_dir);
     res
 }
 
