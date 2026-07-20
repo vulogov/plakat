@@ -1,8 +1,10 @@
-# plakat 3.9.0 — roadmap (in progress)
+# plakat 3.9.0 — roadmap (SHIPPED)
 
-**Theme — present & share.** The manager can now organize, edit, and place a collection; 3.9.0 is
-about getting the results *out* and *shown*. A portable offline web gallery to hand someone, and a
-hands-free slideshow for viewing on the machine.
+**Theme — present, share & work together.** The manager can now organize, edit, and place a
+collection; 3.9.0 gets the results *out* (offline web gallery, slideshow, binary-EXIF write-back),
+adds the freeform **brush-mask** local adjustment, and — the headline — makes a library **safe to
+share on a synced volume across multiple `plakat photos` instances** (lock-free three-way merge,
+live cross-instance sync, `flock` fast-path, per-record last-editor + conflict warnings).
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]` needs a decision.
 
@@ -86,12 +88,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Docs
 
-- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back + brush.
-- [~] README what's-new + PHOTOS_TUTORIAL note + a shared-volume section.
+- [x] KEYMAP: `Ctrl-B w` web gallery + `S`/`[`/`]` slideshow + `Ctrl-B d w` EXIF write-back + brush +
+      a "Shared volumes & multiple instances" section.
+- [x] README what's-new ("present, share & work together"); 3.8.0 archived to RELEASE_HISTORY.
 
 ## Distribution
 
-- [ ] Per-cut (crates.io + GH release via the tag-triggered CI + FF `main`).
+- [x] Per-cut (crates.io + GH release via the tag-triggered CI + FF `main`).
 
 ## Ground rules (unchanged)
 

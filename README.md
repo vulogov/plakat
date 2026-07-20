@@ -17,35 +17,36 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.8.0 — `plakat photos`: the manager grows up
+## What's new in 3.9.0 — `plakat photos`: present, share & work together
 
-3.7 finished the editing surface. **3.8 turns to the manager** — browsing, organizing, metadata,
-local adjustments, and a **map** — with a bug fix that started it all: a mixed album (loose images +
-sub-albums) showed its recursive count in the tree, hiding what "open" actually shows. Fixing that
-pointed straight at the browsing gaps.
+3.8 grew the manager; **3.9 gets your work *out*, and lets a team share a library.**
 
-**Browse & organize.** **Flatten browse** (`*`) shows *every* image beneath a folder / mixed album in
-one grid. **Move / copy → album** (`Ctrl-B m o` / `m p`) carries the file, sidecar, and record.
-**Trash** (`m t`) — a real recycle bin with restore and empty, instead of a permanent delete.
+**Web gallery.** `Ctrl-B w` writes a portable, **fully-offline** HTML gallery — a responsive
+thumbnail grid + a keyboard lightbox, self-contained (no CDN, no network) — that you can open locally
+or drop on any static host. It sits beside the print-oriented **portfolio** (`Ctrl-B p`).
 
-**Metadata.** A **title / author / copyright / capture-date / geotag** editor (`Ctrl-B d`), stored
-non-destructively. And the filter bar / smart albums now understand **shot metadata** —
-`iso>3200`, `focal=50`, `camera:canon`, `date>2023`, `has-gps`, `author:jane` — all from the cached
-record.
+**Slideshow.** `S` in the image view auto-advances through the current view; `[` / `]` change the
+pace, a green `▶` badge shows it running.
 
-**Local (masked) adjustments.** Apply *any* adjustment — exposure, saturation, warmth, blur — through
-a **linear-gradient** or **radial** mask: darken a bright sky, warm the foreground, blur the edges.
+**Metadata → the file.** `Ctrl-B d w` writes your edited **title / author / copyright / date /
+geotag** into the image's own **binary EXIF** (JPEG/PNG, in place, pixels untouched), so it travels
+with the file to other tools.
 
-**Map.** A **geo view** (`m`) plots your geotagged photos on an offline world map — pan, zoom, and
-open a cluster; **reverse-geocode** (`:geocode`) tags them with `place:<city>` (fetches a small place
-gazetteer once, then works offline).
+**Brush masks.** The freeform companion to 3.8's graduated/radial local adjustments: `Ctrl-B r x/k/s/w/u`
+paint soft dabs (Space to stamp, `+`/`-` to size) and apply exposure / saturation / warmth / blur
+through the painted mask — a single, replayable edit.
 
-**Faster & tidier.** The persistent thumbnail cache gained a global **clear**; the tree badge now
-tells the truth about what each album holds.
+**Shared volumes & multiple instances.** The headline: keep the library on **Dropbox / iCloud / NFS**
+and open it in **several `plakat photos` at once** without losing curation. Saves use a **three-way
+merge** — only the records *you* changed are written, so a colleague rating *other* photos is never
+clobbered. Changes elsewhere are picked up **live** (a smart album added in one window appears in the
+others), a **`⟳ others editing`** badge lights up when they do, and each record shows **who edited it**
+last (with a `⚠` warning if two people touch the same image). A local-disk `flock` fast-path and
+lock-free merge keep it consistent on any volume.
 
 Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 3.7):
+**Earlier releases** (v0.13 – 3.8):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

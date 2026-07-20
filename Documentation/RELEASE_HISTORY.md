@@ -8,6 +8,32 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.8.0 — `plakat photos`: the manager grows up
+
+3.7 finished the editing surface. **3.8 turns to the manager** — browsing, organizing, metadata,
+local adjustments, and a **map** — with a bug fix that started it all: a mixed album (loose images +
+sub-albums) showed its recursive count in the tree, hiding what "open" actually shows. Fixing that
+pointed straight at the browsing gaps.
+
+**Browse & organize.** **Flatten browse** (`*`) shows *every* image beneath a folder / mixed album in
+one grid. **Move / copy → album** (`Ctrl-B m o` / `m p`) carries the file, sidecar, and record.
+**Trash** (`m t`) — a real recycle bin with restore and empty, instead of a permanent delete.
+
+**Metadata.** A **title / author / copyright / capture-date / geotag** editor (`Ctrl-B d`), stored
+non-destructively. And the filter bar / smart albums now understand **shot metadata** —
+`iso>3200`, `focal=50`, `camera:canon`, `date>2023`, `has-gps`, `author:jane` — all from the cached
+record.
+
+**Local (masked) adjustments.** Apply *any* adjustment — exposure, saturation, warmth, blur — through
+a **linear-gradient** or **radial** mask: darken a bright sky, warm the foreground, blur the edges.
+
+**Map.** A **geo view** (`m`) plots your geotagged photos on an offline world map — pan, zoom, and
+open a cluster; **reverse-geocode** (`:geocode`) tags them with `place:<city>` (fetches a small place
+gazetteer once, then works offline).
+
+**Faster & tidier.** The persistent thumbnail cache gained a global **clear**; the tree badge now
+tells the truth about what each album holds.
+
 ## What's new in 3.7.0 — `plakat photos`: retouch, and the last non-AI gaps
 
 3.6 finished the generation story. **3.7 closes the remaining non-AI gaps** — an interactive retouch
