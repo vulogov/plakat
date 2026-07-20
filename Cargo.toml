@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "3.13.0"
+version = "3.14.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -63,7 +63,7 @@ ui = ["dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "
 # Pulls the TUI stack (shared with `ui`) + the photo-library decode/EXIF/watch crates.
 photos = [
   "dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "dep:uuid",
-  "dep:rawloader", "dep:kamadak-exif", "dep:notify", "dep:instant-distance",
+  "dep:rawloader", "dep:kamadak-exif", "dep:notify", "dep:instant-distance", "dep:bincode",
   # Real TrueType/OpenType fonts for the watermark / caption burn-in (font selection).
   "shaped-labels",
 ]
@@ -154,7 +154,8 @@ image = { version = "0.25", default-features = false, features = [
 # All pure-Rust, all optional, all behind `--features photos`.
 rawloader = { version = "0.37", optional = true }        # camera RAW decode
 kamadak-exif = { version = "0.6", optional = true }       # pure-Rust EXIF parse
-instant-distance = { version = "0.6", optional = true }   # pure-Rust HNSW ANN (visual search at scale)
+instant-distance = { version = "0.6", optional = true, features = ["with-serde"] } # pure-Rust HNSW ANN (visual search at scale)
+bincode = { version = "1", optional = true }              # compact binary serde for the persisted HNSW graph
 notify = { version = "7", optional = true }               # cross-platform FS watcher
 # Direct PNG access for tEXt-chunk metadata writes (PNG metadata +
 # JSON sidecar workflow). `image` doesn't expose the chunk API.

@@ -5,15 +5,16 @@
 //! large libraries (≥ ~1M images) and it makes incremental growth cheap. The index is *derived*:
 //! rebuilt from the (int8-quantized) vector cache, never the source of truth.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use instant_distance::{Builder, HnswMap, Point, Search};
+use serde::{Deserialize, Serialize};
 
 use super::visual_search::{qdot, Cache, Embedding};
 
 /// A CLIP embedding as an HNSW point. Distance is `1 − cosine` (angular-ish; lower = more similar),
 /// with `qdot` approximating cosine over the unit vectors.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct EmbPoint(Embedding);
 
 impl Point for EmbPoint {
@@ -56,6 +57,25 @@ impl AnnIndex {
             .map(|item| (item.value.clone(), 1.0 - item.distance))
             .collect()
     }
+
+    /// Persist the graph (compact bincode) so a large library skips the O(N log N) rebuild next launch.
+    /// Best-effort. The `len` is stored first so a load can be rejected when the vector set changed.
+    pub fn save(&self, path: &Path) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(bytes) = bincode::serialize(&(self.len as u64, &self.map)) {
+            let _ = std::fs::write(path, bytes);
+        }
+    }
+
+    /// Load a persisted graph, but only if it was built over `expect_len` vectors (else it's stale and
+    /// the caller rebuilds). `None` on absence / mismatch / corruption.
+    pub fn load(path: &Path, expect_len: usize) -> Option<AnnIndex> {
+        let bytes = std::fs::read(path).ok()?;
+        let (len, map): (u64, HnswMap<EmbPoint, PathBuf>) = bincode::deserialize(&bytes).ok()?;
+        (len as usize == expect_len).then_some(AnnIndex { map, len: len as usize })
+    }
 }
 
 #[cfg(test)]
@@ -88,5 +108,16 @@ mod tests {
         assert!(hits[0].0.ends_with("a.png"), "nearest is a.png, got {:?}", hits[0].0);
         // Empty cache → no index.
         assert!(AnnIndex::build(&Cache::new()).is_none());
+
+        // Persist + reload (matching length) round-trips; a stale length is rejected.
+        let dir = std::env::temp_dir().join(format!("plakat-ann-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("graph.hnsw");
+        idx.save(&path);
+        let loaded = AnnIndex::load(&path, 3).expect("reloaded");
+        assert_eq!(loaded.len(), 3);
+        assert!(loaded.search(&quantize(&q), 1)[0].0.ends_with("a.png"));
+        assert!(AnnIndex::load(&path, 999).is_none(), "stale length rejected");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

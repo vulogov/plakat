@@ -6118,8 +6118,17 @@ impl App {
     /// index when the cache size changed. Returns `(path, similarity)` best-first. Assumes every image
     /// is already embedded in `clip_cache` (the caller runs `embed_all` first).
     fn ann_search(&mut self, query: &visual_search::Embedding, k: usize) -> Vec<(PathBuf, f32)> {
-        if self.ann.as_ref().map(|a| a.len()) != Some(self.clip_cache.len()) {
-            self.ann = ann::AnnIndex::build(&self.clip_cache);
+        let want = self.clip_cache.len();
+        if self.ann.as_ref().map(|a| a.len()) != Some(want) {
+            let path = index::LibraryIndex::snapshot_path(&self.root_dir).with_extension("hnsw");
+            // Load the persisted graph if it matches; else build once and persist for next launch.
+            self.ann = ann::AnnIndex::load(&path, want).or_else(|| {
+                let built = ann::AnnIndex::build(&self.clip_cache);
+                if let Some(a) = &built {
+                    a.save(&path);
+                }
+                built
+            });
         }
         self.ann.as_ref().map(|a| a.search(query, k)).unwrap_or_default()
     }
@@ -6202,6 +6211,8 @@ fn run_visual_search(
     match ranked {
         Ok(ranked) => {
             index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
+            let mode = if lib.len() >= ANN_THRESHOLD { "ANN" } else { "scan" };
+            let top = ranked.first().map(|(_, _, s)| *s).unwrap_or(0.0);
             let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
                 lib.into_iter().map(|(p, _, r)| (p, r)).collect();
             let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked
@@ -6214,7 +6225,7 @@ fn run_visual_search(
                 .collect();
             let count = ordered.len();
             app.enter_smart_view(format!("visual: {query}"), query.clone(), true, ordered, true);
-            app.status = format!("🔍 visual '{query}' · top {count} by CLIP similarity");
+            app.status = format!("🔍 visual '{query}' · top {count} · best {top:.2} · {mode}");
         }
         Err(e) => app.status = format!("✗ visual search failed: {e:#}"),
     }
@@ -6320,35 +6331,72 @@ fn run_clip_lookalike(
         cache.entry(k).or_insert(v);
     }
 
-    // Load the model only if the query or some image isn't embedded yet (else rank offline).
-    let result = if visual_search::any_missing(&items, Some(&query_path), &cache) {
-        match app.ensure_clip() {
-            Ok(()) => {
-                let em = app.clip.as_ref().unwrap();
-                let out = visual_search::search_by_image(Some(em), items, &query_path, cache, |done, tot| {
-                    if done % 10 == 0 || done == tot {
-                        print!("\r  embedding {done}/{tot}…   ");
-                        let _ = std::io::stdout().flush();
-                    }
-                });
-                if let Ok((_, c)) = &out {
-                    visual_search::save_cache(c);
-                }
-                out
-            }
-            Err(e) => Err(e),
+    let progress = |done: usize, tot: usize| {
+        if done % 10 == 0 || done == tot {
+            print!("\r  embedding {done}/{tot}…   ");
+            let _ = std::io::stdout().flush();
         }
+    };
+    let need = visual_search::any_missing(&items, Some(&query_path), &cache);
+    let ranked: Result<Vec<(PathBuf, PathBuf, f32)>> = if items.len() >= ANN_THRESHOLD {
+        // Large library: embed the library + query, then rank with the HNSW ANN (sub-linear).
+        let dir_of: HashMap<PathBuf, PathBuf> = items.iter().cloned().collect();
+        let embedded: Result<(visual_search::Cache, visual_search::Embedding)> = if need {
+            match app.ensure_clip() {
+                Ok(()) => {
+                    let em = app.clip.as_ref().unwrap();
+                    visual_search::embed_all(Some(em), items, cache, &progress).and_then(|c| {
+                        let qmt = visual_search::mtime_secs(&query_path);
+                        let q = match c.get(&query_path) {
+                            Some((m, e)) if *m == qmt => e.clone(),
+                            _ => visual_search::quantize(&em.embed_image(&query_path)?),
+                        };
+                        Ok((c, q))
+                    })
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            match cache.get(&query_path).map(|(_, e)| e.clone()) {
+                Some(q) => Ok((cache, q)),
+                None => Err(anyhow::anyhow!("query image not embedded")),
+            }
+        };
+        embedded.map(|(c, q)| {
+            visual_search::save_cache(&c);
+            app.clip_cache = c;
+            app.ann_search(&q, 120)
+                .into_iter()
+                .filter_map(|(p, s)| dir_of.get(&p).map(|d| (p.clone(), d.clone(), s)))
+                .collect()
+        })
     } else {
-        visual_search::search_by_image(None, items, &query_path, cache, |_, _| {}) // fully cached → offline
+        // Typical library: resident-model linear scan (offline when fully cached).
+        let out = if need {
+            match app.ensure_clip() {
+                Ok(()) => {
+                    let em = app.clip.as_ref().unwrap();
+                    visual_search::search_by_image(Some(em), items, &query_path, cache, &progress)
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            visual_search::search_by_image(None, items, &query_path, cache, |_, _| {})
+        };
+        out.map(|(r, c)| {
+            visual_search::save_cache(&c);
+            app.clip_cache = c;
+            r
+        })
     };
 
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     terminal.clear()?;
-    match result {
-        Ok((ranked, cache)) => {
-            app.clip_cache = cache;
+    match ranked {
+        Ok(ranked) => {
             index::LibraryIndex::save_vectors(&app.root_dir, &app.clip_cache); // warm the index sidecar
+            let mode = if lib.len() >= ANN_THRESHOLD { "ANN" } else { "scan" };
             let lookup: HashMap<PathBuf, Option<hjson::ImageRecord>> =
                 lib.into_iter().map(|(p, _, r)| (p, r)).collect();
             let ordered: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>)> = ranked
@@ -6360,7 +6408,7 @@ fn run_clip_lookalike(
             app.enter_smart_view(format!("clip-similar: {qname}"), String::new(), true, ordered, true);
             app.lookalike_of = Some(query_path); // snapshot; rescan won't re-embed
             app.lookalike_clip = true;
-            app.status = format!("🔍 {count} most-similar to {qname} (CLIP)");
+            app.status = format!("🔍 {count} most-similar to {qname} · CLIP · {mode}");
         }
         Err(e) => app.status = format!("✗ lookalike failed: {e:#}"),
     }

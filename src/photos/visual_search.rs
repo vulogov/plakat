@@ -14,7 +14,7 @@ use crate::pipelines::clip_embed::ClipEmbedder;
 
 /// A compact CLIP embedding: an L2-normalized 768-vector quantized to **int8** with one scale factor.
 /// Cosine similarity ≈ [`qdot`] — 4× less memory than f32 and a faster, SIMD-friendly dot product.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Embedding {
     pub scale: f32,
     pub q: Vec<i8>,
@@ -109,7 +109,7 @@ pub fn save_cache(cache: &Cache) {
     }
 }
 
-fn mtime_secs(p: &Path) -> u64 {
+pub fn mtime_secs(p: &Path) -> u64 {
     std::fs::metadata(p)
         .and_then(|m| m.modified())
         .ok()
