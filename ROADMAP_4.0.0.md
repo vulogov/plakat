@@ -1,4 +1,4 @@
-# plakat 4.0.0 — roadmap (in progress)
+# plakat 4.0.0 — roadmap (SHIPPED)
 
 **The major cut — `plakat photos` is done.** The 3.x line built the flagship TUI photo/image manager
 end to end (organize · edit · AI · collaborate · output · maps · formats · scale). 4.0 is the
@@ -41,8 +41,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       current through 4.0: a new §14 covering the 3.10–4.0 additions (metadata write-back, brush masks
       + retouch, present/share, collaboration on shared volumes, formats + scale). Intro + the Tutorials
       index updated; cross-linked to KEYMAP. (Removed a redundant second tutorial draft.)
-- [ ] **The 4.0 stamp** — README "what's new" tells the flagship's story; RELEASE_HISTORY archives
-      3.13; full suite + clippy-clean gate; declare 4.0.
+- [x] **The 4.0 stamp** — README "what's new in 4.0.0" tells the whole flagship story (the seven
+      pillars); RELEASE_HISTORY archives 3.13; tutorials/index reflect 4.0; attribution audit clean;
+      full suite + clippy (no correctness findings) gate; crates.io + tag CI + FF `main`.
 
 ## Ground rules
 

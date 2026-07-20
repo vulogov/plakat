@@ -17,26 +17,36 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 3.13.0 — `plakat photos`: visual search at scale
+## What's new in 4.0.0 — `plakat photos`: the flagship, complete
 
-3.12 made the manager fast on large libraries. **3.13 makes visual search itself scale** — three
-layers, so finding "images that look like this" stays fast whether you have 10k photos or a million.
+The whole 3.x line built **`plakat photos`** — a full-screen terminal photo & image collection manager
+— end to end. **4.0 is the milestone that caps it**: no new pillars, a hardening / consistency / docs
+pass, and a "done" stamp on a manager that now does the lot. What it is, in one place:
 
-**No model reload between searches.** The CLIP model is now kept **resident** — loaded once, then
-reused, so the second and later visual searches / lookalikes skip the multi-second reload.
+- **Organize** — a folder tree of albums, smart albums (a composable filter grammar), flatten browse,
+  move / copy / trash, ratings / flags / colour labels / tags — all non-destructive in a per-album,
+  human-editable `album.hjson` (never a hidden database).
+- **Edit** — a real darkroom: exposure/tone/colour adjustments, levels + curves, **layers & masks**,
+  **local & brush masks**, a crosshair **retouch** mode (heal / clone / red-eye / dodge-burn), looks &
+  LUTs — every edit replayable over the pristine original.
+- **Metadata** — a title / author / copyright / date / geotag editor + EXIF smart-album filters, and
+  **binary EXIF write-back** (JPEG / PNG / WebP / TIFF) so metadata + tags travel with the file.
+- **AI** — generate / img2img / portrait / relight / upscale / face, aesthetic auto-cull, all via a
+  resident, OOM-guarded worker.
+- **Collaborate** — keep the library on **Dropbox / iCloud / NFS** and open it in **several instances
+  at once**: a lock-free three-way merge, live cross-instance sync, presence (`:who`), and conflict
+  review (`:conflicts`).
+- **Present** — a portable offline **web gallery**, portfolio + contact sheet, a **slideshow** with
+  shuffle + **Ken Burns**, and an offline **map** with reverse-geocoding.
+- **Formats & scale** — RAW + **HEIC / HEIF / AVIF**; a **derived index** that keeps browse / smart
+  albums / search instant on huge libraries (`:all`, `:stats`, `:reindex`); and **visual search at
+  scale** — a resident CLIP model, int8 vectors, and a persisted **HNSW** index for sub-linear search.
 
-**4× smaller embeddings.** CLIP vectors are stored **int8-quantized** (with a per-vector scale) in
-memory, the per-album cache, and the index sidecar — a quarter of the RAM and disk, a faster dot
-product, and similarity that tracks the true cosine within a rounding error.
+Start with the tour: [`Documentation/Tutorials/PHOTOS_TUTORIAL.md`](Documentation/Tutorials/PHOTOS_TUTORIAL.md)
+· every key: [`Documentation/Photos/KEYMAP.md`](Documentation/Photos/KEYMAP.md). Everything from the
+2.x/3.x line is unchanged; default CLI image output stays byte-identical.
 
-**Sub-linear search on huge libraries.** For very large collections, text search runs through a
-pure-Rust **HNSW** approximate-nearest-neighbour index over the vectors, so ranking doesn't scan every
-image. Below that size the (already fast) resident-model scan is used directly.
-
-Once embedded, visual search stays offline; the ANN is derived and rebuilds from the vectors.
-Everything from the 3.x and 2.x line is unchanged; default CLI image output stays byte-identical.
-
-**Earlier releases** (v0.13 – 3.12):
+**Earlier releases** (v0.13 – 3.13):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

@@ -8,6 +8,22 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 3.13.0 — `plakat photos`: visual search at scale
+
+3.12 made the manager fast on large libraries. **3.13 makes visual search itself scale** — three
+layers, so finding "images that look like this" stays fast whether you have 10k photos or a million.
+
+**No model reload between searches.** The CLIP model is kept **resident** — loaded once, then reused,
+so the second and later visual searches / lookalikes skip the multi-second reload.
+
+**4× smaller embeddings.** CLIP vectors are stored **int8-quantized** (with a per-vector scale) in
+memory, the per-album cache, and the index sidecar — a quarter of the RAM and disk, a faster dot
+product, and similarity that tracks the true cosine within a rounding error.
+
+**Sub-linear search on huge libraries.** For very large collections, text search runs through a
+pure-Rust **HNSW** approximate-nearest-neighbour index over the vectors, so ranking doesn't scan every
+image. Below that size the (already fast) resident-model scan is used directly.
+
 ## What's new in 3.12.0 — `plakat photos`: scale (the derived index)
 
 `album.hjson` stays the human-editable source of truth. **3.12 adds a derived, rebuildable index** so
