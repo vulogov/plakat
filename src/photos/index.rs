@@ -245,22 +245,21 @@ impl LibraryIndex {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut buf = Vec::with_capacity(12 + vectors.len() * (768 * 4 + 24));
-        buf.extend_from_slice(b"PKIVEC1\n");
+        let mut buf = Vec::with_capacity(12 + vectors.len() * (768 + 24));
+        buf.extend_from_slice(b"PKIVEC2\n"); // v2 = int8-quantized embeddings
         buf.extend_from_slice(&(vectors.len() as u32).to_le_bytes());
-        for (p, (mt, v)) in vectors {
+        for (p, (mt, e)) in vectors {
             let name = p.to_string_lossy();
             let nb = name.as_bytes();
-            if nb.len() > u16::MAX as usize || v.len() > u16::MAX as usize {
+            if nb.len() > u16::MAX as usize || e.q.len() > u16::MAX as usize {
                 continue;
             }
             buf.extend_from_slice(&(nb.len() as u16).to_le_bytes());
             buf.extend_from_slice(nb);
             buf.extend_from_slice(&mt.to_le_bytes());
-            buf.extend_from_slice(&(v.len() as u16).to_le_bytes());
-            for f in v {
-                buf.extend_from_slice(&f.to_le_bytes());
-            }
+            buf.extend_from_slice(&e.scale.to_le_bytes());
+            buf.extend_from_slice(&(e.q.len() as u16).to_le_bytes());
+            buf.extend(e.q.iter().map(|&b| b as u8));
         }
         let _ = std::fs::write(path, buf);
     }
@@ -269,7 +268,7 @@ impl LibraryIndex {
     pub fn load_vectors(root: &Path) -> super::visual_search::Cache {
         let mut out = super::visual_search::Cache::new();
         let Ok(b) = std::fs::read(Self::vec_path(root)) else { return out };
-        if b.len() < 12 || &b[..8] != b"PKIVEC1\n" {
+        if b.len() < 12 || &b[..8] != b"PKIVEC2\n" {
             return out;
         }
         let count = u32::from_le_bytes(b[8..12].try_into().unwrap()) as usize;
@@ -286,13 +285,16 @@ impl LibraryIndex {
             let Some(mtb) = get(o, 8) else { break };
             let mt = u64::from_le_bytes(mtb.try_into().unwrap());
             o += 8;
+            let Some(sb) = get(o, 4) else { break };
+            let scale = f32::from_le_bytes(sb.try_into().unwrap());
+            o += 4;
             let Some(db) = get(o, 2) else { break };
             let dim = u16::from_le_bytes(db.try_into().unwrap()) as usize;
             o += 2;
-            let Some(vb) = get(o, dim * 4) else { break };
-            let v: Vec<f32> = vb.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-            o += dim * 4;
-            out.insert(PathBuf::from(name), (mt, v));
+            let Some(qb) = get(o, dim) else { break };
+            let q: Vec<i8> = qb.iter().map(|&x| x as i8).collect();
+            o += dim;
+            out.insert(PathBuf::from(name), (mt, super::visual_search::Embedding { scale, q }));
         }
         out
     }
@@ -393,16 +395,17 @@ mod tests {
     fn vector_sidecar_roundtrips() {
         let root = std::env::temp_dir().join(format!("plakat-idxvec-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
+        use super::super::visual_search::quantize;
         let mut vecs = super::super::visual_search::Cache::new();
-        vecs.insert(root.join("a/1.png"), (111, vec![0.5_f32; 768]));
-        vecs.insert(root.join("b/2.png"), (222, vec![-0.25_f32; 768]));
+        vecs.insert(root.join("a/1.png"), (111, quantize(&vec![0.5_f32; 768])));
+        vecs.insert(root.join("b/2.png"), (222, quantize(&vec![-0.25_f32; 768])));
         LibraryIndex::save_vectors(&root, &vecs);
         let back = LibraryIndex::load_vectors(&root);
         assert_eq!(back.len(), 2);
-        let (mt, v) = back.get(&root.join("a/1.png")).expect("vector present");
+        let (mt, e) = back.get(&root.join("a/1.png")).expect("vector present");
         assert_eq!(*mt, 111);
-        assert_eq!(v.len(), 768);
-        assert!((v[0] - 0.5).abs() < 1e-6);
+        assert_eq!(e.q.len(), 768);
+        assert!((e.scale * e.q[0] as f32 - 0.5).abs() < 0.02);
         // Corrupt file → empty, not a panic.
         std::fs::write(LibraryIndex::vec_path(&root), b"junk").unwrap();
         assert!(LibraryIndex::load_vectors(&root).is_empty());

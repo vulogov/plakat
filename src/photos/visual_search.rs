@@ -11,14 +11,40 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use candle_core::Device;
 
-use crate::pipelines::clip_embed::{cosine, ClipEmbedder};
+use crate::pipelines::clip_embed::ClipEmbedder;
 
-/// Image-embedding cache: path → (file mtime secs, unit vector). Held in-session and persisted
+/// A compact CLIP embedding: an L2-normalized 768-vector quantized to **int8** with one scale factor.
+/// Cosine similarity ≈ [`qdot`] — 4× less memory than f32 and a faster, SIMD-friendly dot product.
+#[derive(Clone)]
+pub struct Embedding {
+    pub scale: f32,
+    pub q: Vec<i8>,
+}
+
+/// Quantize an (already L2-normalized) embedding to int8 with a per-vector max-abs scale.
+pub fn quantize(v: &[f32]) -> Embedding {
+    let max = v.iter().fold(0f32, |m, &x| m.max(x.abs())).max(1e-6);
+    let scale = max / 127.0;
+    let q = v.iter().map(|&x| (x / scale).round().clamp(-127.0, 127.0) as i8).collect();
+    Embedding { scale, q }
+}
+
+/// Approximate cosine similarity of two quantized embeddings (int dot product × scales). Both come
+/// from unit vectors, so this tracks the true cosine within the int8 rounding error.
+pub fn qdot(a: &Embedding, b: &Embedding) -> f32 {
+    if a.q.len() != b.q.len() {
+        return 0.0;
+    }
+    let dot: i32 = a.q.iter().zip(&b.q).map(|(&x, &y)| x as i32 * y as i32).sum();
+    dot as f32 * a.scale * b.scale
+}
+
+/// Image-embedding cache: path → (file mtime secs, quantized embedding). Held in-session and persisted
 /// per-album to a hidden `.plakat_clip` file so visual search is fast after the first run.
-pub type Cache = HashMap<PathBuf, (u64, Vec<f32>)>;
+pub type Cache = HashMap<PathBuf, (u64, Embedding)>;
 
 const CACHE_FILE: &str = ".plakat_clip";
-const CACHE_MAGIC: &[u8; 8] = b"PKCLIP1\n";
+const CACHE_MAGIC: &[u8; 8] = b"PKCLIP2\n"; // v2 = int8-quantized (v1 f32 files are ignored → re-embed)
 const DIM: usize = 768;
 
 /// Load persisted embeddings for images under each of `dirs` (its hidden `.plakat_clip`), keyed by
@@ -48,37 +74,37 @@ fn read_dir_cache(dir: &Path, cache: &mut Cache) -> Option<()> {
         o += nlen;
         let mtime = u64::from_le_bytes(bytes.get(o..o + 8)?.try_into().ok()?);
         o += 8;
-        let vec_bytes = bytes.get(o..o + DIM * 4)?;
-        o += DIM * 4;
-        let vec: Vec<f32> =
-            vec_bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
-        cache.insert(dir.join(name), (mtime, vec));
+        let scale = f32::from_le_bytes(bytes.get(o..o + 4)?.try_into().ok()?);
+        o += 4;
+        let qb = bytes.get(o..o + DIM)?;
+        o += DIM;
+        let q: Vec<i8> = qb.iter().map(|&b| b as i8).collect();
+        cache.insert(dir.join(name), (mtime, Embedding { scale, q }));
     }
     Some(())
 }
 
 /// Persist `cache`, grouped by parent directory, to each dir's `.plakat_clip`. Best-effort.
 pub fn save_cache(cache: &Cache) {
-    let mut by_dir: HashMap<&Path, Vec<(&str, u64, &Vec<f32>)>> = HashMap::new();
-    for (path, (mt, v)) in cache {
-        if v.len() != DIM {
+    let mut by_dir: HashMap<&Path, Vec<(&str, u64, &Embedding)>> = HashMap::new();
+    for (path, (mt, e)) in cache {
+        if e.q.len() != DIM {
             continue;
         }
         if let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
-            by_dir.entry(dir).or_default().push((name, *mt, v));
+            by_dir.entry(dir).or_default().push((name, *mt, e));
         }
     }
     for (dir, entries) in by_dir {
-        let mut buf = Vec::with_capacity(12 + entries.len() * (DIM * 4 + 24));
+        let mut buf = Vec::with_capacity(12 + entries.len() * (DIM + 24));
         buf.extend_from_slice(CACHE_MAGIC);
         buf.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-        for (name, mt, v) in entries {
+        for (name, mt, e) in entries {
             buf.extend_from_slice(&(name.len() as u16).to_le_bytes());
             buf.extend_from_slice(name.as_bytes());
             buf.extend_from_slice(&mt.to_le_bytes());
-            for f in v {
-                buf.extend_from_slice(&f.to_le_bytes());
-            }
+            buf.extend_from_slice(&e.scale.to_le_bytes());
+            buf.extend(e.q.iter().map(|&b| b as u8));
         }
         let _ = std::fs::write(dir.join(CACHE_FILE), buf);
     }
@@ -104,23 +130,24 @@ pub async fn search(
     progress: impl Fn(usize, usize),
 ) -> Result<(Vec<(PathBuf, PathBuf, f32)>, Cache)> {
     let embedder = ClipEmbedder::load(device).await?;
-    let q = embedder.embed_text(query)?;
+    let q = quantize(&embedder.embed_text(query)?);
     let total = items.len();
     let mut scored: Vec<(PathBuf, PathBuf, f32)> = Vec::with_capacity(total);
     for (i, (path, dir)) in items.into_iter().enumerate() {
         progress(i + 1, total);
         let mt = mtime_secs(&path);
-        let vec = match cache.get(&path) {
-            Some((m, v)) if *m == mt => v.clone(),
+        let emb = match cache.get(&path) {
+            Some((m, e)) if *m == mt => e.clone(),
             _ => match embedder.embed_image(&path) {
                 Ok(v) => {
-                    cache.insert(path.clone(), (mt, v.clone()));
-                    v
+                    let e = quantize(&v);
+                    cache.insert(path.clone(), (mt, e.clone()));
+                    e
                 }
                 Err(_) => continue, // skip unreadable images
             },
         };
-        scored.push((path, dir, cosine(&q, &vec)));
+        scored.push((path, dir, qdot(&q, &emb)));
     }
     scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     Ok((scored, cache))
@@ -147,7 +174,7 @@ pub async fn embed_all(
             embedder = Some(ClipEmbedder::load(device).await?);
         }
         if let Ok(v) = embedder.as_ref().unwrap().embed_image(&path) {
-            cache.insert(path, (mt, v));
+            cache.insert(path, (mt, quantize(&v)));
         }
     }
     Ok(cache)
@@ -168,13 +195,13 @@ pub async fn search_by_image(
     // Query embedding (cache-first; loads the model only on a miss).
     let qmt = mtime_secs(query_path);
     let q = match cache.get(query_path) {
-        Some((m, v)) if *m == qmt => v.clone(),
+        Some((m, e)) if *m == qmt => e.clone(),
         _ => {
-            let e = ClipEmbedder::load(device).await?;
-            let v = e.embed_image(query_path)?;
-            cache.insert(query_path.to_path_buf(), (qmt, v.clone()));
-            embedder = Some(e);
-            v
+            let em = ClipEmbedder::load(device).await?;
+            let e = quantize(&em.embed_image(query_path)?);
+            cache.insert(query_path.to_path_buf(), (qmt, e.clone()));
+            embedder = Some(em);
+            e
         }
     };
 
@@ -183,22 +210,23 @@ pub async fn search_by_image(
     for (i, (path, dir)) in items.into_iter().enumerate() {
         progress(i + 1, total);
         let mt = mtime_secs(&path);
-        let vec = match cache.get(&path) {
-            Some((m, v)) if *m == mt => v.clone(),
+        let emb = match cache.get(&path) {
+            Some((m, e)) if *m == mt => e.clone(),
             _ => {
                 if embedder.is_none() {
                     embedder = Some(ClipEmbedder::load(device).await?);
                 }
                 match embedder.as_ref().unwrap().embed_image(&path) {
                     Ok(v) => {
-                        cache.insert(path.clone(), (mt, v.clone()));
-                        v
+                        let e = quantize(&v);
+                        cache.insert(path.clone(), (mt, e.clone()));
+                        e
                     }
                     Err(_) => continue,
                 }
             }
         };
-        scored.push((path, dir, cosine(&q, &vec)));
+        scored.push((path, dir, qdot(&q, &emb)));
     }
     scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     Ok((scored, cache))
@@ -215,24 +243,41 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut cache = Cache::new();
-        cache.insert(dir.join("a.png"), (1000, vec![0.1_f32; DIM]));
-        cache.insert(dir.join("b.png"), (2000, vec![0.2_f32; DIM]));
+        cache.insert(dir.join("a.png"), (1000, quantize(&vec![0.1_f32; DIM])));
+        cache.insert(dir.join("b.png"), (2000, quantize(&vec![0.2_f32; DIM])));
         // Wrong-dimension entry must not be written.
-        cache.insert(dir.join("bad.png"), (3000, vec![0.5_f32; 10]));
+        cache.insert(dir.join("bad.png"), (3000, quantize(&vec![0.5_f32; 10])));
         save_cache(&cache);
         assert!(dir.join(CACHE_FILE).exists());
 
         let back = load_cache(&[dir.clone()]);
         assert_eq!(back.len(), 2, "the 10-dim entry was skipped");
-        let (mt, v) = back.get(&dir.join("a.png")).expect("a.png cached");
+        let (mt, e) = back.get(&dir.join("a.png")).expect("a.png cached");
         assert_eq!(*mt, 1000);
-        assert_eq!(v.len(), DIM);
-        assert!((v[0] - 0.1).abs() < 1e-6);
+        assert_eq!(e.q.len(), DIM);
+        // Round-trips within int8 rounding (a flat 0.1 vector → q all 127, scale ≈ 0.1/127).
+        assert!((e.scale * e.q[0] as f32 - 0.1).abs() < 0.01);
 
         // A truncated/garbage file loads as empty, not a panic.
         std::fs::write(dir.join(CACHE_FILE), b"not a cache").unwrap();
         assert!(load_cache(&[dir.clone()]).is_empty());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn qdot_approximates_cosine() {
+        // Two unit vectors; int8 qdot should track the true cosine (plain dot for unit vectors).
+        let unit = |v: &[f32]| {
+            let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter().map(|x| x / n).collect::<Vec<f32>>()
+        };
+        let a: Vec<f32> = unit(&(0..DIM).map(|i| ((i * 7 % 13) as f32) - 6.0).collect::<Vec<_>>());
+        let b: Vec<f32> = unit(&(0..DIM).map(|i| ((i * 5 % 11) as f32) - 5.0).collect::<Vec<_>>());
+        let true_cos: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        let approx = qdot(&quantize(&a), &quantize(&b));
+        assert!((approx - true_cos).abs() < 0.02, "qdot {approx} vs cosine {true_cos}");
+        // Self-similarity ≈ 1.
+        assert!((qdot(&quantize(&a), &quantize(&a)) - 1.0).abs() < 0.02);
     }
 
     #[test]
@@ -246,7 +291,7 @@ mod tests {
         for name in ["a.png", "b.png"] {
             let p = dir.join(name);
             std::fs::write(&p, b"x").unwrap();
-            cache.insert(p.clone(), (mtime_secs(&p), vec![0.1_f32; DIM]));
+            cache.insert(p.clone(), (mtime_secs(&p), quantize(&vec![0.1_f32; DIM])));
             items.push((p, dir.clone()));
         }
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
