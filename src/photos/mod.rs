@@ -1977,7 +1977,7 @@ impl App {
                 self.edit_menu = false;
                 let n = self.targets().len();
                 self.prompt(
-                    format!("write metadata into {n} file(s)' EXIF (JPEG/PNG/WebP, in place)? [y/N]: "),
+                    format!("write metadata into {n} file(s)' EXIF (JPEG/PNG/WebP/TIFF, in place)? [y/N]: "),
                     "",
                     PendingCmd::WriteExif,
                 );

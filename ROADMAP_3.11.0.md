@@ -30,8 +30,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       `RIFF/WEBP/VP8|VP8L` file is upgraded to the extended `VP8X` form (EXIF flag + canvas size) and an
       `EXIF` chunk appended; an extended file has its flag set + stale `EXIF` replaced. Round-trips
       through the `kamadak-exif` reader (date + GPS). 1 test.
-- [ ] **TIFF EXIF** — append a merged IFD (little-endian) at EOF and repoint the header, keeping the
-      image strips in place. (In progress / may defer if the IFD-offset surgery proves too fiddly.)
+- [x] **TIFF EXIF** — `exifwrite::embed_tiff` (little-endian): append a **merged IFD0** at EOF (the
+      original entries kept verbatim — their offsets stay valid since nothing moves — plus our tags +
+      Exif/GPS sub-IFDs) and repoint the header, so the image strips stay put. Shared layout with the
+      standalone builder (`metadata_ifd` + `layout_ifd`). Round-trips through `kamadak-exif` (date +
+      GPS + title); big-endian (`MM`) is declined, not corrupted. 1 test. *Limitation: a pre-existing
+      Exif sub-IFD is superseded (its extra sub-tags not carried) when a date/geotag is written.*
 
 ## Ground rules (unchanged)
 

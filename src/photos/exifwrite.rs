@@ -169,11 +169,11 @@ fn serialize_ifd(fields: &[Field], ifd_off: u32) -> Vec<u8> {
     ifd
 }
 
-/// Build a complete little-endian TIFF/EXIF block for `f`. Returns `None` when nothing to write.
-fn build_tiff(f: &MetaFields) -> Option<Vec<u8>> {
+/// The metadata tags this writer sets, as IFD0 fields (ascending tag order, with pointer placeholders
+/// for the Exif/GPS sub-IFDs) plus the Exif and GPS sub-IFD field lists. `None` when nothing to write.
+fn metadata_ifd(f: &MetaFields) -> Option<(Vec<Field>, Vec<Field>, Vec<Field>)> {
     let exif_datetime = f.date.as_deref().and_then(to_exif_datetime);
 
-    // IFD0 fields, in ascending tag order (a TIFF requirement).
     let mut ifd0: Vec<Field> = Vec::new();
     if let Some(t) = &f.title {
         if !t.is_empty() {
@@ -193,16 +193,13 @@ fn build_tiff(f: &MetaFields) -> Option<Vec<u8>> {
             ifd0.push(ascii_field(0x8298, c)); // Copyright
         }
     }
-    let has_exif = exif_datetime.is_some();
-    let has_gps = f.gps.is_some();
-    // Pointer placeholders (patched with real offsets below); keep them last (highest tags).
-    if has_exif {
-        ifd0.push(long_field(0x8769, 0)); // ExifIFDPointer
+    if exif_datetime.is_some() {
+        ifd0.push(long_field(0x8769, 0)); // ExifIFDPointer (patched at layout)
     }
-    if has_gps {
-        ifd0.push(long_field(0x8825, 0)); // GPSInfoIFDPointer
+    if f.gps.is_some() {
+        ifd0.push(long_field(0x8825, 0)); // GPSInfoIFDPointer (patched at layout)
     }
-    // XPKeywords (0x9C9E) is the highest tag → must come after the pointers to keep IFD0 ascending.
+    // XPKeywords (0x9C9E) is the highest tag → after the pointers to keep IFD0 ascending.
     let kw: Vec<&str> = f.keywords.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
     if !kw.is_empty() {
         ifd0.push(xp_field(0x9C9E, &kw.join(";")));
@@ -211,49 +208,107 @@ fn build_tiff(f: &MetaFields) -> Option<Vec<u8>> {
         return None;
     }
 
-    // Lay out: header(8) | IFD0 | Exif IFD | GPS IFD. IFD0 length is independent of the (inline)
-    // pointer values, so serialize once to measure, place the sub-IFDs, then patch the pointers.
-    let ifd0_len = serialize_ifd(&ifd0, 8).len() as u32;
-    let exif_off = 8 + ifd0_len;
-
-    let mut exif_bytes = Vec::new();
-    if let Some(dt) = &exif_datetime {
-        exif_bytes = serialize_ifd(&[ascii_field(0x9003, dt)], exif_off); // DateTimeOriginal
-    }
-    let gps_off = exif_off + exif_bytes.len() as u32;
-
-    let mut gps_bytes = Vec::new();
-    if let Some((lat, lon)) = f.gps {
-        let lat_ref = if lat >= 0.0 { "N" } else { "S" };
-        let lon_ref = if lon >= 0.0 { "E" } else { "W" };
-        let gps = vec![
+    let exif = match &exif_datetime {
+        Some(dt) => vec![ascii_field(0x9003, dt)], // DateTimeOriginal
+        None => Vec::new(),
+    };
+    let gps = match f.gps {
+        Some((lat, lon)) => vec![
             Field { tag: 0x0000, typ: 1, count: 4, val: Val::Inline([2, 3, 0, 0]) }, // GPSVersionID
-            ascii_field(0x0001, lat_ref),
+            ascii_field(0x0001, if lat >= 0.0 { "N" } else { "S" }),
             rational3_field(0x0002, dms_rationals(lat)),
-            ascii_field(0x0003, lon_ref),
+            ascii_field(0x0003, if lon >= 0.0 { "E" } else { "W" }),
             rational3_field(0x0004, dms_rationals(lon)),
-        ];
-        gps_bytes = serialize_ifd(&gps, gps_off);
-    }
+        ],
+        None => Vec::new(),
+    };
+    Some((ifd0, exif, gps))
+}
 
-    // Patch the pointer values now that offsets are known.
-    for fld in ifd0.iter_mut() {
-        match fld.tag {
-            0x8769 => fld.val = Val::Inline(exif_off.to_le_bytes()),
-            0x8825 => fld.val = Val::Inline(gps_off.to_le_bytes()),
-            _ => {}
+/// A merged-IFD entry: an original 12-byte entry copied verbatim, or a new field we compute.
+enum Ent {
+    Raw([u8; 12]),
+    New(Field),
+}
+
+fn ent_tag(e: &Ent) -> u16 {
+    match e {
+        Ent::Raw(b) => u16::from_le_bytes([b[0], b[1]]),
+        Ent::New(f) => f.tag,
+    }
+}
+
+/// Serialize one little-endian IFD (main directory) at absolute offset `base`: emit `ents` (sorted by
+/// tag), the `next_ifd` link, this IFD's out-of-line data, then the Exif + GPS sub-IFDs. `Raw` entries
+/// keep their bytes (their offsets already point into the untouched file); `New` fields get absolute
+/// offsets; the Exif/GPS pointer fields are patched to the sub-IFD offsets. Returns the block bytes.
+fn layout_ifd(base: u32, mut ents: Vec<Ent>, exif: Vec<Field>, gps: Vec<Field>, next_ifd: u32) -> Vec<u8> {
+    let count = ents.len() as u32;
+    let struct_len = 2 + count * 12 + 4;
+    let ext_len: u32 = ents
+        .iter()
+        .map(|e| match e {
+            Ent::New(Field { val: Val::Ext(b), .. }) => b.len() as u32 + (b.len() as u32 & 1),
+            _ => 0,
+        })
+        .sum();
+    let exif_off = base + struct_len + ext_len;
+    let exif_bytes = if exif.is_empty() { Vec::new() } else { serialize_ifd(&exif, exif_off) };
+    let gps_off = exif_off + exif_bytes.len() as u32;
+    let gps_bytes = if gps.is_empty() { Vec::new() } else { serialize_ifd(&gps, gps_off) };
+
+    for e in ents.iter_mut() {
+        if let Ent::New(f) = e {
+            match f.tag {
+                0x8769 => f.val = Val::Inline(exif_off.to_le_bytes()),
+                0x8825 => f.val = Val::Inline(gps_off.to_le_bytes()),
+                _ => {}
+            }
         }
     }
-    let ifd0_bytes = serialize_ifd(&ifd0, 8);
-    debug_assert_eq!(ifd0_bytes.len() as u32, ifd0_len);
 
-    let mut tiff = Vec::with_capacity(8 + ifd0_bytes.len() + exif_bytes.len() + gps_bytes.len());
-    tiff.extend_from_slice(b"II"); // little-endian
+    let mut ifd = Vec::new();
+    let mut ext = Vec::new();
+    ifd.extend_from_slice(&(count as u16).to_le_bytes());
+    for e in &ents {
+        match e {
+            Ent::Raw(b) => ifd.extend_from_slice(b),
+            Ent::New(f) => {
+                ifd.extend_from_slice(&f.tag.to_le_bytes());
+                ifd.extend_from_slice(&f.typ.to_le_bytes());
+                ifd.extend_from_slice(&f.count.to_le_bytes());
+                match &f.val {
+                    Val::Inline(b) => ifd.extend_from_slice(b),
+                    Val::Ext(bytes) => {
+                        let at = base + struct_len + ext.len() as u32;
+                        ifd.extend_from_slice(&at.to_le_bytes());
+                        ext.extend_from_slice(bytes);
+                        if ext.len() % 2 == 1 {
+                            ext.push(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ifd.extend_from_slice(&next_ifd.to_le_bytes());
+    ifd.extend_from_slice(&ext);
+    ifd.extend_from_slice(&exif_bytes);
+    ifd.extend_from_slice(&gps_bytes);
+    ifd
+}
+
+/// Build a complete little-endian standalone TIFF/EXIF block for `f` (used as the EXIF payload spliced
+/// into JPEG/PNG/WebP). Returns `None` when nothing to write.
+fn build_tiff(f: &MetaFields) -> Option<Vec<u8>> {
+    let (ifd0, exif, gps) = metadata_ifd(f)?;
+    let ents: Vec<Ent> = ifd0.into_iter().map(Ent::New).collect(); // already ascending
+    let block = layout_ifd(8, ents, exif, gps, 0);
+    let mut tiff = Vec::with_capacity(8 + block.len());
+    tiff.extend_from_slice(b"II");
     tiff.extend_from_slice(&42u16.to_le_bytes());
     tiff.extend_from_slice(&8u32.to_le_bytes()); // IFD0 at offset 8
-    tiff.extend_from_slice(&ifd0_bytes);
-    tiff.extend_from_slice(&exif_bytes);
-    tiff.extend_from_slice(&gps_bytes);
+    tiff.extend_from_slice(&block);
     Some(tiff)
 }
 
@@ -476,9 +531,57 @@ fn embed_webp(data: &[u8], tiff: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Write `fields` into `path`'s binary EXIF, in place (atomic temp → rename). JPEG, PNG and WebP.
-/// Returns `Ok(false)` when there was nothing to write; errors on an unsupported format or I/O
-/// failure. Never touches the pixel stream.
+/// Write `fields` into a **little-endian** TIFF by appending a merged IFD0 (the original entries — kept
+/// verbatim, their offsets still valid since nothing moves — plus our tags + Exif/GPS sub-IFDs) at the
+/// end and repointing the header to it. The image strips stay put. Returns `None` for a big-endian
+/// (`MM`) or malformed TIFF. Note: a pre-existing Exif/GPS sub-IFD is superseded (its extra sub-tags,
+/// e.g. exposure, are not carried into the new one) when we write a date/geotag.
+fn embed_tiff(data: &[u8], fields: &MetaFields) -> Option<Vec<u8>> {
+    if data.len() < 8 || &data[0..2] != b"II" || u16::from_le_bytes([data[2], data[3]]) != 42 {
+        return None; // little-endian TIFF only
+    }
+    let ifd0_off = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+    if ifd0_off < 8 || ifd0_off + 2 > data.len() {
+        return None;
+    }
+    let n = u16::from_le_bytes([data[ifd0_off], data[ifd0_off + 1]]) as usize;
+    let entries_off = ifd0_off + 2;
+    let next_off = entries_off + n * 12;
+    if next_off + 4 > data.len() {
+        return None;
+    }
+    let orig_next = u32::from_le_bytes([data[next_off], data[next_off + 1], data[next_off + 2], data[next_off + 3]]);
+
+    let (new_ifd0, exif, gps) = metadata_ifd(fields)?;
+    let overrides: Vec<u16> = new_ifd0.iter().map(|f| f.tag).collect();
+
+    // Merge: original entries (dropping the tags we're overriding) + our new fields, sorted by tag.
+    let mut ents: Vec<Ent> = Vec::new();
+    for k in 0..n {
+        let e = entries_off + k * 12;
+        let mut raw = [0u8; 12];
+        raw.copy_from_slice(&data[e..e + 12]);
+        if !overrides.contains(&u16::from_le_bytes([raw[0], raw[1]])) {
+            ents.push(Ent::Raw(raw));
+        }
+    }
+    ents.extend(new_ifd0.into_iter().map(Ent::New));
+    ents.sort_by_key(ent_tag);
+
+    // Append at an even offset (TIFF offsets are word-aligned); repoint the header at the new IFD0.
+    let mut out = data.to_vec();
+    if out.len() % 2 == 1 {
+        out.push(0);
+    }
+    let base = out.len() as u32;
+    out.extend_from_slice(&layout_ifd(base, ents, exif, gps, orig_next));
+    out[4..8].copy_from_slice(&base.to_le_bytes());
+    Some(out)
+}
+
+/// Write `fields` into `path`'s binary EXIF, in place (atomic temp → rename). JPEG, PNG, WebP and
+/// (little-endian) TIFF. Returns `Ok(false)` when there was nothing to write; errors on an unsupported
+/// format or I/O failure. Never touches the pixel stream.
 pub fn write_metadata(path: &Path, fields: &MetaFields) -> Result<bool> {
     if fields.is_empty() {
         return Ok(false);
@@ -489,10 +592,11 @@ pub fn write_metadata(path: &Path, fields: &MetaFields) -> Result<bool> {
         "jpg" | "jpeg" => embed_jpeg(&data, &tiff),
         "png" => embed_png(&data, &tiff),
         "webp" => embed_webp(&data, &tiff),
-        other => anyhow::bail!("EXIF write-back supports JPEG/PNG/WebP (got {other})"),
+        "tif" | "tiff" => embed_tiff(&data, fields),
+        other => anyhow::bail!("EXIF write-back supports JPEG/PNG/WebP/TIFF (got {other})"),
     };
     let Some(bytes) = out else {
-        anyhow::bail!("{} is not a well-formed JPEG/PNG/WebP", path.display());
+        anyhow::bail!("{} is not a well-formed little-endian JPEG/PNG/WebP/TIFF", path.display());
     };
     let tmp = path.with_extension(format!("{}.plakat_tmp", ext_lower(path)));
     std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
@@ -610,6 +714,41 @@ mod tests {
         let rec = super::super::exif::read_exif(&p).unwrap();
         assert_eq!(rec.date_taken.as_deref(), Some("2024-07-14T12:34:56"));
         assert!((rec.gps_lat.unwrap() - 37.7749).abs() < 1e-3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_and_reads_back_tiff() {
+        let dir = tmpdir("tiff");
+        let p = dir.join("scan.tiff");
+        if DynamicImage::ImageRgb8(ImageBuffer::from_pixel(30, 20, Rgb([120u8, 60, 30])))
+            .save(&p)
+            .is_err()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        assert!(write_metadata(&p, &fields()).unwrap());
+        // The image still decodes at the same size (strips untouched).
+        let img = image::open(&p).unwrap();
+        assert_eq!((img.width(), img.height()), (30, 20));
+        // The appended IFD is read back by the project reader (date + GPS).
+        let rec = super::super::exif::read_exif(&p).unwrap();
+        assert_eq!(rec.date_taken.as_deref(), Some("2024-07-14T12:34:56"));
+        assert!((rec.gps_lat.unwrap() - 37.7749).abs() < 1e-3, "lat {:?}", rec.gps_lat);
+
+        // Direct kamadak read of the string tags in the appended IFD0.
+        let file = std::fs::File::open(&p).unwrap();
+        let mut buf = std::io::BufReader::new(file);
+        let exif = exif::Reader::new().read_from_container(&mut buf).unwrap();
+        let desc = exif.get_field(exif::Tag::ImageDescription, exif::In::PRIMARY).map(|f| f.display_value().to_string());
+        assert!(desc.unwrap().contains("Sunset over the bay"), "title in appended IFD");
+
+        // Big-endian TIFF is declined rather than corrupted.
+        let mut be = std::fs::read(&p).unwrap();
+        be[0] = b'M';
+        be[1] = b'M';
+        assert!(embed_tiff(&be, &fields()).is_none(), "big-endian declined");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

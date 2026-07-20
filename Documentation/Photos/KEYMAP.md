@@ -167,14 +167,14 @@ gazetteer once, then offline).
 | `Ctrl-B d d` | set capture date… |
 | `Ctrl-B d g` | set geotag (lat, lon)… |
 | `Ctrl-B d e` | set caption… |
-| `Ctrl-B d w` | **write metadata → file EXIF** (title/author/©/date/geo/tags · JPEG/PNG/WebP · confirms) |
+| `Ctrl-B d w` | **write metadata → file EXIF** (title/author/©/date/geo/tags · JPEG/PNG/WebP/TIFF · confirms) |
 
 Edited metadata (title / author / copyright / date / geotag) is stored non-destructively in
 `album.hjson` and shown in the info panel. It's **filterable** in the filter bar / smart albums:
 `iso>3200`, `focal=50`, `camera:canon`, `lens:35`, `date>2023` / `date:2024`, `has-gps` /
 `-has-gps`, `author:jane`, `copyright:acme`, `title:sunset` (all read from the cached record).
 
-`d w` **writes it back into the file's own binary EXIF** (in place, JPEG / PNG / WebP) so the metadata
+`d w` **writes it back into the file's own binary EXIF** (in place, JPEG / PNG / WebP / TIFF) so the metadata
 travels with the file to other tools — title→ImageDescription, author→Artist, copyright→Copyright,
 date→DateTime/DateTimeOriginal, geotag→GPS IFD, and the image's **tags→XPKeywords**. It confirms
 first and never touches the pixels.
