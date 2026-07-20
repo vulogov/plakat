@@ -34,6 +34,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       album matching 200 of 50k images clones 200, not the whole library); `App::query_library(q)`
       syncs then filters in place. `open_smart` + `materialize_smart` route through it (search /
       lookalike still take all rows, as they rank everything).
+- [x] **`:stats`** — aggregate library facets computed from the index in one pass (`LibraryIndex::stats`
+      → `IndexStats`): total images / albums, a rating histogram (with bars), flagged / rejected /
+      tagged / geotagged counts, mean aesthetic score, top cameras, and the capture-year span. Shown in
+      a dismissable overlay — instant at any library size.
 
 ## Track C — fast visual search (persist CLIP)
 

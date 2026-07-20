@@ -616,6 +616,8 @@ struct App {
     /// The conflict-review modal (`:conflicts`) is open.
     conflict_review: bool,
     conflict_cursor: usize,
+    /// Library-stats overlay (`:stats`) — pre-formatted lines; any key dismisses.
+    stats_lines: Option<Vec<String>>,
     /// Presence heartbeat throttle + the last-seen live peer list (other instances on this library).
     presence_last: Option<Instant>,
     live_peers: Vec<presence::Presence>,
@@ -963,6 +965,7 @@ impl App {
             conflicts: Vec::new(),
             conflict_review: false,
             conflict_cursor: 0,
+            stats_lines: None,
             presence_last: None,
             live_peers: Vec::new(),
             album_paths: Vec::new(),
@@ -3397,6 +3400,7 @@ impl App {
                 self.pending_embed = true;
                 self.status = "embedding the library for visual search … (the UI will pause)".into();
             }
+            Action::Stats => self.show_stats(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -4748,6 +4752,49 @@ impl App {
         self.index.sync(&dirs);
         self.index.save(&self.root_dir);
         self.status = format!("reindexed — {} image(s) across {} album(s)", self.index.entries.len(), dirs.len());
+    }
+
+    /// Show aggregate library statistics (`:stats`) computed from the derived index in one pass.
+    fn show_stats(&mut self) {
+        let mut dirs = Vec::new();
+        collect_album_dirs(&self.root, &mut dirs);
+        if self.index.sync(&dirs) {
+            self.refresh_tree_counts();
+            self.index.save(&self.root_dir);
+        }
+        let s = self.index.stats();
+        let mut lines = Vec::new();
+        lines.push(format!("{} images  ·  {} albums", s.total, s.albums));
+        lines.push(String::new());
+        // Rating histogram (5★ down to unrated), with a little bar.
+        for r in (0..=5).rev() {
+            let n = s.rating[r];
+            if n == 0 {
+                continue;
+            }
+            let bar = "█".repeat((n * 20 / s.total.max(1)).min(20).max(1));
+            let label = if r == 0 { "unrated".to_string() } else { format!("{r}★") };
+            lines.push(format!("{label:>7}  {n:>6}  {bar}"));
+        }
+        lines.push(String::new());
+        lines.push(format!("flagged {} · rejected {} · tagged {} · geotagged {}", s.flagged, s.rejected, s.tagged, s.with_gps));
+        if let Some(avg) = s.avg_score {
+            lines.push(format!("mean aesthetic score  {avg:.2}"));
+        }
+        if !s.top_cameras.is_empty() {
+            lines.push(String::new());
+            lines.push("cameras:".into());
+            for (cam, n) in &s.top_cameras {
+                lines.push(format!("  {cam}  ({n})"));
+            }
+        }
+        if s.years.len() > 1 {
+            lines.push(String::new());
+            let span = format!("{}–{}", s.years.first().unwrap().0, s.years.last().unwrap().0);
+            lines.push(format!("years: {span}"));
+        }
+        self.stats_lines = Some(lines);
+        self.status = "library stats · any key to close".into();
     }
 
     /// List the live instances sharing this library (`:who`).
@@ -6308,6 +6355,10 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> bool {
         }
         return false;
     }
+    if app.stats_lines.is_some() {
+        app.stats_lines = None; // any key dismisses the stats overlay
+        return false;
+    }
     if app.conflict_review {
         handle_conflict_key(app, k.code);
         return false;
@@ -7560,6 +7611,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.conflict_review {
         draw_conflict_review(f, app, album_col);
+    }
+    if let Some(lines) = &app.stats_lines {
+        draw_info_panel(f, " 📊 Library stats ", lines, album_col);
     }
     if app.version_browser {
         draw_version_browser(f, app, album_col);

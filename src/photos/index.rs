@@ -30,6 +30,24 @@ pub struct Entry {
     pub rec: Option<ImageRecord>,
 }
 
+/// Aggregate library statistics ([`LibraryIndex::stats`]).
+#[derive(Default)]
+pub struct IndexStats {
+    pub total: usize,
+    pub albums: usize,
+    /// Count of records at each rating 0..=5.
+    pub rating: [usize; 6],
+    pub flagged: usize,
+    pub rejected: usize,
+    pub tagged: usize,
+    pub with_gps: usize,
+    pub avg_score: Option<f64>,
+    /// Top cameras by frequency (up to 5).
+    pub top_cameras: Vec<(String, usize)>,
+    /// Capture-year histogram (ascending year).
+    pub years: Vec<(String, usize)>,
+}
+
 /// The derived index: all entries plus the per-album stamps used to sync incrementally.
 #[derive(Default, Serialize, Deserialize)]
 pub struct LibraryIndex {
@@ -129,6 +147,56 @@ impl LibraryIndex {
         m
     }
 
+    /// Aggregate library statistics computed in one pass over the index (fast at any scale).
+    pub fn stats(&self) -> IndexStats {
+        let mut s = IndexStats { total: self.entries.len(), albums: self.dir_stamps.len(), ..Default::default() };
+        let mut cameras: HashMap<String, usize> = HashMap::new();
+        let mut years: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut score_sum = 0.0;
+        let mut score_n = 0usize;
+        for e in &self.entries {
+            // An image with no record is simply unrated (rating 0), so the histogram sums to `total`.
+            let Some(r) = &e.rec else {
+                s.rating[0] += 1;
+                continue;
+            };
+            s.rating[(r.rating.min(5)) as usize] += 1;
+            if r.flagged {
+                s.flagged += 1;
+            }
+            if r.rejected {
+                s.rejected += 1;
+            }
+            if !r.tags.is_empty() {
+                s.tagged += 1;
+            }
+            if let Some(sc) = r.score {
+                score_sum += sc;
+                score_n += 1;
+            }
+            if let Some(ex) = &r.exif {
+                if ex.gps_lat.is_some() && ex.gps_lon.is_some() {
+                    s.with_gps += 1;
+                }
+                if let Some(cam) = ex.camera_model.clone().or_else(|| ex.camera_make.clone()) {
+                    *cameras.entry(cam).or_insert(0) += 1;
+                }
+                if let Some(d) = &ex.date_taken {
+                    if d.len() >= 4 && d[..4].chars().all(|c| c.is_ascii_digit()) {
+                        *years.entry(d[..4].to_string()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        s.avg_score = (score_n > 0).then(|| score_sum / score_n as f64);
+        let mut cams: Vec<(String, usize)> = cameras.into_iter().collect();
+        cams.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        cams.truncate(5);
+        s.top_cameras = cams;
+        s.years = years.into_iter().collect();
+        s
+    }
+
     /// Snapshot path for a library root: `<cache>/plakat/photos/index/<sha256(root)>.json`.
     pub fn snapshot_path(root: &Path) -> PathBuf {
         use sha2::{Digest, Sha256};
@@ -215,6 +283,13 @@ mod tests {
         let rated = idx.filter(|_, rec| rec.map(|r| r.rating).unwrap_or(0) >= 5);
         assert_eq!(rated.len(), 1);
         assert!(rated[0].0.ends_with("1.png"));
+
+        // stats(): 2 images in album a, one rated 5, one unrated.
+        let st = idx.stats();
+        assert_eq!(st.total, 2);
+        assert_eq!(st.albums, 1);
+        assert_eq!(st.rating[5], 1);
+        assert_eq!(st.rating[0], 1);
 
         // Snapshot round-trips.
         idx.save(&root);
