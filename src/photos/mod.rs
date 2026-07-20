@@ -1666,6 +1666,20 @@ impl App {
             format!("★ {name}  ·  {count} images  ·  [{query}]  (curation writes to each source album)");
     }
 
+    /// Index-backed **All Photos** grid: the whole library in one view, straight from the derived
+    /// index (no re-parse of every `album.hjson` — the cold-start / warm-start browse). Curation still
+    /// routes to each image's source album, and the `/` filter narrows it live.
+    fn open_all(&mut self) {
+        let items = self.query_library(""); // empty filter → all index rows
+        if items.is_empty() {
+            self.status = "no images in the library yet".into();
+            return;
+        }
+        let count = items.len();
+        self.enter_smart_view("All Photos".into(), String::new(), false, items, false);
+        self.status = format!("▤ All Photos · {count} image(s) · from the index (/ to filter)");
+    }
+
     /// Metadata semantic search: rank every image in the library by TF-IDF relevance of `query`
     /// against its text metadata (filename, title, caption, notes, tags, and the `--import` prompt /
     /// model), and show the matches best-first. A relevance-ranked smart view — curation still routes
@@ -3402,6 +3416,7 @@ impl App {
                 self.status = "embedding the library for visual search … (the UI will pause)".into();
             }
             Action::Stats => self.show_stats(),
+            Action::AllPhotos => self.open_all(),
             Action::Convert { fmt, max_px } => {
                 let size = max_px.map(scrub::ConvertSize::MaxPx).unwrap_or(scrub::ConvertSize::Keep);
                 self.convert_targets(&fmt, size);
@@ -5476,6 +5491,11 @@ pub async fn run_with(root_dir: PathBuf, thumb_px: u32) -> Result<()> {
     let mut app = App::new(root, root_dir.clone(), picker, thumb_px);
     // Capture the async runtime handle so the resident ML worker can block_on pipeline loads.
     app.rt = Handle::try_current().ok();
+    // Warm cold-start: if a persisted index snapshot exists, open the whole library as one grid
+    // straight away (no full re-parse). First-ever run (empty snapshot) stays on the tree.
+    if !app.index.rows().is_empty() {
+        app.open_all();
+    }
     // Live watch (best-effort — the manager still works statically if it can't be started).
     app.watch = watcher::spawn(&root_dir).ok();
 

@@ -268,6 +268,7 @@ Beyond edits and smart-album filters, the `:` command pane has library-wide verb
 
 | Command | Does |
 |---------|------|
+| `:all` | **All Photos** — the whole library in one grid, straight from the index (also on warm launch); `/` filters it |
 | `:stats` | aggregate library facets — rating histogram, flagged/tagged/geotagged, cameras, years |
 | `:reindex` | rebuild the derived index from scratch (always safe; it's non-authoritative) |
 | `:embed` | pre-compute + persist CLIP embeddings for the whole library (fast visual search after) |

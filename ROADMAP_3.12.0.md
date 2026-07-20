@@ -59,6 +59,13 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
       search build doesn't re-read that album. Wired into `save_album` (open albums; smart views edit
       per-album). Leaves the directory stamp so a later file add/remove still re-syncs. 1 test.
 
+## Track E — index-backed browse
+
+- [x] **All Photos grid** (`:all`) — the whole library in one grid, sourced straight from the index
+      (no re-parse of every `album.hjson`). On a **warm launch** (a persisted snapshot exists) it opens
+      automatically as the cold-start view, so a large library is browsable immediately; first-ever run
+      (empty snapshot) stays on the tree. Curation routes to each source album; `/` filters live.
+
 ## Ground rules
 
 - The index is **derived + non-authoritative**: delete it and it rebuilds from `album.hjson`.

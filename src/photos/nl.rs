@@ -81,6 +81,8 @@ pub enum Action {
     Embed,
     /// Show aggregate library statistics (computed from the derived index).
     Stats,
+    /// Open the whole library as one grid, straight from the derived index.
+    AllPhotos,
     /// Convert the targets to `fmt` (jpg/png/webp), optionally capping the longest side. Writes NEW
     /// files inside the album (create-only; the source is untouched).
     Convert { fmt: String, #[serde(default)] max_px: Option<u32> },
@@ -167,6 +169,7 @@ fn action_label(a: &Action) -> String {
         Action::Reindex => "reindex".into(),
         Action::Embed => "embed".into(),
         Action::Stats => "stats".into(),
+        Action::AllPhotos => "all photos".into(),
         Action::Convert { fmt, max_px } => match max_px {
             Some(p) => format!("convert→{fmt} ≤{p}px"),
             None => format!("convert→{fmt}"),
@@ -332,6 +335,7 @@ fn parse_action(stage: &str) -> Option<Action> {
         "reindex" | "rebuild index" | "rebuild-index" => Some(Action::Reindex),
         "embed" | "embed library" | "index visual" | "precompute clip" => Some(Action::Embed),
         "stats" | "statistics" | "library stats" | "summary" => Some(Action::Stats),
+        "all" | "all photos" | "everything" | "library" => Some(Action::AllPhotos),
         _ => None,
     }
 }
