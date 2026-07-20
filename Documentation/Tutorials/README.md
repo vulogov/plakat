@@ -25,13 +25,15 @@ If you're new to plakat, work through these in order:
    into scenarios — eight screens, all keyboard-driven, on the same
    engine as the CLI. The friendliest way to explore everything below.
 
-0b. [`PHOTOS_TUTORIAL.md`](PHOTOS_TUTORIAL.md) — **`plakat photos`, the
-   photo & image collection manager (the 3.x flagship).** Browse a folder
-   tree of images (RAW + every common format, EXIF), curate
-   non-destructively (ratings, flags, colour labels, tags in a plain
-   per-album `album.hjson`), filter and cull fast — and close the loop with
-   `--import`, which lands anything you generate straight into an album with
-   its full recipe. On by default.
+0b. [`PHOTOS_TUTORIAL.md`](PHOTOS_TUTORIAL.md) — **`plakat photos`, the photo &
+   image collection manager (the 3.x flagship, capped at 4.0).** Browse a folder
+   tree of images (RAW + HEIC + every common format, EXIF), curate
+   non-destructively (ratings, flags, colour labels, tags in a plain per-album
+   `album.hjson`), a full darkroom (adjustments, layers/masks, brush masks,
+   retouch), AI (generate/relight/upscale/cull), **collaborate on shared
+   volumes**, present (web gallery, slideshow + Ken Burns, maps), and **search at
+   scale** (a derived index + resident CLIP + HNSW). Close the loop with
+   `--import`. See also [`../Photos/KEYMAP.md`](../Photos/KEYMAP.md). On by default.
 
 1. [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md) — **the foundation.**
    Your first generation, the flags that matter, seeds for

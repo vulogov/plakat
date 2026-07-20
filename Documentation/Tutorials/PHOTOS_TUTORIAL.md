@@ -1,11 +1,12 @@
 # `plakat photos` — the photo & image collection manager
 
-`plakat photos` is the 3.x flagship: a full-screen terminal application for
-**browsing, curating, and generating into** a library of images — your
-camera photos, your RAW files, and everything plakat generates. It reuses the
-same decode, EXIF, aesthetic-scoring, and generation pipelines as the rest of
-plakat, so it's not a separate app bolted on: it's the collection front-end to
-the engine you already have.
+`plakat photos` is the flagship of the 3.x line, capped at **4.0**: a full-screen terminal application
+for **browsing, curating, editing, generating into, collaborating on, and presenting** a library of
+images — your camera photos (incl. RAW and HEIC), and everything plakat generates. It reuses the same
+decode, EXIF, aesthetic-scoring, and generation pipelines as the rest of plakat, so it's not a separate
+app bolted on: it's the collection front-end to the engine you already have. §14 covers what the
+3.10–4.0 releases added (metadata write-back, brush masks, present/share, collaboration, formats +
+scale).
 
 ```
 plakat photos ~/Pictures
@@ -881,6 +882,53 @@ aesthetic `score`, and carries its recipe in the EXIF overlay — the same recip
    the result land curated in the grid.
 
 That's the loop: **browse → curate → generate → back into the library.**
+
+---
+
+## 14. New in the 3.10 – 4.0 line
+
+The sections above cover the core. The later 3.x releases — capped by **4.0** — added five more pillars.
+
+### Metadata, and writing it back to the file
+`Ctrl-B d` edits **title / author / copyright / capture-date / geotag** into the album record
+(non-destructive, shown in the info panel), and those fields are **filterable** in smart albums
+(`iso>3200`, `focal=50`, `lens:35`, `date:2024`, `has-gps`, `author:jane`). `Ctrl-B d w` **writes that
+metadata — plus your tags — into the file's own binary EXIF** (JPEG, PNG, WebP, TIFF), so it travels
+with the file. It confirms first and never touches the pixels.
+
+### Local & brush masks; retouch
+Beyond the global adjustments: apply any adjustment through a **graduated / radial** mask (`a g`,
+`a i`), or **paint** a freeform mask (`r x/k/s/w/u` — Space stamps dabs, then it applies through them).
+The **`r` retouch** chord opens a crosshair pick-mode: spot-heal, clone stamp, red-eye, dodge/burn,
+4-point perspective — all replayable edits.
+
+### Present & share
+- **Web gallery** (`Ctrl-B w`) — a portable, fully-offline HTML gallery (thumbnail grid + keyboard
+  lightbox with captions, star ratings, an EXIF summary and tag chips).
+- **Slideshow** (`S` in the image view) — auto-advance (higher-rated images linger longer); `[`/`]`
+  pace, `r` 🔀 shuffle, `k` 🎥 **Ken Burns** pan/zoom.
+- **Maps** — `m` plots geotagged photos on an offline world map; `:geocode` tags them with
+  `place:<city>` (one-time gazetteer fetch, then offline).
+
+### Collaborate — shared volumes
+Keep the library on **Dropbox / iCloud / NFS** and open it in **several `plakat photos` at once**.
+Saves use a **lock-free three-way merge**, so a colleague rating *other* photos is never clobbered.
+Changes elsewhere appear **live** (a `⟳ others editing` badge), each record shows **who edited it**,
+`:conflicts` reviews same-image conflicts (jump / take-theirs), and `:who` lists live instances (a
+`👥 N` badge). Set `PLAKAT_EDITOR` to name yourself in the stamp.
+
+### Formats & scale
+- **HEIC / HEIF / AVIF** — the iPhone family now browses, thumbnails, views, filters and exports
+  (decoded via `sips` / `heif-convert` / ImageMagick).
+- **The derived index** keeps large libraries fast: `:all` opens the whole library instantly (and on a
+  warm launch); smart albums touch only matching rows; `:stats` shows facets (rating histogram,
+  cameras, years); `:reindex` rebuilds it (it's always safe to delete — `album.hjson` stays
+  authoritative).
+- **Visual search at scale** — `:embed` pre-computes + persists CLIP vectors (int8-quantized); the
+  model stays **resident** (no reload between searches); above ~20k images text search ranks through a
+  persisted **HNSW** index for sub-linear results.
+
+See [`../Photos/KEYMAP.md`](../Photos/KEYMAP.md) for every chord, `:` command and image-view key.
 
 ---
 
