@@ -215,6 +215,7 @@ enum EditCmd {
     OpenTrash,   // browse .trash
     RestoreTrash, // restore everything from .trash
     EmptyTrash,  // permanently purge .trash (confirms)
+    ClearThumbs, // purge the whole persistent thumbnail cache
     Retouch(PickOp), // enter the crosshair pick-mode for a retouch op
     Meta(EditField), // edit a per-image metadata field (title / author / copyright / date / geotag)
     FacePolish, // AI-detect faces (SCRFD), then open the 0–100% skin-smoothing slider
@@ -428,6 +429,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("browse trash", "mb", EditCmd::OpenTrash),
         ("restore all from trash", "", EditCmd::RestoreTrash),
         ("empty trash (permanent)…", "", EditCmd::EmptyTrash),
+        ("clear thumbnail cache (all — reclaims disk)", "", EditCmd::ClearThumbs),
         // Stylize — algorithmic filters (s). All open the slider (strength 0..100); numbered variants
         // are palette-only (empty chord).
         ("pencil sketch…", "sk", EditCmd::Adjust(PencilSketch(100))),
@@ -1906,6 +1908,10 @@ impl App {
             EditCmd::EmptyTrash => {
                 self.edit_menu = false;
                 self.prompt("empty trash — permanently delete all? [y/N]: ", "", PendingCmd::EmptyTrash);
+            }
+            EditCmd::ClearThumbs => {
+                self.edit_menu = false;
+                self.clear_thumb_cache();
             }
             EditCmd::FacePolish => {
                 self.edit_menu = false;
@@ -3664,6 +3670,19 @@ impl App {
         let dname = dest.file_name().and_then(|n| n.to_str()).unwrap_or("album");
         let tail = if err > 0 { format!(", {err} skipped/failed") } else { String::new() };
         self.status = format!("{verb} {ok} image(s) → '{dname}'{tail}");
+    }
+
+    /// Purge the **entire** persistent thumbnail cache (XDG `<cache>/plakat/photos/thumbs`) — every
+    /// thumb is keyed by `sha256(path + size + mtime + byte-len)`, so this only reclaims disk; the
+    /// thumbs rebuild lazily on the next browse. (Per-album regeneration is the tree's `regen`.)
+    fn clear_thumb_cache(&mut self) {
+        let dir = loader::thumb_cache_dir();
+        self.thumbs.clear();
+        match std::fs::remove_dir_all(&dir) {
+            Ok(_) => self.status = "🧹 thumbnail cache cleared (rebuilds on browse)".into(),
+            Err(_) if !dir.exists() => self.status = "thumbnail cache already empty".into(),
+            Err(e) => self.status = format!("couldn't clear thumbnail cache: {e}"),
+        }
     }
 
     /// The library's hidden recycle bin (`<root>/.trash`). Skipped by the tree walk (dot-dir).

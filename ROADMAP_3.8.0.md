@@ -44,9 +44,12 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress · `[⏸]` blocked · `[?]
 
 ## Stretch
 
-- [ ] **Persistent thumbnail cache** — a per-library on-disk thumb store so big libraries open fast.
+- [x] **Persistent thumbnail cache** — already existed (`loader::get_or_render_thumb`, XDG
+      `<cache>/plakat/photos/thumbs`, keyed by `sha256(path + size + mtime + byte-len)` so any on-disk
+      change auto-invalidates — the byte-size disambiguates same-second in-place edits). Added a
+      **global clear** (`clear_thumb_cache`) to reclaim disk (per-album `regen` already existed).
 - [ ] **Map / geo view** — cluster photos by GPS; reverse-geocode to place tags. The "wow" manager
-      feature, fully non-AI.
+      feature, fully non-AI. *(Plan drafted — see notes.)*
 
 ## Deferred
 
