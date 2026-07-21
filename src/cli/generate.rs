@@ -41,31 +41,31 @@ pub struct GenerateArgs {
     /// scheduler / size / negative / clip-skip) flow through, plus
     /// the LoRA stack. Pass any CLI flag explicitly to override
     /// the corresponding recipe field.
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Model & sampler", long, value_name = "PATH")]
     pub recipe: Option<PathBuf>,
 
     /// Model: alias (sd15, sd21, sdxl, sdxl-turbo, flux-schnell) or any HF repo id.
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Output size, e.g. 768x768. If omitted, use --aspect and --base.
-    #[arg(long)]
+    #[arg(help_heading = "Size & output", long)]
     pub size: Option<Size>,
 
     /// Aspect ratio, e.g. 16:9, 1:1, 2:3.
-    #[arg(long, conflicts_with = "size")]
+    #[arg(help_heading = "Size & output", long, conflicts_with = "size")]
     pub aspect: Option<String>,
 
     /// Base resolution used with --aspect (shorter side).
-    #[arg(long, default_value_t = 768)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 768)]
     pub base: u32,
 
     /// Number of images to generate.
-    #[arg(long, short = 'n', default_value_t = 1)]
+    #[arg(help_heading = "Size & output", long, short = 'n', default_value_t = 1)]
     pub count: u32,
 
     /// Denoising steps.
-    #[arg(long, default_value_t = 28)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 28)]
     pub steps: usize,
 
     /// Stable Cascade Stage C denoising steps. Unset → split
@@ -73,13 +73,13 @@ pub struct GenerateArgs {
     /// Stage B (refine). When set, takes precedence over `--steps`
     /// for the Stage C count. Cascade-only; ignored on every
     /// non-Cascade model.
-    #[arg(long = "stage-c-steps", value_name = "N")]
+    #[arg(help_heading = "Cascade & Flux", long = "stage-c-steps", value_name = "N")]
     pub stage_c_steps: Option<usize>,
 
     /// Stable Cascade Stage B denoising steps. Unset → derived
     /// from `--steps` (1/3 of total, or `steps - stage_c_steps`
     /// when only `--stage-c-steps` was given). Cascade-only.
-    #[arg(long = "stage-b-steps", value_name = "N")]
+    #[arg(help_heading = "Cascade & Flux", long = "stage-b-steps", value_name = "N")]
     pub stage_b_steps: Option<usize>,
 
     /// Stable Cascade ControlNet weights path (safetensors).
@@ -88,7 +88,7 @@ pub struct GenerateArgs {
     /// canny:…`), the CN is auto-resolved from the model repo's
     /// `controlnet/canny.safetensors`. Set this only to point at a
     /// non-standard checkpoint. Cascade-only; ignored on other models.
-    #[arg(long = "cascade-control-weights", value_name = "PATH")]
+    #[arg(help_heading = "Cascade & Flux", long = "cascade-control-weights", value_name = "PATH")]
     pub cascade_control_weights: Option<PathBuf>,
 
     /// Stable Cascade image variation: condition generation on a
@@ -98,11 +98,11 @@ pub struct GenerateArgs {
     /// leave the prompt empty to vary on the image alone. Loads the
     /// `image_encoder/` from the Cascade repo on first use.
     /// Cascade-only; ignored on other models.
-    #[arg(long = "image-variation", value_name = "PATH")]
+    #[arg(help_heading = "Cascade & Flux", long = "image-variation", value_name = "PATH")]
     pub image_variation: Option<PathBuf>,
 
     /// Classifier-free guidance scale. Use 0.0 for SDXL-Turbo.
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
 
     /// Stable Cascade Stage B (decoder) CFG scale, decoupled from
@@ -110,7 +110,7 @@ pub struct GenerateArgs {
     /// decoder defaults to ~0 (no CFG); ~1.0 is the pure conditional.
     /// Default 1.1 (mild). Raise toward 2-4 for sharper decoder
     /// detail at the risk of over-saturation. Cascade-only.
-    #[arg(long = "decoder-guidance", default_value_t = 1.1)]
+    #[arg(help_heading = "Cascade & Flux", long = "decoder-guidance", default_value_t = 1.1)]
     pub decoder_guidance: f64,
 
     /// Perturbed-Attention Guidance scale (0 = off). An extra conditional forward with self-attention
@@ -118,44 +118,44 @@ pub struct GenerateArgs {
     /// PixArt-Σ: try 2.0–3.0 (calibrated; SD perturbs the mid block via the own UNet). SD3/3.5 (MMDiT):
     /// EXPERIMENTAL — mid joint block by default, tune `PLAKAT_PAG_LAYERS`, start low. Ignored on
     /// candle-UNet (`PLAKAT_CANDLE_UNET=1`), SD 2.1 (v-pred), and other models. Sets `PLAKAT_PAG_SCALE`.
-    #[arg(long = "pag-scale", default_value_t = 0.0)]
+    #[arg(help_heading = "Quality tuning", long = "pag-scale", default_value_t = 0.0)]
     pub pag_scale: f64,
 
     /// CFG-rescale factor φ (0 = off, ~0.7 = paper sweet spot). Rescales the guided prediction
     /// toward the conditional's std to curb over-exposure/wash-out at high `--guidance`. Applies to
     /// SD 1.5/2.1/SDXL, PixArt-Σ, and SD3/3.5. Sets `PLAKAT_CFG_RESCALE` for the run.
-    #[arg(long = "guidance-rescale", default_value_t = 0.0)]
+    #[arg(help_heading = "Quality tuning", long = "guidance-rescale", default_value_t = 0.0)]
     pub guidance_rescale: f64,
 
     /// Enable FreeU: reweight the UNet up-blocks (boost backbone, Fourier-suppress skip low-freqs)
     /// for better detail/texture at no extra cost. SD 1.5/2.1/SDXL (the own-UNet path). Defaults to
     /// (b1,b2,s1,s2)=(1.2,1.4,0.9,0.2); override with `--freeu-params`.
-    #[arg(long = "freeu", default_value_t = false)]
+    #[arg(help_heading = "Quality tuning", long = "freeu", default_value_t = false)]
     pub freeu: bool,
 
     /// FreeU factors as `b1,b2,s1,s2` (implies --freeu). SDXL wants `1.3,1.4,0.9,0.2`.
-    #[arg(long = "freeu-params", value_name = "b1,b2,s1,s2")]
+    #[arg(help_heading = "Quality tuning", long = "freeu-params", value_name = "b1,b2,s1,s2")]
     pub freeu_params: Option<String>,
 
     /// Dynamic thresholding percentile (0 = off, ~99.5 = Imagen default). Per-step, clamps the
     /// predicted x0 to its per-sample percentile and rescales — curbs high-CFG saturation. Applies
     /// to epsilon SD (1.5 / SDXL); ignored on v-pred (2.1) and non-SD. Sets `PLAKAT_DYNTHRESH`.
-    #[arg(long = "dynamic-threshold", default_value_t = 0.0)]
+    #[arg(help_heading = "Quality tuning", long = "dynamic-threshold", default_value_t = 0.0)]
     pub dynamic_threshold: f64,
 
     /// After a `--count N` batch, keep only the K aesthetically best outputs (LAION CLIP predictor,
     /// same as `plakat rank`) and delete the rest. Only prunes files this run created.
-    #[arg(long = "keep-best", value_name = "K")]
+    #[arg(help_heading = "Quality tuning", long = "keep-best", value_name = "K")]
     pub keep_best: Option<usize>,
 
     /// Score each output with the aesthetic predictor and write the score into its `.json` metadata
     /// sidecar (no pruning). The persistent sort key for the collection manager. Implied by
     /// `--keep-best` (which writes the kept images' scores).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Quality tuning", long, default_value_t = false)]
     pub score: bool,
 
     /// Negative prompt.
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// v0.19: bundled negative-prompt preset. One of `photo` /
@@ -164,23 +164,23 @@ pub struct GenerateArgs {
     /// two are comma-joined (preset first, user negative appended).
     /// Saves users from copy-pasting the same `blurry, low quality,
     /// watermark, ...` line into every invocation.
-    #[arg(long = "negative-preset", value_name = "NAME")]
+    #[arg(help_heading = "Prompt & text", long = "negative-preset", value_name = "NAME")]
     pub negative_preset: Option<String>,
 
     /// Random seed for reproducibility.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// Optional prompt enhancer: deepseek | gemini | local |
     /// local:<alias> | auto.
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub enhance: Option<String>,
 
     /// v0.19: custom system prompt path for the enhancer. Overrides
     /// the built-in "rewrite text-to-image prompts..." system prompt
     /// for all three providers (DeepSeek / Gemini / local). Loaded
     /// from disk on each enhance dispatch.
-    #[arg(long = "enhance-system", value_name = "PATH")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-system", value_name = "PATH")]
     pub enhance_system: Option<PathBuf>,
 
     /// v0.19: sampling temperature for `--enhance local`. Default
@@ -188,13 +188,13 @@ pub struct GenerateArgs {
     /// Bump to `0.5`-`1.0` for variety at the cost of repeatability.
     /// Ignored on the API providers (DeepSeek / Gemini have their own
     /// server-side defaults).
-    #[arg(long = "enhance-temp", value_name = "F")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-temp", value_name = "F")]
     pub enhance_temp: Option<f64>,
 
     /// v0.19: maximum new tokens for `--enhance local`. Default 96.
     /// Higher values let the enhancer write longer prompts at the
     /// cost of decode-loop latency. Ignored on the API providers.
-    #[arg(long = "enhance-max-tokens", value_name = "N")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-max-tokens", value_name = "N")]
     pub enhance_max_tokens: Option<usize>,
 
     /// v0.19: SHA-256 disk cache for the local enhancer. When set,
@@ -204,7 +204,7 @@ pub struct GenerateArgs {
     /// the result on success (refusals + empty output never cache).
     /// Opt-in to avoid stale-hit surprises during system-prompt
     /// iteration. Ignored on the API providers.
-    #[arg(long = "enhance-cache", default_value_t = false)]
+    #[arg(help_heading = "Prompt & text", long = "enhance-cache", default_value_t = false)]
     pub enhance_cache: bool,
 
     /// v0.20: keep the original prompt alongside the enhancer's
@@ -215,7 +215,7 @@ pub struct GenerateArgs {
     /// has the token budget to carry both phrasings without
     /// BREAK and where the keyword is a no-op anyway. Ignored
     /// without `--enhance`. Ignored if the prompt was empty.
-    #[arg(long = "enhance-keep-original", default_value_t = false)]
+    #[arg(help_heading = "Prompt & text", long = "enhance-keep-original", default_value_t = false)]
     pub enhance_keep_original: bool,
 
     /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
@@ -224,7 +224,7 @@ pub struct GenerateArgs {
     /// prompt and negative prompt resolve to a random non-empty,
     /// non-comment line. Wildcard RNG is seeded from `--seed` when
     /// set (reproducible expansion) and from the OS RNG otherwise.
-    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    #[arg(help_heading = "Prompt & text", long = "wildcard-dir", value_name = "DIR")]
     pub wildcard_dir: Option<PathBuf>,
 
     /// v0.16 phase 5: CLIP-skip. `1` (default) uses the last hidden
@@ -234,11 +234,11 @@ pub struct GenerateArgs {
     /// AnyLoRA, ...). SD 1.5 / SD 2.1 only — SDXL ignores with a
     /// warning (already uses penultimate by training default).
     /// Flux / SD3 ignore entirely.
-    #[arg(long = "clip-skip", default_value_t = 1, value_name = "N")]
+    #[arg(help_heading = "Model & sampler", long = "clip-skip", default_value_t = 1, value_name = "N")]
     pub clip_skip: usize,
 
     /// Output directory.
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// LoRA to apply (kohya format). Repeatable. Each value can be:
@@ -246,16 +246,16 @@ pub struct GenerateArgs {
     ///   - an HF repo:     `latent-consistency/lcm-lora-sdv1-5` (file auto-picked)
     ///   - an HF repo+file: `civitai/anime#models/style-v1.safetensors`
     /// Optionally append `:SCALE` (e.g. `:0.7`) to weight one LoRA. SD only.
-    #[arg(long = "lora")]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// Global multiplier applied to every LoRA's per-file scale.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long, default_value_t = 1.0)]
     pub lora_scale: f32,
 
     /// Sampler: default | ddim | euler-a | unipc (DPM-Solver++).
     /// Euler-A often improves SD 1.5/SDXL quality at the same step count.
-    #[arg(long, default_value = "default")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
     /// v0.30 phase 1: explicit LCM-LoRA mode. Forces the LCM
@@ -267,51 +267,51 @@ pub struct GenerateArgs {
     /// auto-detect's blind spots. User-supplied `--steps` /
     /// `--guidance` still take precedence — `--lcm --steps 8` runs
     /// at higher quality. SD 1.5 / SDXL.
-    #[arg(long = "lcm", default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long = "lcm", default_value_t = false)]
     pub lcm: bool,
 
     /// Add a low-strength img2img polish pass at the end (extra denoise steps
     /// on the generated latents using the SAME base model). Sharpens details
     /// and removes some artifacts. Not the official SDXL refiner.
-    #[arg(long, value_name = "STEPS")]
+    #[arg(help_heading = "Refiner & hi-res", long, value_name = "STEPS")]
     pub refine: Option<usize>,
 
     /// Strength of the --refine polish (0.0 = no effect, 1.0 = full re-noise).
-    #[arg(long, default_value_t = 0.3)]
+    #[arg(help_heading = "Refiner & hi-res", long, default_value_t = 0.3)]
     pub refine_strength: f32,
 
     /// Use the real SDXL refiner UNet (stable-diffusion-xl-refiner-1.0) for
     /// the last fraction of the schedule. SDXL/SDXL-Turbo only. Adds a
     /// ~6 GB download on first run. Independent of --refine; both can be on.
-    #[arg(long)]
+    #[arg(help_heading = "Refiner & hi-res", long)]
     pub refiner: bool,
 
     /// Fraction of the schedule where the refiner takes over (last 1-FRAC).
     /// 0.8 = last 20% of steps run on the refiner.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(help_heading = "Refiner & hi-res", long, default_value_t = 0.8)]
     pub refiner_frac: f32,
 
     /// Detect art style from this photo and load the matching LoRAs from
     /// the style catalog. Composes with --style to override the detected
     /// result by name. Conflicts with --lora (catalog LoRAs win, with a
     /// warning).
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Style & look", long, value_name = "PATH")]
     pub style_ref: Option<PathBuf>,
 
     /// Pick a style by id from the catalog. Bypasses detection when used
     /// alone; overrides the detection result when combined with
     /// --style-ref. See `plakat style list` (when shipped).
-    #[arg(long, value_name = "ID")]
+    #[arg(help_heading = "Style & look", long, value_name = "ID")]
     pub style: Option<String>,
 
     /// Multiplier applied to every catalog LoRA's :scale. 1.0 uses the
     /// catalog's authored scales verbatim. Above ~1.8 most LoRAs start
     /// to degrade the prompt.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "Style & look", long, default_value_t = 1.0)]
     pub style_strength: f32,
 
     /// Override the bundled style catalog directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Style & look", long, value_name = "DIR")]
     pub style_catalog: Option<PathBuf>,
 
     /// Composite a named artefact (PNG cutout) into the generated
@@ -328,11 +328,11 @@ pub struct GenerateArgs {
     /// equals flag order). For per-artefact offset / anchor /
     /// flip / alpha overrides, use the scenario `artefacts: [...]`
     /// HJSON form.
-    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
     pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
 
     /// Override the bundled artefact library directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long, value_name = "DIR")]
     pub artefact_library: Option<PathBuf>,
 
     /// After alpha-compositing artefacts, run a low-strength masked
@@ -340,13 +340,13 @@ pub struct GenerateArgs {
     /// edges and modest lighting mismatches at the cost of one extra
     /// short denoise pass (~2–5 s per image on GPU). Default: off
     /// (v1 alpha-only).
-    #[arg(long = "artefact-blend", default_value_t = false)]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "artefact-blend", default_value_t = false)]
     pub artefact_blend: bool,
 
     /// img2img strength for `--artefact-blend`. 0.0 = no-op,
     /// 1.0 = full re-noise inside the mask. Sweet spot: 0.25–0.4.
     /// Higher values let the model redraw the artefact silhouette.
-    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
     pub artefact_blend_strength: f32,
 
     /// v3: derive artefact zones from the generated image's own
@@ -354,46 +354,46 @@ pub struct GenerateArgs {
     /// Depth-Anything-V2 small checkpoint (~99 MB, downloaded once
     /// and cached). Falls back to the grid with a warning if the
     /// model can't be loaded. Default: off.
-    #[arg(long = "smart-zones", default_value_t = false)]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
 
     /// ControlNet conditioner kind. v0.10 supports: `depth`. Requires
     /// either `--control-image PATH` (pre-rendered map) or
     /// `--control-from PATH` (auto-annotate any image). SD 1.5 only;
     /// Flux is unsupported.
-    #[arg(long = "control", value_name = "KIND")]
+    #[arg(help_heading = "ControlNet & regional", long = "control", value_name = "KIND")]
     pub control: Option<crate::pipelines::controlnet::ControlKind>,
 
     /// Path to a pre-rendered conditioning image (a depth map, edge
     /// image, pose skeleton, etc.). Use this when you already have
     /// the annotator output. Mutually exclusive with `--control-from`.
-    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
     pub control_image: Option<PathBuf>,
 
     /// **v0.10**: path to an ordinary image to auto-annotate. Runs
     /// the matching annotator for `--control` (e.g. Depth-Anything-V2
     /// for `depth`) on this image and uses the result as the
     /// conditioning. Mutually exclusive with `--control-image`.
-    #[arg(long = "control-from", value_name = "PATH")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-from", value_name = "PATH")]
     pub control_from: Option<PathBuf>,
 
     /// Multiplier applied to ControlNet residuals. 0.0 = ignore the
     /// conditioner; 1.0 = full diffusers default; >1.0 over-emphasises
     /// the structure at the cost of prompt adherence. Sweet spot 0.6–1.0.
-    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
 
     /// Fractional timestep at which ControlNet becomes active.
     /// Default 0.0 (active from the start). Set e.g. 0.3 to skip
     /// control on the early high-noise steps.
-    #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-start", default_value_t = 0.0, value_name = "F")]
     pub control_start: f32,
 
     /// Fractional timestep at which ControlNet stops applying.
     /// Default 1.0 (active through to the end). Set e.g. 0.5 to
     /// lock composition early then let the prompt drive the late
     /// texture/atmosphere passes.
-    #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 
     /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet
@@ -411,7 +411,7 @@ pub struct GenerateArgs {
     /// (`--control`, `--control-image`, etc.). All conditioners in the
     /// stack share the model variant — mixing SD 1.5 / SDXL is not
     /// supported.
-    #[arg(
+    #[arg(help_heading = "ControlNet & regional", 
         long = "control-spec",
         value_name = "SPEC",
         conflicts_with_all = [
@@ -429,26 +429,26 @@ pub struct GenerateArgs {
     /// resolution. Supported on SDXL (v0.12) and Flux (v0.13 phase 4).
     /// Doesn't yet compose with `--control*`, the SDXL refiner, or
     /// Flux.1-Fill-dev.
-    #[arg(long = "tiled", default_value_t = false)]
+    #[arg(help_heading = "ControlNet & regional", long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
     /// Regional prompting: a prompted region `"X0,Y0,X1,Y1:prompt"` (coords are
     /// `[0,1]` canvas fractions). Repeatable — each region's prompt applies in
     /// its box, blended over the main prompt for one coherent image. SD 1.5 /
     /// SDXL, native resolution. Not composed with `--tiled` / `--control*`.
-    #[arg(long = "region", value_name = "X0,Y0,X1,Y1:PROMPT")]
+    #[arg(help_heading = "ControlNet & regional", long = "region", value_name = "X0,Y0,X1,Y1:PROMPT")]
     pub region: Vec<String>,
 
     /// Tile side length in pixels. Default 1024 — SDXL's native
     /// working resolution. Must be a multiple of 8 (VAE constraint).
-    #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
+    #[arg(help_heading = "ControlNet & regional", long = "tile-size", default_value_t = 1024, value_name = "PX")]
     pub tile_size: u32,
 
     /// Stride between tile origins in pixels. Default 768 — gives a
     /// 256 px overlap between adjacent tiles (~25 %). Smaller stride
     /// = more overlap = smoother seams = more compute. Must be a
     /// multiple of 8 and ≤ `--tile-size`.
-    #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
+    #[arg(help_heading = "ControlNet & regional", long = "tile-stride", default_value_t = 768, value_name = "PX")]
     pub tile_stride: u32,
 
     /// **v0.13 phase 1b**: also quantize the T5-XXL text encoder via
@@ -457,7 +457,7 @@ pub struct GenerateArgs {
     /// drops to ~10 GB — fits 12 GB consumer GPUs. Requires a GGUF
     /// transformer (bails loud on BF16 Flux). Ignored for SD-family
     /// models.
-    #[arg(long = "quantize-t5", default_value_t = false)]
+    #[arg(help_heading = "Cascade & Flux", long = "quantize-t5", default_value_t = false)]
     pub quantize_t5: bool,
 
     /// **v0.13 phase 5**: GGUF quant level for the Flux transformer.
@@ -472,13 +472,13 @@ pub struct GenerateArgs {
     ///   * `Q5_K_M` (~8.5 GB) — sweeter quality/memory tradeoff
     ///   * `Q8_0`   (~13 GB) — near-BF16 quality at half the memory
     ///   * `F16`    (~24 GB) — equivalent to BF16
-    #[arg(long = "flux-quant-level", value_name = "LEVEL")]
+    #[arg(help_heading = "Cascade & Flux", long = "flux-quant-level", value_name = "LEVEL")]
     pub flux_quant_level: Option<String>,
 
     /// **v0.13 phase 5**: GGUF quant level for the T5-XXL encoder.
     /// Defaults to `Q4_K_M` (~3 GB). Only meaningful with
     /// `--quantize-t5`. city96 publishes Q3_K_S..Q8_0 + F16/F32.
-    #[arg(long = "t5-quant-level", value_name = "LEVEL")]
+    #[arg(help_heading = "Cascade & Flux", long = "t5-quant-level", value_name = "LEVEL")]
     pub t5_quant_level: Option<String>,
 
     /// **v0.14 phase 6**: Apply a curated distillation-LoRA preset for
@@ -498,7 +498,7 @@ pub struct GenerateArgs {
     ///
     /// Requires a non-Fill Flux variant. NF4 + `--fast` bails (NF4 +
     /// LoRA composition isn't wired in v0.14).
-    #[arg(long = "fast", value_name = "PRESET")]
+    #[arg(help_heading = "Model & sampler", long = "fast", value_name = "PRESET")]
     pub fast: Option<crate::pipelines::flux_fast::FastPresetArg>,
 
     /// **v0.25**: art-medium preset. Bundles a prompt prefix/suffix,
@@ -510,14 +510,14 @@ pub struct GenerateArgs {
     /// Override-only: flags you pass explicitly always win.
     /// Composes with `--genre`, `--style`, `--fast`,
     /// `--negative-preset`.
-    #[arg(long = "look", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "look", value_name = "NAME")]
     pub look: Option<String>,
 
     /// **v0.25**: subject-domain preset — independent axis from
     /// `--look`. Built-in: `anime`. User-extensible via
     /// `$CONFIG_DIR/genres/*.json` (phase 9). Combines additively
     /// with `--look` (a watercolor anime composes both).
-    #[arg(long = "genre", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "genre", value_name = "NAME")]
     pub genre: Option<String>,
 
     /// **v0.25**: skip remote LoRA discovery for `--look` /
@@ -526,7 +526,7 @@ pub struct GenerateArgs {
     /// discovery cache and the local-cache scan run. Useful for CI
     /// / reproducibility / air-gapped runs. Has no effect when no
     /// `--look` / `--genre` is set.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = false)]
     pub offline: bool,
 
     /// **v0.46**: re-rank `--look` / `--genre` Civitai discovery candidates
@@ -534,7 +534,7 @@ pub struct GenerateArgs {
     /// character/person LoRAs. Generic medium terms (watercolour, pencil)
     /// otherwise match anime-character LoRAs that hijack the subject. Runs the
     /// judge on CPU; falls back to the prompt preset if nothing suitable.
-    #[arg(long = "smart-discovery", default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long = "smart-discovery", default_value_t = false)]
     pub smart_discovery: bool,
 
     /// **v0.14 phase 3 / 3c**: Flux Redux reference image. Adds image
@@ -556,7 +556,7 @@ pub struct GenerateArgs {
     ///
     /// Loading Redux adds ~1.5 GB of memory for SigLIP + the 140 MB
     /// adapter — paid only when this flag is set.
-    #[arg(long = "redux-image", value_name = "SPEC")]
+    #[arg(help_heading = "Cascade & Flux", long = "redux-image", value_name = "SPEC")]
     pub redux_images: Vec<crate::pipelines::flux_redux::ReduxSpec>,
 
     /// Pre-rendered conditioning map / reference image for the BFL
@@ -576,7 +576,7 @@ pub struct GenerateArgs {
     /// supplied; required on Kontext (no auto-annotate equivalent —
     /// Kontext wants the actual reference, not a derived map).
     /// Ignored on other models. Mutually exclusive with `--concept-from`.
-    #[arg(
+    #[arg(help_heading = "Cascade & Flux", 
         long = "concept-image",
         value_name = "PATH",
         conflicts_with = "concept_from"
@@ -592,7 +592,7 @@ pub struct GenerateArgs {
     ///
     /// Mutually exclusive with `--concept-image`. Only valid with
     /// `--model flux-canny-dev` / `flux-depth-dev`.
-    #[arg(long = "concept-from", value_name = "PATH")]
+    #[arg(help_heading = "Cascade & Flux", long = "concept-from", value_name = "PATH")]
     pub concept_from: Option<PathBuf>,
 
     /// v0.18 phase 2b: snap `--size` to the closest of 17 BFL-
@@ -603,7 +603,7 @@ pub struct GenerateArgs {
     /// best-trained-quality outputs. The 17 buckets span 9:21 → 21:9
     /// at ~1M-token budgets, all multiples of 16. Ignored on every
     /// other model.
-    #[arg(long = "kontext-bucket", default_value_t = false)]
+    #[arg(help_heading = "Cascade & Flux", long = "kontext-bucket", default_value_t = false)]
     pub kontext_bucket: bool,
 
     /// v0.16 phase 6: enable ADetailer-style face refinement. After
@@ -614,45 +614,45 @@ pub struct GenerateArgs {
     /// Needs SCRFD weights configured via `PLAKAT_SCRFD_WEIGHTS` or
     /// `PLAKAT_SCRFD_HF` (same env vars the FaceID portrait flow
     /// uses). SD 1.5 / SDXL only — Flux / SD3 bail loud.
-    #[arg(long = "adetailer", default_value_t = false)]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer", default_value_t = false)]
     pub adetailer: bool,
 
     /// v0.16 phase 6: img2img strength for the face refinement pass.
     /// `0.4` (default) preserves identity + colour, only crisps
     /// detail. `0.6+` can change the face significantly.
-    #[arg(long = "adetailer-strength", default_value_t = 0.4, value_name = "F")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-strength", default_value_t = 0.4, value_name = "F")]
     pub adetailer_strength: f32,
 
     /// v0.16 phase 6: bbox expansion factor for the face crop.
     /// `0.25` (default) adds 25% on each side — gives the inpaint
     /// pass enough surrounding context to match colour + skin tone.
-    #[arg(long = "adetailer-padding", default_value_t = 0.25, value_name = "F")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-padding", default_value_t = 0.25, value_name = "F")]
     pub adetailer_padding: f32,
 
     /// v0.16 phase 6: feather fraction for the composite. `0.25`
     /// fades the outer 25% of the bbox from full opacity → 0 at the
     /// edge. Larger feather = softer seam, smaller = sharper detail
     /// near the edge but more visible boundary.
-    #[arg(long = "adetailer-feather", default_value_t = 0.25, value_name = "F")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-feather", default_value_t = 0.25, value_name = "F")]
     pub adetailer_feather: f32,
 
     /// v0.16 phase 6: SCRFD confidence threshold. Faces below this
     /// score are skipped. `0.5` is the InsightFace deploy default.
-    #[arg(long = "adetailer-confidence", default_value_t = 0.5, value_name = "F")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-confidence", default_value_t = 0.5, value_name = "F")]
     pub adetailer_confidence: f32,
 
     /// v0.16 phase 6: working resolution for the face img2img pass
     /// (square, snapped to multiples of 8). `512` (default) suits
     /// SD 1.5; `1024` matches SDXL. Larger = more VRAM + slower per
     /// face.
-    #[arg(long = "adetailer-size", default_value_t = 512, value_name = "PX")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-size", default_value_t = 512, value_name = "PX")]
     pub adetailer_size: u32,
 
     /// v0.16 phase 6: optional prompt override for the face pass.
     /// When unset, plakat uses a generic "detailed face, sharp
     /// focus, high quality". Override when you want a specific style
     /// (e.g. "ethereal portrait, soft lighting").
-    #[arg(long = "adetailer-prompt", value_name = "STR")]
+    #[arg(help_heading = "Face detail (ADetailer)", long = "adetailer-prompt", value_name = "STR")]
     pub adetailer_prompt: Option<String>,
 
     /// v0.16 phase 8: enable Hires fix workflow. After the t2i pass,
@@ -661,19 +661,19 @@ pub struct GenerateArgs {
     /// mitigation for the "multi-head problem" when sampling SD 1.5
     /// or SDXL above their trained resolution. SD-family only;
     /// Flux / SD3 bail loud.
-    #[arg(long = "hires-fix", default_value_t = false)]
+    #[arg(help_heading = "Refiner & hi-res", long = "hires-fix", default_value_t = false)]
     pub hires_fix: bool,
 
     /// v0.16 phase 8: upscale factor for the hires-fix pass. `2.0`
     /// (default) doubles each axis. Ignored for ML upscalers
     /// (Real-ESRGAN) which use their native fixed scale (2× / 4×).
-    #[arg(long = "hires-scale", default_value_t = 2.0, value_name = "F")]
+    #[arg(help_heading = "Refiner & hi-res", long = "hires-scale", default_value_t = 2.0, value_name = "F")]
     pub hires_scale: f32,
 
     /// v0.16 phase 8: img2img strength on the upscaled image. `0.5`
     /// (default) preserves the t2i composition + adds refinement;
     /// `0.7+` allows more reinterpretation.
-    #[arg(long = "hires-strength", default_value_t = 0.5, value_name = "F")]
+    #[arg(help_heading = "Refiner & hi-res", long = "hires-strength", default_value_t = 0.5, value_name = "F")]
     pub hires_strength: f32,
 
     /// v0.16 phase 8: upscaler for the hires-fix pass. Accepts the
@@ -682,12 +682,12 @@ pub struct GenerateArgs {
     /// real-esrgan-x4 | real-esrgan-anime-x4`.
     /// Classical filters are fast + sharp; Real-ESRGAN reconstructs
     /// high-frequency detail at extra compute cost.
-    #[arg(long = "hires-upscaler", default_value = "lanczos", value_name = "MODE")]
+    #[arg(help_heading = "Refiner & hi-res", long = "hires-upscaler", default_value = "lanczos", value_name = "MODE")]
     pub hires_upscaler: String,
 
     /// v0.16 phase 8: optional step-count override for the refine
     /// pass. Defaults to the main `--steps`.
-    #[arg(long = "hires-steps", value_name = "N")]
+    #[arg(help_heading = "Refiner & hi-res", long = "hires-steps", value_name = "N")]
     pub hires_steps: Option<usize>,
 
     /// v0.16 phase 9: Textual Inversion (embedding) spec. Repeatable.
@@ -706,7 +706,7 @@ pub struct GenerateArgs {
     /// Runtime injection works (v0.30): the TI is injected at runtime via the
     /// vendored CLIP path — the corpus `embedding.sh` proves it (baseline vs
     /// +EasyNegative on SD 1.5).
-    #[arg(long = "embedding", value_name = "SPEC")]
+    #[arg(help_heading = "LoRA, embeddings & artefacts", long = "embedding", value_name = "SPEC")]
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 
     /// Disable the v0.17 PNG `parameters` tEXt-chunk metadata + the
@@ -716,7 +716,7 @@ pub struct GenerateArgs {
     /// drag-to-load, sd-prompt-reader, ...) can surface the
     /// prompt, seed, sampler, LoRAs, etc. Pass `--no-metadata` to
     /// get anonymous PNGs identical to pre-v0.17 plakat.
-    #[arg(long = "no-metadata", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
 
     /// v0.19: output image container. `png` (default) writes the
@@ -732,27 +732,27 @@ pub struct GenerateArgs {
     /// 2.1 / SDXL / SDXL-Turbo). Flux / SD3 outputs stay PNG-only
     /// in this release; passing `--format webp` with those models
     /// emits a warning and falls back to PNG.
-    #[arg(long, default_value = "png", value_name = "FORMAT")]
+    #[arg(help_heading = "Size & output", long, default_value = "png", value_name = "FORMAT")]
     pub format: crate::imaging::io::OutputFormat,
 
     /// v0.17 phase 4: with `--count N > 1`, also write a single
     /// `plakat-grid-<base-seed>.png` combining all N outputs in a
     /// near-square grid. Per-image PNGs are written as usual
     /// alongside.
-    #[arg(long = "grid", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "grid", default_value_t = false)]
     pub grid: bool,
 
     /// v0.17 phase 4: column count for `--grid`. Default is
     /// `ceil(sqrt(count))` — 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4.
     /// Ignored when `--grid` is off.
-    #[arg(long = "grid-cols", value_name = "N")]
+    #[arg(help_heading = "Size & output", long = "grid-cols", value_name = "N")]
     pub grid_cols: Option<usize>,
 
     /// v0.17 phase 4: padding (px) between grid cells. Default 0
     /// (flush). Higher values insert a white border between cells
     /// for clearer per-cell separation. Ignored when `--grid` is
     /// off.
-    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Size & output", long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
 
     /// v0.17 phase D: write a low-cost latent-projection preview
@@ -763,13 +763,13 @@ pub struct GenerateArgs {
     /// projection (microseconds — no VAE decode), so the preview
     /// adds no meaningful runtime cost. SD 1.5 / 2.1 / SDXL /
     /// SDXL-Turbo only; Flux / SD3 ignore.
-    #[arg(long = "preview-every", default_value_t = 0, value_name = "N")]
+    #[arg(help_heading = "Size & output", long = "preview-every", default_value_t = 0, value_name = "N")]
     pub preview_every: u32,
 
     /// v0.17 phase D: longer-side dimension (px) of the preview
     /// PNG. Default 384. Smaller = faster writes; larger = more
     /// detail in the live preview.
-    #[arg(long = "preview-size", default_value_t = 384, value_name = "PX")]
+    #[arg(help_heading = "Size & output", long = "preview-size", default_value_t = 384, value_name = "PX")]
     pub preview_size: u32,
 
     /// v3.x: `--import <album>` / `--import-move` — land each output in a photo album (see
