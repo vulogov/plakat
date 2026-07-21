@@ -145,6 +145,11 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-dump-spec")]
     pub dump_spec: bool,
 
+    /// Open the interactive TUI explorer: pan / zoom / retune live, then `s` to save to
+    /// `--fractal-out`. Needs a graphics-capable terminal + the `ui` feature.
+    #[arg(long = "fractal-explore")]
+    pub explore: bool,
+
     // ── Track B: optional AI enhancement pass (RFC FRACTALS-1, Phase 4) ──
     /// Enable the AI paint pass: repaint the Track-A render via ControlNet-guided img2img.
     /// The painted image is written next to `--fractal-out` (`<name>.painted.png`) unless
@@ -378,6 +383,21 @@ pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
         return Ok(());
     }
 
+    if args.explore {
+        #[cfg(feature = "ui")]
+        {
+            return fractals::explorer::run(spec, args.out.clone());
+        }
+        #[cfg(not(feature = "ui"))]
+        {
+            let _ = &spec;
+            anyhow::bail!(
+                "--fractal-explore needs the TUI stack — rebuild with `--features fractals,ui` \
+                 (the default build includes it)"
+            );
+        }
+    }
+
     let started = std::time::Instant::now();
 
     // A live progress bar driven by the renderer's callback (fires from worker threads).
@@ -490,6 +510,7 @@ mod tests {
             sd_lora_scale: None,
             out: PathBuf::from("out/fractal.png"),
             dump_spec: false,
+            explore: false,
         }
     }
 

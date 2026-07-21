@@ -15,6 +15,9 @@ pub mod ai_pass;
 pub mod attractor;
 pub mod buddhabrot;
 pub mod coloring;
+/// Interactive TUI explorer (`--fractal-explore`). Needs the TUI stack (`ui` feature).
+#[cfg(feature = "ui")]
+pub mod explorer;
 pub mod flame;
 pub mod ifs;
 pub mod image_io;

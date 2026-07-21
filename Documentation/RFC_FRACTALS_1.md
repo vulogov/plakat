@@ -100,7 +100,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
    mapping, rotational symmetry, 5 presets) + strange attractors (7: clifford/dejong/bedhead/duffing/
    ikeda maps + lorenz/rossler RK4 ODEs, density-accumulated). Both deterministic, both AA via
    supersample. (`.flam3` XML import deferred.) **DONE.**
-6. **TUI explorer** (`--fractal-explore`).
+6. **TUI explorer** (`--fractal-explore`) — interactive pan/zoom/retune with live inline preview
+   (ratatui-image: Kitty/iTerm2/Sixel); cycle kind/palette/coloring, adjust iterations, `s` to save
+   full-res (spec embedded). Gated on the `ui` feature (render engine stays feature-free); graceful
+   error on a non-graphics terminal. **DONE.**
 7. **3D raymarched fractals**.
 8. **Composition, ecosystem integration, LLM spec generation, perturbation-theory deep zoom.**
 
