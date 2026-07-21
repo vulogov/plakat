@@ -17,6 +17,11 @@ use crate::fractals::{
 
 #[derive(Args, Debug, Clone)]
 pub struct FractalsArgs {
+    /// Build the base spec from a prose description (offline keyword mapper); CLI flags
+    /// still override. E.g. `--fractal-from "a fiery burning ship, deep zoom"`.
+    #[arg(long = "fractal-from", value_name = "TEXT")]
+    pub from: Option<String>,
+
     /// Load the base spec from an HJSON/JSON file (CLI flags still override its fields).
     #[arg(long = "fractal-spec", value_name = "FILE")]
     pub spec: Option<PathBuf>,
@@ -158,6 +163,20 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-stops", value_name = "#hex,#hex,...")]
     pub stops: Option<String>,
 
+    /// Color the fractal with a photo sampled at the orbit trap (the `plakat photos`
+    /// bridge). Sets `--fractal-coloring image`. Best on Julia / Mandelbrot.
+    #[arg(long = "fractal-trap-image", value_name = "IMAGE")]
+    pub trap_image: Option<PathBuf>,
+
+    /// Compose an R×C grid instead of one fractal: julia-sweep | zoom-grid | palette-grid
+    /// | variation-sweep.
+    #[arg(long = "fractal-compose", value_name = "MODE")]
+    pub compose: Option<String>,
+
+    /// Grid shape for `--fractal-compose` as `RxC` (default 4x4).
+    #[arg(long = "fractal-grid", value_name = "RxC")]
+    pub grid: Option<String>,
+
     /// Output PNG path (the deterministic Track-A render).
     #[arg(long = "fractal-out", value_name = "PATH", default_value = "out/fractal.png")]
     pub out: PathBuf,
@@ -244,6 +263,19 @@ fn painted_path(out: &Path) -> PathBuf {
     }
 }
 
+fn parse_grid(s: &str) -> Result<(u32, u32)> {
+    let parts: Vec<&str> = s.split(['x', 'X', '×']).map(str::trim).collect();
+    if parts.len() != 2 {
+        anyhow::bail!("grid must be `RxC` (got {s:?})");
+    }
+    let r = parts[0].parse::<u32>().with_context(|| format!("rows {:?}", parts[0]))?;
+    let c = parts[1].parse::<u32>().with_context(|| format!("cols {:?}", parts[1]))?;
+    if r == 0 || c == 0 {
+        anyhow::bail!("grid dimensions must be non-zero (got {s:?})");
+    }
+    Ok((r, c))
+}
+
 fn parse_size(s: &str) -> Result<(u32, u32)> {
     let parts: Vec<&str> = s.split(['x', 'X', '×']).map(str::trim).collect();
     if parts.len() != 2 {
@@ -264,6 +296,8 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
             .with_context(|| format!("{} has no embedded fractalspec chunk", png.display()))?
     } else if let Some(file) = &args.spec {
         FractalSpec::load(file)?
+    } else if let Some(prose) = &args.from {
+        fractals::prompt::spec_from_prose(prose)
     } else {
         FractalSpec::default()
     };
@@ -298,8 +332,12 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(stops) = &args.stops {
         spec.palette.stops = stops.split(',').map(|s| s.trim().to_string()).collect();
     }
+    if let Some(img) = &args.trap_image {
+        spec.trap_image = img.to_string_lossy().into_owned();
+        spec.coloring = Coloring::Image; // providing a trap image implies image coloring
+    }
     if let Some(c) = &args.coloring {
-        spec.coloring = Coloring::parse(c)?;
+        spec.coloring = Coloring::parse(c)?; // explicit --fractal-coloring still wins
     }
     if let Some(ss) = args.supersample {
         spec.supersample = ss;
@@ -437,7 +475,37 @@ pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
     let started = std::time::Instant::now();
 
     // A live progress bar driven by the renderer's callback (fires from worker threads).
+    // Declared here so the compose branch and the single-render path can both drive it.
     let pb = ProgressBar::new(1);
+
+    // Composition mode: an R×C grid of related sub-fractals.
+    if let Some(mode_s) = &args.compose {
+        let mode = fractals::compose::ComposeMode::parse(mode_s)?;
+        let (rows, cols) = match &args.grid {
+            Some(g) => parse_grid(g)?,
+            None => (4, 4),
+        };
+        pb.set_style(
+            ProgressStyle::with_template("  {spinner:.cyan} composing [{bar:30.cyan/blue}] {pos}/{len} cells")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("=>-"),
+        );
+        let report = |done: u64, total: u64| {
+            if pb.length() != Some(total) {
+                pb.set_length(total.max(1));
+            }
+            pb.set_position(done);
+        };
+        let r = fractals::compose::compose(&spec, mode, rows, cols, &report)?;
+        pb.finish_and_clear();
+        fractals::image_io::save_png_with_spec(&r.pixels, r.width, r.height, &spec, &args.out)?;
+        println!(
+            "composed {mode_s} {rows}x{cols} {}x{} → {} ({:.2}s)",
+            r.width, r.height, args.out.display(), started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+
     pb.set_style(
         ProgressStyle::with_template(
             "  {spinner:.cyan} {msg} [{bar:30.cyan/blue}] {percent:>3}%  {elapsed}",
@@ -503,8 +571,12 @@ mod tests {
 
     fn base_args() -> FractalsArgs {
         FractalsArgs {
+            from: None,
             spec: None,
             clone_from: None,
+            trap_image: None,
+            compose: None,
+            grid: None,
             kind: None,
             center: None,
             zoom: None,

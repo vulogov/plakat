@@ -74,6 +74,8 @@ pub struct Escape {
     pub distance: f64,
     /// Mean angular-stripe value over the orbit, in `[0,1]` (stripe coloring).
     pub stripe: f64,
+    /// The orbit point at the closest trap approach (image-trap coloring).
+    pub trap_z: Complex<f64>,
 }
 
 impl Default for Escape {
@@ -86,6 +88,7 @@ impl Default for Escape {
             trap: f64::INFINITY,
             distance: -1.0,
             stripe: 0.0,
+            trap_z: Complex::new(0.0, 0.0),
         }
     }
 }
@@ -102,7 +105,7 @@ impl Feats {
     fn for_coloring(c: Coloring) -> Self {
         Feats {
             deriv: matches!(c, Coloring::Distance),
-            trap: matches!(c, Coloring::OrbitTrap),
+            trap: matches!(c, Coloring::OrbitTrap | Coloring::Image),
             stripe: matches!(c, Coloring::Stripe),
         }
     }
@@ -159,6 +162,7 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
     let mut dz = Complex::new(1.0, 0.0);
     let mut z_prev = Complex::new(0.0, 0.0);
     let mut trap = f64::INFINITY;
+    let mut trap_z = Complex::new(0.0, 0.0);
     let mut stripe_sum = 0.0f64;
     let mut stripe_prev = 0.0f64;
     let mut stripe_count = 0u32;
@@ -206,7 +210,11 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
         n += 1;
 
         if feats.trap {
-            trap = trap.min(trap_distance(z, &spec.trap));
+            let d = trap_distance(z, &spec.trap);
+            if d < trap {
+                trap = d;
+                trap_z = z;
+            }
         }
         if feats.stripe {
             let s = 0.5 + 0.5 * (spec.stripe_freq * z.arg()).sin();
@@ -245,7 +253,9 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
             } else {
                 0.0
             };
-            return Escape { inside: false, iters: n, smooth, final_z: z, trap, distance, stripe };
+            return Escape {
+                inside: false, iters: n, smooth, final_z: z, trap, distance, stripe, trap_z,
+            };
         }
     }
     Escape {
@@ -256,6 +266,7 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
         trap,
         distance: -1.0,
         stripe: 0.0,
+        trap_z,
     }
 }
 
@@ -299,6 +310,7 @@ fn newton_at(spec: &FractalSpec, pixel: Complex<f64>) -> Escape {
                 trap: f64::INFINITY,
                 distance: -1.0,
                 stripe: 0.0,
+                trap_z: Complex::new(0.0, 0.0),
             };
         }
         if !z.norm_sqr().is_finite() {

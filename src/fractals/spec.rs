@@ -170,6 +170,9 @@ pub enum Coloring {
     Angle,
     /// Stripe average — smooth banded "flame" texturing from the orbit's angular history.
     Stripe,
+    /// Orbit-trap by an image — sample a photo at the orbit's closest approach (the bridge
+    /// to `plakat photos`: a Julia set textured by a photograph). Needs `trap_image`.
+    Image,
 }
 
 impl Coloring {
@@ -181,9 +184,10 @@ impl Coloring {
             "orbit-trap" | "trap" => Ok(Coloring::OrbitTrap),
             "angle" => Ok(Coloring::Angle),
             "stripe" | "stripe-average" => Ok(Coloring::Stripe),
+            "image" | "image-trap" => Ok(Coloring::Image),
             other => anyhow::bail!(
                 "unknown coloring {other:?} (want: smooth | histogram | distance | orbit-trap | \
-                 angle | stripe)"
+                 angle | stripe | image)"
             ),
         }
     }
@@ -544,6 +548,8 @@ pub struct FractalSpec {
     pub trap: TrapSpec,
     /// Stripe-average angular frequency (higher = finer bands).
     pub stripe_freq: f64,
+    /// Path to the image sampled by `coloring = image` (orbit-trap-image / photo bridge).
+    pub trap_image: String,
     /// Distance-estimate contrast (larger = thinner filaments).
     pub de_scale: f64,
     /// Phoenix distortion constant `p` `[re, im]`.
@@ -589,6 +595,7 @@ impl Default for FractalSpec {
             coloring: Coloring::Smooth,
             trap: TrapSpec::default(),
             stripe_freq: 6.0,
+            trap_image: String::new(),
             de_scale: 1.0,
             phoenix_p: [-0.5, 0.0],
             nova_relax: [1.0, 0.0],

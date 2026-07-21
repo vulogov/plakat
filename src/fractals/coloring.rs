@@ -66,11 +66,30 @@ fn escape_t(spec: &FractalSpec, e: &Escape, scale: f64, cdf: &[f64], inv_max: f6
         }
         Coloring::Angle => (e.final_z.arg() + PI) / (2.0 * PI),
         Coloring::Stripe => e.stripe,
+        // Image trap falls back to the orbit-trap gradient when no image is supplied.
+        Coloring::Image => {
+            if e.trap.is_finite() { (e.trap * spec.trap.scale).tanh() } else { 0.0 }
+        }
     }
 }
 
+/// Sample an image at normalized `(u, v) ∈ [0,1]²` (nearest neighbor, clamped).
+fn sample_image(img: &image::RgbImage, u: f64, v: f64) -> [u8; 3] {
+    let (w, h) = (img.width(), img.height());
+    let x = ((u.clamp(0.0, 1.0)) * (w.saturating_sub(1)) as f64).round() as u32;
+    let y = ((v.clamp(0.0, 1.0)) * (h.saturating_sub(1)) as f64).round() as u32;
+    img.get_pixel(x.min(w - 1), y.min(h - 1)).0
+}
+
 /// Map the escape field to a packed `RGB8` buffer (`width*height*3` bytes), row-major.
-pub fn colorize(spec: &FractalSpec, field: &[Escape], palette: &Palette) -> Vec<u8> {
+/// `trap_img` (when the coloring is `Image`) is the photo sampled at each orbit's closest
+/// approach — the `plakat photos` bridge.
+pub fn colorize(
+    spec: &FractalSpec,
+    field: &[Escape],
+    palette: &Palette,
+    trap_img: Option<&image::RgbImage>,
+) -> Vec<u8> {
     let n = (spec.width as usize) * (spec.height as usize);
     debug_assert_eq!(field.len(), n);
     let interior = palette.interior();
@@ -82,11 +101,18 @@ pub fn colorize(spec: &FractalSpec, field: &[Escape], palette: &Palette) -> Vec<
     } else {
         Vec::new()
     };
+    let img = if spec.coloring == Coloring::Image { trap_img } else { None };
+    let (tp, ts) = (spec.trap.point, spec.trap.scale);
 
     let mut buf = vec![0u8; n * 3];
     buf.par_chunks_mut(3).zip(field.par_iter()).for_each(|(px, e)| {
         let rgb = if e.inside {
             interior
+        } else if let Some(im) = img {
+            // Map the closest-approach orbit point into the photo's UV space.
+            let u = 0.5 + 0.5 * ((e.trap_z.re - tp[0]) * ts).tanh();
+            let v = 0.5 - 0.5 * ((e.trap_z.im - tp[1]) * ts).tanh();
+            sample_image(im, u, v)
         } else {
             palette.sample(escape_t(spec, e, scale, &cdf, inv_max))
         };
@@ -126,7 +152,7 @@ mod tests {
         };
         let field = render_escape(&spec, &|_, _| {});
         let pal = Palette::from_spec(&spec.palette).unwrap();
-        let buf = colorize(&spec, &field, &pal);
+        let buf = colorize(&spec, &field, &pal, None);
         assert_eq!(buf.len(), 32 * 32 * 3);
         assert!(buf.chunks(3).zip(field.iter())
             .any(|(px, e)| e.inside && px == [0x12, 0x34, 0x56]));
@@ -141,7 +167,7 @@ mod tests {
             let spec = spec_with(c);
             let field = render_escape(&spec, &|_, _| {});
             let pal = Palette::from_spec(&spec.palette).unwrap();
-            let buf = colorize(&spec, &field, &pal);
+            let buf = colorize(&spec, &field, &pal, None);
             assert_eq!(buf.len(), 40 * 40 * 3, "{c:?}");
             // Not a single flat color (some variation exists).
             assert!(buf.chunks(3).any(|p| p != &buf[0..3]), "{c:?} was flat");
@@ -152,11 +178,11 @@ mod tests {
     fn histogram_and_smooth_differ() {
         let field = render_escape(&spec_with(Coloring::Smooth), &|_, _| {});
         let pal = Palette::from_spec(&PaletteSpec::default()).unwrap();
-        let smooth = colorize(&spec_with(Coloring::Smooth), &field, &pal);
+        let smooth = colorize(&spec_with(Coloring::Smooth), &field, &pal, None);
         // Same field, histogram equalization → a different mapping.
         let hist_spec = spec_with(Coloring::Histogram);
         let hist_field = render_escape(&hist_spec, &|_, _| {});
-        let hist = colorize(&hist_spec, &hist_field, &pal);
+        let hist = colorize(&hist_spec, &hist_field, &pal, None);
         assert_ne!(smooth, hist);
     }
 
@@ -169,7 +195,7 @@ mod tests {
         };
         let field = render_escape(&spec, &|_, _| {});
         let pal = Palette::from_spec(&spec.palette).unwrap();
-        let buf = colorize(&spec, &field, &pal);
+        let buf = colorize(&spec, &field, &pal, None);
         assert!(buf.chunks(3).any(|p| p != &buf[0..3]));
     }
 

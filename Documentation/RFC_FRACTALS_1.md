@@ -108,7 +108,13 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
    menger, sierpinski3d, quat-julia; orbit camera (yaw/pitch/dist/fov), Phong + ambient occlusion +
    depth fog, orbit-trap palette coloring. Rayon per-row, deterministic. Track-B control = Depth (the
    distance field *is* the depth map). **DONE.**
-8. **Composition, ecosystem integration, LLM spec generation, perturbation-theory deep zoom.**
+8. **Composition + spec generation + the photos bridge** — grid compositions (`--fractal-compose`:
+   julia-sweep / zoom-grid / palette-grid / variation-sweep, each cell a full Track-A render);
+   image orbit-trap coloring (`--fractal-trap-image`, a Julia textured by a photo — the `plakat photos`
+   bridge); offline prose→FractalSpec (`--fractal-from`, deterministic keyword mapper). **DONE.**
+   *Deferred follow-ups:* aesthetic `--keep-best` scoring on sweeps, `plakat scenario` fractal task,
+   Bund `plakat.fractal.*` words, the photos-TUI fractalspec panel, `plakat generate` fractal-as-
+   ControlNet, LLM-backed `prompt::complete` prose, and perturbation-theory deep zoom.
 
 ## Open questions (see full RFC)
 

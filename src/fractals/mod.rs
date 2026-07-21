@@ -15,6 +15,7 @@ pub mod ai_pass;
 pub mod attractor;
 pub mod buddhabrot;
 pub mod coloring;
+pub mod compose;
 /// Interactive TUI explorer (`--fractal-explore`). Needs the TUI stack (`ui` feature).
 #[cfg(feature = "ui")]
 pub mod explorer;
@@ -25,11 +26,12 @@ pub mod lsystem;
 pub mod palette;
 pub mod plot;
 pub mod progress;
+pub mod prompt;
 pub mod raymarch;
 pub mod render;
 pub mod spec;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::path::Path;
 
@@ -117,8 +119,18 @@ pub fn render_spec_with_progress(spec: &FractalSpec, prog: ProgressFn) -> Result
         FractalKind::Attractor => attractor::render(&hi, &palette, prog)?,
         FractalKind::Raymarch => raymarch::render(&hi, &palette, prog)?,
         _ => {
+            // Image-trap coloring loads the photo once, up front.
+            let trap_img = if hi.coloring == Coloring::Image && !hi.trap_image.trim().is_empty() {
+                Some(
+                    image::open(hi.trap_image.trim())
+                        .with_context(|| format!("opening trap image {}", hi.trap_image))?
+                        .to_rgb8(),
+                )
+            } else {
+                None
+            };
             let field = render::render_escape(&hi, prog);
-            coloring::colorize(&hi, &field, &palette)
+            coloring::colorize(&hi, &field, &palette, trap_img.as_ref())
         }
     };
 
