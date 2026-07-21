@@ -59,6 +59,11 @@ pub mod textsearch;
 /// v3.0 flagship: `plakat photos` TUI collection manager (RFC PHOTOS-1). Behind `--features photos`.
 #[cfg(feature = "photos")]
 pub mod photos;
+/// v4.1 flagship: `plakat fractals` — non-AI + AI-assisted fractal generation (RFC FRACTALS-1).
+/// Behind `--features fractals`.
+#[cfg(feature = "fractals")]
+#[doc(hidden)]
+pub mod fractals;
 #[doc(hidden)]
 pub mod preset;
 #[doc(hidden)]

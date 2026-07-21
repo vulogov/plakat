@@ -11,6 +11,8 @@ pub mod compile;
 pub mod convert_onnx;
 pub mod compose;
 pub mod map;
+#[cfg(feature = "fractals")]
+pub mod fractals;
 pub mod bench;
 pub mod doctor;
 pub mod verify;
@@ -119,6 +121,12 @@ pub enum Command {
     /// Generate a fantasy map from a prose world description. MAP-1: prose →
     /// `MapSpec v2` JSON via the LLM (`--map-dump-spec`); geometry + render follow.
     Map(map::MapArgs),
+    /// Generate fractals — pure-CPU deterministic render (Track A), optional AI paint
+    /// pass (Track B). Escape-time families (Mandelbrot / Julia / Burning Ship) with
+    /// Lab-space palettes; the spec is embedded in the PNG for `--fractal-clone`.
+    /// RFC FRACTALS-1. Behind `--features fractals`.
+    #[cfg(feature = "fractals")]
+    Fractals(fractals::FractalsArgs),
     /// Manage the local HuggingFace model cache.
     #[command(subcommand)]
     Models(models::ModelsCmd),
@@ -312,6 +320,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
         Command::Map(args) => map::run(args, &cli.device).await,
+        #[cfg(feature = "fractals")]
+        Command::Fractals(args) => fractals::run(args).await,
         Command::Compose(args) => {
             let device = crate::device::select(&cli.device)?;
             compose::run(args, device).await
