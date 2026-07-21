@@ -1,20 +1,56 @@
 //! Prose → `FractalSpec` (RFC FRACTALS-1, Phase 8) — deterministic, offline.
 //!
-//! Maps a natural-language description to a starting spec by keyword: family, mood
-//! (palette), coloring, symmetry, and depth. Not an LLM — it always works offline and is
-//! fully reproducible; CLI flags then override any field. (An LLM-backed `prompt::complete`
-//! path, like `plakat map`'s parser, is a future enhancement.)
+//! This shapes the **fractal itself** (Track A), NOT an AI scene. It reads *fractal*
+//! keywords from the text — family (mandelbrot, julia, flame, fern…), mood → palette
+//! (fiery, icy, cosmic…), coloring (stripes, filaments), symmetry, depth — and for any
+//! text that names no family it derives a **distinctive fractal from a hash of the words**,
+//! so different phrases give different art (never the same default twice). Fully
+//! deterministic (no LLM); CLI flags override any field afterward.
+//!
+//! To paint a *scene* from a description ("a winding forest path"), that text belongs in
+//! `--fractal-prompt` with `--fractal-paint` — see `ai_pass`.
+
+use std::f64::consts::TAU;
 
 use super::spec::{Coloring, FractalKind, FractalSpec};
+
+/// A small deterministic string hash (FNV-1a) — seeds the "distinctive fractal from any
+/// text" behavior without any RNG.
+fn text_hash(t: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in t.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// Whether the text explicitly names a fractal family (vs. leaving it to the hash).
+pub fn names_a_family(text: &str) -> bool {
+    let t = text.to_lowercase();
+    [
+        "burning ship", "burning-ship", "mandelbulb", "3d", "raymarch", "mandelbox", "menger",
+        "sponge", "nebula", "buddhabrot", "lorenz", "clifford", "de jong", "dejong", "attractor",
+        "flame", "fern", "koch", "snowflake", "dragon", "plant", "tree", "bush", "branch",
+        "hilbert", "sierpinski", "sierpiński", "newton", "tricorn", "mandelbar", "phoenix",
+        "julia", "mandelbrot",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
+}
 
 /// Build a starting spec from a prose description.
 pub fn spec_from_prose(text: &str) -> FractalSpec {
     let t = text.to_lowercase();
     let has = |kw: &str| t.contains(kw);
     let mut s = FractalSpec::default();
+    let hash = text_hash(&t);
+    s.seed = hash; // stochastic families vary per phrase
 
     // ── Family (most specific first) ──────────────────────────────────────────
-    if has("burning ship") || has("burning-ship") {
+    if has("mandelbrot") {
+        s.kind = FractalKind::Mandelbrot;
+    } else if has("burning ship") || has("burning-ship") {
         s.kind = FractalKind::BurningShip;
         s.center = [-0.4, -0.5];
     } else if has("mandelbulb") || has("3d") || has("raymarch") {
@@ -69,10 +105,20 @@ pub fn spec_from_prose(text: &str) -> FractalSpec {
     } else if has("julia") {
         s.kind = FractalKind::Julia;
         s.center = [0.0, 0.0];
+    } else {
+        // No family named → a distinctive connected Julia set derived from the text hash.
+        // (Julia constants on the 0.7885·e^{iθ} circle are always connected and pretty, so
+        // any phrase yields something worth looking at — and a different one each time.)
+        s.kind = FractalKind::Julia;
+        let theta = (hash % 1_000_000) as f64 / 1_000_000.0 * TAU;
+        s.julia_c = [0.7885 * theta.cos(), 0.7885 * theta.sin()];
+        s.center = [0.0, 0.0];
+        s.zoom = 1.15;
     }
-    // else: Mandelbrot (the default).
 
-    // ── Mood → palette ────────────────────────────────────────────────────────
+    // ── Mood → palette (else a hash-picked palette so every phrase gets a color) ──
+    const PALETTES: &[&str] =
+        &["fire", "ice", "electric", "neon", "pastel", "monochrome", "midnight", "earth"];
     let palette = if has("neon") {
         Some("neon")
     } else if has("fiery") || has("fire") || has("lava") || has("molten") || has("hot") || has("ember") {
@@ -92,9 +138,9 @@ pub fn spec_from_prose(text: &str) -> FractalSpec {
     } else {
         None
     };
-    if let Some(p) = palette {
-        s.palette.preset = p.into();
-    }
+    s.palette.preset = palette
+        .map(str::to_string)
+        .unwrap_or_else(|| PALETTES[(hash as usize / 7) % PALETTES.len()].to_string());
 
     // ── Coloring hints (only for the escape families) ─────────────────────────
     if s.kind.is_escape_time() {
@@ -161,11 +207,33 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_defaults_to_mandelbrot() {
-        let s = spec_from_prose("something interesting");
+    fn explicit_mandelbrot_is_honored() {
+        let s = spec_from_prose("a classic mandelbrot");
         assert_eq!(s.kind, FractalKind::Mandelbrot);
-        // Always yields a valid spec.
-        assert!(s.validate().is_ok());
+        assert!(names_a_family("a classic mandelbrot"));
+    }
+
+    #[test]
+    fn unrecognized_text_gives_a_distinctive_julia() {
+        // No family named → a hash-derived Julia (not the identical default Mandelbrot).
+        let a = spec_from_prose("winding path in the forest");
+        assert_eq!(a.kind, FractalKind::Julia);
+        assert!(a.validate().is_ok());
+        assert!(!names_a_family("winding path in the forest"));
+        // "forest" still steers the palette.
+        assert_eq!(a.palette.preset, "earth");
+        // Different phrases → different fractals (not a fixed default).
+        let b = spec_from_prose("a quiet mountain lake");
+        assert_ne!(a.julia_c, b.julia_c);
+        assert_ne!(a.seed, b.seed);
+        // Deterministic: same phrase → same spec.
+        assert_eq!(a, spec_from_prose("winding path in the forest"));
+    }
+
+    #[test]
+    fn no_palette_keyword_still_gets_a_color() {
+        let s = spec_from_prose("abcdef ghijkl");
+        assert!(!s.palette.preset.is_empty());
     }
 
     #[test]

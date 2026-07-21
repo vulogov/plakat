@@ -245,25 +245,51 @@ load a spec and tweak one field: `--fractal-spec my.hjson --fractal-zoom 500`.
 
 # Part 3 — Prose → spec (`--fractal-from`)
 
-Describe what you want in words; plakat maps it to a starting spec (offline,
-deterministic keyword matcher). CLI flags still override.
+> **Important:** `--fractal-from` shapes the **fractal itself** from *fractal keywords*.
+> It is **not** a scene generator. If you want a picture of "a winding forest path,"
+> that description belongs in `--fractal-prompt` with `--fractal-paint` (Part 7).
+
+`--fractal-from` reads fractal keywords from your text and builds a starting spec
+(offline, deterministic — no LLM). CLI flags still override.
 
 ```bash
-plakat fractals --fractal-from "a fiery burning ship, deep zoom, intricate" \
-  --fractal-out out/from_prose.png
-
-# See what it decided:
+# See what it decided (renders nothing):
 plakat fractals --fractal-from "an icy julia with stripes" --fractal-dump-spec
 #   → kind=julia, palette=ice, coloring=stripe
 
 plakat fractals --fractal-from "a cosmic nebula" --fractal-out out/nebula.png
 #   → kind=buddhabrot, palette=midnight
+
+plakat fractals --fractal-from "a fiery burning ship, deep zoom, intricate" \
+  --fractal-out out/from_prose.png
+#   → kind=burning-ship, palette=fire, zoom×40, high iterations
 ```
 
-It understands families (mandelbrot, julia, burning ship, newton, flame, fern,
-plant, dragon, koch, lorenz, clifford, mandelbulb, …), moods → palettes (fiery, icy,
-neon, pastel, cosmic, earthy…), coloring hints (stripes, filaments), symmetry
-(kaleidoscope), and depth (deep zoom, intricate).
+It understands **families** (mandelbrot, julia, burning ship, newton, flame, fern,
+plant, dragon, koch, lorenz, clifford, mandelbulb, …), **moods → palettes** (fiery,
+icy, neon, pastel, cosmic, earthy…), **coloring** (stripes, filaments), **symmetry**
+(kaleidoscope), and **depth** (deep zoom, intricate).
+
+**Any text that names no family** still gives you something distinctive — plakat hashes
+the words into a unique Julia set, so every phrase yields different art (never the same
+default twice), and any mood word still steers the palette:
+
+```bash
+plakat fractals --fractal-from "winding path in the forest" --fractal-out out/forest.png
+#   → a hash-derived Julia set in the 'earth' palette (from "forest"); a *different*
+#     Julia for every phrase. It also prints a hint reminding you that scenes go in
+#     --fractal-prompt.
+```
+
+### Prose → fractal → painted scene
+
+The natural combo: use `--fractal-from` to pick a fractal *vibe*, and `--fractal-prompt`
+to paint the *scene* on top of it:
+
+```bash
+plakat fractals --fractal-from "icy julia, intricate" \
+  --fractal-paint --fractal-prompt "a frozen alien landscape under aurora, cinematic"
+```
 
 ---
 

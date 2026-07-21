@@ -17,8 +17,10 @@ use crate::fractals::{
 
 #[derive(Args, Debug, Clone)]
 pub struct FractalsArgs {
-    /// Build the base spec from a prose description (offline keyword mapper); CLI flags
-    /// still override. E.g. `--fractal-from "a fiery burning ship, deep zoom"`.
+    /// Shape the FRACTAL from keywords in a description (family/mood/coloring/depth); any
+    /// text that names no family derives a distinctive fractal from a hash of the words.
+    /// This does NOT paint a scene — for that use `--fractal-paint --fractal-prompt`.
+    /// E.g. `--fractal-from "a fiery burning ship, deep zoom"`.
     #[arg(long = "fractal-from", value_name = "TEXT", help_heading = "Input & output")]
     pub from: Option<String>,
 
@@ -466,6 +468,18 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
 
 pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
     let spec = resolve_spec(&args)?;
+
+    // Gently steer users who put a *scene* into --fractal-from (it shapes the fractal, not
+    // a painted scene). Only when they named no fractal family and aren't already painting.
+    if let Some(from) = &args.from {
+        if !spec.ai.enabled && !fractals::prompt::names_a_family(from) {
+            eprintln!(
+                "note: --fractal-from shapes the FRACTAL (it found no family name, so it \
+                 derived one from your words). To paint a scene from a description, add \
+                 `--fractal-paint --fractal-prompt \"{from}\"`."
+            );
+        }
+    }
 
     if args.dump_spec {
         println!("{}", spec.to_json()?);
