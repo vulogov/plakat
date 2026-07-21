@@ -46,6 +46,8 @@ pub enum FractalKind {
     Flame,
     /// Strange attractor — density plot of a chaotic map / ODE trajectory.
     Attractor,
+    /// 3D distance-estimated fractal, sphere-traced (Mandelbulb, Mandelbox, Menger…).
+    Raymarch,
 }
 
 impl FractalKind {
@@ -67,6 +69,7 @@ impl FractalKind {
             FractalKind::Lsystem => "lsystem",
             FractalKind::Flame => "flame",
             FractalKind::Attractor => "attractor",
+            FractalKind::Raymarch => "raymarch",
         }
     }
 
@@ -76,7 +79,7 @@ impl FractalKind {
     }
 
     /// The per-pixel complex-plane escape families (everything except buddhabrot / the
-    /// line-drawing / density families).
+    /// line-drawing / density / raymarched families).
     pub fn is_escape_time(self) -> bool {
         !matches!(
             self,
@@ -85,6 +88,7 @@ impl FractalKind {
                 | FractalKind::Lsystem
                 | FractalKind::Flame
                 | FractalKind::Attractor
+                | FractalKind::Raymarch
         )
     }
 
@@ -106,10 +110,11 @@ impl FractalKind {
             "lsystem" | "l-system" | "lsys" => Ok(FractalKind::Lsystem),
             "flame" => Ok(FractalKind::Flame),
             "attractor" | "strange-attractor" => Ok(FractalKind::Attractor),
+            "raymarch" | "3d" | "mandelbulb" => Ok(FractalKind::Raymarch),
             other => anyhow::bail!(
                 "unknown fractal kind {other:?} (want: mandelbrot | julia | burning-ship | \
                  tricorn | multibrot | newton | nova | phoenix | magnet | sine | exp | buddhabrot \
-                 | ifs | lsystem | flame | attractor)"
+                 | ifs | lsystem | flame | attractor | raymarch)"
             ),
         }
     }
@@ -414,6 +419,59 @@ impl Default for AttractorSpec {
     }
 }
 
+/// 3D distance-estimated (raymarched) fractal configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RaymarchSpec {
+    /// Shape: mandelbulb · mandelbox · menger · sierpinski3d · quat-julia.
+    pub shape: String,
+    /// Mandelbulb exponent (8 is the classic).
+    pub power: f64,
+    /// Fractal iteration count (detail of the distance estimator).
+    pub iterations: u32,
+    /// Maximum sphere-tracing steps per ray.
+    pub max_steps: u32,
+    /// Far clip distance.
+    pub max_dist: f64,
+    /// Surface-hit threshold.
+    pub epsilon: f64,
+    /// Orbit camera yaw / pitch (degrees) and distance from the origin.
+    pub camera_yaw: f64,
+    pub camera_pitch: f64,
+    pub camera_dist: f64,
+    /// Vertical field of view (degrees).
+    pub fov: f64,
+    /// Light direction `[x, y, z]`.
+    pub light: [f64; 3],
+    /// Ambient-occlusion shading.
+    pub ao: bool,
+    /// Mandelbox scale factor.
+    pub box_scale: f64,
+    /// Quaternion-Julia constant `[a, b, c, d]`.
+    pub quat_c: [f64; 4],
+}
+
+impl Default for RaymarchSpec {
+    fn default() -> Self {
+        RaymarchSpec {
+            shape: "mandelbulb".to_string(),
+            power: 8.0,
+            iterations: 12,
+            max_steps: 160,
+            max_dist: 12.0,
+            epsilon: 0.0008,
+            camera_yaw: 40.0,
+            camera_pitch: 22.0,
+            camera_dist: 2.6,
+            fov: 55.0,
+            light: [0.6, 0.7, -0.5],
+            ao: true,
+            box_scale: 2.5,
+            quat_c: [-0.2, 0.6, 0.2, 0.0],
+        }
+    }
+}
+
 /// Track-B (AI enhancement) configuration. When `enabled`, the deterministic Track-A
 /// render feeds a ControlNet-conditioned img2img pass through the generation stack.
 /// Empty string fields mean "auto": `prompt`/`negative` fall back to a per-kind default,
@@ -505,6 +563,8 @@ pub struct FractalSpec {
     pub flame: FlameSpec,
     /// Strange-attractor configuration (used when `kind = attractor`).
     pub attractor: AttractorSpec,
+    /// Raymarched-3D configuration (used when `kind = raymarch`).
+    pub raymarch: RaymarchSpec,
     /// Track-B AI enhancement configuration.
     pub ai: AiSpec,
     /// Reserved / stochastic-family seed. Escape-time is deterministic regardless;
@@ -538,6 +598,7 @@ impl Default for FractalSpec {
             lsystem: LsystemSpec::default(),
             flame: FlameSpec::default(),
             attractor: AttractorSpec::default(),
+            raymarch: RaymarchSpec::default(),
             ai: AiSpec::default(),
             seed: 0,
         }
@@ -637,6 +698,21 @@ impl FractalSpec {
                 "attractor.iterations must be in 1..=500M (got {})",
                 self.attractor.iterations
             );
+        }
+        if self.kind == FractalKind::Raymarch {
+            let r = &self.raymarch;
+            if r.iterations == 0 || r.iterations > 200 {
+                anyhow::bail!("raymarch.iterations must be in 1..=200 (got {})", r.iterations);
+            }
+            if r.max_steps == 0 || r.max_steps > 4000 {
+                anyhow::bail!("raymarch.max_steps must be in 1..=4000 (got {})", r.max_steps);
+            }
+            if !r.epsilon.is_finite() || r.epsilon <= 0.0 {
+                anyhow::bail!("raymarch.epsilon must be positive (got {})", r.epsilon);
+            }
+            if !r.camera_dist.is_finite() || r.camera_dist <= 0.0 {
+                anyhow::bail!("raymarch.camera_dist must be positive (got {})", r.camera_dist);
+            }
         }
         Ok(())
     }

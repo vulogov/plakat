@@ -104,7 +104,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
    (ratatui-image: Kitty/iTerm2/Sixel); cycle kind/palette/coloring, adjust iterations, `s` to save
    full-res (spec embedded). Gated on the `ui` feature (render engine stays feature-free); graceful
    error on a non-graphics terminal. **DONE.**
-7. **3D raymarched fractals**.
+7. **3D raymarched fractals** — distance-estimated sphere tracing (nalgebra): mandelbulb, mandelbox,
+   menger, sierpinski3d, quat-julia; orbit camera (yaw/pitch/dist/fov), Phong + ambient occlusion +
+   depth fog, orbit-trap palette coloring. Rayon per-row, deterministic. Track-B control = Depth (the
+   distance field *is* the depth map). **DONE.**
 8. **Composition, ecosystem integration, LLM spec generation, perturbation-theory deep zoom.**
 
 ## Open questions (see full RFC)

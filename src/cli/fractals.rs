@@ -129,6 +129,27 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-attractor-iterations", value_name = "N")]
     pub attractor_iterations: Option<u64>,
 
+    /// 3D shape (for `--fractal-kind raymarch`): mandelbulb | mandelbox | menger |
+    /// sierpinski3d | quat-julia.
+    #[arg(long = "fractal-raymarch-shape", value_name = "SHAPE")]
+    pub raymarch_shape: Option<String>,
+
+    /// Mandelbulb exponent (for `--fractal-kind raymarch`; 8 is classic).
+    #[arg(long = "fractal-raymarch-power", value_name = "P")]
+    pub raymarch_power: Option<f64>,
+
+    /// Camera yaw in degrees (orbit around the 3D fractal).
+    #[arg(long = "fractal-raymarch-yaw", value_name = "DEG")]
+    pub raymarch_yaw: Option<f64>,
+
+    /// Camera pitch in degrees.
+    #[arg(long = "fractal-raymarch-pitch", value_name = "DEG")]
+    pub raymarch_pitch: Option<f64>,
+
+    /// Camera distance from the origin.
+    #[arg(long = "fractal-raymarch-dist", value_name = "D")]
+    pub raymarch_dist: Option<f64>,
+
     /// Palette preset: fire | ice | electric | neon | pastel | monochrome | midnight | earth.
     #[arg(long = "fractal-palette", value_name = "NAME")]
     pub palette: Option<String>,
@@ -335,6 +356,21 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(n) = args.attractor_iterations {
         spec.attractor.iterations = n;
     }
+    if let Some(s) = &args.raymarch_shape {
+        spec.raymarch.shape = s.clone();
+    }
+    if let Some(p) = args.raymarch_power {
+        spec.raymarch.power = p;
+    }
+    if let Some(y) = args.raymarch_yaw {
+        spec.raymarch.camera_yaw = y;
+    }
+    if let Some(p) = args.raymarch_pitch {
+        spec.raymarch.camera_pitch = p;
+    }
+    if let Some(d) = args.raymarch_dist {
+        spec.raymarch.camera_dist = d;
+    }
 
     // Track B (AI paint).
     if args.paint || args.paint_out.is_some() {
@@ -496,6 +532,11 @@ mod tests {
             flame_iterations: None,
             attractor_preset: None,
             attractor_iterations: None,
+            raymarch_shape: None,
+            raymarch_power: None,
+            raymarch_yaw: None,
+            raymarch_pitch: None,
+            raymarch_dist: None,
             paint: false,
             paint_out: None,
             sd_model: None,

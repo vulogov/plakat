@@ -25,6 +25,7 @@ pub mod lsystem;
 pub mod palette;
 pub mod plot;
 pub mod progress;
+pub mod raymarch;
 pub mod render;
 pub mod spec;
 
@@ -114,6 +115,7 @@ pub fn render_spec_with_progress(spec: &FractalSpec, prog: ProgressFn) -> Result
         FractalKind::Lsystem => lsystem::render(&hi, &palette, prog)?,
         FractalKind::Flame => flame::render(&hi, &palette, prog)?,
         FractalKind::Attractor => attractor::render(&hi, &palette, prog)?,
+        FractalKind::Raymarch => raymarch::render(&hi, &palette, prog)?,
         _ => {
             let field = render::render_escape(&hi, prog);
             coloring::colorize(&hi, &field, &palette)

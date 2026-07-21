@@ -33,6 +33,8 @@ pub fn default_control_for_kind(kind: FractalKind) -> ControlKind {
         FractalKind::Buddhabrot | FractalKind::Flame | FractalKind::Attractor => {
             ControlKind::SoftEdge
         }
+        // The distance field is literally a depth map → condition on Depth.
+        FractalKind::Raymarch => ControlKind::Depth,
         _ => ControlKind::Canny,
     }
 }
@@ -60,6 +62,10 @@ pub fn fractal_prompt(spec: &FractalSpec) -> (String, String) {
         }
         FractalKind::Attractor => {
             "a glowing strange-attractor, delicate luminous threads, long-exposure light trails"
+        }
+        FractalKind::Raymarch => {
+            "a 3D fractal sculpture, ornate recursive geometry, dramatic cinematic lighting, \
+             polished stone and metal, volumetric depth"
         }
         _ => "an intricate fractal, ornate recursive filigree, iridescent, mesmerizing deep zoom",
     };
