@@ -321,7 +321,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Compile(args) => compile::run(args).await,
         Command::Map(args) => map::run(args, &cli.device).await,
         #[cfg(feature = "fractals")]
-        Command::Fractals(args) => fractals::run(args).await,
+        Command::Fractals(args) => fractals::run(args, &cli.device).await,
         Command::Compose(args) => {
             let device = crate::device::select(&cli.device)?;
             compose::run(args, device).await

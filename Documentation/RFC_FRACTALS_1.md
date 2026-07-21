@@ -92,7 +92,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
    deterministic seeded, two-pass bounds+density) + L-system turtle (8 presets, custom axiom/rules,
    gradient-along-path, thickened strokes). Aspect-preserving fit; both AA via supersample. A progress
    callback (`indicatif` bar) now spans **all** generators. **DONE.**
-4. **AI enhancement pass (Track B)**.
+4. **AI enhancement pass (Track B)** — opt-in (`ai.enabled` / `--fractal-paint`): the Track-A render
+   is both the img2img init and the ControlNet source (auto per-family: canny/lineart/softedge), a
+   per-family default prompt, reusing `pipelines::img2img` + `pipelines::controlnet`. GPU auto-detected
+   (respects `--device cpu`); Track A always saved first, untouched. **DONE.**
 5. **Fractal flame + strange attractors** (+ optional `.flam3`).
 6. **TUI explorer** (`--fractal-explore`).
 7. **3D raymarched fractals**.

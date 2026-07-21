@@ -299,6 +299,51 @@ impl Default for LsystemSpec {
     }
 }
 
+/// Track-B (AI enhancement) configuration. When `enabled`, the deterministic Track-A
+/// render feeds a ControlNet-conditioned img2img pass through the generation stack.
+/// Empty string fields mean "auto": `prompt`/`negative` fall back to a per-kind default,
+/// `control` to [`FractalKind`]'s default control type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiSpec {
+    pub enabled: bool,
+    /// Model alias (sdxl / sd15 / …).
+    pub model: String,
+    /// Positive prompt ("" = per-kind auto).
+    pub prompt: String,
+    /// Negative prompt ("" = auto).
+    pub negative: String,
+    /// img2img strength in [0,1] (how far from the Track-A base).
+    pub strength: f32,
+    pub steps: u32,
+    pub guidance: f64,
+    /// ControlNet type ("" = per-kind auto: canny / lineart / softedge).
+    pub control: String,
+    /// ControlNet conditioning scale.
+    pub control_strength: f32,
+    /// LoRA specs (HF `org/name[:scale]`, `civitai:ID`, or a local path).
+    pub loras: Vec<String>,
+    pub lora_scale: f32,
+}
+
+impl Default for AiSpec {
+    fn default() -> Self {
+        AiSpec {
+            enabled: false,
+            model: "sdxl".to_string(),
+            prompt: String::new(),
+            negative: String::new(),
+            strength: 0.55,
+            steps: 28,
+            guidance: 6.5,
+            control: String::new(),
+            control_strength: 0.9,
+            loras: Vec::new(),
+            lora_scale: 0.9,
+        }
+    }
+}
+
 /// A complete, deterministic fractal render request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -341,6 +386,8 @@ pub struct FractalSpec {
     pub ifs: IfsSpec,
     /// L-system configuration (used when `kind = lsystem`).
     pub lsystem: LsystemSpec,
+    /// Track-B AI enhancement configuration.
+    pub ai: AiSpec,
     /// Reserved / stochastic-family seed. Escape-time is deterministic regardless;
     /// buddhabrot uses it so its sampling is reproducible.
     pub seed: u64,
@@ -370,6 +417,7 @@ impl Default for FractalSpec {
             buddha_min_iter: 20,
             ifs: IfsSpec::default(),
             lsystem: LsystemSpec::default(),
+            ai: AiSpec::default(),
             seed: 0,
         }
     }

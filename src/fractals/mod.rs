@@ -11,6 +11,7 @@
 //! families — IFS (chaos game) and L-systems — plus a progress callback across all
 //! generators.
 
+pub mod ai_pass;
 pub mod buddhabrot;
 pub mod coloring;
 pub mod ifs;
@@ -28,7 +29,7 @@ use std::path::Path;
 
 pub use palette::Palette;
 pub use progress::ProgressFn;
-pub use spec::{Coloring, FractalKind, FractalSpec, PaletteSpec};
+pub use spec::{AiSpec, Coloring, FractalKind, FractalSpec, PaletteSpec};
 
 /// A finished Track-A render held in memory (packed `RGB8`, row-major).
 #[derive(Debug, Clone)]

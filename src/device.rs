@@ -42,6 +42,15 @@ fn metal() -> Result<Device> {
     ))
 }
 
+/// A short human label for a resolved device.
+pub fn label(d: &Device) -> &'static str {
+    match d {
+        Device::Cpu => "CPU",
+        Device::Cuda(_) => "CUDA GPU",
+        Device::Metal(_) => "Metal GPU",
+    }
+}
+
 fn auto() -> Device {
     #[cfg(feature = "cuda")]
     if let Ok(d) = Device::new_cuda(0) {

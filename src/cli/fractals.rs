@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::fractals::{
     self,
@@ -116,13 +116,64 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-stops", value_name = "#hex,#hex,...")]
     pub stops: Option<String>,
 
-    /// Output PNG path.
+    /// Output PNG path (the deterministic Track-A render).
     #[arg(long = "fractal-out", value_name = "PATH", default_value = "out/fractal.png")]
     pub out: PathBuf,
 
     /// Print the fully-resolved spec as JSON and exit without rendering.
     #[arg(long = "fractal-dump-spec")]
     pub dump_spec: bool,
+
+    // ── Track B: optional AI enhancement pass (RFC FRACTALS-1, Phase 4) ──
+    /// Enable the AI paint pass: repaint the Track-A render via ControlNet-guided img2img.
+    /// The painted image is written next to `--fractal-out` (`<name>.painted.png`) unless
+    /// `--fractal-paint-out` is given. Needs a model download + GPU for real speed.
+    #[arg(long = "fractal-paint")]
+    pub paint: bool,
+
+    /// Painted-output path (implies `--fractal-paint`).
+    #[arg(long = "fractal-paint-out", value_name = "PATH")]
+    pub paint_out: Option<PathBuf>,
+
+    /// Paint model alias (default sdxl).
+    #[arg(long = "fractal-sd-model", value_name = "ALIAS")]
+    pub sd_model: Option<String>,
+
+    /// Paint prompt (default: a per-family auto prompt).
+    #[arg(long = "fractal-prompt", value_name = "TEXT")]
+    pub prompt: Option<String>,
+
+    /// Paint negative prompt.
+    #[arg(long = "fractal-negative", value_name = "TEXT")]
+    pub negative: Option<String>,
+
+    /// img2img strength in [0,1] (how far the repaint departs from the fractal).
+    #[arg(long = "fractal-sd-strength", value_name = "S")]
+    pub sd_strength: Option<f32>,
+
+    /// Paint diffusion steps.
+    #[arg(long = "fractal-sd-steps", value_name = "N")]
+    pub sd_steps: Option<u32>,
+
+    /// Paint CFG guidance scale.
+    #[arg(long = "fractal-sd-guidance", value_name = "G")]
+    pub sd_guidance: Option<f64>,
+
+    /// ControlNet type override (default: per-family — canny / lineart / softedge).
+    #[arg(long = "fractal-sd-control", value_name = "KIND")]
+    pub sd_control: Option<String>,
+
+    /// ControlNet conditioning scale.
+    #[arg(long = "fractal-sd-control-strength", value_name = "S")]
+    pub sd_control_strength: Option<f32>,
+
+    /// Paint LoRA (repeatable): HF `org/name[:scale]`, `civitai:ID`, or a local path.
+    #[arg(long = "fractal-sd-lora", value_name = "SPEC")]
+    pub sd_lora: Vec<String>,
+
+    /// Paint LoRA scale.
+    #[arg(long = "fractal-sd-lora-scale", value_name = "S")]
+    pub sd_lora_scale: Option<f32>,
 }
 
 fn parse_pair(s: &str, what: &str) -> Result<[f64; 2]> {
@@ -133,6 +184,17 @@ fn parse_pair(s: &str, what: &str) -> Result<[f64; 2]> {
     let re = parts[0].parse::<f64>().with_context(|| format!("{what} real part {:?}", parts[0]))?;
     let im = parts[1].parse::<f64>().with_context(|| format!("{what} imaginary part {:?}", parts[1]))?;
     Ok([re, im])
+}
+
+/// Derive the painted-output path from the Track-A path: `x/y.png` → `x/y.painted.png`.
+fn painted_path(out: &Path) -> PathBuf {
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("fractal");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("png");
+    let name = format!("{stem}.painted.{ext}");
+    match out.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(name),
+        _ => PathBuf::from(name),
+    }
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32)> {
@@ -231,11 +293,46 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
         spec.lsystem.iterations = d;
     }
 
+    // Track B (AI paint).
+    if args.paint || args.paint_out.is_some() {
+        spec.ai.enabled = true;
+    }
+    if let Some(m) = &args.sd_model {
+        spec.ai.model = m.clone();
+    }
+    if let Some(p) = &args.prompt {
+        spec.ai.prompt = p.clone();
+    }
+    if let Some(nprompt) = &args.negative {
+        spec.ai.negative = nprompt.clone();
+    }
+    if let Some(s) = args.sd_strength {
+        spec.ai.strength = s;
+    }
+    if let Some(n) = args.sd_steps {
+        spec.ai.steps = n;
+    }
+    if let Some(g) = args.sd_guidance {
+        spec.ai.guidance = g;
+    }
+    if let Some(c) = &args.sd_control {
+        spec.ai.control = c.clone();
+    }
+    if let Some(s) = args.sd_control_strength {
+        spec.ai.control_strength = s;
+    }
+    if !args.sd_lora.is_empty() {
+        spec.ai.loras = args.sd_lora.clone();
+    }
+    if let Some(s) = args.sd_lora_scale {
+        spec.ai.lora_scale = s;
+    }
+
     spec.validate()?;
     Ok(spec)
 }
 
-pub async fn run(args: FractalsArgs) -> Result<()> {
+pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
     let spec = resolve_spec(&args)?;
 
     if args.dump_spec {
@@ -273,6 +370,36 @@ pub async fn run(args: FractalsArgs) -> Result<()> {
         args.out.display(),
         dt.as_secs_f64()
     );
+
+    // Track B — optional AI paint pass. The device (GPU) is resolved lazily, only when
+    // painting, so Track A stays entirely device-free.
+    if spec.ai.enabled {
+        let paint_out = args.paint_out.clone().unwrap_or_else(|| painted_path(&args.out));
+        println!(
+            "painting via {} (control: {}, strength {})…",
+            spec.ai.model,
+            if spec.ai.control.trim().is_empty() {
+                fractals::ai_pass::default_control_for_kind(spec.kind).slug().to_string()
+            } else {
+                spec.ai.control.clone()
+            },
+            spec.ai.strength,
+        );
+        // Device resolution honors `--device`: the default `auto` auto-detects and uses
+        // the GPU (CUDA → Metal → CPU); an explicit `--device cpu` is respected; an
+        // explicit `metal` / `cuda[:N]` is honored (and errors clearly if not built in).
+        let device = crate::device::select(device_spec)?;
+        let label = crate::device::label(&device);
+        println!("painting on {label}…");
+        if device.is_cpu() && device_spec.trim().eq_ignore_ascii_case("auto") {
+            eprintln!(
+                "  note: no GPU backend detected — painting on CPU (slow). Rebuild with \
+                 `--features metal` (macOS) or `--features cuda` (NVIDIA) for GPU."
+            );
+        }
+        fractals::ai_pass::run_ai_pass(&spec, &args.out, &paint_out, device).await?;
+        println!("painted fractal → {}", paint_out.display());
+    }
     Ok(())
 }
 
@@ -306,6 +433,18 @@ mod tests {
             lsystem_preset: None,
             lsystem_angle: None,
             lsystem_depth: None,
+            paint: false,
+            paint_out: None,
+            sd_model: None,
+            prompt: None,
+            negative: None,
+            sd_strength: None,
+            sd_steps: None,
+            sd_guidance: None,
+            sd_control: None,
+            sd_control_strength: None,
+            sd_lora: Vec::new(),
+            sd_lora_scale: None,
             out: PathBuf::from("out/fractal.png"),
             dump_spec: false,
         }
@@ -376,6 +515,34 @@ mod tests {
     fn bad_coloring_errors() {
         let args = FractalsArgs { coloring: Some("rainbow".into()), ..base_args() };
         assert!(resolve_spec(&args).is_err());
+    }
+
+    #[test]
+    fn paint_flag_enables_ai_and_applies_knobs() {
+        let args = FractalsArgs {
+            paint: true,
+            sd_model: Some("sd15".into()),
+            sd_strength: Some(0.4),
+            sd_control: Some("softedge".into()),
+            sd_lora: vec!["org/frac:0.7".into()],
+            ..base_args()
+        };
+        let spec = resolve_spec(&args).unwrap();
+        assert!(spec.ai.enabled);
+        assert_eq!(spec.ai.model, "sd15");
+        assert_eq!(spec.ai.strength, 0.4);
+        assert_eq!(spec.ai.control, "softedge");
+        assert_eq!(spec.ai.loras, vec!["org/frac:0.7"]);
+        // Not painting by default.
+        assert!(!resolve_spec(&base_args()).unwrap().ai.enabled);
+    }
+
+    #[test]
+    fn paint_out_implies_enabled_and_derived_path() {
+        let args = FractalsArgs { paint_out: Some(PathBuf::from("x/y.png")), ..base_args() };
+        assert!(resolve_spec(&args).unwrap().ai.enabled);
+        assert_eq!(painted_path(Path::new("out/frac.png")), PathBuf::from("out/frac.painted.png"));
+        assert_eq!(painted_path(Path::new("frac.png")), PathBuf::from("frac.painted.png"));
     }
 
     #[test]
