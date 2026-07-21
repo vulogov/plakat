@@ -46,23 +46,23 @@ pub mod photos;
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
 pub struct Cli {
     /// Increase log verbosity (-v, -vv).
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    #[arg(short, long, action = clap::ArgAction::Count, global = true, help_heading = "Global options")]
     pub verbose: u8,
 
     /// Override device: auto | cuda[:N] | metal | cpu.
-    #[arg(long, global = true, default_value = "auto")]
+    #[arg(long, global = true, default_value = "auto", help_heading = "Global options")]
     pub device: String,
 
     /// Custom cache directory for HuggingFace model downloads.
     /// Takes precedence over PLAKAT_CACHE_DIR / HF_HOME / HUGGINGFACE_HUB_CACHE.
-    #[arg(long, global = true, env = "PLAKAT_CACHE_DIR", value_name = "PATH")]
+    #[arg(long, global = true, env = "PLAKAT_CACHE_DIR", value_name = "PATH", help_heading = "Global options")]
     pub cache_dir: Option<PathBuf>,
 
     /// Allow this run even when another plakat instance is already running on
     /// the host. By default a second heavy (model / training) run is refused —
     /// concurrent runs share unified memory and thrash. (env
     /// `PLAKAT_ALLOW_MULTIPLE_INSTANCES=1` does the same.)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     pub enable_multiple_instances: bool,
 
     #[command(subcommand)]

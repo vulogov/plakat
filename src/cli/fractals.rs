@@ -19,232 +19,232 @@ use crate::fractals::{
 pub struct FractalsArgs {
     /// Build the base spec from a prose description (offline keyword mapper); CLI flags
     /// still override. E.g. `--fractal-from "a fiery burning ship, deep zoom"`.
-    #[arg(long = "fractal-from", value_name = "TEXT")]
+    #[arg(long = "fractal-from", value_name = "TEXT", help_heading = "Input & output")]
     pub from: Option<String>,
 
     /// Load the base spec from an HJSON/JSON file (CLI flags still override its fields).
-    #[arg(long = "fractal-spec", value_name = "FILE")]
+    #[arg(long = "fractal-spec", value_name = "FILE", help_heading = "Input & output")]
     pub spec: Option<PathBuf>,
 
     /// Reconstruct the base spec from a PNG previously written by `plakat fractals`
     /// (reads its embedded `fractalspec` chunk). Takes precedence over `--fractal-spec`.
-    #[arg(long = "fractal-clone", value_name = "PNG")]
+    #[arg(long = "fractal-clone", value_name = "PNG", help_heading = "Input & output")]
     pub clone_from: Option<PathBuf>,
 
     /// Fractal family: mandelbrot | julia | burning-ship.
-    #[arg(long = "fractal-kind", value_name = "KIND")]
+    #[arg(long = "fractal-kind", value_name = "KIND", help_heading = "Fractal shape")]
     pub kind: Option<String>,
 
     /// Viewport center in the complex plane as `RE,IM`.
-    #[arg(long = "fractal-center", value_name = "RE,IM", allow_hyphen_values = true)]
+    #[arg(long = "fractal-center", value_name = "RE,IM", allow_hyphen_values = true, help_heading = "Fractal shape")]
     pub center: Option<String>,
 
     /// Zoom factor (vertical axis spans `3.0 / zoom` complex units).
-    #[arg(long = "fractal-zoom", value_name = "Z")]
+    #[arg(long = "fractal-zoom", value_name = "Z", help_heading = "Fractal shape")]
     pub zoom: Option<f64>,
 
     /// Iteration cap (escape budget).
-    #[arg(long = "fractal-iter", value_name = "N")]
+    #[arg(long = "fractal-iter", value_name = "N", help_heading = "Fractal shape")]
     pub iter: Option<u32>,
 
     /// Julia constant as `RE,IM` (only used when kind = julia).
-    #[arg(long = "fractal-julia-c", value_name = "RE,IM", allow_hyphen_values = true)]
+    #[arg(long = "fractal-julia-c", value_name = "RE,IM", allow_hyphen_values = true, help_heading = "Per-family")]
     pub julia_c: Option<String>,
 
     /// Exponent for the `z^power` step (2 = classic; other = multibrot / Newton degree).
-    #[arg(long = "fractal-power", value_name = "P")]
+    #[arg(long = "fractal-power", value_name = "P", help_heading = "Per-family")]
     pub power: Option<f64>,
 
     /// Output size as `WxH` (e.g. `1920x1080`).
-    #[arg(long = "fractal-size", value_name = "WxH")]
+    #[arg(long = "fractal-size", value_name = "WxH", help_heading = "Fractal shape")]
     pub size: Option<String>,
 
     /// Coloring: smooth | histogram | distance | orbit-trap | angle | stripe.
-    #[arg(long = "fractal-coloring", value_name = "MODE")]
+    #[arg(long = "fractal-coloring", value_name = "MODE", help_heading = "Coloring & palette")]
     pub coloring: Option<String>,
 
     /// Anti-aliasing: render at NxN samples per pixel then downsample (1..=8; 1 = off).
-    #[arg(long = "fractal-supersample", value_name = "N")]
+    #[arg(long = "fractal-supersample", value_name = "N", help_heading = "Coloring & palette")]
     pub supersample: Option<u32>,
 
     /// Orbit-trap shape (for `--fractal-coloring orbit-trap`): point | cross | circle.
-    #[arg(long = "fractal-trap-shape", value_name = "SHAPE")]
+    #[arg(long = "fractal-trap-shape", value_name = "SHAPE", help_heading = "Coloring & palette")]
     pub trap_shape: Option<String>,
 
     /// Orbit-trap center as `RE,IM`.
-    #[arg(long = "fractal-trap-point", value_name = "RE,IM", allow_hyphen_values = true)]
+    #[arg(long = "fractal-trap-point", value_name = "RE,IM", allow_hyphen_values = true, help_heading = "Coloring & palette")]
     pub trap_point: Option<String>,
 
     /// Stripe-average angular frequency (for `--fractal-coloring stripe`).
-    #[arg(long = "fractal-stripe-freq", value_name = "F")]
+    #[arg(long = "fractal-stripe-freq", value_name = "F", help_heading = "Coloring & palette")]
     pub stripe_freq: Option<f64>,
 
     /// Distance-estimate contrast (for `--fractal-coloring distance`; larger = thinner).
-    #[arg(long = "fractal-de-scale", value_name = "S")]
+    #[arg(long = "fractal-de-scale", value_name = "S", help_heading = "Coloring & palette")]
     pub de_scale: Option<f64>,
 
     /// Buddhabrot sample count (for `--fractal-kind buddhabrot`).
-    #[arg(long = "fractal-buddha-samples", value_name = "N")]
+    #[arg(long = "fractal-buddha-samples", value_name = "N", help_heading = "Per-family")]
     pub buddha_samples: Option<u64>,
 
     /// Seed for stochastic families (buddhabrot / ifs). Same seed → identical output.
-    #[arg(long = "fractal-seed", value_name = "N")]
+    #[arg(long = "fractal-seed", value_name = "N", help_heading = "Fractal shape")]
     pub seed: Option<u64>,
 
     /// IFS preset (for `--fractal-kind ifs`): barnsley-fern | sierpinski | dragon | levy |
     /// tree | spiral.
-    #[arg(long = "fractal-ifs-preset", value_name = "NAME")]
+    #[arg(long = "fractal-ifs-preset", value_name = "NAME", help_heading = "Per-family")]
     pub ifs_preset: Option<String>,
 
     /// IFS chaos-game point count (for `--fractal-kind ifs`).
-    #[arg(long = "fractal-ifs-iterations", value_name = "N")]
+    #[arg(long = "fractal-ifs-iterations", value_name = "N", help_heading = "Per-family")]
     pub ifs_iterations: Option<u64>,
 
     /// L-system preset (for `--fractal-kind lsystem`): koch | koch-snowflake | sierpinski |
     /// dragon | hilbert | gosper | plant | bush.
-    #[arg(long = "fractal-lsystem-preset", value_name = "NAME")]
+    #[arg(long = "fractal-lsystem-preset", value_name = "NAME", help_heading = "Per-family")]
     pub lsystem_preset: Option<String>,
 
     /// L-system turn angle in degrees (for `--fractal-kind lsystem`).
-    #[arg(long = "fractal-lsystem-angle", value_name = "DEG")]
+    #[arg(long = "fractal-lsystem-angle", value_name = "DEG", help_heading = "Per-family")]
     pub lsystem_angle: Option<f64>,
 
     /// L-system rewrite depth (for `--fractal-kind lsystem`; grows exponentially).
-    #[arg(long = "fractal-lsystem-depth", value_name = "N")]
+    #[arg(long = "fractal-lsystem-depth", value_name = "N", help_heading = "Per-family")]
     pub lsystem_depth: Option<u32>,
 
     /// Flame preset (for `--fractal-kind flame`): sierpinski | spherical | swirl | spiral | flame.
-    #[arg(long = "fractal-flame-preset", value_name = "NAME")]
+    #[arg(long = "fractal-flame-preset", value_name = "NAME", help_heading = "Per-family")]
     pub flame_preset: Option<String>,
 
     /// Flame rotational symmetry (1 = none).
-    #[arg(long = "fractal-flame-symmetry", value_name = "N")]
+    #[arg(long = "fractal-flame-symmetry", value_name = "N", help_heading = "Per-family")]
     pub flame_symmetry: Option<u32>,
 
     /// Flame chaos-game iteration count.
-    #[arg(long = "fractal-flame-iterations", value_name = "N")]
+    #[arg(long = "fractal-flame-iterations", value_name = "N", help_heading = "Per-family")]
     pub flame_iterations: Option<u64>,
 
     /// Strange-attractor preset (for `--fractal-kind attractor`): clifford | dejong | bedhead |
     /// duffing | ikeda | lorenz | rossler.
-    #[arg(long = "fractal-attractor-preset", value_name = "NAME")]
+    #[arg(long = "fractal-attractor-preset", value_name = "NAME", help_heading = "Per-family")]
     pub attractor_preset: Option<String>,
 
     /// Attractor trajectory step count.
-    #[arg(long = "fractal-attractor-iterations", value_name = "N")]
+    #[arg(long = "fractal-attractor-iterations", value_name = "N", help_heading = "Per-family")]
     pub attractor_iterations: Option<u64>,
 
     /// 3D shape (for `--fractal-kind raymarch`): mandelbulb | mandelbox | menger |
     /// sierpinski3d | quat-julia.
-    #[arg(long = "fractal-raymarch-shape", value_name = "SHAPE")]
+    #[arg(long = "fractal-raymarch-shape", value_name = "SHAPE", help_heading = "Per-family")]
     pub raymarch_shape: Option<String>,
 
     /// Mandelbulb exponent (for `--fractal-kind raymarch`; 8 is classic).
-    #[arg(long = "fractal-raymarch-power", value_name = "P", allow_hyphen_values = true)]
+    #[arg(long = "fractal-raymarch-power", value_name = "P", allow_hyphen_values = true, help_heading = "Per-family")]
     pub raymarch_power: Option<f64>,
 
     /// Camera yaw in degrees (orbit around the 3D fractal).
-    #[arg(long = "fractal-raymarch-yaw", value_name = "DEG", allow_hyphen_values = true)]
+    #[arg(long = "fractal-raymarch-yaw", value_name = "DEG", allow_hyphen_values = true, help_heading = "Per-family")]
     pub raymarch_yaw: Option<f64>,
 
     /// Camera pitch in degrees.
-    #[arg(long = "fractal-raymarch-pitch", value_name = "DEG", allow_hyphen_values = true)]
+    #[arg(long = "fractal-raymarch-pitch", value_name = "DEG", allow_hyphen_values = true, help_heading = "Per-family")]
     pub raymarch_pitch: Option<f64>,
 
     /// Camera distance from the origin.
-    #[arg(long = "fractal-raymarch-dist", value_name = "D")]
+    #[arg(long = "fractal-raymarch-dist", value_name = "D", help_heading = "Per-family")]
     pub raymarch_dist: Option<f64>,
 
     /// Palette preset: fire | ice | electric | neon | pastel | monochrome | midnight | earth.
-    #[arg(long = "fractal-palette", value_name = "NAME")]
+    #[arg(long = "fractal-palette", value_name = "NAME", help_heading = "Coloring & palette")]
     pub palette: Option<String>,
 
     /// Explicit gradient stops, comma-separated `#rrggbb` (overrides the preset).
-    #[arg(long = "fractal-stops", value_name = "#hex,#hex,...")]
+    #[arg(long = "fractal-stops", value_name = "#hex,#hex,...", help_heading = "Coloring & palette")]
     pub stops: Option<String>,
 
     /// Color the fractal with a photo sampled at the orbit trap (the `plakat photos`
     /// bridge). Sets `--fractal-coloring image`. Best on Julia / Mandelbrot.
-    #[arg(long = "fractal-trap-image", value_name = "IMAGE")]
+    #[arg(long = "fractal-trap-image", value_name = "IMAGE", help_heading = "Coloring & palette")]
     pub trap_image: Option<PathBuf>,
 
     /// Compose an R×C grid instead of one fractal: julia-sweep | zoom-grid | palette-grid
     /// | variation-sweep.
-    #[arg(long = "fractal-compose", value_name = "MODE")]
+    #[arg(long = "fractal-compose", value_name = "MODE", help_heading = "Composition")]
     pub compose: Option<String>,
 
     /// Grid shape for `--fractal-compose` as `RxC` (default 4x4).
-    #[arg(long = "fractal-grid", value_name = "RxC")]
+    #[arg(long = "fractal-grid", value_name = "RxC", help_heading = "Composition")]
     pub grid: Option<String>,
 
     /// Output PNG path (the deterministic Track-A render).
-    #[arg(long = "fractal-out", value_name = "PATH", default_value = "out/fractal.png")]
+    #[arg(long = "fractal-out", value_name = "PATH", default_value = "out/fractal.png", help_heading = "Input & output")]
     pub out: PathBuf,
 
     /// Print the fully-resolved spec as JSON and exit without rendering.
-    #[arg(long = "fractal-dump-spec")]
+    #[arg(long = "fractal-dump-spec", help_heading = "Input & output")]
     pub dump_spec: bool,
 
     /// Open the interactive TUI explorer: pan / zoom / retune live, then `s` to save to
     /// `--fractal-out`. Needs a graphics-capable terminal + the `ui` feature.
-    #[arg(long = "fractal-explore")]
+    #[arg(long = "fractal-explore", help_heading = "Input & output")]
     pub explore: bool,
 
     // ── Track B: optional AI enhancement pass (RFC FRACTALS-1, Phase 4) ──
     /// Enable the AI paint pass: repaint the Track-A render via ControlNet-guided img2img.
     /// The painted image is written next to `--fractal-out` (`<name>.painted.png`) unless
     /// `--fractal-paint-out` is given. Needs a model download + GPU for real speed.
-    #[arg(long = "fractal-paint")]
+    #[arg(long = "fractal-paint", help_heading = "AI paint (Track B)")]
     pub paint: bool,
 
     /// Painted-output path (implies `--fractal-paint`).
-    #[arg(long = "fractal-paint-out", value_name = "PATH")]
+    #[arg(long = "fractal-paint-out", value_name = "PATH", help_heading = "AI paint (Track B)")]
     pub paint_out: Option<PathBuf>,
 
-    /// Paint pipeline: `img2img` (default — a scene *made of* the fractal: keeps its colors
-    /// and layout) or `txt2img` (a scene *shaped by* the fractal: ControlNet-only, so the
-    /// model paints a real sky / horizon / lighting from the prompt).
-    #[arg(long = "fractal-paint-mode", value_name = "MODE")]
+    /// Paint pipeline: `txt2img` (default — a scene *shaped by* the fractal: ControlNet-only,
+    /// so the model paints a real sky / horizon / lighting from the prompt) or `img2img`
+    /// (a scene *made of* the fractal: keeps its colors and layout, more abstract).
+    #[arg(long = "fractal-paint-mode", value_name = "MODE", help_heading = "AI paint (Track B)")]
     pub paint_mode: Option<String>,
 
     /// Paint model alias (default sdxl).
-    #[arg(long = "fractal-sd-model", value_name = "ALIAS")]
+    #[arg(long = "fractal-sd-model", value_name = "ALIAS", help_heading = "AI paint (Track B)")]
     pub sd_model: Option<String>,
 
     /// Paint prompt (default: a per-family auto prompt).
-    #[arg(long = "fractal-prompt", value_name = "TEXT")]
+    #[arg(long = "fractal-prompt", value_name = "TEXT", help_heading = "AI paint (Track B)")]
     pub prompt: Option<String>,
 
     /// Paint negative prompt.
-    #[arg(long = "fractal-negative", value_name = "TEXT")]
+    #[arg(long = "fractal-negative", value_name = "TEXT", help_heading = "AI paint (Track B)")]
     pub negative: Option<String>,
 
     /// img2img strength in [0,1] (how far the repaint departs from the fractal).
-    #[arg(long = "fractal-sd-strength", value_name = "S")]
+    #[arg(long = "fractal-sd-strength", value_name = "S", help_heading = "AI paint (Track B)")]
     pub sd_strength: Option<f32>,
 
     /// Paint diffusion steps.
-    #[arg(long = "fractal-sd-steps", value_name = "N")]
+    #[arg(long = "fractal-sd-steps", value_name = "N", help_heading = "AI paint (Track B)")]
     pub sd_steps: Option<u32>,
 
     /// Paint CFG guidance scale.
-    #[arg(long = "fractal-sd-guidance", value_name = "G")]
+    #[arg(long = "fractal-sd-guidance", value_name = "G", help_heading = "AI paint (Track B)")]
     pub sd_guidance: Option<f64>,
 
     /// ControlNet type override (default: per-family — canny / lineart / softedge).
-    #[arg(long = "fractal-sd-control", value_name = "KIND")]
+    #[arg(long = "fractal-sd-control", value_name = "KIND", help_heading = "AI paint (Track B)")]
     pub sd_control: Option<String>,
 
     /// ControlNet conditioning scale.
-    #[arg(long = "fractal-sd-control-strength", value_name = "S")]
+    #[arg(long = "fractal-sd-control-strength", value_name = "S", help_heading = "AI paint (Track B)")]
     pub sd_control_strength: Option<f32>,
 
     /// Paint LoRA (repeatable): HF `org/name[:scale]`, `civitai:ID`, or a local path.
-    #[arg(long = "fractal-sd-lora", value_name = "SPEC")]
+    #[arg(long = "fractal-sd-lora", value_name = "SPEC", help_heading = "AI paint (Track B)")]
     pub sd_lora: Vec<String>,
 
     /// Paint LoRA scale.
-    #[arg(long = "fractal-sd-lora-scale", value_name = "S")]
+    #[arg(long = "fractal-sd-lora-scale", value_name = "S", help_heading = "AI paint (Track B)")]
     pub sd_lora_scale: Option<f32>,
 }
 
