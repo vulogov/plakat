@@ -59,10 +59,10 @@ pub struct SearchArgs {
     /// Filter to one asset type:
     /// `lora | checkpoint | ti | controlnet | vae | locon | hypernetwork`
     /// (synonyms accepted — `ckpt`, `embedding`, ...).
-    #[arg(long = "asset-type", value_name = "TYPE")]
+    #[arg(help_heading = "Browse & download", long = "asset-type", value_name = "TYPE")]
     pub asset_type: Option<String>,
     /// Result page size (1..=100). Default 10.
-    #[arg(long, default_value_t = 10, value_name = "N")]
+    #[arg(help_heading = "Browse & download", long, default_value_t = 10, value_name = "N")]
     pub limit: u32,
     /// Page number (1-indexed). Default 1.
     ///
@@ -72,11 +72,11 @@ pub struct SearchArgs {
     /// walks the cursor chain once from page 1). Deep paging with
     /// a query string costs one round-trip per intermediate page —
     /// refine the query instead of paging past ~5 for typical use.
-    #[arg(long, default_value_t = 1, value_name = "P")]
+    #[arg(help_heading = "Browse & download", long, default_value_t = 1, value_name = "P")]
     pub page: u32,
     /// When set, include NSFW results in the output. Default: filter
     /// them out post-fetch.
-    #[arg(long = "include-nsfw", default_value_t = false)]
+    #[arg(help_heading = "Browse & download", long = "include-nsfw", default_value_t = false)]
     pub include_nsfw: bool,
 }
 
@@ -92,7 +92,7 @@ pub struct DownloadArgs {
     pub reference: String,
     /// Explicit file name within the version. When unset, picks the
     /// primary file (Civitai marks one per version) or the first.
-    #[arg(long, value_name = "NAME")]
+    #[arg(help_heading = "Browse & download", long, value_name = "NAME")]
     pub file: Option<String>,
 }
 
@@ -108,15 +108,15 @@ pub struct SyncArgs {
     /// Filter to one asset type:
     /// `lora | checkpoint | ti | controlnet | vae | locon | hypernetwork`
     /// (synonyms accepted). Omitted = all the user's models.
-    #[arg(long = "asset-type", value_name = "TYPE")]
+    #[arg(help_heading = "Browse & download", long = "asset-type", value_name = "TYPE")]
     pub asset_type: Option<String>,
     /// Cap total models synced. Useful for testing — `--limit 3`
     /// downloads at most three. Default: unlimited.
-    #[arg(long, value_name = "N")]
+    #[arg(help_heading = "Browse & download", long, value_name = "N")]
     pub limit: Option<usize>,
     /// Preview the plan without downloading anything. Lists each
     /// model + file + target path.
-    #[arg(long = "dry-run", default_value_t = false)]
+    #[arg(help_heading = "Browse & download", long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
 }
 

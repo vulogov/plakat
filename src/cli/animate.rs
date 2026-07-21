@@ -39,20 +39,20 @@ use crate::pipelines::sd_core::{SdCore, SdLoadRequest, SdVariant};
 #[derive(Args, Debug)]
 pub struct AnimateArgs {
     /// First prompt — frame 0 renders this.
-    #[arg(long)]
+    #[arg(help_heading = "Animation", long)]
     pub from: String,
 
     /// Second prompt — the last frame renders this. Required for
     /// the v0.20 lerp morph (default mode); **optional and ignored**
     /// in `--animatediff` mode (single-prompt motion-coherent
     /// generation reuses `--from` for every frame).
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Animation", long, default_value = "")]
     pub to: String,
 
     /// Frame count (≥ 2). Frame N maps to lerp factor
     /// `i / (N - 1)` so frame 0 = `--from`, frame N-1 = `--to`,
     /// midpoint is 50/50.
-    #[arg(long, default_value_t = 16)]
+    #[arg(help_heading = "Animation", long, default_value_t = 16)]
     pub frames: u32,
 
     /// Shared seed for every frame. Locking the seed keeps the
@@ -98,12 +98,12 @@ pub struct AnimateArgs {
     /// Also bundle the frames into `<out>/animation.gif`. Uses
     /// the `image` crate's GIF encoder. Frame delay is 100 ms by
     /// default (10 fps); override with `--gif-delay-ms`.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Size & output", long, default_value_t = false)]
     pub gif: bool,
 
     /// GIF frame delay in milliseconds. 100 ms = 10 fps;
     /// 41 ms ≈ 24 fps (cinematic); 33 ms ≈ 30 fps.
-    #[arg(long, default_value_t = 100)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 100)]
     pub gif_delay_ms: u16,
 
     /// **v0.26**: enable AnimateDiff mode (SD 1.5 only). Switches
@@ -115,7 +115,7 @@ pub struct AnimateArgs {
     /// trained window (default 16); the adapter's
     /// `motion_max_seq_length = 32` is a hard cap. Output formats
     /// expand in phase 5 (`--format mp4` / `webm`).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Motion (AnimateDiff)", long, default_value_t = false)]
     pub animatediff: bool,
 
     /// **v0.26**: motion LoRAs to stack onto the AnimateDiff
@@ -124,13 +124,13 @@ pub struct AnimateArgs {
     /// Lets you pick community motion LoRAs (zoom-in / pan-left /
     /// panic / etc.) from `guoyww/animatediff-motion-lora-*`.
     /// Repeatable. No-op outside `--animatediff` mode.
-    #[arg(long = "motion-lora", value_name = "SPEC")]
+    #[arg(help_heading = "Motion (AnimateDiff)", long = "motion-lora", value_name = "SPEC")]
     pub motion_loras: Vec<crate::pipelines::lora::LoraSpec>,
 
     /// **v0.26**: per-LoRA scale multiplier for `--motion-lora`,
     /// stacked on top of each spec's own `:scale` suffix. Mirrors
     /// `--lora-scale` from `plakat generate`. Default `1.0`.
-    #[arg(long = "motion-lora-scale", default_value_t = 1.0)]
+    #[arg(help_heading = "Motion (AnimateDiff)", long = "motion-lora-scale", default_value_t = 1.0)]
     pub motion_lora_scale: f32,
 
     /// **v0.26**: output format(s). `frames` is the default
@@ -157,7 +157,7 @@ pub struct AnimateArgs {
     /// when a long animate run crashes on frame 23 of 24 — without
     /// this flag the only recovery is rerunning all 24 from frame 0.
     /// Mirrors the scenario `--resume` semantics added in v0.17.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Animation", long, default_value_t = false)]
     pub resume: bool,
 
     /// **v0.27 phase 3 / v0.28 phase 0**: ControlNet conditioning kind
@@ -231,7 +231,7 @@ pub struct AnimateArgs {
     /// 16 frames; values > 32 exceed the trained positional
     /// embedding's `motion_max_seq_length`. No-op when `--frames` is
     /// ≤ `--window-size` (single-window path).
-    #[arg(long = "window-size", default_value_t = 16)]
+    #[arg(help_heading = "Animation", long = "window-size", default_value_t = 16)]
     pub window_size: u32,
 
     /// **v0.27 phase 5**: overlap between consecutive sliding-
@@ -241,7 +241,7 @@ pub struct AnimateArgs {
     /// reduces seam artefacts at the cost of more redundant compute.
     /// Default 4 (25 % of the 16-frame window) is the community
     /// sweet spot.
-    #[arg(long = "window-overlap", default_value_t = 4)]
+    #[arg(help_heading = "Animation", long = "window-overlap", default_value_t = 4)]
     pub window_overlap: u32,
 
     /// **v0.32 phase 0**: FreeNoise — pre-generate a full-length
@@ -256,7 +256,7 @@ pub struct AnimateArgs {
     /// existing `--seed` reproducibility unchanged when the flag is
     /// off — output is byte-identical to v0.31 in that case. SD 1.5
     /// + SDXL.
-    #[arg(long = "free-noise", default_value_t = false)]
+    #[arg(help_heading = "Animation", long = "free-noise", default_value_t = false)]
     pub free_noise: bool,
 }
 

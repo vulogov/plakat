@@ -68,11 +68,11 @@ impl std::str::FromStr for StylizePreset {
 #[derive(ClapArgs, Debug)]
 pub struct StylizeArgs {
     /// Input image to transform.
-    #[arg(long = "in", value_name = "IN")]
+    #[arg(help_heading = "Style transfer", long = "in", value_name = "IN")]
     pub input: PathBuf,
 
     /// Style reference image.
-    #[arg(long = "ref", value_name = "REF")]
+    #[arg(help_heading = "Style transfer", long = "ref", value_name = "REF")]
     pub reference: PathBuf,
 
     /// Output image path.
@@ -96,7 +96,7 @@ pub struct StylizeArgs {
     ///   portrait → 0.35 (face-preserving)
     ///   scene    → 0.55 (balanced; landscapes/objects)
     ///   grading  → 0.25 (tonal/colour only)
-    #[arg(long = "preset", value_name = "PRESET")]
+    #[arg(help_heading = "Style transfer", long = "preset", value_name = "PRESET")]
     pub preset: Option<StylizePreset>,
 
     /// Base diffusion model (alias or HF repo id). Currently SD 1.5 only.
@@ -115,12 +115,12 @@ pub struct StylizeArgs {
     /// off). Wipes the ref's fine content (subject/face) while keeping its
     /// broad style — palette, texture, composition — so stylize transfers a
     /// LOOK, not a subject. The cheap "style not content" knob; try ~8-14.
-    #[arg(long = "ref-blur", default_value_t = 0.0)]
+    #[arg(help_heading = "Style transfer", long = "ref-blur", default_value_t = 0.0)]
     pub ref_blur: f32,
 
     /// **v0.46**: scale the reference's influence (1.0 = full). Lower lets the
     /// prompt own the subject while the ref owns the look.
-    #[arg(long = "ref-weight", default_value_t = 1.0)]
+    #[arg(help_heading = "Style transfer", long = "ref-weight", default_value_t = 1.0)]
     pub ref_weight: f32,
 
     /// **InstantStyle** — true painterly STYLE transfer via a decoupled IP
@@ -129,7 +129,7 @@ pub struct StylizeArgs {
     /// watercolour at `--style-scale ~4` + `--strength ~0.8`. **SD 1.5** (full
     /// `up_blocks.1`) is EXPERIMENTAL — it works but styles softly (no clean
     /// strong-watercolour window); prefer SDXL.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Style transfer", long, default_value_t = false)]
     pub instantstyle: bool,
 
     /// InstantStyle injection strength (the style-block IP scale). 1.0 is the

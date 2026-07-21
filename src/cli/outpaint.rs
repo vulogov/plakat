@@ -44,24 +44,24 @@ pub struct OutpaintArgs {
     pub prompt: String,
 
     /// Pixels to extend on the left side. 0 = no expansion left.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Canvas expansion", long, default_value_t = 0, value_name = "PX")]
     pub left: u32,
 
     /// Pixels to extend on the right side.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Canvas expansion", long, default_value_t = 0, value_name = "PX")]
     pub right: u32,
 
     /// Pixels to extend on the top.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Canvas expansion", long, default_value_t = 0, value_name = "PX")]
     pub top: u32,
 
     /// Pixels to extend on the bottom.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Canvas expansion", long, default_value_t = 0, value_name = "PX")]
     pub bottom: u32,
 
     /// Shorthand: extend all four sides equally. Conflicts with the
     /// per-side flags.
-    #[arg(
+    #[arg(help_heading = "Canvas expansion", 
         long,
         conflicts_with_all = ["left", "right", "top", "bottom"],
         value_name = "PX",
@@ -125,7 +125,7 @@ pub struct OutpaintArgs {
 
     /// Feather radius (pixels) on the mask edge. Softens the boundary
     /// between the preserved input and the inpainted expansion.
-    #[arg(long = "mask-feather", default_value_t = 16, value_name = "PX")]
+    #[arg(help_heading = "Canvas expansion", long = "mask-feather", default_value_t = 16, value_name = "PX")]
     pub mask_feather: u32,
 
     /// Output directory.

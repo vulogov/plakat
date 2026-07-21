@@ -11,20 +11,20 @@ use crate::pipelines::aesthetic::AestheticScorer;
 pub struct RankArgs {
     /// Images and/or directories to score. Directories are scanned (non-recursively) for
     /// `.png` / `.jpg` / `.jpeg` / `.webp`.
-    #[arg(value_name = "PATH", required = true)]
+    #[arg(help_heading = "Ranking", value_name = "PATH", required = true)]
     pub inputs: Vec<PathBuf>,
 
     /// Print only the top-N (after sorting by descending aesthetic score).
-    #[arg(long, value_name = "N")]
+    #[arg(help_heading = "Ranking", long, value_name = "N")]
     pub top: Option<usize>,
 
     /// Emit JSON (`[{"path":…,"score":…}]`) instead of the aligned table.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Ranking", long, default_value_t = false)]
     pub json: bool,
 
     /// Also write each score into the image's `.json` metadata sidecar (the collection manager's
     /// sort key). No-op for images without a sidecar.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Ranking", long, default_value_t = false)]
     pub write: bool,
 }
 

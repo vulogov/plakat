@@ -14,35 +14,35 @@ use crate::map::{self, parser::ParseOpts, spec::MapSpec};
 #[derive(ClapArgs, Debug)]
 pub struct MapArgs {
     /// Prose world description (optional when `--map-spec` is given).
-    #[arg(value_name = "DESCRIPTION", default_value = "")]
+    #[arg(help_heading = "Map input", value_name = "DESCRIPTION", default_value = "")]
     pub description: String,
 
     /// Tile grid `CxR` (1x1 … 8x8, non-square ok). Overrides `--map-scale`.
-    #[arg(long = "map-tiles", value_name = "CxR")]
+    #[arg(help_heading = "Map input", long = "map-tiles", value_name = "CxR")]
     pub tiles: Option<String>,
 
     /// Named scale: block|district|settlement|city|vicinity|coast|region|inland-sea|hemisphere.
-    #[arg(long = "map-scale", value_name = "NAME")]
+    #[arg(help_heading = "Map input", long = "map-scale", value_name = "NAME")]
     pub scale: Option<String>,
 
     /// LLM provider for parsing (reuses the `--enhance` stack).
-    #[arg(long = "map-provider", default_value = "auto")]
+    #[arg(help_heading = "Map input", long = "map-provider", default_value = "auto")]
     pub provider: String,
 
     /// Override the built-in geographic-parser system prompt (file).
-    #[arg(long = "map-system", value_name = "PATH")]
+    #[arg(help_heading = "Map input", long = "map-system", value_name = "PATH")]
     pub system: Option<PathBuf>,
 
     /// SHA-256 disk cache of parsed specs (`~/.cache/plakat/map/`).
-    #[arg(long = "map-cache", default_value_t = false)]
+    #[arg(help_heading = "Map input", long = "map-cache", default_value_t = false)]
     pub cache: bool,
 
     /// Load a pre-written `MapSpec` JSON and skip the LLM entirely.
-    #[arg(long = "map-spec", value_name = "PATH")]
+    #[arg(help_heading = "Map input", long = "map-spec", value_name = "PATH")]
     pub spec: Option<PathBuf>,
 
     /// Write the parsed `MapSpec` JSON to PATH (`-` = stdout).
-    #[arg(long = "map-dump-spec", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-spec", value_name = "PATH")]
     pub dump_spec: Option<PathBuf>,
 
     /// Seed for the geometry engine (deterministic: same spec + seed → same map).
@@ -50,71 +50,71 @@ pub struct MapArgs {
     pub seed: u64,
 
     /// MAP-2: write the full-canvas tectonic heightmap PNG (L0+L1).
-    #[arg(long = "map-dump-heightmap", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-heightmap", value_name = "PATH")]
     pub dump_heightmap: Option<PathBuf>,
 
     /// MAP-2: write the river network over the terrain (L2 hydraulics).
-    #[arg(long = "map-dump-rivers", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-rivers", value_name = "PATH")]
     pub dump_rivers: Option<PathBuf>,
 
     /// MAP-2: write land/sea + coastline (L3).
-    #[arg(long = "map-dump-coast", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-coast", value_name = "PATH")]
     pub dump_coast: Option<PathBuf>,
 
     /// MAP-2: write the biome map (L4).
-    #[arg(long = "map-dump-biome", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-biome", value_name = "PATH")]
     pub dump_biome: Option<PathBuf>,
 
     /// MAP-2: write resolved landmarks placed at their anchors (L5).
-    #[arg(long = "map-dump-landmarks", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-landmarks", value_name = "PATH")]
     pub dump_landmarks: Option<PathBuf>,
 
     /// MAP-2: write the road network (+ rivers, landmarks) (L6).
-    #[arg(long = "map-dump-roads", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-roads", value_name = "PATH")]
     pub dump_roads: Option<PathBuf>,
 
     /// MAP-2: write the assembled feature overlay — the complete composited map
     /// (biome + coast + rivers + roads + landmarks) (L7).
-    #[arg(long = "map-dump-features", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-features", value_name = "PATH")]
     pub dump_features: Option<PathBuf>,
 
     /// MAP-5: write the urban street graph (U0) — wall, gates, arterials, streets,
     /// blocks — for a city/town-scale spec.
-    #[arg(long = "map-dump-streets", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-streets", value_name = "PATH")]
     pub dump_streets: Option<PathBuf>,
 
     /// MAP-5: override the town street plan: radial (medieval) | grid (planned) |
     /// organic (winding). When unset, taken from the spec or inferred from context.
-    #[arg(long = "map-urban-layout", value_name = "STYLE")]
+    #[arg(help_heading = "Map render", long = "map-urban-layout", value_name = "STYLE")]
     pub urban_layout: Option<String>,
 
     /// MAP-2: erosion / irregularity of natural features (coasts, mountain ridges):
     /// 0 = smooth/idealized, 1 = natural (default), >1 = rugged. Overrides the spec.
-    #[arg(long = "map-erosion", value_name = "AMOUNT")]
+    #[arg(help_heading = "Map render", long = "map-erosion", value_name = "AMOUNT")]
     pub erosion: Option<f32>,
 
     /// MAP-3: a TrueType/OpenType font for labels (non-Latin scripts — Cyrillic,
     /// CJK). Requires a build with `--features shaped-labels`; without it the flag
     /// warns and the built-in Latin bitmap font is used.
-    #[arg(long = "map-font", value_name = "PATH")]
+    #[arg(help_heading = "Map render", long = "map-font", value_name = "PATH")]
     pub font: Option<PathBuf>,
 
     /// MAP-3: render the complete styled, labelled map (the headline output:
     /// terrain + coast + rivers + roads + labelled landmarks + compass/scale/legend).
-    #[arg(long = "map-render", value_name = "PATH")]
+    #[arg(help_heading = "Map render", long = "map-render", value_name = "PATH")]
     pub render: Option<PathBuf>,
 
     /// 1.13.0: render the world and slice it into the `--map-tiles CxR` grid of
     /// seamless tile images (`tile_r{R}_c{C}.png`) in DIR, plus the full `world.png`.
     /// The geometry is one continuous world, so the tiles stitch back together
     /// exactly. Uses the `--map-style`/`--map-season` of `--map-render`.
-    #[arg(long = "map-render-tiles", value_name = "DIR")]
+    #[arg(help_heading = "Map render", long = "map-render-tiles", value_name = "DIR")]
     pub render_tiles: Option<PathBuf>,
 
     /// 1.14.0-D: with `--map-render-tiles`, draw per-tile furniture (a frame, the
     /// grid coordinate `R1C2`, and a north arrow) on each tile so a single tile is
     /// a usable standalone map. The stitched `world.png` stays clean.
-    #[arg(long = "map-tile-furniture", default_value_t = false)]
+    #[arg(help_heading = "Map render", long = "map-tile-furniture", default_value_t = false)]
     pub tile_furniture: bool,
 
     /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
@@ -123,7 +123,7 @@ pub struct MapArgs {
 
     /// 1.11.0: seasonal land palette for `--map-render`:
     /// spring|summer|autumn|winter (default summer = neutral).
-    #[arg(long = "map-season", default_value = "summer")]
+    #[arg(help_heading = "Map render", long = "map-season", default_value = "summer")]
     pub season: String,
 
     /// 1.11.0: overlay a tabletop coordinate grid (A1/B2…) of N×N cells on
@@ -133,62 +133,62 @@ pub struct MapArgs {
 
     /// MAP-3b: export the map geometry as GeoJSON (coast/rivers/roads/landmarks,
     /// normalized 0–1 north-up).
-    #[arg(long = "map-export-geojson", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-export-geojson", value_name = "PATH")]
     pub export_geojson: Option<PathBuf>,
 
     /// MAP-3b: export the map as a standalone SVG (scalable linework + labels).
-    #[arg(long = "map-export-svg", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-export-svg", value_name = "PATH")]
     pub export_svg: Option<PathBuf>,
 
     /// MAP-6: render a **painted** map via SD img2img + Canny ControlNet over the
     /// styled base, then re-composite labels. Requires a GPU build (downloads the
     /// model on first use). The styled-base conditioning is deterministic.
-    #[arg(long = "map-render-sd", value_name = "PATH")]
+    #[arg(help_heading = "AI paint (SD)", long = "map-render-sd", value_name = "PATH")]
     pub render_sd: Option<PathBuf>,
 
     /// MAP-6: just write the deterministic SD conditioning base (no GPU) — the
     /// styled map with no labels, the img2img init + Canny source.
-    #[arg(long = "map-dump-conditioning", value_name = "PATH")]
+    #[arg(help_heading = "Debug & export", long = "map-dump-conditioning", value_name = "PATH")]
     pub dump_conditioning: Option<PathBuf>,
 
     /// MAP-6: SD backbone for `--map-render-sd` (any plakat model: sdxl, sd15,
     /// sd21, sdxl-turbo, an HF repo, …).
-    #[arg(long = "map-sd-model", default_value = "sdxl")]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-model", default_value = "sdxl")]
     pub sd_model: String,
 
     /// MAP-6: LoRA for the painted render (repeatable; HF `org/name[:scale]`,
     /// `civitai:ID`, or a local path). `none` forces no LoRA. When unset, SDXL-
     /// family models default to the fantasy-map style LoRA, others to none.
-    #[arg(long = "map-sd-lora", value_name = "SPEC")]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-lora", value_name = "SPEC")]
     pub sd_lora: Vec<String>,
 
     /// MAP-6: LoRA scale for `--map-sd-lora`.
-    #[arg(long = "map-sd-lora-scale", default_value_t = 0.9)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-lora-scale", default_value_t = 0.9)]
     pub sd_lora_scale: f32,
 
     /// MAP-6: img2img strength (how far the paint moves from the base geometry).
-    #[arg(long = "map-sd-strength", default_value_t = 0.55)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-strength", default_value_t = 0.55)]
     pub sd_strength: f32,
 
     /// MAP-6: SD sampling steps.
-    #[arg(long = "map-sd-steps", default_value_t = 28)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-steps", default_value_t = 28)]
     pub sd_steps: usize,
 
     /// MAP-6: SD guidance scale.
-    #[arg(long = "map-sd-guidance", default_value_t = 6.5)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-guidance", default_value_t = 6.5)]
     pub sd_guidance: f64,
 
     /// MAP-6: skip the label/furniture re-composite (raw painted output).
-    #[arg(long = "map-sd-raw", default_value_t = false)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-raw", default_value_t = false)]
     pub sd_raw: bool,
 
     /// MAP-6: tile size (px) for the multi-tile paint. A canvas larger than this
     /// paints in overlapping, feather-blended tiles (memory-safe for big maps).
-    #[arg(long = "map-sd-tile", default_value_t = 1024)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-tile", default_value_t = 1024)]
     pub sd_tile: u32,
 
     /// MAP-6: tile origin stride (px); smaller = more overlap = smoother seams.
-    #[arg(long = "map-sd-tile-stride", default_value_t = 768)]
+    #[arg(help_heading = "AI paint (SD)", long = "map-sd-tile-stride", default_value_t = 768)]
     pub sd_tile_stride: u32,
 }
 

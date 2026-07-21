@@ -9,7 +9,7 @@ use crate::imaging::upscale::Method;
 #[derive(ClapArgs, Debug)]
 pub struct UpscaleArgs {
     /// Input image.
-    #[arg(long = "in", value_name = "IN")]
+    #[arg(help_heading = "Upscaling", long = "in", value_name = "IN")]
     pub input: PathBuf,
 
     /// Output image. Extension determines format (.png, .jpg, .webp).
@@ -22,18 +22,18 @@ pub struct UpscaleArgs {
 
     /// Scale factor for classical filters (e.g. 2 for 2×, 4 for 4×). Ignored
     /// for ML methods — their scale is fixed by the model.
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(help_heading = "Upscaling", long, default_value_t = 2.0)]
     pub scale: f32,
 
     /// Method:
     ///   nearest | bilinear | bicubic | lanczos                    (classical)
     ///   real-esrgan-x2 | real-esrgan-x4 | real-esrgan-anime-x4    (ML, RRDBNet)
-    #[arg(long, default_value = "lanczos")]
+    #[arg(help_heading = "Upscaling", long, default_value = "lanczos")]
     pub method: Method,
 
     /// Diffusion upscale (ControlNet-Tile / SUPIR-lite): pre-upscale then tiled img2img refine,
     /// each tile guided by ControlNet-Tile to hallucinate coherent detail. Uses `--scale`.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Diffusion upscale", long, default_value_t = false)]
     pub diffusion: bool,
 
     /// [diffusion] SD model (Tile ControlNet is SD 1.5 / SDXL).
@@ -41,20 +41,20 @@ pub struct UpscaleArgs {
     pub model: String,
 
     /// [diffusion] Tile side in px (SD 1.5 → 512, SDXL → 1024).
-    #[arg(long, default_value_t = 512)]
+    #[arg(help_heading = "Upscaling", long, default_value_t = 512)]
     pub tile: u32,
 
     /// [diffusion] Tile overlap in px (feathered blend).
-    #[arg(long, default_value_t = 96)]
+    #[arg(help_heading = "Upscaling", long, default_value_t = 96)]
     pub overlap: u32,
 
     /// [diffusion] Per-tile img2img denoise strength. 0.3–0.5 adds detail while preserving
     /// structure; higher invents more (and risks tile drift).
-    #[arg(long = "tile-strength", default_value_t = 0.4)]
+    #[arg(help_heading = "Diffusion upscale", long = "tile-strength", default_value_t = 0.4)]
     pub tile_strength: f32,
 
     /// [diffusion] ControlNet-Tile residual scale.
-    #[arg(long = "cn-strength", default_value_t = 1.0)]
+    #[arg(help_heading = "Diffusion upscale", long = "cn-strength", default_value_t = 1.0)]
     pub cn_strength: f32,
 
     /// [diffusion] Denoise steps per tile.

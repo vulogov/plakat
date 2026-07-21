@@ -30,16 +30,16 @@ pub struct GalleryArgs {
     pub out: Option<PathBuf>,
 
     /// Gallery title (the H1 heading). Defaults to "plakat gallery".
-    #[arg(long, value_name = "TEXT")]
+    #[arg(help_heading = "Gallery", long, value_name = "TEXT")]
     pub title: Option<String>,
 
     /// Thumbnails per row in the grid.
-    #[arg(long, default_value_t = 3, value_name = "N")]
+    #[arg(help_heading = "Gallery", long, default_value_t = 3, value_name = "N")]
     pub cols: usize,
 
     /// Recurse into subdirectories (paths in the index stay relative
     /// to the output file).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Gallery", long, default_value_t = false)]
     pub recursive: bool,
 }
 

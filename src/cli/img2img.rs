@@ -53,17 +53,17 @@ pub struct Img2ImgArgs {
     /// Optional inpaint mask. When set, only mask=white pixels are
     /// re-painted; mask=black pixels are preserved. Grayscale, RGB
     /// (luminance), or RGBA (alpha channel) all accepted.
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Inpaint mask", long, value_name = "PATH")]
     pub mask: Option<PathBuf>,
 
     /// Feather radius (pixels) applied to the mask edge. Softens
     /// the inpaint↔preserve transition. Only meaningful with --mask.
-    #[arg(long = "mask-feather", default_value_t = 8, value_name = "PX")]
+    #[arg(help_heading = "Inpaint mask", long = "mask-feather", default_value_t = 8, value_name = "PX")]
     pub mask_feather: u32,
 
     /// Invert the mask polarity (treat black as inpaint instead of
     /// white). Use when your mask source uses the opposite convention.
-    #[arg(long = "mask-invert", default_value_t = false)]
+    #[arg(help_heading = "Inpaint mask", long = "mask-invert", default_value_t = false)]
     pub mask_invert: bool,
 
     /// img2img strength in [0, 1]. 0.0 = no change, 1.0 = full
@@ -122,7 +122,7 @@ pub struct Img2ImgArgs {
 
     /// Stable Cascade decoder (Stage B) CFG scale, decoupled from
     /// `--guidance`. Default 1.1. Cascade-only.
-    #[arg(long = "decoder-guidance", default_value_t = 1.1)]
+    #[arg(help_heading = "Model & sampler", long = "decoder-guidance", default_value_t = 1.1)]
     pub decoder_guidance: f64,
 
     /// Stable Cascade faithful img2img: also condition Stage C's
@@ -130,7 +130,7 @@ pub struct Img2ImgArgs {
     /// B's VAE seed. Pulls the output's *content* toward the init — use
     /// when plain img2img drifts off-subject at higher strengths. Loads
     /// the `image_encoder/` from the Cascade repo. Cascade-only.
-    #[arg(long = "faithful", default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long = "faithful", default_value_t = false)]
     pub faithful: bool,
 
     /// Base seed. Subsequent --count outputs use seed+1, seed+2, ...
@@ -289,7 +289,7 @@ pub struct Img2ImgArgs {
     /// (or the input's native dims) to the closest of 17 BFL-
     /// recommended Kontext resolutions before VAE encoding. Off by
     /// default. Ignored on every other model.
-    #[arg(long = "kontext-bucket", default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long = "kontext-bucket", default_value_t = false)]
     pub kontext_bucket: bool,
 }
 

@@ -8,19 +8,19 @@ use clap::Args as ClapArgs;
 #[derive(ClapArgs, Debug)]
 pub struct PhotosArgs {
     /// Library root. Defaults to `$PLAKAT_PHOTOS_ROOT`, then `~/Pictures`.
-    #[arg(value_name = "ROOT_DIR")]
+    #[arg(help_heading = "Library", value_name = "ROOT_DIR")]
     pub root: Option<PathBuf>,
 
     /// Thumbnail size in pixels.
-    #[arg(long = "thumb-size", default_value_t = 128)]
+    #[arg(help_heading = "Library", long = "thumb-size", default_value_t = 128)]
     pub thumb_size: u32,
 
     /// Thumbnail decode workers.
-    #[arg(long = "thumb-workers", default_value_t = 4)]
+    #[arg(help_heading = "Library", long = "thumb-workers", default_value_t = 4)]
     pub thumb_workers: usize,
 
     /// Disable the filesystem watcher (static snapshot).
-    #[arg(long = "no-watch", default_value_t = false)]
+    #[arg(help_heading = "Library", long = "no-watch", default_value_t = false)]
     pub no_watch: bool,
 }
 

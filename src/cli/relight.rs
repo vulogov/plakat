@@ -19,7 +19,7 @@ use crate::pipelines::ic_light;
 pub struct RelightArgs {
     /// Subject image to relight. Its background is matted away
     /// automatically (U2Net) before conditioning.
-    #[arg(value_name = "SUBJECT")]
+    #[arg(help_heading = "Relight", value_name = "SUBJECT")]
     pub subject: PathBuf,
 
     /// Prompt describing the desired lighting / scene

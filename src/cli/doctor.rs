@@ -39,7 +39,7 @@ pub struct DoctorArgs {
     ///
     /// Without this flag, doctor is fully offline: parses HF specs and
     /// checks local paths, but doesn't hit the network.
-    #[arg(long)]
+    #[arg(help_heading = "Checks", long)]
     pub verify: bool,
 
     /// Run a synthetic micro-benchmark (conv2d / matmul / resize at
@@ -48,7 +48,7 @@ pub struct DoctorArgs {
     /// No model downloads, no network — completes in ~2 seconds.
     ///
     /// Replaces the health-check flow; the two modes are independent.
-    #[arg(long)]
+    #[arg(help_heading = "Checks", long)]
     pub benchmark: bool,
 
     /// Override the device for `--benchmark`. Default: auto-detect.
@@ -66,7 +66,7 @@ pub struct DoctorArgs {
     ///
     /// Designed for CI / scripting; pipe through `jq` for
     /// structured queries. Mutually exclusive with `--benchmark`.
-    #[arg(long, default_value_t = false, conflicts_with = "benchmark")]
+    #[arg(help_heading = "Checks", long, default_value_t = false, conflicts_with = "benchmark")]
     pub json: bool,
 
     /// v0.33 phase 3: walk every RNG-touching code path across
@@ -80,7 +80,7 @@ pub struct DoctorArgs {
     ///
     /// Combine with `--json` for a machine-readable report.
     /// Mutually exclusive with `--benchmark`.
-    #[arg(long = "reproducibility-check", default_value_t = false, conflicts_with = "benchmark")]
+    #[arg(help_heading = "Checks", long = "reproducibility-check", default_value_t = false, conflicts_with = "benchmark")]
     pub reproducibility_check: bool,
 
     /// v0.46: report which supported models can run on THIS hardware.
@@ -90,7 +90,7 @@ pub struct DoctorArgs {
     /// models you haven't pulled yet — and judges runs / tight / won't-fit,
     /// naming the tuning lever that helps. `--device` picks which backend to
     /// probe. Combine with `--json` for a machine-readable report.
-    #[arg(long, default_value_t = false, conflicts_with = "benchmark")]
+    #[arg(help_heading = "Checks", long, default_value_t = false, conflicts_with = "benchmark")]
     pub capability: bool,
 }
 

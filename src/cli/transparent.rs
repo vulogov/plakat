@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(ClapArgs, Debug)]
 pub struct TransparentArgs {
     /// Input image.
-    #[arg(long = "in", value_name = "IN")]
+    #[arg(help_heading = "Cutout", long = "in", value_name = "IN")]
     pub input: PathBuf,
 
     /// Output image. Use a .png (or .webp) extension to preserve alpha.
@@ -18,20 +18,20 @@ pub struct TransparentArgs {
     /// between adjacent pixels as it grows from the image corners. 0 = exact;
     /// ~10 absorbs render/JPEG noise on a flat backdrop; ~20–32 follows
     /// gradients / soft shadows; too high leaks into the subject.
-    #[arg(long, default_value_t = 10)]
+    #[arg(help_heading = "Cutout", long, default_value_t = 10)]
     pub tolerance: u8,
 
     /// Crop the output to the subject's non-transparent bounding box — useful
     /// when the cut-out feeds a compositor (e.g. the artefact library) that
     /// scales by frame size, so a centred subject isn't left tiny.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Cutout", long, default_value_t = false)]
     pub crop: bool,
 
     /// Smart, content-aware cut-out: a salient-object model (U2Net) predicts the
     /// foreground matte directly from image content — no chroma backdrop needed,
     /// works on photoreal / painted subjects on ANY background. Overrides the
     /// corner flood-fill (`--tolerance` is ignored). Downloads the model once.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Cutout", long, default_value_t = false)]
     pub matte: bool,
 }
 

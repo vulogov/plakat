@@ -16,7 +16,7 @@ use crate::compile::{self, CompileOpts};
 #[derive(ClapArgs, Debug)]
 pub struct CompileArgs {
     /// Input `prompts.txt` (`-` reads stdin).
-    #[arg(value_name = "INPUT")]
+    #[arg(help_heading = "Compile", value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Output scenario HJSON. Default: `<input-stem>.hjson` (`-` = stdout; also
@@ -26,7 +26,7 @@ pub struct CompileArgs {
 
     /// LLM provider (reuses the `--enhance` stack): `deepseek`/`gemini`/`local`/
     /// `local:<alias>`/`auto`.
-    #[arg(long = "compile-provider", default_value = "auto")]
+    #[arg(help_heading = "Enhancement", long = "compile-provider", default_value = "auto")]
     pub provider: String,
 
     /// Model used to pick the family prompt profile when no block names a model.
@@ -34,71 +34,71 @@ pub struct CompileArgs {
     pub model: String,
 
     /// Override the positive-enhancement system prompt (file).
-    #[arg(long = "compile-system", value_name = "PATH")]
+    #[arg(help_heading = "Enhancement", long = "compile-system", value_name = "PATH")]
     pub system: Option<PathBuf>,
 
     /// Skip the positive LLM call; assemble the prompt verbatim.
-    #[arg(long = "no-enhance", default_value_t = false)]
+    #[arg(help_heading = "Enhancement", long = "no-enhance", default_value_t = false)]
     pub no_enhance: bool,
 
     /// Suppress the negative LLM call; seed terms pass through verbatim.
-    #[arg(long = "no-negative", default_value_t = false)]
+    #[arg(help_heading = "Enhancement", long = "no-negative", default_value_t = false)]
     pub no_negative: bool,
 
     /// Validate the input (unknown commands, misplaced `skip:`) and exit; no LLM.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub lint: bool,
 
     /// Print a per-block summary (family, LLM call count) without calling the LLM.
-    #[arg(long = "dry-run", default_value_t = false)]
+    #[arg(help_heading = "Compile", long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
 
     /// Max concurrent scenes when calling the LLM. `0` = auto (per provider:
     /// deepseek 3, gemini 5, local/auto 1).
-    #[arg(long = "compile-parallel", value_name = "N", default_value_t = 1)]
+    #[arg(help_heading = "Compile", long = "compile-parallel", value_name = "N", default_value_t = 1)]
     pub parallel: usize,
 
     /// Read/write the two-namespace LLM disk cache (`positive/` + `negative/`).
-    #[arg(long = "compile-cache", default_value_t = false)]
+    #[arg(help_heading = "Compile", long = "compile-cache", default_value_t = false)]
     pub compile_cache: bool,
 
     /// Clear the compile cache and exit: `all` (default), `positive`, or `negative`.
-    #[arg(long = "compile-cache-clear", value_name = "WHICH", num_args = 0..=1, default_missing_value = "all")]
+    #[arg(help_heading = "Compile", long = "compile-cache-clear", value_name = "WHICH", num_args = 0..=1, default_missing_value = "all")]
     pub cache_clear: Option<String>,
 
     /// Inverse: read a scenario HJSON (the INPUT) and emit a `prompts.txt`.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub decompile: bool,
 
     /// Compare the freshly-compiled scenario against an existing HJSON; print the
     /// per-task add/change/remove diff instead of writing output.
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Compile", long, value_name = "PATH")]
     pub diff: Option<PathBuf>,
 
     // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
     /// Force the Tera template pre-pass regardless of file extension.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Templating", long, default_value_t = false)]
     pub template: bool,
 
     /// Inject a template variable `KEY=VALUE` (repeatable; highest precedence).
-    #[arg(long = "var", value_name = "KEY=VALUE")]
+    #[arg(help_heading = "Templating", long = "var", value_name = "KEY=VALUE")]
     pub var: Vec<String>,
 
     /// Load template variables from a JSON or TOML file (repeatable; later wins).
-    #[arg(long = "vars", value_name = "PATH")]
+    #[arg(help_heading = "Templating", long = "vars", value_name = "PATH")]
     pub vars: Vec<PathBuf>,
 
     /// Import env vars with PREFIX into the template context (prefix stripped, key
     /// lowercased: `PLAKAT_MODEL` → `{{ model }}`). Repeatable.
-    #[arg(long = "vars-env", value_name = "PREFIX")]
+    #[arg(help_heading = "Templating", long = "vars-env", value_name = "PREFIX")]
     pub vars_env: Vec<String>,
 
     /// Write the rendered `prompts.txt` (before parsing) to PATH (`-` = stdout).
-    #[arg(long = "dump-rendered", value_name = "PATH")]
+    #[arg(help_heading = "Templating", long = "dump-rendered", value_name = "PATH")]
     pub dump_rendered: Option<PathBuf>,
 
     /// Render the template, write it, and exit — no parse, no LLM.
-    #[arg(long = "dump-rendered-only", default_value_t = false)]
+    #[arg(help_heading = "Templating", long = "dump-rendered-only", default_value_t = false)]
     pub dump_rendered_only: bool,
 }
 

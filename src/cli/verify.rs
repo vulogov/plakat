@@ -9,7 +9,7 @@ use anyhow::Result;
 pub struct VerifyArgs {
     /// Run only this tier: 0 = structural/determinism (no downloads),
     /// 1 = per-module correctness, 2 = end-to-end perceptual. Omit for all applicable.
-    #[arg(long)]
+    #[arg(help_heading = "Verify", long)]
     pub tier: Option<u8>,
 
     /// Restrict Tier 1+ correctness checks to a single model alias (e.g. `sd15`).
@@ -20,7 +20,7 @@ pub struct VerifyArgs {
     /// Local golden source for Tier 1 (authored by `tools/reference/dump.py`), laid out as
     /// `<dir>/<model>/<fixture>/{manifest.json, goldens.safetensors}`. Omit to only report
     /// coverage (Tier 1 loads models + compares only when this is set).
-    #[arg(long)]
+    #[arg(help_heading = "Verify", long)]
     pub golden_dir: Option<std::path::PathBuf>,
 
     /// Device for Tier 1 model loads: `auto` (default), `metal`, `cuda`, `cpu`.
@@ -28,7 +28,7 @@ pub struct VerifyArgs {
     pub device: String,
 
     /// Emit a machine-readable JSON report (for CI gating) instead of text.
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Verify", long, default_value_t = false)]
     pub json: bool,
 }
 

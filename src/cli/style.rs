@@ -22,7 +22,7 @@ pub struct StyleArgs {
     pub op: StyleOp,
 
     /// Override the bundled style catalog directory.
-    #[arg(long, value_name = "DIR", global = true)]
+    #[arg(help_heading = "Detection & catalog", long, value_name = "DIR", global = true)]
     pub catalog: Option<PathBuf>,
 }
 
@@ -53,7 +53,7 @@ pub enum StyleOp {
 #[derive(ClapArgs, Debug)]
 pub struct TrainArgs {
     /// Folder of style images to train on (3+ recommended; jpg/png).
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Training", long, value_name = "DIR")]
     pub from_dir: PathBuf,
     /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium),
     /// `pixart` (PixArt-Σ), or `cascade` (Stable Cascade Stage-C).
@@ -61,7 +61,7 @@ pub struct TrainArgs {
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
     /// at inference to invoke the style.
-    #[arg(long, default_value = "in this style")]
+    #[arg(help_heading = "Training", long, default_value = "in this style")]
     pub trigger: String,
     /// Output `.safetensors` path.
     #[arg(help_heading = "Size & output", long, value_name = "FILE")]
@@ -70,42 +70,42 @@ pub struct TrainArgs {
     #[arg(help_heading = "Model & sampler", long, default_value_t = 90)]
     pub steps: usize,
     /// LoRA rank.
-    #[arg(long, default_value_t = 16)]
+    #[arg(help_heading = "Training", long, default_value_t = 16)]
     pub rank: usize,
     /// Checkpoint interval in steps. Each periodic checkpoint is written as
     /// `<out>-step<N>` so a run can be swept for the sweet spot. Default: ~10
     /// evenly-spaced checkpoints (min every 30). Set e.g. `30` for finer
     /// granularity on a long run, or a large value for fewer files.
-    #[arg(long = "checkpoint-every", value_name = "STEPS")]
+    #[arg(help_heading = "Training", long = "checkpoint-every", value_name = "STEPS")]
     pub checkpoint_every: Option<usize>,
     /// Log a progress line every N steps (default 10). Larger = quieter logs on
     /// a long run.
-    #[arg(long = "log-every", default_value_t = 10)]
+    #[arg(help_heading = "Training", long = "log-every", default_value_t = 10)]
     pub log_every: usize,
     /// Training resolution (256 fits 24 GB; higher needs more memory).
     #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
     /// Learning rate.
-    #[arg(long, default_value_t = 1.5e-4)]
+    #[arg(help_heading = "Training", long, default_value_t = 1.5e-4)]
     pub lr: f64,
     /// Resume from a checkpoint (a `…-step<N>.safetensors` written by an earlier
     /// run). Continues from that step up to `--steps`, so bump `--steps` to train
     /// further. Omit to train from scratch. Works on all bases (sd15/sd21/sdxl/sd35).
-    #[arg(long, value_name = "CKPT")]
+    #[arg(help_heading = "Training", long, value_name = "CKPT")]
     pub resume: Option<PathBuf>,
     /// DreamBooth prior preservation — a folder of generic CLASS images (e.g.
     /// other dogs) trained alongside your subject so its token doesn't overfit
     /// or drag the whole class. Makes this a **subject** LoRA: set `--trigger`
     /// to an instance prompt like "a photo of sks dog". Omit for plain style
     /// training. (sd15 / sd21 / sdxl / sd35.)
-    #[arg(long = "class-dir", value_name = "DIR")]
+    #[arg(help_heading = "Training", long = "class-dir", value_name = "DIR")]
     pub class_dir: Option<PathBuf>,
     /// Class prompt for `--class-dir` (e.g. "a photo of a dog"). Required with
     /// `--class-dir`.
-    #[arg(long = "class-prompt", value_name = "TEXT")]
+    #[arg(help_heading = "Training", long = "class-prompt", value_name = "TEXT")]
     pub class_prompt: Option<String>,
     /// Weight (λ) on the prior-preservation loss. Default 1.0.
-    #[arg(long = "prior-weight", default_value_t = 1.0)]
+    #[arg(help_heading = "Training", long = "prior-weight", default_value_t = 1.0)]
     pub prior_weight: f32,
 }
 
@@ -115,7 +115,7 @@ pub struct DetectArgs {
     pub photo: PathBuf,
 
     /// Number of top matches to show.
-    #[arg(long, default_value_t = 5)]
+    #[arg(help_heading = "Detection & catalog", long, default_value_t = 5)]
     pub top_k: usize,
 
     /// Output format.
@@ -154,7 +154,7 @@ pub struct InitArgs {
     /// non-alphanumerics replaced with `_`).
     ///
     /// `holdout/` and hidden directories (starting with `.`) are skipped.
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Training", long, value_name = "DIR")]
     pub from_dir: PathBuf,
 
     /// Output HJSON path. Defaults to `<from-dir>/catalog.hjson`.
@@ -164,14 +164,14 @@ pub struct InitArgs {
     pub out: Option<PathBuf>,
 
     /// Overwrite the output file if it already exists.
-    #[arg(long)]
+    #[arg(help_heading = "Detection & catalog", long)]
     pub force: bool,
 }
 
 #[derive(ClapArgs, Debug)]
 pub struct ProbeArgs {
     /// Probe only the LoRAs for this style id. Default: every style.
-    #[arg(long, value_name = "ID")]
+    #[arg(help_heading = "Detection & catalog", long, value_name = "ID")]
     pub id: Option<String>,
 
     /// Output format.
@@ -179,7 +179,7 @@ pub struct ProbeArgs {
     pub format: OutFormat,
 
     /// Network timeout per request, in seconds.
-    #[arg(long, default_value_t = 10)]
+    #[arg(help_heading = "Detection & catalog", long, default_value_t = 10)]
     pub timeout: u64,
 }
 

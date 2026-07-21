@@ -18,12 +18,12 @@ pub struct InspectArgs {
     /// Filter tensor names by substring (case-sensitive). Useful for
     /// large files like UNets where the full key list is overwhelming.
     /// Example: `--filter bn1` to find all BatchNorm-named tensors.
-    #[arg(long)]
+    #[arg(help_heading = "Inspect", long)]
     pub filter: Option<String>,
 
     /// Limit number of entries printed (default: all). Combine with
     /// `--filter` for tighter output on huge files.
-    #[arg(long)]
+    #[arg(help_heading = "Inspect", long)]
     pub limit: Option<usize>,
 }
 

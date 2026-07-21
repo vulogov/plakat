@@ -16,7 +16,7 @@ use crate::pipelines::adetailer;
 pub struct RestoreFacesArgs {
     /// Images and/or directories to restore (edited in place). Directories are scanned
     /// non-recursively for `.png` / `.jpg` / `.jpeg` / `.webp`.
-    #[arg(value_name = "PATH", required = true)]
+    #[arg(help_heading = "Face restore", value_name = "PATH", required = true)]
     pub inputs: Vec<PathBuf>,
 
     /// SD model for the face refinement pass.
@@ -29,19 +29,19 @@ pub struct RestoreFacesArgs {
     pub strength: f32,
 
     /// Bbox expansion (0.25 = +25% each side) — more context = smoother blend, less face resolution.
-    #[arg(long, default_value_t = 0.25)]
+    #[arg(help_heading = "Face restore", long, default_value_t = 0.25)]
     pub padding: f32,
 
     /// Feather fraction for the composite seam (outer 0.25 fades 1→0).
-    #[arg(long, default_value_t = 0.25)]
+    #[arg(help_heading = "Face restore", long, default_value_t = 0.25)]
     pub feather: f32,
 
     /// SCRFD confidence threshold — faces below this are skipped.
-    #[arg(long, default_value_t = 0.5)]
+    #[arg(help_heading = "Face restore", long, default_value_t = 0.5)]
     pub confidence: f32,
 
     /// Working resolution of the face pass (square; 512 = SD 1.5 native, 1024 = SDXL).
-    #[arg(long = "working-size", default_value_t = 512)]
+    #[arg(help_heading = "Face restore", long = "working-size", default_value_t = 512)]
     pub working_size: u32,
 }
 

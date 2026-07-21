@@ -52,7 +52,7 @@ pub enum EmbeddingCmd {
 #[derive(Args, Debug)]
 pub struct EmbTrainArgs {
     /// Folder of images teaching the new token (3+ recommended; jpg/png).
-    #[arg(long = "from-dir", value_name = "DIR")]
+    #[arg(help_heading = "TI training", long = "from-dir", value_name = "DIR")]
     pub from_dir: std::path::PathBuf,
     /// Base model: `sd15` / `sd21` (single CLIP-L), `sdxl` (dual CLIP-L+CLIP-G),
     /// or `sd35` (triple CLIP-L+CLIP-G+T5).
@@ -60,11 +60,11 @@ pub struct EmbTrainArgs {
     pub base: String,
     /// The trigger you'll use the embedding under later (load with
     /// `--embedding PATH:<token>`).
-    #[arg(long, default_value = "sks")]
+    #[arg(help_heading = "TI training", long, default_value = "sks")]
     pub token: String,
     /// A coarse single class word to initialize from (e.g. "toy", "art", "style")
     /// — TI converges much faster from a sensible starting point.
-    #[arg(long = "init-word", default_value = "object")]
+    #[arg(help_heading = "TI training", long = "init-word", default_value = "object")]
     pub init_word: String,
     /// Output `.safetensors` (A1111 `emb_params`).
     #[arg(help_heading = "Size & output", long)]
@@ -74,12 +74,12 @@ pub struct EmbTrainArgs {
     #[arg(help_heading = "Model & sampler", long, default_value_t = 500)]
     pub steps: usize,
     /// Learning rate (TI tolerates a high LR — it's one vector).
-    #[arg(long, default_value_t = 5e-3)]
+    #[arg(help_heading = "TI training", long, default_value_t = 5e-3)]
     pub lr: f64,
     /// Training resolution (256² is faster; 512² captures more).
     #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
-    #[arg(long = "log-every", default_value_t = 25)]
+    #[arg(help_heading = "TI training", long = "log-every", default_value_t = 25)]
     pub log_every: usize,
 }
 
@@ -89,7 +89,7 @@ pub struct InfoArgs {
     /// (auto-downloads on first run).
     pub source: String,
     /// Override the trigger word derived from the filename.
-    #[arg(long)]
+    #[arg(help_heading = "TI training", long)]
     pub trigger: Option<String>,
 }
 

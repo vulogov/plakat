@@ -33,7 +33,7 @@ pub struct ScenarioArgs {
 
     /// Validate, print every task's planned prompts, but skip generation.
     /// Does NOT call the enhancer (no API cost).
-    #[arg(long)]
+    #[arg(help_heading = "Batch run", long)]
     pub dry_run: bool,
 
     /// v0.17 phase 5: skip tasks whose **every** expected output
@@ -41,7 +41,7 @@ pub struct ScenarioArgs {
     /// pick up where it left off without restarting from task 0.
     /// Task name + seed-based filenames are checked under
     /// `<out>/<task-name>/`. Mutually exclusive with `--force`.
-    #[arg(long, default_value_t = false, conflicts_with = "force")]
+    #[arg(help_heading = "Batch run", long, default_value_t = false, conflicts_with = "force")]
     pub resume: bool,
 
     /// v0.17 phase 5: regenerate every task even when outputs
@@ -49,7 +49,7 @@ pub struct ScenarioArgs {
     /// existing files silently — `--force` makes the intent
     /// explicit (and pairs with future safety checks). Mutually
     /// exclusive with `--resume`.
-    #[arg(long, default_value_t = false, conflicts_with = "resume")]
+    #[arg(help_heading = "Batch run", long, default_value_t = false, conflicts_with = "resume")]
     pub force: bool,
 
     /// v0.19: run only the named tasks. Comma-separated list of task
@@ -58,7 +58,7 @@ pub struct ScenarioArgs {
     /// not in the list are silently skipped (no output written).
     /// Composes with `--resume` (a named task already on disk still
     /// gets skipped under resume semantics).
-    #[arg(long, value_delimiter = ',', value_name = "NAME[,NAME,…]")]
+    #[arg(help_heading = "Batch run", long, value_delimiter = ',', value_name = "NAME[,NAME,…]")]
     pub only: Vec<String>,
 
     /// v0.19: run only the first N tasks (in scenario file order).
@@ -66,7 +66,7 @@ pub struct ScenarioArgs {
     /// full run. `0` means "no limit" (same as omitting the flag).
     /// Composes with `--only` (the limit applies after the
     /// name-filter; e.g. `--only a,b,c --limit 2` runs `a` and `b`).
-    #[arg(long, default_value_t = 0, value_name = "N")]
+    #[arg(help_heading = "Batch run", long, default_value_t = 0, value_name = "N")]
     pub limit: u32,
 
     /// v0.33 phase 2: write a structured `ScenarioRunSummary` JSON
@@ -79,7 +79,7 @@ pub struct ScenarioArgs {
     /// output. Writes in dry-run mode too (status fields say
     /// `dry-run` per task) so plan validation has the same
     /// machine-readable shape.
-    #[arg(long = "json-summary", value_name = "PATH")]
+    #[arg(help_heading = "Batch run", long = "json-summary", value_name = "PATH")]
     pub json_summary: Option<PathBuf>,
 
     /// Programmatic override for the scenario's `out:` dir (not a CLI flag). The

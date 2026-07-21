@@ -9,7 +9,7 @@ use crate::pipelines::sam::PointPrompt;
 #[derive(ClapArgs, Debug)]
 pub struct SegmentArgs {
     /// Input image to segment.
-    #[arg(long = "in", value_name = "IN")]
+    #[arg(help_heading = "Segmentation", long = "in", value_name = "IN")]
     pub input: PathBuf,
 
     /// Output mask (PNG). White = selected region, black = excluded — feed it
@@ -22,7 +22,7 @@ pub struct SegmentArgs {
     /// any value exceeds 1 (e.g. `--point 0.5,0.4` or `--point 512,400`). Click
     /// the object to select it; add `:bg` points to carve away over-selection.
     /// Optional when `--depth-band` is given.
-    #[arg(long = "point", value_name = "X,Y[:bg]")]
+    #[arg(help_heading = "Segmentation", long = "point", value_name = "X,Y[:bg]")]
     pub points: Vec<String>,
 
     /// Select by DEPTH band instead of (or together with) points: `LO,HI` in
@@ -31,24 +31,24 @@ pub struct SegmentArgs {
     /// Depth-Anything-V2 (downloaded once). Combine with `--point` to intersect
     /// (this object, but only where it's near). Pass at least one of
     /// `--point` / `--depth-band`.
-    #[arg(long = "depth-band", value_name = "LO,HI")]
+    #[arg(help_heading = "Segmentation", long = "depth-band", value_name = "LO,HI")]
     pub depth_band: Option<String>,
 
     /// Invert the mask — select everything EXCEPT the prompted object (handy
     /// for "change the background, keep the subject").
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Segmentation", long, default_value_t = false)]
     pub invert: bool,
 
     /// Grow the selection by N pixels (dilate) before output. For inpaint edits,
     /// a small margin (~8–12) keeps the repaint off the subject's fringe — the
     /// cure for rope/halo artefacts at the mask boundary. Applied before
     /// `--invert`, so it always expands the *subject*.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Segmentation", long, default_value_t = 0, value_name = "PX")]
     pub grow: u32,
 
     /// Feather the mask edge by N pixels (gaussian) for a soft inpaint blend
     /// instead of a hard seam.
-    #[arg(long, default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Segmentation", long, default_value_t = 0, value_name = "PX")]
     pub feather: u32,
 }
 

@@ -41,10 +41,10 @@ pub struct BenchArgs {
     pub guidance: f64,
     /// Repeat the timed generation K times; report the best (min total) — warms caches, drops
     /// the cold-start outlier. Model load is timed once (cold).
-    #[arg(long, default_value_t = 1)]
+    #[arg(help_heading = "Benchmark", long, default_value_t = 1)]
     pub repeat: usize,
     /// Emit JSON instead of a table (for the perf CI gate).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Benchmark", long, default_value_t = false)]
     pub json: bool,
 }
 

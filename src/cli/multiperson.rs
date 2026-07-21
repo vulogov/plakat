@@ -19,37 +19,37 @@ use crate::pipelines::multiperson::{self, MultipersonRequest, Person, Placement}
 pub struct MultipersonArgs {
     /// Scene description (prose). A `// ` splits an inline style clause:
     /// `"three friends at tea // oil painting"`.
-    #[arg(value_name = "SCENE")]
+    #[arg(help_heading = "People & layout", value_name = "SCENE")]
     pub scene: String,
 
     /// A persona: `label:photo[:weight][,photo:weight…]`. Repeatable; min 2.
     /// Multi-photo weighted merge (same as `portrait --photo`).
-    #[arg(long = "person", value_name = "LABEL:PHOTO")]
+    #[arg(help_heading = "People & layout", long = "person", value_name = "LABEL:PHOTO")]
     pub person: Vec<String>,
 
     /// Relative location for a persona: `label:<position> <distance> <facing>`,
     /// e.g. `"alice:left closer front"`. Axes (order-insensitive): position
     /// left|center-left|center|center-right|right · distance closer|mid|farther
     /// · facing front|side|back. Omit a persona to auto-place them. Repeatable.
-    #[arg(long = "at", value_name = "LABEL:LOC")]
+    #[arg(help_heading = "People & layout", long = "at", value_name = "LABEL:LOC")]
     pub at: Vec<String>,
 
     /// Behavioural prompt for a persona: `label:text`. Repeatable.
-    #[arg(long = "person-prompt", value_name = "LABEL:TEXT")]
+    #[arg(help_heading = "People & layout", long = "person-prompt", value_name = "LABEL:TEXT")]
     pub person_prompt: Vec<String>,
 
     /// Explicit pixel region for a persona: `label:[x0,y0,x1,y1]` (normalised).
     /// Overrides `--at`. Repeatable.
-    #[arg(long = "bbox", value_name = "LABEL:BBOX")]
+    #[arg(help_heading = "People & layout", long = "bbox", value_name = "LABEL:BBOX")]
     pub bbox: Vec<String>,
 
     /// Per-persona identity strength override: `label:0.85`. Repeatable.
-    #[arg(long = "face-strength", value_name = "LABEL:F")]
+    #[arg(help_heading = "Face & identity", long = "face-strength", value_name = "LABEL:F")]
     pub face_strength: Vec<String>,
 
     /// Per-persona figure-height scale for `--pose`: `label:0.7` (1.0 = adult,
     /// ~0.7 = a child/teen so they render shorter, not adult-sized). Repeatable.
-    #[arg(long = "scale", value_name = "LABEL:F")]
+    #[arg(help_heading = "People & layout", long = "scale", value_name = "LABEL:F")]
     pub scale: Vec<String>,
 
     /// Global aesthetic clause (sent to the enhancer, never the scene analyser).
@@ -66,12 +66,12 @@ pub struct MultipersonArgs {
 
     /// Identity strategy (all personas share one): plus-face | plus-face-sdxl |
     /// faceid | faceid-sdxl.
-    #[arg(long, default_value = "plus-face")]
+    #[arg(help_heading = "Face & identity", long, default_value = "plus-face")]
     pub identity: IdentityKind,
 
     /// LLM provider for scene-aware auto-placement: deepseek | gemini | local |
     /// local:<alias> | none (geometric). Only used for un-pinned personas.
-    #[arg(long = "layout-provider", default_value = "none")]
+    #[arg(help_heading = "People & layout", long = "layout-provider", default_value = "none")]
     pub layout_provider: String,
 
     /// Optional prompt enhancer for the scene base: deepseek | gemini | local.
@@ -109,18 +109,18 @@ pub struct MultipersonArgs {
     /// LOW-strength masked repaint that preserves the face's scale/framing, so it
     /// nudges likeness without distorting. Face boxes are clamped to each
     /// persona's region. OFF by default while it's validated.
-    #[arg(long = "face-refine")]
+    #[arg(help_heading = "Face & identity", long = "face-refine")]
     pub face_refine: bool,
 
     /// IP-Adapter identity scale for the face-refinement pass (how hard to push
     /// the reference likeness). Only used with `--face-refine`.
-    #[arg(long = "refine-identity", default_value_t = 0.85)]
+    #[arg(help_heading = "Face & identity", long = "refine-identity", default_value_t = 0.85)]
     pub refine_face_strength: f32,
 
     /// Denoise strength of the face-refinement repaint, 0..1. Low (~0.3) keeps the
     /// existing face's framing and just nudges identity/detail; higher redraws it.
     /// Only used with `--face-refine`.
-    #[arg(long = "refine-strength", default_value_t = 0.35)]
+    #[arg(help_heading = "Face & identity", long = "refine-strength", default_value_t = 0.35)]
     pub refine_denoise: f32,
 
     /// **Composite** mode (recommended for true identity, widest model coverage):
@@ -129,32 +129,32 @@ pub struct MultipersonArgs {
     /// positions. Identity is the actual photo, so it's exact and model-agnostic.
     /// Use a photo (or any portrait) on a plain/light background for the cleanest
     /// cut-out. Add `--harmonize` to img2img-blend the composite into the scene.
-    #[arg(long = "composite")]
+    #[arg(help_heading = "Compositing", long = "composite")]
     pub composite: bool,
 
     /// With `--composite`: **relight each person** to the scene's lighting
     /// (IC-Light) before placing them — matches light direction/colour so they
     /// belong in the scene instead of looking pasted. The real integration step.
-    #[arg(long = "relight")]
+    #[arg(help_heading = "Compositing", long = "relight")]
     pub relight: bool,
 
     /// With `--composite`: run a light img2img pass over the finished composite so
     /// the placed people share the scene's lighting/style (less collage-like).
     /// Strength 0..1 (low keeps identity; ~0.3 is a good blend).
-    #[arg(long = "harmonize", value_name = "STRENGTH", num_args = 0..=1, default_missing_value = "0.3")]
+    #[arg(help_heading = "Compositing", long = "harmonize", value_name = "STRENGTH", num_args = 0..=1, default_missing_value = "0.3")]
     pub harmonize: Option<f32>,
 
     /// Pin each figure's position + pose with a synthetic **OpenPose ControlNet**
     /// (one skeleton per persona region) during scene generation. Fixes the
     /// persona↔figure binding so the right identity lands on the right figure.
     /// Use with `--swap`.
-    #[arg(long = "pose")]
+    #[arg(help_heading = "Face & identity", long = "pose")]
     pub pose: bool,
 
     /// After `--swap`, run a light ADetailer-style detail pass on the swapped
     /// faces to sharpen small scene faces. OFF by default — it's a low-strength
     /// img2img and can slightly drift the swapped identity.
-    #[arg(long = "restore-faces")]
+    #[arg(help_heading = "Face & identity", long = "restore-faces")]
     pub restore_faces: bool,
 
     /// Use **face-swap** for identity (secondary): generate one coherent scene,
@@ -162,11 +162,11 @@ pub struct MultipersonArgs {
     /// ArcFace + inswapper). Far stronger likeness than the IP-Adapter region
     /// path. Needs the inswapper / ArcFace weights (auto-resolved or via
     /// `PLAKAT_INSWAPPER_WEIGHTS` / `PLAKAT_ARCFACE_WEIGHTS`).
-    #[arg(long = "swap")]
+    #[arg(help_heading = "Face & identity", long = "swap")]
     pub swap: bool,
 
     /// Resolve placement (+ print the plan) without loading models or generating.
-    #[arg(long = "dry-run")]
+    #[arg(help_heading = "Size & output", long = "dry-run")]
     pub dry_run: bool,
 }
 

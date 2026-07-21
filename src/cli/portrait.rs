@@ -38,7 +38,7 @@ pub struct PortraitArgs {
     /// independently controlled by `--face-strength`. Without any
     /// `--photo`, runs as a portrait-tuned text-only generate (3:4
     /// aspect, face/anatomy negatives baked in).
-    #[arg(long, value_name = "PATH[:WEIGHT]")]
+    #[arg(help_heading = "Identity & face", long, value_name = "PATH[:WEIGHT]")]
     pub photo: Vec<crate::pipelines::ip_adapter::WeightedPhoto>,
 
     /// Identity strategy:
@@ -50,13 +50,13 @@ pub struct PortraitArgs {
     /// or PLAKAT_ARCFACE_HF). Alignment: `--face-landmarks` > SCRFD-
     /// detected landmarks (when configured) > `--face-bbox` > centre-crop.
     /// InstantID is roadmap.
-    #[arg(long, default_value = "plus-face")]
+    #[arg(help_heading = "Identity & face", long, default_value = "plus-face")]
     pub identity: IdentityKind,
 
     /// Strength of the identity signal (image-token scale). 0.0 = pure
     /// text-driven, 1.0 = full reference influence, >1.0 over-amplifies
     /// the face at the cost of prompt adherence. Ignored without --photo.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(help_heading = "Identity & face", long, default_value_t = 0.8)]
     pub face_strength: f32,
 
     /// Optional face bbox in the photo, format `X0,Y0,X1,Y1` (normalised
@@ -67,7 +67,7 @@ pub struct PortraitArgs {
     /// detection (PLAKAT_SCRFD_*) can fill this in from any photo.
     ///
     /// Example: `--face-bbox 0.2,0.1,0.8,0.7`.
-    #[arg(long, value_name = "X0,Y0,X1,Y1", value_parser = parse_face_bbox)]
+    #[arg(help_heading = "Identity & face", long, value_name = "X0,Y0,X1,Y1", value_parser = parse_face_bbox)]
     pub face_bbox: Option<[f32; 4]>,
 
     /// Optional 5-point face landmarks in the photo, format
@@ -88,7 +88,7 @@ pub struct PortraitArgs {
     ///
     /// Optional SCRFD auto-detection (PLAKAT_SCRFD_*) can auto-fill these
     /// from any photo when no manual landmarks are passed.
-    #[arg(long, value_name = "LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY", value_parser = parse_face_landmarks)]
+    #[arg(help_heading = "Identity & face", long, value_name = "LX,LY,RX,RY,NX,NY,MLX,MLY,MRX,MRY", value_parser = parse_face_landmarks)]
     pub face_landmarks: Option<[[f32; 2]; 5]>,
 
     /// Model: alias (`sd15`, `sdxl`) or any HF SD-1.5/SDXL repo id. The
