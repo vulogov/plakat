@@ -2,15 +2,14 @@
 //! description of a fractal render. Embedded as a `fractalspec` tEXt chunk in every
 //! output PNG so `plakat fractals --fractal-clone PATH` can reconstruct the exact image.
 //!
-//! RFC FRACTALS-1, Phase 1. Escape-time only for now; later phases add `ifs` / `lsystem`
-//! / `flame` / `attractor` / `raymarch` variants alongside `EscapeParams`.
+//! RFC FRACTALS-1, Phases 1–2. Escape-time only for now (11 families + buddhabrot);
+//! later phases add `ifs` / `lsystem` / `flame` / `attractor` / `raymarch`.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Which escape-time fractal to render. Phase 1 ships the three canonical families;
-/// Phase 2 extends this list (tricorn, multibrot, newton, phoenix, …).
+/// Which escape-time fractal to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FractalKind {
@@ -20,6 +19,25 @@ pub enum FractalKind {
     Julia,
     /// z ← (|Re z| + i|Im z|)^power + c — the Burning Ship.
     BurningShip,
+    /// z ← conj(z)^power + c — the Mandelbar / Tricorn.
+    Tricorn,
+    /// z ← z^power + c with power > 2 — the Multibrot (same recurrence as Mandelbrot,
+    /// named separately for discoverability; set `power`).
+    Multibrot,
+    /// Newton's method on z^degree − 1 (degree = round(power)); colored by convergence.
+    Newton,
+    /// Nova (relaxed Newton with an additive c): z ← z − relax·f/f′ + c.
+    Nova,
+    /// Phoenix: zₙ₊₁ = zₙ² + c + p·zₙ₋₁ (uses the previous iterate; z₀ = pixel).
+    Phoenix,
+    /// Magnet type I: z ← ((z² + c − 1)/(2z + c − 2))².
+    Magnet,
+    /// z ← c · sin(z) (transcendental; z₀ = pixel).
+    Sine,
+    /// z ← c · exp(z) (transcendental; z₀ = pixel).
+    Exp,
+    /// Buddhabrot — density plot of escaping Mandelbrot orbits (stochastic, seeded).
+    Buddhabrot,
 }
 
 impl FractalKind {
@@ -28,7 +46,21 @@ impl FractalKind {
             FractalKind::Mandelbrot => "mandelbrot",
             FractalKind::Julia => "julia",
             FractalKind::BurningShip => "burning-ship",
+            FractalKind::Tricorn => "tricorn",
+            FractalKind::Multibrot => "multibrot",
+            FractalKind::Newton => "newton",
+            FractalKind::Nova => "nova",
+            FractalKind::Phoenix => "phoenix",
+            FractalKind::Magnet => "magnet",
+            FractalKind::Sine => "sine",
+            FractalKind::Exp => "exp",
+            FractalKind::Buddhabrot => "buddhabrot",
         }
+    }
+
+    /// Buddhabrot renders via density accumulation, not a per-pixel escape field.
+    pub fn is_buddhabrot(self) -> bool {
+        self == FractalKind::Buddhabrot
     }
 
     pub fn parse(s: &str) -> Result<Self> {
@@ -36,8 +68,18 @@ impl FractalKind {
             "mandelbrot" | "mandel" | "m" => Ok(FractalKind::Mandelbrot),
             "julia" | "j" => Ok(FractalKind::Julia),
             "burning-ship" | "burningship" | "ship" | "bs" => Ok(FractalKind::BurningShip),
+            "tricorn" | "mandelbar" => Ok(FractalKind::Tricorn),
+            "multibrot" | "multi" => Ok(FractalKind::Multibrot),
+            "newton" => Ok(FractalKind::Newton),
+            "nova" => Ok(FractalKind::Nova),
+            "phoenix" => Ok(FractalKind::Phoenix),
+            "magnet" => Ok(FractalKind::Magnet),
+            "sine" | "sin" => Ok(FractalKind::Sine),
+            "exp" | "exponential" => Ok(FractalKind::Exp),
+            "buddhabrot" | "buddha" => Ok(FractalKind::Buddhabrot),
             other => anyhow::bail!(
-                "unknown fractal kind {other:?} (want: mandelbrot | julia | burning-ship)"
+                "unknown fractal kind {other:?} (want: mandelbrot | julia | burning-ship | \
+                 tricorn | multibrot | newton | nova | phoenix | magnet | sine | exp | buddhabrot)"
             ),
         }
     }
@@ -76,14 +118,83 @@ impl Default for PaletteSpec {
     }
 }
 
-/// Coloring algorithm applied to the escape result. Phase 1 = smooth (continuous)
-/// iteration count; Phase 2 adds histogram / distance-estimate / orbit-trap / angle.
+/// Coloring algorithm applied to the escape result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Coloring {
     /// Continuous (Bernstein-smoothed) escape count — no visible iteration bands.
     #[default]
     Smooth,
+    /// Histogram-equalized iteration count — even color distribution across the frame.
+    Histogram,
+    /// Boundary distance estimate — thin, evenly-lit filaments (needs a holomorphic family).
+    Distance,
+    /// Orbit trap — color by the closest approach of the orbit to a shape (`trap`).
+    OrbitTrap,
+    /// Final-iterate argument (angle) — good for Newton-basin coloring.
+    Angle,
+    /// Stripe average — smooth banded "flame" texturing from the orbit's angular history.
+    Stripe,
+}
+
+impl Coloring {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "smooth" => Ok(Coloring::Smooth),
+            "histogram" | "hist" => Ok(Coloring::Histogram),
+            "distance" | "de" => Ok(Coloring::Distance),
+            "orbit-trap" | "trap" => Ok(Coloring::OrbitTrap),
+            "angle" => Ok(Coloring::Angle),
+            "stripe" | "stripe-average" => Ok(Coloring::Stripe),
+            other => anyhow::bail!(
+                "unknown coloring {other:?} (want: smooth | histogram | distance | orbit-trap | \
+                 angle | stripe)"
+            ),
+        }
+    }
+}
+
+/// Orbit-trap shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrapShape {
+    /// Distance to a point.
+    #[default]
+    Point,
+    /// Distance to the nearer of the two axes through the trap point (a cross).
+    Cross,
+    /// Distance to a circle of radius `radius` centered on the trap point.
+    Circle,
+}
+
+impl TrapShape {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "point" => Ok(TrapShape::Point),
+            "cross" => Ok(TrapShape::Cross),
+            "circle" => Ok(TrapShape::Circle),
+            other => anyhow::bail!("unknown trap shape {other:?} (want: point | cross | circle)"),
+        }
+    }
+}
+
+/// Orbit-trap configuration (used when `coloring = orbit-trap`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TrapSpec {
+    pub shape: TrapShape,
+    /// Trap center `[re, im]`.
+    pub point: [f64; 2],
+    /// Circle radius (for `shape = circle`).
+    pub radius: f64,
+    /// Contrast: larger squeezes the mapped range (`t = tanh(dist · scale)`).
+    pub scale: f64,
+}
+
+impl Default for TrapSpec {
+    fn default() -> Self {
+        TrapSpec { shape: TrapShape::Point, point: [0.0, 0.0], radius: 0.5, scale: 4.0 }
+    }
 }
 
 /// A complete, deterministic fractal render request.
@@ -102,14 +213,30 @@ pub struct FractalSpec {
     /// Escape radius: iteration stops once `|z| > escape_radius`. Large values (256)
     /// give smoother coloring than the mathematically-minimal 2.0.
     pub escape_radius: f64,
-    /// The Julia constant `[re, im]` (only used when `kind = julia`).
+    /// The Julia constant `[re, im]` (used by `julia`, `phoenix`, `nova`).
     pub julia_c: [f64; 2],
-    /// Exponent for the `z^power` step (2 = classic; other values = multibrot).
+    /// Exponent for the `z^power` step (2 = classic; other = multibrot / Newton degree).
     pub power: f64,
+    /// Anti-aliasing: render at `supersample`× per axis then box-downsample (1 = off).
+    pub supersample: u32,
     pub palette: PaletteSpec,
     pub coloring: Coloring,
-    /// Reserved for stochastic families (flame/attractor). Escape-time is fully
-    /// deterministic, but carrying the seed keeps every spec reproducible.
+    pub trap: TrapSpec,
+    /// Stripe-average angular frequency (higher = finer bands).
+    pub stripe_freq: f64,
+    /// Distance-estimate contrast (larger = thinner filaments).
+    pub de_scale: f64,
+    /// Phoenix distortion constant `p` `[re, im]`.
+    pub phoenix_p: [f64; 2],
+    /// Nova relaxation factor `[re, im]`.
+    pub nova_relax: [f64; 2],
+    /// Buddhabrot: number of random sample points (higher = smoother density).
+    pub buddha_samples: u64,
+    /// Buddhabrot: only accumulate orbits that escape after at least this many iterations
+    /// (suppresses the low-detail halo).
+    pub buddha_min_iter: u32,
+    /// Reserved / stochastic-family seed. Escape-time is deterministic regardless;
+    /// buddhabrot uses it so its sampling is reproducible.
     pub seed: u64,
 }
 
@@ -125,8 +252,16 @@ impl Default for FractalSpec {
             escape_radius: 256.0,
             julia_c: [-0.8, 0.156],
             power: 2.0,
+            supersample: 1,
             palette: PaletteSpec::default(),
             coloring: Coloring::Smooth,
+            trap: TrapSpec::default(),
+            stripe_freq: 6.0,
+            de_scale: 1.0,
+            phoenix_p: [-0.5, 0.0],
+            nova_relax: [1.0, 0.0],
+            buddha_samples: 5_000_000,
+            buddha_min_iter: 20,
             seed: 0,
         }
     }
@@ -151,6 +286,11 @@ impl FractalSpec {
         Self::from_hjson(&text)
     }
 
+    /// The Newton / Nova polynomial degree (from `power`, min 2).
+    pub fn newton_degree(&self) -> f64 {
+        self.power.round().max(2.0)
+    }
+
     /// Validate the spec — cheap sanity checks so a bad spec fails before a long render.
     pub fn validate(&self) -> Result<()> {
         if self.width == 0 || self.height == 0 {
@@ -167,6 +307,18 @@ impl FractalSpec {
         }
         if !self.power.is_finite() {
             anyhow::bail!("power must be finite (got {})", self.power);
+        }
+        if self.supersample == 0 || self.supersample > 8 {
+            anyhow::bail!("supersample must be in 1..=8 (got {})", self.supersample);
+        }
+        // Guard against an accidental multi-billion-pixel supersampled allocation.
+        let ss = self.supersample as u64;
+        let px = self.width as u64 * self.height as u64 * ss * ss;
+        if px > 500_000_000 {
+            anyhow::bail!(
+                "render too large: {}x{} at {}x supersample = {} samples (cap 500M)",
+                self.width, self.height, self.supersample, px
+            );
         }
         Ok(())
     }
@@ -201,10 +353,12 @@ mod tests {
     #[test]
     fn spec_json_round_trips() {
         let spec = FractalSpec {
-            kind: FractalKind::Julia,
+            kind: FractalKind::Phoenix,
             center: [0.123, -0.456],
             zoom: 4.0,
             julia_c: [-0.8, 0.156],
+            coloring: Coloring::OrbitTrap,
+            supersample: 3,
             ..FractalSpec::default()
         };
         let json = spec.to_json().unwrap();
@@ -215,19 +369,26 @@ mod tests {
     #[test]
     fn hjson_defaults_fill_missing_fields() {
         // A minimal HJSON spec — every omitted field takes its default.
-        let spec = FractalSpec::from_hjson("{ kind: burning-ship, max_iter: 200 }").unwrap();
-        assert_eq!(spec.kind, FractalKind::BurningShip);
+        let spec = FractalSpec::from_hjson("{ kind: tricorn, max_iter: 200 }").unwrap();
+        assert_eq!(spec.kind, FractalKind::Tricorn);
         assert_eq!(spec.max_iter, 200);
         assert_eq!(spec.width, 1024); // default
-        assert_eq!(spec.zoom, 1.0);
+        assert_eq!(spec.supersample, 1);
+        assert_eq!(spec.coloring, Coloring::Smooth);
     }
 
     #[test]
     fn kind_parse_accepts_aliases() {
         assert_eq!(FractalKind::parse("Mandelbrot").unwrap(), FractalKind::Mandelbrot);
-        assert_eq!(FractalKind::parse("j").unwrap(), FractalKind::Julia);
-        assert_eq!(FractalKind::parse("burning_ship").unwrap(), FractalKind::BurningShip);
+        assert_eq!(FractalKind::parse("mandelbar").unwrap(), FractalKind::Tricorn);
+        assert_eq!(FractalKind::parse("buddha").unwrap(), FractalKind::Buddhabrot);
         assert!(FractalKind::parse("koch").is_err());
+    }
+
+    #[test]
+    fn coloring_parses_kebab() {
+        let spec = FractalSpec::from_hjson("{ coloring: orbit-trap }").unwrap();
+        assert_eq!(spec.coloring, Coloring::OrbitTrap);
     }
 
     #[test]
@@ -238,6 +399,9 @@ mod tests {
         assert!(spec.validate().is_err());
         spec.width = 512;
         spec.zoom = 0.0;
+        assert!(spec.validate().is_err());
+        spec.zoom = 1.0;
+        spec.supersample = 9;
         assert!(spec.validate().is_err());
     }
 }

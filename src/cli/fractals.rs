@@ -8,7 +8,11 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::fractals::{self, spec::FractalKind, FractalSpec};
+use crate::fractals::{
+    self,
+    spec::{Coloring, FractalKind, TrapShape},
+    FractalSpec,
+};
 
 #[derive(Args, Debug, Clone)]
 pub struct FractalsArgs {
@@ -41,13 +45,45 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-julia-c", value_name = "RE,IM")]
     pub julia_c: Option<String>,
 
-    /// Exponent for the `z^power` step (2 = classic; other = multibrot).
+    /// Exponent for the `z^power` step (2 = classic; other = multibrot / Newton degree).
     #[arg(long = "fractal-power", value_name = "P")]
     pub power: Option<f64>,
 
     /// Output size as `WxH` (e.g. `1920x1080`).
     #[arg(long = "fractal-size", value_name = "WxH")]
     pub size: Option<String>,
+
+    /// Coloring: smooth | histogram | distance | orbit-trap | angle | stripe.
+    #[arg(long = "fractal-coloring", value_name = "MODE")]
+    pub coloring: Option<String>,
+
+    /// Anti-aliasing: render at NxN samples per pixel then downsample (1..=8; 1 = off).
+    #[arg(long = "fractal-supersample", value_name = "N")]
+    pub supersample: Option<u32>,
+
+    /// Orbit-trap shape (for `--fractal-coloring orbit-trap`): point | cross | circle.
+    #[arg(long = "fractal-trap-shape", value_name = "SHAPE")]
+    pub trap_shape: Option<String>,
+
+    /// Orbit-trap center as `RE,IM`.
+    #[arg(long = "fractal-trap-point", value_name = "RE,IM")]
+    pub trap_point: Option<String>,
+
+    /// Stripe-average angular frequency (for `--fractal-coloring stripe`).
+    #[arg(long = "fractal-stripe-freq", value_name = "F")]
+    pub stripe_freq: Option<f64>,
+
+    /// Distance-estimate contrast (for `--fractal-coloring distance`; larger = thinner).
+    #[arg(long = "fractal-de-scale", value_name = "S")]
+    pub de_scale: Option<f64>,
+
+    /// Buddhabrot sample count (for `--fractal-kind buddhabrot`).
+    #[arg(long = "fractal-buddha-samples", value_name = "N")]
+    pub buddha_samples: Option<u64>,
+
+    /// Seed for stochastic families (buddhabrot). Same seed → identical output.
+    #[arg(long = "fractal-seed", value_name = "N")]
+    pub seed: Option<u64>,
 
     /// Palette preset: fire | ice | electric | neon | pastel | monochrome | midnight | earth.
     #[arg(long = "fractal-palette", value_name = "NAME")]
@@ -130,6 +166,30 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(stops) = &args.stops {
         spec.palette.stops = stops.split(',').map(|s| s.trim().to_string()).collect();
     }
+    if let Some(c) = &args.coloring {
+        spec.coloring = Coloring::parse(c)?;
+    }
+    if let Some(ss) = args.supersample {
+        spec.supersample = ss;
+    }
+    if let Some(sh) = &args.trap_shape {
+        spec.trap.shape = TrapShape::parse(sh)?;
+    }
+    if let Some(tp) = &args.trap_point {
+        spec.trap.point = parse_pair(tp, "trap-point")?;
+    }
+    if let Some(f) = args.stripe_freq {
+        spec.stripe_freq = f;
+    }
+    if let Some(s) = args.de_scale {
+        spec.de_scale = s;
+    }
+    if let Some(n) = args.buddha_samples {
+        spec.buddha_samples = n;
+    }
+    if let Some(s) = args.seed {
+        spec.seed = s;
+    }
 
     spec.validate()?;
     Ok(spec)
@@ -174,6 +234,14 @@ mod tests {
             size: None,
             palette: None,
             stops: None,
+            coloring: None,
+            supersample: None,
+            trap_shape: None,
+            trap_point: None,
+            stripe_freq: None,
+            de_scale: None,
+            buddha_samples: None,
+            seed: None,
             out: PathBuf::from("out/fractal.png"),
             dump_spec: false,
         }
@@ -216,6 +284,34 @@ mod tests {
         };
         let spec = resolve_spec(&args).unwrap();
         assert_eq!(spec.palette.stops, vec!["#000000", "#ffffff"]);
+    }
+
+    #[test]
+    fn phase2_overrides_apply() {
+        let args = FractalsArgs {
+            kind: Some("tricorn".into()),
+            coloring: Some("orbit-trap".into()),
+            supersample: Some(2),
+            trap_shape: Some("circle".into()),
+            trap_point: Some("0.5,-0.5".into()),
+            stripe_freq: Some(9.0),
+            seed: Some(123),
+            ..base_args()
+        };
+        let spec = resolve_spec(&args).unwrap();
+        assert_eq!(spec.kind, FractalKind::Tricorn);
+        assert_eq!(spec.coloring, Coloring::OrbitTrap);
+        assert_eq!(spec.supersample, 2);
+        assert_eq!(spec.trap.shape, TrapShape::Circle);
+        assert_eq!(spec.trap.point, [0.5, -0.5]);
+        assert_eq!(spec.stripe_freq, 9.0);
+        assert_eq!(spec.seed, 123);
+    }
+
+    #[test]
+    fn bad_coloring_errors() {
+        let args = FractalsArgs { coloring: Some("rainbow".into()), ..base_args() };
+        assert!(resolve_spec(&args).is_err());
     }
 
     #[test]

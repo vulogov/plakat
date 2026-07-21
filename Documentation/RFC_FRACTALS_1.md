@@ -84,8 +84,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
 
 1. **Escape-time core + CLI** — FractalSpec + serde + tEXt; viewport→complex; Mandelbrot/Julia/
    Burning-Ship (rayon + num-complex); smooth coloring + Lab palettes; core CLI; `--fractal-clone`.
+   **DONE.**
 2. **Extended coloring + escape-time variants** — histogram/distance/orbit-trap/angle/stripe; the full
-   escape-time family; supersampling; buddhabrot.
+   escape-time family (+tricorn/multibrot/newton/nova/phoenix/magnet/sine/exp); supersampling AA;
+   buddhabrot (deterministic seeded density). **DONE.**
 3. **L-system + IFS**.
 4. **AI enhancement pass (Track B)**.
 5. **Fractal flame + strange attractors** (+ optional `.flam3`).
