@@ -42,6 +42,10 @@ pub enum FractalKind {
     Ifs,
     /// L-system — Lindenmayer rewriting + turtle line drawing (Koch, dragon, plants…).
     Lsystem,
+    /// Fractal flame — IFS + non-linear variations + log-density color (Draves).
+    Flame,
+    /// Strange attractor — density plot of a chaotic map / ODE trajectory.
+    Attractor,
 }
 
 impl FractalKind {
@@ -61,6 +65,8 @@ impl FractalKind {
             FractalKind::Buddhabrot => "buddhabrot",
             FractalKind::Ifs => "ifs",
             FractalKind::Lsystem => "lsystem",
+            FractalKind::Flame => "flame",
+            FractalKind::Attractor => "attractor",
         }
     }
 
@@ -70,9 +76,16 @@ impl FractalKind {
     }
 
     /// The per-pixel complex-plane escape families (everything except buddhabrot / the
-    /// line-drawing families).
+    /// line-drawing / density families).
     pub fn is_escape_time(self) -> bool {
-        !matches!(self, FractalKind::Buddhabrot | FractalKind::Ifs | FractalKind::Lsystem)
+        !matches!(
+            self,
+            FractalKind::Buddhabrot
+                | FractalKind::Ifs
+                | FractalKind::Lsystem
+                | FractalKind::Flame
+                | FractalKind::Attractor
+        )
     }
 
     pub fn parse(s: &str) -> Result<Self> {
@@ -91,10 +104,12 @@ impl FractalKind {
             "buddhabrot" | "buddha" => Ok(FractalKind::Buddhabrot),
             "ifs" => Ok(FractalKind::Ifs),
             "lsystem" | "l-system" | "lsys" => Ok(FractalKind::Lsystem),
+            "flame" => Ok(FractalKind::Flame),
+            "attractor" | "strange-attractor" => Ok(FractalKind::Attractor),
             other => anyhow::bail!(
                 "unknown fractal kind {other:?} (want: mandelbrot | julia | burning-ship | \
                  tricorn | multibrot | newton | nova | phoenix | magnet | sine | exp | buddhabrot \
-                 | ifs | lsystem)"
+                 | ifs | lsystem | flame | attractor)"
             ),
         }
     }
@@ -299,6 +314,106 @@ impl Default for LsystemSpec {
     }
 }
 
+/// One weighted non-linear variation in a flame function (`name` → the variation, `weight`
+/// → its blend coefficient). See `flame::VARIATIONS` for the supported names.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VarWeight {
+    pub name: String,
+    pub weight: f64,
+}
+
+/// One function ("transform") of a fractal flame: an affine pre-transform, a weighted sum
+/// of non-linear variations, a color coordinate, and a selection weight.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FlameFunction {
+    /// Affine pre-transform `[a, b, c, d, e, f]`: `x' = a·x + b·y + c`, `y' = d·x + e·y + f`.
+    pub affine: [f64; 6],
+    /// Weighted non-linear variations applied after the affine (summed).
+    pub variations: Vec<VarWeight>,
+    /// Color coordinate in `[0,1]` (looked up in the palette).
+    pub color: f64,
+    /// Relative selection probability in the chaos game.
+    pub weight: f64,
+}
+
+impl Default for FlameFunction {
+    fn default() -> Self {
+        FlameFunction {
+            affine: [0.5, 0.0, 0.0, 0.0, 0.5, 0.0],
+            variations: vec![VarWeight { name: "linear".to_string(), weight: 1.0 }],
+            color: 0.0,
+            weight: 1.0,
+        }
+    }
+}
+
+/// Fractal flame configuration. A `preset` name OR explicit `functions` (functions win).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FlameSpec {
+    /// Named preset: sierpinski · spherical · swirl · spiral · flame.
+    pub preset: String,
+    /// Explicit flame functions (overrides `preset` when non-empty).
+    pub functions: Vec<FlameFunction>,
+    /// Chaos-game iteration count (higher = smoother density).
+    pub iterations: u64,
+    /// Discard the first `warmup` points.
+    pub warmup: u32,
+    /// Tone-mapping gamma (2.2 is standard).
+    pub gamma: f64,
+    /// Overall brightness multiplier.
+    pub brightness: f64,
+    /// Rotational symmetry count (1 = none; N replicates each plotted point N-fold).
+    pub symmetry: u32,
+    /// Fraction of the canvas the flame fills.
+    pub margin: f64,
+}
+
+impl Default for FlameSpec {
+    fn default() -> Self {
+        FlameSpec {
+            preset: "flame".to_string(),
+            functions: Vec::new(),
+            iterations: 4_000_000,
+            warmup: 20,
+            gamma: 2.2,
+            brightness: 1.3,
+            symmetry: 1,
+            margin: 0.9,
+        }
+    }
+}
+
+/// Strange-attractor configuration: a named chaotic map / ODE, with optional parameter
+/// override. The trajectory's visited points are accumulated into a density image.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttractorSpec {
+    /// Named attractor: clifford · dejong · bedhead · duffing · ikeda · lorenz · rossler.
+    pub preset: String,
+    /// Parameter override (empty = the preset's classic parameters).
+    pub params: Vec<f64>,
+    /// Number of trajectory steps to accumulate.
+    pub iterations: u64,
+    /// Discard the first `warmup` steps (settle onto the attractor).
+    pub warmup: u32,
+    /// Fraction of the canvas the attractor fills.
+    pub margin: f64,
+}
+
+impl Default for AttractorSpec {
+    fn default() -> Self {
+        AttractorSpec {
+            preset: "clifford".to_string(),
+            params: Vec::new(),
+            iterations: 4_000_000,
+            warmup: 100,
+            margin: 0.9,
+        }
+    }
+}
+
 /// Track-B (AI enhancement) configuration. When `enabled`, the deterministic Track-A
 /// render feeds a ControlNet-conditioned img2img pass through the generation stack.
 /// Empty string fields mean "auto": `prompt`/`negative` fall back to a per-kind default,
@@ -386,6 +501,10 @@ pub struct FractalSpec {
     pub ifs: IfsSpec,
     /// L-system configuration (used when `kind = lsystem`).
     pub lsystem: LsystemSpec,
+    /// Fractal-flame configuration (used when `kind = flame`).
+    pub flame: FlameSpec,
+    /// Strange-attractor configuration (used when `kind = attractor`).
+    pub attractor: AttractorSpec,
     /// Track-B AI enhancement configuration.
     pub ai: AiSpec,
     /// Reserved / stochastic-family seed. Escape-time is deterministic regardless;
@@ -417,6 +536,8 @@ impl Default for FractalSpec {
             buddha_min_iter: 20,
             ifs: IfsSpec::default(),
             lsystem: LsystemSpec::default(),
+            flame: FlameSpec::default(),
+            attractor: AttractorSpec::default(),
             ai: AiSpec::default(),
             seed: 0,
         }
@@ -497,6 +618,25 @@ impl FractalSpec {
             if !(self.lsystem.margin > 0.0 && self.lsystem.margin <= 1.0) {
                 anyhow::bail!("lsystem.margin must be in (0,1] (got {})", self.lsystem.margin);
             }
+        }
+        if self.kind == FractalKind::Flame {
+            if self.flame.iterations == 0 || self.flame.iterations > 200_000_000 {
+                anyhow::bail!("flame.iterations must be in 1..=200M (got {})", self.flame.iterations);
+            }
+            if !self.flame.gamma.is_finite() || self.flame.gamma <= 0.0 {
+                anyhow::bail!("flame.gamma must be a positive finite number (got {})", self.flame.gamma);
+            }
+            if self.flame.symmetry == 0 || self.flame.symmetry > 24 {
+                anyhow::bail!("flame.symmetry must be in 1..=24 (got {})", self.flame.symmetry);
+            }
+        }
+        if self.kind == FractalKind::Attractor
+            && (self.attractor.iterations == 0 || self.attractor.iterations > 500_000_000)
+        {
+            anyhow::bail!(
+                "attractor.iterations must be in 1..=500M (got {})",
+                self.attractor.iterations
+            );
         }
         Ok(())
     }

@@ -96,7 +96,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
    is both the img2img init and the ControlNet source (auto per-family: canny/lineart/softedge), a
    per-family default prompt, reusing `pipelines::img2img` + `pipelines::controlnet`. GPU auto-detected
    (respects `--device cpu`); Track A always saved first, untouched. **DONE.**
-5. **Fractal flame + strange attractors** (+ optional `.flam3`).
+5. **Fractal flame + strange attractors** — flame (18 non-linear variations, log-density color tone
+   mapping, rotational symmetry, 5 presets) + strange attractors (7: clifford/dejong/bedhead/duffing/
+   ikeda maps + lorenz/rossler RK4 ODEs, density-accumulated). Both deterministic, both AA via
+   supersample. (`.flam3` XML import deferred.) **DONE.**
 6. **TUI explorer** (`--fractal-explore`).
 7. **3D raymarched fractals**.
 8. **Composition, ecosystem integration, LLM spec generation, perturbation-theory deep zoom.**

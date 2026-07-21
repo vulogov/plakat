@@ -200,7 +200,8 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
             FractalKind::Sine => c * z.sin(),
             FractalKind::Exp => c * z.exp(),
             FractalKind::Newton | FractalKind::Nova | FractalKind::Buddhabrot
-            | FractalKind::Ifs | FractalKind::Lsystem => unreachable!(),
+            | FractalKind::Ifs | FractalKind::Lsystem | FractalKind::Flame
+            | FractalKind::Attractor => unreachable!(),
         };
         n += 1;
 

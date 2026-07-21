@@ -30,7 +30,9 @@ pub const SUGGESTED_FRACTAL_LORA: &str = "artificialguybr/fractalredmond";
 pub fn default_control_for_kind(kind: FractalKind) -> ControlKind {
     match kind {
         FractalKind::Ifs | FractalKind::Lsystem => ControlKind::Lineart,
-        FractalKind::Buddhabrot => ControlKind::SoftEdge,
+        FractalKind::Buddhabrot | FractalKind::Flame | FractalKind::Attractor => {
+            ControlKind::SoftEdge
+        }
         _ => ControlKind::Canny,
     }
 }
@@ -52,6 +54,12 @@ pub fn fractal_prompt(spec: &FractalSpec) -> (String, String) {
         }
         FractalKind::Buddhabrot => {
             "an ethereal cosmic nebula, glowing stardust, deep-space astrophotography"
+        }
+        FractalKind::Flame => {
+            "a luminous fractal flame, glowing plasma filaments, wispy light, vivid neon energy"
+        }
+        FractalKind::Attractor => {
+            "a glowing strange-attractor, delicate luminous threads, long-exposure light trails"
         }
         _ => "an intricate fractal, ornate recursive filigree, iridescent, mesmerizing deep zoom",
     };

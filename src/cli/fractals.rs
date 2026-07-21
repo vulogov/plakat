@@ -108,6 +108,27 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-lsystem-depth", value_name = "N")]
     pub lsystem_depth: Option<u32>,
 
+    /// Flame preset (for `--fractal-kind flame`): sierpinski | spherical | swirl | spiral | flame.
+    #[arg(long = "fractal-flame-preset", value_name = "NAME")]
+    pub flame_preset: Option<String>,
+
+    /// Flame rotational symmetry (1 = none).
+    #[arg(long = "fractal-flame-symmetry", value_name = "N")]
+    pub flame_symmetry: Option<u32>,
+
+    /// Flame chaos-game iteration count.
+    #[arg(long = "fractal-flame-iterations", value_name = "N")]
+    pub flame_iterations: Option<u64>,
+
+    /// Strange-attractor preset (for `--fractal-kind attractor`): clifford | dejong | bedhead |
+    /// duffing | ikeda | lorenz | rossler.
+    #[arg(long = "fractal-attractor-preset", value_name = "NAME")]
+    pub attractor_preset: Option<String>,
+
+    /// Attractor trajectory step count.
+    #[arg(long = "fractal-attractor-iterations", value_name = "N")]
+    pub attractor_iterations: Option<u64>,
+
     /// Palette preset: fire | ice | electric | neon | pastel | monochrome | midnight | earth.
     #[arg(long = "fractal-palette", value_name = "NAME")]
     pub palette: Option<String>,
@@ -292,6 +313,23 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(d) = args.lsystem_depth {
         spec.lsystem.iterations = d;
     }
+    if let Some(p) = &args.flame_preset {
+        spec.flame.preset = p.clone();
+        spec.flame.functions.clear();
+    }
+    if let Some(s) = args.flame_symmetry {
+        spec.flame.symmetry = s;
+    }
+    if let Some(n) = args.flame_iterations {
+        spec.flame.iterations = n;
+    }
+    if let Some(p) = &args.attractor_preset {
+        spec.attractor.preset = p.clone();
+        spec.attractor.params.clear();
+    }
+    if let Some(n) = args.attractor_iterations {
+        spec.attractor.iterations = n;
+    }
 
     // Track B (AI paint).
     if args.paint || args.paint_out.is_some() {
@@ -433,6 +471,11 @@ mod tests {
             lsystem_preset: None,
             lsystem_angle: None,
             lsystem_depth: None,
+            flame_preset: None,
+            flame_symmetry: None,
+            flame_iterations: None,
+            attractor_preset: None,
+            attractor_iterations: None,
             paint: false,
             paint_out: None,
             sd_model: None,
