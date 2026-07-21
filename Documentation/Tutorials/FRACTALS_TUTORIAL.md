@@ -527,6 +527,186 @@ Render `plakat fractals --help` for the authoritative list. The essentials:
 
 ---
 
+# Appendix — presets & enums (reference tables)
+
+### Fractal families — `--fractal-kind`
+
+```
+┌──────────────┬─────────┬──────────────────────────────────────────┐
+│ kind         │ type    │ what it is                               │
+├──────────────┼─────────┼──────────────────────────────────────────┤
+│ mandelbrot   │ escape  │ the classic set; z ← z² + c              │
+│ julia        │ escape  │ fixed c (--fractal-julia-c), z₀ = pixel  │
+│ burning-ship │ escape  │ z ← (|Re z|+i|Im z|)² + c; fiery hulls   │
+│ tricorn      │ escape  │ mandelbar; conjugate z ← z̄² + c         │
+│ multibrot    │ escape  │ z ← zⁿ + c (--fractal-power)             │
+│ newton       │ escape  │ root basins (pair with coloring=angle)   │
+│ nova         │ escape  │ relaxed Newton with an added c           │
+│ phoenix      │ escape  │ uses the previous iterate                │
+│ magnet       │ escape  │ magnet type-I rational map               │
+│ sine         │ escape  │ z ← c·sin(z) (transcendental)            │
+│ exp          │ escape  │ z ← c·exp(z) (transcendental)            │
+│ buddhabrot   │ density │ density of escaping orbits (seeded)      │
+│ flame        │ density │ fractal flame (variations + log-density) │
+│ attractor    │ density │ strange-attractor trajectory             │
+│ ifs          │ line    │ chaos-game attractor (fern, dragon…)     │
+│ lsystem      │ line    │ Lindenmayer turtle drawing               │
+│ raymarch     │ 3D      │ distance-estimated 3D fractal            │
+└──────────────┴─────────┴──────────────────────────────────────────┘
+```
+
+### Coloring — `--fractal-coloring` (escape families)
+
+```
+┌────────────┬────────────────────────────────────────────────────┐
+│ mode       │ look                                               │
+├────────────┼────────────────────────────────────────────────────┤
+│ smooth     │ continuous gradient (default)                      │
+│ histogram  │ even color spread across the frame                 │
+│ distance   │ thin, evenly-lit filaments                         │
+│ orbit-trap │ color by closest approach to a shape               │
+│ angle      │ final-iterate angle (Newton basins)                │
+│ stripe     │ flame-like angular bands                           │
+│ image      │ sample a photo at the orbit (--fractal-trap-image) │
+└────────────┴────────────────────────────────────────────────────┘
+```
+
+### Palettes — `--fractal-palette`
+
+```
+┌────────────┬───────────────────────────────────┐
+│ preset     │ mood                              │
+├────────────┼───────────────────────────────────┤
+│ fire       │ black → red → orange → white      │
+│ ice        │ deep blue → cyan → white          │
+│ electric   │ violet → magenta → cyan           │
+│ neon       │ hot pink / orange / yellow / blue │
+│ pastel     │ soft muted tones                  │
+│ monochrome │ black → white grayscale           │
+│ midnight   │ deep-space blues                  │
+│ earth      │ browns & natural tones            │
+└────────────┴───────────────────────────────────┘
+```
+
+### IFS presets — `--fractal-ifs-preset`
+
+```
+┌───────────────┬───────────────────────┐
+│ preset        │ attractor             │
+├───────────────┼───────────────────────┤
+│ barnsley-fern │ the classic fern      │
+│ sierpinski    │ Sierpiński triangle   │
+│ dragon        │ Heighway dragon curve │
+│ levy          │ Lévy C curve          │
+│ tree          │ branching tree        │
+│ spiral        │ logarithmic spiral    │
+└───────────────┴───────────────────────┘
+```
+
+### L-system presets — `--fractal-lsystem-preset`
+
+```
+┌────────────────┬─────────────────────────────┐
+│ preset         │ curve                       │
+├────────────────┼─────────────────────────────┤
+│ koch           │ Koch curve                  │
+│ koch-snowflake │ Koch snowflake              │
+│ sierpinski     │ Sierpiński arrowhead        │
+│ dragon         │ dragon curve                │
+│ hilbert        │ Hilbert space-filling curve │
+│ gosper         │ Gosper (flowsnake) curve    │
+│ plant          │ branching plant             │
+│ bush           │ bushy plant                 │
+└────────────────┴─────────────────────────────┘
+```
+
+### Flame presets — `--fractal-flame-preset`
+
+```
+┌────────────┬─────────────────────────────────────────┐
+│ preset     │ note                                    │
+├────────────┼─────────────────────────────────────────┤
+│ flame      │ the default mixed set (spherical+swirl) │
+│ sierpinski │ 3 linear maps                           │
+│ spherical  │ spherical variation                     │
+│ swirl      │ swirl variation                         │
+│ spiral     │ spiral variation                        │
+└────────────┴─────────────────────────────────────────┘
+```
+
+Flame variations (for custom `functions` in a spec file): linear, sinusoidal,
+spherical, swirl, horseshoe, polar, handkerchief, heart, disc, spiral, hyperbolic,
+diamond, ex, fisheye, exponential, power, cosine, bubble.
+
+### Strange attractors — `--fractal-attractor-preset`
+
+```
+┌──────────┬─────────────────────────┐
+│ preset   │ kind                    │
+├──────────┼─────────────────────────┤
+│ clifford │ 2D map                  │
+│ dejong   │ 2D map (Peter de Jong)  │
+│ bedhead  │ 2D map                  │
+│ duffing  │ 2D map                  │
+│ ikeda    │ 2D map                  │
+│ lorenz   │ 3D ODE (butterfly), RK4 │
+│ rossler  │ 3D ODE, RK4             │
+└──────────┴─────────────────────────┘
+```
+
+### 3D shapes — `--fractal-raymarch-shape`
+
+```
+┌──────────────┬───────────────────────────────────────────────────────┐
+│ shape        │ note                                                  │
+├──────────────┼───────────────────────────────────────────────────────┤
+│ mandelbulb   │ spherical-power Mandelbrot (--fractal-raymarch-power) │
+│ mandelbox    │ box-fold + sphere-fold                                │
+│ menger       │ Menger sponge                                         │
+│ sierpinski3d │ Sierpiński tetrahedron                                │
+│ quat-julia   │ quaternion Julia                                      │
+└──────────────┴───────────────────────────────────────────────────────┘
+```
+
+### Composition — `--fractal-compose`
+
+```
+┌─────────────────┬───────────────────────────────┐
+│ mode            │ grid of…                      │
+├─────────────────┼───────────────────────────────┤
+│ julia-sweep     │ Julia sets, c around a circle │
+│ zoom-grid       │ progressive deep zoom         │
+│ palette-grid    │ one fractal, every palette    │
+│ variation-sweep │ seed / parameter variations   │
+└─────────────────┴───────────────────────────────┘
+```
+
+### Orbit-trap shapes — `--fractal-trap-shape`
+
+```
+┌────────┬───────────────────────────────────┐
+│ shape  │ distance to…                      │
+├────────┼───────────────────────────────────┤
+│ point  │ a point (--fractal-trap-point)    │
+│ cross  │ the nearer axis through the point │
+│ circle │ a circle around the point         │
+└────────┴───────────────────────────────────┘
+```
+
+### AI paint — modes & control (Track B)
+
+```
+┌──────────────────────┬────────────────────────────────────────┐
+│ setting              │ values                                 │
+├──────────────────────┼────────────────────────────────────────┤
+│ --fractal-paint-mode │ txt2img (default) · img2img            │
+│ control (auto)       │ escape→canny · ifs/lsystem→lineart     │
+│ control (auto)       │ flame/attractor/buddhabrot→softedge    │
+│ control (auto)       │ raymarch→depth                         │
+│ --fractal-sd-control │ override: canny·lineart·softedge·depth │
+└──────────────────────┴────────────────────────────────────────┘
+```
+
 # Tips & gotchas
 
 - **Negative coordinates:** prefer the `=` form: `--fractal-center=-0.745,0.113`.
