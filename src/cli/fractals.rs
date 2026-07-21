@@ -201,6 +201,12 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-paint-out", value_name = "PATH")]
     pub paint_out: Option<PathBuf>,
 
+    /// Paint pipeline: `img2img` (default — a scene *made of* the fractal: keeps its colors
+    /// and layout) or `txt2img` (a scene *shaped by* the fractal: ControlNet-only, so the
+    /// model paints a real sky / horizon / lighting from the prompt).
+    #[arg(long = "fractal-paint-mode", value_name = "MODE")]
+    pub paint_mode: Option<String>,
+
     /// Paint model alias (default sdxl).
     #[arg(long = "fractal-sd-model", value_name = "ALIAS")]
     pub sd_model: Option<String>,
@@ -414,6 +420,15 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if args.paint || args.paint_out.is_some() {
         spec.ai.enabled = true;
     }
+    if let Some(m) = &args.paint_mode {
+        spec.ai.mode = m.clone();
+        // txt2img reads best with looser control (a scene *shaped by* the fractal, not
+        // locked to it). Drop the default control weight unless the user set one explicitly.
+        let txt = ["txt2img", "text2img", "t2i"].iter().any(|k| m.eq_ignore_ascii_case(k));
+        if txt && args.sd_control_strength.is_none() {
+            spec.ai.control_strength = 0.4;
+        }
+    }
     if let Some(m) = &args.sd_model {
         spec.ai.model = m.clone();
     }
@@ -537,16 +552,20 @@ pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
     // painting, so Track A stays entirely device-free.
     if spec.ai.enabled {
         let paint_out = args.paint_out.clone().unwrap_or_else(|| painted_path(&args.out));
-        println!(
-            "painting via {} (control: {}, strength {})…",
-            spec.ai.model,
-            if spec.ai.control.trim().is_empty() {
-                fractals::ai_pass::default_control_for_kind(spec.kind).slug().to_string()
-            } else {
-                spec.ai.control.clone()
-            },
-            spec.ai.strength,
-        );
+        let mode = if fractals::ai_pass::is_txt2img(&spec) { "txt2img" } else { "img2img" };
+        let control = if spec.ai.control.trim().is_empty() {
+            fractals::ai_pass::default_control_for_kind(spec.kind).slug().to_string()
+        } else {
+            spec.ai.control.clone()
+        };
+        if mode == "txt2img" {
+            println!("painting via {} ({mode}, control: {control} {})…", spec.ai.model, spec.ai.control_strength);
+        } else {
+            println!(
+                "painting via {} ({mode}, control: {control}, strength {})…",
+                spec.ai.model, spec.ai.strength,
+            );
+        }
         // Device resolution honors `--device`: the default `auto` auto-detects and uses
         // the GPU (CUDA → Metal → CPU); an explicit `--device cpu` is respected; an
         // explicit `metal` / `cuda[:N]` is honored (and errors clearly if not built in).
@@ -611,6 +630,7 @@ mod tests {
             raymarch_dist: None,
             paint: false,
             paint_out: None,
+            paint_mode: None,
             sd_model: None,
             prompt: None,
             negative: None,

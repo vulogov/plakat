@@ -14,9 +14,10 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::pipelines::controlnet::{ControlKind, ControlSpec};
-use crate::pipelines::img2img::{self, Request};
+use crate::pipelines::img2img;
 use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
+use crate::pipelines::t2i;
 
 use super::spec::{FractalKind, FractalSpec};
 
@@ -106,14 +107,15 @@ fn newest_png(dir: &Path) -> Result<std::path::PathBuf> {
         .with_context(|| format!("AI paint pass produced no PNG in {}", dir.display()))
 }
 
-/// Run the Track-B paint pass: `base_png` (the Track-A render) → ControlNet-guided
-/// img2img → `out`. `base_png` is left untouched.
-pub async fn run_ai_pass(
-    spec: &FractalSpec,
-    base_png: &Path,
-    out: &Path,
-    device: Device,
-) -> Result<()> {
+/// Resolved paint inputs shared by both pipelines.
+struct PaintInputs {
+    positive: String,
+    negative: String,
+    control: ControlKind,
+    loras: Vec<LoraSpec>,
+}
+
+fn resolve_inputs(spec: &FractalSpec) -> Result<PaintInputs> {
     let ai = &spec.ai;
     let (mut positive, mut negative) = fractal_prompt(spec);
     if !ai.prompt.trim().is_empty() {
@@ -122,23 +124,74 @@ pub async fn run_ai_pass(
     if !ai.negative.trim().is_empty() {
         negative = ai.negative.clone();
     }
-
     let control = if ai.control.trim().is_empty() {
         default_control_for_kind(spec.kind)
     } else {
         ControlKind::from_str(ai.control.trim())
             .map_err(|e| anyhow::anyhow!("bad control type {:?}: {e}", ai.control))?
     };
+    Ok(PaintInputs { positive, negative, control, loras: parse_loras(&ai.loras)? })
+}
 
-    let loras = parse_loras(&ai.loras)?;
+/// A single ControlNet conditioner that auto-annotates the Track-A render.
+fn control_spec(kind: ControlKind, base_png: &Path, strength: f32) -> ControlSpec {
+    ControlSpec {
+        kind,
+        image: None,
+        from: Some(base_png.to_path_buf()),
+        video: None,
+        strength,
+        start: 0.0,
+        end: 1.0,
+    }
+}
+
+/// Copy the single PNG a pipeline produced in `scratch` to `out`.
+fn finalize(scratch: &Path, out: &Path) -> Result<()> {
+    let produced = newest_png(scratch)?;
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    std::fs::copy(&produced, out)
+        .with_context(|| format!("writing painted fractal to {}", out.display()))?;
+    Ok(())
+}
+
+/// Whether the spec selects the text2img pipeline (fractal as ControlNet only).
+pub fn is_txt2img(spec: &FractalSpec) -> bool {
+    let m = spec.ai.mode.trim();
+    m.eq_ignore_ascii_case("txt2img") || m.eq_ignore_ascii_case("text2img") || m.eq_ignore_ascii_case("t2i")
+}
+
+/// Run the Track-B paint pass. `base_png` (the Track-A render) is left untouched.
+/// Dispatches on `ai.mode`:
+///   * `img2img` — the fractal is the init image **and** the ControlNet source; the scene
+///     is *made of* the fractal (its colors + spatial layout carry through).
+///   * `txt2img` — the fractal is the ControlNet source **only**; the scene is generated
+///     from noise + prompt and merely *shaped by* the fractal's structure (free to place a
+///     real sky / horizon / lighting).
+pub async fn run_ai_pass(spec: &FractalSpec, base_png: &Path, out: &Path, device: Device) -> Result<()> {
+    if is_txt2img(spec) {
+        run_txt2img_pass(spec, base_png, out, device).await
+    } else {
+        run_img2img_pass(spec, base_png, out, device).await
+    }
+}
+
+/// img2img + ControlNet: the fractal is the init image and the conditioner.
+async fn run_img2img_pass(spec: &FractalSpec, base_png: &Path, out: &Path, device: Device) -> Result<()> {
+    let ai = &spec.ai;
+    let inp = resolve_inputs(spec)?;
     let scratch = tempfile::tempdir().context("creating AI-pass scratch dir")?;
-
-    let req = Request {
-        prompt: positive,
-        negative,
+    let req = img2img::Request {
+        prompt: inp.positive,
+        negative: inp.negative,
         model: ai.model.clone(),
         device,
-        loras,
+        loras: inp.loras,
         lora_scale: ai.lora_scale,
         input: base_png.to_path_buf(),
         mask: None,
@@ -153,29 +206,67 @@ pub async fn run_ai_pass(
         strength: ai.strength,
         seed: Some(spec.seed),
         out_dir: scratch.path().to_path_buf(),
-        controls: vec![ControlSpec {
-            kind: control,
-            image: None,
-            from: Some(base_png.to_path_buf()), // auto-annotate the Track-A render
-            video: None,
-            strength: ai.control_strength,
-            start: 0.0,
-            end: 1.0,
-        }],
+        controls: vec![control_spec(inp.control, base_png, ai.control_strength)],
     };
+    img2img::run(req).await.context("fractal paint pass (img2img + ControlNet)")?;
+    finalize(scratch.path(), out)
+}
 
-    img2img::run(req).await.context("fractal AI paint pass (img2img + ControlNet)")?;
-
-    let produced = newest_png(scratch.path())?;
-    if let Some(parent) = out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-    }
-    std::fs::copy(&produced, out)
-        .with_context(|| format!("writing painted fractal to {}", out.display()))?;
-    Ok(())
+/// text2img + ControlNet: no init image — the fractal only conditions the composition, so
+/// the model builds the scene (sky / horizon / light) freely from the prompt.
+async fn run_txt2img_pass(spec: &FractalSpec, base_png: &Path, out: &Path, device: Device) -> Result<()> {
+    let ai = &spec.ai;
+    let inp = resolve_inputs(spec)?;
+    let scratch = tempfile::tempdir().context("creating AI-pass scratch dir")?;
+    let req = t2i::Request {
+        prompt: inp.positive,
+        negative: inp.negative,
+        model: ai.model.clone(),
+        width: spec.width,
+        height: spec.height,
+        count: 1,
+        steps: ai.steps as usize,
+        guidance: ai.guidance,
+        seed: Some(spec.seed),
+        out_dir: scratch.path().to_path_buf(),
+        device,
+        loras: inp.loras,
+        lora_scale: ai.lora_scale,
+        scheduler: SchedulerKind::Default,
+        refine: None,
+        refine_strength: 0.0,
+        use_refiner: false,
+        refiner_frac: 0.8,
+        controls: vec![control_spec(inp.control, base_png, ai.control_strength)],
+        tiled: None,
+        regions: Vec::new(),
+        kontext_bucket: false,
+        quantize_t5: false,
+        flux_quant_level: None,
+        t5_quant_level: None,
+        redux_images: Vec::new(),
+        flux_concept_image: None,
+        clip_skip: 0,
+        embeddings: Vec::new(),
+        write_metadata: false,
+        preview_every: None,
+        preview_size: None,
+        output_format: crate::imaging::io::OutputFormat::Png,
+        look: None,
+        genre: None,
+        negative_preset: None,
+        lora_stack: None,
+        embedding_stack: None,
+        control_stack: None,
+        enhancement: None,
+        cascade_stage_c_steps: None,
+        cascade_decoder_guidance: 0.0,
+        cascade_stage_b_steps: None,
+        cascade_image_prompt: None,
+        cascade_controlnet_weights: None,
+    };
+    t2i::run(req).await.context("fractal paint pass (text2img + ControlNet)")?;
+    finalize(scratch.path(), out)
 }
 
 #[cfg(test)]

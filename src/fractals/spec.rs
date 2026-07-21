@@ -484,6 +484,11 @@ impl Default for RaymarchSpec {
 #[serde(default)]
 pub struct AiSpec {
     pub enabled: bool,
+    /// Paint pipeline: `img2img` (the fractal is the init image *and* ControlNet — a scene
+    /// **made of** the fractal, keeps its colors/layout) or `txt2img` (the fractal is
+    /// ControlNet **only** — a scene **shaped by** the fractal, free composition: real sky,
+    /// horizon, lighting from the prompt).
+    pub mode: String,
     /// Model alias (sdxl / sd15 / …).
     pub model: String,
     /// Positive prompt ("" = per-kind auto).
@@ -507,6 +512,7 @@ impl Default for AiSpec {
     fn default() -> Self {
         AiSpec {
             enabled: false,
+            mode: "img2img".to_string(),
             model: "sdxl".to_string(),
             prompt: String::new(),
             negative: String::new(),
