@@ -422,11 +422,11 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     }
     if let Some(m) = &args.paint_mode {
         spec.ai.mode = m.clone();
-        // txt2img reads best with looser control (a scene *shaped by* the fractal, not
-        // locked to it). Drop the default control weight unless the user set one explicitly.
-        let txt = ["txt2img", "text2img", "t2i"].iter().any(|k| m.eq_ignore_ascii_case(k));
-        if txt && args.sd_control_strength.is_none() {
-            spec.ai.control_strength = 0.4;
+        // The default (txt2img) uses a looser control (0.4, set in AiSpec). img2img anchors
+        // on the init too, so it reads a touch stronger — bump unless the user set one.
+        let img = ["img2img", "i2i"].iter().any(|k| m.eq_ignore_ascii_case(k));
+        if img && args.sd_control_strength.is_none() {
+            spec.ai.control_strength = 0.55;
         }
     }
     if let Some(m) = &args.sd_model {

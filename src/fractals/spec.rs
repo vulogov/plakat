@@ -484,10 +484,10 @@ impl Default for RaymarchSpec {
 #[serde(default)]
 pub struct AiSpec {
     pub enabled: bool,
-    /// Paint pipeline: `img2img` (the fractal is the init image *and* ControlNet — a scene
-    /// **made of** the fractal, keeps its colors/layout) or `txt2img` (the fractal is
-    /// ControlNet **only** — a scene **shaped by** the fractal, free composition: real sky,
-    /// horizon, lighting from the prompt).
+    /// Paint pipeline. `txt2img` (default) — the fractal is the ControlNet source **only**,
+    /// so the scene is generated from the prompt and merely *shaped by* the fractal (real
+    /// sky / horizon / lighting). `img2img` — the fractal is the init image *and* ControlNet,
+    /// so the scene is *made of* the fractal (keeps its colors + layout; more abstract).
     pub mode: String,
     /// Model alias (sdxl / sd15 / …).
     pub model: String,
@@ -512,7 +512,7 @@ impl Default for AiSpec {
     fn default() -> Self {
         AiSpec {
             enabled: false,
-            mode: "img2img".to_string(),
+            mode: "txt2img".to_string(),
             model: "sdxl".to_string(),
             prompt: String::new(),
             negative: String::new(),
@@ -525,7 +525,9 @@ impl Default for AiSpec {
             steps: 28,
             guidance: 6.5,
             control: String::new(),
-            control_strength: 0.55,
+            // Tuned for the default txt2img mode (a scene shaped by the fractal, not locked
+            // to it). Explicit `--fractal-paint-mode img2img` bumps this to 0.55 in the CLI.
+            control_strength: 0.4,
             loras: Vec::new(),
             lora_scale: 0.9,
         }

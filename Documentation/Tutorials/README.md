@@ -268,6 +268,17 @@ If you're new to plakat, work through these in order:
     + borders), seasonal palettes (`--map-season`), and a tabletop grid
     (`--map-grid`).
 
+19a. [`FRACTALS_TUTORIAL.md`](FRACTALS_TUTORIAL.md) — **`plakat fractals`.** Two
+    tracks: a pure-CPU, deterministic fractal renderer (Mandelbrot & the escape-time
+    family, buddhabrot, IFS, L-systems, flames, strange attractors, 3D raymarched
+    fractals — with coloring modes, Lab palettes, supersampling, spec/clone
+    reproducibility, prose→spec, composition grids, image orbit-trap, and a live TUI
+    explorer), **and** an AI paint pass that generates real images *from the fractal's
+    structure* via ControlNet — `txt2img` (a scene *shaped by* the fractal: sky,
+    horizon, lighting) or `img2img` (a scene *made of* the fractal). Includes a full
+    worked seascape example and the `control-strength` dial. GPU recommended for the
+    paint pass.
+
 20. [`RELIGHT_TUTORIAL.md`](RELIGHT_TUTORIAL.md) — **v1.11.0. `plakat relight`.**
     IC-Light re-illuminates a foreground subject under a lighting you describe in
     text, keeping the subject's identity while changing the light + scene. SD
