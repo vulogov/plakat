@@ -39,7 +39,7 @@ pub struct ListArgs {
     pub category: Option<String>,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 }
 
@@ -49,7 +49,7 @@ pub struct ShowArgs {
     pub name: String,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 }
 

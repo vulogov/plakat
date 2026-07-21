@@ -53,15 +53,15 @@ pub struct MultipersonArgs {
     pub scale: Vec<String>,
 
     /// Global aesthetic clause (sent to the enhancer, never the scene analyser).
-    #[arg(long)]
+    #[arg(help_heading = "Style & look", long)]
     pub style: Option<String>,
 
     /// Negative prompt.
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// Base model (SD 1.5 / SDXL family).
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Identity strategy (all personas share one): plus-face | plus-face-sdxl |
@@ -75,29 +75,29 @@ pub struct MultipersonArgs {
     pub layout_provider: String,
 
     /// Optional prompt enhancer for the scene base: deepseek | gemini | local.
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub enhancer: Option<String>,
 
     /// Output size, `WxH` or `N` (square).
-    #[arg(long, default_value = "768x768")]
+    #[arg(help_heading = "Size & output", long, default_value = "768x768")]
     pub size: String,
 
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 30)]
     pub steps: usize,
 
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
 
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
-    #[arg(long, default_value_t = 1)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 1)]
     pub count: u32,
 
-    #[arg(long, default_value = "default")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "default")]
     pub scheduler: String,
 
-    #[arg(long, default_value = "./")]
+    #[arg(help_heading = "Size & output", long, default_value = "./")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land the composed scene in a photo album.

@@ -14,7 +14,7 @@ pub struct SegmentArgs {
 
     /// Output mask (PNG). White = selected region, black = excluded — feed it
     /// straight to `img2img --mask` (inpaint) or any `--mask` consumer.
-    #[arg(long, value_name = "OUT")]
+    #[arg(help_heading = "Size & output", long, value_name = "OUT")]
     pub out: PathBuf,
 
     /// A prompt point, repeatable. `X,Y` selects (foreground); append `:bg` to

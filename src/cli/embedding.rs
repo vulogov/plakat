@@ -56,7 +56,7 @@ pub struct EmbTrainArgs {
     pub from_dir: std::path::PathBuf,
     /// Base model: `sd15` / `sd21` (single CLIP-L), `sdxl` (dual CLIP-L+CLIP-G),
     /// or `sd35` (triple CLIP-L+CLIP-G+T5).
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Size & output", long, default_value = "sd15")]
     pub base: String,
     /// The trigger you'll use the embedding under later (load with
     /// `--embedding PATH:<token>`).
@@ -67,17 +67,17 @@ pub struct EmbTrainArgs {
     #[arg(long = "init-word", default_value = "object")]
     pub init_word: String,
     /// Output `.safetensors` (A1111 `emb_params`).
-    #[arg(long)]
+    #[arg(help_heading = "Size & output", long)]
     pub out: std::path::PathBuf,
     /// Training steps. (Each is a full frozen UNet forward+backward, so this is
     /// as slow per-step as LoRA training, despite learning only one vector.)
-    #[arg(long, default_value_t = 500)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 500)]
     pub steps: usize,
     /// Learning rate (TI tolerates a high LR — it's one vector).
     #[arg(long, default_value_t = 5e-3)]
     pub lr: f64,
     /// Training resolution (256² is faster; 512² captures more).
-    #[arg(long, default_value_t = 256)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
     #[arg(long = "log-every", default_value_t = 25)]
     pub log_every: usize,

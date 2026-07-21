@@ -17,17 +17,17 @@ pub struct Img2ImgArgs {
     pub input: PathBuf,
 
     /// Text prompt describing the desired output.
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub prompt: String,
 
     /// Negative prompt (things to discourage).
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// v0.19: bundled negative-prompt preset. See
     /// `plakat generate --negative-preset` for the full list.
     /// Combined with `--negative` (preset first, user appended).
-    #[arg(long = "negative-preset", value_name = "NAME")]
+    #[arg(help_heading = "Prompt & text", long = "negative-preset", value_name = "NAME")]
     pub negative_preset: Option<String>,
 
     /// **v0.25**: art-medium preset (`ink-wash` / `watercolor` /
@@ -37,17 +37,17 @@ pub struct Img2ImgArgs {
     /// auto-discovers a matching LoRA from Civitai → HF Hub →
     /// local cache. Override-only: explicit flags always win.
     /// Applies to inpaint too (use `--mask`).
-    #[arg(long = "look", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "look", value_name = "NAME")]
     pub look: Option<String>,
 
     /// **v0.25**: subject-domain preset (`anime`). Independent
     /// axis from `--look`; composes additively.
-    #[arg(long = "genre", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "genre", value_name = "NAME")]
     pub genre: Option<String>,
 
     /// **v0.25**: skip remote LoRA discovery for `--look` /
     /// `--genre` (use only cache + local scan).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = false)]
     pub offline: bool,
 
     /// Optional inpaint mask. When set, only mask=white pixels are
@@ -69,7 +69,7 @@ pub struct Img2ImgArgs {
     /// img2img strength in [0, 1]. 0.0 = no change, 1.0 = full
     /// re-noise + denoise inside the mask. Default differs by mode:
     /// 0.6 for img2img (whole image), 1.0 for inpaint (--mask set).
-    #[arg(long, value_name = "F")]
+    #[arg(help_heading = "Model & sampler", long, value_name = "F")]
     pub strength: Option<f32>,
 
     /// Model: alias or any HF repo id. Aliases:
@@ -80,7 +80,7 @@ pub struct Img2ImgArgs {
     ///   preserve the unmasked region natively (no RePaint blending).
     ///   `--mask` is required when picking these.
     /// Flux is not supported by img2img.
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Output size, e.g. 512x512. Resolution order:
@@ -90,13 +90,13 @@ pub struct Img2ImgArgs {
     ///   3. (default) the input image's dims snapped to /8.
     /// Multiple-of-8 round-down is applied to (1) and (2) as well —
     /// VAE constraint.
-    #[arg(long)]
+    #[arg(help_heading = "Size & output", long)]
     pub size: Option<Size>,
 
     /// v0.18: aspect ratio (e.g. `16:9`, `9:16`, `1:1`, `4:3`)
     /// paired with `--base`. Mutually exclusive with `--size`. When
     /// neither flag is set, the input image's dimensions are used.
-    #[arg(long, conflicts_with = "size")]
+    #[arg(help_heading = "Size & output", long, conflicts_with = "size")]
     pub aspect: Option<String>,
 
     /// v0.18: base resolution used with `--aspect` (the shorter
@@ -104,20 +104,20 @@ pub struct Img2ImgArgs {
     /// `--size` or no aspect override is set. SD 1.5 defaults to 512
     /// in the rest of the codebase; we pick 1024 here as the modern
     /// default matching SDXL / Flux / SD3.
-    #[arg(long, default_value_t = 1024)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 1024)]
     pub base: u32,
 
     /// Number of variations to generate from the same input. Each
     /// gets a fresh seed.
-    #[arg(long, short = 'n', default_value_t = 1)]
+    #[arg(help_heading = "Size & output", long, short = 'n', default_value_t = 1)]
     pub count: u32,
 
     /// Denoising steps.
-    #[arg(long, default_value_t = 28)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 28)]
     pub steps: usize,
 
     /// Classifier-free guidance scale.
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
 
     /// Stable Cascade decoder (Stage B) CFG scale, decoupled from
@@ -135,17 +135,17 @@ pub struct Img2ImgArgs {
 
     /// Base seed. Subsequent --count outputs use seed+1, seed+2, ...
     /// If omitted, a random seed is picked.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// Scheduler. `default` follows the model's preferred scheduler.
-    #[arg(long, default_value = "default")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
     /// v0.16 phase 5: directory holding `<name>.txt` wildcard files
     /// for `__name__` prompt expansion. Inline `{a|b|c}` alternation
     /// works without this flag. RNG is seeded from `--seed` when set.
-    #[arg(long = "wildcard-dir", value_name = "DIR")]
+    #[arg(help_heading = "Prompt & text", long = "wildcard-dir", value_name = "DIR")]
     pub wildcard_dir: Option<PathBuf>,
 
     /// v0.16 phase 10: tiled MultiDiffusion-style denoise for SD3
@@ -153,32 +153,32 @@ pub struct Img2ImgArgs {
     /// variants — SD 1.5 / SDXL img2img doesn't share the SD3
     /// rectified-flow tile path. Drop `--tiled` on SD-family
     /// models or wait for a follow-up phase.
-    #[arg(long = "tiled", default_value_t = false)]
+    #[arg(help_heading = "ControlNet & regional", long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
     /// v0.16 phase 10: tile side length in pixels. Default 1024.
     /// Must be a multiple of 16 (SD3 patch-2 × VAE-8). See the
     /// SD3 tutorial §7 for per-variant pos_embed_max_size limits.
-    #[arg(long = "tile-size", default_value_t = 1024, value_name = "PX")]
+    #[arg(help_heading = "ControlNet & regional", long = "tile-size", default_value_t = 1024, value_name = "PX")]
     pub tile_size: u32,
 
     /// v0.16 phase 10: stride between tile origins in pixels.
     /// Default 768 — 256 px overlap with 1024 px tiles. Smaller
     /// stride = more overlap = smoother seams = more compute.
-    #[arg(long = "tile-stride", default_value_t = 768, value_name = "PX")]
+    #[arg(help_heading = "ControlNet & regional", long = "tile-stride", default_value_t = 768, value_name = "PX")]
     pub tile_stride: u32,
 
     /// LoRA spec(s). Repeatable — same grammar as `plakat generate --lora`.
-    #[arg(long = "lora")]
+    #[arg(help_heading = "LoRA & embeddings", long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// LoRA weight scale multiplier.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "LoRA & embeddings", long, default_value_t = 1.0)]
     pub lora_scale: f32,
 
     /// Output directory. Files land as
     /// `plakat-img2img-<seed>.png` or `plakat-inpaint-<seed>.png`.
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land each output in a photo album.
@@ -190,33 +190,33 @@ pub struct Img2ImgArgs {
     /// every denoise step. Conditioning source: `--control-image PATH`
     /// (pre-rendered), `--control-from PATH` (auto-annotate any
     /// image), or **default**: auto-annotate `<INPUT>`.
-    #[arg(long = "control", value_name = "KIND")]
+    #[arg(help_heading = "ControlNet & regional", long = "control", value_name = "KIND")]
     pub control: Option<crate::pipelines::controlnet::ControlKind>,
 
     /// Pre-rendered conditioning image for `--control`. Mutually
     /// exclusive with `--control-from`. If neither is set on
     /// `img2img`, the `<INPUT>` image is auto-annotated.
-    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
     pub control_image: Option<PathBuf>,
 
     /// **v0.10**: source image to auto-annotate. Runs the matching
     /// annotator for `--control` and uses the result as the
     /// conditioning. Default for `img2img` when neither
     /// `--control-image` nor this flag is set: use `<INPUT>`.
-    #[arg(long = "control-from", value_name = "PATH")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-from", value_name = "PATH")]
     pub control_from: Option<PathBuf>,
 
     /// ControlNet residual scale. Default 1.0.
-    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
 
     /// Timestep window start in `[0, 1]`. Default 0.0.
-    #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-start", default_value_t = 0.0, value_name = "F")]
     pub control_start: f32,
 
     /// Timestep window end in `[0, 1]`. Default 1.0. Use `0.5` to
     /// disable ControlNet for the back half of the schedule.
-    #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 
     /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet.
@@ -224,7 +224,7 @@ pub struct Img2ImgArgs {
     /// exclusive with the legacy single-conditioner flags. When a spec
     /// has neither `image=` nor `from=`, the input image is
     /// auto-annotated (img2img-specific default).
-    #[arg(
+    #[arg(help_heading = "ControlNet & regional", 
         long = "control-spec",
         value_name = "SPEC",
         conflicts_with_all = [
@@ -238,30 +238,30 @@ pub struct Img2ImgArgs {
     /// Composite a named artefact (PNG cutout) into each output image.
     /// Repeatable. Grammar: `NAME[@ZONE[:SCALE]]`. Same as
     /// `plakat generate --artefact` — see that command for examples.
-    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    #[arg(help_heading = "Artefacts", long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
     pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
 
     /// Override the bundled artefact library directory.
-    #[arg(long = "artefact-library", value_name = "DIR")]
+    #[arg(help_heading = "Artefacts", long = "artefact-library", value_name = "DIR")]
     pub artefact_library: Option<PathBuf>,
 
     /// After alpha-compositing artefacts, run a low-strength masked
     /// img2img pass over the artefact zones to soften the seams.
     /// Reuses the SD backbone loaded for the main img2img/inpaint
     /// pass — no second download or model load.
-    #[arg(long = "artefact-blend", default_value_t = false)]
+    #[arg(help_heading = "Artefacts", long = "artefact-blend", default_value_t = false)]
     pub artefact_blend: bool,
 
     /// Blend strength for `--artefact-blend`. 0.0 = no-op, 0.3 is the
     /// recommended default; higher values let the model redraw the
     /// artefact silhouette and can "fix" it into something unrecognisable.
-    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    #[arg(help_heading = "Artefacts", long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
     pub artefact_blend_strength: f32,
 
     /// Derive artefact zones from each generated image's own depth +
     /// luminance, instead of the bundled rigid grid. Falls back to
     /// the grid if the depth model load fails.
-    #[arg(long = "smart-zones", default_value_t = false)]
+    #[arg(help_heading = "Artefacts", long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
 
     /// v0.18 phase 2: with `--count N > 1`, also write a single
@@ -270,19 +270,19 @@ pub struct Img2ImgArgs {
     /// alongside. The prefix tracks the backbone (e.g.
     /// `plakat-img2img-grid-…`, `plakat-flux-grid-…`,
     /// `plakat-sd3-inpaint-grid-…`).
-    #[arg(long = "grid", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "grid", default_value_t = false)]
     pub grid: bool,
 
     /// v0.18 phase 2: column count for `--grid`. Default is
     /// `ceil(sqrt(count))` — 4 → 2×2, 6 → 3×2, 9 → 3×3, 16 → 4×4.
     /// Ignored when `--grid` is off.
-    #[arg(long = "grid-cols", value_name = "N")]
+    #[arg(help_heading = "Size & output", long = "grid-cols", value_name = "N")]
     pub grid_cols: Option<usize>,
 
     /// v0.18 phase 2: padding (px) between grid cells. Default 0
     /// (flush). Higher values insert a white border between cells.
     /// Ignored when `--grid` is off.
-    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Size & output", long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
 
     /// v0.18 phase 2b: on `--model flux-kontext-dev`, snap `--size`

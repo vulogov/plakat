@@ -24,7 +24,7 @@ pub struct RunArgs {
     /// Output directory passed to host words that produce images
     /// (`plakat.save`, the implicit auto-saves in `plakat.generate`).
     /// Defaults to `./out`.
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// v0.21 phase 7: start an interactive REPL instead of evaling

@@ -26,7 +26,7 @@ pub struct GalleryArgs {
     pub dir: PathBuf,
 
     /// Output Markdown file. Defaults to `<dir>/README.md`.
-    #[arg(long, value_name = "OUT")]
+    #[arg(help_heading = "Size & output", long, value_name = "OUT")]
     pub out: Option<PathBuf>,
 
     /// Gallery title (the H1 heading). Defaults to "plakat gallery".

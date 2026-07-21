@@ -40,7 +40,7 @@ pub struct OutpaintArgs {
     /// The inpaint UNet sees the prompt at every denoise step, so this
     /// should describe the **whole** scene including the new region —
     /// e.g. "wide landscape, mountains and a river in the distance".
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub prompt: String,
 
     /// Pixels to extend on the left side. 0 = no expansion left.
@@ -69,58 +69,58 @@ pub struct OutpaintArgs {
     pub expand: Option<u32>,
 
     /// Negative prompt (things to discourage in the expansion).
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// Inpaint model alias or HF repo id. Defaults to `sdxl-inpaint`.
     /// `flux-fill-dev` routes through the Flux pipeline; SD 1.5 /
     /// SDXL inpaint go through the SD path. Vanilla `sdxl` / `sd15`
     /// also work — those are RePaint-style masked img2img.
-    #[arg(long, default_value = "sdxl-inpaint")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sdxl-inpaint")]
     pub model: String,
 
     /// Number of variations to generate. Each gets a fresh seed.
-    #[arg(long, short = 'n', default_value_t = 1)]
+    #[arg(help_heading = "Size & output", long, short = 'n', default_value_t = 1)]
     pub count: u32,
 
     /// Denoising steps.
-    #[arg(long, default_value_t = 28)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 28)]
     pub steps: usize,
 
     /// Classifier-free guidance scale.
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
 
     /// Base seed. Subsequent --count outputs use seed+1, seed+2, ...
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// Scheduler. `default` follows the model's preferred scheduler.
-    #[arg(long, default_value = "default")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
     /// LoRA spec(s). Repeatable — same grammar as `plakat generate --lora`.
-    #[arg(long = "lora")]
+    #[arg(help_heading = "LoRA & embeddings", long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// LoRA weight scale multiplier.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "LoRA & embeddings", long, default_value_t = 1.0)]
     pub lora_scale: f32,
 
     /// **v0.25**: art-medium preset. See `plakat generate --look`
     /// for the full list. Composes the prompt + suggests sampler /
     /// steps / guidance, and auto-discovers a matching LoRA when
     /// `--loras` is empty.
-    #[arg(long = "look", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "look", value_name = "NAME")]
     pub look: Option<String>,
 
     /// **v0.25**: subject-domain preset (`anime`).
-    #[arg(long = "genre", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "genre", value_name = "NAME")]
     pub genre: Option<String>,
 
     /// **v0.25**: skip remote LoRA discovery (use cache + local
     /// scan only).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = false)]
     pub offline: bool,
 
     /// Feather radius (pixels) on the mask edge. Softens the boundary
@@ -129,7 +129,7 @@ pub struct OutpaintArgs {
     pub mask_feather: u32,
 
     /// Output directory.
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land the outpainted image in a photo album.
@@ -141,17 +141,17 @@ pub struct OutpaintArgs {
     /// in a near-square layout. Forwarded to the underlying
     /// `plakat img2img` pipeline (outpaint always runs through the
     /// inpaint dispatch).
-    #[arg(long = "grid", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "grid", default_value_t = false)]
     pub grid: bool,
 
     /// v0.18 phase 2: column count for `--grid`. Default is
     /// `ceil(sqrt(count))`. Ignored when `--grid` is off.
-    #[arg(long = "grid-cols", value_name = "N")]
+    #[arg(help_heading = "Size & output", long = "grid-cols", value_name = "N")]
     pub grid_cols: Option<usize>,
 
     /// v0.18 phase 2: padding (px) between grid cells. Default 0.
     /// Ignored when `--grid` is off.
-    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Size & output", long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
 }
 

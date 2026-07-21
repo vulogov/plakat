@@ -11,7 +11,7 @@ pub struct TransparentArgs {
     pub input: PathBuf,
 
     /// Output image. Use a .png (or .webp) extension to preserve alpha.
-    #[arg(long, value_name = "OUT")]
+    #[arg(help_heading = "Size & output", long, value_name = "OUT")]
     pub out: PathBuf,
 
     /// Per-channel tolerance for the background flood-fill — the max diff

@@ -59,40 +59,40 @@ pub struct AnimateArgs {
     /// initial noise constant so the prompt morph is the only
     /// changing variable — producing a smooth animation rather
     /// than a flickery seed sweep.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// SD 1.5 / SD 2.1 / SDXL model. Defaults to `sd15`. Flux / SD3
     /// bail loud — they use T5 + rectified-flow and need separate
     /// animate machinery (deferred).
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Output dimensions. Multiple of 8 required (VAE constraint).
-    #[arg(long, default_value = "512x512")]
+    #[arg(help_heading = "Size & output", long, default_value = "512x512")]
     pub size: String,
 
     /// Denoise steps per frame. Lower (15-20) is fine for
     /// animations since per-frame quality matters less than
     /// smoothness across frames.
-    #[arg(long, default_value_t = 20)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 20)]
     pub steps: usize,
 
     /// CFG guidance. Standard SD 1.5 / 2.1 default applies.
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
 
     /// Negative prompt (shared across all frames).
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// Scheduler. Default = the model's built-in (DDIM for SD 1.5).
-    #[arg(long, default_value = "default")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "default")]
     pub scheduler: SchedulerKind,
 
     /// Output directory. Frames land as `frame-NNNN.png`
     /// (zero-padded to 4 digits — 9999 frames max).
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// Also bundle the frames into `<out>/animation.gif`. Uses
@@ -141,7 +141,7 @@ pub struct AnimateArgs {
     ///
     /// Composes with `--gif`: passing `--gif` is equivalent to
     /// `--format gif`. When both are set, `--format` wins.
-    #[arg(long, value_name = "FMT", default_value = "frames")]
+    #[arg(help_heading = "Size & output", long, value_name = "FMT", default_value = "frames")]
     pub format: crate::imaging::video::Format,
 
     /// v0.18 phase 6: skip the A1111 `parameters` PNG tEXt chunk
@@ -149,7 +149,7 @@ pub struct AnimateArgs {
     /// `frame-NNNN.png`. Default off — metadata helps you re-render
     /// any frame from its sidecar's `Lerp t` / `Animate from` /
     /// `Animate to` entries.
-    #[arg(long = "no-metadata", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "no-metadata", default_value_t = false)]
     pub no_metadata: bool,
 
     /// v0.19: skip frames already on disk. Scans `<out>/frame-NNNN.png`
@@ -171,22 +171,22 @@ pub struct AnimateArgs {
     /// `--control-spec` instead — see below.
     ///
     /// SD 1.5 + SDXL (v0.27 phase 4). No-op outside `--animatediff` mode.
-    #[arg(long = "control", value_name = "KIND")]
+    #[arg(help_heading = "ControlNet & regional", long = "control", value_name = "KIND")]
     pub control: Option<String>,
 
     /// Pre-rendered conditioning image (depth map, canny edge map,
     /// etc.). Mutually exclusive with `--control-from`.
-    #[arg(long = "control-image", value_name = "PATH")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-image", value_name = "PATH")]
     pub control_image: Option<PathBuf>,
 
     /// Source image that the annotator auto-converts into the
     /// conditioning. Mutually exclusive with `--control-image`.
-    #[arg(long = "control-from", value_name = "PATH")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-from", value_name = "PATH")]
     pub control_from: Option<PathBuf>,
 
     /// ControlNet strength multiplier. 1.0 is the diffusers default;
     /// 0.5 = soft guidance, 1.5+ = heavy.
-    #[arg(long = "control-strength", default_value_t = 1.0)]
+    #[arg(help_heading = "ControlNet & regional", long = "control-strength", default_value_t = 1.0)]
     pub control_strength: f32,
 
     /// **v0.28 phase 0**: full ControlNet spec, repeatable for
@@ -206,7 +206,7 @@ pub struct AnimateArgs {
     /// (`--control`, `--control-image`, `--control-from`,
     /// `--control-strength`). All conditioners in the stack share
     /// the model variant — mixing SD 1.5 / SDXL is not supported.
-    #[arg(
+    #[arg(help_heading = "ControlNet & regional", 
         long = "control-spec",
         value_name = "SPEC",
         conflicts_with_all = [
@@ -223,7 +223,7 @@ pub struct AnimateArgs {
     /// — pass `--lcm --steps 8` for higher quality at 2× cost.
     /// SD 1.5 only in v0.28; SDXL AnimateLCM repo isn't publicly
     /// available.
-    #[arg(long = "lcm", default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long = "lcm", default_value_t = false)]
     pub lcm: bool,
 
     /// **v0.27 phase 5**: per-window frame count for long-form

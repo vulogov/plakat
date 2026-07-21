@@ -76,7 +76,7 @@ pub struct StylizeArgs {
     pub reference: PathBuf,
 
     /// Output image path.
-    #[arg(long, value_name = "OUT")]
+    #[arg(help_heading = "Size & output", long, value_name = "OUT")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land the stylized image in a photo album.
@@ -87,7 +87,7 @@ pub struct StylizeArgs {
     /// Default 0.7 is "heavy restyle" — drop to 0.35 for face inputs,
     /// or use `--for portrait` (which does this automatically).
     /// Explicit `--strength` always wins over `--for`.
-    #[arg(long, default_value_t = 0.7)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 0.7)]
     pub strength: f32,
 
     /// Strength preset shortcut: pick a documented strength for a use case.
@@ -100,15 +100,15 @@ pub struct StylizeArgs {
     pub preset: Option<StylizePreset>,
 
     /// Base diffusion model (alias or HF repo id). Currently SD 1.5 only.
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Denoising steps.
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 30)]
     pub steps: usize,
 
     /// Random seed.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// **v0.46**: Gaussian-blur the reference before encoding it (sigma; 0 =
@@ -137,7 +137,7 @@ pub struct StylizeArgs {
     /// block — the style reads clearly only at higher scale (~3-5) AND higher
     /// `--strength` (~0.8, so the denoise has room to repaint). 3.0 is a visible
     /// default; raise for heavier paint, lower to keep more of the photo.
-    #[arg(long = "style-scale", default_value_t = 3.0)]
+    #[arg(help_heading = "Style & look", long = "style-scale", default_value_t = 3.0)]
     pub style_scale: f32,
 }
 

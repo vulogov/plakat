@@ -14,7 +14,7 @@ pub struct VerifyArgs {
 
     /// Restrict Tier 1+ correctness checks to a single model alias (e.g. `sd15`).
     /// Omit to cover the pilot set.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub model: Option<String>,
 
     /// Local golden source for Tier 1 (authored by `tools/reference/dump.py`), laid out as

@@ -94,43 +94,43 @@ pub struct PortraitArgs {
     /// Model: alias (`sd15`, `sdxl`) or any HF SD-1.5/SDXL repo id. The
     /// `--identity` strategy must target the matching cross_attn_dim
     /// (`plus-face` for SD 1.5, `plus-face-sdxl` for SDXL).
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// Output size, e.g. 768x1024. If omitted, use --aspect and --base.
-    #[arg(long)]
+    #[arg(help_heading = "Size & output", long)]
     pub size: Option<Size>,
 
     /// Aspect ratio, e.g. 3:4 (default for portrait), 1:1, 2:3.
-    #[arg(long, conflicts_with = "size", default_value = "3:4")]
+    #[arg(help_heading = "Size & output", long, conflicts_with = "size", default_value = "3:4")]
     pub aspect: String,
 
     /// Base resolution used with --aspect (shorter side).
-    #[arg(long, default_value_t = 768)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 768)]
     pub base: u32,
 
     /// Number of portraits to generate.
-    #[arg(long, short = 'n', default_value_t = 1)]
+    #[arg(help_heading = "Size & output", long, short = 'n', default_value_t = 1)]
     pub count: u32,
 
     /// Denoising steps.
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 30)]
     pub steps: usize,
 
     /// Classifier-free guidance scale.
-    #[arg(long, default_value_t = 7.0)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.0)]
     pub guidance: f64,
 
     /// Negative prompt. Defaults to a face-and-anatomy fixer baseline;
     /// pass --negative "" to disable.
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub negative: Option<String>,
 
     /// v0.19: bundled negative-prompt preset. See
     /// `plakat generate --negative-preset` for the full list.
     /// Combined with `--negative` if both are set; replaces the
     /// portrait DEFAULT_NEGATIVE if `--negative` isn't set.
-    #[arg(long = "negative-preset", value_name = "NAME")]
+    #[arg(help_heading = "Prompt & text", long = "negative-preset", value_name = "NAME")]
     pub negative_preset: Option<String>,
 
     /// **v0.25**: art-medium preset. Bundles a prompt prefix/suffix,
@@ -139,43 +139,43 @@ pub struct PortraitArgs {
     /// `ink-wash`, `watercolor`, `oil-painting`, `charcoal`,
     /// `pencil`, `chalk-pastel`, `linocut`, `gouache`.
     /// Override-only: flags you pass explicitly always win.
-    #[arg(long = "look", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "look", value_name = "NAME")]
     pub look: Option<String>,
 
     /// **v0.25**: subject-domain preset (independent axis from
     /// `--look`). Built-in: `anime`.
-    #[arg(long = "genre", value_name = "NAME")]
+    #[arg(help_heading = "Style & look", long = "genre", value_name = "NAME")]
     pub genre: Option<String>,
 
     /// **v0.25**: skip remote LoRA discovery for `--look` /
     /// `--genre` (use only cache + local scan).
-    #[arg(long, default_value_t = false)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = false)]
     pub offline: bool,
 
     /// Random seed.
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// Optional prompt enhancer: deepseek | gemini | local |
     /// local:<alias> | auto.
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub enhance: Option<String>,
 
     /// v0.19: see `plakat generate --enhance-system` — same semantics.
-    #[arg(long = "enhance-system", value_name = "PATH")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-system", value_name = "PATH")]
     pub enhance_system: Option<PathBuf>,
 
     /// v0.19: see `plakat generate --enhance-temp` — same semantics.
-    #[arg(long = "enhance-temp", value_name = "F")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-temp", value_name = "F")]
     pub enhance_temp: Option<f64>,
 
     /// v0.19: see `plakat generate --enhance-max-tokens` — same semantics.
-    #[arg(long = "enhance-max-tokens", value_name = "N")]
+    #[arg(help_heading = "Prompt & text", long = "enhance-max-tokens", value_name = "N")]
     pub enhance_max_tokens: Option<usize>,
 
     /// v0.19: opt-in disk cache for `--enhance local`. See
     /// `plakat generate --enhance-cache` for full details.
-    #[arg(long = "enhance-cache", default_value_t = false)]
+    #[arg(help_heading = "Prompt & text", long = "enhance-cache", default_value_t = false)]
     pub enhance_cache: bool,
 
     /// v0.20: keep the original prompt alongside the enhancer's
@@ -183,11 +183,11 @@ pub struct PortraitArgs {
     /// `plakat generate --enhance-keep-original` for full
     /// rationale. Portrait is always SD-family, so the flag
     /// applies unconditionally when `--enhance` is set.
-    #[arg(long = "enhance-keep-original", default_value_t = false)]
+    #[arg(help_heading = "Prompt & text", long = "enhance-keep-original", default_value_t = false)]
     pub enhance_keep_original: bool,
 
     /// Output directory.
-    #[arg(long, default_value = "./out")]
+    #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land each portrait in a photo album.
@@ -195,24 +195,24 @@ pub struct PortraitArgs {
     pub import: crate::cli::import::ImportArgs,
 
     /// LoRA to apply. Repeatable. Same syntax as `generate`.
-    #[arg(long = "lora")]
+    #[arg(help_heading = "LoRA & embeddings", long = "lora")]
     pub loras: Vec<LoraSpec>,
 
     /// Global multiplier applied to every LoRA's per-file scale.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "LoRA & embeddings", long, default_value_t = 1.0)]
     pub lora_scale: f32,
 
     /// Sampler. Defaults to `euler-a` (smoother skin tones than DDIM).
-    #[arg(long, default_value = "euler-a")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "euler-a")]
     pub scheduler: SchedulerKind,
 
     /// Add a low-strength img2img polish pass at the end (same model).
     /// Sharpens details and reduces artifacts.
-    #[arg(long, value_name = "STEPS")]
+    #[arg(help_heading = "Refiner & hi-res", long, value_name = "STEPS")]
     pub refine: Option<usize>,
 
     /// Strength of the --refine polish (0.0 = none, 1.0 = full re-noise).
-    #[arg(long, default_value_t = 0.3)]
+    #[arg(help_heading = "Refiner & hi-res", long, default_value_t = 0.3)]
     pub refine_strength: f32,
 
     /// Detect art style from this photo and load the matching LoRAs from
@@ -220,32 +220,32 @@ pub struct PortraitArgs {
     /// — `--photo` controls identity (who), `--style-ref` controls visual
     /// style (how). Conflicts with --lora (catalog LoRAs win, with a
     /// warning).
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Style & look", long, value_name = "PATH")]
     pub style_ref: Option<PathBuf>,
 
     /// Pick a style by id from the catalog. Bypasses detection when used
     /// alone; overrides the detection result when combined with
     /// --style-ref.
-    #[arg(long, value_name = "ID")]
+    #[arg(help_heading = "Style & look", long, value_name = "ID")]
     pub style: Option<String>,
 
     /// Multiplier applied to every catalog LoRA's :scale. 1.0 uses the
     /// catalog's authored scales verbatim.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(help_heading = "Style & look", long, default_value_t = 1.0)]
     pub style_strength: f32,
 
     /// Override the bundled style catalog directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Style & look", long, value_name = "DIR")]
     pub style_catalog: Option<PathBuf>,
 
     /// Composite a named artefact (PNG cutout from the artefact library)
     /// into the portrait. Repeatable. Grammar: `NAME[@ZONE[:SCALE]]` —
     /// same as `plakat generate`. See `plakat artefact list`.
-    #[arg(long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
+    #[arg(help_heading = "Artefacts", long = "artefact", value_name = "NAME[@ZONE[:SCALE]]")]
     pub artefacts: Vec<crate::artefacts::ArtefactSpec>,
 
     /// Override the bundled artefact library directory.
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Artefacts", long, value_name = "DIR")]
     pub artefact_library: Option<PathBuf>,
 
     /// After alpha-compositing artefacts, run a low-strength masked
@@ -253,55 +253,55 @@ pub struct PortraitArgs {
     /// edges and modest lighting mismatches at the cost of one extra
     /// short denoise pass (~2–5 s per image on GPU). Default: off
     /// (v1 alpha-only).
-    #[arg(long = "artefact-blend", default_value_t = false)]
+    #[arg(help_heading = "Artefacts", long = "artefact-blend", default_value_t = false)]
     pub artefact_blend: bool,
 
     /// img2img strength for `--artefact-blend`. 0.0 = no-op,
     /// 1.0 = full re-noise inside the mask. Sweet spot: 0.25–0.4.
-    #[arg(long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
+    #[arg(help_heading = "Artefacts", long = "artefact-blend-strength", default_value_t = 0.3, value_name = "F")]
     pub artefact_blend_strength: f32,
 
     /// v3: derive artefact zones from the generated image's own
     /// depth + luminance instead of the rigid 4×3 grid. See
     /// `Documentation/ARTEFACTS.md` § Smart zones (v3) for cost +
     /// fallback behaviour.
-    #[arg(long = "smart-zones", default_value_t = false)]
+    #[arg(help_heading = "Artefacts", long = "smart-zones", default_value_t = false)]
     pub smart_zones: bool,
 
     /// ControlNet conditioner kind (currently `depth`). Requires
     /// `--control-image PATH` (pre-rendered) or `--control-from PATH`
     /// (auto-annotate). SD 1.5 only. See `Documentation/CONTROLNET.md`.
-    #[arg(long = "control", value_name = "KIND")]
+    #[arg(help_heading = "ControlNet & regional", long = "control", value_name = "KIND")]
     pub control: Option<crate::pipelines::controlnet::ControlKind>,
 
     /// Pre-rendered conditioning image (depth map, pose skeleton, ...).
     /// Mutually exclusive with `--control-from`.
-    #[arg(long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-image", value_name = "PATH", conflicts_with = "control_from")]
     pub control_image: Option<PathBuf>,
 
     /// **v0.10**: source image to auto-annotate. Runs the matching
     /// annotator for `--control` and uses the result as the
     /// conditioning. Mutually exclusive with `--control-image`.
-    #[arg(long = "control-from", value_name = "PATH")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-from", value_name = "PATH")]
     pub control_from: Option<PathBuf>,
 
     /// Multiplier applied to ControlNet residuals. Sweet spot 0.6–1.0.
-    #[arg(long = "control-strength", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-strength", default_value_t = 1.0, value_name = "F")]
     pub control_strength: f32,
 
     /// Timestep window start in `[0, 1]`. Default 0.0.
-    #[arg(long = "control-start", default_value_t = 0.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-start", default_value_t = 0.0, value_name = "F")]
     pub control_start: f32,
 
     /// Timestep window end in `[0, 1]`. Default 1.0. Use `0.5` to
     /// disable ControlNet for the back half of the schedule.
-    #[arg(long = "control-end", default_value_t = 1.0, value_name = "F")]
+    #[arg(help_heading = "ControlNet & regional", long = "control-end", default_value_t = 1.0, value_name = "F")]
     pub control_end: f32,
 
     /// **v0.11**: full ControlNet spec, repeatable for multi-ControlNet.
     /// See `plakat generate --control-spec` for grammar. Mutually
     /// exclusive with the legacy single-conditioner flags.
-    #[arg(
+    #[arg(help_heading = "ControlNet & regional", 
         long = "control-spec",
         value_name = "SPEC",
         conflicts_with_all = [
@@ -314,17 +314,17 @@ pub struct PortraitArgs {
     /// v0.18 phase 2: with `--count N > 1`, also write a single
     /// `plakat-portrait-grid-<base-seed>.png` combining all N
     /// portraits in a near-square layout.
-    #[arg(long = "grid", default_value_t = false)]
+    #[arg(help_heading = "Size & output", long = "grid", default_value_t = false)]
     pub grid: bool,
 
     /// v0.18 phase 2: column count for `--grid`. Default is
     /// `ceil(sqrt(count))`. Ignored when `--grid` is off.
-    #[arg(long = "grid-cols", value_name = "N")]
+    #[arg(help_heading = "Size & output", long = "grid-cols", value_name = "N")]
     pub grid_cols: Option<usize>,
 
     /// v0.18 phase 2: padding (px) between grid cells. Default 0.
     /// Ignored when `--grid` is off.
-    #[arg(long = "grid-padding", default_value_t = 0, value_name = "PX")]
+    #[arg(help_heading = "Size & output", long = "grid-padding", default_value_t = 0, value_name = "PX")]
     pub grid_padding: u32,
 }
 

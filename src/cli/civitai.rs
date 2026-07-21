@@ -103,7 +103,7 @@ pub struct SyncArgs {
     pub username: String,
     /// Destination directory. Created if missing. Existing files
     /// are skipped (idempotent rerun).
-    #[arg(long, value_name = "DIR")]
+    #[arg(help_heading = "Size & output", long, value_name = "DIR")]
     pub out: std::path::PathBuf,
     /// Filter to one asset type:
     /// `lora | checkpoint | ti | controlnet | vae | locon | hypernetwork`

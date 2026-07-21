@@ -25,19 +25,19 @@ use crate::pipelines::step_hook::{StepControl, StepHook};
 #[derive(clap::Args, Debug)]
 pub struct BenchArgs {
     /// Model alias to benchmark (SD family for now: sd15 / sd21 / sdxl / pony / sdxl-turbo).
-    #[arg(default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", default_value = "sd15")]
     pub model: String,
     /// Device: auto / metal / cuda / cpu.
     #[arg(long, default_value = "auto")]
     pub device: String,
     /// Output size, `WxH`.
-    #[arg(long, default_value = "512x512")]
+    #[arg(help_heading = "Size & output", long, default_value = "512x512")]
     pub size: String,
     /// Denoise steps.
-    #[arg(long, default_value_t = 20)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 20)]
     pub steps: usize,
     /// Guidance scale.
-    #[arg(long, default_value_t = 7.5)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 7.5)]
     pub guidance: f64,
     /// Repeat the timed generation K times; report the best (min total) — warms caches, drops
     /// the cold-start outlier. Model load is timed once (cold).

@@ -21,7 +21,7 @@ pub struct CompileArgs {
 
     /// Output scenario HJSON. Default: `<input-stem>.hjson` (`-` = stdout; also
     /// the default when reading stdin).
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Size & output", long, value_name = "PATH")]
     pub out: Option<PathBuf>,
 
     /// LLM provider (reuses the `--enhance` stack): `deepseek`/`gemini`/`local`/
@@ -30,7 +30,7 @@ pub struct CompileArgs {
     pub provider: String,
 
     /// Model used to pick the family prompt profile when no block names a model.
-    #[arg(long, default_value = "sdxl")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sdxl")]
     pub model: String,
 
     /// Override the positive-enhancement system prompt (file).

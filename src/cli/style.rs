@@ -57,17 +57,17 @@ pub struct TrainArgs {
     pub from_dir: PathBuf,
     /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium),
     /// `pixart` (PixArt-Σ), or `cascade` (Stable Cascade Stage-C).
-    #[arg(long, default_value = "sd35")]
+    #[arg(help_heading = "Size & output", long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
     /// at inference to invoke the style.
     #[arg(long, default_value = "in this style")]
     pub trigger: String,
     /// Output `.safetensors` path.
-    #[arg(long, value_name = "FILE")]
+    #[arg(help_heading = "Size & output", long, value_name = "FILE")]
     pub out: PathBuf,
     /// Training steps.
-    #[arg(long, default_value_t = 90)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 90)]
     pub steps: usize,
     /// LoRA rank.
     #[arg(long, default_value_t = 16)]
@@ -83,7 +83,7 @@ pub struct TrainArgs {
     #[arg(long = "log-every", default_value_t = 10)]
     pub log_every: usize,
     /// Training resolution (256 fits 24 GB; higher needs more memory).
-    #[arg(long, default_value_t = 256)]
+    #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
     /// Learning rate.
     #[arg(long, default_value_t = 1.5e-4)]
@@ -119,7 +119,7 @@ pub struct DetectArgs {
     pub top_k: usize,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 }
 
@@ -128,11 +128,11 @@ pub struct ListArgs {
     /// Filter: only styles with LoRA mappings for the given base model.
     /// Without this flag, every catalog style is listed (including
     /// detection-only styles with empty `models`).
-    #[arg(long, value_enum)]
+    #[arg(help_heading = "Size & output", long, value_enum)]
     pub base: Option<BaseFilter>,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 }
 
@@ -142,7 +142,7 @@ pub struct ShowArgs {
     pub id: String,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 }
 
@@ -160,7 +160,7 @@ pub struct InitArgs {
     /// Output HJSON path. Defaults to `<from-dir>/catalog.hjson`.
     /// Exemplar paths in the emitted HJSON are resolved relative to
     /// this file's directory.
-    #[arg(long, value_name = "PATH")]
+    #[arg(help_heading = "Size & output", long, value_name = "PATH")]
     pub out: Option<PathBuf>,
 
     /// Overwrite the output file if it already exists.
@@ -175,7 +175,7 @@ pub struct ProbeArgs {
     pub id: Option<String>,
 
     /// Output format.
-    #[arg(long, value_enum, default_value_t = OutFormat::Text)]
+    #[arg(help_heading = "Size & output", long, value_enum, default_value_t = OutFormat::Text)]
     pub format: OutFormat,
 
     /// Network timeout per request, in seconds.

@@ -20,12 +20,12 @@ pub struct RestoreFacesArgs {
     pub inputs: Vec<PathBuf>,
 
     /// SD model for the face refinement pass.
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// img2img strength on each face crop. 0.3–0.5 crisps detail while preserving identity/colour;
     /// higher can change the face.
-    #[arg(long, default_value_t = 0.4)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 0.4)]
     pub strength: f32,
 
     /// Bbox expansion (0.25 = +25% each side) — more context = smoother blend, less face resolution.

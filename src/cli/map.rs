@@ -46,7 +46,7 @@ pub struct MapArgs {
     pub dump_spec: Option<PathBuf>,
 
     /// Seed for the geometry engine (deterministic: same spec + seed → same map).
-    #[arg(long, default_value_t = 42)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 42)]
     pub seed: u64,
 
     /// MAP-2: write the full-canvas tectonic heightmap PNG (L0+L1).
@@ -118,7 +118,7 @@ pub struct MapArgs {
     pub tile_furniture: bool,
 
     /// MAP-3: cartographic style for `--map-render`: parchment|inked|blueprint.
-    #[arg(long = "map-style", default_value = "parchment")]
+    #[arg(help_heading = "Style & look", long = "map-style", default_value = "parchment")]
     pub style: String,
 
     /// 1.11.0: seasonal land palette for `--map-render`:
@@ -128,7 +128,7 @@ pub struct MapArgs {
 
     /// 1.11.0: overlay a tabletop coordinate grid (A1/B2…) of N×N cells on
     /// `--map-render`. `0` (default) = no grid. Capped at 26 (A–Z).
-    #[arg(long = "map-grid", default_value_t = 0)]
+    #[arg(help_heading = "Size & output", long = "map-grid", default_value_t = 0)]
     pub grid: u32,
 
     /// MAP-3b: export the map geometry as GeoJSON (coast/rivers/roads/landmarks,

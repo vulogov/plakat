@@ -26,7 +26,7 @@ pub struct ConvertOnnxArgs {
     pub input: PathBuf,
 
     /// Output `.safetensors` path.
-    #[arg(value_name = "OUTPUT.safetensors")]
+    #[arg(help_heading = "Size & output", value_name = "OUTPUT.safetensors")]
     pub output: PathBuf,
 
     /// Source architecture (decides the weight-name mapping).

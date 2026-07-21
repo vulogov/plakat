@@ -24,31 +24,31 @@ pub struct RelightArgs {
 
     /// Prompt describing the desired lighting / scene
     /// (e.g. "warm sunset light from the left, golden hour").
-    #[arg(long)]
+    #[arg(help_heading = "Prompt & text", long)]
     pub prompt: String,
 
     /// Negative prompt.
-    #[arg(long, default_value = "")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
 
     /// Output size: `N` (square) or `WxH` (e.g. 512x768).
-    #[arg(long, default_value = "512")]
+    #[arg(help_heading = "Size & output", long, default_value = "512")]
     pub size: String,
 
     /// Denoise steps.
-    #[arg(long, default_value_t = 25)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 25)]
     pub steps: usize,
 
     /// Classifier-free guidance scale. IC-Light works best at low CFG.
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 2.0)]
     pub guidance: f64,
 
     /// Seed (omit for a random seed).
-    #[arg(long)]
+    #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
     /// Output directory (or file path ending in an image extension).
-    #[arg(long, default_value = "./")]
+    #[arg(help_heading = "Size & output", long, default_value = "./")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land the relit image in a photo album.

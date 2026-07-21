@@ -13,7 +13,7 @@ pub struct UpscaleArgs {
     pub input: PathBuf,
 
     /// Output image. Extension determines format (.png, .jpg, .webp).
-    #[arg(long, value_name = "OUT")]
+    #[arg(help_heading = "Size & output", long, value_name = "OUT")]
     pub out: PathBuf,
 
     /// `--import <album>` / `--import-move`: land the upscaled image in a photo album.
@@ -37,7 +37,7 @@ pub struct UpscaleArgs {
     pub diffusion: bool,
 
     /// [diffusion] SD model (Tile ControlNet is SD 1.5 / SDXL).
-    #[arg(long, default_value = "sd15")]
+    #[arg(help_heading = "Model & sampler", long, default_value = "sd15")]
     pub model: String,
 
     /// [diffusion] Tile side in px (SD 1.5 → 512, SDXL → 1024).
@@ -58,23 +58,23 @@ pub struct UpscaleArgs {
     pub cn_strength: f32,
 
     /// [diffusion] Denoise steps per tile.
-    #[arg(long, default_value_t = 20)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 20)]
     pub steps: usize,
 
     /// [diffusion] CFG scale.
-    #[arg(long, default_value_t = 6.0)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 6.0)]
     pub guidance: f64,
 
     /// [diffusion] Prompt steering the detail (kept generic by default).
-    #[arg(long, default_value = "highly detailed, sharp focus, intricate texture")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "highly detailed, sharp focus, intricate texture")]
     pub prompt: String,
 
     /// [diffusion] Negative prompt.
-    #[arg(long, default_value = "blurry, lowres, jpeg artifacts, oversmoothed")]
+    #[arg(help_heading = "Prompt & text", long, default_value = "blurry, lowres, jpeg artifacts, oversmoothed")]
     pub negative: String,
 
     /// [diffusion] Seed.
-    #[arg(long, default_value_t = 0)]
+    #[arg(help_heading = "Model & sampler", long, default_value_t = 0)]
     pub seed: u64,
 }
 

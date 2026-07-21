@@ -18,7 +18,7 @@ pub struct ImportArgs {
     /// sidecar) is copied into the album directory and its generation parameters are recorded in
     /// the album's `album.hjson`, so it shows up already curated in `plakat photos`. The album is
     /// created if it doesn't exist. Requires a build with `--features photos`.
-    #[arg(long = "import", value_name = "ALBUM_DIR")]
+    #[arg(help_heading = "Size & output", long = "import", value_name = "ALBUM_DIR")]
     pub import: Option<PathBuf>,
 
     /// With `--import`, MOVE each output into the album instead of copying (leaves only the album
