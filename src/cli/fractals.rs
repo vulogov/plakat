@@ -36,7 +36,7 @@ pub struct FractalsArgs {
     pub kind: Option<String>,
 
     /// Viewport center in the complex plane as `RE,IM`.
-    #[arg(long = "fractal-center", value_name = "RE,IM")]
+    #[arg(long = "fractal-center", value_name = "RE,IM", allow_hyphen_values = true)]
     pub center: Option<String>,
 
     /// Zoom factor (vertical axis spans `3.0 / zoom` complex units).
@@ -48,7 +48,7 @@ pub struct FractalsArgs {
     pub iter: Option<u32>,
 
     /// Julia constant as `RE,IM` (only used when kind = julia).
-    #[arg(long = "fractal-julia-c", value_name = "RE,IM")]
+    #[arg(long = "fractal-julia-c", value_name = "RE,IM", allow_hyphen_values = true)]
     pub julia_c: Option<String>,
 
     /// Exponent for the `z^power` step (2 = classic; other = multibrot / Newton degree).
@@ -72,7 +72,7 @@ pub struct FractalsArgs {
     pub trap_shape: Option<String>,
 
     /// Orbit-trap center as `RE,IM`.
-    #[arg(long = "fractal-trap-point", value_name = "RE,IM")]
+    #[arg(long = "fractal-trap-point", value_name = "RE,IM", allow_hyphen_values = true)]
     pub trap_point: Option<String>,
 
     /// Stripe-average angular frequency (for `--fractal-coloring stripe`).
@@ -140,15 +140,15 @@ pub struct FractalsArgs {
     pub raymarch_shape: Option<String>,
 
     /// Mandelbulb exponent (for `--fractal-kind raymarch`; 8 is classic).
-    #[arg(long = "fractal-raymarch-power", value_name = "P")]
+    #[arg(long = "fractal-raymarch-power", value_name = "P", allow_hyphen_values = true)]
     pub raymarch_power: Option<f64>,
 
     /// Camera yaw in degrees (orbit around the 3D fractal).
-    #[arg(long = "fractal-raymarch-yaw", value_name = "DEG")]
+    #[arg(long = "fractal-raymarch-yaw", value_name = "DEG", allow_hyphen_values = true)]
     pub raymarch_yaw: Option<f64>,
 
     /// Camera pitch in degrees.
-    #[arg(long = "fractal-raymarch-pitch", value_name = "DEG")]
+    #[arg(long = "fractal-raymarch-pitch", value_name = "DEG", allow_hyphen_values = true)]
     pub raymarch_pitch: Option<f64>,
 
     /// Camera distance from the origin.
