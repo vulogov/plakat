@@ -510,11 +510,16 @@ impl Default for AiSpec {
             model: "sdxl".to_string(),
             prompt: String::new(),
             negative: String::new(),
-            strength: 0.55,
+            // Fractals are abstract (often near-black) img2img bases, so the paint pass
+            // needs more freedom than map's already-painted base: a high strength lets the
+            // prompt's scene actually emerge, while a moderate control keeps the fractal's
+            // composition as guidance rather than a hard lock. Turn strength DOWN
+            // (`--fractal-sd-strength 0.5`) for subtle "enhance the fractal" instead.
+            strength: 0.78,
             steps: 28,
             guidance: 6.5,
             control: String::new(),
-            control_strength: 0.9,
+            control_strength: 0.55,
             loras: Vec::new(),
             lora_scale: 0.9,
         }
