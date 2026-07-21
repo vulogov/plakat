@@ -8,7 +8,9 @@
 
 use num_complex::Complex;
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::progress::ProgressFn;
 use super::spec::{Coloring, FractalKind, FractalSpec, TrapShape, TrapSpec};
 
 /// Maps pixel coordinates to points in the complex plane. Square pixels: the vertical
@@ -197,7 +199,8 @@ fn escape_at(spec: &FractalSpec, pixel: Complex<f64>, feats: Feats) -> Escape {
             }
             FractalKind::Sine => c * z.sin(),
             FractalKind::Exp => c * z.exp(),
-            FractalKind::Newton | FractalKind::Nova | FractalKind::Buddhabrot => unreachable!(),
+            FractalKind::Newton | FractalKind::Nova | FractalKind::Buddhabrot
+            | FractalKind::Ifs | FractalKind::Lsystem => unreachable!(),
         };
         n += 1;
 
@@ -305,16 +308,20 @@ fn newton_at(spec: &FractalSpec, pixel: Complex<f64>) -> Escape {
 }
 
 /// Render the full escape field, one [`Escape`] per pixel, row-parallel via rayon.
-pub fn render_escape(spec: &FractalSpec) -> Vec<Escape> {
+/// `prog(done_rows, total_rows)` is called as rows complete (from worker threads).
+pub fn render_escape(spec: &FractalSpec, prog: ProgressFn) -> Vec<Escape> {
     let vp = Viewport::new(spec);
     let feats = Feats::for_coloring(spec.coloring);
     let (w, h) = (spec.width as usize, spec.height as usize);
+    let done = AtomicU64::new(0);
     let mut field = vec![Escape::default(); w * h];
     field.par_chunks_mut(w).enumerate().for_each(|(row, out)| {
         let py = row as u32;
         for (px, cell) in out.iter_mut().enumerate() {
             *cell = escape_at(spec, vp.pixel_to_complex(px as u32, py), feats);
         }
+        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+        prog(d, h as u64);
     });
     field
 }
@@ -351,8 +358,8 @@ mod tests {
     #[test]
     fn escape_field_is_deterministic() {
         let spec = mandel_default();
-        let a = render_escape(&spec);
-        let b = render_escape(&spec);
+        let a = render_escape(&spec, &|_, _| {});
+        let b = render_escape(&spec, &|_, _| {});
         assert_eq!(a, b);
         assert_eq!(a.len(), 64 * 64);
         assert!(a.iter().any(|e| e.inside));
@@ -371,7 +378,7 @@ mod tests {
                 kind, width: 48, height: 48, power: 3.0, max_iter: 100,
                 center: [0.0, 0.0], zoom: 0.6, ..FractalSpec::default()
             };
-            let field = render_escape(&spec);
+            let field = render_escape(&spec, &|_, _| {});
             assert_eq!(field.len(), 48 * 48, "{kind:?}");
             // Every family produces a mix (some escaped / converged pixel exists).
             assert!(field.iter().any(|e| !e.inside), "{kind:?} produced no exterior");
@@ -383,7 +390,7 @@ mod tests {
         let spec = FractalSpec {
             width: 32, height: 32, coloring: Coloring::Distance, ..FractalSpec::default()
         };
-        let field = render_escape(&spec);
+        let field = render_escape(&spec, &|_, _| {});
         assert!(field.iter().any(|e| !e.inside && e.distance >= 0.0));
     }
 
@@ -392,8 +399,8 @@ mod tests {
         let trap = FractalSpec {
             width: 32, height: 32, coloring: Coloring::OrbitTrap, ..FractalSpec::default()
         };
-        assert!(render_escape(&trap).iter().any(|e| !e.inside && e.trap.is_finite()));
+        assert!(render_escape(&trap, &|_, _| {}).iter().any(|e| !e.inside && e.trap.is_finite()));
         let stripe = FractalSpec { coloring: Coloring::Stripe, ..trap };
-        assert!(render_escape(&stripe).iter().any(|e| !e.inside && e.stripe > 0.0));
+        assert!(render_escape(&stripe, &|_, _| {}).iter().any(|e| !e.inside && e.stripe > 0.0));
     }
 }

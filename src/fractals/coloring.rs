@@ -124,7 +124,7 @@ mod tests {
             palette: PaletteSpec { interior: "#123456".into(), ..PaletteSpec::default() },
             ..FractalSpec::default()
         };
-        let field = render_escape(&spec);
+        let field = render_escape(&spec, &|_, _| {});
         let pal = Palette::from_spec(&spec.palette).unwrap();
         let buf = colorize(&spec, &field, &pal);
         assert_eq!(buf.len(), 32 * 32 * 3);
@@ -139,7 +139,7 @@ mod tests {
             Coloring::OrbitTrap, Coloring::Angle, Coloring::Stripe,
         ] {
             let spec = spec_with(c);
-            let field = render_escape(&spec);
+            let field = render_escape(&spec, &|_, _| {});
             let pal = Palette::from_spec(&spec.palette).unwrap();
             let buf = colorize(&spec, &field, &pal);
             assert_eq!(buf.len(), 40 * 40 * 3, "{c:?}");
@@ -150,12 +150,12 @@ mod tests {
 
     #[test]
     fn histogram_and_smooth_differ() {
-        let field = render_escape(&spec_with(Coloring::Smooth));
+        let field = render_escape(&spec_with(Coloring::Smooth), &|_, _| {});
         let pal = Palette::from_spec(&PaletteSpec::default()).unwrap();
         let smooth = colorize(&spec_with(Coloring::Smooth), &field, &pal);
         // Same field, histogram equalization → a different mapping.
         let hist_spec = spec_with(Coloring::Histogram);
-        let hist_field = render_escape(&hist_spec);
+        let hist_field = render_escape(&hist_spec, &|_, _| {});
         let hist = colorize(&hist_spec, &hist_field, &pal);
         assert_ne!(smooth, hist);
     }
@@ -167,7 +167,7 @@ mod tests {
             center: [0.0, 0.0], zoom: 0.5, coloring: Coloring::Angle,
             ..FractalSpec::default()
         };
-        let field = render_escape(&spec);
+        let field = render_escape(&spec, &|_, _| {});
         let pal = Palette::from_spec(&spec.palette).unwrap();
         let buf = colorize(&spec, &field, &pal);
         assert!(buf.chunks(3).any(|p| p != &buf[0..3]));

@@ -38,6 +38,10 @@ pub enum FractalKind {
     Exp,
     /// Buddhabrot — density plot of escaping Mandelbrot orbits (stochastic, seeded).
     Buddhabrot,
+    /// Iterated Function System — chaos-game point attractor (Barnsley fern, Sierpiński…).
+    Ifs,
+    /// L-system — Lindenmayer rewriting + turtle line drawing (Koch, dragon, plants…).
+    Lsystem,
 }
 
 impl FractalKind {
@@ -55,12 +59,20 @@ impl FractalKind {
             FractalKind::Sine => "sine",
             FractalKind::Exp => "exp",
             FractalKind::Buddhabrot => "buddhabrot",
+            FractalKind::Ifs => "ifs",
+            FractalKind::Lsystem => "lsystem",
         }
     }
 
     /// Buddhabrot renders via density accumulation, not a per-pixel escape field.
     pub fn is_buddhabrot(self) -> bool {
         self == FractalKind::Buddhabrot
+    }
+
+    /// The per-pixel complex-plane escape families (everything except buddhabrot / the
+    /// line-drawing families).
+    pub fn is_escape_time(self) -> bool {
+        !matches!(self, FractalKind::Buddhabrot | FractalKind::Ifs | FractalKind::Lsystem)
     }
 
     pub fn parse(s: &str) -> Result<Self> {
@@ -77,9 +89,12 @@ impl FractalKind {
             "sine" | "sin" => Ok(FractalKind::Sine),
             "exp" | "exponential" => Ok(FractalKind::Exp),
             "buddhabrot" | "buddha" => Ok(FractalKind::Buddhabrot),
+            "ifs" => Ok(FractalKind::Ifs),
+            "lsystem" | "l-system" | "lsys" => Ok(FractalKind::Lsystem),
             other => anyhow::bail!(
                 "unknown fractal kind {other:?} (want: mandelbrot | julia | burning-ship | \
-                 tricorn | multibrot | newton | nova | phoenix | magnet | sine | exp | buddhabrot)"
+                 tricorn | multibrot | newton | nova | phoenix | magnet | sine | exp | buddhabrot \
+                 | ifs | lsystem)"
             ),
         }
     }
@@ -197,6 +212,93 @@ impl Default for TrapSpec {
     }
 }
 
+/// One affine contraction map of an IFS: `x' = a·x + b·y + e`, `y' = c·x + d·y + f`,
+/// selected with relative weight `p` in the chaos game.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IfsMap {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
+    pub e: f64,
+    pub f: f64,
+    pub p: f64,
+}
+
+impl Default for IfsMap {
+    fn default() -> Self {
+        IfsMap { a: 0.5, b: 0.0, c: 0.0, d: 0.5, e: 0.0, f: 0.0, p: 1.0 }
+    }
+}
+
+/// Iterated Function System configuration (chaos game). A `preset` name OR an explicit
+/// list of affine `maps` (maps win when non-empty).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IfsSpec {
+    /// Named preset: barnsley-fern · sierpinski · dragon · levy · tree · spiral.
+    pub preset: String,
+    /// Explicit affine maps (overrides `preset` when non-empty).
+    pub maps: Vec<IfsMap>,
+    /// Chaos-game point count (higher = denser / smoother).
+    pub iterations: u64,
+    /// Discard the first `warmup` points (settle onto the attractor).
+    pub warmup: u32,
+    /// Fraction of the canvas the attractor fills (0<margin≤1).
+    pub margin: f64,
+}
+
+impl Default for IfsSpec {
+    fn default() -> Self {
+        IfsSpec {
+            preset: "barnsley-fern".to_string(),
+            maps: Vec::new(),
+            iterations: 2_000_000,
+            warmup: 20,
+            margin: 0.9,
+        }
+    }
+}
+
+/// L-system configuration: Lindenmayer rewriting + turtle drawing. A `preset` name OR an
+/// explicit `axiom` + `rules` (the explicit grammar wins when `axiom` is non-empty).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LsystemSpec {
+    /// Named preset: koch · koch-snowflake · sierpinski · dragon · hilbert · gosper · plant · bush.
+    pub preset: String,
+    /// Starting string (overrides `preset` when non-empty).
+    pub axiom: String,
+    /// Rewrite rules, each `"X=..."` (LHS is a single symbol).
+    pub rules: Vec<String>,
+    /// Turn angle in degrees (`+` / `-`).
+    pub angle: f64,
+    /// Rewrite depth (each pass expands every symbol; grows fast).
+    pub iterations: u32,
+    /// Initial turtle heading in degrees (0 = east/right, 90 = up).
+    pub start_angle: f64,
+    /// Stroke width in pixels.
+    pub line_width: u32,
+    /// Fraction of the canvas the drawing fills (0<margin≤1).
+    pub margin: f64,
+}
+
+impl Default for LsystemSpec {
+    fn default() -> Self {
+        LsystemSpec {
+            preset: "koch-snowflake".to_string(),
+            axiom: String::new(),
+            rules: Vec::new(),
+            angle: 60.0,
+            iterations: 4,
+            start_angle: 0.0,
+            line_width: 1,
+            margin: 0.9,
+        }
+    }
+}
+
 /// A complete, deterministic fractal render request.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -235,6 +337,10 @@ pub struct FractalSpec {
     /// Buddhabrot: only accumulate orbits that escape after at least this many iterations
     /// (suppresses the low-detail halo).
     pub buddha_min_iter: u32,
+    /// IFS (chaos-game) configuration (used when `kind = ifs`).
+    pub ifs: IfsSpec,
+    /// L-system configuration (used when `kind = lsystem`).
+    pub lsystem: LsystemSpec,
     /// Reserved / stochastic-family seed. Escape-time is deterministic regardless;
     /// buddhabrot uses it so its sampling is reproducible.
     pub seed: u64,
@@ -262,6 +368,8 @@ impl Default for FractalSpec {
             nova_relax: [1.0, 0.0],
             buddha_samples: 5_000_000,
             buddha_min_iter: 20,
+            ifs: IfsSpec::default(),
+            lsystem: LsystemSpec::default(),
             seed: 0,
         }
     }
@@ -319,6 +427,28 @@ impl FractalSpec {
                 "render too large: {}x{} at {}x supersample = {} samples (cap 500M)",
                 self.width, self.height, self.supersample, px
             );
+        }
+        if self.kind == FractalKind::Ifs {
+            if self.ifs.iterations == 0 || self.ifs.iterations > 200_000_000 {
+                anyhow::bail!("ifs.iterations must be in 1..=200M (got {})", self.ifs.iterations);
+            }
+            if !(self.ifs.margin > 0.0 && self.ifs.margin <= 1.0) {
+                anyhow::bail!("ifs.margin must be in (0,1] (got {})", self.ifs.margin);
+            }
+        }
+        if self.kind == FractalKind::Lsystem {
+            if self.lsystem.iterations > 20 {
+                anyhow::bail!(
+                    "lsystem.iterations must be ≤ 20 (grammar grows exponentially; got {})",
+                    self.lsystem.iterations
+                );
+            }
+            if !self.lsystem.angle.is_finite() {
+                anyhow::bail!("lsystem.angle must be finite");
+            }
+            if !(self.lsystem.margin > 0.0 && self.lsystem.margin <= 1.0) {
+                anyhow::bail!("lsystem.margin must be in (0,1] (got {})", self.lsystem.margin);
+            }
         }
         Ok(())
     }

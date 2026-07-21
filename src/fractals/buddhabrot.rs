@@ -10,7 +10,9 @@ use num_complex::Complex;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::progress::ProgressFn;
 use super::render::Viewport;
 use super::spec::FractalSpec;
 
@@ -22,8 +24,9 @@ const SAMPLE_IM: (f64, f64) = (-1.5, 1.5);
 const ESCAPE2: f64 = 4.0;
 
 /// Accumulate the buddhabrot density into a `width*height` histogram (row-major),
-/// returning `(histogram, max_count)`.
-pub fn render_density(spec: &FractalSpec) -> (Vec<u32>, u32) {
+/// returning `(histogram, max_count)`. `prog(done_chunks, total_chunks)` fires as
+/// sampling chunks complete.
+pub fn render_density(spec: &FractalSpec, prog: ProgressFn) -> (Vec<u32>, u32) {
     let vp = Viewport::new(spec);
     let (w, h) = (spec.width as usize, spec.height as usize);
     let n = w * h;
@@ -34,6 +37,7 @@ pub fn render_density(spec: &FractalSpec) -> (Vec<u32>, u32) {
     // deterministic (chunk `i` always draws the same samples from seed ⊕ i).
     let chunks: u64 = 64;
     let per = spec.buddha_samples / chunks;
+    let done = AtomicU64::new(0);
 
     let partials: Vec<Vec<u32>> = (0..chunks)
         .into_par_iter()
@@ -68,6 +72,8 @@ pub fn render_density(spec: &FractalSpec) -> (Vec<u32>, u32) {
                     }
                 }
             }
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            prog(d, chunks);
             hist
         })
         .collect();
@@ -105,8 +111,8 @@ mod tests {
 
     #[test]
     fn density_is_deterministic_and_nonempty() {
-        let (a, amax) = render_density(&small());
-        let (b, bmax) = render_density(&small());
+        let (a, amax) = render_density(&small(), &|_, _| {});
+        let (b, bmax) = render_density(&small(), &|_, _| {});
         assert_eq!(a, b, "same spec → same density");
         assert_eq!(amax, bmax);
         assert!(amax > 0, "some pixels accumulated");
@@ -116,8 +122,8 @@ mod tests {
 
     #[test]
     fn different_seed_changes_density() {
-        let (a, _) = render_density(&small());
-        let (b, _) = render_density(&FractalSpec { seed: 7, ..small() });
+        let (a, _) = render_density(&small(), &|_, _| {});
+        let (b, _) = render_density(&FractalSpec { seed: 7, ..small() }, &|_, _| {});
         assert_ne!(a, b);
     }
 }

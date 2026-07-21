@@ -88,7 +88,10 @@ One new dep (`palette 0.7`); `rayon` / `num-complex` / `nalgebra` promoted from 
 2. **Extended coloring + escape-time variants** — histogram/distance/orbit-trap/angle/stripe; the full
    escape-time family (+tricorn/multibrot/newton/nova/phoenix/magnet/sine/exp); supersampling AA;
    buddhabrot (deterministic seeded density). **DONE.**
-3. **L-system + IFS**.
+3. **L-system + IFS** — chaos-game IFS (6 presets: fern/sierpinski/dragon/levy/tree/spiral,
+   deterministic seeded, two-pass bounds+density) + L-system turtle (8 presets, custom axiom/rules,
+   gradient-along-path, thickened strokes). Aspect-preserving fit; both AA via supersample. A progress
+   callback (`indicatif` bar) now spans **all** generators. **DONE.**
 4. **AI enhancement pass (Track B)**.
 5. **Fractal flame + strange attractors** (+ optional `.flam3`).
 6. **TUI explorer** (`--fractal-explore`).

@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use clap::Args;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 
 use crate::fractals::{
@@ -81,9 +82,31 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-buddha-samples", value_name = "N")]
     pub buddha_samples: Option<u64>,
 
-    /// Seed for stochastic families (buddhabrot). Same seed → identical output.
+    /// Seed for stochastic families (buddhabrot / ifs). Same seed → identical output.
     #[arg(long = "fractal-seed", value_name = "N")]
     pub seed: Option<u64>,
+
+    /// IFS preset (for `--fractal-kind ifs`): barnsley-fern | sierpinski | dragon | levy |
+    /// tree | spiral.
+    #[arg(long = "fractal-ifs-preset", value_name = "NAME")]
+    pub ifs_preset: Option<String>,
+
+    /// IFS chaos-game point count (for `--fractal-kind ifs`).
+    #[arg(long = "fractal-ifs-iterations", value_name = "N")]
+    pub ifs_iterations: Option<u64>,
+
+    /// L-system preset (for `--fractal-kind lsystem`): koch | koch-snowflake | sierpinski |
+    /// dragon | hilbert | gosper | plant | bush.
+    #[arg(long = "fractal-lsystem-preset", value_name = "NAME")]
+    pub lsystem_preset: Option<String>,
+
+    /// L-system turn angle in degrees (for `--fractal-kind lsystem`).
+    #[arg(long = "fractal-lsystem-angle", value_name = "DEG")]
+    pub lsystem_angle: Option<f64>,
+
+    /// L-system rewrite depth (for `--fractal-kind lsystem`; grows exponentially).
+    #[arg(long = "fractal-lsystem-depth", value_name = "N")]
+    pub lsystem_depth: Option<u32>,
 
     /// Palette preset: fire | ice | electric | neon | pastel | monochrome | midnight | earth.
     #[arg(long = "fractal-palette", value_name = "NAME")]
@@ -190,6 +213,23 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(s) = args.seed {
         spec.seed = s;
     }
+    if let Some(p) = &args.ifs_preset {
+        spec.ifs.preset = p.clone();
+        spec.ifs.maps.clear();
+    }
+    if let Some(n) = args.ifs_iterations {
+        spec.ifs.iterations = n;
+    }
+    if let Some(p) = &args.lsystem_preset {
+        spec.lsystem.preset = p.clone();
+        spec.lsystem.axiom.clear();
+    }
+    if let Some(a) = args.lsystem_angle {
+        spec.lsystem.angle = a;
+    }
+    if let Some(d) = args.lsystem_depth {
+        spec.lsystem.iterations = d;
+    }
 
     spec.validate()?;
     Ok(spec)
@@ -204,7 +244,26 @@ pub async fn run(args: FractalsArgs) -> Result<()> {
     }
 
     let started = std::time::Instant::now();
-    fractals::render_to_file(&spec, &args.out)?;
+
+    // A live progress bar driven by the renderer's callback (fires from worker threads).
+    let pb = ProgressBar::new(1);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "  {spinner:.cyan} {msg} [{bar:30.cyan/blue}] {percent:>3}%  {elapsed}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-"),
+    );
+    pb.set_message(format!("rendering {}", spec.kind.as_str()));
+    let report = |done: u64, total: u64| {
+        if pb.length() != Some(total) {
+            pb.set_length(total.max(1));
+        }
+        pb.set_position(done);
+    };
+    fractals::render_to_file_with_progress(&spec, &args.out, &report)?;
+    pb.finish_and_clear();
+
     let dt = started.elapsed();
     println!(
         "fractal {} {}x{} → {} ({:.2}s)",
@@ -242,6 +301,11 @@ mod tests {
             de_scale: None,
             buddha_samples: None,
             seed: None,
+            ifs_preset: None,
+            ifs_iterations: None,
+            lsystem_preset: None,
+            lsystem_angle: None,
+            lsystem_depth: None,
             out: PathBuf::from("out/fractal.png"),
             dump_spec: false,
         }

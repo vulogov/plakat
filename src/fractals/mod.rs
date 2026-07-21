@@ -6,14 +6,19 @@
 //!   * **Track B** (later phase): an optional AI enhancement pass that feeds the Track-A
 //!     render through ControlNet-conditioned img2img.
 //!
-//! Phase 1 shipped the escape-time core; Phase 2 adds the full family (tricorn, multibrot,
-//! newton, nova, phoenix, magnet, sine, exp), five extra coloring modes (histogram /
-//! distance-estimate / orbit-trap / angle / stripe), supersampling AA, and buddhabrot.
+//! Phase 1 shipped the escape-time core; Phase 2 added the full escape-time family, five
+//! extra coloring modes, supersampling AA, and buddhabrot; Phase 3 adds the line-drawing
+//! families — IFS (chaos game) and L-systems — plus a progress callback across all
+//! generators.
 
 pub mod buddhabrot;
 pub mod coloring;
+pub mod ifs;
 pub mod image_io;
+pub mod lsystem;
 pub mod palette;
+pub mod plot;
+pub mod progress;
 pub mod render;
 pub mod spec;
 
@@ -22,6 +27,7 @@ use rayon::prelude::*;
 use std::path::Path;
 
 pub use palette::Palette;
+pub use progress::ProgressFn;
 pub use spec::{Coloring, FractalKind, FractalSpec, PaletteSpec};
 
 /// A finished Track-A render held in memory (packed `RGB8`, row-major).
@@ -33,18 +39,20 @@ pub struct RenderedFractal {
 }
 
 /// A high-resolution copy of `spec` for supersampling: dimensions ×`ss`, `supersample`
-/// reset to 1 (so nothing downstream re-supersamples). Same framing, more samples.
+/// reset to 1 (so nothing downstream re-supersamples). Same framing, more samples. The
+/// L-system stroke is thickened by `ss` too, so a 1px line stays 1px after downsampling.
 fn supersampled(spec: &FractalSpec) -> (FractalSpec, u32) {
     let ss = spec.supersample.clamp(1, 8);
     if ss == 1 {
         return (spec.clone(), 1);
     }
-    let hi = FractalSpec {
+    let mut hi = FractalSpec {
         width: spec.width * ss,
         height: spec.height * ss,
         supersample: 1,
         ..spec.clone()
     };
+    hi.lsystem.line_width = (spec.lsystem.line_width * ss).max(1);
     (hi, ss)
 }
 
@@ -78,19 +86,30 @@ fn downsample(hi: &[u8], hw: u32, hh: u32, ss: u32) -> Vec<u8> {
     out
 }
 
-/// Render a spec to an in-memory RGB buffer (Track A). Validates first, so a bad spec
-/// fails fast rather than after a long iteration loop.
+/// Render a spec to an in-memory RGB buffer (Track A). No progress reporting.
 pub fn render_spec(spec: &FractalSpec) -> Result<RenderedFractal> {
+    let silent = progress::silent();
+    render_spec_with_progress(spec, &silent)
+}
+
+/// Render a spec, reporting coarse progress via `prog(done, total)` (called from worker
+/// threads for the parallel families). Validates first, so a bad spec fails fast.
+pub fn render_spec_with_progress(spec: &FractalSpec, prog: ProgressFn) -> Result<RenderedFractal> {
     spec.validate()?;
     let palette = Palette::from_spec(&spec.palette)?;
     let (hi, ss) = supersampled(spec);
 
-    let pixels_hi = if hi.kind.is_buddhabrot() {
-        let (hist, max) = buddhabrot::render_density(&hi);
-        coloring::colorize_density(&hist, max, &palette)
-    } else {
-        let field = render::render_escape(&hi);
-        coloring::colorize(&hi, &field, &palette)
+    let pixels_hi = match hi.kind {
+        FractalKind::Buddhabrot => {
+            let (hist, max) = buddhabrot::render_density(&hi, prog);
+            coloring::colorize_density(&hist, max, &palette)
+        }
+        FractalKind::Ifs => ifs::render(&hi, &palette, prog)?,
+        FractalKind::Lsystem => lsystem::render(&hi, &palette, prog)?,
+        _ => {
+            let field = render::render_escape(&hi, prog);
+            coloring::colorize(&hi, &field, &palette)
+        }
     };
 
     let pixels = if ss > 1 {
@@ -104,6 +123,12 @@ pub fn render_spec(spec: &FractalSpec) -> Result<RenderedFractal> {
 /// Render a spec straight to a PNG file, embedding the spec for `--fractal-clone`.
 pub fn render_to_file(spec: &FractalSpec, path: &Path) -> Result<()> {
     let r = render_spec(spec)?;
+    image_io::save_png_with_spec(&r.pixels, r.width, r.height, spec, path)
+}
+
+/// Render to a PNG file with progress reporting (the CLI path — wires a progress bar).
+pub fn render_to_file_with_progress(spec: &FractalSpec, path: &Path, prog: ProgressFn) -> Result<()> {
+    let r = render_spec_with_progress(spec, prog)?;
     image_io::save_png_with_spec(&r.pixels, r.width, r.height, spec, path)
 }
 
@@ -125,9 +150,9 @@ mod tests {
         let aa = FractalSpec { supersample: 3, ..base.clone() };
         let r1 = render_spec(&base).unwrap();
         let r3 = render_spec(&aa).unwrap();
-        assert_eq!((r3.width, r3.height), (32, 32)); // output size unchanged
+        assert_eq!((r3.width, r3.height), (32, 32));
         assert_eq!(r3.pixels.len(), r1.pixels.len());
-        assert_ne!(r1.pixels, r3.pixels); // AA smooths edges → different bytes
+        assert_ne!(r1.pixels, r3.pixels);
     }
 
     #[test]
@@ -140,6 +165,42 @@ mod tests {
         let r = render_spec(&spec).unwrap();
         assert_eq!(r.pixels.len(), 32 * 32 * 3);
         assert!(r.pixels.chunks(3).any(|p| p != &r.pixels[0..3]));
+    }
+
+    #[test]
+    fn ifs_and_lsystem_render_through_the_pipeline() {
+        let fern = FractalSpec {
+            kind: FractalKind::Ifs, width: 48, height: 48,
+            ifs: spec::IfsSpec { iterations: 100_000, ..spec::IfsSpec::default() },
+            ..FractalSpec::default()
+        };
+        let r = render_spec(&fern).unwrap();
+        assert_eq!(r.pixels.len(), 48 * 48 * 3);
+        assert!(r.pixels.chunks(3).any(|p| p != &r.pixels[0..3]));
+
+        let koch = FractalSpec {
+            kind: FractalKind::Lsystem, width: 64, height: 64, supersample: 2,
+            ..FractalSpec::default()
+        };
+        let r = render_spec(&koch).unwrap();
+        assert_eq!((r.width, r.height), (64, 64));
+        assert!(r.pixels.chunks(3).any(|p| p != &r.pixels[0..3]));
+    }
+
+    #[test]
+    fn progress_is_reported() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let calls = AtomicU64::new(0);
+        let last = AtomicU64::new(0);
+        let report = |done: u64, total: u64| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            if done == total {
+                last.store(1, Ordering::Relaxed);
+            }
+        };
+        let spec = FractalSpec { width: 32, height: 32, ..FractalSpec::default() };
+        render_spec_with_progress(&spec, &report).unwrap();
+        assert!(calls.load(Ordering::Relaxed) > 0, "progress was called");
     }
 
     #[test]
