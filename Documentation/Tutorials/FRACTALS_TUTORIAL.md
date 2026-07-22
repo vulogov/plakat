@@ -270,6 +270,16 @@ plant, dragon, koch, lorenz, clifford, mandelbulb, …), **moods → palettes** 
 icy, neon, pastel, cosmic, earthy…), **coloring** (stripes, filaments), **symmetry**
 (kaleidoscope), and **depth** (deep zoom, intricate).
 
+**Smarter mapping with an LLM (optional).** Add `--fractal-provider` to have a language
+model map an arbitrary description to a spec — it falls back to the offline keyword mapper
+on any failure, so it's always safe:
+
+```bash
+plakat fractals --fractal-from "a stormy alien coastline at dusk" \
+  --fractal-provider auto --fractal-out out/llm.png
+#   auto | deepseek | gemini | local | local:<alias>
+```
+
 **Any text that names no family** still gives you something distinctive — plakat hashes
 the words into a unique Julia set, so every phrase yields different art (never the same
 default twice), and any mood word still steers the palette:

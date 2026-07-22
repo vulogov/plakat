@@ -30,9 +30,9 @@ precision — the per-pixel math stays `f64`, so deep zoom is fast.
       rings, fan, blob, pdj, …) usable from spec-file `functions`.
 - [x] A few more escape families / attractors where they earn their keep.
 
-## Phase D — LLM-backed prose → spec
+## Phase D — LLM-backed prose → spec (DONE)
 
-- [ ] Wire `prompt::complete()` (the same enhancer `map`/`generate` use) so `--fractal-from` can map an
+- [x] Wire `prompt::complete()` (the same enhancer `map`/`generate` use) so `--fractal-from` can map an
       arbitrary description to a FractalSpec, with the deterministic keyword mapper as the offline
       fallback (robust-by-design, like `map`'s parser).
 

@@ -14,6 +14,64 @@ use std::f64::consts::TAU;
 
 use super::spec::{Coloring, FractalKind, FractalSpec};
 
+/// System prompt for the LLM-backed `--fractal-from` path: describes the FractalSpec JSON
+/// so a model can pick the fractal + palette that best evoke a free-form description.
+const LLM_SYSTEM: &str = r#"You convert a short description into a JSON spec for a fractal renderer. Respond with ONLY a JSON object — no markdown fences, no commentary.
+
+All fields are optional; omit what isn't relevant (defaults fill in):
+  "kind": one of mandelbrot, julia, burning-ship, tricorn, multibrot, newton, phoenix, buddhabrot, ifs, lsystem, flame, attractor, raymarch
+  "center": [re, im]   (complex-plane center; use [0,0] for julia)
+  "zoom": number       (1 = whole set; higher = deeper)
+  "max_iter": integer  (detail; 300-2000)
+  "julia_c": [re, im]  (only for kind=julia)
+  "power": number      (for multibrot/newton; 3-8)
+  "coloring": one of smooth, histogram, distance, orbit-trap, angle, stripe
+  "palette": {"preset": one of fire, ice, electric, neon, pastel, monochrome, midnight, earth}
+  "ifs": {"preset": one of barnsley-fern, sierpinski, dragon, levy, tree, spiral}
+  "lsystem": {"preset": one of koch, koch-snowflake, sierpinski, dragon, hilbert, gosper, plant, bush}
+  "flame": {"preset": one of sierpinski, spherical, swirl, spiral, flame, "symmetry": integer}
+  "attractor": {"preset": one of clifford, dejong, bedhead, duffing, ikeda, lorenz, rossler, svensson, hopalong, fractal-dream}
+  "raymarch": {"shape": one of mandelbulb, mandelbox, menger, sierpinski3d, quat-julia}
+
+Pick the fractal, palette, and coloring that best evoke the description.
+Examples:
+  "a fiery burning ship, deep zoom" -> {"kind":"burning-ship","palette":{"preset":"fire"},"zoom":50,"max_iter":1200}
+  "a delicate icy fern" -> {"kind":"ifs","ifs":{"preset":"barnsley-fern"},"palette":{"preset":"ice"}}
+  "a glowing 3d alien sculpture" -> {"kind":"raymarch","raymarch":{"shape":"mandelbulb"},"palette":{"preset":"midnight"}}"#;
+
+/// Extract a JSON object from an LLM reply (strip ``` fences / surrounding prose).
+fn extract_json(text: &str) -> String {
+    let t = text.trim();
+    if let Some(start) = t.find("```") {
+        let after = &t[start + 3..];
+        let after = after.strip_prefix("json").unwrap_or(after);
+        if let Some(end) = after.find("```") {
+            return after[..end].trim().to_string();
+        }
+    }
+    match (t.find('{'), t.rfind('}')) {
+        (Some(a), Some(b)) if b > a => t[a..=b].to_string(),
+        _ => t.to_string(),
+    }
+}
+
+/// Prose → spec via the LLM provider stack (`prompt::complete`, the same `--enhance`
+/// providers), **falling back to the offline keyword mapper** on any failure — so it is
+/// robust by design and always returns a valid spec. Mirrors `map`'s parser.
+pub async fn spec_from_prose_llm(text: &str, provider: &str) -> FractalSpec {
+    let eargs = crate::prompt::EnhanceArgs::default();
+    if let Ok(reply) = crate::prompt::complete(provider, LLM_SYSTEM, text, &eargs).await {
+        if let Ok(spec) = serde_json::from_str::<FractalSpec>(&extract_json(&reply)) {
+            if spec.validate().is_ok() {
+                tracing::info!(target: "plakat", "fractals: --fractal-from via LLM ({provider})");
+                return spec;
+            }
+        }
+        tracing::warn!(target: "plakat", "fractals: LLM prose→spec unusable; using keyword mapper");
+    }
+    spec_from_prose(text)
+}
+
 /// A small deterministic string hash (FNV-1a) — seeds the "distinctive fractal from any
 /// text" behavior without any RNG.
 fn text_hash(t: &str) -> u64 {
@@ -240,5 +298,32 @@ mod tests {
     fn mandelbulb_prose() {
         let s = spec_from_prose("a golden 3d mandelbulb sculpture");
         assert_eq!(s.kind, FractalKind::Raymarch);
+    }
+
+    #[test]
+    fn extract_json_strips_fences_and_prose() {
+        assert_eq!(extract_json("```json\n{\"kind\":\"julia\"}\n```"), "{\"kind\":\"julia\"}");
+        assert_eq!(extract_json("sure! {\"zoom\":3} hope that helps"), "{\"zoom\":3}");
+    }
+
+    #[test]
+    fn partial_llm_json_parses_into_a_spec() {
+        // The LLM emits only a few fields; serde `default` fills the rest.
+        let json = r#"{"kind":"julia","julia_c":[-0.8,0.156],"palette":{"preset":"ice"},"coloring":"stripe"}"#;
+        let s: FractalSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(s.kind, FractalKind::Julia);
+        assert_eq!(s.palette.preset, "ice");
+        assert_eq!(s.coloring, Coloring::Stripe);
+        assert!(s.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn llm_path_falls_back_to_keyword_mapper() {
+        // An unknown provider makes `complete` error immediately (no network) → the robust
+        // fallback returns the offline keyword-mapped spec.
+        let s = spec_from_prose_llm("an icy julia with stripes", "not-a-provider").await;
+        assert_eq!(s.kind, FractalKind::Julia);
+        assert_eq!(s.palette.preset, "ice");
+        assert_eq!(s.coloring, Coloring::Stripe);
     }
 }

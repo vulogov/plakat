@@ -24,6 +24,12 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-from", value_name = "TEXT", help_heading = "Input & output")]
     pub from: Option<String>,
 
+    /// LLM provider for `--fractal-from` (deepseek | gemini | local | local:<alias> | auto).
+    /// When set, an LLM maps the description to a spec (falling back to the offline keyword
+    /// mapper on any failure). Omit for the fast, fully-offline keyword mapper.
+    #[arg(long = "fractal-provider", value_name = "PROVIDER", help_heading = "Input & output")]
+    pub provider: Option<String>,
+
     /// Load the base spec from an HJSON/JSON file (CLI flags still override its fields).
     #[arg(long = "fractal-spec", value_name = "FILE", help_heading = "Input & output")]
     pub spec: Option<PathBuf>,
@@ -320,8 +326,10 @@ fn parse_size(s: &str) -> Result<(u32, u32)> {
 }
 
 /// Build the resolved spec from the base + CLI overrides.
-fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
-    let mut spec = if let Some(png) = &args.clone_from {
+/// Choose the base spec before CLI overrides: clone → spec-file → prose (offline keyword
+/// mapper) → default.
+fn resolve_base(args: &FractalsArgs) -> Result<FractalSpec> {
+    Ok(if let Some(png) = &args.clone_from {
         fractals::spec::read_spec_chunk(png)?
             .with_context(|| format!("{} has no embedded fractalspec chunk", png.display()))?
     } else if let Some(file) = &args.spec {
@@ -330,8 +338,28 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
         fractals::prompt::spec_from_prose(prose)
     } else {
         FractalSpec::default()
-    };
+    })
+}
 
+/// Sync spec resolution (offline base + CLI overrides) — the test entry point; the runtime
+/// path goes through `resolve_spec_async`.
+#[cfg(test)]
+fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
+    finish_spec(resolve_base(args)?, args)
+}
+
+/// Async spec resolution: LLM prose→spec when `--fractal-from` is paired with
+/// `--fractal-provider` (falls back to the keyword mapper), else the offline base.
+async fn resolve_spec_async(args: &FractalsArgs) -> Result<FractalSpec> {
+    let base = match (&args.from, &args.provider) {
+        (Some(prose), Some(provider)) => fractals::prompt::spec_from_prose_llm(prose, provider).await,
+        _ => resolve_base(args)?,
+    };
+    finish_spec(base, args)
+}
+
+/// Apply all `--fractal-*` overrides to a base spec, then validate.
+fn finish_spec(mut spec: FractalSpec, args: &FractalsArgs) -> Result<FractalSpec> {
     if let Some(k) = &args.kind {
         spec.kind = FractalKind::parse(k)?;
     }
@@ -495,11 +523,12 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
 }
 
 pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
-    let spec = resolve_spec(&args)?;
+    let spec = resolve_spec_async(&args).await?;
 
     // Gently steer users who put a *scene* into --fractal-from (it shapes the fractal, not
-    // a painted scene). Only when they named no fractal family and aren't already painting.
-    if let Some(from) = &args.from {
+    // a painted scene). Only for the offline keyword path (no provider), when they named no
+    // fractal family and aren't already painting.
+    if let (Some(from), None) = (&args.from, &args.provider) {
         if !spec.ai.enabled && !fractals::prompt::names_a_family(from) {
             eprintln!(
                 "note: --fractal-from shapes the FRACTAL (it found no family name, so it \
@@ -660,6 +689,7 @@ mod tests {
     fn base_args() -> FractalsArgs {
         FractalsArgs {
             from: None,
+            provider: None,
             spec: None,
             clone_from: None,
             trap_image: None,
