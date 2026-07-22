@@ -24,11 +24,11 @@ precision — the per-pixel math stays `f64`, so deep zoom is fast.
       rendered frame-by-frame (Track A) and encoded to mp4/gif via the existing `animate` ffmpeg path.
 - [x] `--fractal-animate {zoom|julia-sweep|param-sweep}`, `--fractal-frames N`, `--fractal-fps`.
 
-## Phase C — more families & flame variations
+## Phase C — more families & flame variations (DONE)
 
-- [ ] Complete the flame variation set (→ the full ~20+ V1/V2 variations: julia, bent, waves, popcorn,
+- [x] Complete the flame variation set (→ the full ~20+ V1/V2 variations: julia, bent, waves, popcorn,
       rings, fan, blob, pdj, …) usable from spec-file `functions`.
-- [ ] A few more escape families / attractors where they earn their keep.
+- [x] A few more escape families / attractors where they earn their keep.
 
 ## Phase D — LLM-backed prose → spec
 

@@ -24,6 +24,9 @@ pub enum AttractorKind {
     Ikeda,
     Lorenz,
     Rossler,
+    Svensson,
+    Hopalong,
+    FractalDream,
 }
 
 impl AttractorKind {
@@ -36,9 +39,12 @@ impl AttractorKind {
             "ikeda" => AttractorKind::Ikeda,
             "lorenz" => AttractorKind::Lorenz,
             "rossler" | "rössler" => AttractorKind::Rossler,
+            "svensson" => AttractorKind::Svensson,
+            "hopalong" => AttractorKind::Hopalong,
+            "fractal-dream" | "fractaldream" | "dream" => AttractorKind::FractalDream,
             other => anyhow::bail!(
                 "unknown attractor {other:?} (want: clifford | dejong | bedhead | duffing | \
-                 ikeda | lorenz | rossler)"
+                 ikeda | lorenz | rossler | svensson | hopalong | fractal-dream)"
             ),
         })
     }
@@ -58,6 +64,9 @@ impl AttractorKind {
             AttractorKind::Ikeda => vec![0.918],
             AttractorKind::Lorenz => vec![10.0, 28.0, 8.0 / 3.0],
             AttractorKind::Rossler => vec![0.2, 0.2, 5.7],
+            AttractorKind::Svensson => vec![1.40, 1.56, 1.40, -6.56],
+            AttractorKind::Hopalong => vec![2.0, 1.0, 0.0],
+            AttractorKind::FractalDream => vec![-0.966, 2.879, 0.765, 0.744],
         }
     }
 }
@@ -86,6 +95,18 @@ fn map_step(kind: AttractorKind, x: f64, y: f64, p: &[f64]) -> (f64, f64) {
             let u = p[0];
             let t = 0.4 - 6.0 / (1.0 + x * x + y * y);
             (1.0 + u * (x * t.cos() - y * t.sin()), u * (x * t.sin() + y * t.cos()))
+        }
+        AttractorKind::Svensson => {
+            let (a, b, c, d) = (p[0], p[1], p[2], p[3]);
+            (d * (a * x).sin() - (b * y).sin(), c * (a * x).cos() + (b * y).cos())
+        }
+        AttractorKind::Hopalong => {
+            let (a, b, c) = (p[0], p[1], p[2]);
+            (y - x.signum() * (b * x - c).abs().sqrt(), a - x)
+        }
+        AttractorKind::FractalDream => {
+            let (a, b, c, d) = (p[0], p[1], p[2], p[3]);
+            ((b * y).sin() + c * (b * x).sin(), (a * x).sin() + d * (a * y).sin())
         }
         _ => unreachable!("map_step called for an ODE"),
     }
@@ -164,9 +185,11 @@ pub fn render(spec: &FractalSpec, palette: &Palette, prog: ProgressFn) -> Result
         spec.attractor.params.clone()
     };
     let needed = match kind {
-        AttractorKind::Bedhead | AttractorKind::Duffing => 2,
         AttractorKind::Ikeda => 1,
-        _ => 3,
+        AttractorKind::Bedhead | AttractorKind::Duffing => 2,
+        AttractorKind::Hopalong | AttractorKind::Lorenz | AttractorKind::Rossler => 3,
+        // Clifford / DeJong / Svensson / FractalDream index p[3].
+        _ => 4,
     };
     if params.len() < needed {
         anyhow::bail!("attractor {:?} needs {needed} parameters, got {}", kind, params.len());
@@ -228,7 +251,10 @@ mod tests {
     #[test]
     fn all_attractors_render_and_are_deterministic() {
         let pal = Palette::from_spec(&PaletteSpec::default()).unwrap();
-        for p in ["clifford", "dejong", "bedhead", "duffing", "ikeda", "lorenz", "rossler"] {
+        for p in [
+            "clifford", "dejong", "bedhead", "duffing", "ikeda", "lorenz", "rossler",
+            "svensson", "hopalong", "fractal-dream",
+        ] {
             let spec = spec_for(p);
             let a = render(&spec, &pal, &|_, _| {}).unwrap();
             let b = render(&spec, &pal, &|_, _| {}).unwrap();

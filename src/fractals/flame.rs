@@ -21,6 +21,9 @@ pub const VARIATIONS: &[&str] = &[
     "linear", "sinusoidal", "spherical", "swirl", "horseshoe", "polar", "handkerchief",
     "heart", "disc", "spiral", "hyperbolic", "diamond", "ex", "fisheye", "exponential",
     "power", "cosine", "bubble",
+    // v4.2 Phase C additions:
+    "bent", "waves", "fan", "rings", "popcorn", "eyefish", "cylinder", "tangent", "cross",
+    "secant", "julia", "scry",
 ];
 
 fn variation_id(name: &str) -> Result<usize> {
@@ -34,8 +37,9 @@ fn variation_id(name: &str) -> Result<usize> {
 
 const EPS: f64 = 1e-9;
 
-/// Apply variation `id` to `(x, y)`.
-fn apply_variation(id: usize, x: f64, y: f64) -> (f64, f64) {
+/// Apply variation `id` to `(x, y)`. `aff` is the function's affine `[a,b,c,d,e,f]` — a few
+/// variations (waves/fan/rings/popcorn) use its `c`/`f` coefficients, per Draves' flam3.
+fn apply_variation(id: usize, x: f64, y: f64, aff: &[f64; 6]) -> (f64, f64) {
     let r2 = x * x + y * y;
     let r = r2.sqrt();
     let theta = y.atan2(x);
@@ -70,6 +74,45 @@ fn apply_variation(id: usize, x: f64, y: f64) -> (f64, f64) {
         17 => {
             let f = 4.0 / (r2 + 4.0);
             (f * x, f * y) // bubble
+        }
+        18 => (if x >= 0.0 { x } else { 2.0 * x }, if y >= 0.0 { y } else { 0.5 * y }), // bent
+        19 => {
+            // waves — uses affine b,c,e,f.
+            let (b, c, e, ff) = (aff[1], aff[2], aff[4], aff[5]);
+            (x + b * (y / (c * c + EPS)).sin(), y + e * (x / (ff * ff + EPS)).sin())
+        }
+        20 => {
+            // fan — uses affine c,f.
+            let dx = PI * (aff[2] * aff[2] + EPS);
+            let dy = aff[5];
+            let a = if ((theta + dy).rem_euclid(dx)) > dx * 0.5 { theta - dx * 0.5 } else { theta + dx * 0.5 };
+            (r * a.cos(), r * a.sin())
+        }
+        21 => {
+            // rings — uses affine c.
+            let dx = aff[2] * aff[2] + EPS;
+            let rr = (r.rem_euclid(2.0 * dx)) - dx + r * (1.0 - dx);
+            (rr * theta.cos(), rr * theta.sin())
+        }
+        22 => {
+            // popcorn — uses affine c,f.
+            (x + aff[2] * (3.0 * y).tan().sin(), y + aff[5] * (3.0 * x).tan().sin())
+        }
+        23 => (2.0 / (r + 1.0) * x, 2.0 / (r + 1.0) * y), // eyefish
+        24 => (x.sin(), y),                                // cylinder
+        25 => (x.sin() / (y.cos() + EPS), y.tan()),        // tangent
+        26 => {
+            let s = (1.0 / ((x * x - y * y).powi(2) + EPS)).sqrt();
+            (x * s, y * s) // cross
+        }
+        27 => (x, 1.0 / (r * r.cos() + EPS)), // secant
+        28 => {
+            let sr = r.sqrt();
+            (sr * (theta * 0.5).cos(), sr * (theta * 0.5).sin()) // julia (deterministic half)
+        }
+        29 => {
+            let t = 1.0 / (r * (r2 + 1.0 / (r2 + EPS)) + EPS);
+            (x * t, y * t) // scry
         }
         _ => (x, y),
     }
@@ -179,7 +222,7 @@ fn chaos<F: FnMut(f64, f64, f64)>(
         let (ax, ay) = (a[0] * x + a[1] * y + a[2], a[3] * x + a[4] * y + a[5]);
         let (mut vx, mut vy) = (0.0, 0.0);
         for &(vid, w) in &f.vars {
-            let (px, py) = apply_variation(vid, ax, ay);
+            let (px, py) = apply_variation(vid, ax, ay, &f.affine);
             vx += w * px;
             vy += w * py;
         }
@@ -290,8 +333,33 @@ mod tests {
     #[test]
     fn variation_ids_resolve() {
         assert_eq!(variation_id("linear").unwrap(), 0);
-        assert_eq!(variation_id("Bubble").unwrap(), VARIATIONS.len() - 1);
+        assert_eq!(variation_id("bubble").unwrap(), 17);
+        assert_eq!(variation_id("Scry").unwrap(), VARIATIONS.len() - 1);
+        assert_eq!(VARIATIONS.len(), 30);
         assert!(variation_id("nope").is_err());
+    }
+
+    #[test]
+    fn every_variation_renders_non_flat() {
+        let pal = Palette::from_spec(&PaletteSpec::default()).unwrap();
+        for name in VARIATIONS {
+            let spec = FractalSpec {
+                kind: FractalKind::Flame,
+                width: 32,
+                height: 32,
+                flame: FlameSpec {
+                    functions: vec![
+                        f([0.6, 0.2, 0.1, -0.2, 0.6, 0.1], &[(name, 1.0)], 0.0, 1.0),
+                        f([0.4, 0.0, 0.4, 0.0, 0.4, 0.2], &[("linear", 1.0)], 1.0, 1.0),
+                    ],
+                    iterations: 120_000,
+                    ..FlameSpec::default()
+                },
+                ..FractalSpec::default()
+            };
+            let out = render(&spec, &pal, &|_, _| {}).unwrap();
+            assert!(out.chunks(3).any(|p| p != &out[0..3]), "variation {name} rendered flat");
+        }
     }
 
     #[test]

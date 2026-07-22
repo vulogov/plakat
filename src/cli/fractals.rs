@@ -128,7 +128,7 @@ pub struct FractalsArgs {
     pub flame_iterations: Option<u64>,
 
     /// Strange-attractor preset (for `--fractal-kind attractor`): clifford | dejong | bedhead |
-    /// duffing | ikeda | lorenz | rossler.
+    /// duffing | ikeda | lorenz | rossler | svensson | hopalong | fractal-dream.
     #[arg(long = "fractal-attractor-preset", value_name = "NAME", help_heading = "Per-family")]
     pub attractor_preset: Option<String>,
 
