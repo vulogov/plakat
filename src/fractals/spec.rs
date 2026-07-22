@@ -543,6 +543,10 @@ pub struct FractalSpec {
     pub height: u32,
     /// Viewport center in the complex plane, `[re, im]`.
     pub center: [f64; 2],
+    /// High-precision center as decimal strings `[re, im]` — set for perturbation-theory
+    /// **deep zoom** (past the `f64` limit, ~zoom 1e13). Empty = use `center`. Escape-time
+    /// Mandelbrot only. See `deepzoom`.
+    pub center_hi: [String; 2],
     /// Zoom factor: the shorter (vertical) axis spans `3.0 / zoom` complex units.
     pub zoom: f64,
     /// Iteration cap — the escape budget. Higher = more boundary detail (and slower).
@@ -598,6 +602,7 @@ impl Default for FractalSpec {
             width: 1024,
             height: 1024,
             center: [-0.5, 0.0],
+            center_hi: [String::new(), String::new()],
             zoom: 1.0,
             max_iter: 500,
             escape_radius: 256.0,

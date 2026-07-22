@@ -16,6 +16,7 @@ pub mod attractor;
 pub mod buddhabrot;
 pub mod coloring;
 pub mod compose;
+pub mod deepzoom;
 /// Interactive TUI explorer (`--fractal-explore`). Needs the TUI stack (`ui` feature).
 #[cfg(feature = "ui")]
 pub mod explorer;
@@ -129,8 +130,27 @@ pub fn render_spec_with_progress(spec: &FractalSpec, prog: ProgressFn) -> Result
             } else {
                 None
             };
-            let field = render::render_escape(&hi, prog);
-            coloring::colorize(&hi, &field, &palette, trap_img.as_ref())
+            // Perturbation-theory deep zoom: Mandelbrot past the f64 precision limit. Uses
+            // the high-precision `center_hi` when supplied. Matches render_escape's output.
+            let deep = hi.kind == FractalKind::Mandelbrot && hi.zoom >= deepzoom::DEEP_ZOOM_THRESHOLD;
+            if deep {
+                // Raise max_iter to the depth-scaled floor on the spec itself, so the
+                // colorizer normalizes `smooth` by the same budget (else deep frames wash out).
+                let mut d = hi.clone();
+                d.max_iter = deepzoom::effective_max_iter(hi.zoom, hi.max_iter);
+                // Linear `smooth` crushes deep-zoom dynamic range (most of the frame escapes
+                // fast, only filaments reach high iterations) → a near-flat dark image.
+                // Histogram equalization reveals the structure, so it's the deep-zoom default
+                // (any explicitly-chosen non-smooth coloring is still honored).
+                if d.coloring == Coloring::Smooth {
+                    d.coloring = Coloring::Histogram;
+                }
+                let field = deepzoom::render_mandelbrot(&d, prog)?;
+                coloring::colorize(&d, &field, &palette, trap_img.as_ref())
+            } else {
+                let field = render::render_escape(&hi, prog);
+                coloring::colorize(&hi, &field, &palette, trap_img.as_ref())
+            }
         }
     };
 

@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "4.1.0"
+version = "4.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -87,7 +87,7 @@ onnx = ["dep:candle-onnx"]
 # Track A (pure CPU render) is standalone; Track B (AI paint) reuses the generation stack that's
 # always compiled in. Photos-integration bits are `#[cfg(feature = "photos")]`-gated (Q7), so
 # `fractals` stays buildable without `photos`.
-fractals = ["dep:palette", "dep:rayon", "dep:num-complex", "dep:nalgebra"]
+fractals = ["dep:palette", "dep:rayon", "dep:num-complex", "dep:nalgebra", "dep:astro-float"]
 
 [dependencies]
 # Hardware probe (doctor --capability): system RAM detection.
@@ -170,6 +170,7 @@ palette     = { version = "0.7",  optional = true }       # Lab/LCh perceptual g
 rayon       = { version = "1",    optional = true }       # parallel per-pixel escape-time iteration
 num-complex = { version = "0.4",  optional = true }       # Complex<f64> for escape-time + IFS math
 nalgebra    = { version = "0.32", optional = true }       # 3D vector math for the raymarched fractals (Phase 7)
+astro-float = { version = "0.9",  optional = true }       # pure-Rust arbitrary-precision float — the perturbation-theory deep-zoom reference orbit (v4.2; no GMP/C dep)
 notify = { version = "7", optional = true }               # cross-platform FS watcher
 # Direct PNG access for tEXt-chunk metadata writes (PNG metadata +
 # JSON sidecar workflow). `image` doesn't expose the chunk API.

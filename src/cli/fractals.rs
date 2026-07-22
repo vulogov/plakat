@@ -315,6 +315,12 @@ fn resolve_spec(args: &FractalsArgs) -> Result<FractalSpec> {
     }
     if let Some(c) = &args.center {
         spec.center = parse_pair(c, "center")?;
+        // Preserve the full-precision decimal strings for perturbation deep zoom (used
+        // only when zoom is deep; the f64 `center` drives the normal path).
+        let parts: Vec<&str> = c.split(',').map(str::trim).collect();
+        if parts.len() == 2 {
+            spec.center_hi = [parts[0].to_string(), parts[1].to_string()];
+        }
     }
     if let Some(z) = args.zoom {
         spec.zoom = z;
