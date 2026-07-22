@@ -12,6 +12,7 @@
 //! generators.
 
 pub mod ai_pass;
+pub mod animation;
 pub mod attractor;
 pub mod buddhabrot;
 pub mod coloring;

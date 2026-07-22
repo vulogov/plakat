@@ -18,11 +18,11 @@ precision — the per-pixel math stays `f64`, so deep zoom is fast.
 - [ ] **Glitch handling** (Pauldelbrot's criterion) + secondary references so deep zooms stay correct.
 - [ ] CLI: `--fractal-center` accepts high-precision decimals; verify vs f64 at moderate zoom.
 
-## Phase B — fractal animation → video
+## Phase B — fractal animation → video (DONE)
 
-- [ ] Zoom-in animation (geometric zoom into a point) and Julia `c`-sweep / parameter-sweep animations,
+- [x] Zoom-in animation (geometric zoom into a point) and Julia `c`-sweep / parameter-sweep animations,
       rendered frame-by-frame (Track A) and encoded to mp4/gif via the existing `animate` ffmpeg path.
-- [ ] `--fractal-animate {zoom|julia-sweep|param-sweep}`, `--fractal-frames N`, `--fractal-fps`.
+- [x] `--fractal-animate {zoom|julia-sweep|param-sweep}`, `--fractal-frames N`, `--fractal-fps`.
 
 ## Phase C — more families & flame variations
 

@@ -179,6 +179,20 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-grid", value_name = "RxC", help_heading = "Composition")]
     pub grid: Option<String>,
 
+    /// Render an animation to video instead of a still: zoom | julia-sweep | param-sweep.
+    /// Output format follows `--fractal-out`'s extension (.mp4 needs ffmpeg; .gif is
+    /// pure-Rust). `zoom` zooms from 1× to `--fractal-zoom` (deep zooms use perturbation).
+    #[arg(long = "fractal-animate", value_name = "MODE", help_heading = "Animation")]
+    pub animate: Option<String>,
+
+    /// Number of animation frames (default 120).
+    #[arg(long = "fractal-frames", value_name = "N", help_heading = "Animation")]
+    pub frames: Option<u32>,
+
+    /// Animation frame rate (default 30).
+    #[arg(long = "fractal-fps", value_name = "F", help_heading = "Animation")]
+    pub fps: Option<u32>,
+
     /// Output PNG path (the deterministic Track-A render).
     #[arg(long = "fractal-out", value_name = "PATH", default_value = "out/fractal.png", help_heading = "Input & output")]
     pub out: PathBuf,
@@ -268,6 +282,14 @@ fn painted_path(out: &Path) -> PathBuf {
     match out.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.join(name),
         _ => PathBuf::from(name),
+    }
+}
+
+/// Default an animation output to `.mp4` when the path is still a still-image extension.
+fn anim_out_path(out: &Path) -> PathBuf {
+    match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()) {
+        Some(e) if e == "mp4" || e == "gif" || e == "webm" => out.to_path_buf(),
+        _ => out.with_extension("mp4"),
     }
 }
 
@@ -541,6 +563,33 @@ pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
         return Ok(());
     }
 
+    // Animation mode: render frames + encode to video.
+    if let Some(mode_s) = &args.animate {
+        let mode = fractals::animation::AnimMode::parse(mode_s)?;
+        let frames = args.frames.unwrap_or(120);
+        let fps = args.fps.unwrap_or(30);
+        let out = anim_out_path(&args.out);
+        pb.set_style(
+            ProgressStyle::with_template("  {spinner:.cyan} frame [{bar:30.cyan/blue}] {pos}/{len}  {elapsed}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar())
+                .progress_chars("=>-"),
+        );
+        let report = |done: u64, total: u64| {
+            if pb.length() != Some(total) {
+                pb.set_length(total.max(1));
+            }
+            pb.set_position(done);
+        };
+        fractals::animation::render_animation(&spec, mode, frames, fps, &out, &report)?;
+        pb.finish_and_clear();
+        println!(
+            "animated {mode_s} {frames} frames @ {fps}fps → {} ({:.1}s)",
+            out.display(),
+            started.elapsed().as_secs_f64()
+        );
+        return Ok(());
+    }
+
     pb.set_style(
         ProgressStyle::with_template(
             "  {spinner:.cyan} {msg} [{bar:30.cyan/blue}] {percent:>3}%  {elapsed}",
@@ -616,6 +665,9 @@ mod tests {
             trap_image: None,
             compose: None,
             grid: None,
+            animate: None,
+            frames: None,
+            fps: None,
             kind: None,
             center: None,
             zoom: None,
