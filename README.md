@@ -1,5 +1,12 @@
 # plakat
 
+[![Crates.io](https://img.shields.io/crates/v/plakat?label=crates.io&color=orange)](https://crates.io/crates/plakat)
+[![Latest release](https://img.shields.io/github/v/release/vulogov/plakat?label=release&color=blue)](https://github.com/vulogov/plakat/releases/latest)
+[![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
+
+> **v4.1.0 — `plakat fractals`**: a pure-Rust fractal studio (17 families) + an AI paint pass that turns a fractal's structure into a real scene. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.1.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
+
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
 Local text-to-image **and animation** across the major open model families —
