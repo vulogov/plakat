@@ -8,6 +8,22 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.1.0 — `plakat fractals`: render fractals, then paint scenes from their structure
+
+A pure-Rust **fractal studio** + an AI paint pass that turns a fractal's *structure* into a real
+image. In the default build.
+
+- **Track A** (deterministic, offline, GPU-free): **17 families** — escape-time classics (Mandelbrot,
+  Julia, Burning Ship, Tricorn, Multibrot, Newton, Nova, Phoenix, Magnet, Sine, Exp), buddhabrot, IFS
+  (Barnsley fern, dragon…), L-systems (Koch, Hilbert, plants…), fractal flames, strange attractors
+  (Lorenz, Clifford…), 3D raymarched (Mandelbulb, Mandelbox, Menger…). 7 coloring modes (incl. a photo
+  orbit-trap), 8 Lab-space palettes, supersampling. Reproducible (spec embedded in every PNG →
+  `--fractal-clone`), prose→fractal (`--fractal-from`), composition grids, and a TUI explorer
+  (`--fractal-explore`).
+- **Track B** (optional, GPU): feed the fractal's structure into Stable Diffusion via ControlNet.
+  `txt2img` (default) paints a real scene *shaped by* the fractal; `img2img` a scene *made of* it.
+- Plus a **CLI-wide grouped `--help`** pass (labeled flag sections + a shared Global options group).
+
 ## What's new in 4.0.0 — `plakat photos`: the flagship, complete
 
 The whole 3.x line built **`plakat photos`** — a full-screen terminal photo & image collection manager

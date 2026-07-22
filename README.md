@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.1.0 — `plakat fractals`**: a pure-Rust fractal studio (17 families) + an AI paint pass that turns a fractal's structure into a real scene. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.1.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
+> **v4.2.0 — `plakat fractals`: depth**: arbitrary-depth perturbation zoom, animation → video (mp4/gif), 30 flame variations + 10 attractors, and LLM-backed prose→spec. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.2.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,41 +24,27 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.1.0 — `plakat fractals`: render fractals, then paint scenes from their structure
+## What's new in 4.2.0 — `plakat fractals`: depth
 
-A new pure-Rust **fractal studio**, plus an AI paint pass that turns a fractal's *structure* into a
-real image — in the default build, so every prebuilt binary has `plakat fractals` (opt out with
-`--no-default-features`).
+The fractal studio ([4.1.0](Documentation/RELEASE_HISTORY.md)) goes deeper on four fronts.
 
-**Track A — a deterministic, offline, GPU-free renderer** (same spec → byte-identical pixels):
+- **Perturbation-theory deep zoom** — `f64` centers pixelate around zoom 1e13; now the Mandelbrot
+  zooms **arbitrarily deep** (verified to 1e20+) via a high-precision reference orbit (pure-Rust
+  `astro-float`, no GMP) + cheap `f64` per-pixel deltas, with Pauldelbrot glitch correction. Just pass
+  a high-precision `--fractal-center` and a big `--fractal-zoom`.
+- **Animation → video** — `--fractal-animate {zoom | julia-sweep | param-sweep}` renders a frame
+  sequence and encodes to **MP4** (ffmpeg) or **GIF** (pure-Rust); zoom-ins automatically switch to the
+  perturbation path as they pass the `f64` limit. Tune with `--fractal-frames` / `--fractal-fps`.
+- **More families** — fractal-flame variations **18 → 30** (waves, fan, rings, popcorn, eyefish,
+  cross, scry…) and strange attractors **7 → 10** (svensson, hopalong, fractal-dream).
+- **LLM-backed prose→spec** — `--fractal-from` gains an optional `--fractal-provider`
+  (deepseek/gemini/local/auto): a language model maps an arbitrary description to a spec, falling back
+  to the offline keyword mapper on any failure.
 
-- **17 families** — the escape-time classics (Mandelbrot, Julia, Burning Ship, Tricorn, Multibrot,
-  Newton, Nova, Phoenix, Magnet, Sine, Exp), **buddhabrot**, **IFS** chaos-game (Barnsley fern,
-  dragon…), **L-systems** (Koch, Hilbert, plants…), **fractal flames**, **strange attractors**
-  (Lorenz, Clifford…), and **3D distance-estimated raymarched** fractals (Mandelbulb, Mandelbox,
-  Menger…).
-- **7 coloring modes** (smooth, histogram, distance-estimate, orbit-trap, angle, stripe, and a **photo
-  orbit-trap** that textures a Julia set with your image), 8 **Lab-space** palettes, supersampling AA.
-- **Reproducible + explorable** — every PNG embeds its spec (`--fractal-clone`); prose→fractal
-  (`--fractal-from`); composition **grids** (`--fractal-compose`); and an interactive **TUI explorer**
-  (`--fractal-explore`) to pan / zoom / retune live.
+Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Documentation/Tutorials/FRACTALS_TUTORIAL.md).
+Everything from the 2.x/3.x/4.0/4.1 line is unchanged; default CLI image output stays byte-identical.
 
-**Track B — optional AI enhancement** (needs a GPU + model):
-
-- Feed the fractal's structure into Stable Diffusion via **ControlNet**. **`txt2img`** (default) paints
-  a real scene *shaped by* the fractal — a golden-hour seascape whose waves follow the boundary
-  contour; **`img2img`** makes a scene *made of* the fractal. One dial (`--fractal-sd-control-strength`)
-  slides from "loosely inspired" to "fractal drives the composition."
-
-**Plus a CLI-wide `--help` readability pass** — every command now groups its flags into labeled
-sections (Model & sampler · Prompt & text · ControlNet · Size & output · …) with a shared **Global
-options** group, so the help screen is scannable even on the 90-flag commands.
-
-Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
-(with an appendix of ASCII reference tables for every family, coloring, and preset). Everything from
-the 2.x/3.x/4.0 line is unchanged; default CLI image output stays byte-identical.
-
-**Earlier releases** (v0.13 – 4.0):
+**Earlier releases** (v0.13 – 4.1):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
