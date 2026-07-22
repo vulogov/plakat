@@ -5,18 +5,18 @@
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
-## Phase A — perturbation-theory deep zoom (the marquee)
+## Phase A — perturbation-theory deep zoom (DONE)
 
 `f64` runs out of mantissa around zoom ≈ 1e13 (the center can't be resolved finer → pixelation). Fix it
 with **perturbation theory**: compute one high-precision **reference orbit**, then render every pixel as
 a cheap `f64` **delta** relative to it. Only the reference (and the center coordinate) need arbitrary
 precision — the per-pixel math stays `f64`, so deep zoom is fast.
 
-- [ ] Pure-Rust arbitrary-precision float for the reference orbit (no `rug`/GMP C dep).
-- [ ] High-precision center in the spec (decimal strings) + auto-enable perturbation past the `f64` limit.
-- [ ] Reference orbit + `δ_{n+1} = 2·Zₙ·δₙ + δₙ² + δc` per-pixel iteration; smooth coloring.
-- [ ] **Glitch handling** (Pauldelbrot's criterion) + secondary references so deep zooms stay correct.
-- [ ] CLI: `--fractal-center` accepts high-precision decimals; verify vs f64 at moderate zoom.
+- [x] Pure-Rust arbitrary-precision float for the reference orbit (no `rug`/GMP C dep).
+- [x] High-precision center in the spec (decimal strings) + auto-enable perturbation past the `f64` limit.
+- [x] Reference orbit + `δ_{n+1} = 2·Zₙ·δₙ + δₙ² + δc` per-pixel iteration; smooth coloring.
+- [x] **Glitch handling** (Pauldelbrot's criterion) + secondary references so deep zooms stay correct.
+- [x] CLI: `--fractal-center` accepts high-precision decimals; verify vs f64 at moderate zoom.
 
 ## Phase B — fractal animation → video (DONE)
 
