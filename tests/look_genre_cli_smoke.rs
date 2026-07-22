@@ -73,7 +73,8 @@ fn bundled_looks_catalog_loads_from_cwd() {
     use plakat::preset::{Catalog, Kind};
     let cat = Catalog::load_with_user_dir(Kind::Look, None)
         .expect("load bundled looks");
-    assert_eq!(cat.entries.len(), 8);
+    // 8 art mediums + the `pony` prompt-convention look.
+    assert_eq!(cat.entries.len(), 9);
     assert!(cat.find("watercolor").is_some());
     assert!(cat.find("oil-painting").is_some());
 }
