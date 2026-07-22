@@ -8,6 +8,33 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.0.0 — `plakat photos`: the flagship, complete
+
+The whole 3.x line built **`plakat photos`** — a full-screen terminal photo & image collection manager
+— end to end. **4.0 is the milestone that caps it**: no new pillars, a hardening / consistency / docs
+pass, and a "done" stamp on a manager that now does the lot. What it is, in one place:
+
+- **Organize** — a folder tree of albums, smart albums (a composable filter grammar), flatten browse,
+  move / copy / trash, ratings / flags / colour labels / tags — all non-destructive in a per-album,
+  human-editable `album.hjson` (never a hidden database).
+- **Edit** — a real darkroom: exposure/tone/colour adjustments, levels + curves, layers & masks,
+  local & brush masks, a crosshair retouch mode (heal / clone / red-eye / dodge-burn), looks & LUTs —
+  every edit replayable over the pristine original.
+- **Metadata** — a title / author / copyright / date / geotag editor + EXIF smart-album filters, and
+  binary EXIF write-back (JPEG / PNG / WebP / TIFF) so metadata + tags travel with the file.
+- **AI** — generate / img2img / portrait / relight / upscale / face, aesthetic auto-cull, all via a
+  resident, OOM-guarded worker.
+- **Collaborate** — keep the library on Dropbox / iCloud / NFS and open it in several instances at
+  once: a lock-free three-way merge, live cross-instance sync, presence (`:who`), conflict review
+  (`:conflicts`).
+- **Present** — a portable offline web gallery, portfolio + contact sheet, a slideshow with shuffle +
+  Ken Burns, and an offline map with reverse-geocoding.
+- **Formats & scale** — RAW + HEIC / HEIF / AVIF; a derived index that keeps browse / smart albums /
+  search instant on huge libraries (`:all`, `:stats`, `:reindex`); and visual search at scale — a
+  resident CLIP model, int8 vectors, and a persisted HNSW index for sub-linear search.
+
+Everything from the 2.x/3.x line unchanged; default CLI image output byte-identical.
+
 ## What's new in 3.13.0 — `plakat photos`: visual search at scale
 
 3.12 made the manager fast on large libraries. **3.13 makes visual search itself scale** — three

@@ -47,15 +47,16 @@ no-default-features = true
 features = []
 
 [features]
-# `ui` (`plakat ui`) and `photos` (`plakat photos`, the 3.x flagship) are on by
-# default so both TUIs work out of the box. No GPU backend is selected by default —
-# `cargo install plakat` builds a CPU-only binary that runs everywhere but is slow.
-# For real perf, pick one:
+# `ui` (`plakat ui`), `photos` (`plakat photos`, the 3.x flagship), and `fractals`
+# (`plakat fractals`, the 4.1 flagship) are on by default so they work out of the box.
+# `fractals`' extra deps are all pure-Rust and small. No GPU backend is selected by
+# default — `cargo install plakat` builds a CPU-only binary that runs everywhere but is
+# slow. For real perf, pick one:
 #   macOS:        cargo install plakat --features metal
 #   Linux+NVIDIA: cargo install plakat --features cuda
 #   Linux+NVIDIA: cargo install plakat --features cudnn   (cuda + cuDNN)
 # CLI-only (no TUI deps): cargo build --no-default-features
-default = ["ui", "photos"]
+default = ["ui", "photos", "fractals"]
 # The `plakat ui` terminal UI (RFC TUI-1). Default-on; opt out with
 # --no-default-features for the lean CLI/pipeline build.
 ui = ["dep:ratatui", "dep:ratatui-image", "dep:crossterm", "dep:tui-textarea", "dep:uuid"]

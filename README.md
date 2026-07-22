@@ -17,36 +17,41 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.0.0 — `plakat photos`: the flagship, complete
+## What's new in 4.1.0 — `plakat fractals`: render fractals, then paint scenes from their structure
 
-The whole 3.x line built **`plakat photos`** — a full-screen terminal photo & image collection manager
-— end to end. **4.0 is the milestone that caps it**: no new pillars, a hardening / consistency / docs
-pass, and a "done" stamp on a manager that now does the lot. What it is, in one place:
+A new pure-Rust **fractal studio**, plus an AI paint pass that turns a fractal's *structure* into a
+real image — in the default build, so every prebuilt binary has `plakat fractals` (opt out with
+`--no-default-features`).
 
-- **Organize** — a folder tree of albums, smart albums (a composable filter grammar), flatten browse,
-  move / copy / trash, ratings / flags / colour labels / tags — all non-destructive in a per-album,
-  human-editable `album.hjson` (never a hidden database).
-- **Edit** — a real darkroom: exposure/tone/colour adjustments, levels + curves, **layers & masks**,
-  **local & brush masks**, a crosshair **retouch** mode (heal / clone / red-eye / dodge-burn), looks &
-  LUTs — every edit replayable over the pristine original.
-- **Metadata** — a title / author / copyright / date / geotag editor + EXIF smart-album filters, and
-  **binary EXIF write-back** (JPEG / PNG / WebP / TIFF) so metadata + tags travel with the file.
-- **AI** — generate / img2img / portrait / relight / upscale / face, aesthetic auto-cull, all via a
-  resident, OOM-guarded worker.
-- **Collaborate** — keep the library on **Dropbox / iCloud / NFS** and open it in **several instances
-  at once**: a lock-free three-way merge, live cross-instance sync, presence (`:who`), and conflict
-  review (`:conflicts`).
-- **Present** — a portable offline **web gallery**, portfolio + contact sheet, a **slideshow** with
-  shuffle + **Ken Burns**, and an offline **map** with reverse-geocoding.
-- **Formats & scale** — RAW + **HEIC / HEIF / AVIF**; a **derived index** that keeps browse / smart
-  albums / search instant on huge libraries (`:all`, `:stats`, `:reindex`); and **visual search at
-  scale** — a resident CLIP model, int8 vectors, and a persisted **HNSW** index for sub-linear search.
+**Track A — a deterministic, offline, GPU-free renderer** (same spec → byte-identical pixels):
 
-Start with the tour: [`Documentation/Tutorials/PHOTOS_TUTORIAL.md`](Documentation/Tutorials/PHOTOS_TUTORIAL.md)
-· every key: [`Documentation/Photos/KEYMAP.md`](Documentation/Photos/KEYMAP.md). Everything from the
-2.x/3.x line is unchanged; default CLI image output stays byte-identical.
+- **17 families** — the escape-time classics (Mandelbrot, Julia, Burning Ship, Tricorn, Multibrot,
+  Newton, Nova, Phoenix, Magnet, Sine, Exp), **buddhabrot**, **IFS** chaos-game (Barnsley fern,
+  dragon…), **L-systems** (Koch, Hilbert, plants…), **fractal flames**, **strange attractors**
+  (Lorenz, Clifford…), and **3D distance-estimated raymarched** fractals (Mandelbulb, Mandelbox,
+  Menger…).
+- **7 coloring modes** (smooth, histogram, distance-estimate, orbit-trap, angle, stripe, and a **photo
+  orbit-trap** that textures a Julia set with your image), 8 **Lab-space** palettes, supersampling AA.
+- **Reproducible + explorable** — every PNG embeds its spec (`--fractal-clone`); prose→fractal
+  (`--fractal-from`); composition **grids** (`--fractal-compose`); and an interactive **TUI explorer**
+  (`--fractal-explore`) to pan / zoom / retune live.
 
-**Earlier releases** (v0.13 – 3.13):
+**Track B — optional AI enhancement** (needs a GPU + model):
+
+- Feed the fractal's structure into Stable Diffusion via **ControlNet**. **`txt2img`** (default) paints
+  a real scene *shaped by* the fractal — a golden-hour seascape whose waves follow the boundary
+  contour; **`img2img`** makes a scene *made of* the fractal. One dial (`--fractal-sd-control-strength`)
+  slides from "loosely inspired" to "fractal drives the composition."
+
+**Plus a CLI-wide `--help` readability pass** — every command now groups its flags into labeled
+sections (Model & sampler · Prompt & text · ControlNet · Size & output · …) with a shared **Global
+options** group, so the help screen is scannable even on the 90-flag commands.
+
+Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
+(with an appendix of ASCII reference tables for every family, coloring, and preset). Everything from
+the 2.x/3.x/4.0 line is unchanged; default CLI image output stays byte-identical.
+
+**Earlier releases** (v0.13 – 4.0):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
