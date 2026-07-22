@@ -303,6 +303,37 @@ plakat fractals --fractal-from "icy julia, intricate" \
 
 ---
 
+# Part 3a — Batch rendering with `plakat scenario`
+
+A scenario can batch-render fractals with `type: fractal` tasks — single fractals, compose grids,
+animations, or AI-painted — alongside `generate` / `map` tasks. **Quote keys and values inside the
+inline `fractal: { … }` block** (HJSON is strict about hyphenated keys):
+
+```hjson
+{
+  out: "out/fractals"
+  seed: 100
+  tasks: [
+    { name: "mandel", type: "fractal", fractal: { kind: "mandelbrot", size: "800x800", palette: "fire" } }
+    { name: "fern",   type: "fractal", fractal: { kind: "ifs", "ifs-preset": "barnsley-fern", palette: "earth" } }
+    { name: "sweep",  type: "fractal", fractal: { compose: "julia-sweep", grid: "4x4", size: "1200x1200" } }
+    { name: "scene",  type: "fractal", fractal: { kind: "julia", center: "0,0", zoom: 40,
+        paint: true, prompt: "a frozen alien landscape, aurora" } }
+  ]
+}
+```
+
+```bash
+plakat scenario my_fractals.hjson
+#   → out/fractals/mandel/fractal.png, .../fern/fractal.png, .../sweep/fractal.png,
+#     .../scene/fractal.painted.png
+```
+
+Each task's `fractal:` block accepts the same options as the CLI flags (without the `--fractal-`
+prefix): `kind`, `center`, `zoom`, `iter`, `size`, `palette`, `coloring`, the `*-preset` /
+`raymarch-shape` selectors, `compose`/`grid`, `animate`/`frames`/`fps`, and paint (`paint`, `prompt`,
+`paint-mode`, `sd-model`, `sd-strength`, `sd-control-strength`). `seed` defaults to the scenario seed.
+
 # Part 4 — Composition grids (`--fractal-compose`)
 
 Make a "contact sheet" of related fractals in one image.

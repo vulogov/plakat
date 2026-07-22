@@ -30,6 +30,7 @@ pub mod plot;
 pub mod progress;
 pub mod prompt;
 pub mod raymarch;
+pub mod scenario_task;
 pub mod render;
 pub mod spec;
 

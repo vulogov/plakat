@@ -942,6 +942,11 @@ struct TaskDef {
     /// refer to the top-level `personas` list (resolved to photos at run time).
     #[serde(default)]
     multiperson: Option<crate::pipelines::multiperson::scenario_task::MultipersonTaskSpec>,
+
+    /// The fractal task body (only consulted for `type: fractal` tasks).
+    #[cfg(feature = "fractals")]
+    #[serde(default)]
+    fractal: Option<crate::fractals::scenario_task::FractalTaskCfg>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -1007,6 +1012,8 @@ enum TaskKind {
     Animate,
     Map,
     Multiperson,
+    #[cfg(feature = "fractals")]
+    Fractal,
 }
 
 impl TaskKind {
@@ -1020,9 +1027,11 @@ impl TaskKind {
             "animatediff" | "animate" => Ok(Self::Animate),
             "map" => Ok(Self::Map),
             "multiperson" | "multi-person" => Ok(Self::Multiperson),
+            #[cfg(feature = "fractals")]
+            "fractal" | "fractals" => Ok(Self::Fractal),
             other => bail!(
                 "scenario task type {other:?} not recognised \
-                 (expected: generate, animatediff, map, multiperson)"
+                 (expected: generate, animatediff, map, multiperson, fractal)"
             ),
         }
     }
@@ -1065,8 +1074,13 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
     match (last, current) {
         (Some(TaskKind::Generate), TaskKind::Animate) => CacheEviction::DropT2i,
         (Some(TaskKind::Animate), TaskKind::Generate) => CacheEviction::DropAnimate,
-        // A map / multiperson task loads its own SD pipeline(s) internally — free
-        // any cached t2i / animate pipeline first.
+        // A map / multiperson / fractal task loads its own SD pipeline(s) internally (or
+        // none, for a pure Track-A fractal) — free any cached t2i / animate pipeline first.
+        #[cfg(feature = "fractals")]
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Fractal) => {
+            CacheEviction::DropAll
+        }
+        #[cfg(not(feature = "fractals"))]
         (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson) => {
             CacheEviction::DropAll
         }
@@ -1583,6 +1597,13 @@ pub async fn run_with_events(
                         .map_err(|e| anyhow::anyhow!("task {:?}: identity {id:?}: {e}", t.name))?;
                 }
             }
+            #[cfg(feature = "fractals")]
+            TaskKind::Fractal => {
+                // Validate the spec up front (kind/coloring/presets parse, dims non-zero).
+                let cfg = t.fractal.clone().unwrap_or_default();
+                crate::fractals::scenario_task::build_spec(&cfg, 0)
+                    .with_context(|| format!("task {:?} (fractal)", t.name))?;
+            }
         }
     }
 
@@ -1599,10 +1620,12 @@ pub async fn run_with_events(
     for t in &s.tasks {
         // Map / multiperson tasks don't use scene/weather styling — skip the
         // cross-reference check (multiperson carries its own scene prompt).
-        if matches!(
-            TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref()),
-            Ok(TaskKind::Map | TaskKind::Multiperson)
-        ) {
+        let tk = TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref());
+        if matches!(tk, Ok(TaskKind::Map | TaskKind::Multiperson)) {
+            continue;
+        }
+        #[cfg(feature = "fractals")]
+        if matches!(tk, Ok(TaskKind::Fractal)) {
             continue;
         }
         if !scenes.contains_key(t.scene.as_str()) {
@@ -2954,6 +2977,51 @@ pub async fn run_with_events(
                     task_records.push(TaskRunRecord {
                         name: task.name.clone(),
                         kind: "map".to_string(),
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
+            seed_offset += count as u64;
+            continue;
+        }
+
+        // 4.3.0: fractal-task dispatch. Renders Track A / composition / animation (no GPU)
+        // or an AI-painted fractal, to `<out>/<name>/fractal.{png,mp4}` (+ `.painted.png`).
+        #[cfg(feature = "fractals")]
+        if matches!(task_kind, TaskKind::Fractal) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset);
+            let task_out = out_root.join(safe_name(&task.name));
+            let fractal_result: Result<()> = async {
+                let cfg = task.fractal.clone().unwrap_or_default();
+                crate::fractals::scenario_task::run_fractal_task(&cfg, task_seed, device.clone(), &task_out, args.dry_run)
+                    .await
+                    .map(|_| ())
+            }
+            .await;
+            let rec_kind = "fractal".to_string();
+            match fractal_result {
+                Ok(()) => task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: rec_kind,
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed),
+                    note: None,
+                    error: None,
+                }),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} task {:?}: {}",
+                        style("✗ failed").red().bold(),
+                        task.name,
+                        e
+                    ));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: rec_kind,
                         status: "failed".to_string(),
                         seed: Some(task_seed),
                         note: None,
