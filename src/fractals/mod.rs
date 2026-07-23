@@ -17,6 +17,7 @@ pub mod attractor;
 pub mod buddhabrot;
 pub mod coloring;
 pub mod compose;
+pub mod control_source;
 pub mod deepzoom;
 /// Interactive TUI explorer (`--fractal-explore`). Needs the TUI stack (`ui` feature).
 #[cfg(feature = "ui")]

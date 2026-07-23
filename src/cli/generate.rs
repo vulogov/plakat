@@ -377,6 +377,14 @@ pub struct GenerateArgs {
     #[arg(help_heading = "ControlNet & regional", long = "control-from", value_name = "PATH")]
     pub control_from: Option<PathBuf>,
 
+    /// **v4.3**: use a FRACTAL as the ControlNet source — render it (at the output size) and
+    /// feed its structure (canny/lineart/depth, auto per family) as conditioning. Accepts a
+    /// fractal spec file, a `kind[:preset]` shorthand (`flame`, `ifs:barnsley-fern`,
+    /// `raymarch:menger`), or prose. The inverse of `plakat fractals --fractal-paint`.
+    /// Needs `--features fractals`.
+    #[arg(help_heading = "ControlNet & regional", long = "control-fractal", value_name = "SPEC")]
+    pub control_fractal: Option<String>,
+
     /// Multiplier applied to ControlNet residuals. 0.0 = ignore the
     /// conditioner; 1.0 = full diffusers default; >1.0 over-emphasises
     /// the structure at the cost of prompt adherence. Sweet spot 0.6–1.0.
@@ -992,6 +1000,30 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         crate::imaging::sizes::resolve(args.size, args.aspect.as_deref(), args.base)?;
     crate::imaging::sizes::warn_large_for_metal(width, height, &device);
     std::fs::create_dir_all(&args.out)?;
+
+    // v4.3: `--control-fractal` — render a fractal at the output size and use its structure as
+    // ControlNet conditioning (kept alive for the whole run so the annotator can read it).
+    #[cfg(feature = "fractals")]
+    let _fractal_control_tmp = if let Some(src) = &args.control_fractal {
+        let mut spec = crate::fractals::control_source::resolve(src)?;
+        spec.width = width;
+        spec.height = height;
+        let tmp = tempfile::tempdir().context("fractal control scratch dir")?;
+        let path = tmp.path().join("fractal-control.png");
+        crate::fractals::render_to_file(&spec, &path)
+            .with_context(|| format!("rendering control fractal {src:?}"))?;
+        args.control_from = Some(path);
+        if args.control.is_none() {
+            args.control = Some(crate::fractals::ai_pass::default_control_for_kind(spec.kind));
+        }
+        Some(tmp)
+    } else {
+        None
+    };
+    #[cfg(not(feature = "fractals"))]
+    if args.control_fractal.is_some() {
+        anyhow::bail!("--control-fractal needs the fractals feature (rebuild with --features fractals)");
+    }
 
     // v0.14 phase 6: apply the `--fast` preset before LoRA / steps /
     // guidance get snapshotted into the t2i Request. Sequencing
@@ -1927,6 +1959,7 @@ mod tests {
             control: None,
             control_image: None,
             control_from: None,
+            control_fractal: None,
             control_strength: 1.0,
             control_start: 0.0,
             control_end: 1.0,

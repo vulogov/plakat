@@ -10,9 +10,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [x] A `fractal` task type in the HJSON scenario system: batch-render fractals (and optionally paint
       them) alongside `generate` / `map` tasks, with the same seed / count / out conventions.
 
-## Phase 2 — `plakat generate --control fractal`
+## Phase 2 — `plakat generate --control-fractal` (DONE)
 
-- [ ] Use a fractal as ControlNet conditioning for a normal generation: render a fractal (spec or a
+- [x] Use a fractal as ControlNet conditioning for a normal generation: render a fractal (spec or a
       quick `kind:...` string) and feed its canny/lineart into `generate` — fractal *structure* guiding
       any prompt, from the generate side (the inverse of `--fractal-paint`).
 

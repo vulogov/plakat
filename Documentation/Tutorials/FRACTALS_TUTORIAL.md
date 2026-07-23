@@ -504,6 +504,23 @@ plakat fractals --fractal-center=-0.745,0.113 --fractal-zoom 60 --fractal-palett
 - Higher (0.8+) reimagines more freely (but a dark fractal stays dark — that's the
   reason txt2img is the default).
 
+## 7.6b The inverse: a fractal as ControlNet for `plakat generate`
+
+Track B paints *from* the fractals command. The **inverse** lives on `plakat generate`:
+`--control-fractal` renders a fractal and uses its structure as ControlNet conditioning for
+any prompt — the fractal shapes a normal generation.
+
+```bash
+plakat generate "a stained glass window, intricate" --model sd15 --size 768x768 \
+  --control-fractal "julia" --control-strength 0.9
+#   → a stained-glass window whose leading follows the Julia set's boundary
+```
+
+`--control-fractal` accepts a fractal spec file, a `kind[:preset]` shorthand
+(`flame`, `ifs:barnsley-fern`, `raymarch:menger`), or prose. The control type is auto per
+family (canny / lineart / depth) unless you set `--control`; combine with the usual
+`--control-strength`.
+
 ## 7.7 3D fractals + depth control
 
 For raymarched fractals, txt2img uses a **depth** ControlNet — the fractal's actual 3D
