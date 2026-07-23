@@ -8,6 +8,28 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.3.0 — `plakat fractals`: ecosystem
+
+The fractal studio (4.1 render + 4.2 depth) stops being a standalone command and becomes **pervasive** —
+wired into the rest of plakat, five ways.
+
+- **Fractal as ControlNet for any generation** — `plakat generate --control-fractal <spec | kind[:preset] |
+  prose>` renders a fractal and feeds its structure (canny / lineart / depth, auto per family) into a
+  normal txt2img. The inverse of `--fractal-paint`: a scene *guided by* a fractal.
+- **Batch fractals in scenarios** — a `type: fractal` task in the HJSON scenario system: single renders,
+  compose grids, animations, or AI-painted, alongside `generate` / `map` tasks.
+- **Bund scripting** — five `plakat.fractal.*` words (`render` / `compose` / `paint` / `animate` /
+  `size`) render or paint a fractal straight into an image handle, so it flows through `plakat.save` /
+  `plakat.upscale` / `plakat.relight` like any generated image.
+- **Photo-manager integration** — the image-view info panel shows a **fractal** section for any plakat
+  fractal PNG (kind, framing, palette, paint recipe), and `Ctrl-B n f` (**fractalize**) renders a Julia
+  set textured by the selected photo (image orbit-trap).
+- **Aesthetic keep-best** — `--fractal-compose --fractal-keep-best K` scores every cell with the LAION
+  predictor (the `plakat rank` model), highlights the top-K in gold, and writes each as its own file.
+
+Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Tutorials/FRACTALS_TUTORIAL.md).
+Everything from the 2.x/3.x/4.0/4.1/4.2 line is unchanged; default CLI image output stays byte-identical.
+
 ## What's new in 4.2.0 — `plakat fractals`: depth
 
 The fractal studio ([4.1.0](#whats-new-in-410--plakat-fractals-render-fractals-then-paint-scenes-from-their-structure))

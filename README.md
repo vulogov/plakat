@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.3.0 — `plakat fractals`: ecosystem**: the fractal studio wired into the rest of plakat — `generate --control-fractal`, a `fractal` scenario task, `plakat.fractal.*` Bund words, a photos fractalspec panel + fractalize, and aesthetic `--fractal-keep-best`. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.3.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
+> **v4.4.0 — SDXL few-step**: 4–8-step SDXL via `--fast lightning-sdxl-8` (SDXL-Lightning) and `--fast hyper-sdxl-8` (Hyper-SD) — ~4–7× faster generation, bundling the LoRA + the right scheduler (a new Euler-trailing sampler). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.4.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,29 +24,28 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.3.0 — `plakat fractals`: ecosystem
+## What's new in 4.4.0 — SDXL few-step
 
-The fractal studio (4.1 render + 4.2 depth) stops being a standalone command and becomes **pervasive** —
-wired into the rest of plakat, five ways.
+**2–8-step SDXL** joins the few-step club that until now was Flux/LCM-only. Two distilled families,
+delivered as opt-in `--fast` presets on base `sdxl` (they bundle a published LoRA + the right
+sampler settings — nothing else to download beyond the small LoRA):
 
-- **Fractal as ControlNet for any generation** — `plakat generate --control-fractal <spec | kind[:preset] |
-  prose>` renders a fractal and feeds its structure (canny / lineart / depth, auto per family) into a
-  normal txt2img. The inverse of `--fractal-paint`: a scene *guided by* a fractal.
-- **Batch fractals in scenarios** — a `type: fractal` task in the HJSON scenario system: single renders,
-  compose grids, animations, or AI-painted, alongside `generate` / `map` tasks.
-- **Bund scripting** — five `plakat.fractal.*` words (`render` / `compose` / `paint` / `animate` /
-  `size`) render or paint a fractal straight into an image handle, so it flows through `plakat.save` /
-  `plakat.upscale` / `plakat.relight` like any generated image.
-- **Photo-manager integration** — the image-view info panel shows a **fractal** section for any plakat
-  fractal PNG (kind, framing, palette, paint recipe), and `Ctrl-B n f` (**fractalize**) renders a Julia
-  set textured by the selected photo (image orbit-trap).
-- **Aesthetic keep-best** — `--fractal-compose --fractal-keep-best K` scores every cell with the LAION
-  predictor (the `plakat rank` model), highlights the top-K in gold, and writes each as its own file.
+- **SDXL-Lightning** — `--fast lightning-sdxl-8` (near-full quality) or `-4` (fastest). ByteDance's
+  distillation, run CFG-free on a new **Euler-trailing** scheduler (the schedule Lightning is trained
+  for — `--scheduler euler-trailing` is now available on its own too).
+- **Hyper-SD-SDXL** — `--fast hyper-sdxl-8` / `-4`. ByteDance's consistency distillation, on the LCM
+  sampler.
 
-Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Documentation/Tutorials/FRACTALS_TUTORIAL.md).
-Everything from the 2.x/3.x/4.0/4.1/4.2 line is unchanged; default CLI image output stays byte-identical.
+```bash
+plakat generate "a lighthouse at sunset" --model sdxl --fast lightning-sdxl-8
+```
 
-**Earlier releases** (v0.13 – 4.2):
+Roughly **4–7× faster** than full 30-step SDXL. Each preset prepends its LoRA and sets the
+step/guidance/scheduler defaults (all still overridable). Run `plakat doctor --capability` to see every
+`--fast` preset grouped by family. Everything else is unchanged; default CLI image output stays
+byte-identical.
+
+**Earlier releases** (v0.13 – 4.3):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install
