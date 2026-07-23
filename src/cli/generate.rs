@@ -490,22 +490,31 @@ pub struct GenerateArgs {
     pub t5_quant_level: Option<String>,
 
     /// **v0.14 phase 6**: Apply a curated distillation-LoRA preset for
-    /// fast Flux inference. Each preset bundles a published LoRA +
-    /// recommended `--steps` + `--guidance`; the LoRA gets prepended
-    /// to your `--loras` stack and the step/guidance defaults are
-    /// overridden when you didn't pass them explicitly.
+    /// fast few-step inference. Each preset bundles a published LoRA +
+    /// recommended `--scheduler` / `--steps` / `--guidance`; the LoRA
+    /// gets prepended to your `--loras` stack and the sampler defaults
+    /// are overridden when you didn't pass them explicitly.
     ///
-    /// Supported presets:
+    /// Flux presets:
     ///   * `hyper-8`     — ByteDance Hyper-FLUX 8-step (CFG-free)
     ///   * `hyper-16`    — ByteDance Hyper-FLUX 16-step (CFG-free)
     ///   * `turbo-alpha` — alimama-creative FLUX.1-Turbo-Alpha 8-step
     ///
+    /// SDXL presets (require `--model sdxl`):
+    ///   * `lightning-sdxl-8` / `-4` — SDXL-Lightning (euler-trailing, CFG-free)
+    ///   * `hyper-sdxl-8` / `-4`     — ByteDance Hyper-SD SDXL (CFG-free)
+    ///   * `lcm-sdxl`                — Latent Consistency LoRA, 4-step @ CFG 1.5
+    ///
+    /// SD 1.5 preset: `lcm-sd15`.
+    ///
     /// ```bash
     /// plakat generate "..." --model flux-dev --fast hyper-8
+    /// plakat generate "..." --model sdxl --fast lightning-sdxl-8
     /// ```
     ///
-    /// Requires a non-Fill Flux variant. NF4 + `--fast` bails (NF4 +
-    /// LoRA composition isn't wired in v0.14).
+    /// The Flux presets need a non-Fill Flux variant (NF4 + `--fast` bails —
+    /// NF4 + LoRA composition isn't wired). The SDXL presets need a base SDXL
+    /// and don't compose with `--refiner`.
     #[arg(help_heading = "Model & sampler", long = "fast", value_name = "PRESET")]
     pub fast: Option<crate::pipelines::flux_fast::FastPresetArg>,
 
@@ -1071,18 +1080,19 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
                     || m.contains("stable-diffusion-xl");
                 if !is_sdxl {
                     anyhow::bail!(
-                        "--fast {} (Latent Consistency LoRA for SDXL) requires an \
-                         SDXL model (got --model {:?}). Use --model sdxl or \
-                         --model sdxl-turbo.",
+                        "--fast {} ({}) requires an SDXL model (got --model {:?}). \
+                         Use --model sdxl or --model sdxl-turbo.",
                         preset.name,
+                        preset.description,
                         args.model
                     );
                 }
                 if args.refiner {
                     anyhow::bail!(
                         "--fast {} doesn't compose with the SDXL refiner — the \
-                         refiner runs a non-LCM scheduler on the late steps which \
-                         conflicts with the 4-step LCM schedule. Drop --refiner.",
+                         refiner runs a full-step scheduler on the late steps which \
+                         conflicts with the preset's few-step distillation schedule. \
+                         Drop --refiner.",
                         preset.name
                     );
                 }

@@ -155,6 +155,58 @@ pub const PRESETS: &[FastPreset] = &[
         guidance: 1.5,
         scheduler_hint: Some("lcm"),
     },
+    // v4.4: SDXL-Lightning (ByteDance) — distilled few-step SDXL. The model card
+    // (https://huggingface.co/ByteDance/SDXL-Lightning) requires EulerDiscrete with
+    // timestep_spacing="trailing" (our `euler-trailing`, 4.4 Phase 0) and CFG off
+    // (guidance 1.0 → the denoise loop's `do_cfg = guidance > 1.0` skips the uncond pass).
+    // LoRA form, merged onto base `sdxl`. 8-step is near-full quality; 4-step is faster.
+    FastPreset {
+        name: "lightning-sdxl-8",
+        description: "SDXL-Lightning 8-step distillation (euler-trailing, CFG-free)",
+        target: FastTarget::Sdxl,
+        lora_repo: "ByteDance/SDXL-Lightning",
+        lora_file: Some("sdxl_lightning_8step_lora.safetensors"),
+        lora_scale: 1.0,
+        steps: 8,
+        guidance: 1.0,
+        scheduler_hint: Some("euler-trailing"),
+    },
+    FastPreset {
+        name: "lightning-sdxl-4",
+        description: "SDXL-Lightning 4-step distillation (euler-trailing, CFG-free)",
+        target: FastTarget::Sdxl,
+        lora_repo: "ByteDance/SDXL-Lightning",
+        lora_file: Some("sdxl_lightning_4step_lora.safetensors"),
+        lora_scale: 1.0,
+        steps: 4,
+        guidance: 1.0,
+        scheduler_hint: Some("euler-trailing"),
+    },
+    // v4.4: Hyper-SD-SDXL (ByteDance) — consistency-distilled few-step SDXL. The model
+    // card recommends the TCD scheduler; plakat has no TCD, so we pair it with the closest
+    // available consistency sampler (`lcm`) at CFG-free guidance. LoRA on base `sdxl`.
+    FastPreset {
+        name: "hyper-sdxl-8",
+        description: "ByteDance Hyper-SD 8-step SDXL distillation (CFG-free)",
+        target: FastTarget::Sdxl,
+        lora_repo: "ByteDance/Hyper-SD",
+        lora_file: Some("Hyper-SDXL-8steps-lora.safetensors"),
+        lora_scale: 1.0,
+        steps: 8,
+        guidance: 1.0,
+        scheduler_hint: Some("lcm"),
+    },
+    FastPreset {
+        name: "hyper-sdxl-4",
+        description: "ByteDance Hyper-SD 4-step SDXL distillation (CFG-free)",
+        target: FastTarget::Sdxl,
+        lora_repo: "ByteDance/Hyper-SD",
+        lora_file: Some("Hyper-SDXL-4steps-lora.safetensors"),
+        lora_scale: 1.0,
+        steps: 4,
+        guidance: 1.0,
+        scheduler_hint: Some("lcm"),
+    },
     // v0.18 phase 1: LCM-LoRA for SD 1.5. Same distillation recipe
     // as the SDXL preset, against the v1.5 base. The model card
     // (`latent-consistency/lcm-lora-sdv1-5`) recommends 4-8 steps
@@ -311,24 +363,20 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_hint_is_only_set_for_lcm() {
-        // The Flux distillations are scheduler-agnostic (rectified
-        // flow works with any sampler); only LCM-LoRA needs to pin
-        // the scheduler at preset-apply time.
+    fn scheduler_hint_matches_distillation_family() {
+        // Each distillation family pins the scheduler its schedule was trained for:
+        // consistency-style (LCM-LoRA / Hyper-SD) → `lcm`; SDXL-Lightning → Euler with
+        // trailing spacing; the Flux distillations (Hyper-FLUX / Turbo-Alpha) are
+        // scheduler-agnostic (rectified flow works with any sampler) → no hint.
         for p in PRESETS {
-            if p.name.starts_with("lcm-") {
-                assert!(
-                    p.scheduler_hint == Some("lcm"),
-                    "{} must pin scheduler to lcm",
-                    p.name
-                );
+            let expected = if p.name.starts_with("lcm-") || p.name.starts_with("hyper-sdxl-") {
+                Some("lcm")
+            } else if p.name.starts_with("lightning-sdxl-") {
+                Some("euler-trailing")
             } else {
-                assert!(
-                    p.scheduler_hint.is_none(),
-                    "{} unexpectedly carries a scheduler hint",
-                    p.name
-                );
-            }
+                None
+            };
+            assert_eq!(p.scheduler_hint, expected, "{}: scheduler_hint", p.name);
         }
     }
 

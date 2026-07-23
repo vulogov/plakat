@@ -1168,20 +1168,16 @@ fn validate_t5_quant_level(value: &str, key: &str) -> Result<()> {
     }
 }
 
-/// v0.22 phase 2: validate a `--fast` preset name. Accepts the
-/// five published presets; bails with the supported list on
-/// anything else.
+/// v0.22 phase 2: validate a `--fast` preset name. Derived from the canonical
+/// `flux_fast::PRESETS` table (the CLI's source of truth) so new presets never
+/// drift out of sync with the scripting allowlist; bails with the supported list.
 fn validate_fast_preset(value: &str) -> Result<()> {
-    const VALID: &[&str] =
-        &["hyper-8", "hyper-16", "turbo-alpha", "lcm-sdxl", "lcm-sd15"];
-    if VALID.iter().any(|p| p.eq_ignore_ascii_case(value)) {
+    let presets = crate::pipelines::flux_fast::PRESETS;
+    if presets.iter().any(|p| p.name.eq_ignore_ascii_case(value)) {
         return Ok(());
     }
-    bail!(
-        "plakat.config.set: fast = {value:?} not recognised. Supported: \
-         {}",
-        VALID.join(", ")
-    )
+    let supported = presets.iter().map(|p| p.name).collect::<Vec<_>>().join(", ");
+    bail!("plakat.config.set: fast = {value:?} not recognised. Supported: {supported}")
 }
 
 /// v0.22 phase 3: tile-size / tile-stride validator. Same as
