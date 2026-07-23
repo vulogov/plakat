@@ -42,6 +42,10 @@ pub enum SchedulerKind {
     /// Deterministic Euler — Euler-Ancestral without the noise injection.
     /// Reproducible across runs given a seed. Works on Metal/CUDA/CPU.
     Euler,
+    /// Euler with **trailing** timestep spacing (diffusers `timestep_spacing="trailing"`).
+    /// This is the schedule **SDXL-Lightning** is distilled for — leading spacing wrecks its
+    /// few-step (2–8) output. Otherwise identical to `Euler`. Works on Metal/CUDA/CPU.
+    EulerTrailing,
     /// Heun second-order predictor-corrector. Two UNet evaluations per
     /// "effective" step. Higher quality at the same number of model calls;
     /// approximately 2× wall time per `--steps` value vs Euler.
@@ -66,12 +70,13 @@ impl std::str::FromStr for SchedulerKind {
             "unipc-exp" | "unipc-exponential" => Self::UniPcExp,
             "lcm" | "lcm-scheduler" => Self::Lcm,
             "euler" | "euler-discrete" | "euler-deterministic" => Self::Euler,
+            "euler-trailing" | "euler-discrete-trailing" | "lightning" => Self::EulerTrailing,
             "heun" | "heun-discrete" => Self::Heun,
             "ddpm" => Self::Ddpm,
             other => {
                 return Err(anyhow!(
                     "unknown scheduler {other:?} (try: default | ddim | euler-a | euler | \
-                     heun | unipc | dpmpp-2m | unipc-exp | lcm | ddpm)"
+                     euler-trailing | heun | unipc | dpmpp-2m | unipc-exp | lcm | ddpm)"
                 ));
             }
         })
@@ -208,6 +213,14 @@ pub fn build(
             ..Default::default()
         }
         .build(steps)?,
+        // Euler with trailing timestep spacing — SDXL-Lightning's distilled schedule.
+        SchedulerKind::EulerTrailing => crate::pipelines::extra_schedulers::EulerSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
+            timestep_spacing:
+                candle_transformers::models::stable_diffusion::schedulers::TimestepSpacing::Trailing,
+            ..Default::default()
+        }
+        .build(steps)?,
         // Heun second-order predictor-corrector.
         SchedulerKind::Heun => crate::pipelines::extra_schedulers::HeunSchedulerConfig {
             prediction_type: PredictionType::Epsilon,
@@ -269,5 +282,48 @@ pub fn build_pixart(
         }
         .build(steps)?),
         other => build(other, cfg, steps),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipelines::extra_schedulers::EulerSchedulerConfig;
+    use candle_transformers::models::stable_diffusion::schedulers::{
+        SchedulerConfig, TimestepSpacing,
+    };
+
+    #[test]
+    fn from_str_parses_euler_trailing() {
+        assert!(matches!(
+            "euler-trailing".parse::<SchedulerKind>().unwrap(),
+            SchedulerKind::EulerTrailing
+        ));
+        assert!(matches!(
+            "lightning".parse::<SchedulerKind>().unwrap(),
+            SchedulerKind::EulerTrailing
+        ));
+    }
+
+    // SDXL-Lightning needs trailing spacing: the first timestep must be the last train step
+    // (999 for a 1000-step schedule), and the schedule must differ from the leading default.
+    #[test]
+    fn euler_trailing_uses_trailing_spacing() {
+        let steps = 8;
+        let leading = EulerSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
+            ..Default::default()
+        }
+        .build(steps)
+        .unwrap();
+        let trailing = EulerSchedulerConfig {
+            prediction_type: PredictionType::Epsilon,
+            timestep_spacing: TimestepSpacing::Trailing,
+            ..Default::default()
+        }
+        .build(steps)
+        .unwrap();
+        assert_eq!(trailing.timesteps()[0], 999);
+        assert_ne!(leading.timesteps(), trailing.timesteps());
     }
 }
