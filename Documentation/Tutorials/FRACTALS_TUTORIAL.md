@@ -392,6 +392,28 @@ plakat fractals --fractal-kind flame --fractal-compose variation-sweep --fractal
 
 Modes: `julia-sweep`, `zoom-grid`, `palette-grid`, `variation-sweep`.
 
+## Part 4a — Keep the best cells (`--fractal-keep-best`)
+
+A sweep makes a contact sheet, but which cells are actually good? Add
+`--fractal-keep-best K` and every cell is scored by the LAION aesthetic predictor
+(the same model behind `plakat rank`). The top-K cells are **highlighted in gold** in
+the grid *and* written out individually as `<out>_best-1.png`, `<out>_best-2.png`, …
+(each with its own embedded spec, so you can clone or re-render it):
+
+```bash
+plakat fractals --fractal-compose julia-sweep --fractal-grid 4x4 \
+  --fractal-size 1600x1600 --fractal-keep-best 3 --fractal-out out/sweep.png
+#   → out/sweep.png              (grid, top-3 cells framed in gold)
+#     out/sweep_best-1.png …-3   (the three highest-scoring Julia sets, standalone)
+#   --fractal-keep-best: scored 16 cells, kept top 3:
+#     #1   6.021  out/sweep_best-1.png
+#     #2   5.874  out/sweep_best-2.png
+#     #3   5.610  out/sweep_best-3.png
+```
+
+Loads a small scoring model on first use (cached thereafter). Runs on whatever
+`--device` resolves to; CPU is fine — scoring a cell is cheap next to rendering it.
+
 ---
 
 # Part 5 — Color a fractal with a photo (`--fractal-trap-image`)

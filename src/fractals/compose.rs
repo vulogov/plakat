@@ -91,6 +91,16 @@ fn cell_spec(base: &FractalSpec, mode: ComposeMode, idx: usize, n: usize, cw: u3
     s
 }
 
+/// One rendered cell of a composition grid, with the sub-spec that produced it and its
+/// position. Returned by [`compose_cells`] for aesthetic keep-best / highlight (Phase 5).
+pub struct CellRender {
+    pub idx: usize,
+    pub row: u32,
+    pub col: u32,
+    pub spec: FractalSpec,
+    pub rendered: RenderedFractal,
+}
+
 /// Render an `rows × cols` grid composition into a single image.
 pub fn compose(
     base: &FractalSpec,
@@ -99,6 +109,19 @@ pub fn compose(
     cols: u32,
     prog: ProgressFn,
 ) -> Result<RenderedFractal> {
+    Ok(compose_cells(base, mode, rows, cols, prog)?.0)
+}
+
+/// Like [`compose`], but also returns each rendered cell — so the caller can score them with
+/// the aesthetic predictor and keep / highlight the best (`--fractal-keep-best`). The grid
+/// image is byte-identical to [`compose`]'s.
+pub fn compose_cells(
+    base: &FractalSpec,
+    mode: ComposeMode,
+    rows: u32,
+    cols: u32,
+    prog: ProgressFn,
+) -> Result<(RenderedFractal, Vec<CellRender>)> {
     if rows == 0 || cols == 0 {
         anyhow::bail!("compose grid must be at least 1x1");
     }
@@ -107,6 +130,7 @@ pub fn compose(
     let (out_w, out_h) = (cw * cols, ch * rows);
     let n = (rows * cols) as usize;
     let mut canvas = vec![0u8; out_w as usize * out_h as usize * 3];
+    let mut cells = Vec::with_capacity(n);
 
     for r in 0..rows {
         for c in 0..cols {
@@ -121,10 +145,11 @@ pub fn compose(
                 let dst = (gy * out_w as usize + gx) * 3;
                 canvas[dst..dst + cw as usize * 3].copy_from_slice(src);
             }
+            cells.push(CellRender { idx, row: r, col: c, spec: cell, rendered });
             prog((idx + 1) as u64, n as u64);
         }
     }
-    Ok(RenderedFractal { width: out_w, height: out_h, pixels: canvas })
+    Ok((RenderedFractal { width: out_w, height: out_h, pixels: canvas }, cells))
 }
 
 #[cfg(test)]

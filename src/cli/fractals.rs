@@ -185,6 +185,12 @@ pub struct FractalsArgs {
     #[arg(long = "fractal-grid", value_name = "RxC", help_heading = "Composition")]
     pub grid: Option<String>,
 
+    /// Aesthetic keep-best for `--fractal-compose`: score every cell with the LAION
+    /// predictor (same as `plakat rank`), highlight the top-K in the grid, and also write
+    /// each as its own `<out>_best-<n>.png` (with embedded spec). Loads a small model.
+    #[arg(long = "fractal-keep-best", value_name = "K", help_heading = "Composition")]
+    pub keep_best: Option<usize>,
+
     /// Render an animation to video instead of a still: zoom | julia-sweep | param-sweep.
     /// Output format follows `--fractal-out`'s extension (.mp4 needs ffmpeg; .gif is
     /// pure-Rust). `zoom` zooms from 1× to `--fractal-zoom` (deep zooms use perturbation).
@@ -310,6 +316,108 @@ fn parse_grid(s: &str) -> Result<(u32, u32)> {
         anyhow::bail!("grid dimensions must be non-zero (got {s:?})");
     }
     Ok((r, c))
+}
+
+/// `foo.png` → `foo_best-3.png` (the individually-kept top cell for rank `n`, 1-based).
+fn best_out_path(out: &Path, n: usize) -> PathBuf {
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("compose");
+    let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let name = format!("{stem}_best-{n}.{ext}");
+    out.parent().map(|p| p.join(&name)).unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// Draw a `t`-px `[r,g,b]` frame just inside the cell at `(row, col)` of a `cw×ch`-per-cell
+/// grid, into the packed-RGB `canvas` of width `gw`. Marks the aesthetic-best cells.
+#[allow(clippy::too_many_arguments)]
+fn highlight_cell(canvas: &mut [u8], gw: u32, cw: u32, ch: u32, row: u32, col: u32, rgb: [u8; 3], t: u32) {
+    let (gw, cw, ch) = (gw as usize, cw as usize, ch as usize);
+    let (x0, y0) = (col as usize * cw, row as usize * ch);
+    let t = (t as usize).min(cw / 2).min(ch / 2).max(1);
+    let mut put = |x: usize, y: usize| {
+        let o = (y * gw + x) * 3;
+        canvas[o..o + 3].copy_from_slice(&rgb);
+    };
+    for dy in 0..ch {
+        for dx in 0..cw {
+            if dx < t || dx >= cw - t || dy < t || dy >= ch - t {
+                put(x0 + dx, y0 + dy);
+            }
+        }
+    }
+}
+
+/// Aesthetic keep-best for a composed grid: score every cell with the LAION predictor,
+/// highlight the top-`k` in the grid, save the grid, and emit each top cell as its own file.
+#[allow(clippy::too_many_arguments)]
+async fn compose_keep_best(
+    grid: &mut fractals::RenderedFractal,
+    cells: &[fractals::compose::CellRender],
+    k: usize,
+    mode_s: &str,
+    rows: u32,
+    cols: u32,
+    spec: &FractalSpec,
+    out: &Path,
+    device_spec: &str,
+    started: std::time::Instant,
+) -> Result<()> {
+    let device = crate::device::select(device_spec)?;
+    let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device)
+        .await
+        .context("loading the aesthetic scorer for --fractal-keep-best")?;
+
+    // Score each cell. Each is written to a temp PNG (carrying its own spec) so the same file
+    // both feeds the scorer and becomes the kept output for the top-K.
+    let scratch = tempfile::tempdir().context("keep-best scratch dir")?;
+    let mut scored: Vec<(usize, f32, PathBuf)> = Vec::with_capacity(cells.len());
+    let spb = ProgressBar::new(cells.len() as u64);
+    spb.set_style(
+        ProgressStyle::with_template("  {spinner:.magenta} scoring [{bar:30.magenta/blue}] {pos}/{len} cells")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=>-"),
+    );
+    for (i, cell) in cells.iter().enumerate() {
+        let p = scratch.path().join(format!("cell-{:03}.png", cell.idx));
+        fractals::image_io::save_png_with_spec(
+            &cell.rendered.pixels, cell.rendered.width, cell.rendered.height, &cell.spec, &p,
+        )?;
+        let s = scorer.score_path(&p).with_context(|| format!("scoring cell {}", cell.idx))?;
+        scored.push((i, s, p));
+        spb.inc(1);
+    }
+    spb.finish_and_clear();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let cw = (spec.width / cols).max(16);
+    let ch = (spec.height / rows).max(16);
+    let keep = k.min(scored.len());
+    // Highlight the winners in the grid (gold), runners-up nothing.
+    for (rank, (ci, _score, _p)) in scored.iter().take(keep).enumerate() {
+        let cell = &cells[*ci];
+        // Brightest gold for #1, dimming slightly down the ranking, so first place reads.
+        let shade = 255u8.saturating_sub((rank as u8).saturating_mul(18));
+        let border = (cw.min(ch) / 24).max(3);
+        highlight_cell(&mut grid.pixels, grid.width, cw, ch, cell.row, cell.col, [shade, (shade as u32 * 3 / 4) as u8, 20], border);
+    }
+    fractals::image_io::save_png_with_spec(&grid.pixels, grid.width, grid.height, spec, out)?;
+
+    // Emit each kept cell as its own file (copy the already-spec-embedded temp render).
+    let mut kept_paths = Vec::with_capacity(keep);
+    for (rank, (_ci, _score, p)) in scored.iter().take(keep).enumerate() {
+        let dest = best_out_path(out, rank + 1);
+        std::fs::copy(p, &dest).with_context(|| format!("writing kept cell {}", dest.display()))?;
+        kept_paths.push(dest);
+    }
+
+    println!(
+        "composed {mode_s} {rows}x{cols} {}x{} → {} ({:.2}s)",
+        grid.width, grid.height, out.display(), started.elapsed().as_secs_f64()
+    );
+    println!("--fractal-keep-best: scored {} cells, kept top {keep}:", scored.len());
+    for (rank, ((_ci, score, _p), dest)) in scored.iter().take(keep).zip(&kept_paths).enumerate() {
+        println!("  #{:<2} {:6.3}  {}", rank + 1, score, dest.display());
+    }
+    Ok(())
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32)> {
@@ -582,13 +690,23 @@ pub async fn run(args: FractalsArgs, device_spec: &str) -> Result<()> {
             }
             pb.set_position(done);
         };
-        let r = fractals::compose::compose(&spec, mode, rows, cols, &report)?;
-        pb.finish_and_clear();
-        fractals::image_io::save_png_with_spec(&r.pixels, r.width, r.height, &spec, &args.out)?;
-        println!(
-            "composed {mode_s} {rows}x{cols} {}x{} → {} ({:.2}s)",
-            r.width, r.height, args.out.display(), started.elapsed().as_secs_f64()
-        );
+        // Plain grid vs aesthetic keep-best (score + highlight + emit the top-K cells).
+        match args.keep_best {
+            None => {
+                let r = fractals::compose::compose(&spec, mode, rows, cols, &report)?;
+                pb.finish_and_clear();
+                fractals::image_io::save_png_with_spec(&r.pixels, r.width, r.height, &spec, &args.out)?;
+                println!(
+                    "composed {mode_s} {rows}x{cols} {}x{} → {} ({:.2}s)",
+                    r.width, r.height, args.out.display(), started.elapsed().as_secs_f64()
+                );
+            }
+            Some(k) => {
+                let (mut grid, cells) = fractals::compose::compose_cells(&spec, mode, rows, cols, &report)?;
+                pb.finish_and_clear();
+                compose_keep_best(&mut grid, &cells, k, mode_s, rows, cols, &spec, &args.out, device_spec, started).await?;
+            }
+        }
         return Ok(());
     }
 
@@ -694,6 +812,7 @@ mod tests {
             clone_from: None,
             trap_image: None,
             compose: None,
+            keep_best: None,
             grid: None,
             animate: None,
             frames: None,

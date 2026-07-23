@@ -38,10 +38,20 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       trap-image render produces a photo-palette-textured Julia carrying a `fractalspec` chunk that the
       panel reads back.
 
-## Phase 5 — aesthetic `--keep-best` on compose sweeps
+## Phase 5 — aesthetic `--keep-best` on compose sweeps (DONE)
 
-- [ ] Score the cells of a `--fractal-compose` sweep with the `AestheticScorer` and keep / highlight
-      the top-N (reuses `plakat rank`'s LAION predictor).
+- [x] `--fractal-keep-best K` on `--fractal-compose`: score every cell with the `AestheticScorer`
+      (`plakat rank`'s LAION predictor), **highlight** the top-K in gold in the grid, and **keep** each
+      as its own `<out>_best-<n>.png` (with embedded spec). `compose_cells()` exposes per-cell renders;
+      each cell is written to a temp PNG that both feeds the scorer and becomes the kept file. Verified:
+      a 2×2 julia-sweep scored 4 cells (4.753 / 4.457 top-2), wrote the highlighted grid + two kept
+      cells carrying `fractalspec` chunks. Tutorial Part 4a added.
+
+## Cycle complete
+
+All five phases shipped. `plakat fractals` is now wired across the CLI (`generate --control-fractal`),
+the scenario system (`type: fractal`), the Bund VM (`plakat.fractal.*`), the photo manager (fractalspec
+panel + fractalize), and the aesthetic scorer (`--fractal-keep-best`). Ready to cut 4.3.0.
 
 ## Ground rules (kept)
 
