@@ -1129,6 +1129,27 @@ fn render_capability(r: &crate::capability::CapabilityReport) {
             style("add --verify to fetch sizes for models you haven't downloaded").dim()
         );
     }
+
+    // Few-step `--fast` presets (bundled LoRA + scheduler + steps/guidance), grouped by the
+    // base family they accelerate. Derived from the canonical `flux_fast::PRESETS` table so
+    // new presets appear here automatically.
+    use crate::pipelines::flux_fast::{FastTarget, PRESETS};
+    println!("\n  {}\n", style("few-step presets (--fast)").bold());
+    for (label, target) in [("Flux", FastTarget::Flux), ("SDXL", FastTarget::Sdxl), ("SD 1.5", FastTarget::Sd15)] {
+        let names: Vec<&str> = PRESETS
+            .iter()
+            .filter(|p| std::mem::discriminant(&p.target) == std::mem::discriminant(&target))
+            .map(|p| p.name)
+            .collect();
+        if !names.is_empty() {
+            println!("    {:<8} {}", label, style(names.join(" · ")).cyan());
+        }
+    }
+    println!(
+        "  {}",
+        style("e.g. plakat generate \"…\" --model sdxl --fast lightning-sdxl-8").dim()
+    );
+
     println!();
 }
 

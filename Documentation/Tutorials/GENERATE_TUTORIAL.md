@@ -179,6 +179,29 @@ Each new model downloads ~4-12 GB on first use. SDXL-Turbo wants
 For this tutorial, stick with `sd15` unless you have a reason to
 switch.
 
+### Few-step speed — `--fast` presets
+
+SDXL at full quality is ~30 steps. **Distilled few-step presets** cut that
+to 4–8 steps (roughly 4–7× faster) by bundling a published LoRA with the
+right sampler settings. Just add `--fast`:
+
+```bash
+# SDXL-Lightning — 8 steps, Euler-trailing, CFG-free (near-full quality)
+plakat generate "a lighthouse at sunset" --model sdxl --fast lightning-sdxl-8
+
+# Or 4 steps for maximum speed
+plakat generate "a lighthouse at sunset" --model sdxl --fast lightning-sdxl-4
+
+# Hyper-SD is the other SDXL family; LCM-LoRA is the older option
+plakat generate "a fox" --model sdxl --fast hyper-sdxl-8
+```
+
+The preset prepends its LoRA, sets the step count / guidance, and pins the
+scheduler — you can still override any of those explicitly. SDXL presets
+need a base `--model sdxl` and don't compose with `--refiner`. Flux has its
+own presets (`hyper-8`, `hyper-16`, `turbo-alpha`). Run
+`plakat doctor --capability` to see every preset grouped by family.
+
 ---
 
 ## 7. Adding LoRAs — small style/character modifiers

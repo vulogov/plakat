@@ -31,9 +31,9 @@ struct ModelMeta {
 const MODELS: &[ModelMeta] = &[
     ModelMeta { alias: "sd15",          native_res: 512,  dtype: "F16",  tuning: "", metal_blocked: false },
     ModelMeta { alias: "sd21",          native_res: 768,  dtype: "F16",  tuning: "", metal_blocked: false },
-    ModelMeta { alias: "sdxl",          native_res: 1024, dtype: "F16",  tuning: "smaller --size, drop --refiner, or --fast lcm-sdxl", metal_blocked: false },
+    ModelMeta { alias: "sdxl",          native_res: 1024, dtype: "F16",  tuning: "smaller --size, drop --refiner, or --fast lightning-sdxl-8 (8-step)", metal_blocked: false },
     ModelMeta { alias: "sdxl-turbo",    native_res: 1024, dtype: "F16",  tuning: "1–4 steps, no CFG", metal_blocked: false },
-    ModelMeta { alias: "pony",          native_res: 1024, dtype: "F16",  tuning: "smaller --size or --fast lcm-sdxl", metal_blocked: false },
+    ModelMeta { alias: "pony",          native_res: 1024, dtype: "F16",  tuning: "smaller --size or --fast lightning-sdxl-8", metal_blocked: false },
     ModelMeta { alias: "sd35-medium",   native_res: 1024, dtype: "BF16", tuning: "smaller --size; needs HF_TOKEN", metal_blocked: false },
     ModelMeta { alias: "sd35-large",    native_res: 1024, dtype: "BF16", tuning: "needs ≥32 GB; else use sd35-medium", metal_blocked: false },
     ModelMeta { alias: "pixart",        native_res: 1024, dtype: "BF16", tuning: "T5-XXL is the hog; else use pixart-512", metal_blocked: false },
