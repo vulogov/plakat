@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.2.0 — `plakat fractals`: depth**: arbitrary-depth perturbation zoom, animation → video (mp4/gif), 30 flame variations + 10 attractors, and LLM-backed prose→spec. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.2.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
+> **v4.3.0 — `plakat fractals`: ecosystem**: the fractal studio wired into the rest of plakat — `generate --control-fractal`, a `fractal` scenario task, `plakat.fractal.*` Bund words, a photos fractalspec panel + fractalize, and aesthetic `--fractal-keep-best`. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.3.0) · [Tutorial →](Documentation/Tutorials/FRACTALS_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,27 +24,29 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.2.0 — `plakat fractals`: depth
+## What's new in 4.3.0 — `plakat fractals`: ecosystem
 
-The fractal studio ([4.1.0](Documentation/RELEASE_HISTORY.md)) goes deeper on four fronts.
+The fractal studio (4.1 render + 4.2 depth) stops being a standalone command and becomes **pervasive** —
+wired into the rest of plakat, five ways.
 
-- **Perturbation-theory deep zoom** — `f64` centers pixelate around zoom 1e13; now the Mandelbrot
-  zooms **arbitrarily deep** (verified to 1e20+) via a high-precision reference orbit (pure-Rust
-  `astro-float`, no GMP) + cheap `f64` per-pixel deltas, with Pauldelbrot glitch correction. Just pass
-  a high-precision `--fractal-center` and a big `--fractal-zoom`.
-- **Animation → video** — `--fractal-animate {zoom | julia-sweep | param-sweep}` renders a frame
-  sequence and encodes to **MP4** (ffmpeg) or **GIF** (pure-Rust); zoom-ins automatically switch to the
-  perturbation path as they pass the `f64` limit. Tune with `--fractal-frames` / `--fractal-fps`.
-- **More families** — fractal-flame variations **18 → 30** (waves, fan, rings, popcorn, eyefish,
-  cross, scry…) and strange attractors **7 → 10** (svensson, hopalong, fractal-dream).
-- **LLM-backed prose→spec** — `--fractal-from` gains an optional `--fractal-provider`
-  (deepseek/gemini/local/auto): a language model maps an arbitrary description to a spec, falling back
-  to the offline keyword mapper on any failure.
+- **Fractal as ControlNet for any generation** — `plakat generate --control-fractal <spec | kind[:preset] |
+  prose>` renders a fractal and feeds its structure (canny / lineart / depth, auto per family) into a
+  normal txt2img. The inverse of `--fractal-paint`: a scene *guided by* a fractal.
+- **Batch fractals in scenarios** — a `type: fractal` task in the HJSON scenario system: single renders,
+  compose grids, animations, or AI-painted, alongside `generate` / `map` tasks.
+- **Bund scripting** — five `plakat.fractal.*` words (`render` / `compose` / `paint` / `animate` /
+  `size`) render or paint a fractal straight into an image handle, so it flows through `plakat.save` /
+  `plakat.upscale` / `plakat.relight` like any generated image.
+- **Photo-manager integration** — the image-view info panel shows a **fractal** section for any plakat
+  fractal PNG (kind, framing, palette, paint recipe), and `Ctrl-B n f` (**fractalize**) renders a Julia
+  set textured by the selected photo (image orbit-trap).
+- **Aesthetic keep-best** — `--fractal-compose --fractal-keep-best K` scores every cell with the LAION
+  predictor (the `plakat rank` model), highlights the top-K in gold, and writes each as its own file.
 
 Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Documentation/Tutorials/FRACTALS_TUTORIAL.md).
-Everything from the 2.x/3.x/4.0/4.1 line is unchanged; default CLI image output stays byte-identical.
+Everything from the 2.x/3.x/4.0/4.1/4.2 line is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 4.1):
+**Earlier releases** (v0.13 – 4.2):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

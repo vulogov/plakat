@@ -8,6 +8,27 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.2.0 — `plakat fractals`: depth
+
+The fractal studio ([4.1.0](#whats-new-in-410--plakat-fractals-render-fractals-then-paint-scenes-from-their-structure))
+goes deeper on four fronts.
+
+- **Perturbation-theory deep zoom** — `f64` centers pixelate around zoom 1e13; now the Mandelbrot
+  zooms **arbitrarily deep** (verified to 1e20+) via a high-precision reference orbit (pure-Rust
+  `astro-float`, no GMP) + cheap `f64` per-pixel deltas, with Pauldelbrot glitch correction. Just pass
+  a high-precision `--fractal-center` and a big `--fractal-zoom`.
+- **Animation → video** — `--fractal-animate {zoom | julia-sweep | param-sweep}` renders a frame
+  sequence and encodes to **MP4** (ffmpeg) or **GIF** (pure-Rust); zoom-ins automatically switch to the
+  perturbation path as they pass the `f64` limit. Tune with `--fractal-frames` / `--fractal-fps`.
+- **More families** — fractal-flame variations **18 → 30** (waves, fan, rings, popcorn, eyefish,
+  cross, scry…) and strange attractors **7 → 10** (svensson, hopalong, fractal-dream).
+- **LLM-backed prose→spec** — `--fractal-from` gains an optional `--fractal-provider`
+  (deepseek/gemini/local/auto): a language model maps an arbitrary description to a spec, falling back
+  to the offline keyword mapper on any failure.
+
+Full guide: [`Documentation/Tutorials/FRACTALS_TUTORIAL.md`](Tutorials/FRACTALS_TUTORIAL.md).
+Everything from the 2.x/3.x/4.0/4.1 line is unchanged; default CLI image output stays byte-identical.
+
 ## What's new in 4.1.0 — `plakat fractals`: render fractals, then paint scenes from their structure
 
 A pure-Rust **fractal studio** + an AI paint pass that turns a fractal's *structure* into a real
