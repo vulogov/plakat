@@ -26,11 +26,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       bare integers via bund's native `conv`. Gated on the `fractals` feature. Live-verified end-to-end
       (`plakat run`): render, compose, animate → real distinct outputs; +section in SCRIPTING_TUTORIAL §14.
 
-## Phase 4 — `plakat photos` integration
+## Phase 4 — `plakat photos` integration (DONE)
 
-- [ ] `fractalspec` panel — show a fractal PNG's embedded spec in the photos viewer.
-- [ ] Fractal-from-photo — the image orbit-trap (`--fractal-trap-image`) driven from a selected photo
-      (a Julia set textured by the picture).
+- [x] `fractalspec` panel — the image-view info panel (`i` / `I`) shows a **fractal** section for any
+      image carrying an embedded `FractalSpec` (read once at decode time into `view_fractal`): kind,
+      framing / per-family knobs, palette, seed, and the AI-paint recipe when present.
+- [x] Fractal-from-photo — `Ctrl-B n f` (**fractalize**) renders a Julia set textured by the selected
+      photo(s) via the image orbit-trap (`coloring = image`, `trap_image = <photo>`), landing a new
+      `*_fractal.png` (with embedded spec) in the album. Pure-CPU, no model. Both bits are
+      `#[cfg(feature = "fractals")]`-gated so `photos` still builds without `fractals`. Verified: the
+      trap-image render produces a photo-palette-textured Julia carrying a `fractalspec` chunk that the
+      panel reads back.
 
 ## Phase 5 — aesthetic `--keep-best` on compose sweeps
 

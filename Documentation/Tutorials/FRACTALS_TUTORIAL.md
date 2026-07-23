@@ -407,6 +407,15 @@ plakat fractals --fractal-kind julia --fractal-julia-c=-0.8,0.156 \
 Passing `--fractal-trap-image` sets `--fractal-coloring image` automatically. Tune the
 sampling window with `--fractal-trap-point RE,IM`. Works best on Julia / Mandelbrot.
 
+## Part 5a — From inside `plakat photos`
+
+The same image orbit-trap is one keystroke away in the photo manager. In the image
+view, `Ctrl-B n f` (**fractalize**) renders a Julia set textured by the current photo
+and drops a new `*_fractal.png` beside it — pure-CPU, no model. Because the output
+embeds its `FractalSpec`, the info panel (`i` / `I`) then shows a **fractal** section
+for it (kind, framing, palette, and the AI-paint recipe when present). Every
+plakat-made fractal PNG gets that panel, so a folder of renders is self-describing.
+
 ---
 
 # Part 6 — Explore interactively (`--fractal-explore`)

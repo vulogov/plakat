@@ -198,8 +198,13 @@ first and never touches the pixels.
 | `Ctrl-B n i` | AI img2img — transform this image with a prompt… |
 | `Ctrl-B n p` | AI portrait — this image as the face + a prompt… |
 | `Ctrl-B n m` | AI multiperson scene — selected images as people + a scene prompt… |
+| `Ctrl-B n f` | Fractalize — render a Julia set textured by this photo (orbit-trap-image; pure-CPU, no model) → a new `*_fractal.png` |
 
 (Also on the ML menu `M` and as `:` commands — `generate …`, `portrait …`, `scene …`, `img2img …`.)
+
+The `n f` fractalize output embeds its `FractalSpec`, so the image-view info panel
+(`i` / `I`) shows a **fractal** section for it — kind, framing, palette, and the
+AI-paint recipe when present. Any plakat-made fractal PNG gets the same panel.
 
 ### `r` — retouch (interactive crosshair pick-mode)
 | Chord | Command |

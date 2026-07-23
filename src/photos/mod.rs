@@ -237,6 +237,10 @@ enum EditCmd {
     Img2imgCreate, // img2img: transform the cursor image under a prompt (resident worker)
     Portrait,     // portrait from a prompt (+ the cursor image as an optional identity face)
     Multiperson,  // multi-person scene from a prompt + the selected images as people
+    /// 4.3-ecosystem: render a Julia set textured by the cursor image (orbit-trap-image),
+    /// landing a new fractal PNG (with embedded spec) in the album. Pure-CPU, no model.
+    #[cfg(feature = "fractals")]
+    Fractalize,
     Undo,
     Redo,
     Revert,
@@ -516,6 +520,9 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
     for (i, (label, chord, _)) in look_presets().into_iter().enumerate() {
         v.push((label, chord, EditCmd::Look(i)));
     }
+    // Fractal (n) — texture a Julia set with the cursor image (orbit-trap-image).
+    #[cfg(feature = "fractals")]
+    v.push(("fractalize (Julia textured by this photo)…", "nf", EditCmd::Fractalize));
     v
 }
 
@@ -658,6 +665,11 @@ struct App {
     analysis: Option<analysis::Analysis>,
     view_proto: Option<StatefulProtocol>,
     view_exif: Option<hjson::ExifRecord>,
+    /// 4.3-ecosystem: the embedded `FractalSpec` of the currently-displayed image, if it's a
+    /// plakat-made fractal PNG (read from the PNG's spec chunk at decode time, so the info panel
+    /// can show a `fractal` section). `None` for ordinary photos.
+    #[cfg(feature = "fractals")]
+    view_fractal: Option<crate::fractals::FractalSpec>,
     /// A compact luma-histogram sparkline of the currently-displayed image, for the top bar (updates
     /// live under the edit previews).
     view_spark: Option<String>,
@@ -1001,6 +1013,8 @@ impl App {
             analysis: None,
             view_proto: None,
             view_exif: None,
+            #[cfg(feature = "fractals")]
+            view_fractal: None,
             view_spark: None,
             view_base: None,
             thumbs: HashMap::new(),
@@ -2135,6 +2149,11 @@ impl App {
             EditCmd::Multiperson => {
                 self.edit_menu = false;
                 self.prompt("AI multiperson — scene (| model [WxH]): ", "", PendingCmd::Multiperson);
+            }
+            #[cfg(feature = "fractals")]
+            EditCmd::Fractalize => {
+                self.edit_menu = false;
+                self.fractalize_from_photo();
             }
             EditCmd::Undo => self.undo_edit(),
             EditCmd::Redo => self.redo_edit(),
@@ -4257,6 +4276,55 @@ impl App {
         self.status = format!("duplicated {ok} image(s){tail}");
     }
 
+    /// 4.3-ecosystem: render a Julia set textured by the selected photo(s) — the image
+    /// orbit-trap (`coloring = image`, `trap_image = <photo>`), so the set's iteration bands
+    /// sample the picture. Lands a new `*_fractal.png` (with embedded `FractalSpec`, so the
+    /// info panel's `fractal` section reads it back) next to each source. Pure-CPU, no model.
+    #[cfg(feature = "fractals")]
+    fn fractalize_from_photo(&mut self) {
+        use crate::fractals::{Coloring, FractalKind, FractalSpec};
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "open / select an image to fractalize".into();
+            return;
+        }
+        self.status = "rendering fractal…".into();
+        let (mut ok, mut err) = (0u32, 0u32);
+        let mut last = None;
+        for (dir, path) in &files {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+            let mut name = format!("{stem}_fractal.png");
+            let mut i = 2;
+            while dir.join(&name).exists() {
+                name = format!("{stem}_fractal-{i}.png");
+                i += 1;
+            }
+            // A classic dendrite Julia, textured by the photo through orbit-trap-image coloring.
+            let spec = FractalSpec {
+                kind: FractalKind::Julia,
+                width: 1024,
+                height: 1024,
+                julia_c: [-0.4, 0.6],
+                coloring: Coloring::Image,
+                trap_image: path.to_string_lossy().into_owned(),
+                ..FractalSpec::default()
+            };
+            match crate::fractals::render_to_file(&spec, &dir.join(&name)) {
+                Ok(()) => {
+                    last = Some(name);
+                    ok += 1;
+                }
+                Err(_) => err += 1,
+            }
+        }
+        self.rescan();
+        if let Some(n) = &last {
+            self.select_by_name(n);
+        }
+        let tail = if err > 0 { format!(", {err} failed") } else { String::new() };
+        self.status = format!("fractalized {ok} image(s){tail}");
+    }
+
     /// "Put back": copy the selected finished image(s) from a workbench sub-album up to its **parent
     /// album** (deduped, curation carried, replay state cleared), so the sub-album can then be
     /// deleted — keeping only the results you want.
@@ -5377,6 +5445,10 @@ impl App {
             self.view_spark = prev.as_ref().map(spark_of);
             self.view_proto = prev.map(|img| self.picker.new_resize_protocol(img));
             self.view_exif = None;
+            #[cfg(feature = "fractals")]
+            {
+                self.view_fractal = None;
+            }
             self.analysis = None;
             return;
         }
@@ -5427,6 +5499,13 @@ impl App {
             self.view_spark = None;
         }
         self.view_exif = path.as_ref().and_then(|p| exif::read_exif(p).ok());
+        // A plakat fractal PNG embeds its `FractalSpec`; surface it in the info panel.
+        #[cfg(feature = "fractals")]
+        {
+            self.view_fractal = path
+                .as_ref()
+                .and_then(|p| crate::fractals::spec::read_spec_chunk(p).ok().flatten());
+        }
         self.analysis = None;
         if self.show_analysis {
             self.compute_analysis();
@@ -9789,6 +9868,11 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(format!("steps    {}  cfg {}", g.steps, g.guidance)));
             }
         }
+        // Embedded FractalSpec (plakat fractal PNGs) — the `fractalspec` panel.
+        #[cfg(feature = "fractals")]
+        if let Some(fs) = app.view_fractal.clone() {
+            lines.extend(fractal_info_lines(&fs));
+        }
         f.render_widget(
             Paragraph::new(lines)
                 .wrap(Wrap { trim: true })
@@ -9801,6 +9885,76 @@ fn draw_image_view(f: &mut Frame, app: &mut App, area: Rect) {
 /// A styled section divider for the info panel.
 fn section(name: &str) -> Line<'static> {
     Line::from(Span::styled(format!("── {name} ──"), Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+}
+
+/// The `fractal` info-panel section for an image carrying an embedded `FractalSpec`
+/// (4.3-ecosystem). Shows the framing + per-family knobs + AI-paint recipe when present.
+#[cfg(feature = "fractals")]
+fn fractal_info_lines(fs: &crate::fractals::FractalSpec) -> Vec<Line<'static>> {
+    use crate::fractals::FractalKind;
+    let mut lines = vec![section("fractal")];
+    lines.push(Line::from(format!("kind     {}", fs.kind.as_str())));
+    lines.push(Line::from(format!("size     {}×{}", fs.width, fs.height)));
+    lines.push(Line::from(format!("coloring {:?}", fs.coloring).to_lowercase()));
+    if !fs.palette.preset.is_empty() {
+        lines.push(Line::from(format!("palette  {}", fs.palette.preset)));
+    }
+    // Per-family knobs worth surfacing.
+    match fs.kind {
+        FractalKind::Ifs => {
+            if !fs.ifs.preset.is_empty() {
+                lines.push(Line::from(format!("preset   {}", fs.ifs.preset)));
+            }
+        }
+        FractalKind::Lsystem => {
+            if !fs.lsystem.preset.is_empty() {
+                lines.push(Line::from(format!("preset   {}", fs.lsystem.preset)));
+            }
+        }
+        FractalKind::Flame => {
+            if !fs.flame.preset.is_empty() {
+                lines.push(Line::from(format!("preset   {}", fs.flame.preset)));
+            }
+        }
+        FractalKind::Attractor => {
+            if !fs.attractor.preset.is_empty() {
+                lines.push(Line::from(format!("preset   {}", fs.attractor.preset)));
+            }
+        }
+        FractalKind::Raymarch => {
+            if !fs.raymarch.shape.is_empty() {
+                lines.push(Line::from(format!("shape    {}", fs.raymarch.shape)));
+            }
+        }
+        // Escape-time families: the viewport is the interesting part.
+        _ => {
+            // Deep zoom carries a high-precision center string; prefer it when set.
+            let center = if !fs.center_hi[0].is_empty() {
+                format!("{}, {}", fs.center_hi[0], fs.center_hi[1])
+            } else {
+                format!("{:.6}, {:.6}", fs.center[0], fs.center[1])
+            };
+            lines.push(Line::from(format!("center   {center}")));
+            lines.push(Line::from(format!("zoom     {}", fs.zoom)));
+            lines.push(Line::from(format!("iter     {}", fs.max_iter)));
+            if fs.kind == FractalKind::Julia {
+                lines.push(Line::from(format!("julia c  {:.4}, {:.4}", fs.julia_c[0], fs.julia_c[1])));
+            }
+        }
+    }
+    lines.push(Line::from(format!("seed     {}", fs.seed)));
+    // AI-paint recipe, if this fractal was painted.
+    if fs.ai.enabled {
+        lines.push(Line::from(Span::styled(
+            format!("painted  {} · {}", if fs.ai.mode.is_empty() { "txt2img" } else { &fs.ai.mode }, if fs.ai.model.is_empty() { "sdxl" } else { &fs.ai.model }),
+            Style::new().fg(Color::Cyan),
+        )));
+        if !fs.ai.prompt.is_empty() {
+            let p: String = fs.ai.prompt.chars().take(60).collect();
+            lines.push(Line::from(format!("prompt   {p}")));
+        }
+    }
+    lines
 }
 
 /// Collapse a raw edit log into a readable summary: group by label (first-seen order) with counts,
