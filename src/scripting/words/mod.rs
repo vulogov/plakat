@@ -18,6 +18,8 @@ pub mod controlnet;
 pub mod echo;
 pub mod embedding;
 pub mod enhance;
+#[cfg(feature = "fractals")]
+pub mod fractals;
 pub mod generate;
 pub mod genre;
 pub mod hires;
@@ -63,6 +65,19 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.map.paint: {e}"))?;
     vm.register_inline("plakat.map.tiles".to_string(), map::plakat_map_tiles)
         .map_err(|e| anyhow!("registering plakat.map.tiles: {e}"))?;
+    #[cfg(feature = "fractals")]
+    {
+        vm.register_inline("plakat.fractal.size".to_string(), fractals::plakat_fractal_size)
+            .map_err(|e| anyhow!("registering plakat.fractal.size: {e}"))?;
+        vm.register_inline("plakat.fractal.render".to_string(), fractals::plakat_fractal_render)
+            .map_err(|e| anyhow!("registering plakat.fractal.render: {e}"))?;
+        vm.register_inline("plakat.fractal.compose".to_string(), fractals::plakat_fractal_compose)
+            .map_err(|e| anyhow!("registering plakat.fractal.compose: {e}"))?;
+        vm.register_inline("plakat.fractal.paint".to_string(), fractals::plakat_fractal_paint)
+            .map_err(|e| anyhow!("registering plakat.fractal.paint: {e}"))?;
+        vm.register_inline("plakat.fractal.animate".to_string(), fractals::plakat_fractal_animate)
+            .map_err(|e| anyhow!("registering plakat.fractal.animate: {e}"))?;
+    }
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

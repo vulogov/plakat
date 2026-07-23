@@ -298,6 +298,11 @@ pub struct ScriptCtx {
     /// set by `plakat.map.erosion`. Applied by `plakat.map.render`. Mirrors
     /// `--map-erosion`.
     pub map_erosion: Option<f32>,
+    /// 4.3-ecosystem: fractal output-size override `(w, h)`, set by
+    /// `plakat.fractal.size`. Applied to the resolved spec by the
+    /// `plakat.fractal.*` render/compose/animate/paint words. When `None`,
+    /// the spec's own dimensions are used. Mirrors `--fractal-size`.
+    pub fractal_size: Option<(u32, u32)>,
 }
 
 /// v0.24 phase 8: per-loaded-pipeline annotation cache. The
@@ -346,6 +351,7 @@ impl ScriptCtx {
             genre_name: None,
             map_layout: None,
             map_erosion: None,
+            fractal_size: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
@@ -1556,6 +1562,7 @@ mod tests {
             genre_name: None,
             map_layout: None,
             map_erosion: None,
+            fractal_size: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,

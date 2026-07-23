@@ -837,7 +837,85 @@ deferral message. The Bund scripting surface is unaffected;
 See [`Documentation/ANIMATEDIFF.md`](../ANIMATEDIFF.md) for the
 full reference + roadmap.
 
-## 14. The full word reference
+## 14. What's new in 4.3 — the `plakat.fractal.*` namespace
+
+The `plakat fractals` flagship becomes scriptable. Five words render
+(or paint) a fractal straight into an image **handle**, so it flows
+into the rest of the pipeline — `plakat.save`, `plakat.relight`,
+`plakat.upscale`, `plakat.metadata.write` — exactly like a generated
+image.
+
+```text
+plakat.fractal.size    ( w h -- )                 Output-size override for the words below
+plakat.fractal.render  ( src -- h )               Track-A CPU render → handle (no GPU, offline)
+plakat.fractal.compose ( src mode rows cols -- h ) Grid contact sheet → handle
+plakat.fractal.paint   ( src -- h )               Track-B AI paint (txt2img + ControlNet) → handle
+plakat.fractal.animate ( src mode frames fps out -- out )  Zoom / sweep video or GIF to a file
+```
+
+`src` (the *spec source*) is anything `--control-fractal` accepts:
+
+- a **spec file** path (`.json` / `.hjson` carrying a `FractalSpec`),
+- a **kind** or **`kind:preset`** shorthand — `"flame"`,
+  `"ifs:barnsley-fern"`, `"raymarch:menger"`, `"burning-ship"`,
+- otherwise **prose** through the offline keyword mapper
+  (`"an icy julia set"` → a Julia set with the `ice` palette).
+
+`mode` mirrors the CLI: `compose` takes
+`julia-sweep | zoom-grid | palette-grid | variation-sweep`;
+`animate` takes `zoom | julia-sweep | param-sweep`.
+
+Numeric args accept a quoted string (`"256"`) or a bare integer
+(`256`) — they run through bund's native `conv`, so either spelling
+works.
+
+### Example: render → upscale → save (pure CPU render, then ML upscale)
+
+```bund
+"512" "512" plakat.fractal.size
+
+// A kind:preset render — no model, no GPU, deterministic.
+"ifs:barnsley-fern" plakat.fractal.render   // handle 1
+1 "real-esrgan-x4" plakat.upscale           // handle 2, 2048²
+"fern-4k.png" plakat.save
+
+// A 2×2 palette contact sheet from one Mandelbrot view.
+"mandelbrot" "palette-grid" "2" "2" plakat.fractal.compose
+"mandelbrot-sheet.png" plakat.save
+```
+
+### Example: paint a scene shaped by a fractal (GPU)
+
+```bund
+"sd15" plakat.load
+// The fractal is the ControlNet structure; the scene comes from the
+// spec's `ai.prompt` (or the per-kind default). Same engine as
+// `plakat fractals --fractal-paint`.
+"julia" plakat.fractal.paint                // handle 1
+"painted-julia.png" plakat.save
+```
+
+`plakat.fractal.paint` reads the AI block off the resolved spec, so
+point `src` at a spec file when you want a specific prompt / model /
+strength; the bare-kind shorthand paints with the per-kind defaults.
+
+### Example: a zoom GIF (no ffmpeg needed for `.gif`)
+
+```bund
+"256" "256" plakat.fractal.size
+"mandelbrot" "zoom" "48" "24" "zoom.gif" plakat.fractal.animate
+// Pushes "zoom.gif" back so you can chain / echo it.
+plakat.echo
+```
+
+`.mp4` / `.webm` output needs ffmpeg on `PATH`; `.gif` never does.
+The word writes the animation to the given path directly (not through
+the handle store, since it's a multi-frame file).
+
+Word count: 49 → 54 (the five `plakat.fractal.*` words). Gated on the
+`fractals` build feature (on by default).
+
+## 15. The full word reference
 
 ```text
 plakat.echo        ( s -- s' )       Phase 1 smoke; pushes "[out=...] <s>"
@@ -848,6 +926,11 @@ plakat.portrait    ( prompt ph -- h ) IP-Adapter portrait; `ph` is path or handl
 plakat.upscale     ( h scale -- h' ) Lanczos x2/x4
 plakat.save        ( h path -- )     Write to disk (relative → --out)
 plakat.config.set  ( val key -- )    Tune one knob (see §3)
+plakat.fractal.size    ( w h -- )                 Output-size override for the fractal words
+plakat.fractal.render  ( src -- h )               Track-A CPU fractal render → handle
+plakat.fractal.compose ( src mode rows cols -- h ) Fractal grid contact sheet → handle
+plakat.fractal.paint   ( src -- h )               AI-painted fractal (GPU) → handle
+plakat.fractal.animate ( src mode frames fps out -- out )  Fractal zoom / sweep to video / GIF
 ```
 
 Stack notation: lowercase letters are values, `h` is a handle, `--`

@@ -334,6 +334,41 @@ prefix): `kind`, `center`, `zoom`, `iter`, `size`, `palette`, `coloring`, the `*
 `raymarch-shape` selectors, `compose`/`grid`, `animate`/`frames`/`fps`, and paint (`paint`, `prompt`,
 `paint-mode`, `sd-model`, `sd-strength`, `sd-control-strength`). `seed` defaults to the scenario seed.
 
+# Part 3b — Bund scripting (`plakat.fractal.*`)
+
+From a Bund script (`plakat run`), five words render or paint a fractal straight into an image
+**handle** so it flows into the rest of the pipeline (`plakat.save`, `plakat.upscale`,
+`plakat.relight`, `plakat.metadata.write`) — the same handle plumbing generated images use:
+
+```text
+plakat.fractal.size    ( w h -- )                 output-size override for the words below
+plakat.fractal.render  ( src -- h )               Track-A CPU render → handle (no GPU)
+plakat.fractal.compose ( src mode rows cols -- h ) grid contact sheet → handle
+plakat.fractal.paint   ( src -- h )               AI paint (txt2img + ControlNet) → handle
+plakat.fractal.animate ( src mode frames fps out -- out )  zoom / sweep to a video / GIF file
+```
+
+`src` is the same **spec source** `--control-fractal` accepts: a spec file, a `kind` /
+`kind:preset` shorthand (`"flame"`, `"ifs:barnsley-fern"`, `"raymarch:menger"`), or prose.
+
+```bund
+"512" "512" plakat.fractal.size
+
+// Pure-CPU render → ML upscale → save.
+"ifs:barnsley-fern" plakat.fractal.render   // handle 1
+1 "real-esrgan-x4" plakat.upscale           // handle 2
+"fern-4k.png" plakat.save
+
+// A 2×2 palette contact sheet.
+"mandelbrot" "palette-grid" "2" "2" plakat.fractal.compose
+"sheet.png" plakat.save
+
+// A zoom GIF (no ffmpeg needed for .gif).
+"mandelbrot" "zoom" "48" "24" "zoom.gif" plakat.fractal.animate
+```
+
+See `SCRIPTING_TUTORIAL.md` §14 for the full scripting reference.
+
 # Part 4 — Composition grids (`--fractal-compose`)
 
 Make a "contact sheet" of related fractals in one image.

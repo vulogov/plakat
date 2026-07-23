@@ -16,10 +16,15 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       quick `kind:...` string) and feed its canny/lineart into `generate` — fractal *structure* guiding
       any prompt, from the generate side (the inverse of `--fractal-paint`).
 
-## Phase 3 — Bund `plakat.fractal.*` scripting words
+## Phase 3 — Bund `plakat.fractal.*` scripting words (DONE)
 
-- [ ] Host words to render fractals from a Bund script (`plakat.fractal.render`, `.compose`, `.animate`,
-      handles interop with the existing save/relight/upscale words).
+- [x] Host words to render fractals from a Bund script — `plakat.fractal.size` (output override),
+      `.render` (Track-A CPU), `.compose` (grid), `.paint` (Track-B AI, GPU), `.animate` (video/GIF).
+      Render/compose/paint push an image **handle** so they interop with the existing
+      save/relight/upscale/metadata words; animate writes a file and pushes its path. `src` reuses the
+      `--control-fractal` resolver (spec file / `kind[:preset]` / prose). Numeric args accept quoted or
+      bare integers via bund's native `conv`. Gated on the `fractals` feature. Live-verified end-to-end
+      (`plakat run`): render, compose, animate → real distinct outputs; +section in SCRIPTING_TUTORIAL §14.
 
 ## Phase 4 — `plakat photos` integration
 
