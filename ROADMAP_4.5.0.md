@@ -47,16 +47,19 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       (`tools/reference/sana_dcae_dump.py`): decode/encode/round-trip all **corr 1.000000** (max_abs ~1e-5).
       F32 island held (no NaN). Downsample=Conv (stride-2), upsample=interpolate per the model config.
 
-## Phase 2 — Gemma-2-2B text encoder (`src/pipelines/vendored_gemma2.rs`)
+## Phase 2 — Gemma-2-2B text encoder (`src/pipelines/vendored_gemma2.rs`) — DONE
 
-- [ ] Vendor candle's `gemma2.rs` + add `forward_hidden(ids) -> Tensor` (embed → layers → final norm over
+- [x] Vendor candle's `gemma2.rs` + add `forward_hidden(ids) -> Tensor` (embed → layers → final norm over
       **all** positions, **no** lm_head; candle's `forward` returns last-token logits and its fields are
       private). Load `text_encoder/` safetensors + Gemma `tokenizer.json` (generic `tokenizers` crate).
-- [ ] `encode_prompt`: prepend the **CHI** ("complex human instruction") string, tokenize
+- [x] `encode_prompt`: prepend the **CHI** ("complex human instruction") string, tokenize
       `padding_side="right"` to `chi_len + 300 − 2`, take last_hidden_state, **re-slice `[0] + last 299`**
       → `(B, 300, 2304)` + the matching attention mask (for DiT cross-attn). No norm/scaling. BF16 encoder.
-- [ ] **Verify:** encode a known prompt, corr the hidden states vs diffusers. (The CHI recipe + the
-      select-index re-slice are the correctness-critical, easy-to-miss bits.)
+- [x] **Verify:** DONE — env-gated (`PLAKAT_GEMMA_VERIFY=1`) vs a diffusers dump
+      (`tools/reference/sana_gemma_dump.py`, Sana's own ungated text_encoder, F32/CPU): `forward_hidden`
+      (all 506 positions incl. pad) **corr 0.999804**; after the `[0]+last-299` reslice **corr 0.999721**.
+      Small drift is f32 compounding over 26 tanh-softcapped layers (benign — pad is masked in DiT cross-attn).
+      Gemma-2-2B: hidden 2304, head_dim 256, 26 layers; text_encoder weights are root-keyed (no `model.` prefix).
 
 ## Phase 3 — Sana Linear-DiT (`src/pipelines/sana_dit.rs`)
 

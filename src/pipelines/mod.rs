@@ -73,6 +73,7 @@ pub mod inswapper;
 pub mod faceswap;
 pub mod mmdit_inner;
 pub mod dc_ae;
+pub mod vendored_gemma2;
 pub mod sana;
 pub mod sd3;
 pub mod sd3_controlnet;
