@@ -34,17 +34,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       the `doctor --capability` listing.
 - [ ] Stub `src/pipelines/sana.rs` `run()` that errors "not implemented yet". Unit test: `detects_sana`.
 
-## Phase 1 — DC-AE autoencoder (`src/pipelines/dc_ae.rs`) + `ImageVae` trait
+## Phase 1 — DC-AE autoencoder (`src/pipelines/dc_ae.rs`) + `ImageVae` trait — DONE
 
-- [ ] `ImageVae` trait (encode→Tensor deterministic, decode, scaling_factor 0.41407, latent_channels 32,
+- [x] `ImageVae` trait (encode→Tensor deterministic, decode, scaling_factor 0.41407, latent_channels 32,
       spatial_compression 32). Retrofit **nothing** — existing pipelines keep the concrete `AutoEncoderKL`.
-- [ ] `AutoencoderDC`: 6 stages `[128,256,512,512,1024,1024]`, ResBlock ×3 then EfficientViTBlock ×3
+- [x] `AutoencoderDC`: 6 stages `[128,256,512,512,1024,1024]`, ResBlock ×3 then EfficientViTBlock ×3
       (encoder 2/2/2/3/3/3, decoder 3×6). Build the novel pieces from candle primitives:
   - **EfficientViT ReLU-linear multiscale attention** (1×1 qkv, 5×5 depthwise multiscale, `relu(Q)·(relu(K)ᵀV)` with the ones-row denominator) — **run in F32** (not self-normalizing → F16 NaN on Metal).
   - channel-dim **RMSNorm2d**, DCDownBlock (stride-2 conv + pixel-unshuffle-avg shortcut), DCUpBlock
     (interpolate + conv + channel-duplicate shortcut), GLU-MBConv FFN.
-- [ ] **Verify:** decode a diffusers-dumped reference latent → PNG; corr vs diffusers DC-AE. (Highest-value
-      early check — net-new arch.) Encode round-trip too.
+- [x] **Verify:** DONE — env-gated test (`PLAKAT_DCAE_VERIFY=1`) vs a diffusers dump
+      (`tools/reference/sana_dcae_dump.py`): decode/encode/round-trip all **corr 1.000000** (max_abs ~1e-5).
+      F32 island held (no NaN). Downsample=Conv (stride-2), upsample=interpolate per the model config.
 
 ## Phase 2 — Gemma-2-2B text encoder (`src/pipelines/vendored_gemma2.rs`)
 
