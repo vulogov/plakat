@@ -38,6 +38,7 @@ const MODELS: &[ModelMeta] = &[
     ModelMeta { alias: "sd35-large",    native_res: 1024, dtype: "BF16", tuning: "needs ≥32 GB; else use sd35-medium", metal_blocked: false },
     ModelMeta { alias: "pixart",        native_res: 1024, dtype: "BF16", tuning: "T5-XXL is the hog; else use pixart-512", metal_blocked: false },
     ModelMeta { alias: "pixart-512",    native_res: 512,  dtype: "BF16", tuning: "", metal_blocked: false },
+    ModelMeta { alias: "sana",          native_res: 1024, dtype: "BF16", tuning: "Gemma-2-2B + DC-AE resident; linear-attn DiT is light", metal_blocked: false },
     ModelMeta { alias: "stable-cascade", native_res: 1024, dtype: "BF16", tuning: "--decoder-guidance / smaller --size", metal_blocked: false },
     ModelMeta { alias: "flux-dev",      native_res: 1024, dtype: "BF16", tuning: "→ flux-dev-gguf --quant-level Q4_K_S (~7 GB) + --quantize-t5; gated", metal_blocked: false },
     ModelMeta { alias: "flux-schnell",  native_res: 1024, dtype: "BF16", tuning: "→ flux-schnell-gguf Q4 + --quantize-t5; 4-step", metal_blocked: false },
@@ -103,6 +104,7 @@ fn gen_base_gb(m: &ModelMeta) -> f64 {
         "sd35-medium" | "sd35-large" => 4.5,
         a if a.starts_with("pixart") => 4.0,
         "stable-cascade" => 4.0,
+        "sana" => 3.5, // linear-attn DiT is light; Gemma/DC-AE are resident (weight side)
         a if a.starts_with("flux") => 6.0,
         _ => 2.5,
     }
@@ -118,6 +120,7 @@ fn rough_weight_gb(m: &ModelMeta) -> f64 {
         "sd35-large" => 20.0,
         a if a.starts_with("pixart") => 12.0, // T5-XXL dominates
         "stable-cascade" => 14.0,
+        "sana" => 13.0, // BF16 repo: Gemma-2-2B (~5) + 1.6B DiT (~3.3) + DC-AE
         a if a.starts_with("flux") => 24.0,
         _ => 8.0,
     }

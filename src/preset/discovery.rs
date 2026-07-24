@@ -59,6 +59,10 @@ pub enum BaseFamily {
     /// land in v0.38+ (LoRA is the v0.37 cycle's explicit
     /// deferral).
     StableCascade,
+    /// v4.5 phase 0: Sana family (Linear-DiT + DC-AE + Gemma-2-2B).
+    /// Routes through `pipelines::sana`. LoRA discovery lands later
+    /// in the 4.5 cycle (base t2i first).
+    Sana,
 }
 
 impl BaseFamily {
@@ -81,6 +85,7 @@ impl BaseFamily {
             | Variant::Sd3Medium => Self::Sd3,
             Variant::PixArt => Self::PixArt,
             Variant::StableCascade => Self::StableCascade,
+            Variant::Sana => Self::Sana,
         }
     }
 
@@ -95,6 +100,7 @@ impl BaseFamily {
             Self::Sd3 => "sd3",
             Self::PixArt => "pixart",
             Self::StableCascade => "cascade",
+            Self::Sana => "sana",
         }
     }
 
@@ -129,6 +135,8 @@ impl BaseFamily {
             // lands in v0.38+ (LoRA support is the v0.37 cycle's
             // explicit deferral). Conservative substring match.
             Self::StableCascade => b.contains("cascade"),
+            // v4.5: Sana LoRA discovery lands later in the cycle; conservative match.
+            Self::Sana => b.contains("sana"),
         }
     }
 }
@@ -430,6 +438,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::Sd3 => id_l.contains("sd3") || id_l.contains("sd-3"),
         BaseFamily::PixArt => id_l.contains("pixart"),
         BaseFamily::StableCascade => id_l.contains("cascade"),
+        BaseFamily::Sana => id_l.contains("sana"),
     };
     if id_check {
         return true;
@@ -442,6 +451,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::Sd3 => &["sd3", "stable-diffusion-3"],
         BaseFamily::PixArt => &["pixart", "pixart-sigma", "pixart-alpha"],
         BaseFamily::StableCascade => &["stable-cascade", "cascade"],
+        BaseFamily::Sana => &["sana"],
     };
     tags.iter().any(|t| {
         let tl = t.to_lowercase();

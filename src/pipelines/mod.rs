@@ -72,6 +72,7 @@ pub mod scrfd;
 pub mod inswapper;
 pub mod faceswap;
 pub mod mmdit_inner;
+pub mod sana;
 pub mod sd3;
 pub mod sd3_controlnet;
 pub mod sd3_lora;

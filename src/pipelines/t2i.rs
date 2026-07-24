@@ -386,6 +386,12 @@ pub enum Variant {
     /// wiring; Stage A in phase 1, Stage B in phase 2, Stage C in
     /// phase 3, 3-stage orchestration in phase 4.
     StableCascade,
+    /// v4.5 phase 0: Sana 1.6B (1024px) — sixth family. A linear-attention
+    /// DiT with a deep-compression autoencoder (DC-AE, 32× / 32-ch, NOT
+    /// AutoEncoderKL) and a Gemma-2-2B text encoder. Routes to
+    /// `pipelines::sana::run`. Phase 0 ships dispatch wiring; DC-AE (P1),
+    /// Gemma encoder (P2), Linear-DiT (P3), end-to-end flow-matching (P4).
+    Sana,
 }
 
 impl Variant {
@@ -397,6 +403,11 @@ impl Variant {
         // Routes to pipelines::cascade::run.
         if m.contains("cascade") {
             return Self::StableCascade;
+        }
+        // v4.5 phase 0: Sana detection. The substring "sana" is unambiguous
+        // across plakat's alias/repo surface. Routes to pipelines::sana::run.
+        if m.contains("sana") {
+            return Self::Sana;
         }
         // v0.35 phase 0: PixArt detection precedes everything else.
         // PixArt-Σ repo ids contain "pixart" — distinct from any
@@ -523,6 +534,11 @@ impl Variant {
     /// text encoder — distinct from every other family.
     pub fn is_cascade(self) -> bool {
         matches!(self, Self::StableCascade)
+    }
+    /// v4.5 phase 0: Sana family. Routes to `pipelines::sana::run`.
+    /// Linear-attention DiT + DC-AE + Gemma-2-2B — its own pipeline module.
+    pub fn is_sana(self) -> bool {
+        matches!(self, Self::Sana)
     }
 }
 
@@ -863,6 +879,12 @@ impl Pipeline {
             anyhow::bail!(
                 "Pipeline::load is SD-only; Stable Cascade models use \
                  pipelines::cascade::Pipeline::load"
+            );
+        }
+        if variant.is_sana() {
+            anyhow::bail!(
+                "Pipeline::load is SD-only; Sana models use \
+                 pipelines::sana::Pipeline::load"
             );
         }
         let repo = resolve_repo(&req.model);
@@ -2687,6 +2709,31 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // v0.35 phase 2: PixArt routing — full inference dispatch.
     // PixArt is DiT-XL/2 + T5-XXL; detection precedes SD3/Flux/SD.
     // v0.35 phase 4: --lora / --lora-scale carry through.
+    // v4.5 phase 0: Sana routing (sixth family — Linear-DiT + DC-AE + Gemma-2-2B).
+    // Detection precedes PixArt / SD3 / Flux / SD. Phase 0 dispatches to a stub that
+    // errors "not implemented"; the pipeline lands across phases 1–4.
+    if variant.is_sana() {
+        use crate::pipelines::sana;
+        sana::run(sana::RunRequest {
+            model: req.model.clone(),
+            device: req.device.clone(),
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width: req.width,
+            height: req.height,
+            steps: req.steps,
+            guidance: req.guidance as f64,
+            seed: req.seed,
+            scheduler: req.scheduler,
+            out_dir: req.out_dir.clone(),
+            count: req.count,
+            loras: req.loras.clone(),
+            lora_scale: req.lora_scale,
+        })
+        .await?;
+        return Ok(None);
+    }
+
     if variant.is_pixart() {
         use crate::pipelines::pixart;
         pixart::run(pixart::RunRequest {
@@ -3432,6 +3479,29 @@ mod tests {
         assert!(!Variant::Sdxl.is_pixart());
         assert!(!Variant::FluxDev.is_pixart());
         assert!(!Variant::Sd35Medium.is_pixart());
+    }
+
+    // v4.5 phase 0: Sana variant detection + predicate.
+
+    #[test]
+    fn detect_sana_alias_and_repo() {
+        assert_eq!(Variant::detect("sana"), Variant::Sana);
+        assert_eq!(Variant::detect("sana-1600m"), Variant::Sana);
+        assert_eq!(Variant::detect("sana-1024"), Variant::Sana);
+        // Full HF repo path also matches via substring lowercase.
+        assert_eq!(
+            Variant::detect("Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers"),
+            Variant::Sana
+        );
+    }
+
+    #[test]
+    fn is_sana_predicate() {
+        assert!(Variant::Sana.is_sana());
+        assert!(!Variant::Sana.is_pixart());
+        assert!(!Variant::PixArt.is_sana());
+        assert!(!Variant::Sd15.is_sana());
+        assert!(!Variant::Sdxl.is_sana());
     }
 
     #[test]

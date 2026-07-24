@@ -258,6 +258,16 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "PixArt-Σ XL 2 1024-MS — DiT + T5-XXL (~0.6B DiT + 4.7B T5)",
     },
+    // v4.5 phase 0: Sana 1.6B 1024px — sixth model family (Linear-DiT +
+    // DC-AE 32× autoencoder + Gemma-2-2B text encoder). BF16 diffusers repo.
+    AliasEntry {
+        aliases: &["sana", "sana-1600m", "sana-1024"],
+        repo: "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers",
+        family: "Sana",
+        kind: "base",
+        gated: false,
+        note: "Sana 1.6B 1024px — Linear-DiT + DC-AE 32× + Gemma-2-2B (~1.6B DiT)",
+    },
     AliasEntry {
         aliases: &["pixart-512", "pixart-sigma-512"],
         repo: "PixArt-alpha/PixArt-Sigma-XL-2-512-MS",

@@ -110,6 +110,10 @@ pub enum BaseModel {
     /// the slot reserves the name so the variant enum stays
     /// exhaustive.
     StableCascade,
+    /// v4.5 phase 0: Sana family (Linear-DiT + DC-AE + Gemma-2-2B).
+    /// Catalog-LoRA support lands later in the 4.5 cycle; the slot
+    /// reserves the name so the variant enum stays exhaustive.
+    Sana,
 }
 
 impl BaseModel {
@@ -136,6 +140,7 @@ impl BaseModel {
             | Variant::Sd35LargeTurbo => Self::Sd3,
             Variant::PixArt => Self::PixArt,
             Variant::StableCascade => Self::StableCascade,
+            Variant::Sana => Self::Sana,
         }
     }
 
@@ -148,6 +153,7 @@ impl BaseModel {
             Self::Sd3 => "sd3",
             Self::PixArt => "pixart",
             Self::StableCascade => "cascade",
+            Self::Sana => "sana",
         }
     }
 }
