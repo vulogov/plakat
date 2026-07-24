@@ -22,17 +22,17 @@ check where possible. `Cargo.lock` in sync.
 
 Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
-## Phase 0 — Plumbing skeleton (no inference)
+## Phase 0 — Plumbing skeleton (no inference) — DONE
 
-- [ ] `Variant::Sana` (`t2i.rs:351`) + `Variant::detect()` arm (`m.contains("sana")`, before the pixart
+- [x] `Variant::Sana` (`t2i.rs:351`) + `Variant::detect()` arm (`m.contains("sana")`, before the pixart
       check) + `is_sana()` predicate + the SD-backbone-loader reject guard (mirror PixArt).
-- [ ] Dispatch fan-out: `if variant.is_sana() { sana::run(...).await }` beside the PixArt block
+- [x] Dispatch fan-out: `if variant.is_sana() { sana::run(...).await }` beside the PixArt block
       (`t2i.rs:~2687`).
-- [ ] `ALIAS_TABLE` entry (`hf/mod.rs`) — `sana` / `sana-1600m` / `sana-1024` →
+- [x] `ALIAS_TABLE` entry (`hf/mod.rs`) — `sana` / `sana-1600m` / `sana-1024` →
       `Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers`.
-- [ ] `capability.rs` `ModelMeta` row (native_res 1024, BF16) + `gen_base_gb` / `rough_weight_gb` arms +
+- [x] `capability.rs` `ModelMeta` row (native_res 1024, BF16) + `gen_base_gb` / `rough_weight_gb` arms +
       the `doctor --capability` listing.
-- [ ] Stub `src/pipelines/sana.rs` `run()` that errors "not implemented yet". Unit test: `detects_sana`.
+- [x] Stub `src/pipelines/sana.rs` `run()` that errors "not implemented yet". Unit test: `detects_sana`.
 
 ## Phase 1 — DC-AE autoencoder (`src/pipelines/dc_ae.rs`) + `ImageVae` trait — DONE
 
