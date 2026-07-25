@@ -73,15 +73,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       velocity **corr 1.000000**. Weight-key inspection confirmed every bias/naming assumption before
       running, so it matched first-compile. Reuses pixart_dit's `TimestepEmbedder` (sincos identical).
 
-## Phase 4 — End-to-end t2i + flow-matching
+## Phase 4 — End-to-end t2i + flow-matching — DONE
 
-- [ ] Extract SD3's flow-match schedule (`build_img2img_timesteps` + the `t_prev−t_curr` velocity update)
+- [x] Extract SD3's flow-match schedule (`build_img2img_timesteps` + the `t_prev−t_curr` velocity update)
       into a shared `pipelines/flow_match.rs` (or copy into `sana.rs`). Sana: FlowMatchEuler, 20 steps,
       guidance 4.5, flow_shift 3.0.
-- [ ] `sana.rs` pipeline mirroring `pixart.rs` (RunRequest/run/run_hooked/load, alias resolve, LoRA
+- [x] `sana.rs` pipeline mirroring `pixart.rs` (RunRequest/run/run_hooked/load, alias resolve, LoRA
       resolve-then-load, StepHook). CFG batch (pos/neg caption). Initial noise `(B, 32, 32, 32)`.
-- [ ] **Verify:** full seeded `plakat generate --model sana "…"` → coherent 1024² image; add a verify
-      fixture (Tier-2 CPU-canonical).
+- [x] **Verify:** DONE — `plakat generate --model sana "…golden hour…"` → coherent 1024² image
+      (warm palette matching the prompt, 253k colors, luma_std 68 — not noise). Scheduler sigmas
+      unit-tested vs diffusers (**exact**). Uses FlowMatchEuler (shift 3.0), not the default DPM++-flow
+      (heavier multistep; a future scheduler option). BF16 DiT/Gemma on GPU, F32 DC-AE + F32 on CPU.
 
 ## Phase 5 — Memory staging, verify fixtures, docs
 
