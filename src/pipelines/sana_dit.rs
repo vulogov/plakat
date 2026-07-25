@@ -1,0 +1,348 @@
+//! Sana Linear-DiT — `SanaTransformer2DModel` in candle (ROADMAP_4.5.0 Phase 3).
+//!
+//! 20-layer DiT for the 1.6B/1024px model. Two novelties vs PixArt's DiT. First, **ReLU linear
+//! self-attention** — `relu(Q)·(relu(K)ᵀV)` with a ones-row denominator, F32 reduction island (not
+//! self-normalizing, would NaN in F16); cross-attention to the caption stays **vanilla softmax**.
+//! Second, a **GLU-MBConv Mix-FFN** (pointwise-expand → 3×3 depthwise → GLU gate → pointwise
+//! project) operating on the tokens reshaped back to the 2D latent grid.
+//!
+//! Timestep conditioning is **AdaLN-single** (a shared 6-chunk `scale_shift_table` per block, like
+//! PixArt). Patch size 1 → the 32×32×32 DC-AE latent is 1024 tokens; patchify/unpatchify are trivial.
+
+use anyhow::{Context, Result};
+use candle_core::{DType, Module, Tensor, D};
+use candle_nn::{
+    Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder, conv2d, conv2d_no_bias, linear,
+    linear_no_bias,
+};
+
+use super::pixart_dit::TimestepEmbedder;
+
+// ── Sana 1.6B config ─────────────────────────────────────────────────────────────────────────
+const HIDDEN: usize = 2240; // num_attention_heads(70) * attention_head_dim(32)
+const HEADS: usize = 70;
+const HEAD_DIM: usize = 32;
+const LAYERS: usize = 20;
+const CROSS_HEADS: usize = 20;
+const CROSS_HEAD_DIM: usize = 112; // 20*112 = 2240
+const CAPTION_CH: usize = 2304; // Gemma-2-2B hidden
+const OUT_CH: usize = 32;
+const MLP_HIDDEN: usize = 5600; // round(2.5 * 2240)
+const NORM_EPS: f64 = 1e-6;
+const CAPTION_RMS_EPS: f64 = 1e-5;
+const ATTN_EPS: f64 = 1e-15;
+
+fn cfg1(groups: usize) -> Conv2dConfig {
+    Conv2dConfig { padding: 0, stride: 1, dilation: 1, groups, cudnn_fwd_algo: None }
+}
+
+/// LayerNorm with `elementwise_affine=False` (no weight/bias) over the last dim.
+fn layer_norm_noaffine(x: &Tensor, eps: f64) -> Result<Tensor> {
+    let mean = x.mean_keepdim(D::Minus1)?;
+    let xc = x.broadcast_sub(&mean)?;
+    let var = xc.sqr()?.mean_keepdim(D::Minus1)?;
+    Ok(xc.broadcast_div(&(var + eps)?.sqrt()?)?)
+}
+
+/// RMSNorm over the last dim with a weight (no `+1`, unlike Gemma), eps 1e-5.
+fn rms_norm_last(x: &Tensor, weight: &Tensor, eps: f64) -> Result<Tensor> {
+    let var = x.sqr()?.mean_keepdim(D::Minus1)?;
+    let xn = x.broadcast_div(&(var + eps)?.sqrt()?)?;
+    Ok(xn.broadcast_mul(weight)?)
+}
+
+// ── ReLU linear self-attention ───────────────────────────────────────────────────────────────
+struct LinearSelfAttn {
+    to_q: Linear,
+    to_k: Linear,
+    to_v: Linear,
+    to_out: Linear,
+}
+impl LinearSelfAttn {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        // attention_bias = False → q/k/v have no bias; to_out.0 has bias.
+        Ok(Self {
+            to_q: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_q"))?,
+            to_k: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_k"))?,
+            to_v: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_v"))?,
+            to_out: linear(HIDDEN, HIDDEN, vb.pp("to_out.0"))?,
+        })
+    }
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let (b, n, _) = x.dims3()?;
+        let orig = x.dtype();
+        // (B,N,inner) → (B,heads,head_dim,N) for q/v; k transposed to (B,heads,N,head_dim).
+        let q = self.to_q.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?;
+        let k = self.to_k.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?.transpose(2, 3)?;
+        let v = self.to_v.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?;
+        let q = q.relu()?.to_dtype(DType::F32)?.contiguous()?;
+        let k = k.relu()?.to_dtype(DType::F32)?.contiguous()?;
+        let v = v.to_dtype(DType::F32)?;
+        let ones = Tensor::ones((b, HEADS, 1, n), DType::F32, v.device())?;
+        let v = Tensor::cat(&[v, ones], 2)?.contiguous()?; // (B,heads,head_dim+1,N)
+        let scores = v.matmul(&k)?; // (B,heads,head_dim+1,head_dim)
+        let out = scores.matmul(&q)?; // (B,heads,head_dim+1,N)
+        let num = out.narrow(2, 0, HEAD_DIM)?;
+        let den = (out.narrow(2, HEAD_DIM, 1)? + ATTN_EPS)?;
+        let attn = num.broadcast_div(&den)?; // (B,heads,head_dim,N)
+        let attn = attn.reshape((b, HIDDEN, n))?.transpose(1, 2)?.contiguous()?.to_dtype(orig)?; // (B,N,inner)
+        Ok(self.to_out.forward(&attn)?)
+    }
+}
+
+// ── vanilla softmax cross-attention ──────────────────────────────────────────────────────────
+struct CrossAttn {
+    to_q: Linear,
+    to_k: Linear,
+    to_v: Linear,
+    to_out: Linear,
+}
+impl CrossAttn {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        // attn2: bias = True (q/k/v), out_bias = True.
+        Ok(Self {
+            to_q: linear(HIDDEN, HIDDEN, vb.pp("to_q"))?,
+            to_k: linear(HIDDEN, HIDDEN, vb.pp("to_k"))?,
+            to_v: linear(HIDDEN, HIDDEN, vb.pp("to_v"))?,
+            to_out: linear(HIDDEN, HIDDEN, vb.pp("to_out.0"))?,
+        })
+    }
+    /// `enc`: (B, L, HIDDEN) caption; `mask_bias`: (B,1,1,L) additive (0 keep / -10000 pad) or None.
+    fn forward(&self, x: &Tensor, enc: &Tensor, mask_bias: Option<&Tensor>) -> Result<Tensor> {
+        let (b, n, _) = x.dims3()?;
+        let l = enc.dim(1)?;
+        let q = self.to_q.forward(x)?.reshape((b, n, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
+        let k = self.to_k.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
+        let v = self.to_v.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
+        let scale = 1.0 / (CROSS_HEAD_DIM as f64).sqrt();
+        let mut scores = (q.contiguous()?.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?; // (B,heads,N,L)
+        if let Some(bias) = mask_bias {
+            scores = scores.broadcast_add(bias)?;
+        }
+        let probs = candle_nn::ops::softmax_last_dim(&scores)?;
+        let out = probs.matmul(&v.contiguous()?)?; // (B,heads,N,head_dim)
+        let out = out.transpose(1, 2)?.reshape((b, n, HIDDEN))?;
+        Ok(self.to_out.forward(&out)?)
+    }
+}
+
+// ── GLU-MBConv Mix-FFN (norm_type=None, residual handled by the block) ───────────────────────
+struct MixFfn {
+    conv_inverted: Conv2d,
+    conv_depth: Conv2d,
+    conv_point: Conv2d,
+}
+impl MixFfn {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            conv_inverted: conv2d(HIDDEN, MLP_HIDDEN * 2, 1, cfg1(1), vb.pp("conv_inverted"))?,
+            conv_depth: conv2d(MLP_HIDDEN * 2, MLP_HIDDEN * 2, 3, Conv2dConfig { padding: 1, stride: 1, dilation: 1, groups: MLP_HIDDEN * 2, cudnn_fwd_algo: None }, vb.pp("conv_depth"))?,
+            conv_point: conv2d_no_bias(MLP_HIDDEN, HIDDEN, 1, cfg1(1), vb.pp("conv_point"))?,
+        })
+    }
+    /// `x`: (B, HIDDEN, H, W).
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let h = self.conv_inverted.forward(x)?;
+        let h = candle_nn::ops::silu(&h)?;
+        let h = self.conv_depth.forward(&h)?;
+        let half = h.dim(1)? / 2;
+        let a = h.narrow(1, 0, half)?;
+        let gate = h.narrow(1, half, half)?;
+        let h = (a * candle_nn::ops::silu(&gate)?)?;
+        Ok(self.conv_point.forward(&h)?)
+    }
+}
+
+// ── SanaTransformerBlock ─────────────────────────────────────────────────────────────────────
+struct Block {
+    attn1: LinearSelfAttn,
+    attn2: CrossAttn,
+    ff: MixFfn,
+    scale_shift_table: Tensor, // (6, HIDDEN)
+}
+impl Block {
+    fn load(vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            attn1: LinearSelfAttn::load(vb.pp("attn1"))?,
+            attn2: CrossAttn::load(vb.pp("attn2"))?,
+            ff: MixFfn::load(vb.pp("ff"))?,
+            scale_shift_table: vb.get((6, HIDDEN), "scale_shift_table")?,
+        })
+    }
+    /// `temb`: (B, 6*HIDDEN) AdaLN-single timestep. `hw`: (H,W) latent grid.
+    fn forward(&self, x: &Tensor, enc: &Tensor, mask_bias: Option<&Tensor>, temb: &Tensor, hw: (usize, usize)) -> Result<Tensor> {
+        let (b, _n, _) = x.dims3()?;
+        // modulation: (scale_shift_table[None] + temb.reshape(B,6,-1)).chunk(6)
+        let sst = self.scale_shift_table.reshape((1, 6, HIDDEN))?;
+        let temb6 = temb.reshape((b, 6, HIDDEN))?;
+        let m = sst.broadcast_add(&temb6)?; // (B,6,HIDDEN)
+        let chunk = |i: usize| m.narrow(1, i, 1)?.squeeze(1); // (B,HIDDEN)
+        let (shift_msa, scale_msa, gate_msa) = (chunk(0)?, chunk(1)?, chunk(2)?);
+        let (shift_mlp, scale_mlp, gate_mlp) = (chunk(3)?, chunk(4)?, chunk(5)?);
+
+        // self-attention
+        let norm = layer_norm_noaffine(x, NORM_EPS)?;
+        let norm = norm.broadcast_mul(&(scale_msa.unsqueeze(1)? + 1.0)?)?.broadcast_add(&shift_msa.unsqueeze(1)?)?;
+        let attn = self.attn1.forward(&norm)?;
+        let x = (x + attn.broadcast_mul(&gate_msa.unsqueeze(1)?)?)?;
+
+        // cross-attention (on raw x, no pre-norm — matches diffusers)
+        let attn = self.attn2.forward(&x, enc, mask_bias)?;
+        let x = (attn + x)?;
+
+        // feed-forward
+        let (h, w) = hw;
+        let norm = layer_norm_noaffine(&x, NORM_EPS)?;
+        let norm = norm.broadcast_mul(&(scale_mlp.unsqueeze(1)? + 1.0)?)?.broadcast_add(&shift_mlp.unsqueeze(1)?)?;
+        // tokens (B,N,HIDDEN) → grid (B,HIDDEN,H,W)
+        let grid = norm.reshape((b, h, w, HIDDEN))?.permute((0, 3, 1, 2))?.contiguous()?;
+        let ff = self.ff.forward(&grid)?; // (B,HIDDEN,H,W)
+        let ff = ff.flatten(2, 3)?.permute((0, 2, 1))?.contiguous()?; // (B,N,HIDDEN)
+        Ok((x + ff.broadcast_mul(&gate_mlp.unsqueeze(1)?)?)?)
+    }
+}
+
+/// The Sana 1.6B Linear-DiT. Predicts the flow-matching velocity for a `(B,32,H,W)` latent.
+pub struct SanaTransformer {
+    patch_proj: Conv2d, // patch_size 1 → 1×1 conv, in 32 → HIDDEN
+    ts_embedder: TimestepEmbedder, // time_embed.emb.timestep_embedder
+    time_linear: Linear, // time_embed.linear → 6*HIDDEN
+    cap_linear1: Linear, // caption_projection.linear_1
+    cap_linear2: Linear, // caption_projection.linear_2
+    caption_norm_w: Tensor,
+    blocks: Vec<Block>,
+    scale_shift_table: Tensor, // final (2, HIDDEN)
+    norm_out: LayerNorm,       // SanaModulatedNorm's inner LayerNorm (no affine)
+    proj_out: Linear,          // HIDDEN → OUT_CH
+}
+
+impl SanaTransformer {
+    pub fn load(vb: VarBuilder) -> Result<Self> {
+        let patch_proj = conv2d(OUT_CH, HIDDEN, 1, cfg1(1), vb.pp("patch_embed.proj")).context("patch_embed")?;
+        let te = vb.pp("time_embed");
+        let ts_embedder = TimestepEmbedder::new(HIDDEN, te.pp("emb.timestep_embedder"))
+            .map_err(|e| anyhow::anyhow!("time_embed timestep_embedder: {e}"))?;
+        let time_linear = linear(HIDDEN, 6 * HIDDEN, te.pp("linear"))?;
+        let cap = vb.pp("caption_projection");
+        let cap_linear1 = linear(CAPTION_CH, HIDDEN, cap.pp("linear_1"))?;
+        let cap_linear2 = linear(HIDDEN, HIDDEN, cap.pp("linear_2"))?;
+        let caption_norm_w = vb.get(HIDDEN, "caption_norm.weight")?;
+        let bvb = vb.pp("transformer_blocks");
+        let mut blocks = Vec::with_capacity(LAYERS);
+        for i in 0..LAYERS {
+            blocks.push(Block::load(bvb.pp(i)).with_context(|| format!("block {i}"))?);
+        }
+        // SanaModulatedNorm's LayerNorm is elementwise_affine=False → build a zero/one LN.
+        let norm_out = LayerNorm::new_no_bias(
+            Tensor::ones(HIDDEN, vb.dtype(), vb.device())?,
+            NORM_EPS,
+        );
+        Ok(Self {
+            patch_proj,
+            ts_embedder,
+            time_linear,
+            cap_linear1,
+            cap_linear2,
+            caption_norm_w,
+            blocks,
+            scale_shift_table: vb.get((2, HIDDEN), "scale_shift_table")?,
+            norm_out,
+            proj_out: linear(HIDDEN, OUT_CH, vb.pp("proj_out"))?,
+        })
+    }
+
+    /// `latent`: (B,32,H,W). `caption`: (B,L,2304). `timestep`: (B,). `enc_mask`: (B,L) 1/0 or None.
+    pub fn forward(&self, latent: &Tensor, caption: &Tensor, timestep: &Tensor, enc_mask: Option<&Tensor>) -> Result<Tensor> {
+        let (b, _c, h, w) = latent.dims4()?;
+        // patchify (patch_size 1): conv → (B,HIDDEN,H,W) → tokens (B,N,HIDDEN)
+        let tokens = self.patch_proj.forward(latent)?.flatten(2, 3)?.permute((0, 2, 1))?.contiguous()?;
+
+        // AdaLN-single: embedded_timestep (B,HIDDEN); temb (B,6*HIDDEN).
+        let embedded_timestep = self.ts_embedder.forward(timestep).map_err(|e| anyhow::anyhow!("ts embed: {e}"))?;
+        let temb = self.time_linear.forward(&candle_nn::ops::silu(&embedded_timestep)?)?;
+
+        // caption projection + RMSNorm.
+        let enc = self.cap_linear1.forward(caption)?;
+        let enc = enc.gelu()?; // gelu_tanh
+        let enc = self.cap_linear2.forward(&enc)?;
+        let enc = rms_norm_last(&enc, &self.caption_norm_w, CAPTION_RMS_EPS)?;
+
+        // encoder mask → additive bias (B,1,1,L).
+        let mask_bias = match enc_mask {
+            None => None,
+            Some(m) => {
+                let l = m.dim(1)?;
+                Some(m.to_dtype(DType::F32)?.affine(10000.0, -10000.0)?.reshape((b, 1, 1, l))?.to_dtype(tokens.dtype())?)
+            }
+        };
+
+        let mut x = tokens;
+        for blk in &self.blocks {
+            x = blk.forward(&x, &enc, mask_bias.as_ref(), &temb, (h, w))?;
+        }
+
+        // SanaModulatedNorm: LN(no affine) then shift/scale from scale_shift_table(2) + embedded_timestep.
+        let x = self.norm_out.forward(&x)?;
+        let sst = self.scale_shift_table.reshape((1, 2, HIDDEN))?;
+        let et = embedded_timestep.reshape((b, 1, HIDDEN))?;
+        let m = sst.broadcast_add(&et)?; // (B,2,HIDDEN)
+        let shift = m.narrow(1, 0, 1)?; // (B,1,HIDDEN)
+        let scale = m.narrow(1, 1, 1)?;
+        let x = x.broadcast_mul(&(scale + 1.0)?)?.broadcast_add(&shift)?;
+
+        let x = self.proj_out.forward(&x)?; // (B,N,OUT_CH)
+        // unpatchify (patch 1): (B,N,OUT_CH) → (B,OUT_CH,H,W)
+        Ok(x.reshape((b, h, w, OUT_CH))?.permute((0, 3, 1, 2))?.contiguous()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle_core::Device;
+
+    fn corr(a: &Tensor, b: &Tensor) -> f32 {
+        let a: Vec<f32> = a.flatten_all().unwrap().to_dtype(DType::F32).unwrap().to_vec1().unwrap();
+        let b: Vec<f32> = b.flatten_all().unwrap().to_dtype(DType::F32).unwrap().to_vec1().unwrap();
+        let n = a.len() as f32;
+        let (ma, mb) = (a.iter().sum::<f32>() / n, b.iter().sum::<f32>() / n);
+        let (mut num, mut da, mut db) = (0.0f32, 0.0f32, 0.0f32);
+        for (x, y) in a.iter().zip(&b) {
+            num += (x - ma) * (y - mb);
+            da += (x - ma).powi(2);
+            db += (y - mb).powi(2);
+        }
+        num / (da.sqrt() * db.sqrt() + 1e-12)
+    }
+
+    /// Verify the candle Sana DiT against a diffusers dump (`tools/reference/sana_dit_dump.py`):
+    /// a single forward with fixed latent / caption / timestep / mask. Opt-in
+    /// (`PLAKAT_SANADIT_VERIFY=1`); the Sana transformer must be cached. F32/CPU canonical.
+    #[test]
+    fn sana_dit_matches_diffusers() {
+        if std::env::var("PLAKAT_SANADIT_VERIFY").is_err() {
+            return;
+        }
+        let dev = Device::Cpu;
+        let home = std::env::var("HOME").unwrap();
+        let base = format!(
+            "{home}/.cache/huggingface/hub/models--Efficient-Large-Model--Sana_1600M_1024px_BF16_diffusers/snapshots"
+        );
+        let snap = std::fs::read_dir(&base).unwrap().next().unwrap().unwrap().path();
+        let tdir = snap.join("transformer");
+        let shards = [
+            tdir.join("diffusion_pytorch_model-00001-of-00002.safetensors"),
+            tdir.join("diffusion_pytorch_model-00002-of-00002.safetensors"),
+        ];
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, DType::F32, &dev).unwrap() };
+        let model = SanaTransformer::load(vb).unwrap();
+
+        let g = candle_core::safetensors::load("tools/reference/out/sana-dit/goldens.safetensors", &dev).unwrap();
+        let out = model
+            .forward(&g["latent"], &g["caption"], &g["timestep"], Some(&g["mask"]))
+            .unwrap();
+        let c = corr(&out, &g["output"]);
+        eprintln!("sana_dit output: corr={c:.6} shape={:?}", out.dims());
+        assert!(c > 0.999, "sana dit corr {c} < 0.999");
+    }
+}

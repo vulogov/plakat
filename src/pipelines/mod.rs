@@ -75,6 +75,7 @@ pub mod mmdit_inner;
 pub mod dc_ae;
 pub mod vendored_gemma2;
 pub mod sana;
+pub mod sana_dit;
 pub mod sd3;
 pub mod sd3_controlnet;
 pub mod sd3_lora;

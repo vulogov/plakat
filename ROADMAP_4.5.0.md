@@ -61,15 +61,17 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       Small drift is f32 compounding over 26 tanh-softcapped layers (benign — pad is masked in DiT cross-attn).
       Gemma-2-2B: hidden 2304, head_dim 256, 26 layers; text_encoder weights are root-keyed (no `model.` prefix).
 
-## Phase 3 — Sana Linear-DiT (`src/pipelines/sana_dit.rs`)
+## Phase 3 — Sana Linear-DiT (`src/pipelines/sana_dit.rs`) — DONE
 
-- [ ] `SanaTransformer2DModel`: 20 layers, hidden 2240 (70×32), cross-attn 20×112, caption_channels 2304,
+- [x] `SanaTransformer2DModel`: 20 layers, hidden 2240 (70×32), cross-attn 20×112, caption_channels 2304,
       in/out 32, patch_size 1 (→ trivial patchify of the 32×32 latent = 1024 tokens), mlp_ratio 2.5.
   - **ReLU linear self-attention** (F32 reduction island, `+1e-15` denom); **vanilla softmax cross-attention** to the caption.
   - **GLUMBConv Mix-FFN**: pointwise expand → 3×3 **depthwise** conv → GLU gate (SiLU) → pointwise project.
   - **AdaLN-single** (6-chunk scale_shift_table, shared timestep embed) — reuse PixArt's code shape.
-- [ ] **Verify:** single forward with frozen reference caption embeds + fixed latent + timestep; corr the
-      velocity output vs diffusers → 1.0.
+- [x] **Verify:** DONE — env-gated (`PLAKAT_SANADIT_VERIFY=1`) vs a diffusers dump
+      (`tools/reference/sana_dit_dump.py`, F32/CPU): single forward (latent+caption+timestep+mask) →
+      velocity **corr 1.000000**. Weight-key inspection confirmed every bias/naming assumption before
+      running, so it matched first-compile. Reuses pixart_dit's `TimestepEmbedder` (sincos identical).
 
 ## Phase 4 — End-to-end t2i + flow-matching
 
