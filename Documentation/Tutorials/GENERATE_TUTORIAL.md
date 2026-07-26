@@ -166,15 +166,25 @@ arbitrary HuggingFace repo ids:
 | `sdxl-turbo` | SDXL trained for very few steps (~4) |
 | `flux-schnell` | Flux Schnell — different architecture, fast |
 | `flux-dev` | Flux Dev — higher-quality Flux variant |
+| `pixart` | PixArt-Σ — DiT + T5, 1024² |
+| `sana` | Sana 1.6B — linear-attention DiT + Gemma-2 text encoder, 1024², strong at long prose |
 | `<org>/<repo>` | Any HuggingFace text-to-image repo by id |
 
 ```bash
 plakat generate "a fox" --model sdxl --size 1024x1024
 plakat generate "a fox" --model sdxl-turbo --steps 4 --guidance 0
+plakat generate "a fox in a misty forest, watercolor" --model sana --steps 20 --guidance 4.5
 ```
 
 Each new model downloads ~4-12 GB on first use. SDXL-Turbo wants
 `--guidance 0` and very few steps (it's a different kind of model).
+
+**Sana** is worth a special mention: its Gemma-2-2B text encoder (plus a built-in
+"complex human instruction" that enriches your prompt) makes it strong at **long,
+detailed scene descriptions**. It generates at 1024² with a 32× deep-compression
+autoencoder, so it's memory-light for its quality. Defaults: 20 steps, guidance 4.5;
+output size must be a multiple of 32. On GPU the DiT + encoder run in BF16 (the encoder
+is freed after encoding, so peak residency stays modest); on CPU everything is F32.
 
 For this tutorial, stick with `sd15` unless you have a reason to
 switch.

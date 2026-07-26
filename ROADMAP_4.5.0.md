@@ -85,13 +85,14 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       unit-tested vs diffusers (**exact**). Uses FlowMatchEuler (shift 3.0), not the default DPM++-flow
       (heavier multistep; a future scheduler option). BF16 DiT/Gemma on GPU, F32 DC-AE + F32 on CPU.
 
-## Phase 5 — Memory staging, verify fixtures, docs
+## Phase 5 — Memory staging, verify fixtures, docs — DONE
 
-- [ ] Non-co-resident staging on 24 GB Metal (Gemma-2-2B ~5 GB + DiT ~3.3 GB + DC-AE): mirror the SD3.5
-      `PLAKAT_SD3_LOWMEM` pattern — encode with Gemma, free it, then load the DiT.
-- [ ] Verify harness fixtures (Tier-1 golden corr for DC-AE / Gemma / DiT; Tier-2 end-to-end SSIM).
-- [ ] Docs: GENERATE tutorial model table + a Sana note; capability tuning hint; README what's-new (at
-      release). Memory: [[reference_feature_directions]] #7 done.
+- [x] Encode-once + **free the Gemma encoder** (~5 GB) before the denoise loop (prompt is fixed across
+      `--count`) → peak residency = DiT + DC-AE only. `gemma: Option<Model>`, dropped in `encode()`.
+- [x] Verify fixtures: 4 env-gated corr tests (`PLAKAT_{DCAE,GEMMA,SANADIT}_VERIFY`, flow_sigmas) +
+      3 committed reference dumpers (`tools/reference/sana_*.py`). DC-AE/DiT corr 1.0, Gemma 0.9998.
+- [x] Docs: GENERATE tutorial model table + Sana note; capability row (Phase 0). README what's-new at
+      release. Memory: [[reference_feature_directions]] #7 done.
 
 ## Risks (ranked)
 

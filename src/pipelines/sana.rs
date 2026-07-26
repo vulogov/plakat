@@ -121,9 +121,13 @@ async fn download_shards(repo: &str, subfolder: &str, base: &str) -> Result<Vec<
 }
 
 /// The loaded Sana pipeline: DC-AE (F32) + Gemma-2 encoder + Linear-DiT + tokenizer.
+///
+/// `gemma` is an `Option` so the encoder (~5 GB) can be **freed after encoding** — the prompt is
+/// fixed across the `--count` loop, so we encode once up front, drop Gemma, then denoise. This
+/// keeps peak residency to DiT + DC-AE (relieves tight 24 GB Metal without a co-residence hit).
 pub struct Pipeline {
     vae: super::dc_ae::AutoencoderDc,
-    gemma: super::vendored_gemma2::Model,
+    gemma: Option<super::vendored_gemma2::Model>,
     dit: super::sana_dit::SanaTransformer,
     tokenizer: tokenizers::Tokenizer,
     device: Device,
@@ -167,7 +171,7 @@ impl Pipeline {
             .map_err(|e| anyhow::anyhow!("tokenizing CHI: {e}"))?
             .len();
 
-        Ok(Self { vae, gemma, dit, tokenizer, device, dtype, chi_tokens })
+        Ok(Self { vae, gemma: Some(gemma), dit, tokenizer, device, dtype, chi_tokens })
     }
 
     /// Encode a prompt → `(embeds (1,300,2304), mask (1,300))` per Sana's `_get_gemma_prompt_embeds`
@@ -191,7 +195,8 @@ impl Pipeline {
         let ids_t = Tensor::from_vec(ids.clone(), (1, max_len), &self.device)?;
         let mask_t = Tensor::from_vec(mask.clone(), (1, max_len), &self.device)?;
         // Gemma hidden states (all positions), then re-slice [0] + last 299.
-        let hidden = self.gemma.forward_hidden(&ids_t, Some(&mask_t))?;
+        let gemma = self.gemma.as_mut().context("Sana text encoder already freed")?;
+        let hidden = gemma.forward_hidden(&ids_t, Some(&mask_t))?;
         let bos = hidden.narrow(1, 0, 1)?;
         let tail = hidden.narrow(1, max_len - (MAX_SEQ - 1), MAX_SEQ - 1)?;
         let embeds = Tensor::cat(&[bos, tail], 1)?.to_dtype(self.dtype)?;
@@ -203,14 +208,21 @@ impl Pipeline {
         Ok((embeds, rmask_t))
     }
 
-    /// One text-to-image generation. `w`/`h` are pixels (must be multiples of 32).
-    fn generate(&mut self, prompt: &str, negative: &str, w: u32, h: u32, steps: usize, guidance: f64) -> Result<(Vec<u8>, u32, u32)> {
-        let (lw, lh) = (w as usize / 32, h as usize / 32);
+    /// Encode the positive + negative prompts into a CFG caption batch `[uncond, cond]` and mask,
+    /// then **free the Gemma encoder** (unused for the rest of the run). Call once per run.
+    fn encode(&mut self, prompt: &str, negative: &str) -> Result<(Tensor, Tensor)> {
         let (pos, pos_m) = self.encode_prompt(prompt)?;
         let (neg, neg_m) = self.encode_prompt(negative)?;
-        let caption = Tensor::cat(&[&neg, &pos], 0)?; // CFG batch: [uncond, cond]
+        let caption = Tensor::cat(&[&neg, &pos], 0)?; // [uncond, cond]
         let mask = Tensor::cat(&[&neg_m, &pos_m], 0)?;
+        self.gemma = None; // drop the ~5 GB encoder before the denoise loop
+        Ok((caption, mask))
+    }
 
+    /// One text-to-image generation from a pre-encoded CFG caption batch. `w`/`h` are pixels
+    /// (multiples of 32). Does not need the Gemma encoder (already freed).
+    fn generate(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64) -> Result<(Vec<u8>, u32, u32)> {
+        let (lw, lh) = (w as usize / 32, h as usize / 32);
         let sigmas = flow_sigmas(steps, FLOW_SHIFT);
         let mut latent = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
 
@@ -218,7 +230,7 @@ impl Pipeline {
             let t = sigmas[i] * 1000.0;
             let lat_in = Tensor::cat(&[&latent, &latent], 0)?.to_dtype(self.dtype)?; // (2,32,lh,lw)
             let ts = Tensor::from_vec(vec![t as f32; 2], 2, &self.device)?;
-            let v = self.dit.forward(&lat_in, &caption, &ts, Some(&mask))?.to_dtype(DType::F32)?;
+            let v = self.dit.forward(&lat_in, caption, &ts, Some(mask))?.to_dtype(DType::F32)?;
             let v_uncond = v.narrow(0, 0, 1)?;
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
@@ -252,13 +264,15 @@ pub async fn run(req: RunRequest) -> Result<()> {
     let guidance = if req.guidance <= 0.0 { 4.5 } else { req.guidance };
 
     let mut pipeline = Pipeline::load(&req.model, req.device.clone()).await?;
+    // Encode the prompt once (fixed across the count loop), then free the ~5 GB Gemma encoder.
+    let (caption, mask) = pipeline.encode(&req.prompt, &req.negative)?;
     let base_seed = req.seed.unwrap_or(42);
     for idx in 0..req.count.max(1) {
         let seed = base_seed.wrapping_add(idx as u64);
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &req.device);
         let _ = req.device.set_seed(prepared);
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, req.count.max(1)));
-        let (buf, w, h) = pipeline.generate(&req.prompt, &req.negative, req.width, req.height, steps, guidance)?;
+        let (buf, w, h) = pipeline.generate(&caption, &mask, req.width, req.height, steps, guidance)?;
         let mut m = crate::imaging::metadata::GenerationMetadata::new(
             &req.prompt,
             &req.model,
