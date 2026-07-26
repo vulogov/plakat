@@ -72,6 +72,89 @@ fn flow_sigmas(steps: usize, shift: f64) -> Vec<f64> {
     sig
 }
 
+/// DPM++ flow sigma schedule (Sana's *default* `DPMSolverMultistepScheduler` with
+/// `use_flow_sigmas`): `σ = 1 − α`, `α = linspace(1, 1/1000, N+1)`, shifted, flipped, drop-last,
+/// terminal 0. Returns N+1 sigmas. Differs from FlowMatchEuler's schedule.
+fn dpm_flow_sigmas(steps: usize, shift: f64) -> Vec<f64> {
+    let n = steps;
+    let mut sig: Vec<f64> = (0..=n)
+        .map(|i| {
+            let alpha = 1.0 - (i as f64) * (1.0 - 1.0 / 1000.0) / (n as f64);
+            let s = 1.0 - alpha; // ascending 0..0.999
+            shift_t(s, shift)
+        })
+        .rev() // descending, n+1 values
+        .collect();
+    sig.pop(); // drop the last (smallest) → n values
+    sig.push(0.0); // terminal sigma (final_sigmas_type = "zero")
+    sig
+}
+
+/// The Sana sampler. **DPM++ 2M multistep (flow)** is the default — Sana's shipped scheduler,
+/// higher quality than the 4.5 FlowMatchEuler, which stays available via `--scheduler euler`.
+enum SanaSched {
+    /// FlowMatchEuler (4.5): `latent += (σ_next − σ)·v`.
+    Euler { sigmas: Vec<f64> },
+    /// DPM++ 2M multistep with flow sigmas + `flow_prediction` (x0 = sample − σ·v). `prev_x0`
+    /// carries the previous step's converted output for the 2nd-order update.
+    Dpm { sigmas: Vec<f64>, prev_x0: Option<Tensor> },
+}
+
+impl SanaSched {
+    fn new(scheduler: SchedulerKind, steps: usize) -> Self {
+        // Only an explicit euler request opts out of the DPM++ default.
+        let want_euler = matches!(scheduler, SchedulerKind::Euler | SchedulerKind::EulerA);
+        if want_euler {
+            SanaSched::Euler { sigmas: flow_sigmas(steps, FLOW_SHIFT) }
+        } else {
+            SanaSched::Dpm { sigmas: dpm_flow_sigmas(steps, FLOW_SHIFT), prev_x0: None }
+        }
+    }
+    /// The DiT timestep for step `i` (`floor(σ_i · 1000)`, matching diffusers).
+    fn timestep(&self, i: usize) -> f64 {
+        let s = match self {
+            SanaSched::Euler { sigmas } | SanaSched::Dpm { sigmas, .. } => sigmas[i],
+        };
+        (s * 1000.0).floor()
+    }
+    /// One step: advance `sample` given the DiT velocity `v` at step `i` → the next latent.
+    fn step(&mut self, v: &Tensor, i: usize, sample: &Tensor) -> Result<Tensor> {
+        match self {
+            SanaSched::Euler { sigmas } => {
+                let dt = sigmas[i + 1] - sigmas[i];
+                Ok((sample + (v * dt)?)?)
+            }
+            SanaSched::Dpm { sigmas, prev_x0 } => {
+                let n = sigmas.len() - 1;
+                let sigma_s0 = sigmas[i]; // current
+                let sigma_t = sigmas[i + 1]; // next
+                // flow_prediction: x0 = sample − σ·v.
+                let x0 = (sample - (v * sigma_s0)?)?;
+                // flow: alpha = 1 − σ, lambda = ln(alpha) − ln(σ).
+                let lam = |s: f64| (1.0 - s).ln() - s.ln();
+                let (alpha_t, lam_t, lam_s0) = (1.0 - sigma_t, lam(sigma_t), lam(sigma_s0));
+                let h = lam_t - lam_s0;
+                let coef = alpha_t * ((-h).exp() - 1.0); // at σ_t=0: alpha_t=1, exp(-∞)=0 → −1
+                let ratio = sigma_t / sigma_s0;
+                // First-order (DDIM-like) on step 0 and the last step (lower_order_final);
+                // second-order midpoint otherwise.
+                let out = if i == 0 || i == n - 1 || prev_x0.is_none() {
+                    ((sample * ratio)? - (&x0 * coef)?)?
+                } else {
+                    let m1 = prev_x0.as_ref().unwrap();
+                    let sigma_s1 = sigmas[i - 1];
+                    let h0 = lam_s0 - lam(sigma_s1);
+                    let r0 = h0 / h;
+                    let d1 = ((&x0 - m1)? * (1.0 / r0))?; // (1/r0)(m0 − m1)
+                    (((sample * ratio)? - (&x0 * coef)?)? - (d1 * (0.5 * coef))?)?
+                };
+                *prev_x0 = Some(x0);
+                Ok(out)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +171,54 @@ mod tests {
         assert_eq!(got.len(), want.len());
         for (i, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!((g - w).abs() < 1e-5, "sigma[{i}]: got {g}, want {w}");
+        }
+    }
+
+    // Reference from diffusers DPMSolverMultistepScheduler(use_flow_sigmas, flow_shift=3.0,
+    // final_sigmas_type="zero").set_timesteps(20) — Sana's default scheduler.
+    #[test]
+    fn dpm_flow_sigmas_match_diffusers() {
+        let want = [
+            0.999666, 0.982419, 0.963941, 0.944094, 0.922722, 0.89964, 0.874635, 0.847457, 0.81781,
+            0.78534, 0.749625, 0.710152, 0.666296, 0.617284, 0.562148, 0.499667, 0.428265, 0.345888,
+            0.249792, 0.13624, 0.0,
+        ];
+        let got = dpm_flow_sigmas(20, 3.0);
+        assert_eq!(got.len(), want.len());
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-5, "dpm sigma[{i}]: got {g}, want {w}");
+        }
+    }
+
+    /// Verify the DPM++ 2M flow **step** (x0-conversion + 1st/2nd-order update) against a diffusers
+    /// trajectory (`tools/reference/sana_dpm_dump.py`) — fixed velocities, no model. Skips if the
+    /// goldens aren't present (they're gitignored; regenerate with the dumper).
+    #[test]
+    fn dpm_step_matches_diffusers() {
+        use candle_core::Device;
+        let path = "tools/reference/out/sana-dpm/goldens.safetensors";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+        let dev = Device::Cpu;
+        let g = candle_core::safetensors::load(path, &dev).unwrap();
+        let mut sched = SanaSched::Dpm { sigmas: dpm_flow_sigmas(20, FLOW_SHIFT), prev_x0: None };
+        let mut latent = g["init"].clone();
+        for i in 0..20 {
+            let v = &g[&format!("v{i}")];
+            latent = sched.step(v, i, &latent).unwrap();
+            let want = &g[&format!("out{i}")];
+            let max_abs = (&latent - want)
+                .unwrap()
+                .abs()
+                .unwrap()
+                .flatten_all()
+                .unwrap()
+                .max(0)
+                .unwrap()
+                .to_vec0::<f32>()
+                .unwrap();
+            assert!(max_abs < 1e-3, "dpm step {i}: max_abs {max_abs}");
         }
     }
 }
@@ -219,12 +350,13 @@ impl Pipeline {
         Ok((caption, mask))
     }
 
-    /// Run the flow-matching denoise loop → a raw latent `(1,32,h/32,w/32)`. Uses the DiT (must
-    /// still be loaded). A per-step progress bar mirrors the other pipelines.
-    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64) -> Result<Tensor> {
+    /// Run the denoise loop → a raw latent `(1,32,h/32,w/32)`. Uses the DiT (must still be loaded).
+    /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. Per-step progress bar.
+    #[allow(clippy::too_many_arguments)]
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
         let dit = self.dit.as_ref().context("Sana DiT already freed")?;
-        let sigmas = flow_sigmas(steps, FLOW_SHIFT);
+        let mut sched = SanaSched::new(scheduler, steps);
         let mut latent = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
 
         let pb = indicatif::ProgressBar::new(steps as u64);
@@ -234,15 +366,14 @@ impl Pipeline {
                 .progress_chars("=>-"),
         );
         for i in 0..steps {
-            let t = sigmas[i] * 1000.0;
+            let t = sched.timestep(i);
             let lat_in = Tensor::cat(&[&latent, &latent], 0)?.to_dtype(self.dtype)?; // (2,32,lh,lw)
             let ts = Tensor::from_vec(vec![t as f32; 2], 2, &self.device)?;
             let v = dit.forward(&lat_in, caption, &ts, Some(mask))?.to_dtype(DType::F32)?;
             let v_uncond = v.narrow(0, 0, 1)?;
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
-            let dt = sigmas[i + 1] - sigmas[i];
-            latent = (latent + (v * dt)?)?; // Euler flow-match step
+            latent = sched.step(&v, i, &latent)?;
             pb.set_position((i + 1) as u64);
         }
         pb.finish_and_clear();
@@ -303,15 +434,19 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &req.device);
         let _ = req.device.set_seed(prepared);
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
-        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance)?));
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler)?));
     }
     // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
     pipeline.free_dit();
 
+    let sched_label = match req.scheduler {
+        SchedulerKind::Euler | SchedulerKind::EulerA => "flow-euler",
+        _ => "dpm++2m-flow",
+    };
     for (seed, latent) in &latents {
         let buf = pipeline.decode(latent, w, h)?;
         let mut m = crate::imaging::metadata::GenerationMetadata::new(
-            &req.prompt, &req.model, *seed, steps, guidance, "flow-euler", w, h,
+            &req.prompt, &req.model, *seed, steps, guidance, sched_label, w, h,
         );
         m.negative = req.negative.clone();
         let out_path = req.out_dir.join(format!("plakat-sana-{seed}.png"));
