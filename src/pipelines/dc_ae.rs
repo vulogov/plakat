@@ -182,14 +182,19 @@ impl LinearAttention {
         let key = hs.narrow(2, HEAD_DIM, HEAD_DIM)?.relu()?;
         let value = hs.narrow(2, 2 * HEAD_DIM, HEAD_DIM)?;
 
-        // Linear attention (F32): value gets a ones-row (denominator), then two matmuls.
-        let ones = Tensor::ones((b, groups, 1, n), DType::F32, value.device())?;
-        let value = Tensor::cat(&[value, ones], 2)?; // (B,g,head_dim+1,N)
-        let scores = value.matmul(&key.transpose(2, 3)?.contiguous()?)?; // (B,g,head_dim+1,head_dim)
-        let out = scores.matmul(&query.contiguous()?)?; // (B,g,head_dim+1,N)
-        let num = out.narrow(2, 0, HEAD_DIM)?; // (B,g,head_dim,N)
-        let den = (out.narrow(2, HEAD_DIM, 1)? + ATTN_EPS)?; // (B,g,1,N)
-        let attn = num.broadcast_div(&den)?; // (B,g,head_dim,N)
+        // Linear attention (F32). Collapse the (B,groups) batch to a single dim: candle 0.10.2's
+        // Metal matmul rejects 4-D batched matmuls, but 3-D batched is well-supported.
+        let bg = b * groups;
+        let q3 = query.contiguous()?.reshape((bg, HEAD_DIM, n))?;
+        let k3 = key.contiguous()?.reshape((bg, HEAD_DIM, n))?;
+        let v3 = value.contiguous()?.reshape((bg, HEAD_DIM, n))?;
+        let ones = Tensor::ones((bg, 1, n), DType::F32, v3.device())?;
+        let v3 = Tensor::cat(&[v3, ones], 1)?; // (bg, head_dim+1, N)
+        let scores = v3.matmul(&k3.transpose(1, 2)?.contiguous()?)?; // (bg, head_dim+1, head_dim)
+        let out = scores.matmul(&q3)?; // (bg, head_dim+1, N)
+        let num = out.narrow(1, 0, HEAD_DIM)?; // (bg, head_dim, N)
+        let den = (out.narrow(1, HEAD_DIM, 1)? + ATTN_EPS)?; // (bg, 1, N)
+        let attn = num.broadcast_div(&den)?; // (bg, head_dim, N)
 
         // → (B, inner*(1+s), H, W), then to_out (channels-last) + norm + residual.
         let attn = attn.reshape((b, groups * HEAD_DIM, h, w))?;

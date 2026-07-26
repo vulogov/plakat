@@ -71,20 +71,22 @@ impl LinearSelfAttn {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (b, n, _) = x.dims3()?;
         let orig = x.dtype();
-        // (B,N,inner) → (B,heads,head_dim,N) for q/v; k transposed to (B,heads,N,head_dim).
-        let q = self.to_q.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?;
-        let k = self.to_k.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?.transpose(2, 3)?;
-        let v = self.to_v.forward(x)?.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?;
-        let q = q.relu()?.to_dtype(DType::F32)?.contiguous()?;
-        let k = k.relu()?.to_dtype(DType::F32)?.contiguous()?;
-        let v = v.to_dtype(DType::F32)?;
-        let ones = Tensor::ones((b, HEADS, 1, n), DType::F32, v.device())?;
-        let v = Tensor::cat(&[v, ones], 2)?.contiguous()?; // (B,heads,head_dim+1,N)
-        let scores = v.matmul(&k)?; // (B,heads,head_dim+1,head_dim)
-        let out = scores.matmul(&q)?; // (B,heads,head_dim+1,N)
-        let num = out.narrow(2, 0, HEAD_DIM)?;
-        let den = (out.narrow(2, HEAD_DIM, 1)? + ATTN_EPS)?;
-        let attn = num.broadcast_div(&den)?; // (B,heads,head_dim,N)
+        // (B,N,inner) → (B·heads, head_dim, N), collapsing the batch: candle 0.10.2's Metal matmul
+        // rejects 4-D batched matmuls, so the linear-attention reduction runs 3-D batched.
+        let bh = b * HEADS;
+        let to3 = |t: Tensor| -> Result<Tensor> {
+            Ok(t.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?.contiguous()?.reshape((bh, HEAD_DIM, n))?)
+        };
+        let q = to3(self.to_q.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
+        let k = to3(self.to_k.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
+        let v = to3(self.to_v.forward(x)?)?.to_dtype(DType::F32)?;
+        let ones = Tensor::ones((bh, 1, n), DType::F32, v.device())?;
+        let v = Tensor::cat(&[v, ones], 1)?; // (bh, head_dim+1, N)
+        let scores = v.matmul(&k.transpose(1, 2)?.contiguous()?)?; // (bh, head_dim+1, head_dim)
+        let out = scores.matmul(&q)?; // (bh, head_dim+1, N)
+        let num = out.narrow(1, 0, HEAD_DIM)?;
+        let den = (out.narrow(1, HEAD_DIM, 1)? + ATTN_EPS)?;
+        let attn = num.broadcast_div(&den)?; // (bh, head_dim, N)
         let attn = attn.reshape((b, HIDDEN, n))?.transpose(1, 2)?.contiguous()?.to_dtype(orig)?; // (B,N,inner)
         Ok(self.to_out.forward(&attn)?)
     }
@@ -111,17 +113,21 @@ impl CrossAttn {
     fn forward(&self, x: &Tensor, enc: &Tensor, mask_bias: Option<&Tensor>) -> Result<Tensor> {
         let (b, n, _) = x.dims3()?;
         let l = enc.dim(1)?;
-        let q = self.to_q.forward(x)?.reshape((b, n, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
-        let k = self.to_k.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
-        let v = self.to_v.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?;
+        let bh = b * CROSS_HEADS;
+        // Collapse (B,heads) → 3-D batched matmul (candle Metal rejects 4-D batched).
+        let q = self.to_q.forward(x)?.reshape((b, n, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, n, CROSS_HEAD_DIM))?;
+        let k = self.to_k.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, CROSS_HEAD_DIM))?;
+        let v = self.to_v.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, CROSS_HEAD_DIM))?;
         let scale = 1.0 / (CROSS_HEAD_DIM as f64).sqrt();
-        let mut scores = (q.contiguous()?.matmul(&k.transpose(2, 3)?.contiguous()?)? * scale)?; // (B,heads,N,L)
+        let mut scores = (q.matmul(&k.transpose(1, 2)?.contiguous()?)? * scale)?; // (bh, N, L)
         if let Some(bias) = mask_bias {
-            scores = scores.broadcast_add(bias)?;
+            // (B,1,1,L) → (bh,1,L): same mask for every head of a batch item.
+            let m = bias.reshape((b, 1, l))?.broadcast_as((b, CROSS_HEADS, l))?.reshape((bh, 1, l))?;
+            scores = scores.broadcast_add(&m)?;
         }
         let probs = candle_nn::ops::softmax_last_dim(&scores)?;
-        let out = probs.matmul(&v.contiguous()?)?; // (B,heads,N,head_dim)
-        let out = out.transpose(1, 2)?.reshape((b, n, HIDDEN))?;
+        let out = probs.matmul(&v)?; // (bh, N, head_dim)
+        let out = out.reshape((b, CROSS_HEADS, n, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((b, n, HIDDEN))?;
         Ok(self.to_out.forward(&out)?)
     }
 }
