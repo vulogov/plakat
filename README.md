@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.4.0 — SDXL few-step**: 4–8-step SDXL via `--fast lightning-sdxl-8` (SDXL-Lightning) and `--fast hyper-sdxl-8` (Hyper-SD) — ~4–7× faster generation, bundling the LoRA + the right scheduler (a new Euler-trailing sampler). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.4.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.5.0 — Sana**: a sixth model family — NVIDIA/MIT's **Sana 1.6B** (`--model sana`), a linear-attention DiT with a 32× deep-compression autoencoder and a Gemma-2 text encoder, ported from scratch (no candle support) and verified component-by-component against diffusers. Strong at long, detailed prose; 1024² on Apple Silicon. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.5.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,28 +24,29 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.4.0 — SDXL few-step
+## What's new in 4.5.0 — Sana
 
-**2–8-step SDXL** joins the few-step club that until now was Flux/LCM-only. Two distilled families,
-delivered as opt-in `--fast` presets on base `sdxl` (they bundle a published LoRA + the right
-sampler settings — nothing else to download beyond the small LoRA):
+A **sixth model family** joins plakat: **Sana 1.6B** (`--model sana`), NVIDIA/MIT's efficient
+text-to-image DiT. candle has no Sana support, so all three of its components were implemented from
+scratch and each **verified tensor-for-tensor against the diffusers reference**:
 
-- **SDXL-Lightning** — `--fast lightning-sdxl-8` (near-full quality) or `-4` (fastest). ByteDance's
-  distillation, run CFG-free on a new **Euler-trailing** scheduler (the schedule Lightning is trained
-  for — `--scheduler euler-trailing` is now available on its own too).
-- **Hyper-SD-SDXL** — `--fast hyper-sdxl-8` / `-4`. ByteDance's consistency distillation, on the LCM
-  sampler.
+- **DC-AE** — a deep-compression autoencoder (**32× spatial**, 32 latent channels), unlike the
+  standard 8× VAE — so Sana is memory-light for its resolution. (corr 1.000000)
+- **Gemma-2-2B** — a decoder-LLM used as the text encoder (not T5/CLIP), with Sana's built-in
+  "complex human instruction" that enriches your prompt → **strong at long, detailed descriptions**.
+  (corr 0.9998)
+- **Linear-attention DiT** — ReLU linear self-attention + GLU-MBConv, sampled with flow matching.
+  (corr 1.000000)
 
 ```bash
-plakat generate "a lighthouse at sunset" --model sdxl --fast lightning-sdxl-8
+plakat generate "an old European town square at dusk, watercolor, soft washes" --model sana --size 1024x1024
 ```
 
-Roughly **4–7× faster** than full 30-step SDXL. Each preset prepends its LoRA and sets the
-step/guidance/scheduler defaults (all still overridable). Run `plakat doctor --capability` to see every
-`--fast` preset grouped by family. Everything else is unchanged; default CLI image output stays
-byte-identical.
+Runs 1024² on Apple Silicon (BF16 DiT + Gemma, F32 autoencoder; the encoder and DiT are freed in
+stages to keep peak memory modest). Defaults: 20 steps, guidance 4.5; output size must be a multiple
+of 32. Everything else is unchanged; default CLI image output stays byte-identical.
 
-**Earlier releases** (v0.13 – 4.3):
+**Earlier releases** (v0.13 – 4.4):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

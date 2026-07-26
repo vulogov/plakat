@@ -8,6 +8,20 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.4.0 — SDXL few-step
+
+**2–8-step SDXL** joins the few-step club that until now was Flux/LCM-only. Two distilled families,
+delivered as opt-in `--fast` presets on base `sdxl` (they bundle a published LoRA + the right
+sampler settings — nothing else to download beyond the small LoRA):
+
+- **SDXL-Lightning** — `--fast lightning-sdxl-8` (near-full quality) or `-4` (fastest). ByteDance's
+  distillation, run CFG-free on a new **Euler-trailing** scheduler (`--scheduler euler-trailing`).
+- **Hyper-SD-SDXL** — `--fast hyper-sdxl-8` / `-4`. ByteDance's consistency distillation, on the LCM
+  sampler.
+
+Roughly **4–7× faster** than full 30-step SDXL. Run `plakat doctor --capability` to see every
+`--fast` preset grouped by family. Default CLI image output stays byte-identical.
+
 ## What's new in 4.3.0 — `plakat fractals`: ecosystem
 
 The fractal studio (4.1 render + 4.2 depth) stops being a standalone command and becomes **pervasive** —

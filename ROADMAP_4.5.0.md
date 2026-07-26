@@ -87,6 +87,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase 5 — Memory staging, verify fixtures, docs — DONE
 
+### Post-verification Metal hardening (surfaced by a live `--features metal` run)
+- [x] **candle Metal 4-D matmul bug** → collapse attention matmuls to 3-D batched in dc_ae + sana_dit
+      (commit abc0c25). Re-verified DC-AE + DiT corr 1.000000. [[reference_candle_metal_4d_matmul]].
+- [x] **Metal buffer OOM in decode** → free the DiT before the F32 DC-AE decode (denoise-all → free →
+      decode). Peak = DiT OR DC-AE, never both.
+- [x] **OOM caught, not crashed** → `looks_like_oom` learns candle's "Failed to create metal resource:
+      Buffer"; `OomContext::Sana` mitigations. + per-step denoise progress bar.
+- [x] **Live-proven on Metal**: 1024² watercolor townsquare (green sky + orange sun) — all components
+      correct in the real pipeline.
+
 - [x] Encode-once + **free the Gemma encoder** (~5 GB) before the denoise loop (prompt is fixed across
       `--count`) → peak residency = DiT + DC-AE only. `gemma: Option<Model>`, dropped in `encode()`.
 - [x] Verify fixtures: 4 env-gated corr tests (`PLAKAT_{DCAE,GEMMA,SANADIT}_VERIFY`, flow_sigmas) +
