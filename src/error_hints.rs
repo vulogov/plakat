@@ -41,6 +41,8 @@ pub enum OomContext {
     Animate,
     /// Real-ESRGAN upscale — ×4 buffers blow the Metal single-buffer cap.
     Upscale,
+    /// Sana — three resident models + a large F32 DC-AE decode at 1024².
+    Sana,
 }
 
 impl OomContext {
@@ -77,6 +79,11 @@ impl OomContext {
             OomContext::Upscale => vec![
                 "use a smaller factor (×2 instead of ×4)",
                 "on Apple/Metal, retry on CPU: `--device cpu` (Real-ESRGAN ×4 buffers exceed the Metal single-buffer cap)",
+            ],
+            OomContext::Sana => vec![
+                "try a smaller image: `--size 512x512` (must be a multiple of 32; the F32 DC-AE decode is the memory peak)",
+                "on Apple/Metal, retry on CPU: `--device cpu` (no single-buffer cap; slower but always fits)",
+                "close other GPU apps to free unified memory (Sana keeps a ~3.3 GB DiT resident during denoise)",
             ],
         }
     }
@@ -115,6 +122,9 @@ pub fn looks_like_oom(s: &str) -> bool {
         || lower.contains("cuda_error_out_of_memory")
         || lower.contains("cudamalloc")
         || lower.contains("mtl: allocation failed")
+        // candle 0.10.2's Metal backend surfaces a buffer-allocation failure this way (no
+        // "out of memory" wording) — e.g. a large F32 VAE decode that exceeds free unified memory.
+        || lower.contains("failed to create metal resource")
 }
 
 /// v0.33 phase 1: detect that a `--model` value didn't resolve to
@@ -278,6 +288,8 @@ mod tests {
         assert!(looks_like_oom("cudaMalloc failed"));
         assert!(looks_like_oom("MTL: allocation failed"));
         assert!(looks_like_oom("oom killer fired"));
+        // candle 0.10.2 Metal buffer-allocation failure (no "out of memory" wording).
+        assert!(looks_like_oom("Metal error Failed to create metal resource: Buffer"));
     }
 
     #[test]

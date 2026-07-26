@@ -128,7 +128,7 @@ async fn download_shards(repo: &str, subfolder: &str, base: &str) -> Result<Vec<
 pub struct Pipeline {
     vae: super::dc_ae::AutoencoderDc,
     gemma: Option<super::vendored_gemma2::Model>,
-    dit: super::sana_dit::SanaTransformer,
+    dit: Option<super::sana_dit::SanaTransformer>,
     tokenizer: tokenizers::Tokenizer,
     device: Device,
     dtype: DType,
@@ -171,7 +171,7 @@ impl Pipeline {
             .map_err(|e| anyhow::anyhow!("tokenizing CHI: {e}"))?
             .len();
 
-        Ok(Self { vae, gemma: Some(gemma), dit, tokenizer, device, dtype, chi_tokens })
+        Ok(Self { vae, gemma: Some(gemma), dit: Some(dit), tokenizer, device, dtype, chi_tokens })
     }
 
     /// Encode a prompt → `(embeds (1,300,2304), mask (1,300))` per Sana's `_get_gemma_prompt_embeds`
@@ -219,26 +219,43 @@ impl Pipeline {
         Ok((caption, mask))
     }
 
-    /// One text-to-image generation from a pre-encoded CFG caption batch. `w`/`h` are pixels
-    /// (multiples of 32). Does not need the Gemma encoder (already freed).
-    fn generate(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64) -> Result<(Vec<u8>, u32, u32)> {
+    /// Run the flow-matching denoise loop → a raw latent `(1,32,h/32,w/32)`. Uses the DiT (must
+    /// still be loaded). A per-step progress bar mirrors the other pipelines.
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
+        let dit = self.dit.as_ref().context("Sana DiT already freed")?;
         let sigmas = flow_sigmas(steps, FLOW_SHIFT);
         let mut latent = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
 
+        let pb = indicatif::ProgressBar::new(steps as u64);
+        pb.set_style(
+            indicatif::ProgressStyle::with_template("  {spinner:.cyan} denoise [{bar:30.cyan/blue}] {pos}/{len}  {elapsed}")
+                .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+                .progress_chars("=>-"),
+        );
         for i in 0..steps {
             let t = sigmas[i] * 1000.0;
             let lat_in = Tensor::cat(&[&latent, &latent], 0)?.to_dtype(self.dtype)?; // (2,32,lh,lw)
             let ts = Tensor::from_vec(vec![t as f32; 2], 2, &self.device)?;
-            let v = self.dit.forward(&lat_in, caption, &ts, Some(mask))?.to_dtype(DType::F32)?;
+            let v = dit.forward(&lat_in, caption, &ts, Some(mask))?.to_dtype(DType::F32)?;
             let v_uncond = v.narrow(0, 0, 1)?;
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
             let dt = sigmas[i + 1] - sigmas[i];
             latent = (latent + (v * dt)?)?; // Euler flow-match step
+            pb.set_position((i + 1) as u64);
         }
+        pb.finish_and_clear();
+        Ok(latent)
+    }
 
-        // DC-AE decode: un-scale, decode, [-1,1] → RGB u8.
+    /// Free the DiT (~3.3 GB) — call after all denoise loops, before the memory-heavy F32 decode.
+    fn free_dit(&mut self) {
+        self.dit = None;
+    }
+
+    /// DC-AE decode a raw latent → packed RGB `u8` `(H·W·3)`. Only needs the VAE (DiT freed).
+    fn decode(&self, latent: &Tensor, w: u32, h: u32) -> Result<Vec<u8>> {
         let z = (latent / DCAE_SCALE)?;
         let img = {
             use super::dc_ae::ImageVae;
@@ -246,7 +263,8 @@ impl Pipeline {
         };
         let img = ((img.clamp(-1f32, 1f32)? + 1.0)? * 127.5)?.to_dtype(DType::U8)?;
         let img = img.i(0)?.permute((1, 2, 0))?.flatten_all()?; // (H,W,3)
-        Ok((img.to_vec1::<u8>()?, w, h))
+        let _ = (w, h);
+        Ok(img.to_vec1::<u8>()?)
     }
 }
 
@@ -264,24 +282,36 @@ pub async fn run(req: RunRequest) -> Result<()> {
     let guidance = if req.guidance <= 0.0 { 4.5 } else { req.guidance };
 
     let mut pipeline = Pipeline::load(&req.model, req.device.clone()).await?;
+    // Any OOM in encode / denoise / decode is caught and decorated with Sana-specific mitigations
+    // (smaller --size, --device cpu) rather than crashing with a raw candle Metal error.
+    generate_all(&mut pipeline, &req, steps, guidance)
+        .map_err(|e| crate::error_hints::decorate_oom(e, crate::error_hints::OomContext::Sana))
+}
+
+/// Encode → denoise (all seeds) → free the DiT → decode + save. Separated from `run` so its errors
+/// (notably Metal buffer OOM) can be decorated with mitigations before surfacing.
+fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidance: f64) -> Result<()> {
     // Encode the prompt once (fixed across the count loop), then free the ~5 GB Gemma encoder.
     let (caption, mask) = pipeline.encode(&req.prompt, &req.negative)?;
-    let base_seed = req.seed.unwrap_or(42);
-    for idx in 0..req.count.max(1) {
-        let seed = base_seed.wrapping_add(idx as u64);
+    let count = req.count.max(1);
+    let (w, h) = (req.width, req.height);
+
+    // Denoise every seed first (DiT resident), collecting the small latents.
+    let mut latents: Vec<(u64, Tensor)> = Vec::with_capacity(count as usize);
+    for idx in 0..count {
+        let seed = req.seed.unwrap_or(42).wrapping_add(idx as u64);
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &req.device);
         let _ = req.device.set_seed(prepared);
-        crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, req.count.max(1)));
-        let (buf, w, h) = pipeline.generate(&caption, &mask, req.width, req.height, steps, guidance)?;
+        crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance)?));
+    }
+    // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
+    pipeline.free_dit();
+
+    for (seed, latent) in &latents {
+        let buf = pipeline.decode(latent, w, h)?;
         let mut m = crate::imaging::metadata::GenerationMetadata::new(
-            &req.prompt,
-            &req.model,
-            seed,
-            steps,
-            guidance,
-            "flow-euler",
-            w,
-            h,
+            &req.prompt, &req.model, *seed, steps, guidance, "flow-euler", w, h,
         );
         m.negative = req.negative.clone();
         let out_path = req.out_dir.join(format!("plakat-sana-{seed}.png"));
