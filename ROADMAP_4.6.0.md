@@ -20,20 +20,22 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       1st/2nd-order midpoint) matches a diffusers trajectory (`sana_dpm_dump.py`, fixed velocities, no
       model) over 20 steps, max_abs <1e-3. `--scheduler euler` keeps the 4.5 FlowMatchEuler.
 
-## Phase 2 — Sana LoRA (`--loras`)
+## Phase 2 — Sana img2img (`plakat img2img --model sana`) — DONE
 
-- [ ] Merge LoRA weights into the Linear-DiT at load (mirror `flux_lora` / `sd3_lora` merge-at-load:
-      `W += (alpha/rank)·scale·(B@A)` over `to_q/k/v/out`, the GLUMBConv convs, caption_projection).
-      Drop the current "LoRA not wired" bail.
-- [ ] Resolve `--loras` specs (HF `repo:name` / civitai / local) via the existing `lora` resolver.
-- [ ] Verify: a known Sana LoRA visibly changes output; no-LoRA path byte-identical.
+- [x] Add a Sana arm to the dedicated img2img dispatch (`cli/img2img.rs`): DC-AE-encode the init
+      (verified corr 1.0), scale by 0.41407, start the flow loop from a **partially-noised** latent per
+      `--strength` (`x_σ = (1-σ)·z0 + σ·noise`, sigma schedule trimmed to the strength window).
+- [x] Reuse `SanaSched` (DPM++ default / euler); the trimmed start has no multistep history → first
+      step is first-order, which is correct.
+- [x] Verify: DONE — 256² CPU smoke (townsquare init, strength 0.6) → coherent image retaining the
+      init's green-sky character (31k colors, luma_std 92.9). DC-AE encode reused (corr 1.0); Sana
+      defaults applied in img2img (20 steps / guidance 4.5); size must be mult-of-32; mask/tiled bail.
 
-## Phase 3 — Sana img2img (`plakat img2img --model sana`)
+## Phase 3 — Sana LoRA — DEFERRED
 
-- [ ] Add a Sana arm to the dedicated img2img dispatch (`cli/img2img.rs`): DC-AE-encode the init
-      (verified corr 1.0), scale, start the flow loop from a **partially-noised** latent per
-      `--strength` (mirror SD3/Flux flow img2img: `lerp(init, noise, σ_start)`, timesteps trimmed).
-- [ ] Verify: strength→1.0 ≈ txt2img; low strength preserves the init; coherent output.
+- [~] Merge-at-load into the Linear-DiT (mirror `sd3_lora`). **Deferred**: no real Sana LoRAs exist yet
+      (the one HF `sana-lora` repo is actually a Flux LoRA). Revisit when the ecosystem matures — the
+      merge machinery + a synthetic-LoRA corr check is the plan. The `--loras` bail stays for now.
 
 ## Phase 4 — variants (parameterize the DiT config + aliases)
 

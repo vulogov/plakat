@@ -453,6 +453,17 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
             }
             return run_cascade_img2img(args, device).await;
         }
+        // v4.6: Sana img2img — DC-AE-encode the init, flow-noise it at `--strength`, denoise a
+        // trimmed schedule (DPM++ default). Mask / tiled aren't wired.
+        if variant.is_sana() {
+            if args.mask.is_some() {
+                anyhow::bail!("Sana img2img doesn't support `--mask` (inpaint) yet.");
+            }
+            if args.tiled {
+                anyhow::bail!("Sana img2img doesn't support `--tiled`.");
+            }
+            return run_sana_img2img(args, device).await;
+        }
     }
 
     // Strength: 0.6 for img2img, 1.0 for inpaint when not explicit.
@@ -1196,6 +1207,40 @@ async fn run_cascade_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()
             faithful: args.faithful,
         },
     )
+    .await
+}
+
+/// v4.6: Sana img2img — build a `sana::RunRequest` with the init image + strength and run it.
+/// The Sana pipeline DC-AE-encodes the init and starts the flow loop from a strength-noised latent.
+async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+    let seed = Some(args.seed.unwrap_or_else(rand::random));
+    let (width, height) = resolve_img2img_size(&args)?;
+    if width % 32 != 0 || height % 32 != 0 {
+        anyhow::bail!("Sana requires the size to be a multiple of 32 (DC-AE is 32×); got {width}x{height}. Pass --size.");
+    }
+    let strength = args.strength.unwrap_or(0.6);
+    // Give Sana its own defaults when the user left the generic img2img defaults untouched.
+    let steps = if args.steps == 28 { 20 } else { args.steps };
+    let guidance = if (args.guidance - 7.5).abs() < f64::EPSILON { 4.5 } else { args.guidance };
+
+    crate::pipelines::sana::run(crate::pipelines::sana::RunRequest {
+        model: args.model,
+        device,
+        prompt: args.prompt,
+        negative: args.negative,
+        width,
+        height,
+        steps,
+        guidance,
+        seed,
+        scheduler: args.scheduler,
+        out_dir: args.out,
+        count: args.count,
+        loras: Vec::new(), // LoRA deferred (no real Sana LoRAs yet)
+        lora_scale: 1.0,
+        init_image: Some(args.input),
+        strength: Some(strength),
+    })
     .await
 }
 

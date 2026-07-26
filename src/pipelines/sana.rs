@@ -48,6 +48,9 @@ pub struct RunRequest {
     pub count: u32,
     pub loras: Vec<crate::pipelines::lora::LoraSpec>,
     pub lora_scale: f32,
+    /// img2img: optional init image + denoise strength (0 = keep init, 1 = full txt2img).
+    pub init_image: Option<std::path::PathBuf>,
+    pub strength: Option<f32>,
 }
 
 /// `shift·t / (1 + (shift−1)·t)` — the flow-matching sigma time-shift (diffusers `mu_t`; identical
@@ -108,6 +111,12 @@ impl SanaSched {
             SanaSched::Euler { sigmas: flow_sigmas(steps, FLOW_SHIFT) }
         } else {
             SanaSched::Dpm { sigmas: dpm_flow_sigmas(steps, FLOW_SHIFT), prev_x0: None }
+        }
+    }
+    /// The sigma at step index `i`.
+    fn sigma(&self, i: usize) -> f64 {
+        match self {
+            SanaSched::Euler { sigmas } | SanaSched::Dpm { sigmas, .. } => sigmas[i],
         }
     }
     /// The DiT timestep for step `i` (`floor(σ_i · 1000)`, matching diffusers).
@@ -350,22 +359,46 @@ impl Pipeline {
         Ok((caption, mask))
     }
 
+    /// DC-AE-encode an init image → a **model-space** latent `z0·scaling_factor` for img2img.
+    fn encode_init(&self, path: &std::path::Path, w: u32, h: u32) -> Result<Tensor> {
+        use super::dc_ae::ImageVae;
+        let px = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.device, DType::F32)?;
+        let px = if px.dims().len() == 3 { px.unsqueeze(0)? } else { px };
+        let z0 = self.vae.encode(&px)?; // raw latent (deterministic)
+        Ok((z0 * DCAE_SCALE)?) // model space (the denoise operates here)
+    }
+
     /// Run the denoise loop → a raw latent `(1,32,h/32,w/32)`. Uses the DiT (must still be loaded).
-    /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. Per-step progress bar.
+    /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. With `init = Some((z0, strength))`
+    /// this is **img2img**: start from a partially-noised init over a strength-trimmed schedule.
     #[allow(clippy::too_many_arguments)]
-    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind) -> Result<Tensor> {
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
         let dit = self.dit.as_ref().context("Sana DiT already freed")?;
-        let mut sched = SanaSched::new(scheduler, steps);
-        let mut latent = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
+        let sched = SanaSched::new(scheduler, steps);
+        let noise = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
+        // txt2img: start at step 0 from pure noise. img2img: start at the strength point from a
+        // flow-noised init `x_σ = (1-σ)·z0 + σ·noise`.
+        let (start, mut latent) = match init {
+            None => (0usize, noise),
+            Some((z0, strength)) => {
+                let s = (strength.clamp(0.0, 1.0) as f64).max(0.0);
+                let init_steps = (s * steps as f64).round() as usize;
+                let start = steps.saturating_sub(init_steps).min(steps.saturating_sub(1));
+                let sigma = sched.sigma(start);
+                let x = ((z0 * (1.0 - sigma))? + (&noise * sigma)?)?;
+                (start, x)
+            }
+        };
+        let mut sched = sched;
 
-        let pb = indicatif::ProgressBar::new(steps as u64);
+        let pb = indicatif::ProgressBar::new((steps - start) as u64);
         pb.set_style(
             indicatif::ProgressStyle::with_template("  {spinner:.cyan} denoise [{bar:30.cyan/blue}] {pos}/{len}  {elapsed}")
                 .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
                 .progress_chars("=>-"),
         );
-        for i in 0..steps {
+        for i in start..steps {
             let t = sched.timestep(i);
             let lat_in = Tensor::cat(&[&latent, &latent], 0)?.to_dtype(self.dtype)?; // (2,32,lh,lw)
             let ts = Tensor::from_vec(vec![t as f32; 2], 2, &self.device)?;
@@ -374,7 +407,7 @@ impl Pipeline {
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
             latent = sched.step(&v, i, &latent)?;
-            pb.set_position((i + 1) as u64);
+            pb.set_position((i - start + 1) as u64);
         }
         pb.finish_and_clear();
         Ok(latent)
@@ -427,6 +460,13 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
     let count = req.count.max(1);
     let (w, h) = (req.width, req.height);
 
+    // img2img: DC-AE-encode the init once (fixed across the count loop).
+    let init_z = match &req.init_image {
+        Some(p) => Some(pipeline.encode_init(p, w, h)?),
+        None => None,
+    };
+    let strength = req.strength.unwrap_or(0.6);
+
     // Denoise every seed first (DiT resident), collecting the small latents.
     let mut latents: Vec<(u64, Tensor)> = Vec::with_capacity(count as usize);
     for idx in 0..count {
@@ -434,7 +474,8 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         let prepared = crate::pipelines::seeds::prepare_seed(seed, &req.device);
         let _ = req.device.set_seed(prepared);
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
-        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler)?));
+        let init = init_z.as_ref().map(|z| (z, strength));
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init)?));
     }
     // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
     pipeline.free_dit();
