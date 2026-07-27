@@ -42,7 +42,8 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [x] GENERATE tutorial: Sana-1.5 model row + inpaint section (with the 32× coarse-boundary note);
       README banner + "what's new in 4.7.0" (Sana-1.5, inpaint, Metal encode fix). `reference_sana`
       memory updated (4.7 section + the rank-5-mean Metal gotcha).
-- [ ] Cut the 4.7.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
+- [x] Cut the 4.7.0 release — v4.7.0 @ 16bc1d4: tag pushed → Release CI green (6 assets + SHA256SUMS),
+      `cargo publish --locked` (on crates.io), main fast-forwarded, notes set via `gh release edit`.
 
 ## Notes / risks
 
