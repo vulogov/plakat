@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.6.0 — Sana deepening**: the Sana family gains its true **DPM++ 2M flow** sampler (now the default), **img2img** (`plakat img2img --model sana`), and the **0.6B / 512 / 2K variants** (`sana-600m`, `sana-512`, `sana-2k`). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.6.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.7.0 — finishing the Sana family**: the **Sana-1.5** checkpoint (`--model sana-1.5`, adds `qk_norm`) and **Sana inpaint** (`plakat img2img --model sana --mask …`). Also fixes a Metal DC-AE encode bug that silently degraded Sana img2img on Apple Silicon. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.7.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,23 +24,25 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.6.0 — Sana deepening
+## What's new in 4.7.0 — finishing the Sana family
 
-4.5.0 added the [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md) family; 4.6.0 rounds it out —
-each item built on the already-verified components:
+4.5/4.6 built and deepened [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md); 4.7.0 closes the two
+remaining items, both on the already-verified components:
 
-- **DPM++ 2M flow scheduler** — Sana's *actual* default sampler (`DPMSolverMultistepScheduler` with
-  flow sigmas), now the plakat default too. Higher quality than the 4.5 FlowMatchEuler, which stays
-  available via `--scheduler euler`. Verified against diffusers (sigmas exact; the step matches a
-  20-step reference trajectory).
-- **img2img** — `plakat img2img <image> --prompt "…" --model sana --strength 0.6`. The init is
-  DC-AE-encoded and the flow loop starts from a strength-noised latent over a trimmed schedule.
-- **Variants** — `sana-600m` (smaller/faster 0.6B DiT), `sana-512` (512²), `sana-2k` (2048²). The DiT
-  config is read per-model from the checkpoint, so all base Sana variants load (same DC-AE + Gemma-2).
+- **Sana-1.5** — `--model sana-1.5` (Efficient-Large-Model/SANA1.5_1.6B_1024px). Its only architectural
+  delta is `qk_norm = rms_norm_across_heads` (an RMSNorm on q/k before the head reshape, both attentions).
+  Verified against a diffusers dump at **corr 0.999998**.
+- **Inpaint** — `plakat img2img <image> --prompt "…" --model sana --mask mask.png`. RePaint-style: the
+  mask is average-pooled to the DC-AE 32× latent grid and, after every denoise step, the *preserve*
+  region snaps back onto the init's flow trajectory while the masked region re-paints. `--mask-feather`
+  / `--mask-invert` as elsewhere; inpaint strength defaults to 1.0.
+- **Metal DC-AE encode fix** — Sana img2img/inpaint on Apple Silicon was silently ignoring the init
+  image: candle's Metal backend miscomputes a reduce over a rank-5 tensor, which the DC-AE encoder used,
+  returning an all-black latent. Now reduced at rank-3. (txt2img was never affected.)
 
 ```bash
-plakat generate "a fox in a misty forest, watercolor" --model sana-600m --size 1024x1024
-plakat img2img photo.png --prompt "watercolor, soft washes" --model sana --strength 0.55
+plakat generate "a fox in a misty forest, watercolor" --model sana-1.5 --size 1024x1024
+plakat img2img town.png --prompt "a full moon in a green sky, watercolor" --model sana --mask sky.png
 ```
 
 Default CLI image output stays byte-identical; everything is additive behind Sana's own pipeline.

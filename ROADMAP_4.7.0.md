@@ -39,8 +39,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase 3 — docs + release
 
-- [ ] GENERATE tutorial: Sana-1.5 + inpaint notes; capability hint; README what's-new. Update
-      [[reference_sana]]. Cut the 4.7.0 release.
+- [x] GENERATE tutorial: Sana-1.5 model row + inpaint section (with the 32× coarse-boundary note);
+      README banner + "what's new in 4.7.0" (Sana-1.5, inpaint, Metal encode fix). `reference_sana`
+      memory updated (4.7 section + the rank-5-mean Metal gotcha).
+- [ ] Cut the 4.7.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
 
 ## Notes / risks
 

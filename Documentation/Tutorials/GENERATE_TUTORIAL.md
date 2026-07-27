@@ -168,6 +168,7 @@ arbitrary HuggingFace repo ids:
 | `flux-dev` | Flux Dev — higher-quality Flux variant |
 | `pixart` | PixArt-Σ — DiT + T5, 1024² |
 | `sana` | Sana 1.6B — linear-attention DiT + Gemma-2 text encoder, 1024², strong at long prose |
+| `sana-1.5` | Sana-1.5 1.6B — the `qk_norm` refinement of the Sana DiT (else identical) |
 | `<org>/<repo>` | Any HuggingFace text-to-image repo by id |
 
 ```bash
@@ -188,9 +189,19 @@ output size must be a multiple of 32. On GPU the DiT + encoder run in BF16 (the 
 is freed after encoding, so peak residency stays modest); on CPU everything is F32.
 
 - **Variants:** `sana-600m` (smaller/faster 0.6B DiT), `sana-512` (512² — use `--size 512x512`),
-  `sana-2k` (2048² — memory-heavy). Same DC-AE + Gemma-2; the DiT config is read per-model.
+  `sana-2k` (2048² — memory-heavy), and `sana-1.5` (the `qk_norm` checkpoint). Same DC-AE + Gemma-2;
+  the DiT config is read per-model.
 - **img2img:** `plakat img2img <image> --prompt "…" --model sana --strength 0.6` — the init is
   DC-AE-encoded and the flow loop starts from a strength-noised latent.
+- **Inpaint:** add `--mask mask.png` (white = repaint, black = preserve; `--mask-feather`,
+  `--mask-invert` as elsewhere). RePaint-style: the mask is pooled to the DC-AE **32× latent grid** —
+  so the boundary is coarse (16×16 for a 512² image) — and after each step the preserve region snaps
+  back onto the init while the masked region re-paints. Inpaint strength defaults to 1.0.
+
+  ```bash
+  plakat img2img town.png --prompt "a full moon in a green sky, watercolor" \
+      --model sana --mask sky.png --mask-feather 8
+  ```
 
 For this tutorial, stick with `sd15` unless you have a reason to
 switch.
