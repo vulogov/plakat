@@ -2714,6 +2714,41 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // errors "not implemented"; the pipeline lands across phases 1–4.
     if variant.is_sana() {
         use crate::pipelines::sana;
+        // v4.8: Sana ControlNet. The public CN is a single 600M model taking one conditioning image
+        // (canny/HED-style), so we accept exactly one --control-spec and require the sana-600m base.
+        // Hold the auto-annotator tempdir until `sana::run` has read the conditioning PNG.
+        let _sana_anno_tmp;
+        let (control_image, control_strength) = if req.controls.is_empty() {
+            (None, 1.0)
+        } else {
+            if req.controls.len() > 1 {
+                anyhow::bail!("Sana ControlNet supports a single --control-spec (the public CN is one model). Drop the extras.");
+            }
+            let spec = &req.controls[0];
+            let anno_dtype = if matches!(req.device, Device::Cpu) { DType::F32 } else { DType::BF16 };
+            let cond_path: PathBuf = match (spec.image.as_ref(), spec.from.as_ref()) {
+                (Some(p), None) => p.clone(),
+                (None, Some(from_path)) => {
+                    let spin = progress::spinner(&format!("Auto-annotating Sana ControlNet ({})", spec.kind.slug()));
+                    let anno = crate::pipelines::controlnet_annotator::annotate(
+                        spec.kind, from_path, req.width, req.height, &req.device, anno_dtype,
+                    )
+                    .await
+                    .with_context(|| format!("auto-annotating {} for Sana ControlNet", spec.kind.slug()))?;
+                    let tmp = tempfile::Builder::new().prefix("plakat-sana-anno-").tempdir()
+                        .context("tempdir for Sana ControlNet annotator")?;
+                    let out_path = tmp.path().join(format!("{}.png", spec.kind.slug()));
+                    write_annotator_tensor_as_png(&anno, &out_path)
+                        .with_context(|| format!("writing auto-annotated {}", spec.kind.slug()))?;
+                    spin.finish_with_message(format!("✓ auto-annotated {} → {}", spec.kind.slug(), out_path.display()));
+                    _sana_anno_tmp = tmp; // keep alive until run() returns
+                    out_path
+                }
+                (Some(_), Some(_)) => anyhow::bail!("Sana --control-spec: image= and from= are mutually exclusive"),
+                (None, None) => anyhow::bail!("Sana --control-spec: requires image=PATH or from=PATH"),
+            };
+            (Some(cond_path), spec.strength)
+        };
         sana::run(sana::RunRequest {
             model: req.model.clone(),
             device: req.device.clone(),
@@ -2734,6 +2769,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             mask: None,
             mask_feather: 0,
             mask_invert: false,
+            control_image,
+            control_strength,
         })
         .await?;
         return Ok(None);

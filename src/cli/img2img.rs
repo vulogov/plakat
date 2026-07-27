@@ -1243,6 +1243,10 @@ async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         mask: args.mask,
         mask_feather: args.mask_feather,
         mask_invert: args.mask_invert,
+        // ControlNet is a txt2img-path feature for Sana (via `generate --control-*`); img2img+CN
+        // isn't wired here.
+        control_image: None,
+        control_strength: 1.0,
     })
     .await
 }

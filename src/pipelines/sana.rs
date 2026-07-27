@@ -19,6 +19,9 @@ const MAX_SEQ: usize = 300;
 const LATENT_CH: usize = 32;
 const DCAE_SCALE: f64 = 0.41407;
 const FLOW_SHIFT: f64 = 3.0;
+/// The public Sana ControlNet (600M-dim, 7 blocks) — pairs with the `sana-600m` base. Weights live
+/// under the `controlnet/` subfolder.
+const SANA_CONTROLNET_REPO: &str = "ishan24/Sana_600M_1024px_ControlNetPlus_diffusers";
 /// Sana's "complex human instruction" — string-prepended to every prompt (Sana was trained with
 /// it; alignment degrades without it). Verbatim from diffusers `SanaPipeline`.
 const CHI: &[&str] = &[
@@ -56,6 +59,10 @@ pub struct RunRequest {
     pub mask: Option<std::path::PathBuf>,
     pub mask_feather: u32,
     pub mask_invert: bool,
+    /// ControlNet: an already-preprocessed conditioning image (canny/HED/etc.) + strength. When set,
+    /// the 600M Sana ControlNet is loaded and its residuals steer the DiT (needs the `sana-600m` base).
+    pub control_image: Option<std::path::PathBuf>,
+    pub control_strength: f32,
 }
 
 /// `shift·t / (1 + (shift−1)·t)` — the flow-matching sigma time-shift (diffusers `mu_t`; identical
@@ -274,6 +281,7 @@ pub struct Pipeline {
     vae: super::dc_ae::AutoencoderDc,
     gemma: Option<super::vendored_gemma2::Model>,
     dit: Option<super::sana_dit::SanaTransformer>,
+    controlnet: Option<super::sana_dit::SanaControlNet>,
     tokenizer: tokenizers::Tokenizer,
     device: Device,
     dtype: DType,
@@ -318,7 +326,28 @@ impl Pipeline {
             .map_err(|e| anyhow::anyhow!("tokenizing CHI: {e}"))?
             .len();
 
-        Ok(Self { vae, gemma: Some(gemma), dit: Some(dit), tokenizer, device, dtype, chi_tokens })
+        Ok(Self { vae, gemma: Some(gemma), dit: Some(dit), controlnet: None, tokenizer, device, dtype, chi_tokens })
+    }
+
+    /// Load the 600M Sana ControlNet (from the `controlnet/` subfolder of `SANA_CONTROLNET_REPO`).
+    /// Its residual width must match the loaded DiT's hidden dim — bail otherwise (the public CN is
+    /// 600M, so the base must be `sana-600m`).
+    async fn load_controlnet(&mut self) -> Result<()> {
+        let repo = SANA_CONTROLNET_REPO;
+        let cfg_path = crate::hf::download::get_file(repo, "controlnet/config.json").await?;
+        let cn_cfg = super::sana_dit::Config::from_json(&cfg_path)?;
+        let dit_hidden = self.dit.as_ref().context("Sana DiT already freed")?.hidden();
+        if cn_cfg.hidden != dit_hidden {
+            bail!(
+                "Sana ControlNet is {}-dim but the base DiT is {}-dim — use `--model sana-600m` (the \
+                 public Sana ControlNet is 600M).",
+                cn_cfg.hidden, dit_hidden
+            );
+        }
+        let shards = download_shards(repo, "controlnet", "diffusion_pytorch_model").await?;
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, self.dtype, &self.device)? };
+        self.controlnet = Some(super::sana_dit::SanaControlNet::load(cn_cfg, vb)?);
+        Ok(())
     }
 
     /// Encode a prompt → `(embeds (1,300,2304), mask (1,300))` per Sana's `_get_gemma_prompt_embeds`
@@ -379,9 +408,14 @@ impl Pipeline {
     /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. With `init = Some((z0, strength))`
     /// this is **img2img**: start from a partially-noised init over a strength-trimmed schedule.
     #[allow(clippy::too_many_arguments)]
-    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>, mask_lat: Option<&Tensor>) -> Result<Tensor> {
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>, mask_lat: Option<&Tensor>, control: Option<(&Tensor, f32)>) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
         let dit = self.dit.as_ref().context("Sana DiT already freed")?;
+        // ControlNet residuals (if any) need the control latent doubled for the CFG pass.
+        let control2 = match control {
+            Some((clat, cscale)) => Some((Tensor::cat(&[clat, clat], 0)?.to_dtype(self.dtype)?, cscale as f64)),
+            None => None,
+        };
         let sched = SanaSched::new(scheduler, steps);
         let noise = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
         // Keep the init latent (if any) for the per-step RePaint blend.
@@ -411,7 +445,15 @@ impl Pipeline {
             let t = sched.timestep(i);
             let lat_in = Tensor::cat(&[&latent, &latent], 0)?.to_dtype(self.dtype)?; // (2,32,lh,lw)
             let ts = Tensor::from_vec(vec![t as f32; 2], 2, &self.device)?;
-            let v = dit.forward(&lat_in, caption, &ts, Some(mask))?.to_dtype(DType::F32)?;
+            // ControlNet: run the CN on the doubled latent+control → per-block residuals → inject.
+            let v = match (self.controlnet.as_ref(), control2.as_ref()) {
+                (Some(cn), Some((ctrl2, cscale))) => {
+                    let residuals = cn.forward(&lat_in, ctrl2, caption, &ts, Some(mask), *cscale)?;
+                    dit.forward_control(&lat_in, caption, &ts, Some(mask), Some(&residuals))?
+                }
+                _ => dit.forward(&lat_in, caption, &ts, Some(mask))?,
+            }
+            .to_dtype(DType::F32)?;
             let v_uncond = v.narrow(0, 0, 1)?;
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
@@ -431,9 +473,10 @@ impl Pipeline {
         Ok(latent)
     }
 
-    /// Free the DiT (~3.3 GB) — call after all denoise loops, before the memory-heavy F32 decode.
+    /// Free the DiT (~3.3 GB) + ControlNet — call after all denoise loops, before the F32 decode.
     fn free_dit(&mut self) {
         self.dit = None;
+        self.controlnet = None;
     }
 
     /// DC-AE decode a raw latent → packed RGB `u8` `(H·W·3)`. Only needs the VAE (DiT freed).
@@ -467,6 +510,11 @@ pub async fn run(req: RunRequest) -> Result<()> {
     let guidance = if req.guidance <= 0.0 { 4.5 } else { req.guidance };
 
     let mut pipeline = Pipeline::load(&req.model, req.device.clone()).await?;
+    // ControlNet: load the 600M CN before the denoise loop (async download). Bails if the base DiT
+    // dim doesn't match (the public CN is 600M → use --model sana-600m).
+    if req.control_image.is_some() {
+        pipeline.load_controlnet().await?;
+    }
     // Any OOM in encode / denoise / decode is caught and decorated with Sana-specific mitigations
     // (smaller --size, --device cpu) rather than crashing with a raw candle Metal error.
     generate_all(&mut pipeline, &req, steps, guidance)
@@ -506,6 +554,13 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         .strength
         .unwrap_or(if req.mask.is_some() { 1.0 } else { 0.6 });
 
+    // ControlNet: the CN is already loaded (in `run`); DC-AE-encode the conditioning image once.
+    let control_z = match &req.control_image {
+        Some(p) => Some(pipeline.encode_init(p, w, h)?),
+        None => None,
+    };
+    let control_strength = req.control_strength;
+
     // Denoise every seed first (DiT resident), collecting the small latents.
     let mut latents: Vec<(u64, Tensor)> = Vec::with_capacity(count as usize);
     for idx in 0..count {
@@ -514,7 +569,8 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         let _ = req.device.set_seed(prepared);
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
         let init = init_z.as_ref().map(|z| (z, strength));
-        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init, mask_lat.as_ref())?));
+        let control = control_z.as_ref().map(|z| (z, control_strength));
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init, mask_lat.as_ref(), control)?));
     }
     // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
     pipeline.free_dit();

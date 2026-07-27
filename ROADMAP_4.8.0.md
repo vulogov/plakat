@@ -22,7 +22,7 @@ So the only real gap was the VAE snap constraint.
 - [x] Verify (Metal): `outpaint plakat-sana-7.png --model sana --right 64` → 512²→576×512, preserved
       region mean|Δ| **7.6** (≤ AE floor), new strip coherently continued (buildings/stalls/sky blend).
 
-## Phase 2 — Sana ControlNet (`plakat generate --model sana --control-* …`)
+## Phase 2 — Sana ControlNet (`plakat generate --model sana-600m --control-* …`) — DONE
 
 Real + verifiable: diffusers 0.38 ships `SanaControlNetModel` + `SanaControlNetPipeline`; checkpoints
 exist (`ishan24/Sana_600M_1024px_ControlNetPlus_diffusers`,
@@ -34,19 +34,21 @@ copy-of-early-blocks pattern, reusing components we already have:
   zero-init `controlnet_block` linear, is scaled by `conditioning_scale`, and is **added into the main
   DiT's hidden state after the matching block** (`hidden += residual[i-1]` for blocks 1..=7).
 
-- [ ] New `sana_controlnet.rs`: `SanaControlNet` = `input_block` + N copied DiT blocks (reuse the
-      `sana_dit` block type) + N zero `controlnet_blocks`; `Config` from the ControlNet `config.json`
-      (num_layers=7, in=32, inner=heads·head_dim). Forward → `Vec<Tensor>` of scaled residuals.
-- [ ] `sana_dit::SanaTransformer::forward` gains an optional `controlnet_residuals: Option<&[Tensor]>`
-      arg, adding `residual[i-1]` after block `i` for `1..=len`. No-op / byte-identical when `None`.
-- [ ] Pipeline wiring (`sana.rs`): load the ControlNet when a control image is given; DC-AE-encode the
-      control image once; thread residuals through the denoise loop (both CFG passes). Reuse plakat's
-      existing control-image preprocessing (canny/depth/etc. already produce the conditioning image).
-- [ ] CLI/dispatch: route `--control` / `--control-image` / `--control-from` for Sana (they currently
-      bail or are SD-only). Alias(es) for the ControlNet repo(s) in `hf/mod.rs`; capability note.
-- [ ] Verify: `SanaControlNet` single-forward residuals match a diffusers dump
-      (`tools/reference/sana_controlnet_dump.py`) at corr > 0.999; end-to-end a canny/HED control run
-      on Metal produces an image that follows the control.
+- [x] `SanaControlNet` in `sana_dit.rs` (same module → reuses the private `Block` + helpers): an
+      `input_block` Linear on the patch-embedded control latent + N copied blocks + N zero
+      `controlnet_blocks` Linears + its own time/caption front-matter. `Config` from the ControlNet
+      `config.json` (7 layers, inner 1152). `forward → Vec<Tensor>` of scaled residuals.
+- [x] `SanaTransformer::forward_control(..., Option<&[Tensor]>)` — adds `residual[i-1]` after block
+      `i` for `1..=len` (diffusers window). `forward` delegates with `None` → byte-identical.
+- [x] Pipeline wiring (`sana.rs`): `load_controlnet` (async, from the CN repo `controlnet/` subfolder,
+      bails if hidden-dim ≠ base DiT → "use sana-600m"); DC-AE-encode the control once via `encode_init`;
+      per-step the CN runs on the doubled latent+control and its residuals steer the DiT; freed with the DiT.
+- [x] CLI/dispatch: the Sana arm resolves one `--control`/`--control-image`/`--control-from` spec
+      (auto-annotate via the shared annotator), single-CN only; repo pinned to `SANA_CONTROLNET_REPO`.
+      (No new model alias → not a `doctor --capability` item.)
+- [x] Verify: `SanaControlNet` residuals match a diffusers dump (`tools/reference/sana_controlnet_dump.py`)
+      at **corr 1.000000** (worst 0.999996); end-to-end canny-guided run on Metal follows the control —
+      ablation NCC-to-source **0.166 with vs 0.079 without** (same prompt+seed → 2× structural alignment).
 
 ## Phase 3 — docs + release
 

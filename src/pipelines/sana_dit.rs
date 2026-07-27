@@ -344,8 +344,20 @@ impl SanaTransformer {
         })
     }
 
+    /// The DiT hidden dim (`heads·head_dim`) — used to check ControlNet residual-width compatibility.
+    pub fn hidden(&self) -> usize {
+        self.c.hidden
+    }
+
     /// `latent`: (B,32,H,W). `caption`: (B,L,2304). `timestep`: (B,). `enc_mask`: (B,L) 1/0 or None.
     pub fn forward(&self, latent: &Tensor, caption: &Tensor, timestep: &Tensor, enc_mask: Option<&Tensor>) -> Result<Tensor> {
+        self.forward_control(latent, caption, timestep, enc_mask, None)
+    }
+
+    /// Like [`forward`], plus optional ControlNet residuals: `residuals[i-1]` is added after block
+    /// `i` for `1 ≤ i ≤ residuals.len()` (diffusers' injection window — block 0 and any block past the
+    /// ControlNet's depth are untouched). `None` is byte-identical to [`forward`].
+    pub fn forward_control(&self, latent: &Tensor, caption: &Tensor, timestep: &Tensor, enc_mask: Option<&Tensor>, controlnet_residuals: Option<&[Tensor]>) -> Result<Tensor> {
         let (b, _c, h, w) = latent.dims4()?;
         // patchify (patch_size 1): conv → (B,HIDDEN,H,W) → tokens (B,N,HIDDEN)
         let tokens = self.patch_proj.forward(latent)?.flatten(2, 3)?.permute((0, 2, 1))?.contiguous()?;
@@ -370,8 +382,14 @@ impl SanaTransformer {
         };
 
         let mut x = tokens;
-        for blk in &self.blocks {
+        for (i, blk) in self.blocks.iter().enumerate() {
             x = blk.forward(&x, &enc, mask_bias.as_ref(), &temb, (h, w))?;
+            // ControlNet residual injection (diffusers window: after blocks 1..=len).
+            if let Some(res) = controlnet_residuals {
+                if i >= 1 && i <= res.len() {
+                    x = x.broadcast_add(&res[i - 1])?;
+                }
+            }
         }
 
         // SanaModulatedNorm: LN(no affine) then shift/scale from scale_shift_table(2) + embedded_timestep.
@@ -387,6 +405,109 @@ impl SanaTransformer {
         let x = self.proj_out.forward(&x)?; // (B,N,out_ch)
         // unpatchify (patch 1): (B,N,out_ch) → (B,out_ch,H,W)
         Ok(x.reshape((b, h, w, out_ch))?.permute((0, 3, 1, 2))?.contiguous()?)
+    }
+}
+
+// ── SanaControlNet ───────────────────────────────────────────────────────────────────────────
+/// `SanaControlNetModel` — a truncated copy of the Sana DiT (the first `layers` blocks) that
+/// consumes a **DC-AE-encoded control latent** and emits one residual per block, added into the
+/// main DiT's hidden state (after blocks 1..=layers). Shares the block/embed machinery above; the
+/// only extra weights are `input_block` (a Linear on the patch-embedded control) and one zero-init
+/// `controlnet_blocks[i]` Linear per block that projects the block output into a residual.
+///
+/// The public ControlNets are 600M-dim (`inner=1152`, 7 blocks) — pair with `sana-600m`.
+pub struct SanaControlNet {
+    c: Config,
+    patch_proj: Conv2d,
+    input_block: Linear,
+    ts_embedder: TimestepEmbedder,
+    time_linear: Linear,
+    cap_linear1: Linear,
+    cap_linear2: Linear,
+    caption_norm_w: Tensor,
+    blocks: Vec<Block>,
+    controlnet_blocks: Vec<Linear>,
+}
+
+impl SanaControlNet {
+    pub fn load(c: Config, vb: VarBuilder) -> Result<Self> {
+        let patch_proj = conv2d(c.out_ch, c.hidden, 1, cfg1(1), vb.pp("patch_embed.proj")).context("cn patch_embed")?;
+        let input_block = linear(c.hidden, c.hidden, vb.pp("input_block")).context("cn input_block")?;
+        let te = vb.pp("time_embed");
+        let ts_embedder = TimestepEmbedder::new(c.hidden, te.pp("emb.timestep_embedder"))
+            .map_err(|e| anyhow::anyhow!("cn time_embed timestep_embedder: {e}"))?;
+        let time_linear = linear(c.hidden, 6 * c.hidden, te.pp("linear"))?;
+        let cap = vb.pp("caption_projection");
+        let cap_linear1 = linear(c.caption_ch, c.hidden, cap.pp("linear_1"))?;
+        let cap_linear2 = linear(c.hidden, c.hidden, cap.pp("linear_2"))?;
+        let caption_norm_w = vb.get(c.hidden, "caption_norm.weight")?;
+        let bvb = vb.pp("transformer_blocks");
+        let cbvb = vb.pp("controlnet_blocks");
+        let mut blocks = Vec::with_capacity(c.layers);
+        let mut controlnet_blocks = Vec::with_capacity(c.layers);
+        for i in 0..c.layers {
+            blocks.push(Block::load(c, bvb.pp(i)).with_context(|| format!("cn block {i}"))?);
+            controlnet_blocks.push(linear(c.hidden, c.hidden, cbvb.pp(i)).with_context(|| format!("cn controlnet_block {i}"))?);
+        }
+        Ok(Self {
+            c,
+            patch_proj,
+            input_block,
+            ts_embedder,
+            time_linear,
+            cap_linear1,
+            cap_linear2,
+            caption_norm_w,
+            blocks,
+            controlnet_blocks,
+        })
+    }
+
+    /// `latent`: (B,32,H,W) noisy latent. `control`: (B,32,H,W) DC-AE control latent. `caption`,
+    /// `timestep`, `enc_mask` as the main DiT. Returns one residual per block, each `× scale`.
+    pub fn forward(
+        &self,
+        latent: &Tensor,
+        control: &Tensor,
+        caption: &Tensor,
+        timestep: &Tensor,
+        enc_mask: Option<&Tensor>,
+        scale: f64,
+    ) -> Result<Vec<Tensor>> {
+        let (b, _c, h, w) = latent.dims4()?;
+        let patch = |t: &Tensor| -> Result<Tensor> {
+            Ok(self.patch_proj.forward(t)?.flatten(2, 3)?.permute((0, 2, 1))?.contiguous()?)
+        };
+        // patch-embed both the noisy latent and the control latent (same proj); add input_block(control).
+        let tokens = patch(latent)?;
+        let ctrl = self.input_block.forward(&patch(control)?)?;
+        let mut x = (tokens + ctrl)?;
+
+        let embedded_timestep = self.ts_embedder.forward(timestep).map_err(|e| anyhow::anyhow!("cn ts embed: {e}"))?;
+        let temb = self.time_linear.forward(&candle_nn::ops::silu(&embedded_timestep)?)?;
+
+        let enc = self.cap_linear1.forward(caption)?;
+        let enc = enc.gelu()?;
+        let enc = self.cap_linear2.forward(&enc)?;
+        let enc = rms_norm_last(&enc, &self.caption_norm_w, CAPTION_RMS_EPS)?;
+
+        let mask_bias = match enc_mask {
+            None => None,
+            Some(m) => {
+                let l = m.dim(1)?;
+                Some(m.to_dtype(DType::F32)?.affine(10000.0, -10000.0)?.reshape((b, 1, 1, l))?.to_dtype(x.dtype())?)
+            }
+        };
+
+        // Run the blocks, projecting each output into a scaled residual.
+        let mut residuals = Vec::with_capacity(self.blocks.len());
+        for (blk, cn) in self.blocks.iter().zip(&self.controlnet_blocks) {
+            x = blk.forward(&x, &enc, mask_bias.as_ref(), &temb, (h, w))?;
+            let r = cn.forward(&x)?;
+            residuals.push((r * scale)?);
+        }
+        let _ = self.c;
+        Ok(residuals)
     }
 }
 
@@ -466,5 +587,38 @@ mod tests {
         let c = corr(&out, &g["output"]);
         eprintln!("sana1.5_dit output: corr={c:.6} shape={:?}", out.dims());
         assert!(c > 0.999, "sana-1.5 dit corr {c} < 0.999");
+    }
+
+    /// Verify the Sana ControlNet residuals against a diffusers dump. Opt-in
+    /// (`PLAKAT_SANACN_VERIFY=1`); needs the 600M ControlNet cached + `sana-controlnet` goldens.
+    #[test]
+    fn sana_controlnet_matches_diffusers() {
+        if std::env::var("PLAKAT_SANACN_VERIFY").is_err() {
+            return;
+        }
+        let dev = Device::Cpu;
+        let home = std::env::var("HOME").unwrap();
+        let base = format!(
+            "{home}/.cache/huggingface/hub/models--ishan24--Sana_600M_1024px_ControlNetPlus_diffusers/snapshots"
+        );
+        let snap = std::fs::read_dir(&base).unwrap().next().unwrap().unwrap().path();
+        let cdir = snap.join("controlnet");
+        let weights = [cdir.join("diffusion_pytorch_model.safetensors")];
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weights, DType::F32, &dev).unwrap() };
+        let cfg = Config::from_json(&cdir.join("config.json")).unwrap();
+        let model = SanaControlNet::load(cfg, vb).unwrap();
+
+        let g = candle_core::safetensors::load("tools/reference/out/sana-controlnet/goldens.safetensors", &dev).unwrap();
+        let res = model
+            .forward(&g["latent"], &g["control"], &g["caption"], &g["timestep"], Some(&g["mask"]), 1.0)
+            .unwrap();
+        assert_eq!(res.len(), cfg.layers, "expected {} residuals", cfg.layers);
+        let mut worst = 1.0f32;
+        for (i, r) in res.iter().enumerate() {
+            let c = corr(r, &g[&format!("res_{i}")]);
+            eprintln!("sana_controlnet res_{i}: corr={c:.6} shape={:?}", r.dims());
+            worst = worst.min(c);
+        }
+        assert!(worst > 0.999, "sana controlnet worst residual corr {worst} < 0.999");
     }
 }
