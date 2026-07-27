@@ -268,6 +268,31 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "Sana 1.6B 1024px — Linear-DiT + DC-AE 32× + Gemma-2-2B (~1.6B DiT)",
     },
+    // v4.6: Sana variants. Same DC-AE + Gemma-2; the DiT config is read from transformer/config.json.
+    AliasEntry {
+        aliases: &["sana-600m"],
+        repo: "Efficient-Large-Model/Sana_600M_1024px_diffusers",
+        family: "Sana",
+        kind: "base",
+        gated: false,
+        note: "Sana 0.6B 1024px — smaller/faster DiT (28 layers, 1152 hidden)",
+    },
+    AliasEntry {
+        aliases: &["sana-512"],
+        repo: "Efficient-Large-Model/Sana_1600M_512px_diffusers",
+        family: "Sana",
+        kind: "base",
+        gated: false,
+        note: "Sana 1.6B 512px — same DiT, trained at 512² (faster, lower-res). Use --size 512x512",
+    },
+    AliasEntry {
+        aliases: &["sana-2k"],
+        repo: "Efficient-Large-Model/Sana_1600M_2Kpx_BF16_diffusers",
+        family: "Sana",
+        kind: "base",
+        gated: false,
+        note: "Sana 1.6B 2K — same DiT, trained at 2048². Use --size 2048x2048 (memory-heavy)",
+    },
     AliasEntry {
         aliases: &["pixart-512", "pixart-sigma-512"],
         repo: "PixArt-alpha/PixArt-Sigma-XL-2-512-MS",

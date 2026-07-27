@@ -37,14 +37,16 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       (the one HF `sana-lora` repo is actually a Flux LoRA). Revisit when the ecosystem matures — the
       merge machinery + a synthetic-LoRA corr check is the plan. The `--loras` bail stays for now.
 
-## Phase 4 — variants (parameterize the DiT config + aliases)
+## Phase 4 — variants (parameterize the DiT config + aliases) — DONE
 
-- [ ] Lift `sana_dit.rs`'s hardcoded consts (num_layers / hidden / heads / sample_size) into a
+- [x] Lift `sana_dit.rs`'s hardcoded consts (num_layers / hidden / heads / sample_size) into a
       `Config` read from `transformer/config.json`, so non-1.6B variants load. DC-AE + Gemma unchanged.
-- [ ] Aliases (all exist on HF): `sana-600m` (`Sana_600M_1024px_diffusers`), `sana-512`
+- [x] Aliases (all exist on HF): `sana-600m` (`Sana_600M_1024px_diffusers`), `sana-512`
       (`Sana_1600M_512px_diffusers`), `sana-2k` (`Sana_1600M_2Kpx_BF16_diffusers`), `sana-1.5`
       (`SANA1.5_1.6B_1024px_diffusers`). Registry + capability rows + `doctor --capability`.
-- [ ] Verify: at least the 600M variant generates a coherent image.
+- [x] Verify: DONE — 1.6B DiT re-verified corr **1.000000** after the refactor; `sana-600m` (28 layers,
+      1152 hidden) generated a coherent 256² image (31k colors). 512/2K share the 1.6B arch. Sana-1.5
+      (qk_norm) bails loudly — deferred.
 
 ## Phase 5 — docs + release
 

@@ -301,10 +301,12 @@ impl Pipeline {
         let te_vb = unsafe { VarBuilder::from_mmaped_safetensors(&te_shards, dtype, &device)? };
         let gemma = super::vendored_gemma2::Model::new(false, &gcfg, te_vb)?;
 
-        // Linear-DiT.
+        // Linear-DiT — config from transformer/config.json so any Sana variant loads.
+        let dit_cfg_path = crate::hf::download::get_file(&repo, "transformer/config.json").await?;
+        let dit_cfg = super::sana_dit::Config::from_json(&dit_cfg_path)?;
         let dit_shards = download_shards(&repo, "transformer", "diffusion_pytorch_model").await?;
         let dit_vb = unsafe { VarBuilder::from_mmaped_safetensors(&dit_shards, dtype, &device)? };
-        let dit = super::sana_dit::SanaTransformer::load(dit_vb)?;
+        let dit = super::sana_dit::SanaTransformer::load(dit_cfg, dit_vb)?;
 
         let chi_tokens = tokenizer
             .encode(CHI.join("\n"), true)

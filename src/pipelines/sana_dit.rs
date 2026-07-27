@@ -1,6 +1,8 @@
-//! Sana Linear-DiT — `SanaTransformer2DModel` in candle (ROADMAP_4.5.0 Phase 3).
+//! Sana Linear-DiT — `SanaTransformer2DModel` in candle (ROADMAP_4.5.0 Phase 3; variants 4.6.0).
 //!
-//! 20-layer DiT for the 1.6B/1024px model. Two novelties vs PixArt's DiT. First, **ReLU linear
+//! A DiT whose dimensions come from a [`Config`] read from `transformer/config.json`, so every base
+//! Sana variant loads (1.6B/1024, 0.6B, 512, 2K — same DC-AE + Gemma-2). Two novelties vs PixArt's
+//! DiT. First, **ReLU linear
 //! self-attention** — `relu(Q)·(relu(K)ᵀV)` with a ones-row denominator, F32 reduction island (not
 //! self-normalizing, would NaN in F16); cross-attention to the caption stays **vanilla softmax**.
 //! Second, a **GLU-MBConv Mix-FFN** (pointwise-expand → 3×3 depthwise → GLU gate → pointwise
@@ -9,7 +11,7 @@
 //! Timestep conditioning is **AdaLN-single** (a shared 6-chunk `scale_shift_table` per block, like
 //! PixArt). Patch size 1 → the 32×32×32 DC-AE latent is 1024 tokens; patchify/unpatchify are trivial.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use candle_core::{DType, Module, Tensor, D};
 use candle_nn::{
     Conv2d, Conv2dConfig, LayerNorm, Linear, VarBuilder, conv2d, conv2d_no_bias, linear,
@@ -18,19 +20,52 @@ use candle_nn::{
 
 use super::pixart_dit::TimestepEmbedder;
 
-// ── Sana 1.6B config ─────────────────────────────────────────────────────────────────────────
-const HIDDEN: usize = 2240; // num_attention_heads(70) * attention_head_dim(32)
-const HEADS: usize = 70;
-const HEAD_DIM: usize = 32;
-const LAYERS: usize = 20;
-const CROSS_HEADS: usize = 20;
-const CROSS_HEAD_DIM: usize = 112; // 20*112 = 2240
-const CAPTION_CH: usize = 2304; // Gemma-2-2B hidden
-const OUT_CH: usize = 32;
-const MLP_HIDDEN: usize = 5600; // round(2.5 * 2240)
 const NORM_EPS: f64 = 1e-6;
 const CAPTION_RMS_EPS: f64 = 1e-5;
 const ATTN_EPS: f64 = 1e-15;
+
+/// DiT dimensions, read from `transformer/config.json` so every Sana variant loads (1.6B, 600M,
+/// 512/2K share arches). `hidden = heads·head_dim`; `mlp_hidden = ⌊mlp_ratio·hidden⌋` (diffusers `int()`).
+#[derive(Clone, Copy)]
+pub struct Config {
+    pub layers: usize,
+    pub hidden: usize,
+    pub heads: usize,
+    pub head_dim: usize,
+    pub cross_heads: usize,
+    pub cross_head_dim: usize,
+    pub caption_ch: usize,
+    pub out_ch: usize,
+    pub mlp_hidden: usize,
+}
+
+impl Config {
+    pub fn from_json(path: &std::path::Path) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_reader(std::fs::File::open(path)?)
+            .with_context(|| format!("parsing Sana transformer config {}", path.display()))?;
+        let g = |k: &str| -> Result<usize> {
+            v[k].as_u64().map(|x| x as usize).with_context(|| format!("config field {k}"))
+        };
+        let heads = g("num_attention_heads")?;
+        let head_dim = g("attention_head_dim")?;
+        let mlp_ratio = v["mlp_ratio"].as_f64().unwrap_or(2.5);
+        let hidden = heads * head_dim;
+        if v.get("qk_norm").and_then(|x| x.as_str()).is_some_and(|s| s != "null") {
+            bail!("this Sana variant uses qk_norm ({}); not yet supported — use a base Sana variant.", v["qk_norm"]);
+        }
+        Ok(Config {
+            layers: g("num_layers")?,
+            hidden,
+            heads,
+            head_dim,
+            cross_heads: g("num_cross_attention_heads")?,
+            cross_head_dim: g("cross_attention_head_dim")?,
+            caption_ch: g("caption_channels")?,
+            out_ch: g("out_channels")?,
+            mlp_hidden: (mlp_ratio * hidden as f64) as usize,
+        })
+    }
+}
 
 fn cfg1(groups: usize) -> Conv2dConfig {
     Conv2dConfig { padding: 0, stride: 1, dilation: 1, groups, cudnn_fwd_algo: None }
@@ -57,25 +92,28 @@ struct LinearSelfAttn {
     to_k: Linear,
     to_v: Linear,
     to_out: Linear,
+    c: Config,
 }
 impl LinearSelfAttn {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(c: Config, vb: VarBuilder) -> Result<Self> {
         // attention_bias = False → q/k/v have no bias; to_out.0 has bias.
         Ok(Self {
-            to_q: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_q"))?,
-            to_k: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_k"))?,
-            to_v: linear_no_bias(HIDDEN, HIDDEN, vb.pp("to_v"))?,
-            to_out: linear(HIDDEN, HIDDEN, vb.pp("to_out.0"))?,
+            to_q: linear_no_bias(c.hidden, c.hidden, vb.pp("to_q"))?,
+            to_k: linear_no_bias(c.hidden, c.hidden, vb.pp("to_k"))?,
+            to_v: linear_no_bias(c.hidden, c.hidden, vb.pp("to_v"))?,
+            to_out: linear(c.hidden, c.hidden, vb.pp("to_out.0"))?,
+            c,
         })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let (heads, hd, hidden) = (self.c.heads, self.c.head_dim, self.c.hidden);
         let (b, n, _) = x.dims3()?;
         let orig = x.dtype();
         // (B,N,inner) → (B·heads, head_dim, N), collapsing the batch: candle 0.10.2's Metal matmul
         // rejects 4-D batched matmuls, so the linear-attention reduction runs 3-D batched.
-        let bh = b * HEADS;
+        let bh = b * heads;
         let to3 = |t: Tensor| -> Result<Tensor> {
-            Ok(t.transpose(1, 2)?.reshape((b, HEADS, HEAD_DIM, n))?.contiguous()?.reshape((bh, HEAD_DIM, n))?)
+            Ok(t.transpose(1, 2)?.reshape((b, heads, hd, n))?.contiguous()?.reshape((bh, hd, n))?)
         };
         let q = to3(self.to_q.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
         let k = to3(self.to_k.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
@@ -84,10 +122,10 @@ impl LinearSelfAttn {
         let v = Tensor::cat(&[v, ones], 1)?; // (bh, head_dim+1, N)
         let scores = v.matmul(&k.transpose(1, 2)?.contiguous()?)?; // (bh, head_dim+1, head_dim)
         let out = scores.matmul(&q)?; // (bh, head_dim+1, N)
-        let num = out.narrow(1, 0, HEAD_DIM)?;
-        let den = (out.narrow(1, HEAD_DIM, 1)? + ATTN_EPS)?;
+        let num = out.narrow(1, 0, hd)?;
+        let den = (out.narrow(1, hd, 1)? + ATTN_EPS)?;
         let attn = num.broadcast_div(&den)?; // (bh, head_dim, N)
-        let attn = attn.reshape((b, HIDDEN, n))?.transpose(1, 2)?.contiguous()?.to_dtype(orig)?; // (B,N,inner)
+        let attn = attn.reshape((b, hidden, n))?.transpose(1, 2)?.contiguous()?.to_dtype(orig)?; // (B,N,inner)
         Ok(self.to_out.forward(&attn)?)
     }
 }
@@ -98,36 +136,40 @@ struct CrossAttn {
     to_k: Linear,
     to_v: Linear,
     to_out: Linear,
+    c: Config,
 }
 impl CrossAttn {
-    fn load(vb: VarBuilder) -> Result<Self> {
-        // attn2: bias = True (q/k/v), out_bias = True.
+    fn load(c: Config, vb: VarBuilder) -> Result<Self> {
+        // attn2: bias = True (q/k/v), out_bias = True. inner = cross_heads·cross_head_dim (= hidden).
+        let inner = c.cross_heads * c.cross_head_dim;
         Ok(Self {
-            to_q: linear(HIDDEN, HIDDEN, vb.pp("to_q"))?,
-            to_k: linear(HIDDEN, HIDDEN, vb.pp("to_k"))?,
-            to_v: linear(HIDDEN, HIDDEN, vb.pp("to_v"))?,
-            to_out: linear(HIDDEN, HIDDEN, vb.pp("to_out.0"))?,
+            to_q: linear(c.hidden, inner, vb.pp("to_q"))?,
+            to_k: linear(c.hidden, inner, vb.pp("to_k"))?,
+            to_v: linear(c.hidden, inner, vb.pp("to_v"))?,
+            to_out: linear(inner, c.hidden, vb.pp("to_out.0"))?,
+            c,
         })
     }
     /// `enc`: (B, L, HIDDEN) caption; `mask_bias`: (B,1,1,L) additive (0 keep / -10000 pad) or None.
     fn forward(&self, x: &Tensor, enc: &Tensor, mask_bias: Option<&Tensor>) -> Result<Tensor> {
+        let (heads, hd, hidden) = (self.c.cross_heads, self.c.cross_head_dim, self.c.hidden);
         let (b, n, _) = x.dims3()?;
         let l = enc.dim(1)?;
-        let bh = b * CROSS_HEADS;
+        let bh = b * heads;
         // Collapse (B,heads) → 3-D batched matmul (candle Metal rejects 4-D batched).
-        let q = self.to_q.forward(x)?.reshape((b, n, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, n, CROSS_HEAD_DIM))?;
-        let k = self.to_k.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, CROSS_HEAD_DIM))?;
-        let v = self.to_v.forward(enc)?.reshape((b, l, CROSS_HEADS, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, CROSS_HEAD_DIM))?;
-        let scale = 1.0 / (CROSS_HEAD_DIM as f64).sqrt();
+        let q = self.to_q.forward(x)?.reshape((b, n, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, n, hd))?;
+        let k = self.to_k.forward(enc)?.reshape((b, l, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, hd))?;
+        let v = self.to_v.forward(enc)?.reshape((b, l, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, hd))?;
+        let scale = 1.0 / (hd as f64).sqrt();
         let mut scores = (q.matmul(&k.transpose(1, 2)?.contiguous()?)? * scale)?; // (bh, N, L)
         if let Some(bias) = mask_bias {
             // (B,1,1,L) → (bh,1,L): same mask for every head of a batch item.
-            let m = bias.reshape((b, 1, l))?.broadcast_as((b, CROSS_HEADS, l))?.reshape((bh, 1, l))?;
+            let m = bias.reshape((b, 1, l))?.broadcast_as((b, heads, l))?.reshape((bh, 1, l))?;
             scores = scores.broadcast_add(&m)?;
         }
         let probs = candle_nn::ops::softmax_last_dim(&scores)?;
         let out = probs.matmul(&v)?; // (bh, N, head_dim)
-        let out = out.reshape((b, CROSS_HEADS, n, CROSS_HEAD_DIM))?.transpose(1, 2)?.contiguous()?.reshape((b, n, HIDDEN))?;
+        let out = out.reshape((b, heads, n, hd))?.transpose(1, 2)?.contiguous()?.reshape((b, n, hidden))?;
         Ok(self.to_out.forward(&out)?)
     }
 }
@@ -139,11 +181,12 @@ struct MixFfn {
     conv_point: Conv2d,
 }
 impl MixFfn {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(c: Config, vb: VarBuilder) -> Result<Self> {
+        let (h, m) = (c.hidden, c.mlp_hidden);
         Ok(Self {
-            conv_inverted: conv2d(HIDDEN, MLP_HIDDEN * 2, 1, cfg1(1), vb.pp("conv_inverted"))?,
-            conv_depth: conv2d(MLP_HIDDEN * 2, MLP_HIDDEN * 2, 3, Conv2dConfig { padding: 1, stride: 1, dilation: 1, groups: MLP_HIDDEN * 2, cudnn_fwd_algo: None }, vb.pp("conv_depth"))?,
-            conv_point: conv2d_no_bias(MLP_HIDDEN, HIDDEN, 1, cfg1(1), vb.pp("conv_point"))?,
+            conv_inverted: conv2d(h, m * 2, 1, cfg1(1), vb.pp("conv_inverted"))?,
+            conv_depth: conv2d(m * 2, m * 2, 3, Conv2dConfig { padding: 1, stride: 1, dilation: 1, groups: m * 2, cudnn_fwd_algo: None }, vb.pp("conv_depth"))?,
+            conv_point: conv2d_no_bias(m, h, 1, cfg1(1), vb.pp("conv_point"))?,
         })
     }
     /// `x`: (B, HIDDEN, H, W).
@@ -164,23 +207,26 @@ struct Block {
     attn1: LinearSelfAttn,
     attn2: CrossAttn,
     ff: MixFfn,
-    scale_shift_table: Tensor, // (6, HIDDEN)
+    scale_shift_table: Tensor, // (6, hidden)
+    c: Config,
 }
 impl Block {
-    fn load(vb: VarBuilder) -> Result<Self> {
+    fn load(c: Config, vb: VarBuilder) -> Result<Self> {
         Ok(Self {
-            attn1: LinearSelfAttn::load(vb.pp("attn1"))?,
-            attn2: CrossAttn::load(vb.pp("attn2"))?,
-            ff: MixFfn::load(vb.pp("ff"))?,
-            scale_shift_table: vb.get((6, HIDDEN), "scale_shift_table")?,
+            attn1: LinearSelfAttn::load(c, vb.pp("attn1"))?,
+            attn2: CrossAttn::load(c, vb.pp("attn2"))?,
+            ff: MixFfn::load(c, vb.pp("ff"))?,
+            scale_shift_table: vb.get((6, c.hidden), "scale_shift_table")?,
+            c,
         })
     }
     /// `temb`: (B, 6*HIDDEN) AdaLN-single timestep. `hw`: (H,W) latent grid.
     fn forward(&self, x: &Tensor, enc: &Tensor, mask_bias: Option<&Tensor>, temb: &Tensor, hw: (usize, usize)) -> Result<Tensor> {
+        let hidden = self.c.hidden;
         let (b, _n, _) = x.dims3()?;
         // modulation: (scale_shift_table[None] + temb.reshape(B,6,-1)).chunk(6)
-        let sst = self.scale_shift_table.reshape((1, 6, HIDDEN))?;
-        let temb6 = temb.reshape((b, 6, HIDDEN))?;
+        let sst = self.scale_shift_table.reshape((1, 6, hidden))?;
+        let temb6 = temb.reshape((b, 6, hidden))?;
         let m = sst.broadcast_add(&temb6)?; // (B,6,HIDDEN)
         let chunk = |i: usize| m.narrow(1, i, 1)?.squeeze(1); // (B,HIDDEN)
         let (shift_msa, scale_msa, gate_msa) = (chunk(0)?, chunk(1)?, chunk(2)?);
@@ -201,7 +247,7 @@ impl Block {
         let norm = layer_norm_noaffine(&x, NORM_EPS)?;
         let norm = norm.broadcast_mul(&(scale_mlp.unsqueeze(1)? + 1.0)?)?.broadcast_add(&shift_mlp.unsqueeze(1)?)?;
         // tokens (B,N,HIDDEN) → grid (B,HIDDEN,H,W)
-        let grid = norm.reshape((b, h, w, HIDDEN))?.permute((0, 3, 1, 2))?.contiguous()?;
+        let grid = norm.reshape((b, h, w, hidden))?.permute((0, 3, 1, 2))?.contiguous()?;
         let ff = self.ff.forward(&grid)?; // (B,HIDDEN,H,W)
         let ff = ff.flatten(2, 3)?.permute((0, 2, 1))?.contiguous()?; // (B,N,HIDDEN)
         Ok((x + ff.broadcast_mul(&gate_mlp.unsqueeze(1)?)?)?)
@@ -217,30 +263,31 @@ pub struct SanaTransformer {
     cap_linear2: Linear, // caption_projection.linear_2
     caption_norm_w: Tensor,
     blocks: Vec<Block>,
-    scale_shift_table: Tensor, // final (2, HIDDEN)
+    scale_shift_table: Tensor, // final (2, hidden)
     norm_out: LayerNorm,       // SanaModulatedNorm's inner LayerNorm (no affine)
-    proj_out: Linear,          // HIDDEN → OUT_CH
+    proj_out: Linear,          // hidden → out_ch
+    c: Config,
 }
 
 impl SanaTransformer {
-    pub fn load(vb: VarBuilder) -> Result<Self> {
-        let patch_proj = conv2d(OUT_CH, HIDDEN, 1, cfg1(1), vb.pp("patch_embed.proj")).context("patch_embed")?;
+    pub fn load(c: Config, vb: VarBuilder) -> Result<Self> {
+        let patch_proj = conv2d(c.out_ch, c.hidden, 1, cfg1(1), vb.pp("patch_embed.proj")).context("patch_embed")?;
         let te = vb.pp("time_embed");
-        let ts_embedder = TimestepEmbedder::new(HIDDEN, te.pp("emb.timestep_embedder"))
+        let ts_embedder = TimestepEmbedder::new(c.hidden, te.pp("emb.timestep_embedder"))
             .map_err(|e| anyhow::anyhow!("time_embed timestep_embedder: {e}"))?;
-        let time_linear = linear(HIDDEN, 6 * HIDDEN, te.pp("linear"))?;
+        let time_linear = linear(c.hidden, 6 * c.hidden, te.pp("linear"))?;
         let cap = vb.pp("caption_projection");
-        let cap_linear1 = linear(CAPTION_CH, HIDDEN, cap.pp("linear_1"))?;
-        let cap_linear2 = linear(HIDDEN, HIDDEN, cap.pp("linear_2"))?;
-        let caption_norm_w = vb.get(HIDDEN, "caption_norm.weight")?;
+        let cap_linear1 = linear(c.caption_ch, c.hidden, cap.pp("linear_1"))?;
+        let cap_linear2 = linear(c.hidden, c.hidden, cap.pp("linear_2"))?;
+        let caption_norm_w = vb.get(c.hidden, "caption_norm.weight")?;
         let bvb = vb.pp("transformer_blocks");
-        let mut blocks = Vec::with_capacity(LAYERS);
-        for i in 0..LAYERS {
-            blocks.push(Block::load(bvb.pp(i)).with_context(|| format!("block {i}"))?);
+        let mut blocks = Vec::with_capacity(c.layers);
+        for i in 0..c.layers {
+            blocks.push(Block::load(c, bvb.pp(i)).with_context(|| format!("block {i}"))?);
         }
         // SanaModulatedNorm's LayerNorm is elementwise_affine=False → build a zero/one LN.
         let norm_out = LayerNorm::new_no_bias(
-            Tensor::ones(HIDDEN, vb.dtype(), vb.device())?,
+            Tensor::ones(c.hidden, vb.dtype(), vb.device())?,
             NORM_EPS,
         );
         Ok(Self {
@@ -251,9 +298,10 @@ impl SanaTransformer {
             cap_linear2,
             caption_norm_w,
             blocks,
-            scale_shift_table: vb.get((2, HIDDEN), "scale_shift_table")?,
+            scale_shift_table: vb.get((2, c.hidden), "scale_shift_table")?,
             norm_out,
-            proj_out: linear(HIDDEN, OUT_CH, vb.pp("proj_out"))?,
+            proj_out: linear(c.hidden, c.out_ch, vb.pp("proj_out"))?,
+            c,
         })
     }
 
@@ -288,17 +336,18 @@ impl SanaTransformer {
         }
 
         // SanaModulatedNorm: LN(no affine) then shift/scale from scale_shift_table(2) + embedded_timestep.
+        let (hidden, out_ch) = (self.c.hidden, self.c.out_ch);
         let x = self.norm_out.forward(&x)?;
-        let sst = self.scale_shift_table.reshape((1, 2, HIDDEN))?;
-        let et = embedded_timestep.reshape((b, 1, HIDDEN))?;
-        let m = sst.broadcast_add(&et)?; // (B,2,HIDDEN)
-        let shift = m.narrow(1, 0, 1)?; // (B,1,HIDDEN)
+        let sst = self.scale_shift_table.reshape((1, 2, hidden))?;
+        let et = embedded_timestep.reshape((b, 1, hidden))?;
+        let m = sst.broadcast_add(&et)?; // (B,2,hidden)
+        let shift = m.narrow(1, 0, 1)?; // (B,1,hidden)
         let scale = m.narrow(1, 1, 1)?;
         let x = x.broadcast_mul(&(scale + 1.0)?)?.broadcast_add(&shift)?;
 
-        let x = self.proj_out.forward(&x)?; // (B,N,OUT_CH)
-        // unpatchify (patch 1): (B,N,OUT_CH) → (B,OUT_CH,H,W)
-        Ok(x.reshape((b, h, w, OUT_CH))?.permute((0, 3, 1, 2))?.contiguous()?)
+        let x = self.proj_out.forward(&x)?; // (B,N,out_ch)
+        // unpatchify (patch 1): (B,N,out_ch) → (B,out_ch,H,W)
+        Ok(x.reshape((b, h, w, out_ch))?.permute((0, 3, 1, 2))?.contiguous()?)
     }
 }
 
@@ -341,7 +390,8 @@ mod tests {
             tdir.join("diffusion_pytorch_model-00002-of-00002.safetensors"),
         ];
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, DType::F32, &dev).unwrap() };
-        let model = SanaTransformer::load(vb).unwrap();
+        let cfg = Config::from_json(&tdir.join("config.json")).unwrap();
+        let model = SanaTransformer::load(cfg, vb).unwrap();
 
         let g = candle_core::safetensors::load("tools/reference/out/sana-dit/goldens.safetensors", &dev).unwrap();
         let out = model
