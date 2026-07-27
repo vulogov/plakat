@@ -42,6 +42,7 @@ const MODELS: &[ModelMeta] = &[
     ModelMeta { alias: "sana-600m",     native_res: 1024, dtype: "BF16", tuning: "0.6B DiT — smaller/faster than sana", metal_blocked: false },
     ModelMeta { alias: "sana-512",      native_res: 512,  dtype: "BF16", tuning: "512² Sana — use --size 512x512", metal_blocked: false },
     ModelMeta { alias: "sana-2k",       native_res: 2048, dtype: "BF16", tuning: "2K Sana — --size 2048x2048; memory-heavy", metal_blocked: false },
+    ModelMeta { alias: "sana-1.5",      native_res: 1024, dtype: "BF16", tuning: "Sana-1.5 (qk_norm) — improved 1024² checkpoint", metal_blocked: false },
     ModelMeta { alias: "stable-cascade", native_res: 1024, dtype: "BF16", tuning: "--decoder-guidance / smaller --size", metal_blocked: false },
     ModelMeta { alias: "flux-dev",      native_res: 1024, dtype: "BF16", tuning: "→ flux-dev-gguf --quant-level Q4_K_S (~7 GB) + --quantize-t5; gated", metal_blocked: false },
     ModelMeta { alias: "flux-schnell",  native_res: 1024, dtype: "BF16", tuning: "→ flux-schnell-gguf Q4 + --quantize-t5; 4-step", metal_blocked: false },

@@ -293,6 +293,15 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "Sana 1.6B 2K — same DiT, trained at 2048². Use --size 2048x2048 (memory-heavy)",
     },
+    // v4.7: Sana-1.5 1.6B — adds qk_norm (rms_norm_across_heads); otherwise the base 1024px arch.
+    AliasEntry {
+        aliases: &["sana-1.5", "sana1.5", "sana-15"],
+        repo: "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
+        family: "Sana",
+        kind: "base",
+        gated: false,
+        note: "Sana-1.5 1.6B 1024px — improved checkpoint (qk_norm)",
+    },
     AliasEntry {
         aliases: &["pixart-512", "pixart-sigma-512"],
         repo: "PixArt-alpha/PixArt-Sigma-XL-2-512-MS",

@@ -21,12 +21,15 @@ REPO = "Efficient-Large-Model/Sana_1600M_1024px_BF16_diffusers"
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="tools/reference/out")
+    ap.add_argument("--repo", default=REPO, help="Sana diffusers repo (e.g. SANA1.5 for qk_norm)")
+    ap.add_argument("--name", default="sana-dit", help="output subdir name")
     args = ap.parse_args()
+    repo = args.repo
 
     from diffusers import SanaTransformer2DModel
 
-    print(f"[dit] loading {REPO} transformer/ (F32/CPU)…", file=sys.stderr)
-    model = SanaTransformer2DModel.from_pretrained(REPO, subfolder="transformer", torch_dtype=torch.float32).to("cpu").eval()
+    print(f"[dit] loading {repo} transformer/ (F32/CPU)…", file=sys.stderr)
+    model = SanaTransformer2DModel.from_pretrained(repo, subfolder="transformer", torch_dtype=torch.float32).to("cpu").eval()
     cfg = dict(model.config)
     print(
         f"[dit] layers={cfg.get('num_layers')} heads={cfg.get('num_attention_heads')} "
@@ -59,13 +62,13 @@ def main() -> int:
         "timestep": timestep.contiguous(),
         "output": out.contiguous(),
     }
-    out_dir = Path(args.out) / "sana-dit"
+    out_dir = Path(args.out) / args.name
     out_dir.mkdir(parents=True, exist_ok=True)
     save_file({k: v.to(torch.float32) for k, v in tensors.items()}, str(out_dir / "goldens.safetensors"))
     (out_dir / "manifest.json").write_text(
         json.dumps(
             {
-                "repo": REPO,
+                "repo": repo,
                 "config": {k: cfg.get(k) for k in ["num_layers", "num_attention_heads", "attention_head_dim", "num_cross_attention_heads", "cross_attention_head_dim", "cross_attention_dim", "caption_channels", "in_channels", "out_channels", "patch_size", "sample_size", "mlp_ratio", "norm_eps", "guidance_embeds", "qk_norm", "timestep_scale"]},
                 "shapes": {k: list(v.shape) for k, v in tensors.items()},
                 "note": "F32/CPU canonical. timestep=500, mask=first-40-real. output = velocity.",

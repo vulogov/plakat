@@ -23,6 +23,7 @@ use super::pixart_dit::TimestepEmbedder;
 const NORM_EPS: f64 = 1e-6;
 const CAPTION_RMS_EPS: f64 = 1e-5;
 const ATTN_EPS: f64 = 1e-15;
+const QK_NORM_EPS: f64 = 1e-5; // Sana-1.5 qk_norm (Attention default eps)
 
 /// DiT dimensions, read from `transformer/config.json` so every Sana variant loads (1.6B, 600M,
 /// 512/2K share arches). `hidden = heads·head_dim`; `mlp_hidden = ⌊mlp_ratio·hidden⌋` (diffusers `int()`).
@@ -37,6 +38,8 @@ pub struct Config {
     pub caption_ch: usize,
     pub out_ch: usize,
     pub mlp_hidden: usize,
+    /// Sana-1.5: `qk_norm = rms_norm_across_heads` → an RMSNorm over the full inner dim on q/k.
+    pub qk_norm: bool,
 }
 
 impl Config {
@@ -50,9 +53,12 @@ impl Config {
         let head_dim = g("attention_head_dim")?;
         let mlp_ratio = v["mlp_ratio"].as_f64().unwrap_or(2.5);
         let hidden = heads * head_dim;
-        if v.get("qk_norm").and_then(|x| x.as_str()).is_some_and(|s| s != "null") {
-            bail!("this Sana variant uses qk_norm ({}); not yet supported — use a base Sana variant.", v["qk_norm"]);
-        }
+        // Only `rms_norm_across_heads` (Sana-1.5) is supported; other qk_norm kinds bail.
+        let qk_norm = match v.get("qk_norm").and_then(|x| x.as_str()) {
+            None | Some("null") => false,
+            Some("rms_norm_across_heads") => true,
+            Some(other) => bail!("Sana qk_norm {other:?} not supported (only rms_norm_across_heads)."),
+        };
         Ok(Config {
             layers: g("num_layers")?,
             hidden,
@@ -63,6 +69,7 @@ impl Config {
             caption_ch: g("caption_channels")?,
             out_ch: g("out_channels")?,
             mlp_hidden: (mlp_ratio * hidden as f64) as usize,
+            qk_norm,
         })
     }
 }
@@ -92,16 +99,25 @@ struct LinearSelfAttn {
     to_k: Linear,
     to_v: Linear,
     to_out: Linear,
+    norm_q: Option<Tensor>, // Sana-1.5 qk_norm (RMSNorm over the full inner dim)
+    norm_k: Option<Tensor>,
     c: Config,
 }
 impl LinearSelfAttn {
     fn load(c: Config, vb: VarBuilder) -> Result<Self> {
+        let (norm_q, norm_k) = if c.qk_norm {
+            (Some(vb.get(c.hidden, "norm_q.weight")?), Some(vb.get(c.hidden, "norm_k.weight")?))
+        } else {
+            (None, None)
+        };
         // attention_bias = False → q/k/v have no bias; to_out.0 has bias.
         Ok(Self {
             to_q: linear_no_bias(c.hidden, c.hidden, vb.pp("to_q"))?,
             to_k: linear_no_bias(c.hidden, c.hidden, vb.pp("to_k"))?,
             to_v: linear_no_bias(c.hidden, c.hidden, vb.pp("to_v"))?,
             to_out: linear(c.hidden, c.hidden, vb.pp("to_out.0"))?,
+            norm_q,
+            norm_k,
             c,
         })
     }
@@ -115,8 +131,15 @@ impl LinearSelfAttn {
         let to3 = |t: Tensor| -> Result<Tensor> {
             Ok(t.transpose(1, 2)?.reshape((b, heads, hd, n))?.contiguous()?.reshape((bh, hd, n))?)
         };
-        let q = to3(self.to_q.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
-        let k = to3(self.to_k.forward(x)?)?.relu()?.to_dtype(DType::F32)?;
+        // qk_norm (Sana-1.5): RMSNorm over the full inner dim on q/k, before the head reshape.
+        let qk = |t: Tensor, w: &Option<Tensor>| -> Result<Tensor> {
+            match w {
+                Some(w) => rms_norm_last(&t, w, QK_NORM_EPS),
+                None => Ok(t),
+            }
+        };
+        let q = to3(qk(self.to_q.forward(x)?, &self.norm_q)?)?.relu()?.to_dtype(DType::F32)?;
+        let k = to3(qk(self.to_k.forward(x)?, &self.norm_k)?)?.relu()?.to_dtype(DType::F32)?;
         let v = to3(self.to_v.forward(x)?)?.to_dtype(DType::F32)?;
         let ones = Tensor::ones((bh, 1, n), DType::F32, v.device())?;
         let v = Tensor::cat(&[v, ones], 1)?; // (bh, head_dim+1, N)
@@ -136,17 +159,26 @@ struct CrossAttn {
     to_k: Linear,
     to_v: Linear,
     to_out: Linear,
+    norm_q: Option<Tensor>, // Sana-1.5 qk_norm
+    norm_k: Option<Tensor>,
     c: Config,
 }
 impl CrossAttn {
     fn load(c: Config, vb: VarBuilder) -> Result<Self> {
         // attn2: bias = True (q/k/v), out_bias = True. inner = cross_heads·cross_head_dim (= hidden).
         let inner = c.cross_heads * c.cross_head_dim;
+        let (norm_q, norm_k) = if c.qk_norm {
+            (Some(vb.get(inner, "norm_q.weight")?), Some(vb.get(inner, "norm_k.weight")?))
+        } else {
+            (None, None)
+        };
         Ok(Self {
             to_q: linear(c.hidden, inner, vb.pp("to_q"))?,
             to_k: linear(c.hidden, inner, vb.pp("to_k"))?,
             to_v: linear(c.hidden, inner, vb.pp("to_v"))?,
             to_out: linear(inner, c.hidden, vb.pp("to_out.0"))?,
+            norm_q,
+            norm_k,
             c,
         })
     }
@@ -156,9 +188,16 @@ impl CrossAttn {
         let (b, n, _) = x.dims3()?;
         let l = enc.dim(1)?;
         let bh = b * heads;
+        // qk_norm (Sana-1.5): RMSNorm over the full inner dim on q/k, before the head reshape.
+        let qk = |t: Tensor, w: &Option<Tensor>| -> Result<Tensor> {
+            match w {
+                Some(w) => rms_norm_last(&t, w, QK_NORM_EPS),
+                None => Ok(t),
+            }
+        };
         // Collapse (B,heads) → 3-D batched matmul (candle Metal rejects 4-D batched).
-        let q = self.to_q.forward(x)?.reshape((b, n, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, n, hd))?;
-        let k = self.to_k.forward(enc)?.reshape((b, l, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, hd))?;
+        let q = qk(self.to_q.forward(x)?, &self.norm_q)?.reshape((b, n, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, n, hd))?;
+        let k = qk(self.to_k.forward(enc)?, &self.norm_k)?.reshape((b, l, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, hd))?;
         let v = self.to_v.forward(enc)?.reshape((b, l, heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((bh, l, hd))?;
         let scale = 1.0 / (hd as f64).sqrt();
         let mut scores = (q.matmul(&k.transpose(1, 2)?.contiguous()?)? * scale)?; // (bh, N, L)
@@ -400,5 +439,32 @@ mod tests {
         let c = corr(&out, &g["output"]);
         eprintln!("sana_dit output: corr={c:.6} shape={:?}", out.dims());
         assert!(c > 0.999, "sana dit corr {c} < 0.999");
+    }
+
+    /// Verify the Sana-1.5 DiT (qk_norm = rms_norm_across_heads) against a diffusers dump.
+    /// Opt-in (`PLAKAT_SANA15_VERIFY=1`); SANA1.5 transformer cached + `sana-dit-15` goldens present.
+    #[test]
+    fn sana15_dit_matches_diffusers() {
+        if std::env::var("PLAKAT_SANA15_VERIFY").is_err() {
+            return;
+        }
+        let dev = Device::Cpu;
+        let home = std::env::var("HOME").unwrap();
+        let base = format!(
+            "{home}/.cache/huggingface/hub/models--Efficient-Large-Model--SANA1.5_1.6B_1024px_diffusers/snapshots"
+        );
+        let snap = std::fs::read_dir(&base).unwrap().next().unwrap().unwrap().path();
+        let tdir = snap.join("transformer");
+        let shards = [tdir.join("diffusion_pytorch_model.safetensors")]; // SANA1.5 is a single file
+        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, DType::F32, &dev).unwrap() };
+        let cfg = Config::from_json(&tdir.join("config.json")).unwrap();
+        assert!(cfg.qk_norm, "SANA1.5 config should set qk_norm");
+        let model = SanaTransformer::load(cfg, vb).unwrap();
+
+        let g = candle_core::safetensors::load("tools/reference/out/sana-dit-15/goldens.safetensors", &dev).unwrap();
+        let out = model.forward(&g["latent"], &g["caption"], &g["timestep"], Some(&g["mask"])).unwrap();
+        let c = corr(&out, &g["output"]);
+        eprintln!("sana1.5_dit output: corr={c:.6} shape={:?}", out.dims());
+        assert!(c > 0.999, "sana-1.5 dit corr {c} < 0.999");
     }
 }

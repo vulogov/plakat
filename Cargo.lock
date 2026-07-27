@@ -3687,7 +3687,7 @@ checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plakat"
-version = "4.6.0"
+version = "4.7.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
