@@ -2731,6 +2731,9 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             lora_scale: req.lora_scale,
             init_image: None,
             strength: None,
+            mask: None,
+            mask_feather: 0,
+            mask_invert: false,
         })
         .await?;
         return Ok(None);

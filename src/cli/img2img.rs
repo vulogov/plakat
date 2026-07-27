@@ -454,11 +454,9 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
             return run_cascade_img2img(args, device).await;
         }
         // v4.6: Sana img2img — DC-AE-encode the init, flow-noise it at `--strength`, denoise a
-        // trimmed schedule (DPM++ default). Mask / tiled aren't wired.
+        // trimmed schedule (DPM++ default). v4.7: `--mask` → RePaint-style inpaint at the 32×
+        // DC-AE latent grid. Tiled isn't wired.
         if variant.is_sana() {
-            if args.mask.is_some() {
-                anyhow::bail!("Sana img2img doesn't support `--mask` (inpaint) yet.");
-            }
             if args.tiled {
                 anyhow::bail!("Sana img2img doesn't support `--tiled`.");
             }
@@ -1218,7 +1216,9 @@ async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
     if width % 32 != 0 || height % 32 != 0 {
         anyhow::bail!("Sana requires the size to be a multiple of 32 (DC-AE is 32×); got {width}x{height}. Pass --size.");
     }
-    let strength = args.strength.unwrap_or(0.6);
+    // strength: default 1.0 for inpaint (repaint the masked region fully), 0.6 for plain img2img.
+    // Leave `None` here so the pipeline picks the mode-appropriate default in one place.
+    let strength = args.strength;
     // Give Sana its own defaults when the user left the generic img2img defaults untouched.
     let steps = if args.steps == 28 { 20 } else { args.steps };
     let guidance = if (args.guidance - 7.5).abs() < f64::EPSILON { 4.5 } else { args.guidance };
@@ -1239,7 +1239,10 @@ async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
         loras: Vec::new(), // LoRA deferred (no real Sana LoRAs yet)
         lora_scale: 1.0,
         init_image: Some(args.input),
-        strength: Some(strength),
+        strength,
+        mask: args.mask,
+        mask_feather: args.mask_feather,
+        mask_invert: args.mask_invert,
     })
     .await
 }

@@ -119,12 +119,25 @@ impl Mask {
     /// Average-pools by the VAE factor; the latent grid never
     /// receives sub-pixel mask information, so the pool is fine.
     pub fn to_latent_tensor(&self, device: &Device, dtype: DType) -> Result<Tensor> {
+        self.to_latent_tensor_factor(VAE_FACTOR as usize, device, dtype)
+    }
+
+    /// Like [`to_latent_tensor`] but for a caller-supplied spatial
+    /// downsample `factor`. SD-family VAEs are 8×; DC-AE (Sana) is 32×.
+    pub fn to_latent_tensor_factor(
+        &self,
+        factor: usize,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Tensor> {
         let iw = self.width as usize;
         let ih = self.height as usize;
         if iw == 0 || ih == 0 {
             anyhow::bail!("empty mask");
         }
-        let factor = VAE_FACTOR as usize;
+        if factor == 0 {
+            anyhow::bail!("mask downsample factor must be non-zero");
+        }
         let latent_w = iw / factor;
         let latent_h = ih / factor;
         if latent_w == 0 || latent_h == 0 {
@@ -323,5 +336,23 @@ mod tests {
     fn to_latent_tensor_rejects_too_small() {
         let m = Mask::solid_one(4, 4);
         assert!(m.to_latent_tensor(&Device::Cpu, DType::F32).is_err());
+    }
+
+    #[test]
+    fn to_latent_tensor_factor_pools_by_thirtytwo() {
+        // DC-AE / Sana inpaint path: 32× downsample.
+        let m = Mask::solid_one(128, 64);
+        let t = m
+            .to_latent_tensor_factor(32, &Device::Cpu, DType::F32)
+            .expect("latent tensor");
+        assert_eq!(t.dims(), &[1, 1, 64 / 32, 128 / 32]);
+        let v = t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(v.iter().all(|&x| (x - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn to_latent_tensor_factor_rejects_zero() {
+        let m = Mask::solid_one(64, 64);
+        assert!(m.to_latent_tensor_factor(0, &Device::Cpu, DType::F32).is_err());
     }
 }

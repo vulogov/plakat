@@ -20,13 +20,22 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       (`sana_dit_dump.py --repo …SANA1.5…`). RMSNorm eps 1e-5 (Attention default); 1.6B path unchanged
       (qk closure is identity when norm=None).
 
-## Phase 2 — Sana inpaint (`plakat img2img --model sana --mask …`)
+## Phase 2 — Sana inpaint (`plakat img2img --model sana --mask …`) — DONE
 
-- [ ] Mask-aware img2img: load the mask → latent-space mask (32× downsample); RePaint-style — after
-      each denoise step, blend the **known** region back from the (flow-noised) init latent so only the
-      masked region is regenerated. Reuse the Phase-2 (4.6) img2img start + DC-AE encode.
-- [ ] Drop the `--mask` bail in the Sana img2img arm; wire mask feather/invert like SD3.
-- [ ] Verify: masked region preserved outside the mask; coherent fill inside; strength honored.
+- [x] Mask-aware img2img: load the mask → latent-space mask (32× downsample, `Mask::to_latent_tensor_factor`);
+      RePaint-style — after each denoise step, blend the **known** region back from the (flow-noised) init
+      latent (`known = (1-σ)·z0 + σ·noise`) so only the masked region is regenerated. Reuses the 4.6 img2img
+      start + DC-AE encode.
+- [x] Drop the `--mask` bail in the Sana img2img arm; wire mask feather/invert; strength defaults to 1.0
+      for inpaint (vs 0.6 for plain img2img), picked in one place (`sana::generate_all`).
+- [x] **Metal DC-AE encode bug found + fixed** (blocked inpaint AND 4.6 img2img preservation on Metal):
+      candle 0.10.2 Metal returns garbage for `mean` over a non-trailing axis of a **rank-5** tensor
+      (diverges ~1e26; rank-≤4 fine — `examples/dcae_metal_probe.rs`). The encoder's two group-average
+      shortcuts used exactly that → encode returned black on Metal. Replaced with a Metal-safe rank-3
+      `group_mean`. CPU DC-AE corr verify still passes; the naive/fixed forms match at max|Δ|=0.
+- [x] Verify (Metal): round-trip mean|Δ| 124→**10.7** (proper 32× AE floor); inpaint preserves OUTSIDE the
+      mask (7.7, ≤ AE floor) and repaints INSIDE (22.3) — a glowing full moon filled the masked ellipse,
+      the rest of the townsquare byte-preserved.
 
 ## Phase 3 — docs + release
 

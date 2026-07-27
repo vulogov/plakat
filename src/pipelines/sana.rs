@@ -51,6 +51,11 @@ pub struct RunRequest {
     /// img2img: optional init image + denoise strength (0 = keep init, 1 = full txt2img).
     pub init_image: Option<std::path::PathBuf>,
     pub strength: Option<f32>,
+    /// inpaint: optional mask (white = repaint, black = preserve) + polarity / feather.
+    /// Requires `init_image`; RePaint-style per-step blend at the DC-AE 32× latent grid.
+    pub mask: Option<std::path::PathBuf>,
+    pub mask_feather: u32,
+    pub mask_invert: bool,
 }
 
 /// `shift·t / (1 + (shift−1)·t)` — the flow-matching sigma time-shift (diffusers `mu_t`; identical
@@ -374,15 +379,17 @@ impl Pipeline {
     /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. With `init = Some((z0, strength))`
     /// this is **img2img**: start from a partially-noised init over a strength-trimmed schedule.
     #[allow(clippy::too_many_arguments)]
-    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>) -> Result<Tensor> {
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>, mask_lat: Option<&Tensor>) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
         let dit = self.dit.as_ref().context("Sana DiT already freed")?;
         let sched = SanaSched::new(scheduler, steps);
         let noise = Tensor::randn(0f32, 1f32, (1, LATENT_CH, lh, lw), &self.device)?.to_dtype(DType::F32)?;
+        // Keep the init latent (if any) for the per-step RePaint blend.
+        let init_z0 = init.map(|(z, _)| z.clone());
         // txt2img: start at step 0 from pure noise. img2img: start at the strength point from a
         // flow-noised init `x_σ = (1-σ)·z0 + σ·noise`.
         let (start, mut latent) = match init {
-            None => (0usize, noise),
+            None => (0usize, noise.clone()),
             Some((z0, strength)) => {
                 let s = (strength.clamp(0.0, 1.0) as f64).max(0.0);
                 let init_steps = (s * steps as f64).round() as usize;
@@ -409,6 +416,15 @@ impl Pipeline {
             let v_text = v.narrow(0, 1, 1)?;
             let v = (&v_uncond + ((v_text - &v_uncond)? * guidance)?)?; // CFG
             latent = sched.step(&v, i, &latent)?;
+            // RePaint-style inpaint: after stepping to σ_{i+1}, snap the *preserve* region
+            // (mask=0) back onto the init's flow trajectory at that noise level, leaving the
+            // masked region (mask=1) free to re-denoise. `known = (1-σ)·z0 + σ·noise`.
+            if let (Some(z0), Some(m)) = (init_z0.as_ref(), mask_lat) {
+                let sigma_next = sched.sigma(i + 1);
+                let known = ((z0 * (1.0 - sigma_next))? + (&noise * sigma_next)?)?;
+                let one_minus = m.affine(-1.0, 1.0)?; // 1 - mask
+                latent = (latent.broadcast_mul(m)? + known.broadcast_mul(&one_minus)?)?;
+            }
             pb.set_position((i - start + 1) as u64);
         }
         pb.finish_and_clear();
@@ -444,6 +460,9 @@ pub async fn run(req: RunRequest) -> Result<()> {
     if req.width % 32 != 0 || req.height % 32 != 0 {
         bail!("Sana output must be a multiple of 32 (DC-AE is 32× compression); got {}x{}.", req.width, req.height);
     }
+    if req.mask.is_some() && req.init_image.is_none() {
+        bail!("Sana inpaint (--mask) needs an init image. Pass an input image to img2img.");
+    }
     let steps = if req.steps == 0 { 20 } else { req.steps };
     let guidance = if req.guidance <= 0.0 { 4.5 } else { req.guidance };
 
@@ -467,7 +486,25 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         Some(p) => Some(pipeline.encode_init(p, w, h)?),
         None => None,
     };
-    let strength = req.strength.unwrap_or(0.6);
+    // inpaint: build the latent-space mask once (32× DC-AE downsample). RePaint convention —
+    // white (1.0) = repaint, black (0.0) = preserve. Defaults strength to 1.0 (full repaint
+    // inside the mask) when the user left it unset.
+    let mask_lat = match &req.mask {
+        Some(mp) => {
+            let mut m = crate::imaging::mask::Mask::load(mp, w, h)?;
+            if req.mask_invert {
+                m.invert();
+            }
+            if req.mask_feather > 0 {
+                m.feather(req.mask_feather);
+            }
+            Some(m.to_latent_tensor_factor(32, &pipeline.device, DType::F32)?)
+        }
+        None => None,
+    };
+    let strength = req
+        .strength
+        .unwrap_or(if req.mask.is_some() { 1.0 } else { 0.6 });
 
     // Denoise every seed first (DiT resident), collecting the small latents.
     let mut latents: Vec<(u64, Tensor)> = Vec::with_capacity(count as usize);
@@ -477,7 +514,7 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         let _ = req.device.set_seed(prepared);
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
         let init = init_z.as_ref().map(|z| (z, strength));
-        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init)?));
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init, mask_lat.as_ref())?));
     }
     // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
     pipeline.free_dit();

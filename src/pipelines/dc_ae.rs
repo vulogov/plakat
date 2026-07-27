@@ -68,6 +68,20 @@ fn pixel_unshuffle(x: &Tensor, r: usize) -> Result<Tensor> {
     Ok(out)
 }
 
+/// Channel-group average: `(B, cout·g, H, W)` → `(B, cout, H, W)`, averaging each consecutive
+/// block of `g` channels. Used by both DC-AE downsample shortcuts.
+///
+/// candle 0.10.2's Metal backend returns garbage for `mean` over a non-trailing axis of a
+/// **rank-5** tensor (the obvious `reshape((b, cout, g, h, w)).mean(2)` diverges by ~1e26 vs CPU;
+/// rank-≤4 reduces are fine — see `examples/dcae_metal_probe.rs`). So collapse to rank-3
+/// `(b·cout, g, h·w)` and reduce the middle axis there, which Metal computes correctly.
+fn group_mean(x: &Tensor, group: usize) -> Result<Tensor> {
+    let (b, cc, h, w) = x.dims4()?;
+    let cout = cc / group;
+    let out = x.reshape((b * cout, group, h * w))?.mean(1)?.reshape((b, cout, h, w))?;
+    Ok(out)
+}
+
 /// `F.pixel_shuffle(x, r)`: (B, C·r², H, W) → (B, C, H·r, W·r).
 fn pixel_shuffle(x: &Tensor, r: usize) -> Result<Tensor> {
     let (b, c, h, w) = x.dims4()?;
@@ -294,8 +308,7 @@ impl DownBlock {
         let conv = self.conv.forward(x)?; // (B,out,H/2,W/2)
         // shortcut: pixel_unshuffle → group-average.
         let y = pixel_unshuffle(x, 2)?; // (B, in*4, H/2, W/2)
-        let (b, cc, hh, ww) = y.dims4()?;
-        let y = y.reshape((b, cc / self.group_size, self.group_size, hh, ww))?.mean(2)?; // (B,out,H/2,W/2)
+        let y = group_mean(&y, self.group_size)?; // (B,out,H/2,W/2)
         Ok((conv + y)?)
     }
 }
@@ -397,9 +410,8 @@ impl Encoder {
                 h = down.forward(&h)?;
             }
         }
-        // out_shortcut: channel-group average added to conv_out.
-        let (b, c, hh, ww) = h.dims4()?;
-        let sc = h.reshape((b, c / self.out_shortcut_group, self.out_shortcut_group, hh, ww))?.mean(2)?;
+        // out_shortcut: channel-group average added to conv_out (Metal-safe rank-3 reduce).
+        let sc = group_mean(&h, self.out_shortcut_group)?;
         Ok((self.conv_out.forward(&h)? + sc)?)
     }
 }
@@ -530,6 +542,31 @@ mod tests {
     }
     fn max_abs(a: &Tensor, b: &Tensor) -> f32 {
         (a - b).unwrap().abs().unwrap().flatten_all().unwrap().max(0).unwrap().to_vec0::<f32>().unwrap()
+    }
+
+    /// `group_mean` averages each consecutive block of `group` channels. (The Metal-safe rank-3
+    /// reduce it uses matches the naive rank-5 `mean(2)` — proven on Metal by
+    /// `examples/dcae_metal_probe.rs`; here we just check the arithmetic on CPU.)
+    #[test]
+    fn group_mean_averages_channel_blocks() {
+        let dev = Device::Cpu;
+        // 4 channels, group 2 → 2 out channels: out[0]=avg(ch0,ch1), out[1]=avg(ch2,ch3).
+        let x = Tensor::from_vec(
+            vec![
+                0f32, 0., 0., 0., // ch0
+                2., 2., 2., 2., // ch1
+                10., 10., 10., 10., // ch2
+                20., 20., 20., 20., // ch3
+            ],
+            (1, 4, 2, 2),
+            &dev,
+        )
+        .unwrap();
+        let y = super::group_mean(&x, 2).unwrap();
+        assert_eq!(y.dims(), &[1, 2, 2, 2]);
+        let v = y.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(v[..4].iter().all(|&z| (z - 1.0).abs() < 1e-6)); // (0+2)/2
+        assert!(v[4..].iter().all(|&z| (z - 15.0).abs() < 1e-6)); // (10+20)/2
     }
 
     /// Verify the candle DC-AE against a diffusers reference dump. Opt-in (needs the weights +
