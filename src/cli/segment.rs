@@ -52,8 +52,13 @@ pub struct SegmentArgs {
     pub feather: u32,
 }
 
+/// Parse a list of `X,Y[:fg|:bg]` strings into point prompts (shared with `plakat remove`).
+pub(crate) fn parse_points(specs: &[String]) -> Result<Vec<PointPrompt>> {
+    specs.iter().map(|s| parse_point(s)).collect()
+}
+
 /// Parse `X,Y`, `X,Y:fg`, or `X,Y:bg` into a point prompt (default foreground).
-fn parse_point(s: &str) -> Result<PointPrompt> {
+pub(crate) fn parse_point(s: &str) -> Result<PointPrompt> {
     let (coords, foreground) = match s.rsplit_once(':') {
         Some((c, "bg")) => (c, false),
         Some((c, "fg")) => (c, true),
@@ -79,7 +84,7 @@ fn parse_point(s: &str) -> Result<PointPrompt> {
 }
 
 /// Parse `LO,HI` into a normalized depth band, validating `0 ≤ lo < hi ≤ 1`.
-fn parse_band(s: &str) -> Result<(f32, f32)> {
+pub(crate) fn parse_band(s: &str) -> Result<(f32, f32)> {
     let (ls, hs) = s
         .split_once(',')
         .ok_or_else(|| anyhow!("bad --depth-band '{s}': expected 'LO,HI'"))?;

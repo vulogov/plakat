@@ -27,6 +27,7 @@ pub mod metadata;
 pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
+pub mod remove;
 pub mod portrait;
 pub mod multiperson;
 pub mod relight;
@@ -100,6 +101,10 @@ pub enum Command {
     /// (inpaint) and any other `--mask` consumer. The selection enabler
     /// for compose-and-edit (object removal / replacement).
     Segment(segment::SegmentArgs),
+    /// Erase an object and fill the hole seamlessly. Select it with `--point`,
+    /// `--box`, or `--depth-band` (SAM) → the region is inpainted away while the
+    /// rest is preserved. One-shot wrapper over segment + inpaint.
+    Remove(remove::RemoveArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -238,6 +243,7 @@ impl Command {
                 | Command::Relight(_)
                 | Command::Multiperson(_)
                 | Command::Segment(_)
+                | Command::Remove(_)
                 | Command::Upscale(_)
                 | Command::Rank(_)
                 | Command::RestoreFaces(_)
@@ -303,6 +309,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Segment(args) => {
             let device = crate::device::select(&cli.device)?;
             segment::run(args, device).await
+        }
+        Command::Remove(args) => {
+            let device = crate::device::select(&cli.device)?;
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, remove::run(args, device)).await
         }
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;
