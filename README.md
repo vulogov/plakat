@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.7.0 — finishing the Sana family**: the **Sana-1.5** checkpoint (`--model sana-1.5`, adds `qk_norm`) and **Sana inpaint** (`plakat img2img --model sana --mask …`). Also fixes a Metal DC-AE encode bug that silently degraded Sana img2img on Apple Silicon. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.7.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.8.0 — rounding out Sana**: **Sana outpaint** (`plakat outpaint --model sana`) and a **Sana ControlNet** (`plakat generate --model sana-600m --control canny --control-from img.png`) — the public 600M ControlNet, verified against diffusers at corr 1.0. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.8.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,28 +24,26 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.7.0 — finishing the Sana family
+## What's new in 4.8.0 — rounding out Sana
 
-4.5/4.6 built and deepened [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md); 4.7.0 closes the two
-remaining items, both on the already-verified components:
+4.5–4.7 built and deepened [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md); 4.8.0 adds the two
+remaining reach items, both on the verified, now-Metal-correct components:
 
-- **Sana-1.5** — `--model sana-1.5` (Efficient-Large-Model/SANA1.5_1.6B_1024px). Its only architectural
-  delta is `qk_norm = rms_norm_across_heads` (an RMSNorm on q/k before the head reshape, both attentions).
-  Verified against a diffusers dump at **corr 0.999998**.
-- **Inpaint** — `plakat img2img <image> --prompt "…" --model sana --mask mask.png`. RePaint-style: the
-  mask is average-pooled to the DC-AE 32× latent grid and, after every denoise step, the *preserve*
-  region snaps back onto the init's flow trajectory while the masked region re-paints. `--mask-feather`
-  / `--mask-invert` as elsewhere; inpaint strength defaults to 1.0.
-- **Metal DC-AE encode fix** — Sana img2img/inpaint on Apple Silicon was silently ignoring the init
-  image: candle's Metal backend miscomputes a reduce over a rank-5 tensor, which the DC-AE encoder used,
-  returning an all-black latent. Now reduced at rank-3. (txt2img was never affected.)
+- **Outpaint** — `plakat outpaint <image> --model sana --right 256 --prompt "…"`. Extends the canvas
+  past its borders, riding the 4.7 inpaint path (the only Sana-specific bit is snapping padding to the
+  DC-AE 32× grid). The original is preserved; the new border is coherently continued.
+- **ControlNet** — `plakat generate --model sana-600m --control canny --control-from img.png`. The
+  public 600M Sana ControlNet (a 7-block copy of the DiT) steers generation from a conditioning image;
+  its per-block residuals are verified against diffusers at **corr 1.0**. Pairs with the `sana-600m`
+  base; `--control-image` (pre-made map) and `--control-from` (auto-annotate) both work.
 
 ```bash
-plakat generate "a fox in a misty forest, watercolor" --model sana-1.5 --size 1024x1024
-plakat img2img town.png --prompt "a full moon in a green sky, watercolor" --model sana --mask sky.png
+plakat outpaint town.png --model sana --right 256 --prompt "old european townsquare, watercolor"
+plakat generate "cyberpunk night market, neon, rain" --model sana-600m --control canny --control-from town.png
 ```
 
-Default CLI image output stays byte-identical; everything is additive behind Sana's own pipeline.
+Sana ControlNet is 600M — use `--model sana-600m` (plakat says so if you pass the 1.6B base). Default
+CLI image output stays byte-identical; everything is additive behind Sana's own pipeline.
 
 **Earlier releases** (v0.13 – 4.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).

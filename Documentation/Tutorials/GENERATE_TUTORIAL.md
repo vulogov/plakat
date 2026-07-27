@@ -202,6 +202,18 @@ is freed after encoding, so peak residency stays modest); on CPU everything is F
   plakat img2img town.png --prompt "a full moon in a green sky, watercolor" \
       --model sana --mask sky.png --mask-feather 8
   ```
+- **Outpaint:** `plakat outpaint <image> --model sana --right 256 --prompt "…"` (or `--left/--top/
+  --bottom/--expand`). Extends the canvas past its borders on the inpaint path; padding snaps to the
+  DC-AE **32× grid** and the input must already be a multiple of 32.
+- **ControlNet:** `plakat generate --model sana-600m --control canny --control-from photo.png` (or
+  `--control-image edges.png` for a pre-made map). The public Sana ControlNet is **600M**, so it pairs
+  with the `sana-600m` base — plakat bails with a hint if you pass the 1.6B `sana`. One control image
+  per run; conditioning is at the coarse 32× latent grid so fine edges soften.
+
+  ```bash
+  plakat generate "cyberpunk night market, neon, rain" \
+      --model sana-600m --control canny --control-from town.png --control-strength 0.8
+  ```
 
 For this tutorial, stick with `sd15` unless you have a reason to
 switch.

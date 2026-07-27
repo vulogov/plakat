@@ -52,8 +52,9 @@ copy-of-early-blocks pattern, reusing components we already have:
 
 ## Phase 3 — docs + release
 
-- [ ] GENERATE / CONTROLNET tutorials: Sana outpaint + ControlNet notes; README what's-new; capability
-      hints. Update [[reference_sana]]. Cut the 4.8.0 release.
+- [x] GENERATE tutorial: Sana outpaint + ControlNet subsections (600M/coarse-grid notes); README banner
+      + "what's new in 4.8.0". `reference_sana` memory updated (4.8 section).
+- [ ] Cut the 4.8.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
 
 ## Notes / risks
 
