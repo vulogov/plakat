@@ -54,7 +54,8 @@ copy-of-early-blocks pattern, reusing components we already have:
 
 - [x] GENERATE tutorial: Sana outpaint + ControlNet subsections (600M/coarse-grid notes); README banner
       + "what's new in 4.8.0". `reference_sana` memory updated (4.8 section).
-- [ ] Cut the 4.8.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
+- [x] Cut the 4.8.0 release — v4.8.0 @ 9c67ace: tag pushed → Release CI green (6 assets + SHA256SUMS),
+      `cargo publish --locked` (on crates.io), main fast-forwarded, notes set via `gh release edit`.
 
 ## Notes / risks
 
