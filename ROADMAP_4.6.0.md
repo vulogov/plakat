@@ -48,10 +48,10 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
       1152 hidden) generated a coherent 256² image (31k colors). 512/2K share the 1.6B arch. Sana-1.5
       (qk_norm) bails loudly — deferred.
 
-## Phase 5 — docs + release
+## Phase 5 — docs + release — DONE
 
-- [ ] GENERATE tutorial: Sana img2img / LoRA / variants notes. Capability hints. README what's-new.
-- [ ] Memory: update [[reference_sana]]. Cut the 4.6.0 release.
+- [x] GENERATE tutorial: Sana img2img / LoRA / variants notes. Capability hints. README what's-new.
+- [x] Memory: update [[reference_sana]]. Cut the 4.6.0 release.
 
 ## Notes
 

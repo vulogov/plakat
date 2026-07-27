@@ -182,9 +182,15 @@ Each new model downloads ~4-12 GB on first use. SDXL-Turbo wants
 **Sana** is worth a special mention: its Gemma-2-2B text encoder (plus a built-in
 "complex human instruction" that enriches your prompt) makes it strong at **long,
 detailed scene descriptions**. It generates at 1024² with a 32× deep-compression
-autoencoder, so it's memory-light for its quality. Defaults: 20 steps, guidance 4.5;
+autoencoder, so it's memory-light for its quality. Defaults: 20 steps, guidance 4.5,
+the **DPM++ 2M flow** sampler (`--scheduler euler` for the lighter FlowMatchEuler);
 output size must be a multiple of 32. On GPU the DiT + encoder run in BF16 (the encoder
 is freed after encoding, so peak residency stays modest); on CPU everything is F32.
+
+- **Variants:** `sana-600m` (smaller/faster 0.6B DiT), `sana-512` (512² — use `--size 512x512`),
+  `sana-2k` (2048² — memory-heavy). Same DC-AE + Gemma-2; the DiT config is read per-model.
+- **img2img:** `plakat img2img <image> --prompt "…" --model sana --strength 0.6` — the init is
+  DC-AE-encoded and the flow loop starts from a strength-noised latent.
 
 For this tutorial, stick with `sd15` unless you have a reason to
 switch.

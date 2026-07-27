@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.5.0 — Sana**: a sixth model family — NVIDIA/MIT's **Sana 1.6B** (`--model sana`), a linear-attention DiT with a 32× deep-compression autoencoder and a Gemma-2 text encoder, ported from scratch (no candle support) and verified component-by-component against diffusers. Strong at long, detailed prose; 1024² on Apple Silicon. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.5.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.6.0 — Sana deepening**: the Sana family gains its true **DPM++ 2M flow** sampler (now the default), **img2img** (`plakat img2img --model sana`), and the **0.6B / 512 / 2K variants** (`sana-600m`, `sana-512`, `sana-2k`). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.6.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,29 +24,28 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.5.0 — Sana
+## What's new in 4.6.0 — Sana deepening
 
-A **sixth model family** joins plakat: **Sana 1.6B** (`--model sana`), NVIDIA/MIT's efficient
-text-to-image DiT. candle has no Sana support, so all three of its components were implemented from
-scratch and each **verified tensor-for-tensor against the diffusers reference**:
+4.5.0 added the [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md) family; 4.6.0 rounds it out —
+each item built on the already-verified components:
 
-- **DC-AE** — a deep-compression autoencoder (**32× spatial**, 32 latent channels), unlike the
-  standard 8× VAE — so Sana is memory-light for its resolution. (corr 1.000000)
-- **Gemma-2-2B** — a decoder-LLM used as the text encoder (not T5/CLIP), with Sana's built-in
-  "complex human instruction" that enriches your prompt → **strong at long, detailed descriptions**.
-  (corr 0.9998)
-- **Linear-attention DiT** — ReLU linear self-attention + GLU-MBConv, sampled with flow matching.
-  (corr 1.000000)
+- **DPM++ 2M flow scheduler** — Sana's *actual* default sampler (`DPMSolverMultistepScheduler` with
+  flow sigmas), now the plakat default too. Higher quality than the 4.5 FlowMatchEuler, which stays
+  available via `--scheduler euler`. Verified against diffusers (sigmas exact; the step matches a
+  20-step reference trajectory).
+- **img2img** — `plakat img2img <image> --prompt "…" --model sana --strength 0.6`. The init is
+  DC-AE-encoded and the flow loop starts from a strength-noised latent over a trimmed schedule.
+- **Variants** — `sana-600m` (smaller/faster 0.6B DiT), `sana-512` (512²), `sana-2k` (2048²). The DiT
+  config is read per-model from the checkpoint, so all base Sana variants load (same DC-AE + Gemma-2).
 
 ```bash
-plakat generate "an old European town square at dusk, watercolor, soft washes" --model sana --size 1024x1024
+plakat generate "a fox in a misty forest, watercolor" --model sana-600m --size 1024x1024
+plakat img2img photo.png --prompt "watercolor, soft washes" --model sana --strength 0.55
 ```
 
-Runs 1024² on Apple Silicon (BF16 DiT + Gemma, F32 autoencoder; the encoder and DiT are freed in
-stages to keep peak memory modest). Defaults: 20 steps, guidance 4.5; output size must be a multiple
-of 32. Everything else is unchanged; default CLI image output stays byte-identical.
+Default CLI image output stays byte-identical; everything is additive behind Sana's own pipeline.
 
-**Earlier releases** (v0.13 – 4.4):
+**Earlier releases** (v0.13 – 4.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
 
 ## Install

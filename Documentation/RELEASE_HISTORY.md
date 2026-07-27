@@ -8,6 +8,15 @@ new this turn.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 4.5.0 — Sana
+
+A **sixth model family**: **Sana 1.6B** (`--model sana`), NVIDIA/MIT's efficient text-to-image DiT.
+candle has no Sana support, so all three components were implemented from scratch and each verified
+tensor-for-tensor against diffusers: a **DC-AE** 32×-compression autoencoder (corr 1.0), a
+**Gemma-2-2B** decoder-LLM text encoder with Sana's "complex human instruction" prompt-enrichment
+(corr 0.9998), and a **linear-attention DiT** (corr 1.0). Runs 1024² on Apple Silicon (BF16 DiT +
+Gemma, F32 autoencoder, staged frees for modest peak memory). Strong at long, detailed prose.
+
 ## What's new in 4.4.0 — SDXL few-step
 
 **2–8-step SDXL** joins the few-step club that until now was Flux/LCM-only. Two distilled families,
