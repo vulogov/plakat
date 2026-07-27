@@ -167,9 +167,13 @@ pub async fn run(args: OutpaintArgs, device: Device) -> Result<()> {
     }
 
     // Snap-multiple is determined by the inpaint model's VAE / patch
-    // constraint. Flux needs 16; SD needs 8. We over-pad rather than
-    // under-pad — the user asked for *at least* this much expansion.
-    let snap = if args.model.to_lowercase().contains("flux") {
+    // constraint. Sana's DC-AE is 32×; Flux needs 16; SD needs 8. We
+    // over-pad rather than under-pad — the user asked for *at least*
+    // this much expansion.
+    let model_lc = args.model.to_lowercase();
+    let snap = if model_lc.contains("sana") {
+        32
+    } else if model_lc.contains("flux") {
         16
     } else {
         8
