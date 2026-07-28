@@ -42,9 +42,13 @@ pub struct RemoveArgs {
     #[arg(help_heading = "Selection", long = "depth-band", value_name = "LO,HI")]
     pub depth_band: Option<String>,
 
-    /// Open-vocabulary text target (Phase 3, OWL-ViT). Not yet wired — use `--point` / `--box`.
+    /// Open-vocabulary text target — name the object (OWL-ViT detects it, SAM refines the mask).
     #[arg(help_heading = "Selection", long = "what", value_name = "TEXT")]
     pub what: Option<String>,
+
+    /// With `--what`, use the raw detection rectangle instead of SAM-refining it to the object outline.
+    #[arg(help_heading = "Selection", long = "box-only", default_value_t = false)]
+    pub box_only: bool,
 
     /// Prompt for what should fill the hole. Empty = a plausible background continuation. Describing
     /// the surrounding scene (e.g. "cobblestone street") improves the fill.
@@ -113,21 +117,10 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
         Some(s) => Some(box_to_mask(s, w, h)?),
         None => None,
     };
-    // `--what`: OWL-ViT open-vocabulary detection → the best box → a rectangular mask (SAM refine is
-    // a future enhancement; the box already covers the object).
+    // `--what`: OWL-ViT open-vocabulary detection → SAM-refined object mask (or the raw rectangle
+    // with `--box-only`).
     let what_mask = match args.what.as_deref() {
-        Some(query) => {
-            let spin = crate::ui::progress::spinner(&format!("Detecting \"{query}\" (OWL-ViT)"));
-            let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await?;
-            let det = owl.detect(&args.input, query, 0.1)?.with_context(|| {
-                format!("OWL-ViT found no \"{query}\" (try a plainer noun, or select with --point/--box)")
-            })?;
-            spin.finish_with_message(format!(
-                "✓ detected \"{query}\" @ [{:.0},{:.0},{:.0},{:.0}] (score {:.2})",
-                det.x0, det.y0, det.x1, det.y1, det.score
-            ));
-            Some(rect_mask(det.x0, det.y0, det.x1, det.y1, w, h))
-        }
+        Some(query) => Some(detect_object_mask(&args.input, query, &device, w, h, !args.box_only).await?),
         None => None,
     };
     let depth_mask = match args.depth_band.as_deref() {
@@ -212,6 +205,62 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
         base: 1024,
     };
     crate::cli::img2img::run(img2img_args, device).await
+}
+
+/// OWL-ViT text → object mask, shared by `remove --what` and `replace-bg --keep`. Detects the
+/// best-scoring box for `query`, then (when `refine`) tightens it to the object outline with SAM:
+/// prompt SAM at the box center, intersect with the box rectangle to clip over-selection, and fall
+/// back to the plain rectangle if SAM under-selects (< 2% of the image).
+pub(crate) async fn detect_object_mask(
+    image: &std::path::Path,
+    query: &str,
+    device: &Device,
+    w: u32,
+    h: u32,
+    refine: bool,
+) -> Result<GrayImage> {
+    let spin = crate::ui::progress::spinner(&format!("Detecting \"{query}\" (OWL-ViT)"));
+    let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(device).await?;
+    let det = owl.detect(image, query, 0.1)?.with_context(|| {
+        format!("OWL-ViT found no \"{query}\" (try a plainer noun, or select with --point/--box)")
+    })?;
+    spin.finish_with_message(format!(
+        "✓ detected \"{query}\" @ [{:.0},{:.0},{:.0},{:.0}] (score {:.2})",
+        det.x0, det.y0, det.x1, det.y1, det.score
+    ));
+    let rect = rect_mask(det.x0, det.y0, det.x1, det.y1, w, h);
+    if !refine {
+        return Ok(rect);
+    }
+    // SAM refine: a foreground point at the box center, plus background points just OUTSIDE the box
+    // edges (MobileSAM over-selects from a lone point — the bg points tell it the object doesn't
+    // extend past its detected box). Then ∩ the box to clip anything that still leaks out.
+    let pt = |x: f32, y: f32, fg: bool| crate::pipelines::sam::PointPrompt {
+        x: (x.clamp(0.0, (w - 1) as f32)) as f64,
+        y: (y.clamp(0.0, (h - 1) as f32)) as f64,
+        foreground: fg,
+    };
+    let (cx, cy) = ((det.x0 + det.x1) / 2.0, (det.y0 + det.y1) / 2.0);
+    let m = 6.0; // margin (px) outside the box for the background hints
+    let prompts = vec![
+        pt(cx, cy, true),
+        pt(cx, det.y0 - m, false), // above
+        pt(cx, det.y1 + m, false), // below
+        pt(det.x0 - m, cy, false), // left
+        pt(det.x1 + m, cy, false), // right
+    ];
+    let sam_mask = match crate::pipelines::sam::build_selection_mask(image, &prompts, device).await {
+        Ok(m) => m,
+        Err(_) => return Ok(rect), // SAM failed → the rectangle still works
+    };
+    let refined = crate::pipelines::sam::intersect_masks(&sam_mask, &rect);
+    let white = refined.pixels().filter(|p| p.0[0] > 127).count();
+    // Fall back only if SAM essentially collapsed (center missed the object).
+    if (white as f32) < 0.005 * (w as f32 * h as f32) {
+        Ok(rect)
+    } else {
+        Ok(refined)
+    }
 }
 
 /// Build a white-filled rectangle mask from pixel corners (clamped to the image). Used by `--what`

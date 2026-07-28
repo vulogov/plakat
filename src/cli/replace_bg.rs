@@ -32,6 +32,11 @@ pub struct ReplaceBgArgs {
     #[arg(help_heading = "Background", long = "bg-image", value_name = "PATH")]
     pub bg_image: Option<PathBuf>,
 
+    /// Choose the subject to keep by TEXT (OWL-ViT detect → SAM refine) instead of the automatic
+    /// U2Net salient matte. Handy when the salient object isn't the one you want.
+    #[arg(help_heading = "Background", long = "keep", value_name = "TEXT")]
+    pub keep: Option<String>,
+
     /// Feather radius (px) on the subject's matte edge — softens the composite seam.
     #[arg(help_heading = "Background", long = "edge-feather", default_value_t = 2, value_name = "PX")]
     pub edge_feather: u32,
@@ -62,10 +67,20 @@ pub struct ReplaceBgArgs {
 }
 
 pub async fn run(args: ReplaceBgArgs, device: Device) -> Result<()> {
-    // 1. Matte the subject.
-    let (fg, mut alpha) = crate::pipelines::matting::matte(&args.input, &device)
-        .await
-        .with_context(|| format!("matting subject from {}", args.input.display()))?;
+    // 1. Get the subject: by text (OWL-ViT → SAM) via `--keep`, else the U2Net salient matte.
+    let (fg, mut alpha) = match args.keep.as_deref() {
+        Some(query) => {
+            let fg = image::open(&args.input)
+                .with_context(|| format!("opening {}", args.input.display()))?
+                .to_rgb8();
+            let (w, h) = (fg.width(), fg.height());
+            let mask = crate::cli::remove::detect_object_mask(&args.input, query, &device, w, h, true).await?;
+            (fg, mask)
+        }
+        None => crate::pipelines::matting::matte(&args.input, &device)
+            .await
+            .with_context(|| format!("matting subject from {}", args.input.display()))?,
+    };
     let (w, h) = (fg.width(), fg.height());
     if args.edge_feather > 0 {
         alpha = feather(&alpha, args.edge_feather);
