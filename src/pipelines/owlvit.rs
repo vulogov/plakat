@@ -60,7 +60,29 @@ pub struct OwlViT {
     device: Device,
 }
 
+/// The public OWL-ViT checkpoint (CLIP ViT-B/32 backbone).
+pub const OWLVIT_REPO: &str = "google/owlvit-base-patch32";
+
 impl OwlViT {
+    /// Download + load the public OWL-ViT (`google/owlvit-base-patch32`): `model.safetensors` +
+    /// `tokenizer.json`. Runs on CPU or Metal (small model, ~600 MB F32).
+    pub async fn load_pretrained(device: &Device) -> Result<Self> {
+        let weights = crate::hf::download::get_file(OWLVIT_REPO, "model.safetensors")
+            .await
+            .context("downloading OWL-ViT weights")?;
+        // OWL-ViT ships the legacy CLIP tokenizer (vocab.json + merges.txt, no fast tokenizer.json).
+        // It's the standard openai CLIP BPE — reuse the fast tokenizer from the CLIP-L repo.
+        let tok_path = crate::hf::download::get_file("openai/clip-vit-large-patch14", "tokenizer.json")
+            .await
+            .context("downloading CLIP tokenizer for OWL-ViT")?;
+        let mut model = Self::load(&weights, device)?;
+        model.tokenizer = Some(
+            tokenizers::Tokenizer::from_file(&tok_path)
+                .map_err(|e| anyhow::anyhow!("loading OWL-ViT tokenizer: {e}"))?,
+        );
+        Ok(model)
+    }
+
     /// Load from a single `model.safetensors` (F32). Vision + text use candle's CLIP encoders (with
     /// the `pre_layernorm`→`pre_layrnorm` key remap); the heads/projections load directly.
     pub fn load(weights: &std::path::Path, device: &Device) -> Result<Self> {

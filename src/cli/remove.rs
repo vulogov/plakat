@@ -99,12 +99,6 @@ pub struct RemoveArgs {
 }
 
 pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
-    if args.what.is_some() {
-        anyhow::bail!(
-            "`--what` (open-vocabulary text targeting) lands in a follow-up (OWL-ViT). For now select \
-             the object with --point X,Y, --box X0,Y0,X1,Y1, and/or --depth-band LO,HI."
-        );
-    }
     let (w, h) = image::image_dimensions(&args.input)
         .with_context(|| format!("reading dimensions of {}", args.input.display()))?;
 
@@ -119,6 +113,23 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
         Some(s) => Some(box_to_mask(s, w, h)?),
         None => None,
     };
+    // `--what`: OWL-ViT open-vocabulary detection → the best box → a rectangular mask (SAM refine is
+    // a future enhancement; the box already covers the object).
+    let what_mask = match args.what.as_deref() {
+        Some(query) => {
+            let spin = crate::ui::progress::spinner(&format!("Detecting \"{query}\" (OWL-ViT)"));
+            let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await?;
+            let det = owl.detect(&args.input, query, 0.1)?.with_context(|| {
+                format!("OWL-ViT found no \"{query}\" (try a plainer noun, or select with --point/--box)")
+            })?;
+            spin.finish_with_message(format!(
+                "✓ detected \"{query}\" @ [{:.0},{:.0},{:.0},{:.0}] (score {:.2})",
+                det.x0, det.y0, det.x1, det.y1, det.score
+            ));
+            Some(rect_mask(det.x0, det.y0, det.x1, det.y1, w, h))
+        }
+        None => None,
+    };
     let depth_mask = match args.depth_band.as_deref() {
         Some(s) => {
             let (lo, hi) = crate::cli::segment::parse_band(s)?;
@@ -131,14 +142,14 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
     };
 
     let mut mask = None;
-    for m in [point_mask, box_mask, depth_mask].into_iter().flatten() {
+    for m in [point_mask, box_mask, depth_mask, what_mask].into_iter().flatten() {
         mask = Some(match mask {
             None => m,
             Some(prev) => crate::pipelines::sam::intersect_masks(&prev, &m),
         });
     }
     let mask = mask.context(
-        "no selection: pass --point X,Y, --box X0,Y0,X1,Y1, and/or --depth-band LO,HI",
+        "no selection: pass --what \"<object>\", --point X,Y, --box X0,Y0,X1,Y1, and/or --depth-band LO,HI",
     )?;
 
     // Grow + feather, then write the mask to a tempdir the inpaint pass reads by path.
@@ -201,6 +212,22 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
         base: 1024,
     };
     crate::cli::img2img::run(img2img_args, device).await
+}
+
+/// Build a white-filled rectangle mask from pixel corners (clamped to the image). Used by `--what`
+/// (OWL-ViT detection returns pixel boxes).
+fn rect_mask(x0: f32, y0: f32, x1: f32, y1: f32, w: u32, h: u32) -> GrayImage {
+    let cx0 = (x0.round().max(0.0) as u32).min(w);
+    let cy0 = (y0.round().max(0.0) as u32).min(h);
+    let cx1 = (x1.round().max(0.0) as u32).min(w);
+    let cy1 = (y1.round().max(0.0) as u32).min(h);
+    let mut mask: GrayImage = ImageBuffer::from_pixel(w, h, Luma([0]));
+    for y in cy0..cy1 {
+        for x in cx0..cx1 {
+            mask.put_pixel(x, y, Luma([255]));
+        }
+    }
+    mask
 }
 
 /// Parse `X0,Y0,X1,Y1` (normalised 0–1, or pixels if any value > 1) into a white-filled rectangle

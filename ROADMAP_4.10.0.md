@@ -40,14 +40,18 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 - [x] Env-gated corr test (`PLAKAT_OWLVIT_VERIFY`): **image_feats 1.000000, query_embeds 0.999904,
       boxes 1.000000, logits 1.000000** vs the transformers dump (CPU canonical).
 
-## Phase 3 — wire `--what` into the edit verbs
+## Phase 3 — wire `--what` into the edit verbs — DONE (remove)
 
-- [ ] `owlvit::detect(image, query, threshold) → Option<[x0,y0,x1,y1]>` (best box; cxcywh→xyxy in pixels).
-      Reuse plakat's CLIP tokenizer + image preprocessing (letterbox/resize to 768, CLIP mean/std).
-- [ ] `plakat remove --what "…"`: detect → box → SAM-refine (feed the box as a prompt / crop) → the
-      Phase-1 (4.9) mask path. Drop the bail. Optional `--keep "…"` on `replace-bg` (protect a detected
-      subject instead of the U2Net matte).
-- [ ] Verify (Metal): `remove photo --what "…"` removes the named object end-to-end.
+- [x] `owlvit::detect(image, query, threshold) → Option<Detection>` (best box by score; cxcywh→pixel
+      xyxy, mapped through the pad-to-square). `preprocess_image` (pad→768, CLIP mean/std) + `tokenize`
+      (CLIP BPE from `openai/clip-vit-large-patch14` — OWL-ViT ships only the legacy vocab/merges).
+- [x] `owlvit::OwlViT::load_pretrained` (downloads `google/owlvit-base-patch32` + the CLIP tokenizer).
+      `plakat remove --what "…"`: detect → a rectangular box mask (`rect_mask`) → the Phase-1 grow/feather
+      + inpaint path. Bail dropped.
+- [x] Verify (Metal): `remove portrait --what "a cowboy hat"` — the hat is detected + removed; change
+      concentrated in the TOP (hat) third (mean|Δ| 85 vs bottom 7). Detection targeting correct.
+- [ ] Deferred: `--keep "…"` on `replace-bg` (protect a detected subject) — optional, follow-up. SAM
+      box-refine (tighter mask than the rectangle) — optional, follow-up.
 
 ## Phase 4 — docs + release
 
