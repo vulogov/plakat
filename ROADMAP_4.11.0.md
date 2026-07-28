@@ -31,7 +31,8 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 - [x] EDIT_TUTORIAL: SAM-refined `--what` + `--box-only` + `replace-bg --keep`; README banner + "what's
       new in 4.11.0"; `reference_edit_verbs` updated.
-- [ ] Cut the 4.11.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
+- [x] Cut the 4.11.0 release — v4.11.0 @ 4f33a91: tag pushed → Release CI green (6 assets + SHA256SUMS),
+      `cargo publish --locked` (on crates.io), main fast-forwarded, notes set via `gh release edit`.
 
 ## Notes / risks
 
