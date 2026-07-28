@@ -28,6 +28,7 @@ pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
 pub mod remove;
+pub mod replace_bg;
 pub mod portrait;
 pub mod multiperson;
 pub mod relight;
@@ -105,6 +106,10 @@ pub enum Command {
     /// `--box`, or `--depth-band` (SAM) → the region is inpainted away while the
     /// rest is preserved. One-shot wrapper over segment + inpaint.
     Remove(remove::RemoveArgs),
+    /// Replace an image's background while keeping the subject. Mattes the
+    /// subject (U2Net), generates a new background from `--prompt` (or uses
+    /// `--bg-image`), and alpha-composites the subject over it.
+    ReplaceBg(replace_bg::ReplaceBgArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -244,6 +249,7 @@ impl Command {
                 | Command::Multiperson(_)
                 | Command::Segment(_)
                 | Command::Remove(_)
+                | Command::ReplaceBg(_)
                 | Command::Upscale(_)
                 | Command::Rank(_)
                 | Command::RestoreFaces(_)
@@ -314,6 +320,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             let device = crate::device::select(&cli.device)?;
             let (imp, out) = (args.import.clone(), args.out.clone());
             import::run_with_import(imp, out, remove::run(args, device)).await
+        }
+        Command::ReplaceBg(args) => {
+            let device = crate::device::select(&cli.device)?;
+            let (imp, out) = (args.import.clone(), args.out.clone());
+            import::run_with_import(imp, out, replace_bg::run(args, device)).await
         }
         Command::Upscale(args) => {
             let device = crate::device::select(&cli.device)?;

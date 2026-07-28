@@ -27,13 +27,15 @@ existing SAM interface: `--point X,Y` (repeatable, `:bg` to carve), `--depth-ban
       SD-inpaint hallucinates context, the documented LaMa gap; a mis-placed SAM point over-selects, e.g.
       a ground point → 32% mask, expected SAM behaviour not a bug.)
 
-## Phase 2 — `plakat replace-bg` (matte → new bg → composite)
+## Phase 2 — `plakat replace-bg` (matte → new bg → composite) — DONE
 
-- [ ] `src/cli/replace_bg.rs`: U2Net matte (`matting::cutout` → RGBA foreground), generate a new
-      background from `--prompt` (txt2img at the image dims, `--model`), then alpha-composite the
-      foreground over it (feather the matte edge; optional `--bg-image PATH` to composite over a supplied
-      background instead of generating). Preserve the subject exactly.
-- [ ] Verify: subject pixels preserved under the matte; new background follows the prompt; edges clean.
+- [x] `matting::matte(path, device) → (RgbImage, alpha)` extracted from `cutout` (which now reuses it).
+      `src/cli/replace_bg.rs`: matte the subject → new background (`--bg-image PATH` resized, else txt2img
+      from `--prompt` at the subject dims via `t2i::Request::simple` + read-back) → alpha-composite the
+      subject over it (matte edge `--edge-feather`, default 2). Registered in cli/mod.rs.
+- [x] Verify (Metal): cowboy portrait → tropical-beach bg. Subject **94% of core pixels pixel-exact**
+      (matte composite = no VAE roundtrip on the subject, unlike `remove`), whole-image mean|Δ| 30.4
+      (bg replaced). Bg-gen quality is limited by SDXL-at-512 (off-native); `--bg-image` sidesteps it.
 
 ## Phase 3 — text targeting (`--what "…"`) via an OWL-ViT port
 

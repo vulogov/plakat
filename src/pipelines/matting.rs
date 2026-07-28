@@ -328,6 +328,24 @@ async fn matte_weights_path() -> Result<std::path::PathBuf> {
 /// Smart cut-out: predict the foreground matte, write it as the alpha channel,
 /// optionally crop to the subject's bounding box. Output must keep alpha
 /// (`.png` / `.webp`).
+/// Predict the U2Net salient-object alpha matte for an image. Returns the RGB image (at native
+/// resolution) and a single-channel alpha (`GrayImage`, 255 = foreground). Shared by [`cutout`] and
+/// `plakat replace-bg`.
+pub async fn matte(in_path: &Path, device: &Device) -> Result<(image::RgbImage, image::GrayImage)> {
+    let weights = matte_weights_path().await?;
+    let img = image::open(in_path)?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    let vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(&[&weights], DType::F32, device)
+            .context("loading U2Net safetensors")?
+    };
+    let net = U2Net::load(vb)?;
+    let x = preprocess(&img, device)?;
+    let d0 = net.forward(&x)?;
+    let alpha = matte_alpha(&d0, w, h)?;
+    Ok((img, alpha))
+}
+
 pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device) -> Result<()> {
     if let Some(ext) = out_path
         .extension()
@@ -341,19 +359,8 @@ pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device
         }
     }
 
-    let weights = matte_weights_path().await?;
-
-    let img = image::open(in_path)?.to_rgb8();
+    let (img, alpha) = matte(in_path, device).await?;
     let (w, h) = (img.width(), img.height());
-
-    let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(&[&weights], DType::F32, device)
-            .context("loading U2Net safetensors")?
-    };
-    let net = U2Net::load(vb)?;
-    let x = preprocess(&img, device)?;
-    let d0 = net.forward(&x)?;
-    let alpha = matte_alpha(&d0, w, h)?;
     if std::env::var("PLAKAT_MATTE_DEBUG").is_ok() {
         let dbg = out_path.with_extension("matte.png");
         let _ = alpha.save(&dbg);
