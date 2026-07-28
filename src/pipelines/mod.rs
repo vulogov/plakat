@@ -59,6 +59,7 @@ pub mod cascade_lora;
 pub mod cascade_prior;
 pub mod cascade_scheduler;
 pub mod cascade_vae;
+pub mod owlvit;
 pub mod pixart;
 pub mod pixart_dit;
 pub mod pixart_lora;
