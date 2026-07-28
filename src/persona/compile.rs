@@ -143,6 +143,15 @@ fn resolve_one(path: &str, entry: &LexEntry, val: AttrVal) -> Option<ResolvedAtt
             if v == "auto" {
                 return None;
             }
+            // Per-value phrasing (e.g. skin.tone fitzpatrick → neutral words) wins over the template.
+            if let Some(map) = &entry.values {
+                if let Some(phrase) = map.get(&v) {
+                    if phrase.is_empty() {
+                        return None; // this enum value deliberately emits nothing
+                    }
+                    return Some(mk(fix_article(phrase), weight, None));
+                }
+            }
             let t = entry.template.as_deref().unwrap_or("{}");
             Some(mk(fix_article(&t.replace("{}", &v)), weight, None))
         }
@@ -283,6 +292,19 @@ fn attr_value(spec: &PersonaSpec, path: &str) -> Option<AttrVal> {
         "hair.texture" => spec.hair.as_ref()?.texture.clone().map(Enum),
         "facial_hair.style" => spec.facial_hair.as_ref()?.style.clone().map(Enum),
         "figure.build" => spec.figure.as_ref()?.build.clone().map(Enum),
+        // extended coverage
+        "face.jaw.width" => spec.face.as_ref()?.jaw.as_ref()?.width.map(Scalar),
+        "face.jaw.definition" => spec.face.as_ref()?.jaw.as_ref()?.definition.clone().map(Enum),
+        "face.chin.projection" => spec.face.as_ref()?.chin.as_ref()?.projection.map(Scalar),
+        "face.cheekbones.prominence" => spec.face.as_ref()?.cheekbones.as_ref()?.prominence.map(Scalar),
+        "eyes.canthal_tilt" => spec.eyes.as_ref()?.canthal_tilt.map(Scalar),
+        "eyes.brow.arch" => spec.eyes.as_ref()?.brow.as_ref()?.arch.clone().map(Enum),
+        "nose.length" => spec.nose.as_ref()?.length.map(Scalar),
+        "mouth.lower_lip" => spec.mouth.as_ref()?.lower_lip.map(Scalar),
+        "mouth.cupids_bow" => spec.mouth.as_ref()?.cupids_bow.clone().map(Enum),
+        "skin.tone" => spec.skin.as_ref()?.tone.clone().map(Enum),
+        "skin.undertone" => spec.skin.as_ref()?.undertone.clone().map(Enum),
+        "skin.texture" => spec.skin.as_ref()?.texture.map(Scalar),
         _ => None,
     }
 }
@@ -394,6 +416,20 @@ mod tests {
             t5.positive,
             "A portrait of a person with hazel eyes, almond eyes, auburn hair, shoulder-length hair, wavy hair, wide-set eyes, oval-shaped face, and an aquiline nose."
         );
+    }
+
+    #[test]
+    fn per_value_phrasing_maps_neutrally() {
+        // skin.tone fitzpatrick → neutral tone words (§7.4), never the raw enum value.
+        let lex = Lexicon::skeleton();
+        let s = spec("{\n  skin: {\n    tone: fitzpatrick-3\n  }\n}\n");
+        let r = resolve(&s, &lex);
+        let a = r.iter().find(|a| a.path == "skin.tone").unwrap();
+        assert_eq!(a.phrase, "light skin");
+        assert!(!a.phrase.contains("fitzpatrick"));
+        // a `values` entry mapping to "" (mouth.cupids_bow flat) emits nothing.
+        let flat = spec("{\n  mouth: {\n    cupids_bow: flat\n  }\n}\n");
+        assert!(resolve(&flat, &lex).iter().all(|a| a.path != "mouth.cupids_bow"));
     }
 
     #[test]

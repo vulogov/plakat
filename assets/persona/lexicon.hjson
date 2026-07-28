@@ -123,4 +123,128 @@
     template: "a {} build"
     control: weak
   }
+
+  # --- extended coverage (P0 enrichment) ---
+
+  "face.jaw.width": {
+    class: structural
+    section: face
+    kind: scalar
+    low: "a narrow jaw"
+    high: "a wide jaw"
+    control: moderate
+  }
+
+  "face.jaw.definition": {
+    class: surface
+    section: face
+    kind: enum
+    template: "a {} jawline"
+    control: moderate
+  }
+
+  "face.chin.projection": {
+    class: structural
+    section: face
+    kind: scalar
+    low: "a receding chin"
+    high: "a prominent chin"
+    control: moderate
+  }
+
+  "face.cheekbones.prominence": {
+    class: structural
+    section: face
+    kind: scalar
+    low: "low cheekbones"
+    high: "high cheekbones"
+    control: moderate
+  }
+
+  "eyes.canthal_tilt": {
+    class: structural
+    section: eyes
+    kind: scalar
+    low: "downturned eyes"
+    high: "upturned eyes"
+    control: moderate
+  }
+
+  "eyes.brow.arch": {
+    class: surface
+    section: eyes
+    kind: enum
+    values: {
+      straight: "straight eyebrows"
+      soft: "softly arched eyebrows"
+      rounded: "rounded eyebrows"
+      angled: "angular eyebrows"
+      high: "high-arched eyebrows"
+    }
+    control: moderate
+  }
+
+  "nose.length": {
+    class: structural
+    section: nose
+    kind: scalar
+    low: "a short nose"
+    high: "a long nose"
+    control: moderate
+  }
+
+  "mouth.lower_lip": {
+    class: surface
+    section: mouth
+    kind: scalar
+    low: "thin lips"
+    high: "full lips"
+    control: moderate
+  }
+
+  "mouth.cupids_bow": {
+    class: surface
+    section: mouth
+    kind: enum
+    values: {
+      flat: ""
+      soft: "a soft cupid's bow"
+      defined: "a defined cupid's bow"
+      pronounced: "a pronounced cupid's bow"
+    }
+    control: weak
+  }
+
+  # Skin tone: Fitzpatrick → neutral tone words only (§7.4 — no ethnonyms, no geographic labels).
+  "skin.tone": {
+    class: surface
+    section: skin
+    kind: enum
+    values: {
+      fitzpatrick-1: "very fair skin"
+      fitzpatrick-2: "fair skin"
+      fitzpatrick-3: "light skin"
+      fitzpatrick-4: "medium skin"
+      fitzpatrick-5: "tan skin"
+      fitzpatrick-6: "deep skin"
+    }
+    control: strong
+  }
+
+  "skin.undertone": {
+    class: surface
+    section: skin
+    kind: enum
+    template: "{} undertones"
+    control: moderate
+  }
+
+  "skin.texture": {
+    class: surface
+    section: skin
+    kind: scalar
+    low: "smooth skin"
+    high: "textured skin"
+    control: moderate
+  }
 }

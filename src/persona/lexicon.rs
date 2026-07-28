@@ -19,6 +19,10 @@ pub struct LexEntry {
     pub high: Option<String>,
     #[serde(default)]
     pub template: Option<String>,
+    /// Per-value phrasing for enums that need it (e.g. `skin.tone` fitzpatrick → neutral tone words,
+    /// §7.4). Takes precedence over `template`; an empty string means "emit nothing for this value".
+    #[serde(default)]
+    pub values: Option<HashMap<String, String>>,
     #[serde(default)]
     pub none_negative: Option<String>,
     #[serde(default)]
