@@ -41,18 +41,32 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase G — Gating research + decisions (FIRST; RFC flags as architecture-shaping)
 
-- [ ] **§2.3 baseline measurement** — the control. Per family: 1 fixed dense person-prompt, N=32 seeds,
-      native size → pairwise ArcFace cosine (mean/median/p5) + detection-failure rate + localized-detail
-      hit rate (prompted mole/scar/piercing: present? correct side?). Reuses render + ArcFace + OWL-ViT.
-      Committed as a corpus entry; every later phase reports the same stats.
-- [ ] **§27.3 landmark-ControlNet survey** — which families have usable face-landmark/mesh ControlNets,
-      at what resolution + license. **A negative result reshapes the architecture toward the swap bridge
-      as primary.** Highest-leverage unknown.
-- [ ] **106-pt aligner (net-new)** — scope a permissive dense-landmark aligner (InsightFace 2d106det
-      class) portable to candle/onnx; it gates Layer 2 + every `landmark`/`local_anomaly`/`region_*`
-      probe. Decide port path (candle native vs `convert-onnx`) + license.
+Findings recorded in [`Documentation/PERSONA_GATING.md`](Documentation/PERSONA_GATING.md).
+
+- [x] **§27.3 landmark-ControlNet survey — DONE.** Dedicated face-mesh CN exists ONLY for SD1.5/2.1
+      (`CrucibleAI/ControlNetMediaPipeFace`, OpenRAIL-M → optional add-on, not bundled). SDXL/SD3.5/Flux
+      have only coarse face keypoints in OpenPose-union CNs; PixArt/Sana/Cascade have none. **DECISION
+      (negative result, as the RFC anticipated): the face-swap bridge (SCRFD→ArcFace→inswapper, already
+      in plakat) is the PRIMARY cross-family geometric/identity path; the face-landmark-CN map is an
+      SD1.5/2.1-only Tier-A bonus.** Layer 2's cross-family value = depth/pose/region-mask/detail-overlay.
+- [x] **106-pt aligner (net-new) — DECIDED: port PIPNet-98 (WFLW, MIT, prebuilt ONNX).** InsightFace
+      `2d106det` REJECTED (non-commercial weights, license-poisoned). **Topology v1 = WFLW-98, NOT the
+      RFC's assumed 106-pt InsightFace set** — feed back into the RFC/lexicon; every named anchor region
+      (§8.2/§10.1) + probe is defined on WFLW-98. Port via `convert-onnx` (ResNet-18 + pixel-in-pixel).
+      MediaPipe FaceMesh (Apache, 468) is the escape hatch if a dense 3D mesh is later needed.
+- [ ] **§2.3 baseline measurement** — harness committed (`tools/reference/persona_baseline.py`;
+      InsightFace SCRFD+ArcFace variance + detection-failure + OWL-ViT detail-hit). Measurement runs on
+      any image dir today; the **multi-family render is a compute job to schedule.** Commit results as a
+      corpus entry; every later phase reports the same stats. (Detail-hit is a noisy OWL-ViT proxy until
+      the Phase-1 `local_anomaly` probe replaces it.)
 - [ ] **§27.5 Gemma prompt-only ceiling** — does Sana/Gemma hold a persona from one long structured
       paragraph? If yes, casting architecture partially inverts (Gemma = canonical casting renderer).
+      (Cheap experiment; run alongside the baselines.)
+
+**Net architectural consequence:** with landmark-CN unavailable cross-family, the swap-bridge is the
+backbone and the geometry engine (Layer 2) is primarily a *measurement + region-mask + detail-anchor*
+engine (still fully deterministic, no weights) rather than a face-mesh-CN generator. This does not
+change the phase order; it changes the emphasis within P2/P5/P6.
 
 ## Phase 0 — `PersonaSpec` + resolver (no weights, deterministic)
 
@@ -73,7 +87,8 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase 2 — Geometry engine (no weights; mirrors the map track)
 
-- [ ] 106-pt topology + named anchor regions (§10.1), mean template + open-mouth variant, deformation
+- [ ] **WFLW-98 topology** (Phase-G decision, not the RFC's 106-pt InsightFace) + named anchor regions
+      (§10.1), mean template + open-mouth variant, deformation
       basis (§10.2), conditioning maps (landmark/wireframe/depth/pose/dentition/region-mask/detail-overlay,
       §10.3), figure silhouette + skeleton + body anchor sites (§10.4). `geometry`.
 - [ ] Validity clamping + byte-stable rasteriser + corpus.
