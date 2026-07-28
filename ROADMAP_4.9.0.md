@@ -62,7 +62,8 @@ the query text embeds → per-box logits). Feed the top box → SAM → the Phas
 
 - [x] `Documentation/Tutorials/EDIT_TUTORIAL.md` (+ Tutorials README index 5e); README banner +
       "what's new in 4.9.0"; `reference_edit_verbs` memory. (OWL-ViT `--what` docs land with 4.10.0.)
-- [ ] Cut the 4.9.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
+- [x] Cut the 4.9.0 release — v4.9.0 @ 1f9cb77: tag pushed → Release CI green (6 assets + SHA256SUMS),
+      `cargo publish --locked` (on crates.io), main fast-forwarded, notes set via `gh release edit`.
 
 ## Notes / risks
 
