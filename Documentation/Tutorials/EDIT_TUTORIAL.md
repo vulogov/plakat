@@ -30,7 +30,8 @@ plakat remove photo.png --point 0.5,0.5 --point 0.6,0.4:bg
 
 `--what` downloads a small detector (OWL-ViT, ~600 MB, once) and picks the highest-scoring match for
 your phrase. Use a plain noun ("a red car", "the dog"); if it finds nothing, fall back to `--point`
-or `--box`. The detected region is a rectangle around the object — good enough to inpaint it away.
+or `--box`. The detected box is then **refined to the object's outline with SAM** (a tight mask, not
+just a rectangle) — pass `--box-only` to skip the refine and use the raw rectangle.
 
 Useful flags:
 
@@ -62,7 +63,14 @@ plakat replace-bg portrait.png --prompt "a sunlit tropical beach, soft bokeh, pr
 
 # Or composite over a supplied background image (resized to the subject's dimensions).
 plakat replace-bg product.png --bg-image studio.png
+
+# Choose the subject by text (OWL-ViT → SAM) instead of the automatic salient matte.
+plakat replace-bg street.png --keep "the red car" --prompt "a showroom"
 ```
+
+By default the subject is the salient object (U2Net). `--keep "<text>"` instead detects the named
+subject (OWL-ViT) and refines it with SAM — handy when the automatic matte grabs the wrong object or
+there are several.
 
 Useful flags:
 

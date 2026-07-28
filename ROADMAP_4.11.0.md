@@ -29,8 +29,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase 3 — docs + release
 
-- [ ] EDIT_TUTORIAL: note the SAM-refined `--what` mask + `replace-bg --keep`; README what's-new; update
-      [[reference_edit_verbs]] + [[reference_owlvit]]. Cut the 4.11.0 release.
+- [x] EDIT_TUTORIAL: SAM-refined `--what` + `--box-only` + `replace-bg --keep`; README banner + "what's
+      new in 4.11.0"; `reference_edit_verbs` updated.
+- [ ] Cut the 4.11.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
 
 ## Notes / risks
 

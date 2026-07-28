@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.10.0 — text-targeted removal**: `plakat remove --what "the trash can"` — an open-vocabulary **OWL-ViT** detector (ported to candle, verified vs transformers at corr 1.0) finds the named object, then inpaints it away. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.10.0) · [Tutorial →](Documentation/Tutorials/EDIT_TUTORIAL.md)
+> **v4.11.0 — finishing the edit verbs**: `remove --what` now **SAM-refines** the detected box to the object's outline (not just a rectangle), and `replace-bg --keep "<subject>"` picks the kept subject by text (OWL-ViT → SAM) instead of the automatic matte. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.11.0) · [Tutorial →](Documentation/Tutorials/EDIT_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,23 +24,22 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.10.0 — text-targeted removal
+## What's new in 4.11.0 — finishing the edit verbs
 
-4.9.0 shipped `plakat remove` / `plakat replace-bg`; 4.10.0 adds the open-vocabulary text targeting
-that was deferred:
+The two follow-ups deferred from the 4.9/4.10 edit-verbs work:
 
-- **`plakat remove --what "<object>"`** — an **OWL-ViT** detector (`google/owlvit-base-patch32`, ported
-  from scratch to candle and verified against transformers at **corr 1.0**) finds the highest-scoring
-  match for your phrase, and the object is inpainted away. Combines with the existing `--point` / `--box`
-  / `--depth-band` selection. The detector (~600 MB) downloads once.
+- **`remove --what` now SAM-refines the mask** — the OWL-ViT box is tightened to the object's actual
+  outline with SAM (a foreground point at the box center + background hints just outside the edges),
+  so the inpaint follows the object, not a rectangle. `--box-only` keeps the raw rectangle.
+- **`replace-bg --keep "<subject>"`** — choose the kept subject by text (OWL-ViT → SAM) instead of the
+  automatic U2Net salient matte. Handy when the salient object isn't the one you want.
 
 ```bash
-plakat remove street.png --what "the parked car" --prompt "empty road"
-plakat remove photo.png  --what "a red balloon"
+plakat remove photo.png --what "the dog"
+plakat replace-bg street.png --keep "the red car" --prompt "a showroom"
 ```
 
-The port reuses candle's CLIP ViT/text encoders plus OWL-ViT's detection heads (box + query-text
-class head). Default CLIP output stays byte-identical; everything is additive.
+Both reuse the 4.10 OWL-ViT detector + SAM; default output stays byte-identical, everything is additive.
 
 **Earlier releases** (v0.13 – 4.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
