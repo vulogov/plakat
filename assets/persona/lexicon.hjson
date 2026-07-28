@@ -1,0 +1,126 @@
+{
+  # PERSONA-1 lexicon — SKELETON (P0). One entry per prompt-bearing attribute; the join point between
+  # the resolver, the emitters, and (later) the geometry/scorecard/calibration subsystems (RFC §7).
+  #
+  # Entry fields (P0 subset of §7.1):
+  #   class    : structural | surface | detail       (drives salience class-weight + edit invalidation)
+  #   section  : anatomical group (eyes, nose, hair, …) — used for grouping + ordering
+  #   kind     : scalar | enum | color
+  #   scalar   → `low` / `high` phrases (value <0.5 picks low, >0.5 picks high; ==0.5 emits nothing)
+  #             the opposite pole is the negative (anti) for that attribute
+  #   enum/color → `template` with `{}` replaced by the value (skip `auto` / `none`)
+  #   none_negative : (enum) when the value is `none`, emit this comma list as a negative
+  #   control  : default controllability grade (measured per-family later; §7.3/§13.3)
+  #
+  # Neutrality (§7.4): no ethnonyms, no valence. skin-tone / fitzpatrick phrasing is deliberately
+  # deferred until the neutral phrasing table lands (needs the calibration pass).
+
+  "face.shape": {
+    class: surface
+    section: face
+    kind: enum
+    template: "{}-shaped face"
+    control: moderate
+  }
+
+  "face.width": {
+    class: structural
+    section: face
+    kind: scalar
+    low: "a narrow face"
+    high: "a wide face"
+    control: moderate
+  }
+
+  "eyes.shape": {
+    class: surface
+    section: eyes
+    kind: enum
+    template: "{} eyes"
+    control: strong
+  }
+
+  "eyes.spacing": {
+    class: structural
+    section: eyes
+    kind: scalar
+    low: "close-set eyes"
+    high: "wide-set eyes"
+    control: strong
+  }
+
+  "eyes.color": {
+    class: surface
+    section: eyes
+    kind: color
+    template: "{} eyes"
+    control: strong
+  }
+
+  "eyes.brow.thickness": {
+    class: surface
+    section: eyes
+    kind: scalar
+    low: "thin eyebrows"
+    high: "thick eyebrows"
+    control: moderate
+  }
+
+  "nose.profile": {
+    class: surface
+    section: nose
+    kind: enum
+    template: "a {} nose"
+    control: moderate
+  }
+
+  "mouth.width": {
+    class: structural
+    section: mouth
+    kind: scalar
+    low: "a narrow mouth"
+    high: "a wide mouth"
+    control: moderate
+  }
+
+  "hair.color": {
+    class: surface
+    section: hair
+    kind: color
+    template: "{} hair"
+    control: strong
+  }
+
+  "hair.length": {
+    class: surface
+    section: hair
+    kind: enum
+    template: "{}-length hair"
+    control: strong
+  }
+
+  "hair.texture": {
+    class: surface
+    section: hair
+    kind: enum
+    template: "{} hair"
+    control: strong
+  }
+
+  "facial_hair.style": {
+    class: surface
+    section: facial_hair
+    kind: enum
+    template: "a {}"
+    none_negative: "beard, stubble, moustache, goatee, facial hair"
+    control: moderate
+  }
+
+  "figure.build": {
+    class: structural
+    section: figure
+    kind: enum
+    template: "a {} build"
+    control: weak
+  }
+}

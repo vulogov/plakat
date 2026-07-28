@@ -25,6 +25,9 @@ pub enum PersonaCmd {
     /// Validate a persona spec — schema, scalar ranges, contradictions, the age gate. No weights, no
     /// network. Exits non-zero on any error so it can gate CI.
     Lint(LintArgs),
+    /// Show what a spec resolves to for a model family: the salience-ranked prompt-routed attributes,
+    /// the compiled positive/negative prompt, and (on CLIP) which attributes the token budget dropped.
+    Show(ShowArgs),
 }
 
 #[derive(Args, Debug)]
@@ -48,11 +51,55 @@ pub struct LintArgs {
     pub spec: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct ShowArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// Model family to compile for (its encoder class shapes the prompt). Default `sdxl`.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+}
+
 pub fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
         PersonaCmd::Lint(a) => run_lint(a),
+        PersonaCmd::Show(a) => run_show(a),
     }
+}
+
+fn run_show(a: ShowArgs) -> Result<()> {
+    use crate::persona::compile::{self, EncoderClass};
+    use crate::persona::lexicon::Lexicon;
+    let spec = PersonaSpec::load(&a.spec)?;
+    let lex = Lexicon::skeleton();
+    let resolved = compile::resolve(&spec, &lex);
+    let compiled = compile::compile_for_model(&spec, &lex, &a.model);
+
+    println!("{}  {}  (model {}, encoder {})", style("persona").bold(), a.spec.display(), a.model, style(compiled.class).cyan());
+    let _ = EncoderClass::from_model(&a.model);
+    println!("\n{}", style("resolved attributes (salience-ranked):").bold());
+    if resolved.is_empty() {
+        println!("  (none — spec is empty or all-unknown)");
+    }
+    for r in &resolved {
+        let emitted = compiled.emitted.iter().any(|p| p == &r.path);
+        let mark = if r.phrase.is_empty() {
+            style("neg").yellow()
+        } else if emitted {
+            style("✓").green()
+        } else {
+            style("dropped").red()
+        };
+        let phrase = if r.phrase.is_empty() { "(negative only)" } else { &r.phrase };
+        println!("  {mark} {:<22} sal {:.2}  {}", style(&r.path).dim(), r.salience, phrase);
+    }
+    if !compiled.dropped.is_empty() {
+        println!("\n{} {}", style("dropped by budget:").red(), compiled.dropped.join(", "));
+    }
+    println!("\n{}\n  {}", style("positive:").bold().green(), if compiled.positive.is_empty() { "(empty)" } else { &compiled.positive });
+    println!("{}\n  {}", style("negative:").bold().yellow(), if compiled.negative.is_empty() { "(empty)" } else { &compiled.negative });
+    Ok(())
 }
 
 fn run_new(a: NewArgs) -> Result<()> {

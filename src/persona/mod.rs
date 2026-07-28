@@ -11,6 +11,8 @@
 //!
 //! Fully additive; nothing here changes existing behaviour.
 
+pub mod compile;
+pub mod lexicon;
 pub mod lint;
 pub mod spec;
 
