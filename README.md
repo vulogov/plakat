@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.9.0 — one-shot edit commands**: **`plakat remove`** (erase an object — select it with `--point`/`--box`/`--depth-band`, it's inpainted away) and **`plakat replace-bg`** (swap the background — mattes the subject, generates a new background from `--prompt`, composites). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.9.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.10.0 — text-targeted removal**: `plakat remove --what "the trash can"` — an open-vocabulary **OWL-ViT** detector (ported to candle, verified vs transformers at corr 1.0) finds the named object, then inpaints it away. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.10.0) · [Tutorial →](Documentation/Tutorials/EDIT_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,25 +24,23 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.9.0 — one-shot edit commands
+## What's new in 4.10.0 — text-targeted removal
 
-Two ergonomic verbs that wrap the existing selection + inpaint + matte stack:
+4.9.0 shipped `plakat remove` / `plakat replace-bg`; 4.10.0 adds the open-vocabulary text targeting
+that was deferred:
 
-- **`plakat remove`** — erase an object and fill the hole. Select it with `--point X,Y` (SAM, `:bg` to
-  carve), `--box X0,Y0,X1,Y1`, and/or `--depth-band LO,HI`; the region is grown, feathered, and
-  inpainted away while the rest is preserved. Any `--mask` inpaint model works (default `sdxl-inpaint`).
-- **`plakat replace-bg`** — swap the background, keep the subject. Mattes the subject (U2Net), generates
-  a new background from `--prompt` (or composites over `--bg-image`), and alpha-composites the subject
-  back — so the subject is preserved *exactly* (no VAE roundtrip).
+- **`plakat remove --what "<object>"`** — an **OWL-ViT** detector (`google/owlvit-base-patch32`, ported
+  from scratch to candle and verified against transformers at **corr 1.0**) finds the highest-scoring
+  match for your phrase, and the object is inpainted away. Combines with the existing `--point` / `--box`
+  / `--depth-band` selection. The detector (~600 MB) downloads once.
 
 ```bash
-plakat remove photo.png --box 0.7,0.6,1.0,1.0 --prompt "empty street"
-plakat replace-bg portrait.png --prompt "a sunlit tropical beach, soft bokeh"
+plakat remove street.png --what "the parked car" --prompt "empty road"
+plakat remove photo.png  --what "a red balloon"
 ```
 
-Open-vocabulary text targeting (`plakat remove --what "the trash can"`) is a dedicated follow-up
-(OWL-ViT port, 4.10.0); today `--what` points you to `--point`/`--box`. Default CLI image output stays
-byte-identical; the new commands are additive.
+The port reuses candle's CLIP ViT/text encoders plus OWL-ViT's detection heads (box + query-text
+class head). Default CLIP output stays byte-identical; everything is additive.
 
 **Earlier releases** (v0.13 – 4.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).

@@ -9,9 +9,12 @@ while keeping the subject.
 ## `plakat remove` — erase an object
 
 Select the object, and the region is grown, feathered, and inpainted away while the rest of the image
-is preserved. Three ways to select (they can be combined — the selections intersect):
+is preserved. Four ways to select (they can be combined — the selections intersect):
 
 ```bash
+# By text (OWL-ViT open-vocabulary detection) — just name the object.
+plakat remove photo.png --what "the trash can" --prompt "empty pavement"
+
 # Click the object (SAM). Normalised 0–1 unless a value exceeds 1 (then pixels).
 plakat remove photo.png --point 0.42,0.71
 
@@ -24,6 +27,10 @@ plakat remove photo.png --depth-band 0.0,0.3
 # Carve away over-selection with :bg points.
 plakat remove photo.png --point 0.5,0.5 --point 0.6,0.4:bg
 ```
+
+`--what` downloads a small detector (OWL-ViT, ~600 MB, once) and picks the highest-scoring match for
+your phrase. Use a plain noun ("a red car", "the dog"); if it finds nothing, fall back to `--point`
+or `--box`. The detected region is a rectangle around the object — good enough to inpaint it away.
 
 Useful flags:
 
@@ -75,6 +82,3 @@ Notes:
 
 Both commands accept `--out DIR`, `--seed`, and `--import <album>` (land the result in a photo album),
 like the other image commands.
-
-> Open-vocabulary text targeting — `plakat remove --what "the trash can"` — is a dedicated follow-up
-> (an OWL-ViT detector port). Until then, select with `--point` / `--box` / `--depth-band`.

@@ -55,8 +55,9 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 ## Phase 4 — docs + release
 
-- [ ] EDIT_TUTORIAL `--what` section; README what's-new; capability note; update [[reference_edit_verbs]]
-      + a new [[reference_owlvit]] gotcha note. Cut the 4.10.0 release.
+- [x] EDIT_TUTORIAL `--what` section (now the 4th selection mode); README banner + "what's new in 4.10.0";
+      new `reference_owlvit` memory + updated `reference_edit_verbs`.
+- [ ] Cut the 4.10.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
 
 ## Notes / risks
 
