@@ -8,7 +8,10 @@ bump is earned by scale.
 
 **Decisions (locked, 2026-07-28):** cut line **P0–P8** (extraction P9 + integration P10 → 5.1);
 `figure` **IN** v1 scope; the 106-pt landmark aligner is **net-new** (we build/port it); RFC committed
-+ gating research is the first work item.
++ gating research is the first work item. **Landmark topology v1 = WFLW-98 (FROZEN)** — port PIPNet-98
+(MIT); InsightFace 2d106det rejected (non-commercial license). Face-swap bridge is the PRIMARY
+cross-family geometric/identity path (landmark-CN is SD1.5/2.1-only). Converted PIPNet-98 weights host
+on the user's HF repo (the one weight hosting the persona track adds).
 
 Ground rules: additive; determinism contract (§5.2) — resolver/geometry/detail-plan/compositing are
 pure and byte-stable, corpus-tested, no weights; each phase carries corpus + CI gates; `Cargo.lock` in

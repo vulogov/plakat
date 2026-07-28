@@ -27,6 +27,7 @@ pub mod metadata;
 pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
+pub mod persona;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -110,6 +111,10 @@ pub enum Command {
     /// subject (U2Net), generates a new background from `--prompt` (or uses
     /// `--bg-image`), and alpha-composites the subject over it.
     ReplaceBg(replace_bg::ReplaceBgArgs),
+    /// Controllable synthetic-person composition (RFC PERSONA-1, the 5.0 flagship).
+    /// A `PersonaSpec` HJSON → reproducible person. `new` scaffolds a spec; `lint`
+    /// validates it (more subcommands land across the 5.0 phases).
+    Persona(persona::PersonaArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -353,6 +358,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Verify(args) => verify::run(args).await,
         Command::Bench(args) => bench::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
+        Command::Persona(args) => persona::run(args),
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]
