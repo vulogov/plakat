@@ -57,7 +57,8 @@ Status: `[ ]` open · `[x]` done · `[~]` in progress.
 
 - [x] EDIT_TUTORIAL `--what` section (now the 4th selection mode); README banner + "what's new in 4.10.0";
       new `reference_owlvit` memory + updated `reference_edit_verbs`.
-- [ ] Cut the 4.10.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
+- [x] Cut the 4.10.0 release — v4.10.0 @ 016f2e6: tag pushed → Release CI green (6 assets + SHA256SUMS),
+      `cargo publish --locked` (on crates.io), main fast-forwarded, notes set via `gh release edit`.
 
 ## Notes / risks
 
