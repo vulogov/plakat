@@ -37,7 +37,12 @@ existing SAM interface: `--point X,Y` (repeatable, `:bg` to carve), `--depth-ban
       (matte composite = no VAE roundtrip on the subject, unlike `remove`), whole-image mean|Δ| 30.4
       (bg replaced). Bg-gen quality is limited by SDXL-at-512 (off-native); `--bg-image` sidesteps it.
 
-## Phase 3 — text targeting (`--what "…"`) via an OWL-ViT port
+## Phase 3 — text targeting (`--what "…"`) via an OWL-ViT port — DEFERRED to 4.10.0
+
+Scoped and confirmed feasible, but it's a full from-scratch detector port (CLIP ViT vision +
+text + box/class heads + box-decode/NMS + verify vs transformers) — its own focused cycle, not a
+wrap. Per the at-risk guardrail, 4.9.0 ships with the two working commands and this lands as **4.10.0**.
+`--what` bails today with a pointer to `--point`/`--box`. Notes below preserved for 4.10.0.
 
 Open-vocabulary detection so `plakat remove img --what "the trash can"` (and `replace-bg --keep "the
 person"`) work. OWL-ViT ≈ CLIP ViT-B/32 (image + text, which plakat already has in `vendored_clip.rs`)
@@ -55,8 +60,9 @@ the query text embeds → per-box logits). Feed the top box → SAM → the Phas
 
 ## Phase 4 — docs + release
 
-- [ ] Tutorials for `remove` / `replace-bg` (+ `--what` if Phase 3 lands); README what's-new; capability
-      notes. New memory reference for the edit-verbs. Cut the 4.9.0 release.
+- [x] `Documentation/Tutorials/EDIT_TUTORIAL.md` (+ Tutorials README index 5e); README banner +
+      "what's new in 4.9.0"; `reference_edit_verbs` memory. (OWL-ViT `--what` docs land with 4.10.0.)
+- [ ] Cut the 4.9.0 release (tag → CI 6-asset build; `cargo publish --locked`; FF main; notes).
 
 ## Notes / risks
 

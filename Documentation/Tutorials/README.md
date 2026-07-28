@@ -115,6 +115,11 @@ If you're new to plakat, work through these in order:
  different regions of one image (SD 1.5 / SDXL / SD3.5; also a scenario `regions`
  key). Feathered blends, not seams.
 
+5e. [`EDIT_TUTORIAL.md`](EDIT_TUTORIAL.md) — **v4.9. one-shot edits.**
+ `plakat remove` (select an object with `--point`/`--box`/`--depth-band` → inpaint it
+ away) and `plakat replace-bg` (matte the subject → new background from `--prompt` or
+ `--bg-image` → composite). Wraps segment + inpaint + matte into single verbs.
+
 6. [`IMG2IMG_TUTORIAL.md`](IMG2IMG_TUTORIAL.md) — transform an existing
  image with a prompt (img2img), or repaint just a masked region
  (inpaint). Same `plakat img2img` subcommand drives both modes —

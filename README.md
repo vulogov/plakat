@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.8.0 — rounding out Sana**: **Sana outpaint** (`plakat outpaint --model sana`) and a **Sana ControlNet** (`plakat generate --model sana-600m --control canny --control-from img.png`) — the public 600M ControlNet, verified against diffusers at corr 1.0. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.8.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+> **v4.9.0 — one-shot edit commands**: **`plakat remove`** (erase an object — select it with `--point`/`--box`/`--depth-band`, it's inpainted away) and **`plakat replace-bg`** (swap the background — mattes the subject, generates a new background from `--prompt`, composites). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.9.0) · [Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,26 +24,25 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
-## What's new in 4.8.0 — rounding out Sana
+## What's new in 4.9.0 — one-shot edit commands
 
-4.5–4.7 built and deepened [Sana](Documentation/Tutorials/GENERATE_TUTORIAL.md); 4.8.0 adds the two
-remaining reach items, both on the verified, now-Metal-correct components:
+Two ergonomic verbs that wrap the existing selection + inpaint + matte stack:
 
-- **Outpaint** — `plakat outpaint <image> --model sana --right 256 --prompt "…"`. Extends the canvas
-  past its borders, riding the 4.7 inpaint path (the only Sana-specific bit is snapping padding to the
-  DC-AE 32× grid). The original is preserved; the new border is coherently continued.
-- **ControlNet** — `plakat generate --model sana-600m --control canny --control-from img.png`. The
-  public 600M Sana ControlNet (a 7-block copy of the DiT) steers generation from a conditioning image;
-  its per-block residuals are verified against diffusers at **corr 1.0**. Pairs with the `sana-600m`
-  base; `--control-image` (pre-made map) and `--control-from` (auto-annotate) both work.
+- **`plakat remove`** — erase an object and fill the hole. Select it with `--point X,Y` (SAM, `:bg` to
+  carve), `--box X0,Y0,X1,Y1`, and/or `--depth-band LO,HI`; the region is grown, feathered, and
+  inpainted away while the rest is preserved. Any `--mask` inpaint model works (default `sdxl-inpaint`).
+- **`plakat replace-bg`** — swap the background, keep the subject. Mattes the subject (U2Net), generates
+  a new background from `--prompt` (or composites over `--bg-image`), and alpha-composites the subject
+  back — so the subject is preserved *exactly* (no VAE roundtrip).
 
 ```bash
-plakat outpaint town.png --model sana --right 256 --prompt "old european townsquare, watercolor"
-plakat generate "cyberpunk night market, neon, rain" --model sana-600m --control canny --control-from town.png
+plakat remove photo.png --box 0.7,0.6,1.0,1.0 --prompt "empty street"
+plakat replace-bg portrait.png --prompt "a sunlit tropical beach, soft bokeh"
 ```
 
-Sana ControlNet is 600M — use `--model sana-600m` (plakat says so if you pass the 1.6B base). Default
-CLI image output stays byte-identical; everything is additive behind Sana's own pipeline.
+Open-vocabulary text targeting (`plakat remove --what "the trash can"`) is a dedicated follow-up
+(OWL-ViT port, 4.10.0); today `--what` points you to `--point`/`--box`. Default CLI image output stays
+byte-identical; the new commands are additive.
 
 **Earlier releases** (v0.13 – 4.5):
 [`Documentation/RELEASE_HISTORY.md`](Documentation/RELEASE_HISTORY.md).
