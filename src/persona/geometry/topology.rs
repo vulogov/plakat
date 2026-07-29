@@ -135,9 +135,53 @@ pub const ANCHOR_VOCAB: &[&str] = &[
     "right-lobe", "right-helix", "left-lobe", "left-helix",
 ];
 
+/// How the 98 points connect when drawn (mesh / wireframe rasterisation, §10.3). Each entry is a
+/// contiguous index range and whether it closes into a loop.
+pub struct DrawGroup {
+    pub name: &'static str,
+    pub range: std::ops::Range<usize>,
+    pub closed: bool,
+}
+
+/// The feature polylines/loops, in draw order. Contour + brows + nose are open polylines; eyes + both
+/// lips are closed loops. Pupils are drawn as points, not part of any polyline.
+pub const DRAW_GROUPS: &[DrawGroup] = &[
+    DrawGroup { name: "contour", range: 0..33, closed: false },
+    DrawGroup { name: "brow-right", range: 33..42, closed: false },
+    DrawGroup { name: "brow-left", range: 42..51, closed: false },
+    DrawGroup { name: "nose-bridge", range: 51..55, closed: false },
+    DrawGroup { name: "nose-base", range: 55..60, closed: false },
+    DrawGroup { name: "eye-right", range: 60..68, closed: true },
+    DrawGroup { name: "eye-left", range: 68..76, closed: true },
+    DrawGroup { name: "lip-outer", range: 76..88, closed: true },
+    DrawGroup { name: "lip-inner", range: 88..96, closed: true },
+];
+
+/// Feature groups that bound a **filled region mask** (§10.3): the polygon of these indices is filled.
+/// `face` uses the contour plus the two brow arcs to close the top.
+pub const MASK_EYE_RIGHT: std::ops::Range<usize> = 60..68;
+pub const MASK_EYE_LEFT: std::ops::Range<usize> = 68..76;
+pub const MASK_MOUTH: std::ops::Range<usize> = 76..88;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_groups_cover_the_contours() {
+        // Every non-pupil index belongs to exactly one draw group.
+        let mut seen = [false; NUM_LANDMARKS];
+        for g in DRAW_GROUPS {
+            for i in g.range.clone() {
+                assert!(!seen[i], "index {i} in two groups");
+                seen[i] = true;
+            }
+        }
+        for (i, &s) in seen.iter().enumerate() {
+            let is_pupil = i == PUPIL_RIGHT || i == PUPIL_LEFT;
+            assert_eq!(s, !is_pupil, "index {i} coverage");
+        }
+    }
 
     #[test]
     fn ranges_partition_the_98_points() {
