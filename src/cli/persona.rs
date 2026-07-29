@@ -144,6 +144,36 @@ async fn run_verify(a: VerifyArgs) -> Result<()> {
             );
         }
     }
+    // detect probe (OWL-ViT): salient objects — facial hair, glasses. Loaded lazily.
+    let mut queries: Vec<(String, String, bool)> = Vec::new(); // (label, query, expected_present)
+    if let Some(style) = spec.facial_hair.as_ref().and_then(|f| f.style.as_deref()) {
+        let q = crate::persona::scorecard::facial_hair_query(style);
+        queries.push((format!("facial_hair.style={style}"), q.to_string(), style != "none"));
+    }
+    if spec
+        .jewelry
+        .as_ref()
+        .and_then(|j| j.items.as_ref())
+        .is_some_and(|items| items.iter().any(|it| it.kind.as_deref() == Some("glasses")))
+    {
+        queries.push(("jewelry: glasses".into(), "glasses".into(), true));
+    }
+    if !queries.is_empty() {
+        let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await?;
+        println!("\n{}", style("salient objects (detect / OWL-ViT):").bold());
+        for (label, query, expected) in &queries {
+            let r = crate::persona::scorecard::detect_probe(&owl, &a.image, query, 0.1)?;
+            let pass = r.present == *expected;
+            let glyph = if pass { style("✓").green() } else { style("✗").red() };
+            println!(
+                "  {glyph} {label}: {} (score {:.2}, expected {})",
+                if r.present { "present" } else { "absent" },
+                r.score,
+                if *expected { "present" } else { "absent" }
+            );
+        }
+    }
+
     println!("\n{}", style("note: scalar attribute-scoring needs the P4 calibration prior; raw metrics shown.").dim());
     Ok(())
 }

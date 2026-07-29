@@ -241,6 +241,38 @@ pub fn measure_colors(m: &FaceMetrics) -> ColorReadings {
     ColorReadings { iris, skin }
 }
 
+// --- detect probe (RFC §12.1): OWL-ViT present/absent for salient objects (beard, glasses, braces). ---
+
+/// Result of a `detect` probe: was the queried object found, and at what confidence.
+#[derive(Debug, Clone)]
+pub struct DetectResult {
+    pub present: bool,
+    pub score: f32,
+}
+
+/// Run OWL-ViT for `query` on `image` → present/absent + confidence.
+pub fn detect_probe(
+    owl: &crate::pipelines::owlvit::OwlViT,
+    image: &std::path::Path,
+    query: &str,
+    threshold: f32,
+) -> Result<DetectResult> {
+    let det = owl.detect(image, query, threshold).context("OWL-ViT detect probe")?;
+    Ok(DetectResult { present: det.is_some(), score: det.map(|d| d.score).unwrap_or(0.0) })
+}
+
+/// The OWL-ViT query phrase for a `facial_hair.style` value (§12 `detect` target).
+pub fn facial_hair_query(style: &str) -> &'static str {
+    match style {
+        "none" => "a beard", // absence check — expect NOT present
+        "stubble" => "stubble on a face",
+        "moustache" => "a moustache",
+        "goatee" => "a goatee",
+        s if s.contains("beard") => "a beard",
+        _ => "facial hair",
+    }
+}
+
 /// Coarse target Lab for the common eye / hair colour names (§12 `region_color` target). Approximate
 /// but enough to distinguish e.g. blue vs brown eyes; refined against real renders during calibration.
 pub fn color_name_to_lab(name: &str) -> Option<[f32; 3]> {
@@ -385,5 +417,13 @@ mod tests {
         // blue vs brown eyes must be far apart in Lab (the probe's whole point).
         assert!(delta_e(color_name_to_lab("blue").unwrap(), color_name_to_lab("brown").unwrap()) > 25.0);
         assert!(color_name_to_lab("chartreuse").is_none());
+    }
+
+    #[test]
+    fn facial_hair_query_mapping() {
+        assert_eq!(facial_hair_query("none"), "a beard"); // absence check
+        assert_eq!(facial_hair_query("full-beard"), "a beard");
+        assert_eq!(facial_hair_query("moustache"), "a moustache");
+        assert_eq!(facial_hair_query("sideburns"), "facial hair");
     }
 }
