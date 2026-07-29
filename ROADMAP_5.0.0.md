@@ -159,11 +159,24 @@ renders as different people; render produced a coherent garden scene with the sw
 **Deferred:** geometry-CN + multi-view/pose-CN casting (both need `t2i::Request.controls`, not on the
 `api` facade); Tier C baking (§11.6 → P6); resident render worker (§22, per-candidate model reload).
 
-## Phase 6 — Cross-model (weights; the "all families" promise)
+## Phase 6 — Cross-model (weights; the "all families" promise) — DONE
 
-- [ ] Swap-and-restore bridge wiring (§11.5, detail-composite AFTER swap — hard ordering constraint) +
+- [x] Swap-and-restore bridge wiring (§11.5, detail-composite AFTER swap — hard ordering constraint) +
       region-escalation ladder (face/mouth/hand, §14.1) + multiperson attribution (§14.2) + `bake`
       (§11.6, excludes presentation jewelry by default).
+
+**Shipped.** Swap bridge = P5c `render`. P6a `casting::escalation` (area_fraction + per-region
+thresholds + decide + refine_crop) wired into `render` — small face → native-res + stronger restore;
+mouth/hand rungs advisory (mouth-inpaint = P7, hand = §8.5 best-effort). P6b `casting::attribution`
+(containment+IoU assignment, one-to-one, **refuse below 0.35 → detail absent not misplaced**, the §14.2
+catastrophic-failure guard) wired into `render --with` multiperson (left-to-right figure bands, per-
+figure detail composite). P6c `persona bake` (Tier C): TI/LoRA from the reference set via the proven
+trainers, **excludes worn presentation jewelry by default** (recomposites from stored raw candidates
+via `composite_details_opts(false)` unless identity_locked/`--keep-jewelry`), memory-gated
+(`memory_preflight` + `MemoryGuard` Training mode), writes a `.bake.json` invalidation record.
+Live-verified (release/sd15): escalation branch + multiperson 2-persona scene (attribution + dual
+swap + spurious-face refusal). **Deferred:** bake not run live (heavy training); sequential per-figure
+refinement for N>2 (§14.2) uses the same swap path.
 
 ## Phase 7 — Repair loop (weights)
 
