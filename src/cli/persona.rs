@@ -201,6 +201,13 @@ pub struct CastArgs {
     /// Also score aesthetics (LAION) as a secondary sort key (loads an extra model).
     #[arg(long)]
     pub aesthetic: bool,
+    /// Rejection sampling (§12.3): keep rendering (up to `--max-attempts`) until `--keep-best`
+    /// candidates score at least this. `0` (default) disables it — render exactly `--count`.
+    #[arg(long = "min-score", default_value_t = 0.0)]
+    pub min_score: f32,
+    /// Cap on total render attempts when rejection sampling. Defaults to `--count` when unset.
+    #[arg(long = "max-attempts", default_value_t = 0)]
+    pub max_attempts: u32,
     /// Tier label recorded in the set (§11.4): `B` (universal swap) by default.
     #[arg(long, default_value = "B")]
     pub tier: String,
@@ -234,6 +241,10 @@ pub struct RenderArgs {
     /// Skip compositing the persona's details after the swap.
     #[arg(long)]
     pub no_details: bool,
+    /// Identity tier (§11.4): `auto` (A where an IP-Adapter exists, else B), `A` (IP-Adapter-Plus-Face
+    /// from the reference set), or `B` (native render → face swap → restore).
+    #[arg(long, default_value = "auto")]
+    pub tier: String,
 }
 
 pub async fn run(args: PersonaArgs) -> Result<()> {
@@ -271,55 +282,80 @@ async fn run_render(a: RenderArgs) -> Result<()> {
         format!("{}, {}", a.scene, appearance.positive)
     };
 
-    println!("{}  {} into a scene  (model {}, tier {})", style("persona render").bold(), set.persona, a.model, set.tier);
+    println!("{}  {} into a scene  (model {})", style("persona render").bold(), set.persona, a.model);
     if !set.coherence.passes {
-        println!("  {} reference set identity coherence is below threshold (min cos {:.3}) — the swap still unifies identity, but the set is weak", style("note:").yellow(), set.coherence.min_cosine);
+        println!("  {} reference set identity coherence is below threshold (min cos {:.3}) — identity anchoring is weaker than ideal; consider re-casting with tighter conditioning", style("note:").yellow(), set.coherence.min_cosine);
     }
 
-    // 1. Generate the scene (identity will be replaced by the swap).
-    println!("  {} generating the scene…", style("→").cyan());
-    let imgs = crate::api::Generate::new(&a.model)
-        .prompt(&prompt)
-        .negative(&appearance.negative)
-        .seed(a.seed)
-        .size(a.size, a.size)
-        .steps(a.steps)
-        .run()
-        .await
-        .context("scene render")?;
-    let Some(scene_img) = imgs.into_iter().next() else {
-        anyhow::bail!("scene render produced no image");
-    };
-    scene_img.save(&a.out)?;
-
-    // 2. Swap the canonical reference face into the detected scene face (§11.5).
     let device = candle_core::Device::Cpu;
-    let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32).await?;
-    let faces = swapper.detect(&a.out).context("detecting the scene face")?;
-    let Some(target) = faces.into_iter().next() else {
-        println!("  {} no face in the scene render — leaving it un-swapped ({})", style("·").yellow(), a.out.display());
-        return Ok(());
-    };
-    let latent = swapper.source_latent(&canonical_img).context("embedding the canonical reference face")?;
-    let scene_rgb = image::open(&a.out)?.to_rgb8();
-    let swapped = swapper.swap_into(&scene_rgb, target.landmarks, &latent).context("face swap")?;
-    swapped.save(&a.out)?;
-    println!("  {} swapped in {} (canonical, centroid cos {:.3})", style("✓").green(), canonical.image.display(), canonical.centroid_cosine);
+    let tier = resolve_render_tier(&a.tier, &a.model);
 
-    // 3. Restore the swapped region at gentle strength (identity-preserving §11.5).
-    if !a.no_restore {
-        println!("  {} restoring the swapped face…", style("→").cyan());
-        let restore = crate::cli::restore_faces::RestoreFacesArgs {
-            inputs: vec![a.out.clone()],
-            model: if a.model.starts_with("sdxl") { "sdxl".into() } else { "sd15".into() },
-            strength: 0.35,
-            padding: 0.25,
-            feather: 0.25,
-            confidence: 0.5,
-            working_size: 512,
+    if tier == "A" {
+        // Tier A (§11.4): IP-Adapter-Plus-Face from the reference set — identity from the adapter,
+        // no swap. The face-reference generalises across the scene the sampler produces.
+        let kind = identity_kind_for(&a.model).expect("tier A implies an adapter");
+        let n = set.references.len().min(4);
+        println!("  {} Tier A: generating with the face adapter ({n} reference photo(s))…", style("→").cyan());
+        let mut portrait = crate::api::Portrait::new(&a.model)
+            .prompt(&prompt)
+            .negative(&appearance.negative)
+            .identity(kind)
+            .size(a.size, a.size)
+            .steps(a.steps)
+            .seed(a.seed);
+        for r in set.references.iter().take(4) {
+            portrait = portrait.photo(a.persona.join(&r.image), r.centroid_cosine.max(0.1));
+        }
+        let imgs = portrait.run().await.context("Tier A portrait render")?;
+        let Some(img) = imgs.into_iter().next() else {
+            anyhow::bail!("portrait render produced no image");
         };
-        if let Err(e) = crate::cli::restore_faces::run(restore, device.clone()).await {
-            println!("  {} restore skipped: {e}", style("·").yellow());
+        img.save(&a.out)?;
+        println!("  {} rendered via the face adapter", style("✓").green());
+    } else {
+        // Tier B (§11.5, universal): native render → face swap → restore.
+        println!("  {} Tier B: generating the scene…", style("→").cyan());
+        let imgs = crate::api::Generate::new(&a.model)
+            .prompt(&prompt)
+            .negative(&appearance.negative)
+            .seed(a.seed)
+            .size(a.size, a.size)
+            .steps(a.steps)
+            .run()
+            .await
+            .context("scene render")?;
+        let Some(scene_img) = imgs.into_iter().next() else {
+            anyhow::bail!("scene render produced no image");
+        };
+        scene_img.save(&a.out)?;
+
+        let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32).await?;
+        let faces = swapper.detect(&a.out).context("detecting the scene face")?;
+        let Some(target) = faces.into_iter().next() else {
+            println!("  {} no face in the scene render — leaving it un-swapped ({})", style("·").yellow(), a.out.display());
+            return Ok(());
+        };
+        let latent = swapper.source_latent(&canonical_img).context("embedding the canonical reference face")?;
+        let scene_rgb = image::open(&a.out)?.to_rgb8();
+        let swapped = swapper.swap_into(&scene_rgb, target.landmarks, &latent).context("face swap")?;
+        swapped.save(&a.out)?;
+        println!("  {} swapped in {} (canonical, centroid cos {:.3})", style("✓").green(), canonical.image.display(), canonical.centroid_cosine);
+
+        // Restore the swapped region at gentle strength (identity-preserving §11.5).
+        if !a.no_restore {
+            println!("  {} restoring the swapped face…", style("→").cyan());
+            let restore = crate::cli::restore_faces::RestoreFacesArgs {
+                inputs: vec![a.out.clone()],
+                model: if a.model.starts_with("sdxl") { "sdxl".into() } else { "sd15".into() },
+                strength: 0.35,
+                padding: 0.25,
+                feather: 0.25,
+                confidence: 0.5,
+                working_size: 512,
+            };
+            if let Err(e) = crate::cli::restore_faces::run(restore, device.clone()).await {
+                println!("  {} restore skipped: {e}", style("·").yellow());
+            }
         }
     }
 
@@ -354,6 +390,39 @@ fn fnv_hash(s: &str) -> String {
         acc = (acc ^ b as u64).wrapping_mul(1099511628211);
     }
     format!("{acc:016x}")
+}
+
+/// The IP-Adapter-Plus-Face identity variant for a family, or `None` where no adapter exists (§11.4).
+fn identity_kind_for(model: &str) -> Option<crate::pipelines::ip_adapter::IdentityKind> {
+    use crate::pipelines::ip_adapter::IdentityKind;
+    if model.starts_with("sdxl") || model == "pony" {
+        Some(IdentityKind::PlusFaceSdxl)
+    } else if model == "sd15" || model == "sd21" {
+        Some(IdentityKind::PlusFace)
+    } else {
+        None
+    }
+}
+
+/// Resolve the render tier (§11.4): `auto` → `A` where an adapter exists, else `B`; an explicit `A`
+/// falls back to `B` (with no adapter) rather than failing.
+fn resolve_render_tier(requested: &str, model: &str) -> String {
+    let has_adapter = identity_kind_for(model).is_some();
+    match requested {
+        "A" if has_adapter => "A".into(),
+        "A" => {
+            println!("  {} no face adapter for `{model}` — falling back to Tier B (swap)", style("·").yellow());
+            "B".into()
+        }
+        "B" => "B".into(),
+        _ => {
+            if has_adapter {
+                "A".into()
+            } else {
+                "B".into()
+            }
+        }
+    }
 }
 
 async fn run_cast(a: CastArgs) -> Result<()> {
@@ -407,10 +476,25 @@ async fn run_cast(a: CastArgs) -> Result<()> {
     }
     let mut cands: Vec<Cand> = Vec::new();
     let mut no_face = 0u32;
+    let mut rejected = 0u32;
 
-    for i in 0..a.count {
-        let seed = a.seed + i as u64;
-        let raw = cand_dir.join(format!("cand_{i}_raw.png"));
+    // Rejection sampling (§12.3): without `--min-score` this renders exactly `--count`; with it, keep
+    // going (up to `--max-attempts`) until `--keep-best` candidates clear the bar.
+    let target = a.keep_best as usize;
+    let cap = if a.max_attempts > 0 { a.max_attempts.max(a.count) } else { a.count };
+    let mut i = 0u32;
+    while i < cap {
+        if a.min_score > 0.0 {
+            if cands.iter().filter(|c| c.score >= a.min_score).count() >= target {
+                break;
+            }
+        } else if cands.len() + no_face as usize >= a.count as usize {
+            break;
+        }
+        let attempt = i;
+        i += 1;
+        let seed = a.seed + attempt as u64;
+        let raw = cand_dir.join(format!("cand_{attempt}_raw.png"));
         // Render one candidate (Tier-B: prompt only; geometry-CN casting is a follow-on).
         let imgs = crate::api::Generate::new(&a.model)
             .prompt(&compiled.positive)
@@ -420,18 +504,18 @@ async fn run_cast(a: CastArgs) -> Result<()> {
             .steps(a.steps)
             .run()
             .await
-            .with_context(|| format!("rendering candidate {i}"))?;
+            .with_context(|| format!("rendering candidate {attempt}"))?;
         let Some(img) = imgs.into_iter().next() else { continue };
         img.save(&raw)?;
 
         let Some(m) = scorecard::measure_landmarks(&raw, &detector, &pipnet)? else {
-            println!("  {} candidate {i}: no face detected — skipped", style("·").yellow());
+            println!("  {} candidate {attempt}: no face detected — skipped", style("·").yellow());
             no_face += 1;
             continue;
         };
 
         // Composite the persona's details onto the reference (§11.1 step 3) unless disabled.
-        let ref_img = cand_dir.join(format!("cand_{i}.png"));
+        let ref_img = cand_dir.join(format!("cand_{attempt}.png"));
         if a.no_details {
             std::fs::copy(&raw, &ref_img)?;
         } else {
@@ -442,14 +526,17 @@ async fn run_cast(a: CastArgs) -> Result<()> {
 
         let sc = scorecard::score_render(&spec, &m, table.as_ref());
         let score = sc.aggregate().unwrap_or(0.0);
+        if a.min_score > 0.0 && score < a.min_score {
+            rejected += 1;
+        }
         let Some(embedding) = arcface.embed(&ref_img)? else {
-            println!("  {} candidate {i}: face not embeddable — skipped", style("·").yellow());
+            println!("  {} candidate {attempt}: face not embeddable — skipped", style("·").yellow());
             no_face += 1;
             continue;
         };
         let aes = aesthetic.as_ref().map(|s| s.score_path(&ref_img)).transpose()?;
         println!(
-            "  {} candidate {i}: score {:.2}{}  (seed {seed})",
+            "  {} candidate {attempt}: score {:.2}{}  (seed {seed})",
             style("✓").green(),
             score,
             aes.map(|v| format!(", aesthetic {v:.1}")).unwrap_or_default()
@@ -495,7 +582,8 @@ async fn run_cast(a: CastArgs) -> Result<()> {
 
     // Report.
     println!("\n{}", style("── cast ──").bold());
-    println!("  kept {} / {} rendered ({no_face} unusable) → {}", set.references.len(), a.count, ReferenceSet::manifest_path(&persona_dir).display());
+    let rej = if a.min_score > 0.0 { format!(", {rejected} below min-score {:.2}", a.min_score) } else { String::new() };
+    println!("  kept {} / {i} rendered ({no_face} unusable{rej}) → {}", set.references.len(), ReferenceSet::manifest_path(&persona_dir).display());
     let coh = &set.coherence;
     let glyph = if coh.passes { style("✓").green() } else { style("✗").red() };
     println!("  {glyph} identity coherence: mean cos {:.3}, min cos {:.3} (threshold {:.2})", coh.mean_cosine, coh.min_cosine, coh.threshold);

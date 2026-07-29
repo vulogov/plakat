@@ -62,12 +62,21 @@ scene render produces no detectable face, the render is left un-swapped and that
 
 | Tier | Mechanism | Requires |
 |---|---|---|
-| **A** | IP-Adapter-Plus-Face / FaceID + landmark conditioning + detail compositing | an adapter port for the family |
+| **A** | IP-Adapter-Plus-Face from the reference set + detail compositing | an adapter for the family (sd15 / sd21 / sdxl family) |
 | **B** | native generation → face swap from the reference set → restore → detail compositing | nothing family-specific (**universal**) |
-| **C** | a baked per-base adapter (TI / LoRA) from the reference set + detail compositing | a trainer for the base |
+| **C** | a baked per-base adapter (TI / LoRA) from the reference set + detail compositing | a trainer for the base (`persona bake`, forthcoming) |
 
-Detail compositing is tier-independent — the small distinguishing features that make a persona feel
-specific work identically on every family, because they never go through a sampler.
+`persona render --tier auto` (the default) picks **A** where a face adapter exists, else **B**; `--tier B`
+forces the universal swap path, `--tier A` uses the adapter (falling back to B if none exists). Detail
+compositing is tier-independent — the small distinguishing features that make a persona feel specific
+work identically on every family, because they never go through a sampler. **Tier C (baking) is
+deferred to P6.**
+
+## Rejection sampling (§12.3)
+
+`persona cast --min-score <s>` keeps rendering (up to `--max-attempts`) until `--keep-best` candidates
+score at least `s`, instead of rendering a fixed `--count`. Candidates below the bar are reported. This
+trades compute for a higher-quality reference set when the family's hit rate is low.
 
 ## Body identity is out of scope (§11.7)
 
