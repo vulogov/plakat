@@ -220,6 +220,10 @@ pub struct CastArgs {
 pub struct RenderArgs {
     /// Persona directory produced by `persona cast` (holds `reference_set.json`).
     pub persona: PathBuf,
+    /// Additional persona directories to place in the same scene (§14.2 multiperson). Repeatable;
+    /// each is assigned to a left-to-right figure band and swapped only into its own face.
+    #[arg(long = "with")]
+    pub with: Vec<PathBuf>,
     /// Scene / setting prompt (the persona's appearance is merged in from its spec).
     #[arg(long)]
     pub scene: String,
@@ -389,6 +393,10 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::persona::casting::{self, ReferenceSet};
     use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
 
+    if !a.with.is_empty() {
+        return run_render_multi(a).await;
+    }
+
     let set = ReferenceSet::load(&a.persona)
         .with_context(|| format!("loading reference set from {} (run `persona cast` first)", a.persona.display()))?;
     let Some(canonical) = set.canonical().cloned() else {
@@ -542,6 +550,137 @@ fn fnv_hash(s: &str) -> String {
         acc = (acc ^ b as u64).wrapping_mul(1099511628211);
     }
     format!("{acc:016x}")
+}
+
+/// Multiperson render (§14.2): place several personas in one scene. Each is assigned a left-to-right
+/// figure band; a detected face attributed to a band (above confidence) gets that persona's face
+/// swapped in + its details composited — and NOTHING when attribution is below threshold, so figure
+/// A's scar is never composited onto figure B (the catastrophic-failure guard).
+async fn run_render_multi(a: RenderArgs) -> Result<()> {
+    use crate::persona::casting::{self, ReferenceSet};
+    use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
+
+    // Load every persona (primary + each --with), in left-to-right order.
+    let mut dirs = vec![a.persona.clone()];
+    dirs.extend(a.with.iter().cloned());
+    let lex = Lexicon::skeleton();
+    struct P {
+        dir: PathBuf,
+        set: ReferenceSet,
+        spec: Option<PersonaSpec>,
+        appearance: String,
+    }
+    let mut personas: Vec<P> = Vec::new();
+    for d in &dirs {
+        let set = ReferenceSet::load(d).with_context(|| format!("loading reference set from {}", d.display()))?;
+        if set.references.is_empty() {
+            anyhow::bail!("reference set {} is empty", d.display());
+        }
+        let spec = PersonaSpec::load(&d.join("spec.hjson")).ok();
+        let appearance = spec.as_ref().map(|s| compile::compile_for_model(s, &lex, &a.model).positive).unwrap_or_default();
+        personas.push(P { dir: d.clone(), set, spec, appearance });
+    }
+    let n = personas.len();
+    println!("{}  {} personas into a scene  (model {})", style("persona render").bold(), n, a.model);
+
+    // Scene prompt: "N people" + each persona's appearance.
+    let count_word = match n {
+        2 => "two people".to_string(),
+        3 => "three people".to_string(),
+        _ => format!("{n} people"),
+    };
+    let appearances: Vec<String> = personas.iter().map(|p| p.appearance.clone()).filter(|s| !s.is_empty()).collect();
+    let prompt = if appearances.is_empty() {
+        format!("{count_word}, {}", a.scene)
+    } else {
+        format!("{count_word}, {}, {}", a.scene, appearances.join("; "))
+    };
+
+    println!("  {} generating the group scene…", style("→").cyan());
+    let imgs = crate::api::Generate::new(&a.model)
+        .prompt(&prompt)
+        .seed(a.seed)
+        .size(a.size, a.size)
+        .steps(a.steps)
+        .run()
+        .await
+        .context("group scene render")?;
+    let Some(scene_img) = imgs.into_iter().next() else {
+        anyhow::bail!("group scene render produced no image");
+    };
+    scene_img.save(&a.out)?;
+
+    let device = candle_core::Device::Cpu;
+    let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32).await?;
+    let faces = swapper.detect(&a.out).context("detecting scene faces")?;
+    if faces.is_empty() {
+        println!("  {} no faces detected in the group scene — leaving it un-swapped", style("·").yellow());
+        return Ok(());
+    }
+    println!("  detected {} face(s)", faces.len());
+
+    // Figure bands: N equal vertical slices, left→right, mapped to the personas in order.
+    let fw = a.size as f32;
+    let bands: Vec<[f32; 4]> = (0..n)
+        .map(|i| [fw * i as f32 / n as f32, 0.0, fw * (i + 1) as f32 / n as f32, a.size as f32])
+        .collect();
+    let face_boxes: Vec<[f32; 4]> = faces.iter().map(|f| f.bbox).collect();
+    let assignments = casting::assign(&face_boxes, &bands, casting::ATTRIBUTION_CONFIDENCE_MIN);
+
+    // Invert to persona(band) → face, and swap each persona's canonical face into its face.
+    let mut scene = image::open(&a.out)?.to_rgb8();
+    let mut swapped_faces: Vec<Option<usize>> = vec![None; n]; // band → face idx
+    for asg in &assignments {
+        if let Some(band) = asg.figure {
+            if swapped_faces[band].is_none() {
+                swapped_faces[band] = Some(asg.face);
+            }
+        }
+    }
+    for (band, face_idx) in swapped_faces.iter().enumerate() {
+        let p = &personas[band];
+        let Some(face_idx) = face_idx else {
+            println!("  {} {}: no face attributed with confidence ≥ {:.2} — left absent, not misplaced (§14.2)", style("·").yellow(), p.set.persona, casting::ATTRIBUTION_CONFIDENCE_MIN);
+            continue;
+        };
+        let target = &faces[*face_idx];
+        let Some(canonical) = p.set.canonical() else { continue };
+        let latent = swapper.source_latent(&p.dir.join(&canonical.image)).context("embedding canonical face")?;
+        scene = swapper.swap_into(&scene, target.landmarks, &latent).context("face swap")?;
+        println!("  {} {} → face {} (band {band})", style("✓").green(), p.set.persona, face_idx);
+    }
+    scene.save(&a.out)?;
+
+    // Detail compositing per persona, each against ITS OWN assigned face's landmarks (§14.2).
+    if !a.no_details {
+        let (det, pip) = scorecard::load_probes(&device).await?;
+        for (band, face_idx) in swapped_faces.iter().enumerate() {
+            let (Some(face_idx), Some(spec)) = (face_idx, personas[band].spec.as_ref()) else { continue };
+            let has_details = spec.marks.as_ref().is_some_and(|m| !m.is_empty())
+                || spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).is_some_and(|i| !i.is_empty())
+                || spec.piercings.as_ref().is_some_and(|p| !p.is_empty());
+            if !has_details {
+                continue;
+            }
+            // measure only within this persona's face band, so its details anchor to its own face.
+            let bbox = faces[*face_idx].bbox;
+            let crop = casting::refine_crop(bbox, 0.6, a.size, a.size);
+            let sub = image::imageops::crop_imm(&scene, crop[0], crop[1], crop[2] - crop[0], crop[3] - crop[1]).to_image();
+            let tmp = std::env::temp_dir().join(format!("persona_mp_{band}.png"));
+            sub.save(&tmp)?;
+            if let Some(m) = scorecard::measure_landmarks(&tmp, &det, &pip)? {
+                let r = detail::composite_details(&sub, spec, &m, a.seed + band as u64);
+                // paste the composited sub-crop back into the scene.
+                image::imageops::overlay(&mut scene, &r.image, crop[0] as i64, crop[1] as i64);
+                println!("  {} composited {} detail(s) for {}", style("✓").green(), r.placed, personas[band].set.persona);
+            }
+            let _ = std::fs::remove_file(&tmp);
+        }
+        scene.save(&a.out)?;
+    }
+
+    println!("{} {}", style("done:").bold(), a.out.display());
+    Ok(())
 }
 
 /// The IP-Adapter-Plus-Face identity variant for a family, or `None` where no adapter exists (§11.4).
