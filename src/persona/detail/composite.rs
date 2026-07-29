@@ -268,9 +268,88 @@ pub fn composite_details(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetrics, s
         placed += 1;
     }
 
+    // --- piercings (§8.5): an empty site still renders faintly as a healed/open hole. ---
+    if let Some(piercings) = &spec.piercings {
+        for (i, p) in piercings.iter().enumerate() {
+            let Some(site) = p.site.as_deref() else { continue };
+            let Some(anchor) = jewelry_site_anchor(site) else {
+                culled.push(Culled { kind: format!("piercing:{site}"), reason: "site needs body landmarks / unknown".into() });
+                continue;
+            };
+            let Some((cx, cy)) = region_centre_px(anchor, m).filter(|&(x, y)| x >= 0.0 && y >= 0.0 && x < base.width() as f32 && y < base.height() as f32) else {
+                culled.push(Culled { kind: format!("piercing:{site}"), reason: "anchor off-frame".into() });
+                continue;
+            };
+            // a faint small dark dot per hole.
+            let hole = overlay::mole(((0.012 * face_px).max(2.0)) as u32, [70, 55, 55], 0.2, light);
+            for _ in 0..p.count.unwrap_or(1).min(3) {
+                stamp(&mut img, &mut mask, &faint(&hole), cx, cy);
+            }
+            let _ = i;
+            placed += 1;
+        }
+    }
+
+    // --- worn jewelry (§8.5), composited last (front-most). Glasses use the prompt path. ---
+    if let Some(items) = spec.jewelry.as_ref().and_then(|j| j.items.as_ref()) {
+        for it in items {
+            let kind = it.kind.as_deref().unwrap_or("stud");
+            if kind == "glasses" {
+                culled.push(Culled { kind: "jewelry:glasses".into(), reason: "glasses use the prompt path (§8.5)".into() });
+                continue;
+            }
+            let Some(site) = it.site.as_deref() else {
+                culled.push(Culled { kind: format!("jewelry:{kind}"), reason: "no site".into() });
+                continue;
+            };
+            let Some(anchor) = jewelry_site_anchor(site) else {
+                culled.push(Culled { kind: format!("jewelry:{kind}@{site}"), reason: "site needs body/hand landmarks (§8.5)".into() });
+                continue;
+            };
+            let Some((cx, cy)) = region_centre_px(anchor, m).filter(|&(x, y)| x >= 0.0 && y >= 0.0 && x < base.width() as f32 && y < base.height() as f32) else {
+                culled.push(Culled { kind: format!("jewelry:{kind}"), reason: "anchor off-frame".into() });
+                continue;
+            };
+            let sz = (it.size.unwrap_or(0.05) * face_px).max(6.0) as u32;
+            let metal = overlay::metal_colour(it.metal.as_deref().unwrap_or("silver"));
+            let stone = it.stone.as_deref().map(overlay::stone_colour);
+            let ov = overlay::jewelry(kind, sz, metal, stone);
+            stamp(&mut img, &mut mask, &ov, cx, cy);
+            placed += 1;
+        }
+    }
+
     // feather the union mask a little so an optional harmonisation extends past each overlay (§8.4).
     feather(&mut mask, 2);
     CompositeResult { image: img, mask, culled, placed, light }
+}
+
+/// Map a jewelry / piercing site to a face anchor region (§8.5). Body + hand sites return `None`
+/// (they need figure/hand landmarks, not present in a face crop) → the caller culls + reports.
+fn jewelry_site_anchor(site: &str) -> Option<&'static str> {
+    Some(match site {
+        "left-ear" | "left-lobe" | "left-earlobe" => "left-lobe",
+        "right-ear" | "right-lobe" | "right-earlobe" => "right-lobe",
+        "left-helix" => "left-helix",
+        "right-helix" => "right-helix",
+        "left-nostril" => "left-nostril",
+        "right-nostril" => "right-nostril",
+        "septum" | "nose" => "septum",
+        "left-brow" | "left-eyebrow" => "left-brow-outer",
+        "right-brow" | "right-eyebrow" => "right-brow-outer",
+        "lip" | "labret" | "lower-lip" => "lower-lip-centre",
+        "philtrum" | "medusa" => "philtrum",
+        _ => return None, // neck / throat / wrist / finger / navel / nipple → body landmarks
+    })
+}
+
+/// Halve an overlay's alpha (for a faint healed piercing hole).
+fn faint(ov: &image::RgbaImage) -> image::RgbaImage {
+    let mut out = ov.clone();
+    for p in out.pixels_mut() {
+        p.0[3] = (p.0[3] as u16 * 2 / 5) as u8;
+    }
+    out
 }
 
 /// The full-image pixel centre of a named region (for distributional fields).
@@ -360,6 +439,23 @@ mod tests {
             crop: image::RgbImage::from_pixel(dim, dim, image::Rgb([205, 165, 140])),
             crop_origin: (0, 0),
         }
+    }
+
+    #[test]
+    fn jewelry_places_on_face_sites_and_culls_body_sites() {
+        use crate::persona::spec::PersonaSpec;
+        let spec = PersonaSpec::from_hjson(
+            "{ schema: \"persona/1\"\n jewelry: { items: [ { kind: \"stud\"\n site: \"left-lobe\"\n metal: \"gold\"\n stone: \"ruby\" }, { kind: \"pendant\"\n site: \"throat\"\n metal: \"silver\" }, { kind: \"glasses\" } ] } }",
+        )
+        .unwrap();
+        let m = synthetic_metrics(256);
+        let base = image::RgbImage::from_pixel(256, 256, image::Rgb([205, 165, 140]));
+        let r = composite_details(&base, &spec, &m, 1);
+        assert_eq!(r.placed, 1, "the earring places; throat + glasses do not");
+        // throat (body site) and glasses (prompt path) are both reported.
+        assert_eq!(r.culled.len(), 2);
+        assert!(r.culled.iter().any(|c| c.reason.contains("body")));
+        assert!(r.culled.iter().any(|c| c.kind.contains("glasses")));
     }
 
     #[test]

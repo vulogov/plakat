@@ -143,8 +143,11 @@ async fn run_composite(a: CompositeArgs) -> Result<()> {
     use crate::persona::{detail, scorecard};
     let spec = PersonaSpec::load(&a.spec)?;
     let n_marks = spec.marks.as_ref().map(|m| m.len()).unwrap_or(0);
-    if n_marks == 0 {
-        println!("{}  spec has no marks — nothing to composite", style("·").dim());
+    let n_piercings = spec.piercings.as_ref().map(|p| p.len()).unwrap_or(0);
+    let n_jewelry = spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).map(|i| i.len()).unwrap_or(0);
+    let n_details = n_marks + n_piercings + n_jewelry;
+    if n_details == 0 {
+        println!("{}  spec has no marks / piercings / jewelry — nothing to composite", style("·").dim());
         // still a no-op copy so downstream steps have an output.
         image::open(&a.image)?.to_rgb8().save(&a.out)?;
         println!("  {} {}", style("✓").green(), a.out.display());
@@ -168,7 +171,7 @@ async fn run_composite(a: CompositeArgs) -> Result<()> {
         m.detection_score
     );
     println!(
-        "  placed {} / {n_marks} detail(s); light ({:+.2}, {:+.2})",
+        "  placed {} / {n_details} detail(s); light ({:+.2}, {:+.2})",
         r.placed,
         r.light.dx,
         r.light.dy
