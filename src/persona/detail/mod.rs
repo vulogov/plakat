@@ -7,6 +7,8 @@
 //! compositing without harmonisation) is byte-stable and CI-testable without weights (§5.2); the one
 //! stochastic step, harmonisation, is an optional masked-img2img pass layered on top.
 
+pub mod composite;
 pub mod overlay;
 
+pub use composite::{composite_details, CompositeResult, Culled};
 pub use overlay::Light;

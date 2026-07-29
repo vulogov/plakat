@@ -39,6 +39,9 @@ pub struct FaceMetrics {
     pub detection_score: f32,
     /// The aligned face crop (RGB) — the pixel source for `local_anomaly`.
     pub crop: image::RgbImage,
+    /// Top-left of the crop in the ORIGINAL image's pixels — lets the detail compositor map a
+    /// crop-normalised landmark back to full-image coordinates: `full = crop_origin + lm * crop_dim`.
+    pub crop_origin: (u32, u32),
 }
 
 /// Result of a `local_anomaly` probe (RFC §12.1) — the probe that makes marks measurable.
@@ -104,6 +107,7 @@ pub fn measure_landmarks(
         detection_score: face.score,
         landmarks: lm,
         crop,
+        crop_origin: (cx1 as u32, cy1 as u32),
     }))
 }
 
