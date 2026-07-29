@@ -8,8 +8,12 @@
 //! The deterministic core — reference-set storage + coherence math (`reference`) — is testable without
 //! weights; the orchestration (`cast` / `render`) lives in the CLI and runs models.
 
+pub mod attribution;
+pub mod escalation;
 pub mod reference;
 
+pub use attribution::{assign, containment, iou, Assignment, ATTRIBUTION_CONFIDENCE_MIN};
+pub use escalation::{area_fraction, decide, refine_crop, EscalationDecision, EscalationRegion};
 pub use reference::{
     centroid, cosine, compute_coherence, Coherence, Reference, ReferenceSet, COHERENCE_THRESHOLD,
 };
