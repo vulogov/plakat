@@ -257,6 +257,31 @@ pub struct DetailSubscore {
     pub n: usize,
 }
 
+/// Score a geometric scalar against its family calibration prior (§13.1): the realised metric is
+/// normalised to `[0,1]` (median→0.5), and the attribute passes when the realised scalar lands within
+/// `SCALAR_TOL` of the requested one, weighted by the per-family controllability grade (§13.3). `invert`
+/// is set for `face.width` (a wider face has a *smaller* height/width aspect). Returns
+/// `(realised_scalar, score)` — `None` when the family has no prior for this attribute.
+pub fn scalar_score(
+    path: &str,
+    requested: f32,
+    metric: f32,
+    table: &crate::persona::calibration::CalibrationTable,
+    invert: bool,
+) -> Option<(f32, AttrScore)> {
+    const SCALAR_TOL: f32 = 0.20;
+    let prior = table.priors.get(path)?;
+    let realised = {
+        let r = prior.normalise(metric);
+        if invert { 1.0 - r } else { r }
+    };
+    let pass = (realised - requested).abs() < SCALAR_TOL;
+    let grade = table.grade(path);
+    let weight = grade.map(|g| g.weight()).unwrap_or(0.7);
+    let note = format!("req {requested:.2} → realised {realised:.2} [{}]", grade.map(|g| g.as_str()).unwrap_or("uncalibrated"));
+    Some((realised, AttrScore { path: path.into(), pass, weight, note }))
+}
+
 /// The scorecard: the weighted pass-fraction over *scored* attributes, with the four exclusions and the
 /// detail sub-score reported separately so a persona can't score 100% while expressing nothing.
 #[derive(Debug, Clone, Default)]

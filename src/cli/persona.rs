@@ -76,6 +76,9 @@ pub struct VerifyArgs {
     /// The rendered image to measure against the spec.
     #[arg(long)]
     pub image: PathBuf,
+    /// Model family whose calibration table scores the geometric scalars (§13). Default `sdxl`.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
 }
 
 #[derive(Args, Debug)]
@@ -98,6 +101,10 @@ pub struct GeometryArgs {
     /// Seed for the asymmetry perturbation (§10.2).
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
+    /// Pre-distort the deformation through this family's calibration curves (§13.2), so a requested
+    /// scalar lands at its value once realised. Omit to emit the raw requested geometry.
+    #[arg(long)]
+    pub calibrate: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -224,8 +231,21 @@ fn run_geometry(a: GeometryArgs) -> Result<()> {
         _ => geo::MeshStyle::MediaPipe,
     };
 
-    // resolve the face geometry from the spec.
-    let values = geo::geometry_values(&spec);
+    // resolve the face geometry from the spec (optionally pre-distorted through a family's curves).
+    let mut values = geo::geometry_values(&spec);
+    if let Some(family) = &a.calibrate {
+        match crate::persona::calibration::CalibrationTable::bundled(family) {
+            Some(t) => {
+                let corrected = crate::persona::calibration::predistort_geometry(&mut values, &t);
+                if corrected.is_empty() {
+                    println!("  {} calibrate({family}): no geometric scalars to correct", style("·").dim());
+                } else {
+                    println!("  {} calibrate({family}): {}", style("pre-distort").cyan(), corrected.join(", "));
+                }
+            }
+            None => println!("  {} no calibration table for `{family}` — emitting raw geometry", style("·").yellow()),
+        }
+    }
     let open = geo::open_mouth(&spec);
     let d = geo::resolve(&values, open, a.seed);
 
@@ -333,18 +353,40 @@ async fn run_verify(a: VerifyArgs) -> Result<()> {
     };
     println!("{}  {}  (face score {:.2})", style("scorecard").bold(), a.image.display(), m.detection_score);
 
-    // --- landmark metrics (scalars → pending calibration until the P4 prior exists) ---
+    // --- landmark metrics + geometric-scalar scoring vs the family calibration prior (§13.1) ---
     println!("\n{}", style("landmark metrics (WFLW-98):").bold());
     println!("  interpupillary / face-width   {:.3}   ({})", m.interpupillary_over_facewidth, style("eyes.spacing").dim());
     println!("  mouth-width / face-width      {:.3}   ({})", m.mouth_over_facewidth, style("mouth.width").dim());
     println!("  face aspect (h/w)             {:.3}   ({})", m.face_aspect, style("face.width⁻¹").dim());
-    for (path, set) in [
-        ("eyes.spacing", spec.eyes.as_ref().and_then(|e| e.spacing).is_some()),
-        ("mouth.width", spec.mouth.as_ref().and_then(|mo| mo.width).is_some()),
-        ("face.width", spec.face.as_ref().and_then(|f| f.width).is_some()),
-    ] {
-        if set {
-            sc.pending_calibration.push(path.to_string());
+
+    let table = crate::persona::calibration::CalibrationTable::bundled(&a.model);
+    // (path, requested, realised-metric, invert) for the three scalar attrs the aligner measures.
+    let scalars = [
+        ("eyes.spacing", spec.eyes.as_ref().and_then(|e| e.spacing), m.interpupillary_over_facewidth, false),
+        ("mouth.width", spec.mouth.as_ref().and_then(|mo| mo.width), m.mouth_over_facewidth, false),
+        ("face.width", spec.face.as_ref().and_then(|f| f.width), m.face_aspect, true),
+    ];
+    let any_set = scalars.iter().any(|(_, req, _, _)| req.is_some());
+    if any_set {
+        println!("\n{}", style(format!("geometric scalars (vs {} prior):", a.model)).bold());
+        if let Some(t) = &table {
+            for s in t.staleness() {
+                println!("  {} {}", style("staleness:").yellow(), s);
+            }
+        }
+    }
+    for (path, requested, metric, invert) in scalars {
+        let Some(req) = requested else { continue };
+        match table.as_ref().and_then(|t| scorecard::scalar_score(path, req, metric, t, invert)) {
+            Some((_realised, score)) => {
+                let glyph = if score.pass { style("✓").green() } else { style("✗").red() };
+                println!("  {glyph} {path}: {}", score.note);
+                sc.scored.push(score);
+            }
+            None => {
+                println!("  {} {path}: no prior for {} (uncalibrated)", style("·").dim(), a.model);
+                sc.pending_calibration.push(path.to_string());
+            }
         }
     }
 
@@ -453,6 +495,13 @@ fn run_show(a: ShowArgs) -> Result<()> {
 
     println!("{}  {}  (model {}, encoder {})", style("persona").bold(), a.spec.display(), a.model, style(compiled.class).cyan());
     let _ = EncoderClass::from_model(&a.model);
+    // Per-family controllability grades (§13.3) override the lexicon defaults where a table exists.
+    let table = crate::persona::calibration::CalibrationTable::bundled(&a.model);
+    if let Some(t) = &table {
+        if t.identity.provisional {
+            println!("  {} grades from a provisional bootstrap table — run `persona calibrate`", style("note:").dim());
+        }
+    }
     println!("\n{}", style("resolved attributes (salience-ranked):").bold());
     if resolved.is_empty() {
         println!("  (none — spec is empty or all-unknown)");
@@ -467,7 +516,8 @@ fn run_show(a: ShowArgs) -> Result<()> {
             style("dropped").red()
         };
         let phrase = if r.phrase.is_empty() { "(negative only)" } else { &r.phrase };
-        println!("  {mark} {:<22} sal {:.2}  {}", style(&r.path).dim(), r.salience, phrase);
+        let grade = table.as_ref().and_then(|t| t.grade(&r.path)).map(|g| format!(" [{}]", g.as_str())).unwrap_or_default();
+        println!("  {mark} {:<22} sal {:.2}{}  {}", style(&r.path).dim(), r.salience, style(grade).magenta(), phrase);
     }
     if !compiled.dropped.is_empty() {
         println!("\n{} {}", style("dropped by budget:").red(), compiled.dropped.join(", "));

@@ -13,3 +13,22 @@ pub mod table;
 
 pub use fit::{eval, fit, grade_from, predistort, Grade, ResponseCurve};
 pub use table::{CalibrationTable, MeasurementIdentity, Prior};
+
+use std::collections::BTreeMap;
+
+/// Pre-distort a geometry value map in place through the family's response-curve inverses (§13.2), so
+/// that a requested scalar *lands* at that value once the model has realised the conditioning. Values
+/// with no curve for their attribute pass through unchanged. Returns the attributes it corrected.
+pub fn predistort_geometry(values: &mut BTreeMap<String, f32>, table: &CalibrationTable) -> Vec<String> {
+    let mut corrected = Vec::new();
+    for (path, v) in values.iter_mut() {
+        if let Some(curve) = table.curves.get(path) {
+            let pd = predistort(curve, *v);
+            if (pd - *v).abs() > 1e-4 {
+                corrected.push(format!("{path} {v:.2}→{pd:.2}"));
+            }
+            *v = pd;
+        }
+    }
+    corrected
+}
