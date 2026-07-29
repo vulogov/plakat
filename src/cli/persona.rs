@@ -34,6 +34,9 @@ pub enum PersonaCmd {
     /// Rasterise the geometry maps a spec resolves to (the Layer-2 geometry engine, RFC §10) — mesh /
     /// wireframe / depth / pose-skeleton / region-masks / dentition / figure. Pure, no weights.
     Geometry(GeometryArgs),
+    /// Composite a spec's localized details (marks / jewelry) onto a rendered image (RFC §8) —
+    /// anchored through the realised landmarks, deterministic. `--harmonise` blends them into skin.
+    Composite(CompositeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -97,6 +100,34 @@ pub struct GeometryArgs {
     pub seed: u64,
 }
 
+#[derive(Args, Debug)]
+pub struct CompositeArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// The rendered image to composite the details onto.
+    #[arg(long)]
+    pub image: PathBuf,
+    /// Output path for the composited image.
+    #[arg(long, default_value = "composited.png")]
+    pub out: PathBuf,
+    /// Also write the union affected-region mask here (for inspection / external harmonisation).
+    #[arg(long)]
+    pub mask: Option<PathBuf>,
+    /// Seed for the procedural overlays (§8.3).
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Run the harmonisation img2img pass (§8.4) over the affected region to blend the overlays into
+    /// skin. Requires model weights; the deterministic composite runs regardless.
+    #[arg(long)]
+    pub harmonise: bool,
+    /// Model for the harmonisation pass.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Harmonisation denoise strength — low, so the overlays are blended, not regenerated.
+    #[arg(long = "harmonise-strength", default_value_t = 0.25)]
+    pub harmonise_strength: f32,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -104,7 +135,81 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Show(a) => run_show(a),
         PersonaCmd::Verify(a) => run_verify(a).await,
         PersonaCmd::Geometry(a) => run_geometry(a),
+        PersonaCmd::Composite(a) => run_composite(a).await,
     }
+}
+
+async fn run_composite(a: CompositeArgs) -> Result<()> {
+    use crate::persona::{detail, scorecard};
+    let spec = PersonaSpec::load(&a.spec)?;
+    let n_marks = spec.marks.as_ref().map(|m| m.len()).unwrap_or(0);
+    if n_marks == 0 {
+        println!("{}  spec has no marks — nothing to composite", style("·").dim());
+        // still a no-op copy so downstream steps have an output.
+        image::open(&a.image)?.to_rgb8().save(&a.out)?;
+        println!("  {} {}", style("✓").green(), a.out.display());
+        return Ok(());
+    }
+
+    // Detect + align the rendered face (the realised landmarks the anchors resolve through, §8.4).
+    let device = candle_core::Device::Cpu;
+    let (detector, pipnet) = scorecard::load_probes(&device).await?;
+    let Some(m) = scorecard::measure_landmarks(&a.image, &detector, &pipnet)? else {
+        println!("{}  no face detected in {} — cannot anchor details", style("✗").red(), a.image.display());
+        return Ok(());
+    };
+
+    let base = image::open(&a.image)?.to_rgb8();
+    let r = detail::composite_details(&base, &spec, &m, a.seed);
+    println!(
+        "{}  {}  (face score {:.2})",
+        style("persona composite").bold(),
+        a.image.display(),
+        m.detection_score
+    );
+    println!(
+        "  placed {} / {n_marks} detail(s); light ({:+.2}, {:+.2})",
+        r.placed,
+        r.light.dx,
+        r.light.dy
+    );
+    for c in &r.culled {
+        println!("  {} culled {}: {}", style("·").yellow(), c.kind, c.reason);
+    }
+
+    r.image.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    println!("  {} {}", style("✓").green(), a.out.display());
+    if let Some(mp) = &a.mask {
+        r.mask.save(mp).with_context(|| format!("writing {}", mp.display()))?;
+        println!("  {} {} (affected-region mask)", style("✓").green(), mp.display());
+    }
+
+    // Optional harmonisation: low-strength masked img2img over the affected region (§8.4).
+    if a.harmonise {
+        use crate::api::Img2img;
+        let tmp = std::env::temp_dir();
+        let comp_path = tmp.join(format!("persona_harm_{}.png", a.seed));
+        let mask_path = tmp.join(format!("persona_harm_mask_{}.png", a.seed));
+        r.image.save(&comp_path)?;
+        r.mask.save(&mask_path)?;
+        println!("  {} harmonising over the affected region (model {}, strength {:.2})…", style("→").cyan(), a.model, a.harmonise_strength);
+        let prompt = "a portrait photograph, natural skin, detailed skin texture";
+        let out = Img2img::new(&a.model, &comp_path)
+            .prompt(prompt)
+            .mask(&mask_path)
+            .mask_feather(6)
+            .strength(a.harmonise_strength)
+            .seed(a.seed)
+            .run()
+            .await?;
+        if let Some(img) = out.into_iter().next() {
+            img.save(&a.out)?;
+            println!("  {} {} (harmonised)", style("✓").green(), a.out.display());
+        }
+        let _ = std::fs::remove_file(&comp_path);
+        let _ = std::fs::remove_file(&mask_path);
+    }
+    Ok(())
 }
 
 fn run_geometry(a: GeometryArgs) -> Result<()> {

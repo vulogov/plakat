@@ -339,4 +339,47 @@ mod tests {
         assert!(named_rgb("gold").is_some()); // shared with the jewelry palette
         assert!(named_rgb("not-a-colour").is_none());
     }
+
+    // A synthetic FaceMetrics from the mean template — lets the compositing pass be exercised (and its
+    // determinism pinned) WITHOUT the SCRFD/PIPNet weights. This is the P3 corpus.
+    fn synthetic_metrics(dim: u32) -> FaceMetrics {
+        use crate::persona::geometry::{mean_template, topology::*};
+        let lm: Vec<(f32, f32)> = mean_template(false).to_vec();
+        let fx0 = CONTOUR.clone().map(|i| lm[i].0).fold(f32::INFINITY, f32::min);
+        let fx1 = CONTOUR.clone().map(|i| lm[i].0).fold(f32::NEG_INFINITY, f32::max);
+        let fy0 = CONTOUR.clone().map(|i| lm[i].1).fold(f32::INFINITY, f32::min);
+        let fy1 = CONTOUR.map(|i| lm[i].1).fold(f32::NEG_INFINITY, f32::max);
+        FaceMetrics {
+            interpupillary_over_facewidth: 0.4,
+            mouth_over_facewidth: 0.4,
+            face_aspect: 1.3,
+            landmarks: lm,
+            face_w: fx1 - fx0,
+            face_h: fy1 - fy0,
+            detection_score: 1.0,
+            crop: image::RgbImage::from_pixel(dim, dim, image::Rgb([205, 165, 140])),
+            crop_origin: (0, 0),
+        }
+    }
+
+    #[test]
+    fn compositing_is_byte_stable_on_a_synthetic_face() {
+        use crate::persona::spec::PersonaSpec;
+        let spec = PersonaSpec::from_hjson(
+            "{ schema: \"persona/1\"\n marks: [ { kind: \"mole\"\n anchor: { region: \"left-cheek\" }\n size: 0.04 }, { kind: \"scar\"\n anchor: { region: \"forehead-centre\" }\n length: 0.12\n maturity: 0.3 } ] }",
+        )
+        .unwrap();
+        let m = synthetic_metrics(256);
+        let base = image::RgbImage::from_pixel(256, 256, image::Rgb([205, 165, 140]));
+        let r = composite_details(&base, &spec, &m, 99);
+        assert_eq!(r.placed, 2);
+        assert!(r.culled.is_empty());
+        let mut acc: u64 = 1469598103934665603;
+        for p in r.image.pixels() {
+            for &c in &p.0 {
+                acc = (acc ^ c as u64).wrapping_mul(1099511628211);
+            }
+        }
+        assert_eq!(acc, 14264266837389475466, "composite corpus changed — update the golden intentionally");
+    }
 }
