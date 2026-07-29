@@ -105,12 +105,24 @@ foreground-bright convention) · P2d figure (18-kp skeleton + capsule silhouette
 honest weak scope) · P2e CLI + spec→geometry bridge + folded scorecard's duplicate topology onto
 `geometry::topology`. `examples/persona/example.hjson` runnable.
 
-## Phase 3 — Detail subsystem (partial weights; unusually valuable early, standalone)
+## Phase 3 — Detail subsystem (partial weights; unusually valuable early, standalone) — DONE
 
-- [ ] Anchor resolution against realised landmarks; procedural overlay generators (mole/scar/birthmark/
+- [x] Anchor resolution against realised landmarks; procedural overlay generators (mole/scar/birthmark/
       freckle-field) with maturity/relief/light-direction (§8.3, §8.8); **jewelry asset library**
       (original/PD, §10.5) with metal recolour; compositing pass + harmonisation (§8.4); `composite`.
-- [ ] Determinism (compositing-without-harmonise is byte-stable) + corpus.
+- [x] Determinism (compositing-without-harmonise is byte-stable) + corpus.
+
+**Shipped** in `src/persona/detail/` (overlay/composite) + `plakat persona composite`. P3a procedural
+overlay generators (mole/scar w/ maturity ramp + relief/birthmark edge-noise/freckle-field/jewelry
+stud-hoop-pendant-bar w/ metal+stone recolour — all pure, byte-stable, license-free, no PNG assets
+needed). P3b compositing pass: anchors resolve through the REALISED landmarks (crop→full via new
+`FaceMetrics.crop_origin`), z-order, scene-light estimate from face shading, culling reported,
+DETAIL_CAP=24. P3c CLI + weights-free corpus golden (synthetic FaceMetrics from mean template) +
+optional `--harmonise` (low-strength masked img2img via `api::Img2img`). Jewelry+piercings composite
+at face sites; body/hand/glasses culled+reported (§8.5). **Notes/deferred within P3:** jewelry is
+*procedural generic shapes* not a bundled PNG library (extensible later); scar `hair_interruption`
+`condition` component (§8.8) and dentition mouth-region *inpaint escalation* (§8.7) not wired — the
+latter belongs with P7 repair; harmonise wired but not run live (needs model weights).
 
 ## Phase 4 — Calibration (inference; committed tables)
 
