@@ -82,99 +82,129 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
 }
 
 async fn run_verify(a: VerifyArgs) -> Result<()> {
-    use crate::persona::scorecard;
+    use crate::persona::scorecard::{self, AttrScore, DetailSubscore, Scorecard};
+    use crate::persona::spec::Color;
     let spec = PersonaSpec::load(&a.spec)?;
+    let lex = crate::persona::lexicon::Lexicon::skeleton();
+    let weight = |p: &str| lex.get(p).map(|e| e.control_weight() * e.class_weight()).unwrap_or(0.7);
+    let mut sc = Scorecard::default();
+
     // Measurement runs on CPU (the aligner is tiny + deterministic; avoids GPU contention).
     let device = candle_core::Device::Cpu;
     let (detector, pipnet) = scorecard::load_probes(&device).await?;
-    let metrics = scorecard::measure_landmarks(&a.image, &detector, &pipnet)?;
-    let Some(m) = metrics else {
+    let Some(m) = scorecard::measure_landmarks(&a.image, &detector, &pipnet)? else {
         println!("{}  no face detected in {}", style("✗").red(), a.image.display());
         return Ok(());
     };
     println!("{}  {}  (face score {:.2})", style("scorecard").bold(), a.image.display(), m.detection_score);
+
+    // --- landmark metrics (scalars → pending calibration until the P4 prior exists) ---
     println!("\n{}", style("landmark metrics (WFLW-98):").bold());
     println!("  interpupillary / face-width   {:.3}   ({})", m.interpupillary_over_facewidth, style("eyes.spacing").dim());
     println!("  mouth-width / face-width      {:.3}   ({})", m.mouth_over_facewidth, style("mouth.width").dim());
     println!("  face aspect (h/w)             {:.3}   ({})", m.face_aspect, style("face.width⁻¹").dim());
+    for (path, set) in [
+        ("eyes.spacing", spec.eyes.as_ref().and_then(|e| e.spacing).is_some()),
+        ("mouth.width", spec.mouth.as_ref().and_then(|mo| mo.width).is_some()),
+        ("face.width", spec.face.as_ref().and_then(|f| f.width).is_some()),
+    ] {
+        if set {
+            sc.pending_calibration.push(path.to_string());
+        }
+    }
 
-    // region_color probe: measured iris / skin CIELAB, and ΔE to the spec's eyes.color when given.
+    // --- region_color (eyes.color scorable now via ΔE; skin reported) ---
     let colors = scorecard::measure_colors(&m);
     println!("\n{}", style("region colour (CIELAB):").bold());
     let fmt = |l: Option<[f32; 3]>| l.map(|v| format!("L{:.0} a{:+.0} b{:+.0}", v[0], v[1], v[2])).unwrap_or_else(|| "—".into());
     let eye_target = spec.eyes.as_ref().and_then(|e| e.color.as_ref()).and_then(|c| match c {
-        crate::persona::spec::Color::Named(n) => scorecard::color_name_to_lab(n),
-        crate::persona::spec::Color::Lab { lab } => Some(*lab),
+        Color::Named(n) => scorecard::color_name_to_lab(n),
+        Color::Lab { lab } => Some(*lab),
     });
     match (colors.iris, eye_target) {
-        (Some(iris), Some(t)) => println!(
-            "  iris  {}   → ΔE {:.1} to eyes.color target   {}",
-            fmt(Some(iris)),
-            scorecard::delta_e(iris, t),
-            if scorecard::delta_e(iris, t) < 20.0 { style("✓").green() } else { style("✗").red() }
-        ),
-        (iris, _) => println!("  iris  {}   ({})", fmt(iris), style("eyes.color").dim()),
+        (Some(iris), Some(t)) => {
+            let de = scorecard::delta_e(iris, t);
+            let pass = de < 20.0;
+            println!("  iris  {}   → ΔE {:.1} to eyes.color   {}", fmt(Some(iris)), de, if pass { style("✓").green() } else { style("✗").red() });
+            sc.scored.push(AttrScore { path: "eyes.color".into(), pass, weight: weight("eyes.color"), note: format!("ΔE {de:.1}") });
+        }
+        (iris, _) => {
+            println!("  iris  {}   ({})", fmt(iris), style("eyes.color").dim());
+            if spec.eyes.as_ref().and_then(|e| e.color.as_ref()).is_some() {
+                sc.unmeasurable.push("eyes.color".into());
+            }
+        }
     }
     println!("  skin  {}   ({})", fmt(colors.skin), style("skin.tone").dim());
 
-    // Detail sub-score: for each spec mark with an anchor, go to where it should be and probe.
+    // --- detail sub-score (marks via local_anomaly) ---
     let marks = spec.marks.as_deref().unwrap_or(&[]);
     let positional: Vec<_> = marks.iter().filter(|mk| mk.anchor.is_some()).collect();
     if !positional.is_empty() {
         println!("\n{}", style("localized details (local_anomaly):").bold());
+        let (mut pres_sum, mut pos_sum, mut n) = (0.0f32, 0.0f32, 0usize);
         for (i, mk) in positional.iter().enumerate() {
             let anchor = mk.anchor.as_ref().unwrap();
             let kind = mk.kind.as_deref().unwrap_or("mark");
+            let name = anchor.landmark.as_deref().or(anchor.region.as_deref()).unwrap_or("?");
             let Some(pos) = scorecard::resolve_anchor(anchor, &m) else {
-                println!(
-                    "  {} {kind}[{i}]: anchor {:?} not in the WFLW-98 vocabulary",
-                    style("?").yellow(),
-                    anchor.landmark.as_deref().or(anchor.region.as_deref()).unwrap_or("(none)")
-                );
+                println!("  {} {kind}[{i}]: anchor {name:?} not in the WFLW-98 vocabulary", style("?").yellow());
                 continue;
             };
-            let radius = mk.size.unwrap_or(0.05) * m.face_w; // mark size is a fraction of face width
+            let radius = mk.size.unwrap_or(0.05) * m.face_w;
             let r = scorecard::local_anomaly(&m.crop, pos, radius.max(0.02));
-            let mark_glyph = if r.presence > 0.5 { style("✓").green() } else { style("✗").red() };
-            println!(
-                "  {mark_glyph} {kind}[{i}] @ {}  presence {:.2}  position-error {:.3}",
-                style(anchor.landmark.as_deref().or(anchor.region.as_deref()).unwrap_or("?")).dim(),
-                r.presence,
-                r.position_error
-            );
+            let glyph = if r.presence > 0.5 { style("✓").green() } else { style("✗").red() };
+            println!("  {glyph} {kind}[{i}] @ {}  presence {:.2}  position-error {:.3}", style(name).dim(), r.presence, r.position_error);
+            pres_sum += r.presence;
+            pos_sum += r.position_error;
+            n += 1;
+        }
+        if n > 0 {
+            sc.detail = Some(DetailSubscore { presence_mean: pres_sum / n as f32, position_mean: pos_sum / n as f32, n });
         }
     }
-    // detect probe (OWL-ViT): salient objects — facial hair, glasses. Loaded lazily.
-    let mut queries: Vec<(String, String, bool)> = Vec::new(); // (label, query, expected_present)
+
+    // --- detect (OWL-ViT, lazy): facial hair + glasses (scorable present/absent) ---
+    let mut queries: Vec<(String, String, String, bool)> = Vec::new(); // (label, path, query, expected)
     if let Some(style) = spec.facial_hair.as_ref().and_then(|f| f.style.as_deref()) {
-        let q = crate::persona::scorecard::facial_hair_query(style);
-        queries.push((format!("facial_hair.style={style}"), q.to_string(), style != "none"));
+        queries.push((format!("facial_hair.style={style}"), "facial_hair.style".into(), scorecard::facial_hair_query(style).into(), style != "none"));
     }
-    if spec
-        .jewelry
-        .as_ref()
-        .and_then(|j| j.items.as_ref())
-        .is_some_and(|items| items.iter().any(|it| it.kind.as_deref() == Some("glasses")))
-    {
-        queries.push(("jewelry: glasses".into(), "glasses".into(), true));
+    if spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).is_some_and(|it| it.iter().any(|x| x.kind.as_deref() == Some("glasses"))) {
+        queries.push(("jewelry: glasses".into(), "jewelry.glasses".into(), "glasses".into(), true));
     }
     if !queries.is_empty() {
         let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await?;
         println!("\n{}", style("salient objects (detect / OWL-ViT):").bold());
-        for (label, query, expected) in &queries {
-            let r = crate::persona::scorecard::detect_probe(&owl, &a.image, query, 0.1)?;
+        for (label, path, query, expected) in &queries {
+            let r = scorecard::detect_probe(&owl, &a.image, query, 0.1)?;
             let pass = r.present == *expected;
             let glyph = if pass { style("✓").green() } else { style("✗").red() };
-            println!(
-                "  {glyph} {label}: {} (score {:.2}, expected {})",
-                if r.present { "present" } else { "absent" },
-                r.score,
-                if *expected { "present" } else { "absent" }
-            );
+            println!("  {glyph} {label}: {} (score {:.2}, expected {})", if r.present { "present" } else { "absent" }, r.score, if *expected { "present" } else { "absent" });
+            sc.scored.push(AttrScore { path: path.clone(), pass, weight: weight(path), note: String::new() });
         }
     }
 
-    println!("\n{}", style("note: scalar attribute-scoring needs the P4 calibration prior; raw metrics shown.").dim());
+    // --- aggregate (§12.2): weighted pass fraction over scored attrs, exclusions reported separately ---
+    println!("\n{}", style("── scorecard ──").bold());
+    match sc.aggregate() {
+        Some(agg) => {
+            let styled = if agg >= 0.8 { style(format!("{agg:.2}")).green() } else if agg >= 0.5 { style(format!("{agg:.2}")).yellow() } else { style(format!("{agg:.2}")).red() };
+            let passed = sc.scored.iter().filter(|s| s.pass).count();
+            println!("  score {styled}  ({}/{} scored attributes pass)", passed, sc.scored.len());
+        }
+        None => println!("  score {}  (no attributes scorable yet on this spec)", style("—").dim()),
+    }
+    if let Some(d) = &sc.detail {
+        println!("  detail sub-score: presence {:.2}, position {:.3} over {} mark(s)", d.presence_mean, d.position_mean, d.n);
+    }
+    let ex = |label: &str, v: &[String]| {
+        if !v.is_empty() {
+            println!("  {} {}: {}", style("·").dim(), style(label).dim(), v.join(", "));
+        }
+    };
+    ex("pending calibration (P4)", &sc.pending_calibration);
+    ex("unmeasurable", &sc.unmeasurable);
+    ex("non-manifesting", &sc.non_manifesting);
     Ok(())
 }
 

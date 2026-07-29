@@ -261,6 +261,57 @@ pub fn detect_probe(
     Ok(DetectResult { present: det.is_some(), score: det.map(|d| d.score).unwrap_or(0.0) })
 }
 
+// --- scoring aggregate (RFC §12.2) ---
+
+/// One scored attribute: measured vs target, with the weight it carries in the aggregate.
+#[derive(Debug, Clone)]
+pub struct AttrScore {
+    pub path: String,
+    pub pass: bool,
+    /// `control × class` (× priority, default 1) — §9.2/§12.2.
+    pub weight: f32,
+    pub note: String,
+}
+
+/// The detail sub-score (§12.2): marks are realised differently, so they score separately on presence
+/// (was it produced) + position (how far from its anchor).
+#[derive(Debug, Clone)]
+pub struct DetailSubscore {
+    pub presence_mean: f32,
+    pub position_mean: f32,
+    pub n: usize,
+}
+
+/// The scorecard: the weighted pass-fraction over *scored* attributes, with the four exclusions and the
+/// detail sub-score reported separately so a persona can't score 100% while expressing nothing.
+#[derive(Debug, Clone, Default)]
+pub struct Scorecard {
+    pub scored: Vec<AttrScore>,
+    pub detail: Option<DetailSubscore>,
+    /// Measured but not yet scorable — scalar geometric attrs awaiting the P4 calibration prior.
+    pub pending_calibration: Vec<String>,
+    /// Set attributes with no probe wired yet.
+    pub unmeasurable: Vec<String>,
+    /// Set attributes not visible in this render (§8.6).
+    pub non_manifesting: Vec<String>,
+}
+
+impl Scorecard {
+    /// The aggregate = weighted pass fraction over the *scored* attributes. `None` if nothing scorable
+    /// (which the caller must report honestly rather than as 0 or 1).
+    pub fn aggregate(&self) -> Option<f32> {
+        if self.scored.is_empty() {
+            return None;
+        }
+        let wsum: f32 = self.scored.iter().map(|s| s.weight).sum::<f32>().max(1e-6);
+        let pass: f32 = self.scored.iter().filter(|s| s.pass).map(|s| s.weight).sum();
+        // A weighted pass fraction is a proportion in [0,1]; clamp guards against
+        // negative-signed zero and any negative control weights leaking through.
+        // `+ 0.0` normalises a negative-signed zero (0-of-N passing) to `+0.0`.
+        Some((pass / wsum).clamp(0.0, 1.0) + 0.0)
+    }
+}
+
 /// The OWL-ViT query phrase for a `facial_hair.style` value (§12 `detect` target).
 pub fn facial_hair_query(style: &str) -> &'static str {
     match style {
@@ -425,5 +476,18 @@ mod tests {
         assert_eq!(facial_hair_query("full-beard"), "a beard");
         assert_eq!(facial_hair_query("moustache"), "a moustache");
         assert_eq!(facial_hair_query("sideburns"), "facial hair");
+    }
+
+    #[test]
+    fn aggregate_is_the_weighted_pass_fraction() {
+        let mut sc = Scorecard::default();
+        assert_eq!(sc.aggregate(), None); // nothing scorable → honest None, not 0/1
+        sc.scored.push(AttrScore { path: "eyes.color".into(), pass: true, weight: 0.7, note: String::new() });
+        sc.scored.push(AttrScore { path: "facial_hair.style".into(), pass: false, weight: 0.7, note: String::new() });
+        // one pass, one fail, equal weight → 0.5.
+        assert!((sc.aggregate().unwrap() - 0.5).abs() < 1e-6);
+        // heavier passing attribute pulls it up.
+        sc.scored[0].weight = 3.0;
+        assert!((sc.aggregate().unwrap() - 3.0 / 3.7).abs() < 1e-6);
     }
 }
