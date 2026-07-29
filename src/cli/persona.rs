@@ -98,6 +98,25 @@ async fn run_verify(a: VerifyArgs) -> Result<()> {
     println!("  mouth-width / face-width      {:.3}   ({})", m.mouth_over_facewidth, style("mouth.width").dim());
     println!("  face aspect (h/w)             {:.3}   ({})", m.face_aspect, style("face.width⁻¹").dim());
 
+    // region_color probe: measured iris / skin CIELAB, and ΔE to the spec's eyes.color when given.
+    let colors = scorecard::measure_colors(&m);
+    println!("\n{}", style("region colour (CIELAB):").bold());
+    let fmt = |l: Option<[f32; 3]>| l.map(|v| format!("L{:.0} a{:+.0} b{:+.0}", v[0], v[1], v[2])).unwrap_or_else(|| "—".into());
+    let eye_target = spec.eyes.as_ref().and_then(|e| e.color.as_ref()).and_then(|c| match c {
+        crate::persona::spec::Color::Named(n) => scorecard::color_name_to_lab(n),
+        crate::persona::spec::Color::Lab { lab } => Some(*lab),
+    });
+    match (colors.iris, eye_target) {
+        (Some(iris), Some(t)) => println!(
+            "  iris  {}   → ΔE {:.1} to eyes.color target   {}",
+            fmt(Some(iris)),
+            scorecard::delta_e(iris, t),
+            if scorecard::delta_e(iris, t) < 20.0 { style("✓").green() } else { style("✗").red() }
+        ),
+        (iris, _) => println!("  iris  {}   ({})", fmt(iris), style("eyes.color").dim()),
+    }
+    println!("  skin  {}   ({})", fmt(colors.skin), style("skin.tone").dim());
+
     // Detail sub-score: for each spec mark with an anchor, go to where it should be and probe.
     let marks = spec.marks.as_deref().unwrap_or(&[]);
     let positional: Vec<_> = marks.iter().filter(|mk| mk.anchor.is_some()).collect();

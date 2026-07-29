@@ -160,6 +160,109 @@ fn luma(p: &image::Rgb<u8>) -> f32 {
     0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32
 }
 
+// --- region_color probe (RFC §12.1): landmark-masked robust CIELAB + ΔE to target. ---
+
+/// sRGB (0–255) → CIELAB (D65). Standard: gamma-expand → XYZ → Lab.
+pub fn srgb_to_lab(rgb: [u8; 3]) -> [f32; 3] {
+    let lin = |c: f32| {
+        let c = c / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let (r, g, b) = (lin(rgb[0] as f32), lin(rgb[1] as f32), lin(rgb[2] as f32));
+    // linear sRGB → XYZ (D65), then normalise by the white point.
+    let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+    let f = |t: f32| if t > 0.008856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// CIE76 colour difference (Euclidean in Lab) — sufficient for the coarse targets here.
+pub fn delta_e(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Median Lab over a disc — robust to lashes / highlights / stray pixels.
+fn disc_median_lab(crop: &image::RgbImage, cx: f32, cy: f32, r: f32) -> Option<[f32; 3]> {
+    let (cw, ch) = (crop.width() as f32, crop.height() as f32);
+    let mut labs: Vec<[f32; 3]> = Vec::new();
+    let (x0, y0) = ((cx - r).max(0.0) as u32, (cy - r).max(0.0) as u32);
+    let (x1, y1) = ((cx + r).min(cw - 1.0) as u32, (cy + r).min(ch - 1.0) as u32);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() <= r {
+                labs.push(srgb_to_lab(crop.get_pixel(x, y).0));
+            }
+        }
+    }
+    if labs.len() < 3 {
+        return None;
+    }
+    let mut out = [0.0f32; 3];
+    for c in 0..3 {
+        let mut ch: Vec<f32> = labs.iter().map(|l| l[c]).collect();
+        ch.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        out[c] = ch[ch.len() / 2];
+    }
+    Some(out)
+}
+
+/// Colour readings from a face: median Lab of the iris + a clean cheek-skin patch.
+#[derive(Debug, Clone)]
+pub struct ColorReadings {
+    pub iris: Option<[f32; 3]>,
+    pub skin: Option<[f32; 3]>,
+}
+
+/// Measure the iris (both pupils) and skin (both cheeks) median Lab.
+pub fn measure_colors(m: &FaceMetrics) -> ColorReadings {
+    let (cw, ch) = (m.crop.width() as f32, m.crop.height() as f32);
+    let px = |i: usize| (m.landmarks[i].0 * cw, m.landmarks[i].1 * ch);
+    // Iris: a small disc at each pupil, radius ~ a fraction of the inter-pupil distance.
+    let (rp, lp) = (px(PUPIL_RIGHT), px(PUPIL_LEFT));
+    let ipd = ((rp.0 - lp.0).powi(2) + (rp.1 - lp.1).powi(2)).sqrt();
+    let ir = (ipd * 0.10).max(2.0);
+    let iris = match (disc_median_lab(&m.crop, rp.0, rp.1, ir), disc_median_lab(&m.crop, lp.0, lp.1, ir)) {
+        (Some(a), Some(b)) => Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+    // Skin: cheek centroids (pupil + mouth-corner midpoint), a slightly larger patch.
+    let cheek = |pupil: (f32, f32), corner: (f32, f32)| ((pupil.0 + corner.0) / 2.0, (pupil.1 + corner.1) / 2.0);
+    let rc = cheek(rp, px(MOUTH_CORNER_RIGHT));
+    let lc = cheek(lp, px(MOUTH_CORNER_LEFT));
+    let sr = (m.face_w * cw * 0.06).max(3.0);
+    let skin = match (disc_median_lab(&m.crop, rc.0, rc.1, sr), disc_median_lab(&m.crop, lc.0, lc.1, sr)) {
+        (Some(a), Some(b)) => Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        (None, None) => None,
+    };
+    ColorReadings { iris, skin }
+}
+
+/// Coarse target Lab for the common eye / hair colour names (§12 `region_color` target). Approximate
+/// but enough to distinguish e.g. blue vs brown eyes; refined against real renders during calibration.
+pub fn color_name_to_lab(name: &str) -> Option<[f32; 3]> {
+    Some(match name {
+        // eyes
+        "brown" => [30.0, 8.0, 16.0],
+        "hazel" => [42.0, 6.0, 22.0],
+        "amber" => [50.0, 12.0, 34.0],
+        "green" => [45.0, -16.0, 20.0],
+        "blue" => [55.0, -4.0, -16.0],
+        "grey" | "gray" => [55.0, 0.0, 0.0],
+        // hair
+        "black" => [15.0, 1.0, 2.0],
+        "dark-brown" => [22.0, 6.0, 12.0],
+        "auburn" => [30.0, 16.0, 20.0],
+        "red" | "ginger" => [38.0, 26.0, 26.0],
+        "blonde" | "blond" => [72.0, 5.0, 34.0],
+        "white" => [92.0, 0.0, 0.0],
+        _ => return None,
+    })
+}
+
 /// The `local_anomaly` probe (RFC §12.1): go to where a mark *should* be and ask whether the skin there
 /// deviates from its neighbourhood — a far easier question than searching for a 4-pixel mole, robust at
 /// small scale, and it yields a position error. `radius_frac` ≈ the mark's size (fraction of crop width).
@@ -262,5 +365,25 @@ mod tests {
 
         let blank = local_anomaly(&img, (0.2, 0.2), 0.04);
         assert!(blank.presence < 0.2, "blank presence {}", blank.presence);
+    }
+
+    #[test]
+    fn srgb_lab_and_delta_e() {
+        let white = srgb_to_lab([255, 255, 255]);
+        assert!((white[0] - 100.0).abs() < 1.0 && white[1].abs() < 1.0 && white[2].abs() < 1.0, "{white:?}");
+        let black = srgb_to_lab([0, 0, 0]);
+        assert!(black[0].abs() < 1.0, "{black:?}");
+        // a mid grey has ~0 chroma; red is far from grey in Lab.
+        let grey = srgb_to_lab([128, 128, 128]);
+        assert!(grey[1].abs() < 2.0 && grey[2].abs() < 2.0);
+        assert!(delta_e(srgb_to_lab([200, 20, 20]), grey) > 40.0);
+        assert!((delta_e(white, white)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn eye_colour_targets_are_distinguishable() {
+        // blue vs brown eyes must be far apart in Lab (the probe's whole point).
+        assert!(delta_e(color_name_to_lab("blue").unwrap(), color_name_to_lab("brown").unwrap()) > 25.0);
+        assert!(color_name_to_lab("chartreuse").is_none());
     }
 }
