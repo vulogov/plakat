@@ -13,6 +13,7 @@
 
 pub mod aligner;
 pub mod compile;
+pub mod geometry;
 pub mod lexicon;
 pub mod lint;
 pub mod scorecard;

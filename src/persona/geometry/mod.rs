@@ -1,0 +1,20 @@
+//! Layer 2 — the face (and figure) geometry engine (RFC §10).
+//!
+//! Converts a `ResolvedSpec` into an actual conditioning image and resolves every detail anchor into a
+//! position. Pure Rust: no GPU, no network, no model weights; a pure function of `(spec, seed)`,
+//! byte-stable on-box, and independently useful before any generative step exists — mirroring the
+//! `map` track's geometry engine (§10, §5.2).
+//!
+//! Phase-G reshaped the emphasis (see `Documentation/PERSONA_GATING.md`): with a dedicated
+//! face-landmark ControlNet available for SD1.5/2.1 **only**, this engine's cross-family value is its
+//! *measurement + region-mask + detail-anchor* outputs (depth / pose / masks / overlay), not a
+//! face-mesh-CN generator. The mesh map remains an SD1.5/2.1 Tier-A bonus.
+//!
+//! Build order (ROADMAP_5.0.0 P2): topology + mean template (this) → deformation basis + `resolve`
+//! → conditioning-map rasteriser → figure geometry → `geometry` CLI + corpus.
+
+pub mod template;
+pub mod topology;
+
+pub use template::{mean_template, Point, Template};
+pub use topology::{is_named_region, named_region, ANCHOR_VOCAB, NUM_LANDMARKS};
