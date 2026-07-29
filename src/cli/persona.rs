@@ -262,7 +262,7 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
 }
 
 async fn run_render(a: RenderArgs) -> Result<()> {
-    use crate::persona::casting::ReferenceSet;
+    use crate::persona::casting::{self, ReferenceSet};
     use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
 
     let set = ReferenceSet::load(&a.persona)
@@ -335,23 +335,32 @@ async fn run_render(a: RenderArgs) -> Result<()> {
             println!("  {} no face in the scene render — leaving it un-swapped ({})", style("·").yellow(), a.out.display());
             return Ok(());
         };
+        // Region-escalation ladder (§14.1): measure the face's frame area; a small face swaps + restores
+        // poorly, so escalate the restore to native resolution at higher strength.
+        let face_area = casting::area_fraction(target.bbox, a.size, a.size);
+        let face_dec = casting::decide(casting::EscalationRegion::Face, face_area, casting::EscalationRegion::Face.default_threshold());
         let latent = swapper.source_latent(&canonical_img).context("embedding the canonical reference face")?;
         let scene_rgb = image::open(&a.out)?.to_rgb8();
         let swapped = swapper.swap_into(&scene_rgb, target.landmarks, &latent).context("face swap")?;
         swapped.save(&a.out)?;
         println!("  {} swapped in {} (canonical, centroid cos {:.3})", style("✓").green(), canonical.image.display(), canonical.centroid_cosine);
+        if face_dec.escalate {
+            println!("  {} face is {:.1}% of the frame (< {:.0}%) — escalating the restore to native resolution (§14.1)", style("ladder:").cyan(), face_area * 100.0, face_dec.threshold * 100.0);
+        }
 
-        // Restore the swapped region at gentle strength (identity-preserving §11.5).
+        // Restore the swapped region — gentle by default, native-res + stronger when the face is small.
         if !a.no_restore {
             println!("  {} restoring the swapped face…", style("→").cyan());
+            let sdxl = a.model.starts_with("sdxl");
+            let native = if sdxl { 1024 } else { 512 };
             let restore = crate::cli::restore_faces::RestoreFacesArgs {
                 inputs: vec![a.out.clone()],
-                model: if a.model.starts_with("sdxl") { "sdxl".into() } else { "sd15".into() },
-                strength: 0.35,
+                model: if sdxl { "sdxl".into() } else { "sd15".into() },
+                strength: if face_dec.escalate { 0.45 } else { 0.35 },
                 padding: 0.25,
                 feather: 0.25,
                 confidence: 0.5,
-                working_size: 512,
+                working_size: if face_dec.escalate { native } else { 512 },
             };
             if let Err(e) = crate::cli::restore_faces::run(restore, device.clone()).await {
                 println!("  {} restore skipped: {e}", style("·").yellow());
@@ -373,6 +382,25 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                     let r = detail::composite_details(&base, spec, &m, a.seed);
                     r.image.save(&a.out)?;
                     println!("  {} composited {} detail(s) after the swap", style("✓").green(), r.placed);
+
+                    // Mouth escalation advisory (§14.1) — the dentition inpaint itself is P7.
+                    if crate::persona::geometry::open_mouth(spec) {
+                        let lip: Vec<(f32, f32)> = (76..88).map(|i| m.landmarks[i]).collect();
+                        let (cw, ch) = (m.crop.width() as f32, m.crop.height() as f32);
+                        let w = (lip.iter().map(|p| p.0).fold(f32::MIN, f32::max) - lip.iter().map(|p| p.0).fold(f32::MAX, f32::min)) * cw;
+                        let h = (lip.iter().map(|p| p.1).fold(f32::MIN, f32::max) - lip.iter().map(|p| p.1).fold(f32::MAX, f32::min)) * ch;
+                        let mouth_area = (w * h / (a.size as f32 * a.size as f32)).clamp(0.0, 1.0);
+                        if casting::decide(casting::EscalationRegion::Mouth, mouth_area, casting::EscalationRegion::Mouth.default_threshold()).escalate {
+                            println!("  {} mouth is {:.2}% of the frame — dentition would need a mouth-region inpaint (§8.7, P7)", style("ladder:").cyan(), mouth_area * 100.0);
+                        }
+                    }
+                    // Hand jewelry advisory (§8.5) — hand-region refine needs hand landmarks (unreliable).
+                    let has_hand_jewelry = spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).is_some_and(|it| {
+                        it.iter().any(|x| matches!(x.site.as_deref(), Some("left-wrist" | "right-wrist" | "left-hand" | "right-hand" | "finger")))
+                    });
+                    if has_hand_jewelry {
+                        println!("  {} hand jewelry present — hand-region escalation is best-effort and not wired (§8.5)", style("·").yellow());
+                    }
                 } else {
                     println!("  {} could not re-detect the face for detail compositing", style("·").yellow());
                 }
