@@ -45,15 +45,18 @@ that minimum is the "did the cast produce one person?" check. Each reference's c
 is its default weight (the most representative faces dominate) and picks the **canonical** face the
 render path swaps from.
 
-## Rendering (Tier B, §11.5) — forthcoming in P5c
+## Rendering (Tier B, §11.5)
 
 ```
-plakat persona render alice-persona/ --scene "…" --model <any>
+plakat persona render alice-persona/ --scene "a woman in a sunlit garden, photograph" --model <any>
 ```
 
-The universal path: generate on any family → detect → swap the canonical reference face in → restore →
-feather-composite → run the detail compositing pass **after** the swap (a hard ordering constraint: the
-swap replaces the face region wholesale and would destroy any mark composited before it) → score.
+The universal path: generate the scene on any family (the persona's appearance prompt merged in) →
+detect the scene face (SCRFD) → swap the canonical reference face in → restore the swapped region at
+gentle strength (identity-preserving) → run the detail compositing pass **after** the swap (a hard
+ordering constraint: the swap replaces the face region wholesale and would destroy any mark composited
+before it). `--no-restore` / `--no-details` opt out; `--spec` overrides the stashed spec. When the
+scene render produces no detectable face, the render is left un-swapped and that is reported.
 
 ## Tiers (§11.4)
 

@@ -43,6 +43,9 @@ pub enum PersonaCmd {
     /// Cast a persona (RFC §11.1): render candidates, composite the persona's details, score them
     /// against the spec, keep the best, and validate identity coherence → a stored reference set.
     Cast(CastArgs),
+    /// Render a cast persona into a scene (RFC §11.5, the universal Tier-B path): generate → swap the
+    /// canonical face in → restore → composite the persona's details AFTER the swap → save.
+    Render(RenderArgs),
 }
 
 #[derive(Args, Debug)]
@@ -203,6 +206,36 @@ pub struct CastArgs {
     pub tier: String,
 }
 
+#[derive(Args, Debug)]
+pub struct RenderArgs {
+    /// Persona directory produced by `persona cast` (holds `reference_set.json`).
+    pub persona: PathBuf,
+    /// Scene / setting prompt (the persona's appearance is merged in from its spec).
+    #[arg(long)]
+    pub scene: String,
+    /// Model family to render the scene on (any — identity comes from the swap).
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output path.
+    #[arg(long, default_value = "render.png")]
+    pub out: PathBuf,
+    /// Override the persona spec (default: `<persona>/spec.hjson`).
+    #[arg(long)]
+    pub spec: Option<PathBuf>,
+    #[arg(long, default_value_t = 768)]
+    pub size: u32,
+    #[arg(long, default_value_t = 30)]
+    pub steps: usize,
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Skip the face-restoration pass after the swap.
+    #[arg(long)]
+    pub no_restore: bool,
+    /// Skip compositing the persona's details after the swap.
+    #[arg(long)]
+    pub no_details: bool,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -213,7 +246,106 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Composite(a) => run_composite(a).await,
         PersonaCmd::Calibrate(a) => run_calibrate(a).await,
         PersonaCmd::Cast(a) => run_cast(a).await,
+        PersonaCmd::Render(a) => run_render(a).await,
     }
+}
+
+async fn run_render(a: RenderArgs) -> Result<()> {
+    use crate::persona::casting::ReferenceSet;
+    use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
+
+    let set = ReferenceSet::load(&a.persona)
+        .with_context(|| format!("loading reference set from {} (run `persona cast` first)", a.persona.display()))?;
+    let Some(canonical) = set.canonical().cloned() else {
+        anyhow::bail!("reference set is empty");
+    };
+    let canonical_img = a.persona.join(&canonical.image);
+
+    // The spec drives the appearance prompt + the post-swap detail composite.
+    let spec_path = a.spec.clone().unwrap_or_else(|| a.persona.join("spec.hjson"));
+    let spec = PersonaSpec::load(&spec_path).ok();
+    let appearance = spec.as_ref().map(|s| compile::compile_for_model(s, &Lexicon::skeleton(), &a.model)).unwrap_or_else(|| compile::compile_for_model(&PersonaSpec::default(), &Lexicon::skeleton(), &a.model));
+    let prompt = if appearance.positive.is_empty() {
+        a.scene.clone()
+    } else {
+        format!("{}, {}", a.scene, appearance.positive)
+    };
+
+    println!("{}  {} into a scene  (model {}, tier {})", style("persona render").bold(), set.persona, a.model, set.tier);
+    if !set.coherence.passes {
+        println!("  {} reference set identity coherence is below threshold (min cos {:.3}) — the swap still unifies identity, but the set is weak", style("note:").yellow(), set.coherence.min_cosine);
+    }
+
+    // 1. Generate the scene (identity will be replaced by the swap).
+    println!("  {} generating the scene…", style("→").cyan());
+    let imgs = crate::api::Generate::new(&a.model)
+        .prompt(&prompt)
+        .negative(&appearance.negative)
+        .seed(a.seed)
+        .size(a.size, a.size)
+        .steps(a.steps)
+        .run()
+        .await
+        .context("scene render")?;
+    let Some(scene_img) = imgs.into_iter().next() else {
+        anyhow::bail!("scene render produced no image");
+    };
+    scene_img.save(&a.out)?;
+
+    // 2. Swap the canonical reference face into the detected scene face (§11.5).
+    let device = candle_core::Device::Cpu;
+    let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32).await?;
+    let faces = swapper.detect(&a.out).context("detecting the scene face")?;
+    let Some(target) = faces.into_iter().next() else {
+        println!("  {} no face in the scene render — leaving it un-swapped ({})", style("·").yellow(), a.out.display());
+        return Ok(());
+    };
+    let latent = swapper.source_latent(&canonical_img).context("embedding the canonical reference face")?;
+    let scene_rgb = image::open(&a.out)?.to_rgb8();
+    let swapped = swapper.swap_into(&scene_rgb, target.landmarks, &latent).context("face swap")?;
+    swapped.save(&a.out)?;
+    println!("  {} swapped in {} (canonical, centroid cos {:.3})", style("✓").green(), canonical.image.display(), canonical.centroid_cosine);
+
+    // 3. Restore the swapped region at gentle strength (identity-preserving §11.5).
+    if !a.no_restore {
+        println!("  {} restoring the swapped face…", style("→").cyan());
+        let restore = crate::cli::restore_faces::RestoreFacesArgs {
+            inputs: vec![a.out.clone()],
+            model: if a.model.starts_with("sdxl") { "sdxl".into() } else { "sd15".into() },
+            strength: 0.35,
+            padding: 0.25,
+            feather: 0.25,
+            confidence: 0.5,
+            working_size: 512,
+        };
+        if let Err(e) = crate::cli::restore_faces::run(restore, device.clone()).await {
+            println!("  {} restore skipped: {e}", style("·").yellow());
+        }
+    }
+
+    // 4. Detail compositing runs AFTER the swap (hard ordering §11.5 — the swap would erase marks
+    //    composited before it) against the REALISED landmarks.
+    if !a.no_details {
+        if let Some(spec) = &spec {
+            let has_details = spec.marks.as_ref().is_some_and(|m| !m.is_empty())
+                || spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).is_some_and(|i| !i.is_empty())
+                || spec.piercings.as_ref().is_some_and(|p| !p.is_empty());
+            if has_details {
+                let (det, pip) = scorecard::load_probes(&device).await?;
+                if let Some(m) = scorecard::measure_landmarks(&a.out, &det, &pip)? {
+                    let base = image::open(&a.out)?.to_rgb8();
+                    let r = detail::composite_details(&base, spec, &m, a.seed);
+                    r.image.save(&a.out)?;
+                    println!("  {} composited {} detail(s) after the swap", style("✓").green(), r.placed);
+                } else {
+                    println!("  {} could not re-detect the face for detail compositing", style("·").yellow());
+                }
+            }
+        }
+    }
+
+    println!("{} {}", style("done:").bold(), a.out.display());
+    Ok(())
 }
 
 fn fnv_hash(s: &str) -> String {
@@ -244,6 +376,8 @@ async fn run_cast(a: CastArgs) -> Result<()> {
     let refs_dir = persona_dir.join("references");
     std::fs::create_dir_all(&cand_dir)?;
     std::fs::create_dir_all(&refs_dir)?;
+    // Stash the spec so `persona render` can composite details + merge the appearance prompt.
+    std::fs::copy(&a.spec, persona_dir.join("spec.hjson")).ok();
 
     let conditioning_hash = fnv_hash(&format!("{}|{}|{:?}", compiled.positive, compiled.negative, geometry::geometry_values(&spec)));
     let detail_plan_hash = fnv_hash(&format!("{:?}", spec.marks));
