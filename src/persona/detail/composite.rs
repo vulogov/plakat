@@ -189,8 +189,15 @@ fn z_order(mark: &Mark) -> u8 {
     }
 }
 
-/// The compositing pass. Deterministic given `(base, spec, m, seed)`; no harmonisation.
+/// The compositing pass. Deterministic given `(base, spec, m, seed)`; no harmonisation. Composites
+/// all details including worn presentation jewelry.
 pub fn composite_details(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetrics, seed: u64) -> CompositeResult {
+    composite_details_opts(base, spec, m, seed, true)
+}
+
+/// As [`composite_details`], but `include_worn_jewelry = false` skips `jewelry.items` (marks + piercings
+/// still composite). Used by `persona bake` to build a reference set free of swappable jewelry (§11.6).
+pub fn composite_details_opts(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetrics, seed: u64, include_worn_jewelry: bool) -> CompositeResult {
     let mut img = base.clone();
     let mut mask = GrayImage::from_pixel(base.width(), base.height(), Luma([0]));
     let mut culled = Vec::new();
@@ -291,7 +298,8 @@ pub fn composite_details(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetrics, s
     }
 
     // --- worn jewelry (§8.5), composited last (front-most). Glasses use the prompt path. ---
-    if let Some(items) = spec.jewelry.as_ref().and_then(|j| j.items.as_ref()) {
+    // Skipped entirely when baking a jewelry-free reference set (§11.6).
+    if let Some(items) = spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).filter(|_| include_worn_jewelry) {
         for it in items {
             let kind = it.kind.as_deref().unwrap_or("stud");
             if kind == "glasses" {
@@ -456,6 +464,23 @@ mod tests {
         assert_eq!(r.culled.len(), 2);
         assert!(r.culled.iter().any(|c| c.reason.contains("body")));
         assert!(r.culled.iter().any(|c| c.kind.contains("glasses")));
+    }
+
+    #[test]
+    fn excluding_worn_jewelry_places_fewer_details() {
+        use crate::persona::spec::PersonaSpec;
+        // a mole (mark) + an earring (worn jewelry).
+        let spec = PersonaSpec::from_hjson(
+            "{ schema: \"persona/1\"\n marks: [ { kind: \"mole\"\n anchor: { region: \"left-cheek\" }\n size: 0.04 } ]\n jewelry: { items: [ { kind: \"stud\"\n site: \"left-lobe\"\n metal: \"gold\" } ] } }",
+        )
+        .unwrap();
+        let m = synthetic_metrics(256);
+        let base = image::RgbImage::from_pixel(256, 256, image::Rgb([205, 165, 140]));
+        let with = composite_details_opts(&base, &spec, &m, 1, true);
+        let without = composite_details_opts(&base, &spec, &m, 1, false);
+        // the mole places in both; the earring only when jewelry is included.
+        assert_eq!(with.placed, 2);
+        assert_eq!(without.placed, 1, "worn jewelry excluded → only the mole");
     }
 
     #[test]

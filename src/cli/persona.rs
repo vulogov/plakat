@@ -46,6 +46,9 @@ pub enum PersonaCmd {
     /// Render a cast persona into a scene (RFC §11.5, the universal Tier-B path): generate → swap the
     /// canonical face in → restore → composite the persona's details AFTER the swap → save.
     Render(RenderArgs),
+    /// Bake a per-base adapter (Tier C, §11.6) from a cast reference set — a textual-inversion token or
+    /// a LoRA. Excludes swappable presentation jewelry by default; memory-gated.
+    Bake(BakeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -247,6 +250,30 @@ pub struct RenderArgs {
     pub tier: String,
 }
 
+#[derive(Args, Debug)]
+pub struct BakeArgs {
+    /// Persona directory produced by `persona cast`.
+    pub persona: PathBuf,
+    /// Base model to bake for.
+    #[arg(long)]
+    pub base: String,
+    /// `ti` (textual inversion — cheap, composable) or `lora` (stronger, heavier).
+    #[arg(long, default_value = "lora")]
+    pub method: String,
+    /// Trigger token for the baked identity.
+    #[arg(long, default_value = "sks")]
+    pub token: String,
+    /// Training steps (trainer default when 0).
+    #[arg(long, default_value_t = 0)]
+    pub steps: usize,
+    /// Training resolution.
+    #[arg(long, default_value_t = 512)]
+    pub size: u32,
+    /// Include worn presentation jewelry in the trained reference set (default: exclude, §11.6).
+    #[arg(long)]
+    pub keep_jewelry: bool,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -258,7 +285,104 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Calibrate(a) => run_calibrate(a).await,
         PersonaCmd::Cast(a) => run_cast(a).await,
         PersonaCmd::Render(a) => run_render(a).await,
+        PersonaCmd::Bake(a) => run_bake(a).await,
     }
+}
+
+async fn run_bake(a: BakeArgs) -> Result<()> {
+    use crate::persona::casting::ReferenceSet;
+    use crate::persona::{detail, scorecard};
+
+    let set = ReferenceSet::load(&a.persona)
+        .with_context(|| format!("loading reference set from {} (run `persona cast` first)", a.persona.display()))?;
+    if set.references.is_empty() {
+        anyhow::bail!("reference set is empty — nothing to bake");
+    }
+    let spec = PersonaSpec::load(&a.persona.join("spec.hjson")).ok();
+
+    // Presentation jewelry is excluded from the trained set by default (§11.6) unless identity_locked
+    // or `--keep-jewelry`. Rebuild jewelry-free references from the raw candidates when needed.
+    let identity_locked = spec.as_ref().and_then(|s| s.jewelry.as_ref()).and_then(|j| j.identity_locked).unwrap_or(false);
+    let has_worn_jewelry = spec.as_ref().and_then(|s| s.jewelry.as_ref()).and_then(|j| j.items.as_ref()).is_some_and(|i| !i.is_empty());
+    let exclude_jewelry = has_worn_jewelry && !identity_locked && !a.keep_jewelry;
+
+    let bake_dir = a.persona.join("bake");
+    std::fs::create_dir_all(&bake_dir)?;
+    let train_dir = bake_dir.join("train");
+    std::fs::create_dir_all(&train_dir)?;
+
+    println!("{}  {} on {} via {}", style("persona bake").bold(), set.persona, a.base, a.method);
+
+    // Build the training image set.
+    let mut images: Vec<PathBuf> = Vec::new();
+    if exclude_jewelry {
+        println!("  {} excluding presentation jewelry from the trained set (§11.6; --keep-jewelry to include, or set jewelry.identity_locked)", style("note:").cyan());
+        let device = candle_core::Device::Cpu;
+        let (det, pip) = scorecard::load_probes(&device).await?;
+        let spec = spec.as_ref().unwrap();
+        for r in &set.references {
+            let Some(raw_rel) = &r.raw_image else {
+                println!("  {} ref {} has no stored raw — training on its composited image (may carry jewelry)", style("·").yellow(), r.id);
+                images.push(a.persona.join(&r.image));
+                continue;
+            };
+            let raw_path = a.persona.join(raw_rel);
+            match scorecard::measure_landmarks(&raw_path, &det, &pip)? {
+                Some(m) => {
+                    let base = image::open(&raw_path)?.to_rgb8();
+                    let out = train_dir.join(format!("train_{}.png", r.id));
+                    detail::composite_details_opts(&base, spec, &m, r.seed, false).image.save(&out)?;
+                    images.push(out);
+                }
+                None => images.push(a.persona.join(&r.image)),
+            }
+        }
+    } else {
+        for r in &set.references {
+            images.push(a.persona.join(&r.image));
+        }
+    }
+    println!("  training on {} reference image(s)", images.len());
+
+    // Memory gate (§11.6 / §22): warn up front, and arm the training-mode guard around the run so a
+    // sustained-pressure OOM aborts cleanly rather than getting Killed.
+    let device = crate::api::device("auto").unwrap_or(candle_core::Device::Cpu);
+    crate::hw::memory_preflight(&device, &a.base);
+    let _guard = crate::memwatch::MemoryGuard::start_mode(&device, &format!("persona bake {}", a.base), crate::memwatch::Mode::Training);
+
+    // Train.
+    let artifact = bake_dir.join(format!("{}_{}.safetensors", a.base, a.method));
+    match a.method.as_str() {
+        "ti" => {
+            let mut t = crate::api::EmbeddingTrain::new(&a.base, images, &a.token, &artifact);
+            if a.steps > 0 {
+                t = t.steps(a.steps);
+            }
+            t.size(a.size).run().await.context("textual-inversion bake")?;
+        }
+        "lora" => {
+            let mut t = crate::api::StyleTrain::new(&a.base, images, &artifact).trigger(&a.token);
+            if a.steps > 0 {
+                t = t.steps(a.steps);
+            }
+            t.size(a.size).run().await.context("LoRA bake")?;
+        }
+        other => anyhow::bail!("unknown --method `{other}` (expected `ti` or `lora`)"),
+    }
+
+    // Record the inputs the bake was measured under, for invalidation (§11.6).
+    let cond = set.references.first().map(|r| r.conditioning_hash.clone()).unwrap_or_default();
+    let detail_hash = set.references.first().map(|r| r.detail_plan_hash.clone()).unwrap_or_default();
+    let record = format!(
+        "{{\n  base: {:?},\n  method: {:?},\n  token: {:?},\n  artifact: {:?},\n  jewelry_excluded: {exclude_jewelry},\n  conditioning_hash: {:?},\n  detail_plan_hash: {:?},\n  topology: {:?},\n  lexicon_version: {:?}\n}}\n",
+        a.base, a.method, a.token, artifact.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+        cond, detail_hash,
+        crate::persona::calibration::table::CURRENT_TOPOLOGY, crate::persona::calibration::table::CURRENT_LEXICON,
+    );
+    std::fs::write(bake_dir.join(format!("{}_{}.bake.json", a.base, a.method)), record)?;
+
+    println!("{} {} (invalidated by structural / baked-mark / lexicon / topology changes)", style("done:").bold(), artifact.display());
+    Ok(())
 }
 
 async fn run_render(a: RenderArgs) -> Result<()> {
@@ -497,6 +621,7 @@ async fn run_cast(a: CastArgs) -> Result<()> {
 
     struct Cand {
         image: PathBuf,
+        raw: PathBuf,
         seed: u64,
         score: f32,
         aesthetic: Option<f32>,
@@ -569,7 +694,7 @@ async fn run_cast(a: CastArgs) -> Result<()> {
             score,
             aes.map(|v| format!(", aesthetic {v:.1}")).unwrap_or_default()
         );
-        cands.push(Cand { image: ref_img, seed, score, aesthetic: aes, embedding });
+        cands.push(Cand { image: ref_img, raw, seed, score, aesthetic: aes, embedding });
     }
 
     if cands.is_empty() {
@@ -590,6 +715,12 @@ async fn run_cast(a: CastArgs) -> Result<()> {
     for (rank, c) in cands.iter().enumerate() {
         let dst = refs_dir.join(format!("ref_{rank}.png"));
         std::fs::copy(&c.image, &dst)?;
+        // keep the raw (un-composited) candidate so `bake` can build a jewelry-free set (§11.6).
+        let raw_rel = if std::fs::copy(&c.raw, refs_dir.join(format!("ref_{rank}_raw.png"))).is_ok() {
+            Some(PathBuf::from("references").join(format!("ref_{rank}_raw.png")))
+        } else {
+            None
+        };
         references.push(Reference {
             id: rank,
             image: PathBuf::from("references").join(format!("ref_{rank}.png")),
@@ -599,6 +730,7 @@ async fn run_cast(a: CastArgs) -> Result<()> {
             expression: "neutral".into(),
             conditioning_hash: conditioning_hash.clone(),
             detail_plan_hash: detail_plan_hash.clone(),
+            raw_image: raw_rel,
             embedding: c.embedding.clone(),
             score: Some(c.score),
             aesthetic: c.aesthetic,

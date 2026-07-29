@@ -24,6 +24,10 @@ pub struct Reference {
     pub expression: String,
     pub conditioning_hash: String,
     pub detail_plan_hash: String,
+    /// The un-composited raw candidate (relative path), if kept — lets `bake` recomposite a
+    /// jewelry-free reference set (§11.6). `None` for older sets.
+    #[serde(default)]
+    pub raw_image: Option<PathBuf>,
     /// ArcFace embedding (unit-normalised).
     pub embedding: Vec<f32>,
     /// Scorecard aggregate against the spec (`None` if not scored).
@@ -216,6 +220,7 @@ mod tests {
                 expression: "neutral".into(),
                 conditioning_hash: "h".into(),
                 detail_plan_hash: "d".into(),
+                raw_image: None,
                 embedding: emb(0.6, 0.01 * i as f32, dim),
                 score: Some(0.8),
                 aesthetic: Some(5.0),

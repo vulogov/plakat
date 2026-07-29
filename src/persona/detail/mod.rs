@@ -10,5 +10,5 @@
 pub mod composite;
 pub mod overlay;
 
-pub use composite::{composite_details, CompositeResult, Culled};
+pub use composite::{composite_details, composite_details_opts, CompositeResult, Culled};
 pub use overlay::Light;
