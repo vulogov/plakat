@@ -16,6 +16,22 @@ pub use table::{CalibrationTable, MeasurementIdentity, Prior};
 
 use std::collections::BTreeMap;
 
+/// Assemble a table from measured (or seeded) sweep data: fit a `ResponseCurve` per attribute from its
+/// `(requested, realised)` samples + per-step variance. The one place the fit is applied to real data.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble(
+    family: String,
+    identity: MeasurementIdentity,
+    priors: BTreeMap<String, Prior>,
+    samples: BTreeMap<String, (Vec<(f32, f32)>, f32)>,
+    harmonise: BTreeMap<String, f32>,
+    spontaneous_detail_rate: f32,
+    prompted_detail_hit_rate: f32,
+) -> CalibrationTable {
+    let curves = samples.into_iter().map(|(k, (s, var))| (k, fit(s, var))).collect();
+    CalibrationTable { family, identity, priors, curves, harmonise, spontaneous_detail_rate, prompted_detail_hit_rate }
+}
+
 /// Pre-distort a geometry value map in place through the family's response-curve inverses (§13.2), so
 /// that a requested scalar *lands* at that value once the model has realised the conditioning. Values
 /// with no curve for their attribute pass through unchanged. Returns the attributes it corrected.

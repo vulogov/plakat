@@ -37,6 +37,9 @@ pub enum PersonaCmd {
     /// Composite a spec's localized details (marks / jewelry) onto a rendered image (RFC §8) —
     /// anchored through the realised landmarks, deterministic. `--harmonise` blends them into skin.
     Composite(CompositeArgs),
+    /// Build a family calibration table (RFC §13): `--bootstrap` regenerates the provisional seed, or
+    /// `--from <dir>` measures a rendered sweep (the offline compute job) → priors + curves + grades.
+    Calibrate(CalibrateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -135,6 +138,32 @@ pub struct CompositeArgs {
     pub harmonise_strength: f32,
 }
 
+#[derive(Args, Debug)]
+pub struct CalibrateArgs {
+    /// Model family the table is for (e.g. `sd15`, `sdxl`).
+    pub family: String,
+    /// Output path for the table (`.hjson`).
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Regenerate the provisional bootstrap (priors from the geometry mean-template, grades from the
+    /// lexicon defaults). No renders required.
+    #[arg(long)]
+    pub bootstrap: bool,
+    /// Measure a rendered sweep directory (files `<attr>__<requested>__<seed>.png`) → real priors +
+    /// curves + grades (§13.1/§13.2). The render half is the offline compute job.
+    #[arg(long)]
+    pub from: Option<PathBuf>,
+    /// Prompt / sampler / steps / size recorded in the measurement identity (§13.1).
+    #[arg(long, default_value = "a portrait photograph of a person, neutral expression, front facing")]
+    pub prompt: String,
+    #[arg(long, default_value = "euler")]
+    pub sampler: String,
+    #[arg(long, default_value_t = 30)]
+    pub steps: u32,
+    #[arg(long, default_value_t = 1024)]
+    pub size: u32,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -143,7 +172,143 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Verify(a) => run_verify(a).await,
         PersonaCmd::Geometry(a) => run_geometry(a),
         PersonaCmd::Composite(a) => run_composite(a).await,
+        PersonaCmd::Calibrate(a) => run_calibrate(a).await,
     }
+}
+
+/// The three aligner-measured geometric scalars: (attr, metric-extractor, invert-for-scalar).
+const CALIB_METRICS: &[(&str, fn(&crate::persona::scorecard::FaceMetrics) -> f32, bool)] = &[
+    ("eyes.spacing", |m| m.interpupillary_over_facewidth, false),
+    ("mouth.width", |m| m.mouth_over_facewidth, false),
+    ("face.width", |m| m.face_aspect, true),
+];
+
+fn median_p5_p95(xs: &mut [f32]) -> crate::persona::calibration::Prior {
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let at = |q: f32| xs[((q * (xs.len() - 1) as f32).round() as usize).min(xs.len() - 1)];
+    crate::persona::calibration::Prior { median: at(0.5), p5: at(0.05), p95: at(0.95) }
+}
+
+async fn run_calibrate(a: CalibrateArgs) -> Result<()> {
+    use crate::persona::calibration::{self as cal, MeasurementIdentity, Prior};
+    use crate::persona::lexicon::Lexicon;
+    use std::collections::BTreeMap;
+
+    let lex = Lexicon::skeleton();
+    let harmonise: BTreeMap<String, f32> = [("mole", 0.25), ("scar", 0.30), ("birthmark", 0.28), ("freckles", 0.35)]
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
+
+    let (priors, samples, provisional, population, spont, hit) = if a.bootstrap {
+        // Priors = the geometry engine's own mean-template metrics (0.5 configuration).
+        use crate::persona::geometry::{mean_template, topology::*};
+        let t = mean_template(false);
+        let d = |i: usize, j: usize| ((t[i].0 - t[j].0).powi(2) + (t[i].1 - t[j].1).powi(2)).sqrt();
+        let fw = CONTOUR.clone().map(|i| t[i].0).fold(f32::NEG_INFINITY, f32::max) - CONTOUR.clone().map(|i| t[i].0).fold(f32::INFINITY, f32::min);
+        let fh = CONTOUR.clone().map(|i| t[i].1).fold(f32::NEG_INFINITY, f32::max) - CONTOUR.clone().map(|i| t[i].1).fold(f32::INFINITY, f32::min);
+        let ipd = d(PUPIL_RIGHT, PUPIL_LEFT) / fw;
+        let mw = d(MOUTH_CORNER_RIGHT, MOUTH_CORNER_LEFT) / fw;
+        let asp = fh / fw;
+        let mut priors = BTreeMap::new();
+        priors.insert("eyes.spacing".to_string(), Prior { median: ipd, p5: ipd * 0.85, p95: ipd * 1.15 });
+        priors.insert("mouth.width".to_string(), Prior { median: mw, p5: mw * 0.85, p95: mw * 1.15 });
+        priors.insert("face.width".to_string(), Prior { median: asp, p5: asp * 0.85, p95: asp * 1.15 });
+        // Curves seeded from each attribute's lexicon control grade.
+        let mut samples = BTreeMap::new();
+        for (attr, _, _) in CALIB_METRICS {
+            let grade = lex.get(attr).and_then(|e| e.control.clone()).unwrap_or_else(|| "moderate".into());
+            let half = match grade.as_str() {
+                "strong" => 0.38,
+                "weak" => 0.10,
+                "experimental" => 0.02,
+                _ => 0.20, // moderate
+            };
+            let s = vec![(0.0, 0.5 - half), (0.25, 0.5 - half * 0.5), (0.5, 0.5), (0.75, 0.5 + half * 0.5), (1.0, 0.5 + half)];
+            samples.insert(attr.to_string(), (s, 0.03));
+        }
+        (priors, samples, true, 0u32, 0.12, 0.65)
+    } else if let Some(dir) = &a.from {
+        // Measure a rendered sweep: files `<attr>__<requested>__<seed>.png`.
+        let device = candle_core::Device::Cpu;
+        let (det, pip) = crate::persona::scorecard::load_probes(&device).await?;
+        // attr → requested → Vec<realised metric>
+        let mut by: BTreeMap<String, BTreeMap<u32, Vec<f32>>> = BTreeMap::new();
+        let mut count = 0u32;
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading sweep dir {}", dir.display()))? {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("png") {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let parts: Vec<&str> = stem.split("__").collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let (attr, req) = (parts[0].to_string(), parts[1].parse::<f32>().ok());
+            let Some(req) = req else { continue };
+            let Some(&(_, extract, _)) = CALIB_METRICS.iter().find(|(p, _, _)| *p == attr) else { continue };
+            if let Some(m) = crate::persona::scorecard::measure_landmarks(&path, &det, &pip)? {
+                by.entry(attr).or_default().entry((req * 1000.0).round() as u32).or_default().push(extract(&m));
+                count += 1;
+            }
+        }
+        if count == 0 {
+            anyhow::bail!("no measurable `<attr>__<requested>__<seed>.png` renders found in {}", dir.display());
+        }
+        // Priors: from the requested≈0.5 population per attr (fallback: all samples).
+        let mut priors = BTreeMap::new();
+        let mut samples = BTreeMap::new();
+        for (attr, steps) in &by {
+            let invert = CALIB_METRICS.iter().find(|(p, _, _)| p == attr).map(|(_, _, i)| *i).unwrap_or(false);
+            let mut neutral: Vec<f32> = steps.get(&500).cloned().unwrap_or_else(|| steps.values().flatten().copied().collect());
+            let prior = median_p5_p95(&mut neutral);
+            priors.insert(attr.clone(), prior);
+            let mut pts: Vec<(f32, f32)> = Vec::new();
+            let mut vars: Vec<f32> = Vec::new();
+            for (req_k, vals) in steps {
+                let mut v = vals.clone();
+                let med = median_p5_p95(&mut v).median;
+                let mut realised = prior.normalise(med);
+                if invert {
+                    realised = 1.0 - realised;
+                }
+                pts.push((*req_k as f32 / 1000.0, realised));
+                // spread as a rough variance proxy
+                let spread = v.iter().map(|x| (prior.normalise(*x) - realised).abs()).fold(0.0, f32::max);
+                vars.push(spread);
+            }
+            let var = if vars.is_empty() { 0.0 } else { vars.iter().sum::<f32>() / vars.len() as f32 };
+            samples.insert(attr.clone(), (pts, var));
+        }
+        println!("  measured {count} renders across {} attribute(s)", by.len());
+        (priors, samples, false, count, 0.0, 0.0)
+    } else {
+        anyhow::bail!("specify --bootstrap (regenerate the seed) or --from <dir> (measure a sweep)");
+    };
+
+    let identity = MeasurementIdentity {
+        population,
+        prompt: a.prompt.clone(),
+        sampler: a.sampler.clone(),
+        steps: a.steps,
+        size: a.size,
+        aligner: cal::table::CURRENT_ALIGNER.into(),
+        topology: cal::table::CURRENT_TOPOLOGY.into(),
+        lexicon_version: cal::table::CURRENT_LEXICON.into(),
+        provisional,
+    };
+    let table = cal::assemble(a.family.clone(), identity, priors, samples, harmonise, spont, hit);
+    std::fs::write(&a.out, table.to_hjson()).with_context(|| format!("writing {}", a.out.display()))?;
+
+    println!("{}  {} → {}", style("persona calibrate").bold(), a.family, a.out.display());
+    for (attr, curve) in &table.curves {
+        println!("  {} {attr}: grade {} (slope {:.2})", style("·").dim(), curve.grade.as_str(), curve.slope);
+    }
+    if provisional {
+        println!("  {} provisional bootstrap — replace with a measured sweep via `--from <dir>`", style("note:").dim());
+    }
+    Ok(())
 }
 
 async fn run_composite(a: CompositeArgs) -> Result<()> {
