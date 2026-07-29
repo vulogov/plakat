@@ -12,6 +12,7 @@
 //! Fully additive; nothing here changes existing behaviour.
 
 pub mod aligner;
+pub mod calibration;
 pub mod compile;
 pub mod detail;
 pub mod geometry;

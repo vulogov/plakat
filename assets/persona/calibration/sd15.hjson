@@ -1,0 +1,59 @@
+{
+  # PERSONA-1 calibration table — sd15 / sd21 (RFC §13). BOOTSTRAP (provisional): priors seeded from a
+  # single-render baseline + the geometry engine's mean-template metrics; curves + grades seeded from
+  # the lexicon `control` defaults, NOT a measured sweep. `persona calibrate` regenerates real numbers.
+  # HJSON note: quote string values that share a line with a closing brace.
+  family: "sd15"
+
+  identity: {
+    population: 1
+    prompt: "a portrait photograph of a person, neutral expression, front facing"
+    sampler: "euler"
+    steps: 30
+    size: 512
+    aligner: "pipnet-wflw98"
+    topology: "wflw-98"
+    lexicon_version: "1.0"
+    provisional: true
+  }
+
+  # median = the meaning of 0.5 for each landmark metric (§13.1); p5/p95 bound the usable range.
+  priors: {
+    "eyes.spacing": { median: 0.371, p5: 0.320, p95: 0.430 }
+    "mouth.width":  { median: 0.395, p5: 0.340, p95: 0.460 }
+    "face.width":   { median: 0.658, p5: 0.560, p95: 0.760 }
+  }
+
+  # requested -> realised transfer functions (normalised [0,1]); the compiler pre-distorts via inverse.
+  curves: {
+    "eyes.spacing": {
+      grade: "strong"
+      slope: 0.76
+      variance: 0.02
+      samples: [ [0.0, 0.12], [0.25, 0.30], [0.5, 0.50], [0.75, 0.70], [1.0, 0.88] ]
+    }
+    "mouth.width": {
+      grade: "moderate"
+      slope: 0.40
+      variance: 0.04
+      samples: [ [0.0, 0.30], [0.5, 0.50], [1.0, 0.70] ]
+    }
+    "face.width": {
+      grade: "moderate"
+      slope: 0.36
+      variance: 0.045
+      samples: [ [0.0, 0.32], [0.5, 0.50], [1.0, 0.68] ]
+    }
+  }
+
+  # harmonisation strength per detail kind (§13.2) — blend without erasing.
+  harmonise: {
+    mole: 0.25
+    scar: 0.30
+    birthmark: 0.28
+    freckles: 0.35
+  }
+
+  spontaneous_detail_rate: 0.15
+  prompted_detail_hit_rate: 0.63
+}

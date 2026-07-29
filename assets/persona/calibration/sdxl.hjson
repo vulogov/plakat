@@ -1,0 +1,55 @@
+{
+  # PERSONA-1 calibration table — sdxl family (RFC §13). BOOTSTRAP (provisional): seeded from lexicon
+  # defaults + mean-template metrics, NOT a measured sweep. `persona calibrate` regenerates real numbers.
+  # HJSON note: quote string values that share a line with a closing brace.
+  family: "sdxl"
+
+  identity: {
+    population: 1
+    prompt: "a portrait photograph of a person, neutral expression, front facing"
+    sampler: "euler"
+    steps: 30
+    size: 1024
+    aligner: "pipnet-wflw98"
+    topology: "wflw-98"
+    lexicon_version: "1.0"
+    provisional: true
+  }
+
+  priors: {
+    "eyes.spacing": { median: 0.368, p5: 0.322, p95: 0.420 }
+    "mouth.width":  { median: 0.388, p5: 0.338, p95: 0.448 }
+    "face.width":   { median: 0.672, p5: 0.580, p95: 0.770 }
+  }
+
+  curves: {
+    "eyes.spacing": {
+      grade: "strong"
+      slope: 0.80
+      variance: 0.018
+      samples: [ [0.0, 0.10], [0.25, 0.29], [0.5, 0.50], [0.75, 0.71], [1.0, 0.90] ]
+    }
+    "mouth.width": {
+      grade: "moderate"
+      slope: 0.46
+      variance: 0.035
+      samples: [ [0.0, 0.27], [0.5, 0.50], [1.0, 0.73] ]
+    }
+    "face.width": {
+      grade: "moderate"
+      slope: 0.42
+      variance: 0.04
+      samples: [ [0.0, 0.29], [0.5, 0.50], [1.0, 0.71] ]
+    }
+  }
+
+  harmonise: {
+    mole: 0.22
+    scar: 0.28
+    birthmark: 0.26
+    freckles: 0.32
+  }
+
+  spontaneous_detail_rate: 0.10
+  prompted_detail_hit_rate: 0.70
+}
