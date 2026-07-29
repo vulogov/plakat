@@ -13,8 +13,10 @@
 //! Build order (ROADMAP_5.0.0 P2): topology + mean template (this) → deformation basis + `resolve`
 //! → conditioning-map rasteriser → figure geometry → `geometry` CLI + corpus.
 
+pub mod basis;
 pub mod template;
 pub mod topology;
 
+pub use basis::{anchor_point, identity, resolve, Deformed, GeoWarning, GEOMETRIC_ATTRS};
 pub use template::{mean_template, Point, Template};
 pub use topology::{is_named_region, named_region, ANCHOR_VOCAB, NUM_LANDMARKS};
