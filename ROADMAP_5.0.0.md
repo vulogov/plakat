@@ -88,13 +88,22 @@ change the phase order; it changes the emphasis within P2/P5/P6.
 - [ ] Synthetic-ground-truth test for `local_anomaly` (compositor + probe are each other's test, §24).
 - [ ] Fold the §2.3 baselines into the verify harness as a tracked number.
 
-## Phase 2 — Geometry engine (no weights; mirrors the map track)
+## Phase 2 — Geometry engine (no weights; mirrors the map track) — DONE
 
-- [ ] **WFLW-98 topology** (Phase-G decision, not the RFC's 106-pt InsightFace) + named anchor regions
+- [x] **WFLW-98 topology** (Phase-G decision, not the RFC's 106-pt InsightFace) + named anchor regions
       (§10.1), mean template + open-mouth variant, deformation
       basis (§10.2), conditioning maps (landmark/wireframe/depth/pose/dentition/region-mask/detail-overlay,
       §10.3), figure silhouette + skeleton + body anchor sites (§10.4). `geometry`.
-- [ ] Validity clamping + byte-stable rasteriser + corpus.
+- [x] Validity clamping + byte-stable rasteriser + corpus.
+
+**Shipped** in `src/persona/geometry/` (topology/template/basis/raster/figure/from_spec) + the
+`plakat persona geometry` subcommand. Pure Rust, no weights, byte-stable (per-layer golden hashes).
+P2a topology+mean-template · P2b deformation basis + `resolve()` (10 scalar attrs, anatomical
+coupling, seed asymmetry, validity clamp→lint) · P2c rasteriser (mesh/wireframe/depth/skeleton/
+region-masks/dentition/detail-overlay; reuses openpose_post LIMB conventions + Depth-Anything
+foreground-bright convention) · P2d figure (18-kp skeleton + capsule silhouette + body anchors;
+honest weak scope) · P2e CLI + spec→geometry bridge + folded scorecard's duplicate topology onto
+`geometry::topology`. `examples/persona/example.hjson` runnable.
 
 ## Phase 3 — Detail subsystem (partial weights; unusually valuable early, standalone)
 
