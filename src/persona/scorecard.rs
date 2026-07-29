@@ -282,6 +282,43 @@ pub fn scalar_score(
     Some((realised, AttrScore { path: path.into(), pass, weight, note }))
 }
 
+/// The spec's `eyes.color` as a CIELAB target, if set (named → lab table, or an explicit lab triple).
+pub fn eyes_color_target(spec: &crate::persona::spec::PersonaSpec) -> Option<[f32; 3]> {
+    use crate::persona::spec::Color;
+    match spec.eyes.as_ref().and_then(|e| e.color.as_ref())? {
+        Color::Named(n) => color_name_to_lab(n),
+        Color::Lab { lab } => Some(*lab),
+    }
+}
+
+/// A compact per-render scorecard for ranking casting candidates (§11.1): the calibrated geometric
+/// scalars + the `eyes.color` ΔE. No OWL-ViT (too slow per candidate); the detect probes stay in
+/// `verify`. Returns a `Scorecard` whose `aggregate()` is the spec-conformance sort key.
+pub fn score_render(
+    spec: &crate::persona::spec::PersonaSpec,
+    m: &FaceMetrics,
+    table: Option<&crate::persona::calibration::CalibrationTable>,
+) -> Scorecard {
+    let mut sc = Scorecard::default();
+    let scalars = [
+        ("eyes.spacing", spec.eyes.as_ref().and_then(|e| e.spacing), m.interpupillary_over_facewidth, false),
+        ("mouth.width", spec.mouth.as_ref().and_then(|mo| mo.width), m.mouth_over_facewidth, false),
+        ("face.width", spec.face.as_ref().and_then(|f| f.width), m.face_aspect, true),
+    ];
+    for (path, req, metric, invert) in scalars {
+        if let (Some(r), Some(t)) = (req, table) {
+            if let Some((_, s)) = scalar_score(path, r, metric, t, invert) {
+                sc.scored.push(s);
+            }
+        }
+    }
+    if let (Some(iris), Some(target)) = (measure_colors(m).iris, eyes_color_target(spec)) {
+        let de = delta_e(iris, target);
+        sc.scored.push(AttrScore { path: "eyes.color".into(), pass: de < 20.0, weight: 0.7, note: format!("ΔE {de:.1}") });
+    }
+    sc
+}
+
 /// The scorecard: the weighted pass-fraction over *scored* attributes, with the four exclusions and the
 /// detail sub-score reported separately so a persona can't score 100% while expressing nothing.
 #[derive(Debug, Clone, Default)]

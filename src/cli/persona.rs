@@ -40,6 +40,9 @@ pub enum PersonaCmd {
     /// Build a family calibration table (RFC §13): `--bootstrap` regenerates the provisional seed, or
     /// `--from <dir>` measures a rendered sweep (the offline compute job) → priors + curves + grades.
     Calibrate(CalibrateArgs),
+    /// Cast a persona (RFC §11.1): render candidates, composite the persona's details, score them
+    /// against the spec, keep the best, and validate identity coherence → a stored reference set.
+    Cast(CastArgs),
 }
 
 #[derive(Args, Debug)]
@@ -164,6 +167,42 @@ pub struct CalibrateArgs {
     pub size: u32,
 }
 
+#[derive(Args, Debug)]
+pub struct CastArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// Persona directory to write the reference set into (default `persona-<name>`).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Casting family (its encoder shapes the prompt). Default `sdxl`.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Number of candidates to render.
+    #[arg(long, default_value_t = 8)]
+    pub count: u32,
+    /// How many top-scoring candidates to keep in the reference set.
+    #[arg(long = "keep-best", default_value_t = 4)]
+    pub keep_best: u32,
+    /// Render size (square).
+    #[arg(long, default_value_t = 768)]
+    pub size: u32,
+    /// Denoise steps per candidate.
+    #[arg(long, default_value_t = 30)]
+    pub steps: usize,
+    /// Base seed; candidate `i` renders at `seed + i`.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Skip the detail compositing pass (§8.4) on the references.
+    #[arg(long)]
+    pub no_details: bool,
+    /// Also score aesthetics (LAION) as a secondary sort key (loads an extra model).
+    #[arg(long)]
+    pub aesthetic: bool,
+    /// Tier label recorded in the set (§11.4): `B` (universal swap) by default.
+    #[arg(long, default_value = "B")]
+    pub tier: String,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -173,11 +212,172 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Geometry(a) => run_geometry(a),
         PersonaCmd::Composite(a) => run_composite(a).await,
         PersonaCmd::Calibrate(a) => run_calibrate(a).await,
+        PersonaCmd::Cast(a) => run_cast(a).await,
     }
 }
 
-/// The three aligner-measured geometric scalars: (attr, metric-extractor, invert-for-scalar).
-const CALIB_METRICS: &[(&str, fn(&crate::persona::scorecard::FaceMetrics) -> f32, bool)] = &[
+fn fnv_hash(s: &str) -> String {
+    let mut acc: u64 = 1469598103934665603;
+    for b in s.bytes() {
+        acc = (acc ^ b as u64).wrapping_mul(1099511628211);
+    }
+    format!("{acc:016x}")
+}
+
+async fn run_cast(a: CastArgs) -> Result<()> {
+    use crate::persona::casting::{Reference, ReferenceSet, COHERENCE_THRESHOLD};
+    use crate::persona::{compile, detail, geometry, lexicon::Lexicon, scorecard};
+
+    let spec = PersonaSpec::load(&a.spec)?;
+    // Lint is advisory here (casting is exploratory) — report errors, don't abort.
+    let findings = crate::persona::lint::lint(&spec);
+    let errs = findings.iter().filter(|f| f.level == Level::Error).count();
+    if errs > 0 {
+        println!("{} {errs} lint error(s) — casting anyway; run `persona lint` for detail", style("warning:").yellow());
+    }
+
+    let lex = Lexicon::skeleton();
+    let compiled = compile::compile_for_model(&spec, &lex, &a.model);
+    let name = spec.identity.as_ref().and_then(|i| i.name.as_deref()).unwrap_or("persona").to_string();
+    let persona_dir = a.out.clone().unwrap_or_else(|| PathBuf::from(format!("persona-{name}")));
+    let cand_dir = persona_dir.join("candidates");
+    let refs_dir = persona_dir.join("references");
+    std::fs::create_dir_all(&cand_dir)?;
+    std::fs::create_dir_all(&refs_dir)?;
+
+    let conditioning_hash = fnv_hash(&format!("{}|{}|{:?}", compiled.positive, compiled.negative, geometry::geometry_values(&spec)));
+    let detail_plan_hash = fnv_hash(&format!("{:?}", spec.marks));
+
+    // Probes (CPU) + ArcFace + calibration; aesthetic is opt-in.
+    let device = candle_core::Device::Cpu;
+    let (detector, pipnet) = scorecard::load_probes(&device).await?;
+    let arcface = crate::pipelines::identity_quality::IdentityScorer::load_resolved(&device).await?;
+    let table = crate::persona::calibration::CalibrationTable::bundled(&a.model);
+    let aesthetic = if a.aesthetic {
+        Some(crate::pipelines::aesthetic::AestheticScorer::load(&device).await?)
+    } else {
+        None
+    };
+
+    println!("{}  {} → {}  (model {}, {} candidates)", style("persona cast").bold(), name, persona_dir.display(), a.model, a.count);
+    if !compiled.positive.is_empty() {
+        println!("  {} {}", style("prompt:").dim(), compiled.positive);
+    }
+
+    struct Cand {
+        image: PathBuf,
+        seed: u64,
+        score: f32,
+        aesthetic: Option<f32>,
+        embedding: Vec<f32>,
+    }
+    let mut cands: Vec<Cand> = Vec::new();
+    let mut no_face = 0u32;
+
+    for i in 0..a.count {
+        let seed = a.seed + i as u64;
+        let raw = cand_dir.join(format!("cand_{i}_raw.png"));
+        // Render one candidate (Tier-B: prompt only; geometry-CN casting is a follow-on).
+        let imgs = crate::api::Generate::new(&a.model)
+            .prompt(&compiled.positive)
+            .negative(&compiled.negative)
+            .seed(seed)
+            .size(a.size, a.size)
+            .steps(a.steps)
+            .run()
+            .await
+            .with_context(|| format!("rendering candidate {i}"))?;
+        let Some(img) = imgs.into_iter().next() else { continue };
+        img.save(&raw)?;
+
+        let Some(m) = scorecard::measure_landmarks(&raw, &detector, &pipnet)? else {
+            println!("  {} candidate {i}: no face detected — skipped", style("·").yellow());
+            no_face += 1;
+            continue;
+        };
+
+        // Composite the persona's details onto the reference (§11.1 step 3) unless disabled.
+        let ref_img = cand_dir.join(format!("cand_{i}.png"));
+        if a.no_details {
+            std::fs::copy(&raw, &ref_img)?;
+        } else {
+            let base = image::open(&raw)?.to_rgb8();
+            let r = detail::composite_details(&base, &spec, &m, seed);
+            r.image.save(&ref_img)?;
+        }
+
+        let sc = scorecard::score_render(&spec, &m, table.as_ref());
+        let score = sc.aggregate().unwrap_or(0.0);
+        let Some(embedding) = arcface.embed(&ref_img)? else {
+            println!("  {} candidate {i}: face not embeddable — skipped", style("·").yellow());
+            no_face += 1;
+            continue;
+        };
+        let aes = aesthetic.as_ref().map(|s| s.score_path(&ref_img)).transpose()?;
+        println!(
+            "  {} candidate {i}: score {:.2}{}  (seed {seed})",
+            style("✓").green(),
+            score,
+            aes.map(|v| format!(", aesthetic {v:.1}")).unwrap_or_default()
+        );
+        cands.push(Cand { image: ref_img, seed, score, aesthetic: aes, embedding });
+    }
+
+    if cands.is_empty() {
+        anyhow::bail!("no usable candidates ({no_face} had no embeddable face) — try a different model/prompt or more --count");
+    }
+
+    // Rank: spec conformance primary, aesthetics a distant secondary (§11.1 step 5).
+    cands.sort_by(|x, y| {
+        y.score
+            .partial_cmp(&x.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| y.aesthetic.unwrap_or(0.0).partial_cmp(&x.aesthetic.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    cands.truncate(a.keep_best as usize);
+
+    // Move the kept candidates into references/ and build the set.
+    let mut references = Vec::new();
+    for (rank, c) in cands.iter().enumerate() {
+        let dst = refs_dir.join(format!("ref_{rank}.png"));
+        std::fs::copy(&c.image, &dst)?;
+        references.push(Reference {
+            id: rank,
+            image: PathBuf::from("references").join(format!("ref_{rank}.png")),
+            seed: c.seed,
+            model: a.model.clone(),
+            view: "frontal".into(),
+            expression: "neutral".into(),
+            conditioning_hash: conditioning_hash.clone(),
+            detail_plan_hash: detail_plan_hash.clone(),
+            embedding: c.embedding.clone(),
+            score: Some(c.score),
+            aesthetic: c.aesthetic,
+            centroid_cosine: 0.0,
+        });
+    }
+    let set = ReferenceSet::assemble(&name, &a.model, &a.tier, references, COHERENCE_THRESHOLD);
+    set.save(&persona_dir)?;
+
+    // Report.
+    println!("\n{}", style("── cast ──").bold());
+    println!("  kept {} / {} rendered ({no_face} unusable) → {}", set.references.len(), a.count, ReferenceSet::manifest_path(&persona_dir).display());
+    let coh = &set.coherence;
+    let glyph = if coh.passes { style("✓").green() } else { style("✗").red() };
+    println!("  {glyph} identity coherence: mean cos {:.3}, min cos {:.3} (threshold {:.2})", coh.mean_cosine, coh.min_cosine, coh.threshold);
+    if !coh.passes {
+        println!("  {} the cast produced several different people — re-run with tighter conditioning (more --count, a stronger family, or geometry conditioning)", style("warning:").yellow());
+    }
+    if let Some(c) = set.canonical() {
+        println!("  canonical face: {} (centroid cos {:.3})", c.image.display(), c.centroid_cosine);
+    }
+    Ok(())
+}
+
+/// (attr, metric-extractor, invert-for-scalar) for the aligner-measured geometric scalars.
+type CalibMetric = (&'static str, fn(&crate::persona::scorecard::FaceMetrics) -> f32, bool);
+/// The three aligner-measured geometric scalars.
+const CALIB_METRICS: &[CalibMetric] = &[
     ("eyes.spacing", |m| m.interpupillary_over_facewidth, false),
     ("mouth.width", |m| m.mouth_over_facewidth, false),
     ("face.width", |m| m.face_aspect, true),
