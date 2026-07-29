@@ -141,10 +141,23 @@ P4d `calibrate --bootstrap` (regen from mean-template + lexicon) / `--from <dir>
 the scheduled offline compute job** (like §2.3 baselines); the measurement half runs today. Tables are
 provisional until swept.
 
-## Phase 5 — Identity anchor / casting (weights)
+## Phase 5 — Identity anchor / casting (weights) — DONE
 
-- [ ] Casting (§11.1) + multi-view/expression sheets (§11.2) + curation/storage w/ ArcFace coherence
+- [x] Casting (§11.1) + multi-view/expression sheets (§11.2) + curation/storage w/ ArcFace coherence
       (§11.3) + Tier A/B/C (§11.4) + rejection sampling (§12.3). `cast`/`render`.
+
+**Shipped** in `src/persona/casting/` + `plakat persona cast` / `persona render` +
+`Documentation/PERSONA_CASTING.md`. P5a reference-set storage (`Reference`/`ReferenceSet`, JSON
+manifest + images) + pure ArcFace coherence math (cosine/centroid/`compute_coherence`, threshold 0.50,
+worst-pair check). P5b `cast`: compile → render N → composite details → `score_render` (calibrated
+scalars + eyes.color) → rank (conformance primary, `--aesthetic` LAION secondary) → keep-best →
+ArcFace-embed → coherence-validate → store. P5c `render` = Tier-B swap bridge (§11.5): generate →
+SCRFD → swap canonical face → restore → detail-composite AFTER swap (hard ordering). P5d Tier A
+(IP-Adapter via `api::Portrait`) + `--tier auto|A|B` + rejection sampling (`--min-score`). **Live-
+verified** (release, sd15): cast wrote a reference set + coherence correctly flagged 3 unconditioned
+renders as different people; render produced a coherent garden scene with the swapped+restored face.
+**Deferred:** geometry-CN + multi-view/pose-CN casting (both need `t2i::Request.controls`, not on the
+`api` facade); Tier C baking (§11.6 → P6); resident render worker (§22, per-candidate model reload).
 
 ## Phase 6 — Cross-model (weights; the "all families" promise)
 
