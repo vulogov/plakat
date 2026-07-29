@@ -15,16 +15,11 @@ use anyhow::{Context, Result};
 use candle_core::Device;
 
 use crate::persona::aligner::{PipNet, NUM_LANDMARKS};
-
-// --- WFLW-98 landmark topology (frozen v1) — the indices the metrics reference. ---
-/// Face contour (jaw line), 33 points.
-const CONTOUR: std::ops::Range<usize> = 0..33;
-/// Explicit pupil centres (WFLW-98's convenience points).
-const PUPIL_RIGHT: usize = 96;
-const PUPIL_LEFT: usize = 97;
-/// Outer mouth corners (of the 76..=87 outer-lip loop).
-const MOUTH_CORNER_RIGHT: usize = 76;
-const MOUTH_CORNER_LEFT: usize = 82;
+// WFLW-98 topology (frozen v1) lives in one place — the geometry engine's topology module. The
+// scorecard references the same indices + named-anchor vocabulary rather than duplicating them.
+use crate::persona::geometry::topology::{
+    self as topo, CONTOUR, MOUTH_CORNER_LEFT, MOUTH_CORNER_RIGHT, PUPIL_LEFT, PUPIL_RIGHT,
+};
 
 /// Geometric measurements from one aligned face. All ratios are **scale-invariant** in the crop frame.
 #[derive(Debug, Clone)]
@@ -115,30 +110,6 @@ pub fn measure_landmarks(
 /// A named anchor region (§8.2/§10.1) → the WFLW-98 landmark indices whose centroid is its base point.
 /// This is the start of the **frozen WFLW-98 anchor vocabulary** (topology v1). Face regions only —
 /// ear/nose-piercing sites have no WFLW landmark and are handled by the body skeleton later.
-fn named_region(name: &str) -> Option<&'static [usize]> {
-    Some(match name {
-        // eyes / brows (right brow 33..=41, left brow 42..=50; right eye 60..=67, left eye 68..=75)
-        "right-brow-outer" => &[33],
-        "right-brow-inner" => &[41],
-        "left-brow-inner" => &[42],
-        "left-brow-outer" => &[50],
-        "forehead-centre" => &[37, 46], // brow centres — offset upward via `offset`
-        // nose (bridge 51..=54, bottom 55..=59)
-        "nose-tip" => &[57],
-        "nose-bridge" => &[52],
-        // cheeks: below-eye / nasolabial anchors (pupil + nearby mouth corner centroid)
-        "right-cheek" => &[96, 76],
-        "left-cheek" => &[97, 82],
-        "right-nasolabial-upper" => &[57, 76],
-        "left-nasolabial-upper" => &[57, 82],
-        // jaw / chin (contour 0..=32, 16 = chin)
-        "right-jaw-mid" => &[6],
-        "left-jaw-mid" => &[26],
-        "chin" | "chin-crease" => &[16],
-        _ => return None,
-    })
-}
-
 /// Resolve an anchor (named region + face-normalised offset, §8.2) to a crop-normalised `[0,1]` point.
 /// `offset` x is positive to the **subject's left** (= +x in image); scaled by face width/height.
 pub fn resolve_anchor(
@@ -147,7 +118,7 @@ pub fn resolve_anchor(
 ) -> Option<(f32, f32)> {
     // Prefer an explicit landmark region; fall back to `region` shorthand (same vocabulary).
     let name = anchor.landmark.as_deref().or(anchor.region.as_deref())?;
-    let idxs = named_region(name)?;
+    let idxs = topo::named_region(name)?;
     let n = idxs.len() as f32;
     let (bx, by) = idxs.iter().fold((0.0, 0.0), |(ax, ay), &i| {
         (ax + m.landmarks[i].0 / n, ay + m.landmarks[i].1 / n)

@@ -1,0 +1,84 @@
+{
+  # Example PersonaSpec (RFC PERSONA-1). Run:
+  #   plakat persona lint     examples/persona/example.hjson
+  #   plakat persona show     examples/persona/example.hjson --model sdxl
+  #   plakat persona geometry examples/persona/example.hjson --out /tmp/geo
+  # HJSON note: quote a string value that shares its line with a closing brace.
+  schema: "persona/1"
+
+  identity: {
+    name: ada
+    apparent_age: 34
+    sex: female
+  }
+
+  face: {
+    shape: "oval"
+    width: 0.45
+    jaw: {
+      width: 0.4
+    }
+    chin: {
+      projection: 0.55
+    }
+    cheekbones: {
+      prominence: 0.7
+    }
+    asymmetry: 0.2
+  }
+
+  eyes: {
+    color: "hazel"
+    spacing: 0.55
+    canthal_tilt: 0.6
+    brow: {
+      thickness: 0.45
+    }
+  }
+
+  nose: {
+    profile: "straight"
+    length: 0.5
+  }
+
+  mouth: {
+    width: 0.55
+    lower_lip: 0.6
+  }
+
+  skin: {
+    tone: "fitzpatrick-3"
+  }
+
+  hair: {
+    color: "auburn"
+    length: "shoulder"
+  }
+
+  teeth: {
+    visibility: "visible"
+  }
+
+  marks: [
+    {
+      kind: "mole"
+      anchor: {
+        region: "left-cheek"
+      }
+      size: 0.03
+    }
+  ]
+
+  figure: {
+    height_cm: 168
+    build: "mesomorph"
+    shoulders: 0.55
+    waist: 0.45
+    limb_length: 0.55
+  }
+
+  provenance: {
+    method: manual
+    lexicon_version: "1.0"
+  }
+}

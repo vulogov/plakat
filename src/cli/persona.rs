@@ -31,6 +31,9 @@ pub enum PersonaCmd {
     /// Measure a rendered image against a spec (the scorecard, RFC §12). P1: the landmark probe —
     /// SCRFD detects the face, PIPNet-98 aligns it, and geometric ratio metrics are reported.
     Verify(VerifyArgs),
+    /// Rasterise the geometry maps a spec resolves to (the Layer-2 geometry engine, RFC §10) — mesh /
+    /// wireframe / depth / pose-skeleton / region-masks / dentition / figure. Pure, no weights.
+    Geometry(GeometryArgs),
 }
 
 #[derive(Args, Debug)]
@@ -72,13 +75,137 @@ pub struct VerifyArgs {
     pub image: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct GeometryArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// Directory to write the map PNG(s) into (created if missing).
+    #[arg(long, default_value = "persona-geometry")]
+    pub out: PathBuf,
+    /// Which map(s): `all` or a comma list of
+    /// mesh,wireframe,depth,skeleton,masks,dentition,figure.
+    #[arg(long, default_value = "all")]
+    pub map: String,
+    /// Output edge length in pixels (face maps are square; the figure map is 3:4).
+    #[arg(long, default_value_t = 512)]
+    pub size: u32,
+    /// Mesh drawing convention: `mediapipe` (per-feature colour) or `generic` (white).
+    #[arg(long = "mesh-style", default_value = "mediapipe")]
+    pub mesh_style: String,
+    /// Seed for the asymmetry perturbation (§10.2).
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
         PersonaCmd::Lint(a) => run_lint(a),
         PersonaCmd::Show(a) => run_show(a),
         PersonaCmd::Verify(a) => run_verify(a).await,
+        PersonaCmd::Geometry(a) => run_geometry(a),
     }
+}
+
+fn run_geometry(a: GeometryArgs) -> Result<()> {
+    use crate::persona::geometry as geo;
+    let spec = PersonaSpec::load(&a.spec)?;
+    let sz = a.size.clamp(64, 4096);
+    let mesh_style = match a.mesh_style.as_str() {
+        "generic" => geo::MeshStyle::Generic,
+        _ => geo::MeshStyle::MediaPipe,
+    };
+
+    // resolve the face geometry from the spec.
+    let values = geo::geometry_values(&spec);
+    let open = geo::open_mouth(&spec);
+    let d = geo::resolve(&values, open, a.seed);
+
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    let want: Vec<&str> = if a.map == "all" {
+        vec!["mesh", "wireframe", "depth", "skeleton", "masks", "dentition", "figure"]
+    } else {
+        a.map.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect()
+    };
+
+    let name = spec.identity.as_ref().and_then(|i| i.name.as_deref()).unwrap_or("persona");
+    println!("{}  {}  (seed {}, {}²)", style("persona geometry").bold(), name, a.seed, sz);
+    if !d.warnings.is_empty() {
+        for w in &d.warnings {
+            println!("  {} {}: {}", style("validity").yellow(), w.kind, w.detail);
+        }
+    }
+
+    let mut wrote = 0;
+    let save = |path: PathBuf, r: image::DynamicImage| -> Result<()> {
+        r.save(&path).with_context(|| format!("writing {}", path.display()))?;
+        println!("  {} {}", style("✓").green(), path.display());
+        Ok(())
+    };
+    for m in &want {
+        let p = |suffix: &str| a.out.join(format!("{name}_{suffix}.png"));
+        match *m {
+            "mesh" => {
+                save(p("mesh"), geo::mesh_map(&d.landmarks, sz, mesh_style).into())?;
+                wrote += 1;
+            }
+            "wireframe" | "wire" => {
+                save(p("wireframe"), geo::wireframe(&d.landmarks, sz).into())?;
+                wrote += 1;
+            }
+            "depth" => {
+                save(p("depth"), geo::depth_proxy(&d.landmarks, sz).into())?;
+                wrote += 1;
+            }
+            "skeleton" | "pose" => {
+                save(p("skeleton"), geo::face_skeleton(&d.landmarks, sz).into())?;
+                wrote += 1;
+            }
+            "masks" | "mask" => {
+                // composite the region masks into one colour-coded image.
+                let mut img = image::RgbImage::new(sz, sz);
+                for (r, c) in [
+                    (geo::Region::Face, [40u8, 40, 60]),
+                    (geo::Region::BrowRight, [200, 160, 60]),
+                    (geo::Region::BrowLeft, [200, 160, 60]),
+                    (geo::Region::EyeRight, [80, 200, 255]),
+                    (geo::Region::EyeLeft, [80, 200, 255]),
+                    (geo::Region::Nose, [120, 255, 120]),
+                    (geo::Region::Mouth, [255, 90, 90]),
+                ] {
+                    let mask = geo::region_mask(&d.landmarks, sz, r);
+                    for (x, y, px) in mask.enumerate_pixels() {
+                        if px.0[0] > 0 {
+                            img.put_pixel(x, y, image::Rgb(c));
+                        }
+                    }
+                }
+                save(p("masks"), img.into())?;
+                wrote += 1;
+            }
+            "dentition" | "teeth" => {
+                save(p("dentition"), geo::dentition_hint(&d.landmarks, sz, 6).into())?;
+                wrote += 1;
+            }
+            "figure" => match geo::figure_params(&spec) {
+                Some(fp) => {
+                    let (w, h) = (sz, sz * 4 / 3);
+                    let fig = geo::resolve_figure(&fp, a.seed);
+                    save(p("figure_skeleton"), geo::figure_skeleton_map(&fig, w, h).into())?;
+                    save(p("figure_silhouette"), geo::silhouette_mask(&fig, w, h).into())?;
+                    wrote += 2;
+                }
+                None => {
+                    if a.map != "all" {
+                        println!("  {} figure: spec has no `figure:` block — nothing to render", style("·").dim());
+                    }
+                }
+            },
+            other => println!("  {} unknown map `{other}` (skipped)", style("?").yellow()),
+        }
+    }
+    println!("{} {wrote} map(s) → {}", style("done:").bold(), a.out.display());
+    Ok(())
 }
 
 async fn run_verify(a: VerifyArgs) -> Result<()> {

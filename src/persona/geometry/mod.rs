@@ -15,9 +15,12 @@
 
 pub mod basis;
 pub mod figure;
+pub mod from_spec;
 pub mod raster;
 pub mod template;
 pub mod topology;
+
+pub use from_spec::{figure_params, geometry_values, open_mouth};
 
 pub use basis::{anchor_point, identity, resolve, Deformed, GeoWarning, GEOMETRIC_ATTRS};
 pub use figure::{

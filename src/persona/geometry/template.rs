@@ -45,7 +45,8 @@ const LOWER_LIP: f32 = 0.045; // outer bottom drop below the mouth line
 const CUPID_DIP: f32 = 0.010; // cupid's-bow centre dip
 const INNER_HALF_W: f32 = 0.105;
 const INNER_HALF_H_CLOSED: f32 = 0.010;
-const INNER_HALF_H_OPEN: f32 = 0.055; // dentition-visible aperture
+const INNER_HALF_H_OPEN: f32 = 0.038; // dentition-visible aperture (opens downward, see INNER_OPEN_DROP)
+const INNER_OPEN_DROP: f32 = 0.020; // aperture centre drop when the mouth opens
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -127,11 +128,15 @@ pub fn mean_template(open: bool) -> Template {
     }
 
     // --- Inner lip 88..=95 (aperture ellipse): 8 pts, right inner corner first. ---
+    // An open mouth opens *downward* (the jaw drops), so the aperture centre shifts down and its top
+    // stays below the outer upper-lip edge — otherwise it pokes above the outer lip and trips the
+    // validity clamp (§10.2). Closed mouths keep a thin symmetric aperture at the mouth line.
     let ih = if open { INNER_HALF_H_OPEN } else { INNER_HALF_H_CLOSED };
+    let iy = if open { MOUTH_Y + INNER_OPEN_DROP } else { MOUTH_Y };
     for k in 0..8 {
         let ang = PI + k as f32 * (2.0 * PI / 8.0);
         let x = 0.5 + ang.cos() * INNER_HALF_W;
-        let y = MOUTH_Y + ang.sin() * ih;
+        let y = iy + ang.sin() * ih;
         p[LIP_INNER.start + k] = (x, y);
     }
 
