@@ -14,11 +14,16 @@
 //! → conditioning-map rasteriser → figure geometry → `geometry` CLI + corpus.
 
 pub mod basis;
+pub mod figure;
 pub mod raster;
 pub mod template;
 pub mod topology;
 
 pub use basis::{anchor_point, identity, resolve, Deformed, GeoWarning, GEOMETRIC_ATTRS};
+pub use figure::{
+    figure_anchor, figure_skeleton_map, resolve_figure, silhouette_mask, Build, Figure, FigureParams,
+    BODY_ANCHOR_VOCAB,
+};
 pub use raster::{
     dentition_hint, depth_proxy, detail_overlay, face_skeleton, mesh_map, region_mask, wireframe,
     MeshStyle, Region,
