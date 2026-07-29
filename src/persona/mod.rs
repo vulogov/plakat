@@ -13,6 +13,7 @@
 
 pub mod aligner;
 pub mod calibration;
+pub mod casting;
 pub mod compile;
 pub mod detail;
 pub mod geometry;
