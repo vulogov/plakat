@@ -26,8 +26,7 @@ const PUPIL_LEFT: usize = 97;
 const MOUTH_CORNER_RIGHT: usize = 76;
 const MOUTH_CORNER_LEFT: usize = 82;
 
-/// Geometric measurements from one aligned face. All are **scale-invariant ratios** in the crop frame,
-/// so they need no mapping back to image pixels.
+/// Geometric measurements from one aligned face. All ratios are **scale-invariant** in the crop frame.
 #[derive(Debug, Clone)]
 pub struct FaceMetrics {
     /// Inter-pupillary distance / face width — the metric for `eyes.spacing`.
@@ -38,8 +37,23 @@ pub struct FaceMetrics {
     pub face_aspect: f32,
     /// The 98 landmarks in crop-normalised `[0,1]`.
     pub landmarks: Vec<(f32, f32)>,
+    /// Face contour width / height in crop-normalised units (for anchor offset scaling).
+    pub face_w: f32,
+    pub face_h: f32,
     /// SCRFD detection score of the measured face.
     pub detection_score: f32,
+    /// The aligned face crop (RGB) — the pixel source for `local_anomaly`.
+    pub crop: image::RgbImage,
+}
+
+/// Result of a `local_anomaly` probe (RFC §12.1) — the probe that makes marks measurable.
+#[derive(Debug, Clone)]
+pub struct AnomalyResult {
+    /// Presence confidence in `[0,1]` (a darker/redder inner region vs the surrounding skin ring).
+    pub presence: f32,
+    /// Position error: distance from the requested anchor to the anomaly centroid, in crop-normalised
+    /// units (fraction of crop width). Small = the mark landed where the spec asked.
+    pub position_error: f32,
 }
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -90,9 +104,114 @@ pub fn measure_landmarks(
         interpupillary_over_facewidth: dist(lm[PUPIL_RIGHT], lm[PUPIL_LEFT]) / face_w,
         mouth_over_facewidth: dist(lm[MOUTH_CORNER_RIGHT], lm[MOUTH_CORNER_LEFT]) / face_w,
         face_aspect: face_h / face_w,
-        landmarks: lm,
+        face_w,
+        face_h,
         detection_score: face.score,
+        landmarks: lm,
+        crop,
     }))
+}
+
+/// A named anchor region (§8.2/§10.1) → the WFLW-98 landmark indices whose centroid is its base point.
+/// This is the start of the **frozen WFLW-98 anchor vocabulary** (topology v1). Face regions only —
+/// ear/nose-piercing sites have no WFLW landmark and are handled by the body skeleton later.
+fn named_region(name: &str) -> Option<&'static [usize]> {
+    Some(match name {
+        // eyes / brows (right brow 33..=41, left brow 42..=50; right eye 60..=67, left eye 68..=75)
+        "right-brow-outer" => &[33],
+        "right-brow-inner" => &[41],
+        "left-brow-inner" => &[42],
+        "left-brow-outer" => &[50],
+        "forehead-centre" => &[37, 46], // brow centres — offset upward via `offset`
+        // nose (bridge 51..=54, bottom 55..=59)
+        "nose-tip" => &[57],
+        "nose-bridge" => &[52],
+        // cheeks: below-eye / nasolabial anchors (pupil + nearby mouth corner centroid)
+        "right-cheek" => &[96, 76],
+        "left-cheek" => &[97, 82],
+        "right-nasolabial-upper" => &[57, 76],
+        "left-nasolabial-upper" => &[57, 82],
+        // jaw / chin (contour 0..=32, 16 = chin)
+        "right-jaw-mid" => &[6],
+        "left-jaw-mid" => &[26],
+        "chin" | "chin-crease" => &[16],
+        _ => return None,
+    })
+}
+
+/// Resolve an anchor (named region + face-normalised offset, §8.2) to a crop-normalised `[0,1]` point.
+/// `offset` x is positive to the **subject's left** (= +x in image); scaled by face width/height.
+pub fn resolve_anchor(
+    anchor: &crate::persona::spec::Anchor,
+    m: &FaceMetrics,
+) -> Option<(f32, f32)> {
+    // Prefer an explicit landmark region; fall back to `region` shorthand (same vocabulary).
+    let name = anchor.landmark.as_deref().or(anchor.region.as_deref())?;
+    let idxs = named_region(name)?;
+    let n = idxs.len() as f32;
+    let (bx, by) = idxs.iter().fold((0.0, 0.0), |(ax, ay), &i| {
+        (ax + m.landmarks[i].0 / n, ay + m.landmarks[i].1 / n)
+    });
+    let [dx, dy] = anchor.offset.unwrap_or([0.0, 0.0]);
+    Some(((bx + dx * m.face_w).clamp(0.0, 1.0), (by + dy * m.face_h).clamp(0.0, 1.0)))
+}
+
+fn luma(p: &image::Rgb<u8>) -> f32 {
+    0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32
+}
+
+/// The `local_anomaly` probe (RFC §12.1): go to where a mark *should* be and ask whether the skin there
+/// deviates from its neighbourhood — a far easier question than searching for a 4-pixel mole, robust at
+/// small scale, and it yields a position error. `radius_frac` ≈ the mark's size (fraction of crop width).
+pub fn local_anomaly(crop: &image::RgbImage, pos: (f32, f32), radius_frac: f32) -> AnomalyResult {
+    let (cw, ch) = (crop.width() as f32, crop.height() as f32);
+    let (cx, cy) = (pos.0 * cw, pos.1 * ch);
+    let r_in = (radius_frac * cw).max(2.0);
+    let r_out = 2.5 * r_in;
+    let (mut inner_sum, mut inner_n) = (0.0f32, 0.0f32);
+    let mut ring: Vec<f32> = Vec::new();
+    let x0 = (cx - r_out).max(0.0) as u32;
+    let y0 = (cy - r_out).max(0.0) as u32;
+    let x1 = (cx + r_out).min(cw - 1.0) as u32;
+    let y1 = (cy + r_out).min(ch - 1.0) as u32;
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+            let l = luma(crop.get_pixel(x, y));
+            if d <= r_in {
+                inner_sum += l;
+                inner_n += 1.0;
+            } else if d <= r_out {
+                ring.push(l);
+            }
+        }
+    }
+    if inner_n < 1.0 || ring.len() < 4 {
+        return AnomalyResult { presence: 0.0, position_error: 1.0 };
+    }
+    let inner_mean = inner_sum / inner_n;
+    let ring_mean = ring.iter().sum::<f32>() / ring.len() as f32;
+    let ring_var = ring.iter().map(|v| (v - ring_mean).powi(2)).sum::<f32>() / ring.len() as f32;
+    let ring_std = ring_var.sqrt().max(1.0);
+    // A mark is darker than surrounding skin → inner_mean < ring_mean → positive z. z≥3 = confident.
+    let z = (ring_mean - inner_mean) / ring_std;
+    let presence = (z / 3.0).clamp(0.0, 1.0);
+    // Centroid of the darkest pixels in the neighbourhood (weight = how much below the ring mean).
+    let (mut wx, mut wy, mut wsum) = (0.0f32, 0.0f32, 0.0f32);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let w = (ring_mean - luma(crop.get_pixel(x, y))).max(0.0);
+            wx += w * x as f32;
+            wy += w * y as f32;
+            wsum += w;
+        }
+    }
+    let position_error = if wsum > 0.0 {
+        (((wx / wsum - cx).powi(2) + (wy / wsum - cy).powi(2)).sqrt()) / cw
+    } else {
+        1.0
+    };
+    AnomalyResult { presence, position_error }
 }
 
 /// Load the aligner + detector (both weights auto-resolved) for a verify run.
@@ -121,5 +240,27 @@ mod tests {
         assert_eq!(PUPIL_LEFT, NUM_LANDMARKS - 1);
         assert_eq!(PUPIL_RIGHT, NUM_LANDMARKS - 2);
         assert!(MOUTH_CORNER_RIGHT < MOUTH_CORNER_LEFT);
+    }
+
+    /// Synthetic ground truth (§24): a dark spot composited at a known position must be found there by
+    /// `local_anomaly`, and a blank region must not — the probe's self-test needing no annotation.
+    #[test]
+    fn local_anomaly_finds_a_dark_spot_and_ignores_blank_skin() {
+        use image::{Rgb, RgbImage};
+        let mut img = RgbImage::from_pixel(100, 100, Rgb([200, 200, 200]));
+        let (sx, sy, r) = (60.0f32, 40.0f32, 3.5f32); // spot at (0.6, 0.4)
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                if ((x as f32 - sx).powi(2) + (y as f32 - sy).powi(2)).sqrt() <= r {
+                    img.put_pixel(x, y, Rgb([40, 30, 30]));
+                }
+            }
+        }
+        let hit = local_anomaly(&img, (0.6, 0.4), 0.04);
+        assert!(hit.presence > 0.5, "presence {}", hit.presence);
+        assert!(hit.position_error < 0.05, "position_error {}", hit.position_error);
+
+        let blank = local_anomaly(&img, (0.2, 0.2), 0.04);
+        assert!(blank.presence < 0.2, "blank presence {}", blank.presence);
     }
 }

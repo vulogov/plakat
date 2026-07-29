@@ -83,7 +83,7 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
 
 async fn run_verify(a: VerifyArgs) -> Result<()> {
     use crate::persona::scorecard;
-    let _spec = PersonaSpec::load(&a.spec)?; // loaded now; attribute-scoring against it lands with calibration
+    let spec = PersonaSpec::load(&a.spec)?;
     // Measurement runs on CPU (the aligner is tiny + deterministic; avoids GPU contention).
     let device = candle_core::Device::Cpu;
     let (detector, pipnet) = scorecard::load_probes(&device).await?;
@@ -97,6 +97,34 @@ async fn run_verify(a: VerifyArgs) -> Result<()> {
     println!("  interpupillary / face-width   {:.3}   ({})", m.interpupillary_over_facewidth, style("eyes.spacing").dim());
     println!("  mouth-width / face-width      {:.3}   ({})", m.mouth_over_facewidth, style("mouth.width").dim());
     println!("  face aspect (h/w)             {:.3}   ({})", m.face_aspect, style("face.width⁻¹").dim());
+
+    // Detail sub-score: for each spec mark with an anchor, go to where it should be and probe.
+    let marks = spec.marks.as_deref().unwrap_or(&[]);
+    let positional: Vec<_> = marks.iter().filter(|mk| mk.anchor.is_some()).collect();
+    if !positional.is_empty() {
+        println!("\n{}", style("localized details (local_anomaly):").bold());
+        for (i, mk) in positional.iter().enumerate() {
+            let anchor = mk.anchor.as_ref().unwrap();
+            let kind = mk.kind.as_deref().unwrap_or("mark");
+            let Some(pos) = scorecard::resolve_anchor(anchor, &m) else {
+                println!(
+                    "  {} {kind}[{i}]: anchor {:?} not in the WFLW-98 vocabulary",
+                    style("?").yellow(),
+                    anchor.landmark.as_deref().or(anchor.region.as_deref()).unwrap_or("(none)")
+                );
+                continue;
+            };
+            let radius = mk.size.unwrap_or(0.05) * m.face_w; // mark size is a fraction of face width
+            let r = scorecard::local_anomaly(&m.crop, pos, radius.max(0.02));
+            let mark_glyph = if r.presence > 0.5 { style("✓").green() } else { style("✗").red() };
+            println!(
+                "  {mark_glyph} {kind}[{i}] @ {}  presence {:.2}  position-error {:.3}",
+                style(anchor.landmark.as_deref().or(anchor.region.as_deref()).unwrap_or("?")).dim(),
+                r.presence,
+                r.position_error
+            );
+        }
+    }
     println!("\n{}", style("note: scalar attribute-scoring needs the P4 calibration prior; raw metrics shown.").dim());
     Ok(())
 }
