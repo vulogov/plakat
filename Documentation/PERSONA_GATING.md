@@ -54,8 +54,15 @@ the license-clean escape hatch if a dense 3D mesh is later required; FAN is a 68
 Harness committed: `tools/reference/persona_baseline.py` (renders N seeds via the plakat CLI or reads
 a dir → InsightFace SCRFD+ArcFace pairwise-cosine identity variance + detection-failure rate +
 best-effort OWL-ViT localized-detail hit/side rate). It is a **compute job** (multi-family render) to
-schedule; the measurement half runs on any image dir today. Results are committed as a corpus entry
-and every later phase reports the same statistics.
+schedule; the measurement half runs on any image dir today. Every later phase reports the same stats.
+
+**First control (sd15, N=32, dense person prompt):** detection-failure rate **0.75** (only 8/32
+renders produced exactly one detectable face — the dominant failure mode is 0-or-many faces, not
+identity), identity pairwise-ArcFace over the 8 clean faces mean 0.988 / p5 0.978, localized-detail
+(mole) hit 1.0 / correct-side 0.63. Takeaway: on sd15 the biggest baseline problem is **getting a
+single clean face at all**, and the mole lands on the wrong side ~37% of the time (§2.1.4). Full
+multi-family baselines still to run (guard-silenced with `PLAKAT_OOM_GUARD_GB=0` — the guard reads
+macOS `free` pages, which stay near-zero by design, and mis-fires under the tight render loop).
 
 > Detail-hit measurement caveat: OWL-ViT on a 4-pixel mole is exactly the §2.1.4 problem, so the
 > baseline's detail-hit number is a noisy proxy until the Phase-1 `local_anomaly` probe (which needs

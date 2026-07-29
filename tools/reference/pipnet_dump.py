@@ -58,7 +58,9 @@ def main() -> int:
             continue
         wname = n.input[1]
         bname = n.input[2] if len(n.input) > 2 else None
-        head = next((h for h in heads if h in wname), None)
+        # EXACT head match on the stem — substring matching mis-binds nb_x_layer→x_layer (§bug).
+        stem = wname[:-7] if wname.endswith(".weight") else wname
+        head = stem if stem in heads else None
         clean = head if head else r18[conv_idx]
         if not head:
             conv_idx += 1
