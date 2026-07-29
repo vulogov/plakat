@@ -124,11 +124,22 @@ at face sites; body/hand/glasses culled+reported (§8.5). **Notes/deferred withi
 `condition` component (§8.8) and dentition mouth-region *inpaint escalation* (§8.7) not wired — the
 latter belongs with P7 repair; harmonise wired but not run live (needs model weights).
 
-## Phase 4 — Calibration (inference; committed tables)
+## Phase 4 — Calibration (inference; committed tables) — DONE (infra + bootstrap; sweep = compute job)
 
-- [ ] Prior measurement (§13.1, defines `0.5`), response curves + inverse pre-distort (§13.2),
+- [x] Prior measurement (§13.1, defines `0.5`), response curves + inverse pre-distort (§13.2),
       harmonisation constants, controllability grades (§13.3, measured not asserted), recalibration
       policy (§13.4). Committed per-family tables.
+
+**Shipped** in `src/persona/calibration/` (fit/table) + `plakat persona calibrate` +
+`assets/persona/calibration/{sd15,sdxl}.hjson` + `Documentation/PERSONA_CALIBRATION.md`. P4a table
+schema + HJSON loader + `Prior::normalise` + `staleness()` (§13.4) + committed **provisional bootstrap**
+tables. P4b pure fit/`predistort`/`grade_from` math (isotonic-monotone, inverse transfer, grades from
+slope/monotonicity/variance). P4c wired: `verify --model` SCORES the 3 aligner scalars vs prior (out of
+`pending_calibration`), `geometry --calibrate` pre-distorts the deformation, `show` shows grade badges.
+P4d `calibrate --bootstrap` (regen from mean-template + lexicon) / `--from <dir>` (measure a
+`<attr>__<requested>__<seed>.png` sweep → real priors+curves+grades). **The multi-family render sweep is
+the scheduled offline compute job** (like §2.3 baselines); the measurement half runs today. Tables are
+provisional until swept.
 
 ## Phase 5 — Identity anchor / casting (weights)
 
