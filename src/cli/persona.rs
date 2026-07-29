@@ -28,6 +28,9 @@ pub enum PersonaCmd {
     /// Show what a spec resolves to for a model family: the salience-ranked prompt-routed attributes,
     /// the compiled positive/negative prompt, and (on CLIP) which attributes the token budget dropped.
     Show(ShowArgs),
+    /// Measure a rendered image against a spec (the scorecard, RFC §12). P1: the landmark probe —
+    /// SCRFD detects the face, PIPNet-98 aligns it, and geometric ratio metrics are reported.
+    Verify(VerifyArgs),
 }
 
 #[derive(Args, Debug)]
@@ -60,12 +63,42 @@ pub struct ShowArgs {
     pub model: String,
 }
 
-pub fn run(args: PersonaArgs) -> Result<()> {
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// The rendered image to measure against the spec.
+    #[arg(long)]
+    pub image: PathBuf,
+}
+
+pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
         PersonaCmd::Lint(a) => run_lint(a),
         PersonaCmd::Show(a) => run_show(a),
+        PersonaCmd::Verify(a) => run_verify(a).await,
     }
+}
+
+async fn run_verify(a: VerifyArgs) -> Result<()> {
+    use crate::persona::scorecard;
+    let _spec = PersonaSpec::load(&a.spec)?; // loaded now; attribute-scoring against it lands with calibration
+    // Measurement runs on CPU (the aligner is tiny + deterministic; avoids GPU contention).
+    let device = candle_core::Device::Cpu;
+    let (detector, pipnet) = scorecard::load_probes(&device).await?;
+    let metrics = scorecard::measure_landmarks(&a.image, &detector, &pipnet)?;
+    let Some(m) = metrics else {
+        println!("{}  no face detected in {}", style("✗").red(), a.image.display());
+        return Ok(());
+    };
+    println!("{}  {}  (face score {:.2})", style("scorecard").bold(), a.image.display(), m.detection_score);
+    println!("\n{}", style("landmark metrics (WFLW-98):").bold());
+    println!("  interpupillary / face-width   {:.3}   ({})", m.interpupillary_over_facewidth, style("eyes.spacing").dim());
+    println!("  mouth-width / face-width      {:.3}   ({})", m.mouth_over_facewidth, style("mouth.width").dim());
+    println!("  face aspect (h/w)             {:.3}   ({})", m.face_aspect, style("face.width⁻¹").dim());
+    println!("\n{}", style("note: scalar attribute-scoring needs the P4 calibration prior; raw metrics shown.").dim());
+    Ok(())
 }
 
 fn run_show(a: ShowArgs) -> Result<()> {

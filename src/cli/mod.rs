@@ -358,7 +358,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Verify(args) => verify::run(args).await,
         Command::Bench(args) => bench::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
-        Command::Persona(args) => persona::run(args),
+        Command::Persona(args) => persona::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]

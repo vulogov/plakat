@@ -15,6 +15,7 @@ pub mod aligner;
 pub mod compile;
 pub mod lexicon;
 pub mod lint;
+pub mod scorecard;
 pub mod spec;
 
 pub use spec::{PersonaSpec, SCHEMA_VERSION};
