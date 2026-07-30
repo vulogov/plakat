@@ -877,12 +877,11 @@ fn fnv_hash(s: &str) -> String {
 /// A's scar is never composited onto figure B (the catastrophic-failure guard).
 async fn run_render_multi(a: RenderArgs) -> Result<()> {
     use crate::persona::casting::{self, ReferenceSet};
-    use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
+    use crate::persona::{compile, detail, scorecard};
 
     // Load every persona (primary + each --with), in left-to-right order.
     let mut dirs = vec![a.persona.clone()];
     dirs.extend(a.with.iter().cloned());
-    let lex = Lexicon::skeleton();
     struct P {
         dir: PathBuf,
         set: ReferenceSet,
@@ -896,7 +895,9 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
             anyhow::bail!("reference set {} is empty", d.display());
         }
         let spec = PersonaSpec::load(&d.join("spec.hjson")).ok();
-        let appearance = spec.as_ref().map(|s| compile::compile_for_model(s, &lex, &a.model).positive).unwrap_or_default();
+        // a concise per-person descriptor (age + sex + hair/beard) — not the full headshot-framed
+        // attribute dump, which fights a group scene (§14.3).
+        let appearance = spec.as_ref().map(compile::crowd_descriptor).unwrap_or_default();
         personas.push(P { dir: d.clone(), set, spec, appearance });
     }
     let n = personas.len();
@@ -910,9 +911,10 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
     };
     let appearances: Vec<String> = personas.iter().map(|p| p.appearance.clone()).filter(|s| !s.is_empty()).collect();
     let prompt = if appearances.is_empty() {
-        format!("{count_word}, {}", a.scene)
+        format!("a colour photograph of {count_word}, {}", a.scene)
     } else {
-        format!("{count_word}, {}, {}", a.scene, appearances.join("; "))
+        // "a photograph of two people, <scene>: a 31-year-old woman with auburn hair, and a 38-year-old man with a beard"
+        format!("a colour photograph of {count_word}, {}: {}", a.scene, appearances.join(", and "))
     };
 
     println!("  {} generating the group scene…", style("→").cyan());

@@ -267,13 +267,100 @@ pub fn compile_for_model(spec: &PersonaSpec, lex: &Lexicon, model: &str) -> Comp
     let class = EncoderClass::from_model(model);
     let resolved = resolve(spec, lex);
     let mut c = emit(&resolved, class);
-    // Fold in the asserted-empty-collection negatives.
-    let extra = collection_negatives(spec);
-    if !extra.is_empty() {
-        let joined = extra.join(", ");
+
+    // Ground the render with age + sex + a photographic framing. Without it the model invents the age
+    // (an adult persona drifts to an idealised young face) and the framing, and the bare attribute list
+    // reads as an illustration. CLIP: a photographic lead at the front (highest salience). T5/Gemma:
+    // slot the age+sex noun into the natural-language template.
+    let noun = subject_noun(spec);
+    c.positive = match class {
+        EncoderClass::Clip | EncoderClass::ClipDual | EncoderClass::ClipTriple => {
+            let lead = photo_lead(spec);
+            if c.positive.is_empty() {
+                format!("{lead} of {noun}")
+            } else {
+                format!("{lead} of {noun}, {}", c.positive)
+            }
+        }
+        EncoderClass::T5 | EncoderClass::Gemma => {
+            if c.positive.contains("a person") {
+                c.positive.replacen("a person", &noun, 1)
+            } else if c.positive.is_empty() {
+                format!("A portrait photograph of {noun}.")
+            } else {
+                format!("A portrait photograph of {noun}, {}", c.positive)
+            }
+        }
+    };
+
+    // Fold in the asserted-empty-collection negatives + the age-gate guard (personas are 18+, §23.1):
+    // exclude child/underage drift explicitly so the render matches the adult spec.
+    let mut negs = collection_negatives(spec);
+    if spec.identity.is_some() {
+        // Anti-uncanny only — fight the plastic/illustration look the bare attribute list tends to
+        // produce. The subject's AGE is set by the positive clause (`a 31-year-old woman`), not by
+        // suppressing "child" here; the single age-policy control is the lint gate (§23.1), so a
+        // legitimately-authored age renders correctly and the policy lives in exactly one place.
+        for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll"] {
+            negs.push(n.into());
+        }
+    }
+    if !negs.is_empty() {
+        let joined = negs.join(", ");
         c.negative = if c.negative.is_empty() { joined } else { format!("{}, {}", c.negative, joined) };
     }
     c
+}
+
+/// A concise per-person descriptor for a crowd/scene prompt (§14.3) — `a 31-year-old woman with auburn
+/// hair`. Age + sex + the one or two most identifying surface cues (hair colour, facial hair), WITHOUT
+/// the headshot framing (which conflicts with a group scene). Used by multiperson render.
+pub fn crowd_descriptor(spec: &PersonaSpec) -> String {
+    let id = spec.identity.as_ref();
+    let noun = match id.and_then(|i| i.sex.as_deref()) {
+        Some("female") => "woman",
+        Some("male") => "man",
+        _ => "person",
+    };
+    let mut d = match id.and_then(|i| i.apparent_age) {
+        Some(age) => format!("a {age}-year-old {noun}"),
+        None => format!("a {noun}"),
+    };
+    if let Some(Color::Named(c)) = spec.hair.as_ref().and_then(|h| h.color.as_ref()) {
+        d.push_str(&format!(" with {c} hair"));
+    }
+    if let Some(style) = spec.facial_hair.as_ref().and_then(|f| f.style.as_deref()) {
+        if style != "none" {
+            d.push_str(&format!(" and a {}", style.replace('-', " ")));
+        }
+    }
+    d
+}
+
+/// The subject noun phrase — `a 31-year-old woman` (age + sex, neutral, no valence). The age grounds
+/// the render as an adult (§23.1) and stops the drift to an idealised young face.
+fn subject_noun(spec: &PersonaSpec) -> String {
+    let id = spec.identity.as_ref();
+    let noun = match id.and_then(|i| i.sex.as_deref()) {
+        Some("female") => "woman",
+        Some("male") => "man",
+        _ => "person",
+    };
+    match id.and_then(|i| i.apparent_age) {
+        Some(age) => format!("a {age}-year-old {noun}"),
+        None => format!("a {noun}"),
+    }
+}
+
+/// The photographic lead for CLIP — grounds the render as a real photograph (fighting the illustration
+/// / cgi look) and carries the framing. `headshot` → `a portrait photograph` (a bare "headshot" tends
+/// to an unnaturally tight crop).
+fn photo_lead(spec: &PersonaSpec) -> &'static str {
+    match spec.defaults.as_ref().and_then(|d| d.framing.as_deref()) {
+        Some("half-body") | Some("waist-up") => "a waist-up portrait photograph",
+        Some("full-body") | Some("full-length") => "a full-body photograph",
+        _ => "a portrait photograph",
+    }
 }
 
 /// A dentition-focused prompt for the mouth-region inpaint (RFC §8.7). Built from the `teeth` block
@@ -466,16 +553,16 @@ mod tests {
         let clip = compile_for_model(&s, &lex, "sd15");
         assert_eq!(
             clip.positive,
-            "hazel eyes, almond eyes, auburn hair, shoulder-length hair, wavy hair, wide-set eyes, oval-shaped face, an aquiline nose"
+            "a portrait photograph of a 34-year-old person, hazel eyes, almond eyes, auburn hair, shoulder-length hair, wavy hair, wide-set eyes, oval-shaped face, an aquiline nose"
         );
         assert_eq!(
             clip.negative,
-            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes"
+            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes, cgi, 3d render, illustration, plastic skin, airbrushed, doll"
         );
         let t5 = compile_for_model(&s, &lex, "flux-dev");
         assert_eq!(
             t5.positive,
-            "A portrait of a person with hazel eyes, almond eyes, auburn hair, shoulder-length hair, wavy hair, wide-set eyes, oval-shaped face, and an aquiline nose."
+            "A portrait of a 34-year-old person with hazel eyes, almond eyes, auburn hair, shoulder-length hair, wavy hair, wide-set eyes, oval-shaped face, and an aquiline nose."
         );
     }
 
