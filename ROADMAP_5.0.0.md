@@ -214,10 +214,16 @@ sub-interview). **Deferred (interactive UI, low verifiability w/o a PTY):** the 
 tooth widgets wired into the TUI loop, Tier-2 debounced diffusion preview (ChannelHook+CancelFlag), and
 workbench/evolve (§17.8–9).
 
-## Phase 9 — docs + release (5.0.0 cut)
+## Phase 9 — docs + release (5.0.0 cut) — DOCS DONE; CUT PENDING SAMPLE CORPUS
 
-- [ ] Docs deliverables (§21): PERSONA_TUTORIAL, PERSONA_DETAILS_HOWTO, PERSONA.md, PERSONA_LEXICON.md,
-      PERSONA_ANCHORS.md, capability matrix, `doctor` persona section. README what's-new. Cut 5.0.0.
+- [x] Docs deliverables (§21): PERSONA.md, PERSONA_TUTORIAL.md, PERSONA_DETAILS_HOWTO.md,
+      PERSONA_LEXICON.md, PERSONA_ANCHORS.md; `doctor` persona section; README what's-new.
+- [x] `./corpus`: two authored personas (mira, idris) + `persona_run.sh` feature driver (sd15/sd35) +
+      PERSONA_CORPUS.md walkthrough (`persona`-specific; the gallery-index README was restored).
+- [ ] **Generate the sample corpus** (`corpus/persona_run.sh`) — the user runs this before the cut.
+- [ ] **Cut 5.0.0**: bump Cargo.toml **+ Cargo.lock** in sync; `cargo test --no-default-features --lib`
+      green; commit; FF `main`; push `v5.0.0` tag → CI 6-asset release + crates.io; `gh release edit`
+      notes. (Release-flow gotchas in the auto-memory.) **Held until the sample corpus lands.**
 
 ## Cross-cutting (span all phases)
 
