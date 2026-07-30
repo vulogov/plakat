@@ -37,12 +37,16 @@ impl EncoderClass {
         }
     }
 
-    /// Approximate persona token budget (words). CLIP families are capped (77 total, ~40% reserved for
-    /// the scene → ~28 words for the persona); T5/Gemma are effectively unbounded and ordered only.
+    /// Approximate persona token budget (words). PURE-CLIP families (SD 1.5/2.1, SDXL) are bounded by the
+    /// 77-token CLIP limit; at ~1.7 tokens/word for short attribute phrases that is ~44 words, less a
+    /// short subject clause + a little scene headroom → ~40. SD3.5 (ClipTriple) also carries a **T5-XXL**
+    /// encoder that attends to long prompts, so like PixArt/Flux (T5) and Sana (Gemma) it is effectively
+    /// unbounded. NB: attributes dropped from the TEXT still drive the geometry conditioning — the budget
+    /// only trims what the prompt can hold, it does not discard the attribute.
     fn word_budget(self) -> Option<usize> {
         match self {
-            EncoderClass::Clip | EncoderClass::ClipDual | EncoderClass::ClipTriple => Some(28),
-            EncoderClass::T5 | EncoderClass::Gemma => None,
+            EncoderClass::Clip | EncoderClass::ClipDual => Some(40),
+            EncoderClass::ClipTriple | EncoderClass::T5 | EncoderClass::Gemma => None,
         }
     }
 

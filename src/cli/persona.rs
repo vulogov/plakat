@@ -509,8 +509,12 @@ async fn run_repair(a: RepairArgs) -> Result<()> {
             let mtmp = std::env::temp_dir().join(format!("persona_repair_mask_{}.png", a.seed));
             full.save(&tmp)?;
             mask.save(&mtmp)?;
+            let (im, sub) = masked_inpaint_model(&a.model);
+            if sub {
+                println!("  {} {} has no masked img2img — using sd15 for the local repair pass", style("·").dim(), a.model);
+            }
             println!("  {} inpainting the {section} region with \"{phrase}\"…", style("→").cyan());
-            let out = crate::api::Img2img::new(&a.model, &tmp)
+            let out = crate::api::Img2img::new(&im, &tmp)
                 .prompt(&phrase)
                 .mask(&mtmp)
                 .mask_feather(6)
@@ -832,7 +836,8 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                             cur.save(&tmp)?;
                             mask.save(&mtmp)?;
                             println!("  {} dentition inpaint (\"{dprompt}\") over the mouth aperture (§8.7)…", style("→").cyan());
-                            match crate::api::Img2img::new(&a.model, &tmp).prompt(&dprompt).mask(&mtmp).mask_feather(4).strength(0.5).seed(a.seed).run().await {
+                            let (im, _) = masked_inpaint_model(&a.model);
+                            match crate::api::Img2img::new(&im, &tmp).prompt(&dprompt).mask(&mtmp).mask_feather(4).strength(0.5).seed(a.seed).run().await {
                                 Ok(imgs) => {
                                     if let Some(img) = imgs.into_iter().next() {
                                         img.save(&a.out)?;
@@ -861,6 +866,18 @@ async fn run_render(a: RenderArgs) -> Result<()> {
 
     println!("{} {}", style("done:").bold(), a.out.display());
     Ok(())
+}
+
+/// A model usable for a masked img2img inpaint (repair / dentition / harmonise). Those go through the
+/// SdCore UNet path, which supports only SD 1.5 / 2.1 / SDXL — SD3.5 / PixArt / Sana / Flux have
+/// separate pipelines with no masked-img2img entry. Non-SD-UNet families fall back to sd15 for the
+/// small local pass (identity comes from the surrounding pixels, so the base family doesn't matter).
+fn masked_inpaint_model(requested: &str) -> (String, bool) {
+    use crate::persona::compile::EncoderClass;
+    match EncoderClass::from_model(requested) {
+        EncoderClass::Clip | EncoderClass::ClipDual => (requested.to_string(), false),
+        _ => ("sd15".to_string(), true),
+    }
 }
 
 fn fnv_hash(s: &str) -> String {
@@ -1409,9 +1426,13 @@ async fn run_composite(a: CompositeArgs) -> Result<()> {
         let mask_path = tmp.join(format!("persona_harm_mask_{}.png", a.seed));
         r.image.save(&comp_path)?;
         r.mask.save(&mask_path)?;
-        println!("  {} harmonising over the affected region (model {}, strength {:.2})…", style("→").cyan(), a.model, a.harmonise_strength);
+        let (im, sub) = masked_inpaint_model(&a.model);
+        if sub {
+            println!("  {} {} has no masked img2img — using sd15 for the harmonise pass", style("·").dim(), a.model);
+        }
+        println!("  {} harmonising over the affected region (model {}, strength {:.2})…", style("→").cyan(), im, a.harmonise_strength);
         let prompt = "a portrait photograph, natural skin, detailed skin texture";
-        let out = Img2img::new(&a.model, &comp_path)
+        let out = Img2img::new(&im, &comp_path)
             .prompt(prompt)
             .mask(&mask_path)
             .mask_feather(6)
