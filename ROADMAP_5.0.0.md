@@ -178,10 +178,22 @@ Live-verified (release/sd15): escalation branch + multiperson 2-persona scene (a
 swap + spurious-face refusal). **Deferred:** bake not run live (heavy training); sequential per-figure
 refinement for N>2 (§14.2) uses the same swap path.
 
-## Phase 7 — Repair loop (weights)
+## Phase 7 — Repair loop (weights) — DONE
 
-- [ ] Attribute-targeted repair (§12.4, mask-source preference: region-mask → detect → anchor) +
+- [x] Attribute-targeted repair (§12.4, mask-source preference: region-mask → detect → anchor) +
       surface/detail-incremental re-cast (§6.5). `repair`.
+
+**Shipped.** P7a `persona/edit.rs` + `persona diff` (§6.5): class_of → Structural/Surface/Detail/
+Presentation; diff two HJSON specs → classified changed leaves + summary reporting whether the edit
+invalidates the reference set (only structural does). P7b `persona repair --attr` (§12.4): class-routed
+— detail/presentation → recomposite (deterministic), surface → landmark-region-masked inpaint with the
+attribute's phrase re-scored + kept only on improvement (eyes.color ΔE, revert on regression),
+structural → reported re-cast-only. `feature_mask` builds the feathered region mask from realised
+landmarks (mask source #1). P7c `compile::dentition_prompt` + mouth-region inpaint (§8.7, the deferred
+escalation): inner-lip aperture mask + dentition prompt, wired into render's mouth rung + `repair
+--attr teeth.*`. Live-verified deterministic branches (diff classification, detail recomposite,
+structural report). **Deferred:** surface/dentition inpaints not run live (reuse the proven
+img2img-mask path); dentition_hint as a ControlNet cond needs the lower-level t2i path.
 
 ## Phase 8 — Composition TUI (no weights for Tier-1 preview) — the 5.0.0 authoring surface
 
