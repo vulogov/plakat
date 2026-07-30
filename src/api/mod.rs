@@ -373,6 +373,13 @@ impl Img2img {
         };
         let tmp = scratch_dir()?;
         let loras = build_loras(&self.loras)?;
+        // Resolve the working size from the input, snapped to /8 (VAE constraint). The image path
+        // honours width=0 ("keep input"), but the mask + ControlNet paths need concrete dimensions —
+        // passing 0 there yields a 0x0 mask ("empty mask"). Mirror the CLI's `resolve_img2img_size`.
+        let (width, height) = match image::image_dimensions(&self.input) {
+            Ok((iw, ih)) => (iw / 8 * 8, ih / 8 * 8),
+            Err(_) => (0, 0),
+        };
         let req = crate::pipelines::img2img::Request {
             prompt: self.prompt,
             negative: self.negative,
@@ -384,8 +391,8 @@ impl Img2img {
             mask: self.mask,
             mask_feather: self.mask_feather,
             mask_invert: self.mask_invert,
-            width: 0, // 0 = keep the input's dimensions
-            height: 0,
+            width,
+            height,
             count: self.count,
             steps: self.steps,
             guidance: self.guidance,

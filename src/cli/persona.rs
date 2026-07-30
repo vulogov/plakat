@@ -489,6 +489,11 @@ async fn run_repair(a: RepairArgs) -> Result<()> {
                 std::fs::copy(&a.image, &a.out)?;
                 return Ok(());
             };
+            if !mask.pixels().any(|p| p.0[0] > 0) {
+                println!("  {} the {section} region mask is empty (feature off-frame?) — nothing to repair", style("·").yellow());
+                std::fs::copy(&a.image, &a.out)?;
+                return Ok(());
+            }
             let _ = (fw, fh);
             // focused prompt = a dentition prompt for teeth (§8.7), else the attribute's resolved phrase.
             let resolved = compile::resolve(&spec, &lex);
@@ -820,7 +825,7 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                     // dentition hint as a ControlNet cond needs the lower-level t2i path; prompt-only
                     // here — the facade can't pass controls.)
                     if crate::persona::geometry::open_mouth(spec) {
-                        if let (Some(dprompt), Some(mask)) = (compile::dentition_prompt(spec), feature_mask("teeth", &m, a.size, a.size)) {
+                        if let (Some(dprompt), Some(mask)) = (compile::dentition_prompt(spec), feature_mask("teeth", &m, a.size, a.size).filter(|mk| mk.pixels().any(|p| p.0[0] > 0))) {
                             let cur = image::open(&a.out)?.to_rgb8();
                             let tmp = std::env::temp_dir().join(format!("persona_teeth_{}.png", a.seed));
                             let mtmp = std::env::temp_dir().join(format!("persona_teeth_mask_{}.png", a.seed));
