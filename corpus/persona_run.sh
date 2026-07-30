@@ -12,9 +12,9 @@
 # Weights-free steps always run. The per-model steps download the model on first use and render on
 # the GPU (Metal) or CPU. sd35 is heavy — LOWMEM keeps the T5-XXL + MMDiT from being co-resident.
 #
-# Usage:   corpus/run.sh                 # both personas, sd15 + sd35, release binary
-#          MODELS="sd15" corpus/run.sh   # one family
-#          PLAKAT=./target/debug/plakat CAST_COUNT=3 STEPS=16 corpus/run.sh
+# Usage:   corpus/persona_run.sh                 # both personas, sd15 + sd35, release binary
+#          MODELS="sd15" corpus/persona_run.sh   # one family
+#          PLAKAT=./target/debug/plakat CAST_COUNT=3 STEPS=16 corpus/persona_run.sh
 #
 # Build the RELEASE binary first (debug inference is ~50x slower):  cargo build --release
 set -u

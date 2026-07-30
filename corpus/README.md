@@ -1,56 +1,98 @@
-# PERSONA-1 corpus
+# plakat proof corpus
 
-A worked demonstration of the whole `plakat persona` pipeline (RFC PERSONA-1, plakat 5.0.0). Two
-richly-authored personas and a driver that runs every feature over **sd15** and **sd35**.
+A reproducible, self-documenting body of images demonstrating that
+plakat's feature surface actually works end to end — and the tools to
+regenerate and index it.
 
-## Specs
+🖼️ **[Browse the rendered gallery → `GALLERY.md`](GALLERY.md)** — every
+image with its embedded recipe (AnimateDiff clips as animated GIFs).
 
-| File | Persona | Exercises |
-|---|---|---|
-| `mira.hjson` | female, 31 | full facial geometry · hazel eyes · a mole + a linear scar + a freckle field · a lobe piercing + a gold/ruby earring · visible teeth · a mesomorph figure |
-| `idris.hjson` | male, 38 | broad structural geometry · a full beard · a deeper skin tone · an irregular birthmark · glasses (prompt-path jewelry) · an athletic figure |
-| `mira-answers.hjson` | — | a scripted `--answers` log for the headless interview (§17.12) |
+👤 **[PERSONA-1 feature demo → `PERSONA_CORPUS.md`](PERSONA_CORPUS.md)** — the `plakat persona`
+pipeline (5.0.0) end to end over two authored personas (`mira.hjson`, `idris.hjson`) on sd15 + sd35,
+driven by `persona_run.sh`.
 
-Both are lint-clean (`plakat persona lint corpus/mira.hjson`).
+Two kinds of files live here:
 
-## Driver
+- **Driver definitions** (committed): `*.hjson` scenarios + `*.sh` /
+  `*.bund` scripts that render one+ representative image per capability.
+- **Output images** (`images/`, committed as the proof): what the
+  drivers produce. Each PNG is self-documenting — its full recipe is
+  embedded in the `parameters` chunk + a JSON sidecar.
 
-```sh
-cargo build --release            # debug inference is ~50x slower
-corpus/run.sh                    # both personas, sd15 + sd35 → corpus/out/
+The index ([`README` is regenerated below the line](#corpus-index)) is
+built by the `plakat gallery` subcommand straight from that embedded
+metadata — no hand-maintenance.
+
+## Workflow
+
+```bash
+# 1. Render a category (downloads its model on first run)
+plakat scenario corpus/cascade.hjson
+
+# 2. (repeat for other categories you can run — see COVERAGE.md)
+
+# 3. Rebuild the index from every rendered image
+plakat gallery corpus/images --recursive --out corpus/GALLERY.md
 ```
 
-Knobs (env): `MODELS="sd15"`, `CAST_COUNT=3`, `KEEP_BEST=2`, `STEPS=16`, `PLAKAT=./target/debug/plakat`.
+Validate a scenario without generating: `plakat scenario FILE --dry-run`.
 
-It runs, per persona:
+## What's here
 
-- **weights-free** — `lint`, `geometry` (maps pre-distorted through the sdxl calibration curves),
-  `interview --answers` (replay → spec), `diff` (an eye-colour change is a cheap surface repair; an
-  eye-spacing change forces a re-cast, §6.5);
-- **per-model** — `show` (the compiled prompt for the family), `cast` (candidates → composite details
-  → score → keep-best → coherence-checked reference set), `render` (Tier-B swap → restore → detail
-  composite), `verify` (the scorecard), `composite` (standalone detail pass), `repair` (targeted
-  in-place `eyes.color` fix), and a two-persona **multiperson** render.
+Two driver kinds: **scenarios** (`*.hjson` — batch text-to-image, run with
+`plakat scenario FILE`) and **scripts** (`*.sh` — features the scenario
+engine doesn't drive). Each renders into `images/<name>/`.
 
-## Output layout
+### Scenarios (`*.hjson`) — `plakat scenario corpus/<file>`
 
-```
-corpus/out/
-  <persona>/geometry/         mesh · wireframe · depth · skeleton · masks · dentition · figure
-  <persona>/<model>/cast/     reference_set.json · references/ · candidates/
-  <persona>/<model>/render.png · composited.png · repaired_eyes.png · detail_mask.png
-  multiperson_<model>.png
-  mira-from-answers.hjson · mira-edited.hjson
-```
+A scenario is an HJSON batch: a shared `prompt-header`/`-footer`, a list of
+`tasks` (each a prompt + optional per-task `control:` / `style:` / size),
+and optionally `scene`/`weather` axes that cross-product. Add `--dry-run`
+to validate without generating.
 
-## Model notes
+| File | What it does |
+|---|---|
+| `sd15.hjson` | SD 1.5 text-to-image at 512² (ungated, ~4 GB), incl. a **canny ControlNet** task. |
+| `sd21.hjson` | SD 2.1 at 768² native — OpenCLIP-H + **v-prediction** (proves the repointed ungated mirror). |
+| `sdxl.hjson` | SDXL t2i variety + a **canny ControlNet** task (auto-annotated from the source). ~7 GB. |
+| `sd35.hjson` | SD 3.5-medium — incl. a legible **"FRESH BREAD"** sign (its text-rendering strength). ⚠️ gated. |
+| `pixart.hjson` | PixArt-Σ (DiT-XL/2 + T5) text-to-image variety. |
+| `cascade.hjson` | Stable Cascade (Würstchen v3, 3-stage) at 1024² + a canny ControlNet task. ~16 GB. |
+| `portrait.hjson` | Reference-photo **lookalike** portraits (IP-Adapter-Plus-Face) from `examples/persona/example.png`. |
+| `weather-scene.hjson` | The engine's **`scene` × `weather`** axes: one area (a lighthouse coast, held in `prompt-header`) re-lit + re-weathered across the cross-product. |
 
-- **sd15** — light, universal Tier-B swap path; the fastest way to see the pipeline end to end.
-- **sd35** — a heavy MMDiT family. The driver sets `PLAKAT_SD3_LOWMEM=1` so T5-XXL and the MMDiT are
-  never co-resident (runs on a 24 GB Metal box). Identity still comes from the swap bridge (no sd35
-  face adapter → Tier B), so cross-family identity holds.
+### Scripts (`*.sh`) — features not scenario-drivable
 
-Casting renders unconditioned candidates and *selects* the best-matching ones, so a small `--count`
-may not clear the identity-coherence threshold — that is the check working, not a bug (raise
-`--count`, or rely on the swap bridge to unify identity at render time). The sample corpus is
-generated by running `corpus/run.sh` before the 5.0.0 cut.
+Small shells whose outputs write into `images/` alongside the scenarios.
+
+| File | What it does |
+|---|---|
+| `style_train.sh [sd15\|sdxl\|sd35]` | **Train** a watercolour style LoRA from `style/watercolour/` on the chosen base (`plakat style train`). Slow (full back-prop); run once → `style/watercolour-<base>.safetensors`. |
+| `style_gen.sh [sd15\|sdxl\|sd35]` | **Generate** watercolour images with the trained LoRA (`--lora`). Fast; reuses the LoRA without retraining → `images/style-<base>/`. Run `style_train.sh` first. |
+| `animate.sh` | **AnimateDiff** — text → a short motion clip (frames + GIF) on an aesthetic SD 1.5 base. |
+| `img2img.sh` | **img2img style transfer** — repaint a photo into a medium (oil / watercolour / ink-wash) while keeping its composition, on SDXL. |
+| `portrait.sh` | **Text-only persona portraits** (no reference photo) on SD 1.5. |
+| `upscale.sh` | **ML super-resolution** — Real-ESRGAN ×2 of an existing image (Metal-safe; ×4 OOMs on Metal → `--device cpu`). |
+| `transparent.sh` | **Transparent cut-out** (`plakat transparent`) — generate a subject on a flat background, then flood-fill the background out from the corners → an RGBA PNG (follows gradients / soft shadows, stops at the subject edge). |
+| `script.sh` → `script.bund` | **Bund scripting** (`plakat run`) — a stack-based script proving the **load → generate → upscale → save** handle-reuse chain (render to an in-memory handle, upscale it with no disk round-trip, save). SD 1.5. |
+| `looks.sh` | **Art-medium looks** (`--look`) — one subject across the 8 bundled mediums (ink-wash / watercolour / oil / charcoal / pencil / chalk-pastel / linocut / gouache) on **SDXL**. Uses **`--smart-discovery`**: a local LLM judges the Civitai candidate pool → the best *style* LoRA (rejecting characters), falling back to prompt-only if none fits. `--scheduler euler-a` (Metal). Needs `CIVITAI_API_KEY` for the LoRA downloads. |
+| `genres.sh` | **Subject-domain genres** (`--genre`) — the bundled `anime` domain (independent axis from `--look`; they compose) on **SDXL** via a pinned Civitai anime LoRA (`civitai:129020`). Needs `CIVITAI_API_KEY`. |
+| `civitai.sh` | **Civitai LoRA by id** (`--lora civitai:<id>:scale`) — pull a LoRA from Civitai by model id + render (Eldritch Watercolor on SDXL). Needs `CIVITAI_API_KEY` for the auth-gated download. |
+| `embedding.sh` | **Textual Inversion** (`generate --embedding`) — inject a TI trigger (EasyNegative) at runtime; baseline vs +embedding on one seed (SD 1.5 / SD 2.1). |
+| `variation.sh` | **Cascade image variation** (`--image-variation`) — condition Stable Cascade on a reference's CLIP embedding (unCLIP-style); keeps the subject/palette/mood but re-composes. Pure + prompt-steered. |
+| `artefact.sh` (+ `artefact.hjson`) | **Artefact compositing** (`--artefact`/`--artefact-blend`) — build a real SDXL cutout library (generate → transparent), then composite a **multi-artefact** scene (balloon + pine + cottage, one per zone) and blend them in. CLI + scenario. SDXL only (the blend is SD-core img2img). |
+| `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
+| `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sdxl-inpaint`). Clean: the masked region is conditioned on mid-gray with a binary mask (no dark bands, no feather seams). |
+| `stylize.sh` | **Stylize** (`plakat stylize`) — apply a reference's *look* to a subject via IP-Adapter (no prompt, no training) on SD 1.5 or **SDXL** (`--model sdxl`). The IP-Adapter transfers content/appearance/palette, NOT painterly texture → a ref-*variation* tool (for true painterly style use `style_train.sh` / `--look`). `--ref-blur` suppresses ref content. |
+
+See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
+drivers are still to be added.
+
+## Notes
+
+- **Gated models** (Flux-dev, SD 3.5) need a HuggingFace token (accept the
+  licence first). SD 3.5-medium runs BF16-native on Metal; **Flux GGUF
+  does not work on Apple Metal** (a candle kernel bug — use `--device
+  cpu`, non-quantized Flux, or skip on Metal). The corpus marks these.
+- Output images are committed so the proof is browsable without running
+  anything; rerun the drivers to refresh them.
