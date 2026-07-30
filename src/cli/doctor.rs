@@ -315,12 +315,36 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     section_api_keys();
     println!();
 
+    // -------- v5.0.0: persona pipeline --------
+    section_persona();
+    println!();
+
     println!(
         "  {}\n",
         style("If you've fixed any of the issues above, re-run `plakat doctor` to confirm.").dim()
     );
 
     Ok(())
+}
+
+/// v5.0.0: the `plakat persona` pipeline (RFC PERSONA-1). Reports which stages are weights-free (run
+/// anywhere) vs weight-backed, the identity tiers, and the shared weights the generative stages reuse.
+fn section_persona() {
+    section_header("persona (5.0.0 — controllable synthetic-person composition)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · interview · geometry · diff");
+    note("weight-backed: cast · render · verify · composite · repair · bake · calibrate --from");
+    note(
+        "identity tiers (§11.4): A = IP-Adapter-Plus-Face (sd15/sd21/sdxl) · B = face-swap bridge \
+         (universal, every family) · C = baked TI/LoRA (`persona bake`). `render --tier auto` picks A \
+         where an adapter exists, else B.",
+    );
+    note(
+        "reuses the SCRFD detector + ArcFace + inswapper + restore-faces (the swap bridge) and the \
+         PIPNet-98 aligner (auto-downloaded from vulogov98/plakat-persona); the same FaceID/SCRFD env \
+         vars as the sections above apply.",
+    );
+    note("landmark topology = WFLW-98; calibration tables ship provisional (see Documentation/PERSONA.md).");
+    note("body identity is face-only (§11.7); an 18+ age gate + neutral lexicon are binding (§7.4/§23).");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

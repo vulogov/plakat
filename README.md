@@ -24,6 +24,30 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
+## What's new in 5.0.0 — `plakat persona`
+
+The 5.x flagship (RFC PERSONA-1): compose a **specific, reusable synthetic person** from a small HJSON
+spec and render that same person recognisably across scenes and model families. Text prompts are a
+poor instrument for identity — a mole moves between renders, a scar lands anywhere. `persona` treats a
+person as structured data: resolved deterministically, conditioned geometrically, small details
+realised by *compositing* (not prompting), anchored to one identity via a cast reference set, and
+**measured** by a scorecard.
+
+```bash
+plakat persona new alice.hjson --name alice        # scaffold, or --tui to author interactively
+plakat persona cast   alice.hjson --model sd15      # render + score → a coherence-checked reference set
+plakat persona render alice-persona --scene "in a sunlit garden"   # into any scene (universal swap bridge)
+plakat persona verify alice.hjson --image out.png   # the scorecard: did the render match the spec?
+plakat persona repair alice.hjson --image out.png --attr eyes.color   # fix one thing, keep the render
+```
+
+Fully additive — no existing command or output changes. Highlights: a WFLW-98 geometry engine (pure,
+no weights), a localized-detail subsystem (moles/scars/birthmarks/freckles/jewelry/dentition composited
+at anatomical anchors), per-family calibration, three honest identity tiers (IP-Adapter · universal
+face-swap · baked LoRA), multiperson attribution, a class-aware edit/repair loop, and a headless
+interview with a live wireframe TUI. Start at [`Documentation/PERSONA.md`](Documentation/PERSONA.md);
+worked demo in [`corpus/PERSONA_CORPUS.md`](corpus/PERSONA_CORPUS.md).
+
 ## What's new in 4.11.0 — finishing the edit verbs
 
 The two follow-ups deferred from the 4.9/4.10 edit-verbs work:
