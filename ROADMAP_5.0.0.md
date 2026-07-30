@@ -195,12 +195,24 @@ escalation): inner-lip aperture mask + dentition prompt, wired into render's mou
 structural report). **Deferred:** surface/dentition inpaints not run live (reuse the proven
 img2img-mask path); dentition_hint as a ControlNet cond needs the lower-level t2i path.
 
-## Phase 8 — Composition TUI (no weights for Tier-1 preview) — the 5.0.0 authoring surface
+## Phase 8 — Composition TUI (no weights for Tier-1 preview) — the 5.0.0 authoring surface — DONE (core)
 
-- [ ] Headless interview core (§17.2, pure fns + `--answers` replay + nested collection sub-interview
+- [x] Headless interview core (§17.2, pure fns + `--answers` replay + nested collection sub-interview
       stack) + lexicon-driven question graph (§17.3) + widgets incl. `place`/`list`/`tooth` (§17.4) +
       Tier-1 wireframe preview + detail markers + Tier-2 few-step preview (§17.5) + workbench + evolve
       (§17.8–9). Reuses ratatui infra + step-hook + workspace-wizard + retouch-crosshair patterns.
+
+**Shipped.** P8a `persona/interview.rs` — headless engine: question_graph from the lexicon (§17.3,
+coarse→fine), next_question/apply/progress, total `when` condition language, Answer (Unknown≠middle,
+NoneEmpty), to_partial_spec/spec_from_map; `persona interview <out> [--depth] [--answers]` (§17.12
+scriptable replay + headless graph preview). Lexicon gained ask/widget/depth/order/when (derived
+defaults). P8b `persona/preview.rs` (braille Tier-1 wireframe, usable over SSH) + `persona/tui.rs`
+(feature `ui`) — interactive ratatui view over the engine with a LIVE slider-tracking wireframe;
+`persona interview --tui`. P8c cores: `geometry::nearest_anchor` (place-widget drop → nearest named
+anchor + offset, anatomical from creation) + `interview::mark_member_questions` (list-widget collection
+sub-interview). **Deferred (interactive UI, low verifiability w/o a PTY):** the crosshair place / list /
+tooth widgets wired into the TUI loop, Tier-2 debounced diffusion preview (ChannelHook+CancelFlag), and
+workbench/evolve (§17.8–9).
 
 ## Phase 9 — docs + release (5.0.0 cut)
 
