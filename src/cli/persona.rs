@@ -52,6 +52,9 @@ pub enum PersonaCmd {
     /// Diff two persona specs by attribute class (§6.5) — reports which changes are structural (force a
     /// re-cast) vs surface / detail / presentation (cheap in-place repairs). No weights.
     Diff(DiffArgs),
+    /// Repair one failing attribute on a render in place (RFC §12.4): mask the attribute's region →
+    /// recomposite (detail) or regional inpaint (surface) → re-score → keep only on improvement.
+    Repair(RepairArgs),
 }
 
 #[derive(Args, Debug)]
@@ -289,6 +292,30 @@ pub struct DiffArgs {
     pub new: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct RepairArgs {
+    /// Path to the persona spec (`.hjson`).
+    pub spec: PathBuf,
+    /// The rendered image to repair.
+    #[arg(long)]
+    pub image: PathBuf,
+    /// The failing attribute path (e.g. `eyes.color`, `marks`, `face.width`).
+    #[arg(long)]
+    pub attr: String,
+    /// Output path (default: `repaired.png`).
+    #[arg(long, default_value = "repaired.png")]
+    pub out: PathBuf,
+    /// Model for a surface inpaint repair.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Inpaint denoise strength for a surface repair.
+    #[arg(long, default_value_t = 0.4)]
+    pub strength: f32,
+    /// Seed.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -302,6 +329,134 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Render(a) => run_render(a).await,
         PersonaCmd::Bake(a) => run_bake(a).await,
         PersonaCmd::Diff(a) => run_diff(a),
+        PersonaCmd::Repair(a) => run_repair(a).await,
+    }
+}
+
+/// Full-frame feathered mask over an attribute's feature region, from the realised landmarks (§12.4
+/// mask source #1). Returns `None` for a section with no landmark region (caller falls back to detect).
+fn feature_mask(section: &str, m: &crate::persona::scorecard::FaceMetrics, fw: u32, fh: u32) -> Option<image::GrayImage> {
+    use crate::persona::geometry::topology::*;
+    let idxs: Vec<usize> = match section {
+        "eyes" => EYE_RIGHT.chain(EYE_LEFT).chain([PUPIL_RIGHT, PUPIL_LEFT]).collect(),
+        "mouth" => LIP_OUTER.collect(),
+        "nose" => NOSE.collect(),
+        "face" | "skin" => CONTOUR.collect(),
+        _ => return None,
+    };
+    let (cw, ch) = (m.crop.width() as f32, m.crop.height() as f32);
+    let pts: Vec<(f32, f32)> = idxs
+        .iter()
+        .map(|&i| (m.crop_origin.0 as f32 + m.landmarks[i].0 * cw, m.crop_origin.1 as f32 + m.landmarks[i].1 * ch))
+        .collect();
+    let (x0, y0, x1, y1) = pts.iter().fold((f32::MAX, f32::MAX, f32::MIN, f32::MIN), |(ax, ay, bx, by), &(x, y)| {
+        (ax.min(x), ay.min(y), bx.max(x), by.max(y))
+    });
+    // grow by 25% of the region size, then fill a feathered ellipse.
+    let (gx, gy) = ((x1 - x0) * 0.25 + 4.0, (y1 - y0) * 0.25 + 4.0);
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let (rx, ry) = ((x1 - x0) / 2.0 + gx, (y1 - y0) / 2.0 + gy);
+    let mut mask = image::GrayImage::from_pixel(fw, fh, image::Luma([0]));
+    for y in 0..fh {
+        for x in 0..fw {
+            let (dx, dy) = ((x as f32 - cx) / rx.max(1.0), (y as f32 - cy) / ry.max(1.0));
+            let d = (dx * dx + dy * dy).sqrt();
+            if d <= 1.0 {
+                let a = ((1.0 - d) / 0.3).clamp(0.0, 1.0);
+                mask.put_pixel(x, y, image::Luma([(a * 255.0) as u8]));
+            }
+        }
+    }
+    Some(mask)
+}
+
+async fn run_repair(a: RepairArgs) -> Result<()> {
+    use crate::persona::edit::{class_of, Class};
+    use crate::persona::{compile, detail, lexicon::Lexicon, scorecard};
+
+    let spec = PersonaSpec::load(&a.spec)?;
+    let lex = Lexicon::skeleton();
+    let class = class_of(&a.attr, &lex);
+    let section = a.attr.split('.').next().unwrap_or(&a.attr).to_string();
+    println!("{}  {} on {}  (class {})", style("persona repair").bold(), a.attr, a.image.display(), class.as_str());
+
+    let device = candle_core::Device::Cpu;
+    let (det, pip) = scorecard::load_probes(&device).await?;
+    let Some(m) = scorecard::measure_landmarks(&a.image, &det, &pip)? else {
+        println!("{}  no face detected — cannot repair", style("✗").red());
+        return Ok(());
+    };
+
+    match class {
+        // Structural geometry cannot be fixed in place — the sampler decided it (§12.4).
+        Class::Structural => {
+            println!("  {} `{}` is structural — it cannot be repaired in place; re-cast with the edited spec (`persona cast`)", style("⚠").yellow(), a.attr);
+            std::fs::copy(&a.image, &a.out)?;
+            Ok(())
+        }
+        // Details are deterministic — recomposite (§8.4). Cheapest repair.
+        Class::Detail | Class::Presentation => {
+            let base = image::open(&a.image)?.to_rgb8();
+            let r = detail::composite_details(&base, &spec, &m, a.seed);
+            r.image.save(&a.out)?;
+            println!("  {} recomposited {} detail(s) → {}", style("✓").green(), r.placed, a.out.display());
+            Ok(())
+        }
+        // Surface → regional inpaint with an attribute-focused prompt, kept only on improvement.
+        Class::Surface => {
+            let (fw, fh) = (m.crop.width().max(1), m.crop.height().max(1));
+            let full = image::open(&a.image)?.to_rgb8();
+            let Some(mask) = feature_mask(&section, &m, full.width(), full.height()) else {
+                println!("  {} no landmark region for `{section}` — targeted surface repair not available (try detect-based repair)", style("·").yellow());
+                std::fs::copy(&a.image, &a.out)?;
+                return Ok(());
+            };
+            let _ = (fw, fh);
+            // focused prompt = the attribute's resolved phrase.
+            let resolved = compile::resolve(&spec, &lex);
+            let phrase = resolved.iter().find(|r| r.path == a.attr).map(|r| r.phrase.clone()).unwrap_or_else(|| a.attr.clone());
+            let eye_target = scorecard::eyes_color_target(&spec);
+            let before = eye_target.and_then(|t| scorecard::measure_colors(&m).iris.map(|iris| scorecard::delta_e(iris, t)));
+
+            let tmp = std::env::temp_dir().join(format!("persona_repair_{}.png", a.seed));
+            let mtmp = std::env::temp_dir().join(format!("persona_repair_mask_{}.png", a.seed));
+            full.save(&tmp)?;
+            mask.save(&mtmp)?;
+            println!("  {} inpainting the {section} region with \"{phrase}\"…", style("→").cyan());
+            let out = crate::api::Img2img::new(&a.model, &tmp)
+                .prompt(&phrase)
+                .mask(&mtmp)
+                .mask_feather(6)
+                .strength(a.strength)
+                .seed(a.seed)
+                .run()
+                .await
+                .context("surface repair inpaint")?;
+            let Some(img) = out.into_iter().next() else {
+                anyhow::bail!("inpaint produced no image");
+            };
+            img.save(&a.out)?;
+
+            // Re-score: accept only on improvement, else revert (§12.4).
+            if let Some(before_de) = before {
+                if let Some(m2) = scorecard::measure_landmarks(&a.out, &det, &pip)? {
+                    let after = scorecard::eyes_color_target(&spec).and_then(|t| scorecard::measure_colors(&m2).iris.map(|iris| scorecard::delta_e(iris, t)));
+                    if let Some(after_de) = after {
+                        if after_de <= before_de {
+                            println!("  {} accepted: ΔE {before_de:.1} → {after_de:.1}", style("✓").green());
+                        } else {
+                            std::fs::copy(&a.image, &a.out)?;
+                            println!("  {} reverted: ΔE worsened {before_de:.1} → {after_de:.1} (kept the original)", style("✗").red());
+                        }
+                    }
+                }
+            } else {
+                println!("  {} repaired → {} (no scorable target for `{}`, kept the inpaint)", style("✓").green(), a.out.display(), a.attr);
+            }
+            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(&mtmp);
+            Ok(())
+        }
     }
 }
 
