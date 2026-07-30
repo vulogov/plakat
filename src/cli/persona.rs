@@ -22,7 +22,7 @@ pub struct PersonaArgs {
 pub enum PersonaCmd {
     /// Scaffold a new persona spec (a valid, partial `PersonaSpec` HJSON you then edit or `--tui`).
     New(NewArgs),
-    /// Validate a persona spec — schema, scalar ranges, contradictions, the age gate. No weights, no
+    /// Validate a persona spec — schema, scalar ranges, and contradictions. No weights, no
     /// network. Exits non-zero on any error so it can gate CI.
     Lint(LintArgs),
     /// Show what a spec resolves to for a model family: the salience-ranked prompt-routed attributes,
@@ -71,7 +71,7 @@ pub struct NewArgs {
     /// Slug name for the persona (also the People-library folder name).
     #[arg(long, default_value = "unnamed")]
     pub name: String,
-    /// Apparent age in years (must be >= 18; see §23.1).
+    /// Apparent age in years (grounds the render's age; no minimum is enforced).
     #[arg(long, default_value_t = 30)]
     pub age: u32,
 }

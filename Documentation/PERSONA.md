@@ -31,7 +31,7 @@ byte-stable function** — testable in CI without weights or a GPU.
 
 ```
 plakat persona new <out> [--depth quick|standard|full] [--name --age]   scaffold a spec
-plakat persona lint <spec>                                              validate (schema/range/contradiction/age-gate)
+plakat persona lint <spec>                                              validate (schema / range / contradiction)
 plakat persona show <spec> --model <m>                                  the compiled prompt + salience + grades
 plakat persona interview <out> [--depth] [--answers <f>] [--tui]        author via the Q/A interview (§17)
 plakat persona geometry <spec> --out <dir> [--map …] [--calibrate <m>]  rasterise the conditioning maps
@@ -70,8 +70,9 @@ work identically on every family, because they never go through a sampler.
 - **Calibration tables ship as provisional bootstraps.** The per-family response curves + priors are
   measured by an offline render sweep (`persona calibrate --from`); until then the grades are lexicon
   defaults. See [`PERSONA_CALIBRATION.md`](PERSONA_CALIBRATION.md).
-- **Neutrality + an 18+ age gate are binding** (§7.4, §23): skin tone is Fitzpatrick/CIELAB only, no
-  ethnonyms, no valence, no default face; `apparent_age < 18` is refused in the resolver.
+- **Neutrality is binding** (§7.4, §23.3): skin tone is Fitzpatrick/CIELAB only, no ethnonyms, no
+  valence, no default face. `apparent_age` is a plain grounding attribute — it sets the rendered age
+  like any prompt term, with **no minimum enforced** (parity with the rest of `plakat`).
 
 ## Companion documents
 

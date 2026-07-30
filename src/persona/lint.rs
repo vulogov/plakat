@@ -1,7 +1,7 @@
 //! `plakat persona lint` — validate a spec without weights or network (RFC §6.6).
 //!
-//! This first slice covers what needs no lexicon: schema version, scalar ranges (a core set),
-//! specific contradictions, and the §23.1 age-gate stub. Full lexicon-driven validation — unknown
+//! This first slice covers what needs no lexicon: schema version, scalar ranges (a core set), and
+//! specific contradictions. Full lexicon-driven validation — unknown
 //! enum values with nearest-match suggestions, complete range coverage, budget/controllability/
 //! occlusion/manifestation warnings — lands with the lexicon (next P0 task). `lint` returns a non-zero
 //! exit on any error so it can gate CI.
@@ -36,15 +36,10 @@ impl Finding {
     }
 }
 
-/// The minimum apparent age accepted (§23.1). The full combinatorial gate (wardrobe/framing/jewelry)
-/// lives in the resolver; lint enforces the floor here as an error so it is caught at author time.
-pub const MIN_APPARENT_AGE: u32 = 18;
-
 /// Run all lint checks. Returns findings ordered errors-first.
 pub fn lint(spec: &PersonaSpec) -> Vec<Finding> {
     let mut f = Vec::new();
     schema(spec, &mut f);
-    age_gate(spec, &mut f);
     ranges(spec, &mut f);
     contradictions(spec, &mut f);
     f.sort_by_key(|x| match x.level {
@@ -68,17 +63,6 @@ fn schema(spec: &PersonaSpec, f: &mut Vec<Finding>) {
             format!("schema persona/{v} is newer than this build (persona/{}); upgrade plakat", super::SCHEMA_VERSION),
         )),
         Some(_) => {}
-    }
-}
-
-fn age_gate(spec: &PersonaSpec, f: &mut Vec<Finding>) {
-    if let Some(age) = spec.identity.as_ref().and_then(|i| i.apparent_age) {
-        if age < MIN_APPARENT_AGE {
-            f.push(Finding::err(
-                "identity.apparent_age",
-                format!("apparent_age {age} is below the minimum {MIN_APPARENT_AGE}; persona refused (§23.1)"),
-            ));
-        }
     }
 }
 
@@ -228,12 +212,6 @@ mod tests {
         let f = lint(&s);
         assert!(has_errors(&f));
         assert!(f.iter().any(|x| x.path == "eyes.spacing" && x.level == Level::Error));
-    }
-
-    #[test]
-    fn age_gate_rejects_minor() {
-        let s = load("{\n  identity: {\n    apparent_age: 15\n  }\n}\n");
-        assert!(has_errors(&lint(&s)));
     }
 
     #[test]

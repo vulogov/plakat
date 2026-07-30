@@ -19,7 +19,7 @@ Scaffold, then edit — or drive the Q/A interview:
 ```sh
 plakat persona new alice.hjson --name alice --age 30 --depth standard   # a valid partial spec
 plakat persona interview alice.hjson --tui                              # or the interactive TUI (§17)
-plakat persona lint alice.hjson                                         # schema · ranges · contradictions · 18+ gate
+plakat persona lint alice.hjson                                         # schema · ranges · contradictions
 ```
 
 The TUI shows a **live wireframe** that moves as you drag a slider — the geometry engine is CPU-cheap,

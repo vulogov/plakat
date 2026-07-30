@@ -344,7 +344,7 @@ fn section_persona() {
          vars as the sections above apply.",
     );
     note("landmark topology = WFLW-98; calibration tables ship provisional (see Documentation/PERSONA.md).");
-    note("body identity is face-only (§11.7); an 18+ age gate + neutral lexicon are binding (§7.4/§23).");
+    note("body identity is face-only (§11.7); the neutral lexicon is binding (§7.4/§23.3). No age gate — apparent_age grounds the render like any other model.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

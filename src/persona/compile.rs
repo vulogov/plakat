@@ -293,14 +293,13 @@ pub fn compile_for_model(spec: &PersonaSpec, lex: &Lexicon, model: &str) -> Comp
         }
     };
 
-    // Fold in the asserted-empty-collection negatives + the age-gate guard (personas are 18+, §23.1):
+    // Fold in the asserted-empty-collection negatives + anti-uncanny negatives.
     // exclude child/underage drift explicitly so the render matches the adult spec.
     let mut negs = collection_negatives(spec);
     if spec.identity.is_some() {
         // Anti-uncanny only — fight the plastic/illustration look the bare attribute list tends to
-        // produce. The subject's AGE is set by the positive clause (`a 31-year-old woman`), not by
-        // suppressing "child" here; the single age-policy control is the lint gate (§23.1), so a
-        // legitimately-authored age renders correctly and the policy lives in exactly one place.
+        // produce. The subject's AGE is set by the positive clause (`a 31-year-old woman`), so a
+        // legitimately-authored age renders correctly; no age is suppressed here.
         for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll"] {
             negs.push(n.into());
         }
@@ -338,7 +337,7 @@ pub fn crowd_descriptor(spec: &PersonaSpec) -> String {
 }
 
 /// The subject noun phrase — `a 31-year-old woman` (age + sex, neutral, no valence). The age grounds
-/// the render as an adult (§23.1) and stops the drift to an idealised young face.
+/// the render at the authored age and stops the drift to an idealised young face.
 fn subject_noun(spec: &PersonaSpec) -> String {
     let id = spec.identity.as_ref();
     let noun = match id.and_then(|i| i.sex.as_deref()) {
