@@ -936,11 +936,13 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
         _ => format!("{n} people"),
     };
     let appearances: Vec<String> = personas.iter().map(|p| p.appearance.clone()).filter(|s| !s.is_empty()).collect();
+    // "…, each facing the camera" — the swap + SCRFD work best on frontal faces; a group scene
+    // otherwise tends to profiles/three-quarter views where identity transfer is weak (§14.2).
     let prompt = if appearances.is_empty() {
-        format!("a colour photograph of {count_word}, {}", a.scene)
+        format!("a colour photograph of {count_word} facing the camera, {}", a.scene)
     } else {
-        // "a photograph of two people, <scene>: a 31-year-old woman with auburn hair, and a 38-year-old man with a beard"
-        format!("a colour photograph of {count_word}, {}: {}", a.scene, appearances.join(", and "))
+        // "a photograph of two people facing the camera, <scene>: a 31-year-old woman with auburn hair, and a 38-year-old man with a beard"
+        format!("a colour photograph of {count_word} facing the camera, {}: {}", a.scene, appearances.join(", and "))
     };
 
     println!("  {} generating the group scene…", style("→").cyan());
@@ -997,6 +999,26 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
         println!("  {} {} → face {} (band {band})", style("✓").green(), p.set.persona, face_idx);
     }
     scene.save(&a.out)?;
+
+    // Restore ALL swapped faces at gentle strength (§11.5) — the swaps are otherwise rough, especially
+    // at the smaller face sizes of a group shot. Restores every detected face in one pass.
+    if !a.no_restore {
+        println!("  {} restoring the swapped faces…", style("→").cyan());
+        let sdxl = a.model.starts_with("sdxl");
+        let restore = crate::cli::restore_faces::RestoreFacesArgs {
+            inputs: vec![a.out.clone()],
+            model: if sdxl { "sdxl".into() } else { "sd15".into() },
+            strength: 0.35,
+            padding: 0.25,
+            feather: 0.25,
+            confidence: 0.5,
+            working_size: 512,
+        };
+        if let Err(e) = crate::cli::restore_faces::run(restore, device.clone()).await {
+            println!("  {} restore skipped: {e}", style("·").yellow());
+        }
+        scene = image::open(&a.out)?.to_rgb8();
+    }
 
     // Detail compositing per persona, each against ITS OWN assigned face's landmarks (§14.2).
     if !a.no_details {
