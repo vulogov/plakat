@@ -49,6 +49,9 @@ pub enum PersonaCmd {
     /// Bake a per-base adapter (Tier C, §11.6) from a cast reference set — a textual-inversion token or
     /// a LoRA. Excludes swappable presentation jewelry by default; memory-gated.
     Bake(BakeArgs),
+    /// Diff two persona specs by attribute class (§6.5) — reports which changes are structural (force a
+    /// re-cast) vs surface / detail / presentation (cheap in-place repairs). No weights.
+    Diff(DiffArgs),
 }
 
 #[derive(Args, Debug)]
@@ -278,6 +281,14 @@ pub struct BakeArgs {
     pub keep_jewelry: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct DiffArgs {
+    /// The original persona spec.
+    pub old: PathBuf,
+    /// The edited persona spec.
+    pub new: PathBuf,
+}
+
 pub async fn run(args: PersonaArgs) -> Result<()> {
     match args.cmd {
         PersonaCmd::New(a) => run_new(a),
@@ -290,7 +301,59 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Cast(a) => run_cast(a).await,
         PersonaCmd::Render(a) => run_render(a).await,
         PersonaCmd::Bake(a) => run_bake(a).await,
+        PersonaCmd::Diff(a) => run_diff(a),
     }
+}
+
+fn run_diff(a: DiffArgs) -> Result<()> {
+    use crate::persona::edit::{self, ChangeKind, Class};
+    use crate::persona::lexicon::Lexicon;
+    let old = std::fs::read_to_string(&a.old).with_context(|| format!("reading {}", a.old.display()))?;
+    let new = std::fs::read_to_string(&a.new).with_context(|| format!("reading {}", a.new.display()))?;
+    let lex = Lexicon::skeleton();
+    let changes = edit::diff(&old, &new, &lex)?;
+
+    println!("{}  {} → {}", style("persona diff").bold(), a.old.display(), a.new.display());
+    if changes.is_empty() {
+        println!("  {} no attribute changes", style("·").dim());
+        return Ok(());
+    }
+    for cls in [Class::Structural, Class::Surface, Class::Detail, Class::Presentation] {
+        let group: Vec<_> = changes.iter().filter(|c| c.class == cls).collect();
+        if group.is_empty() {
+            continue;
+        }
+        let head = match cls {
+            Class::Structural => style(cls.as_str()).red(),
+            Class::Surface => style(cls.as_str()).yellow(),
+            Class::Detail => style(cls.as_str()).green(),
+            Class::Presentation => style(cls.as_str()).cyan(),
+        };
+        println!("\n  {head} — {}", style(cls.invalidation()).dim());
+        for c in group {
+            let verb = match c.kind {
+                ChangeKind::Added => "＋",
+                ChangeKind::Removed => "－",
+                ChangeKind::Changed => "→",
+            };
+            let val = match (&c.old, &c.new) {
+                (Some(o), Some(n)) => format!("{o} {verb} {n}"),
+                (None, Some(n)) => format!("{verb} {n}"),
+                (Some(o), None) => format!("{verb} (was {o})"),
+                _ => String::new(),
+            };
+            println!("    {} {}  {}", verb, style(&c.path).bold(), style(val).dim());
+        }
+    }
+    let s = edit::summarize(&changes);
+    println!("\n{}", style("── summary ──").bold());
+    println!("  {} structural · {} surface · {} detail · {} presentation", s.structural, s.surface, s.detail, s.presentation);
+    if s.invalidates_references() {
+        println!("  {} {} structural change(s) will INVALIDATE the reference set + baked adapters — re-cast required", style("⚠").red(), s.structural);
+    } else {
+        println!("  {} no structural changes — repairs are in-place (inpaint / recomposite / per-render), the reference set stands", style("✓").green());
+    }
+    Ok(())
 }
 
 async fn run_bake(a: BakeArgs) -> Result<()> {

@@ -16,6 +16,7 @@ pub mod calibration;
 pub mod casting;
 pub mod compile;
 pub mod detail;
+pub mod edit;
 pub mod geometry;
 pub mod lexicon;
 pub mod lint;
