@@ -208,6 +208,15 @@ pub struct CastArgs {
     /// Base seed; candidate `i` renders at `seed + i`.
     #[arg(long, default_value_t = 0)]
     pub seed: u64,
+    /// Apply the geometry engine's structural conditioning while casting (§10.3), so face
+    /// proportions authored in the spec are realised via ControlNet instead of competing for CLIP
+    /// tokens: `depth` (default, topology-agnostic, sd15/sdxl) · `pose` (OpenPose head keypoints) ·
+    /// `off`. Ignored on families without an SD-UNet ControlNet (sd35 / pixart / sana / flux).
+    #[arg(long = "geometry-control", default_value = "depth")]
+    pub geometry_control: String,
+    /// Strength of the geometry ControlNet conditioning.
+    #[arg(long = "geometry-strength", default_value_t = 0.55)]
+    pub geometry_strength: f32,
     /// Skip the detail compositing pass (§8.4) on the references.
     #[arg(long)]
     pub no_details: bool,
@@ -1096,6 +1105,55 @@ async fn run_cast(a: CastArgs) -> Result<()> {
         println!("  {} {}", style("prompt:").dim(), compiled.positive);
     }
 
+    // Geometry structural conditioning (§10.3): render the spec's resolved landmarks to a depth (or
+    // pose) map and drive it through a ControlNet, so the authored face proportions are realised via
+    // conditioning instead of competing for CLIP tokens. SD-UNet families only (sd15/sdxl) — the depth
+    // CN isn't wired for SD3.5/PixArt/Sana/Flux, and those hold the full attribute list in T5/Gemma.
+    let geometry_control = {
+        use crate::persona::compile::EncoderClass;
+        let sd_unet = matches!(EncoderClass::from_model(&a.model), EncoderClass::Clip | EncoderClass::ClipDual);
+        let kind = match a.geometry_control.as_str() {
+            "off" | "none" => None,
+            _ if !sd_unet => {
+                println!("  {} geometry-control skipped — {} has no SD-UNet ControlNet (attributes go via the prompt)", style("·").dim(), a.model);
+                None
+            }
+            "pose" => Some(("pose", crate::pipelines::controlnet::ControlKind::OpenPose)),
+            _ => Some(("depth", crate::pipelines::controlnet::ControlKind::Depth)),
+        };
+        kind.map(|(label, ck)| {
+            // resolve at a fixed seed so every candidate shares one structural target; pre-distort
+            // through the family curves so the requested proportions land (§13.2).
+            let mut values = geometry::geometry_values(&spec);
+            if let Some(t) = &table {
+                crate::persona::calibration::predistort_geometry(&mut values, t);
+            }
+            let d = geometry::resolve(&values, geometry::open_mouth(&spec), 0);
+            let path = persona_dir.join("geometry_control.png");
+            // Frame the map so the face occupies ~62% of the frame with headroom — a full-frame face
+            // (the geometry box == the frame) is a too-large face that SCRFD, trained on smaller WIDER
+            // FACE crops, fails to detect, and reads as an unnaturally tight portrait.
+            let inner = ((a.size as f32 * 0.62) as u32).max(64);
+            let (ox, oy) = (((a.size - inner) / 2) as i64, (a.size as f32 * 0.12) as i64);
+            let saved = match label {
+                "pose" => {
+                    let mut canvas = image::RgbImage::from_pixel(a.size, a.size, image::Rgb([0, 0, 0]));
+                    image::imageops::overlay(&mut canvas, &geometry::face_skeleton(&d.landmarks, inner), ox, oy);
+                    canvas.save(&path)
+                }
+                _ => {
+                    let mut canvas = image::GrayImage::from_pixel(a.size, a.size, image::Luma([0]));
+                    image::imageops::overlay(&mut canvas, &geometry::depth_proxy(&d.landmarks, inner), ox, oy);
+                    image::DynamicImage::ImageLuma8(canvas).save(&path)
+                }
+            };
+            saved.map(|_| {
+                println!("  {} geometry-control: {label} @ strength {:.2} → {}", style("↳").cyan(), a.geometry_strength, path.display());
+                (path, ck)
+            })
+        }).transpose().ok().flatten()
+    };
+
     struct Cand {
         image: PathBuf,
         raw: PathBuf,
@@ -1125,16 +1183,25 @@ async fn run_cast(a: CastArgs) -> Result<()> {
         i += 1;
         let seed = a.seed + attempt as u64;
         let raw = cand_dir.join(format!("cand_{attempt}_raw.png"));
-        // Render one candidate (Tier-B: prompt only; geometry-CN casting is a follow-on).
-        let imgs = crate::api::Generate::new(&a.model)
+        // Render one candidate — prompt + optional geometry structural ControlNet (§10.3).
+        let mut builder = crate::api::Generate::new(&a.model)
             .prompt(&compiled.positive)
             .negative(&compiled.negative)
             .seed(seed)
             .size(a.size, a.size)
-            .steps(a.steps)
-            .run()
-            .await
-            .with_context(|| format!("rendering candidate {attempt}"))?;
+            .steps(a.steps);
+        if let Some((path, ck)) = &geometry_control {
+            builder = builder.control(crate::pipelines::controlnet::ControlSpec {
+                kind: *ck,
+                image: Some(path.clone()),
+                from: None,
+                video: None,
+                strength: a.geometry_strength,
+                start: 0.0,
+                end: 1.0,
+            });
+        }
+        let imgs = builder.run().await.with_context(|| format!("rendering candidate {attempt}"))?;
         let Some(img) = imgs.into_iter().next() else { continue };
         img.save(&raw)?;
 

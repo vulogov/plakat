@@ -138,6 +138,7 @@ pub struct Generate {
     scheduler: SchedulerKind,
     device: Option<Device>,
     loras: Vec<Lora>,
+    controls: Vec<crate::pipelines::controlnet::ControlSpec>,
 }
 
 impl Generate {
@@ -158,7 +159,15 @@ impl Generate {
             scheduler: SchedulerKind::default(),
             device: None,
             loras: Vec::new(),
+            controls: Vec::new(),
         }
+    }
+
+    /// Add a ControlNet conditioning (e.g. a pre-rendered depth map via `ControlSpec.image`). Chainable
+    /// for multiple controls. SD 1.5/2.1/SDXL only (the SdCore UNet path).
+    pub fn control(mut self, spec: crate::pipelines::controlnet::ControlSpec) -> Self {
+        self.controls.push(spec);
+        self
     }
 
     /// The positive prompt.
@@ -246,6 +255,7 @@ impl Generate {
         req.clip_skip = self.clip_skip;
         req.scheduler = self.scheduler;
         req.loras = loras;
+        req.controls = self.controls;
 
         let gen_result = crate::pipelines::t2i::run(req).await;
         let images = collect_images(&tmp);
