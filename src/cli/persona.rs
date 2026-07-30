@@ -340,6 +340,8 @@ fn feature_mask(section: &str, m: &crate::persona::scorecard::FaceMetrics, fw: u
     let idxs: Vec<usize> = match section {
         "eyes" => EYE_RIGHT.chain(EYE_LEFT).chain([PUPIL_RIGHT, PUPIL_LEFT]).collect(),
         "mouth" => LIP_OUTER.collect(),
+        // dentition sits inside the inner-lip aperture (§8.7).
+        "teeth" => LIP_INNER.collect(),
         "nose" => NOSE.collect(),
         "face" | "skin" => CONTOUR.collect(),
         _ => return None,
@@ -412,9 +414,13 @@ async fn run_repair(a: RepairArgs) -> Result<()> {
                 return Ok(());
             };
             let _ = (fw, fh);
-            // focused prompt = the attribute's resolved phrase.
+            // focused prompt = a dentition prompt for teeth (§8.7), else the attribute's resolved phrase.
             let resolved = compile::resolve(&spec, &lex);
-            let phrase = resolved.iter().find(|r| r.path == a.attr).map(|r| r.phrase.clone()).unwrap_or_else(|| a.attr.clone());
+            let phrase = if section == "teeth" {
+                compile::dentition_prompt(&spec).unwrap_or_else(|| "teeth".into())
+            } else {
+                resolved.iter().find(|r| r.path == a.attr).map(|r| r.phrase.clone()).unwrap_or_else(|| a.attr.clone())
+            };
             let eye_target = scorecard::eyes_color_target(&spec);
             let before = eye_target.and_then(|t| scorecard::measure_colors(&m).iris.map(|iris| scorecard::delta_e(iris, t)));
 
@@ -733,15 +739,29 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                     r.image.save(&a.out)?;
                     println!("  {} composited {} detail(s) after the swap", style("✓").green(), r.placed);
 
-                    // Mouth escalation advisory (§14.1) — the dentition inpaint itself is P7.
+                    // Mouth-region dentition inpaint (§8.7): when teeth manifest, mask the inner-lip
+                    // aperture and regenerate it with a dentition-focused prompt. (The geometry
+                    // dentition hint as a ControlNet cond needs the lower-level t2i path; prompt-only
+                    // here — the facade can't pass controls.)
                     if crate::persona::geometry::open_mouth(spec) {
-                        let lip: Vec<(f32, f32)> = (76..88).map(|i| m.landmarks[i]).collect();
-                        let (cw, ch) = (m.crop.width() as f32, m.crop.height() as f32);
-                        let w = (lip.iter().map(|p| p.0).fold(f32::MIN, f32::max) - lip.iter().map(|p| p.0).fold(f32::MAX, f32::min)) * cw;
-                        let h = (lip.iter().map(|p| p.1).fold(f32::MIN, f32::max) - lip.iter().map(|p| p.1).fold(f32::MAX, f32::min)) * ch;
-                        let mouth_area = (w * h / (a.size as f32 * a.size as f32)).clamp(0.0, 1.0);
-                        if casting::decide(casting::EscalationRegion::Mouth, mouth_area, casting::EscalationRegion::Mouth.default_threshold()).escalate {
-                            println!("  {} mouth is {:.2}% of the frame — dentition would need a mouth-region inpaint (§8.7, P7)", style("ladder:").cyan(), mouth_area * 100.0);
+                        if let (Some(dprompt), Some(mask)) = (compile::dentition_prompt(spec), feature_mask("teeth", &m, a.size, a.size)) {
+                            let cur = image::open(&a.out)?.to_rgb8();
+                            let tmp = std::env::temp_dir().join(format!("persona_teeth_{}.png", a.seed));
+                            let mtmp = std::env::temp_dir().join(format!("persona_teeth_mask_{}.png", a.seed));
+                            cur.save(&tmp)?;
+                            mask.save(&mtmp)?;
+                            println!("  {} dentition inpaint (\"{dprompt}\") over the mouth aperture (§8.7)…", style("→").cyan());
+                            match crate::api::Img2img::new(&a.model, &tmp).prompt(&dprompt).mask(&mtmp).mask_feather(4).strength(0.5).seed(a.seed).run().await {
+                                Ok(imgs) => {
+                                    if let Some(img) = imgs.into_iter().next() {
+                                        img.save(&a.out)?;
+                                        println!("  {} teeth refined", style("✓").green());
+                                    }
+                                }
+                                Err(e) => println!("  {} dentition inpaint skipped: {e}", style("·").yellow()),
+                            }
+                            let _ = std::fs::remove_file(&tmp);
+                            let _ = std::fs::remove_file(&mtmp);
                         }
                     }
                     // Hand jewelry advisory (§8.5) — hand-region refine needs hand landmarks (unreliable).

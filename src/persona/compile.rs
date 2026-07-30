@@ -276,6 +276,58 @@ pub fn compile_for_model(spec: &PersonaSpec, lex: &Lexicon, model: &str) -> Comp
     c
 }
 
+/// A dentition-focused prompt for the mouth-region inpaint (RFC §8.7). Built from the `teeth` block
+/// (alignment · shade · features · appliance). `None` when no teeth attributes are set.
+pub fn dentition_prompt(spec: &PersonaSpec) -> Option<String> {
+    let t = spec.teeth.as_ref()?;
+    let mut words: Vec<String> = Vec::new();
+    if let Some(al) = t.alignment.as_deref() {
+        match al {
+            "crowded" => words.push("crowded".into()),
+            "gapped" | "diastema" => words.push("gapped".into()),
+            "even" | "straight" => words.push("straight even".into()),
+            "protruding" => words.push("protruding".into()),
+            _ => {}
+        }
+    }
+    if let Some(s) = t.shade {
+        if s < 0.35 {
+            words.push("bright white".into());
+        } else if s > 0.65 {
+            words.push("slightly yellowed".into());
+        }
+    }
+    let mut prompt = format!("{} teeth", words.join(" ")).trim().to_string();
+    if prompt == "teeth" && t.alignment.is_none() && t.shade.is_none() && t.features.is_none() && t.appliance.is_none() {
+        return None; // teeth block present but empty of describable attributes
+    }
+    // discrete features + appliance.
+    let mut extras: Vec<String> = Vec::new();
+    if let Some(feats) = &t.features {
+        for f in feats {
+            match f.kind.as_deref() {
+                Some("chip") | Some("chipped") => extras.push("a chipped tooth".into()),
+                Some("gold-crown") | Some("gold") => extras.push("a gold tooth".into()),
+                Some("missing") => extras.push("a missing tooth".into()),
+                Some(other) => extras.push(format!("a {other} tooth")),
+                None => {}
+            }
+        }
+    }
+    if let Some(app) = t.appliance.as_deref() {
+        match app {
+            "braces" => extras.push("metal braces".into()),
+            "clear-aligner" | "retainer" => extras.push("a clear retainer".into()),
+            other if other != "none" => extras.push(other.to_string()),
+            _ => {}
+        }
+    }
+    if !extras.is_empty() {
+        prompt = format!("{prompt}, {}", extras.join(", "));
+    }
+    Some(prompt)
+}
+
 fn attr_value(spec: &PersonaSpec, path: &str) -> Option<AttrVal> {
     use AttrVal::*;
     match path {
@@ -315,6 +367,15 @@ mod tests {
 
     fn spec(s: &str) -> PersonaSpec {
         PersonaSpec::from_hjson(s).unwrap()
+    }
+
+    #[test]
+    fn dentition_prompt_from_teeth_block() {
+        assert!(dentition_prompt(&spec("{ schema: \"persona/1\" }")).is_none(), "no teeth → none");
+        let p = dentition_prompt(&spec("{ schema: \"persona/1\"\n teeth: { alignment: \"crowded\", shade: 0.8 } }")).unwrap();
+        assert!(p.contains("crowded") && p.contains("yellowed") && p.contains("teeth"), "{p}");
+        let b = dentition_prompt(&spec("{ schema: \"persona/1\"\n teeth: { appliance: \"braces\" } }")).unwrap();
+        assert!(b.contains("metal braces"), "{b}");
     }
 
     #[test]
