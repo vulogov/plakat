@@ -295,6 +295,24 @@ pub fn anchor_point(p: &Template, name: &str, offset: [f32; 2]) -> Option<Point>
     Some(((bx + offset[0]).clamp(0.0, 1.0), (by + offset[1]).clamp(0.0, 1.0)))
 }
 
+/// The `place`-widget drop (RFC §17.4): convert a point in the face box to the **nearest named anchor
+/// region + a face-normalised offset**, so the authored anchor is anatomical from the moment it is
+/// created (P6) — never a raw coordinate. Returns `(region, [dx, dy])` where the offset re-hits the
+/// point when resolved through the same landmarks.
+pub fn nearest_anchor(point: Point, lm: &Template) -> (&'static str, [f32; 2]) {
+    let mut best: (&'static str, f32, [f32; 2]) = ("chin", f32::INFINITY, [0.0, 0.0]);
+    for &name in ANCHOR_VOCAB {
+        let Some(idxs) = named_region(name) else { continue };
+        let n = idxs.len() as f32;
+        let (cx, cy) = idxs.iter().fold((0.0, 0.0), |(ax, ay), &i| (ax + lm[i].0 / n, ay + lm[i].1 / n));
+        let d = ((point.0 - cx).powi(2) + (point.1 - cy).powi(2)).sqrt();
+        if d < best.1 {
+            best = (name, d, [point.0 - cx, point.1 - cy]);
+        }
+    }
+    (best.0, best.2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,6 +376,22 @@ mod tests {
         let wl = anchor_point(&wide.landmarks, "left-cheek", [0.0, 0.0]).unwrap();
         let nl = anchor_point(&narrow.landmarks, "left-cheek", [0.0, 0.0]).unwrap();
         assert!(wl.0 > nl.0, "left cheek further right on a wider face: {} vs {}", wl.0, nl.0);
+    }
+
+    #[test]
+    fn nearest_anchor_snaps_to_a_named_region_and_offset_re_hits() {
+        let t = mean_template(false);
+        // a point right at the left-cheek centroid snaps to left-cheek with ~zero offset.
+        let idxs = named_region("left-cheek").unwrap();
+        let n = idxs.len() as f32;
+        let (cx, cy) = idxs.iter().fold((0.0, 0.0), |(ax, ay), &i| (ax + t[i].0 / n, ay + t[i].1 / n));
+        let (name, off) = nearest_anchor((cx, cy), &t);
+        assert_eq!(name, "left-cheek");
+        assert!(off[0].abs() < 1e-4 && off[1].abs() < 1e-4);
+        // a point nudged off the centroid keeps the region + records the offset (anatomical anchor).
+        let (name2, off2) = nearest_anchor((cx + 0.01, cy - 0.005), &t);
+        assert_eq!(name2, "left-cheek");
+        assert!((off2[0] - 0.01).abs() < 1e-4 && (off2[1] + 0.005).abs() < 1e-4);
     }
 
     #[test]

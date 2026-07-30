@@ -118,6 +118,26 @@ pub fn question_graph(lex: &Lexicon) -> Vec<Question> {
     qs
 }
 
+/// The nested sub-interview for adding one `marks` member (RFC §17.4 `list` widget): kind → placement
+/// (`place`, resolved via `geometry::nearest_anchor`) → size → colour. Paths are member-relative and
+/// the caller prefixes `marks.<n>.`. Built in here until the lexicon carries `member_widget` entries.
+pub fn mark_member_questions() -> Vec<Question> {
+    let q = |path: &str, ask: &str, widget: &str, options: &[&str]| Question {
+        path: path.into(),
+        ask: ask.into(),
+        widget: widget.into(),
+        section: "marks".into(),
+        options: options.iter().map(|s| s.to_string()).collect(),
+        tier: 2,
+    };
+    vec![
+        q("kind", "What kind of mark?", "select", &["mole", "scar", "birthmark", "freckles"]),
+        q("anchor", "Point to where it sits.", "place", &[]),
+        q("size", "How large?", "scalar", &[]),
+        q("color", "Colour?", "color", &[]),
+    ]
+}
+
 /// The next unanswered question within `depth` whose `when` condition passes (§17.2). `None` when the
 /// interview is complete at that depth.
 pub fn next_question(lex: &Lexicon, answers: &AnswerLog, depth: Depth) -> Option<Question> {
@@ -325,6 +345,20 @@ mod tests {
         let json = serde_json::to_string(&to_partial_spec(&ans)).unwrap();
         let spec = crate::persona::PersonaSpec::from_hjson(&json).expect("partial spec must parse");
         assert_eq!(spec.identity.and_then(|i| i.name).as_deref(), Some("ada"));
+    }
+
+    #[test]
+    fn mark_member_sub_interview_shape() {
+        let ms = mark_member_questions();
+        assert_eq!(ms.iter().map(|q| q.path.as_str()).collect::<Vec<_>>(), ["kind", "anchor", "size", "color"]);
+        assert_eq!(ms[1].widget, "place", "placement uses the crosshair widget");
+        assert!(ms[0].options.contains(&"scar".to_string()));
+        // a completed member maps cleanly to `marks.<n>.*` paths via the answer log.
+        let mut ans = AnswerLog::default();
+        apply(&mut ans, "marks.0.kind", Answer::Enum("mole".into()));
+        apply(&mut ans, "marks.0.size", Answer::Scalar(0.04));
+        let spec = to_partial_spec(&ans);
+        assert_eq!(spec["marks"][0]["kind"], Value::String("mole".into()));
     }
 
     #[test]
