@@ -27,6 +27,58 @@ pub struct LexEntry {
     pub none_negative: Option<String>,
     #[serde(default)]
     pub control: Option<String>,
+    // --- interview question-graph fields (RFC §17.3); all optional, defaults derived from kind/class ---
+    /// The question text. Defaults to a "<section> — <leaf>" phrasing.
+    #[serde(default)]
+    pub ask: Option<String>,
+    /// The answer widget (§17.4). Defaults from `kind` (scalar→scalar, enum→select, color→color).
+    #[serde(default)]
+    pub widget: Option<String>,
+    /// The depth at which the question first appears: `quick` | `standard` | `full`. Defaults from
+    /// `class` (structural→quick, surface→standard, detail→full).
+    #[serde(default)]
+    pub depth: Option<String>,
+    /// A within-section ordering hint (lower first). Defaults to 0.
+    #[serde(default)]
+    pub order: Option<i32>,
+    /// A total condition on the answer log; the question is skipped when it evaluates false (§17.3).
+    #[serde(default)]
+    pub when: Option<String>,
+}
+
+impl LexEntry {
+    /// The interview widget kind for this entry (§17.4), derived from `kind` when unset.
+    pub fn widget_kind(&self) -> &str {
+        if let Some(w) = &self.widget {
+            return w;
+        }
+        match self.kind.as_str() {
+            "scalar" => "scalar",
+            "color" => "color",
+            _ => "select",
+        }
+    }
+    /// The question text (§17.3), derived when unset.
+    pub fn question_text(&self, path: &str) -> String {
+        if let Some(a) = &self.ask {
+            return a.clone();
+        }
+        let leaf = path.rsplit('.').next().unwrap_or(path).replace('_', " ");
+        format!("{} — {}", self.section, leaf)
+    }
+    /// The depth tier (0 quick, 1 standard, 2 full), from `depth` or `class`.
+    pub fn depth_tier(&self) -> u8 {
+        match self.depth.as_deref() {
+            Some("quick") => 0,
+            Some("standard") => 1,
+            Some("full") => 2,
+            _ => match self.class.as_str() {
+                "structural" => 0,
+                "surface" => 1,
+                _ => 2,
+            },
+        }
+    }
 }
 
 impl LexEntry {

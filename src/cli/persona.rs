@@ -55,6 +55,10 @@ pub enum PersonaCmd {
     /// Repair one failing attribute on a render in place (RFC §12.4): mask the attribute's region →
     /// recomposite (detail) or regional inpaint (surface) → re-score → keep only on improvement.
     Repair(RepairArgs),
+    /// Build a spec via the headless interview (RFC §17.2). `--answers <file>` replays a flat
+    /// `path → value` map into a spec (scriptable / reproducible); without it, prints the question
+    /// graph for the depth (the interactive `--tui` view is a separate surface).
+    Interview(InterviewArgs),
 }
 
 #[derive(Args, Debug)]
@@ -293,6 +297,18 @@ pub struct DiffArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct InterviewArgs {
+    /// Output spec path (written when `--answers` is given).
+    pub out: PathBuf,
+    /// Interview depth: `quick` | `standard` | `full`.
+    #[arg(long, default_value = "standard")]
+    pub depth: String,
+    /// Replay a flat `path → value` answer map (HJSON) into a spec — scriptable + reproducible (§17.12).
+    #[arg(long)]
+    pub answers: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 pub struct RepairArgs {
     /// Path to the persona spec (`.hjson`).
     pub spec: PathBuf,
@@ -330,6 +346,52 @@ pub async fn run(args: PersonaArgs) -> Result<()> {
         PersonaCmd::Bake(a) => run_bake(a).await,
         PersonaCmd::Diff(a) => run_diff(a),
         PersonaCmd::Repair(a) => run_repair(a).await,
+        PersonaCmd::Interview(a) => run_interview(a),
+    }
+}
+
+fn run_interview(a: InterviewArgs) -> Result<()> {
+    use crate::persona::interview::{self, Depth};
+    use crate::persona::lexicon::Lexicon;
+    let lex = Lexicon::skeleton();
+    let depth = Depth::parse(&a.depth);
+
+    match &a.answers {
+        // Non-interactive replay (§17.12): flat path→value map → spec.
+        Some(path) => {
+            let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+            let map: serde_json::Map<String, serde_json::Value> = deser_hjson::from_str(&text).context("parsing the answers map")?;
+            let spec_json = interview::spec_from_map(&map);
+            let out = serde_json::to_string_pretty(&spec_json)?;
+            std::fs::write(&a.out, &out).with_context(|| format!("writing {}", a.out.display()))?;
+            // self-lint the result.
+            let spec = PersonaSpec::from_hjson(&out)?;
+            let findings = crate::persona::lint::lint(&spec);
+            let errs = findings.iter().filter(|f| f.level == Level::Error).count();
+            println!("{}  replayed {} answer(s) → {}", style("persona interview").bold(), map.len(), a.out.display());
+            if errs > 0 {
+                println!("  {} {errs} lint error(s) — run `persona lint {}`", style("warning:").yellow(), a.out.display());
+            } else {
+                println!("  {} spec is clean", style("✓").green());
+            }
+            Ok(())
+        }
+        // Headless preview: print the question graph for the depth.
+        None => {
+            let graph = interview::question_graph(&lex);
+            let (_, total) = interview::progress(&lex, &interview::AnswerLog::default(), depth);
+            println!("{}  {} questions at depth `{}` (headless preview; use --answers or --tui to author)", style("persona interview").bold(), total, a.depth);
+            let mut last_section = String::new();
+            for q in graph.iter().filter(|q| q.tier <= depth.tier()) {
+                if q.section != last_section {
+                    println!("\n  {}", style(&q.section).bold());
+                    last_section = q.section.clone();
+                }
+                let opts = if q.options.is_empty() { String::new() } else { format!("  [{}]", q.options.join("/")) };
+                println!("    {:<24} {} ({}){}", style(&q.path).dim(), q.ask, q.widget, style(opts).dim());
+            }
+            Ok(())
+        }
     }
 }
 
