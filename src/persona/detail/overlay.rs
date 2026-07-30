@@ -174,8 +174,9 @@ pub fn freckle_field(mask: &image::GrayImage, density: f32, color: [u8; 3], seed
             continue;
         }
         let r = 1 + (rand01(&mut st) * 2.0) as i32;
-        let jitter = (rand01(&mut st) - 0.5) * 30.0;
-        let c = [clamp_u8(color[0] as f32 + jitter), clamp_u8(color[1] as f32 + jitter * 0.6), clamp_u8(color[2] as f32 + jitter * 0.4)];
+        // neutral per-dot jitter (equal across channels) so a skin-derived grey stays grey.
+        let jitter = (rand01(&mut st) - 0.5) * 24.0;
+        let c = [clamp_u8(color[0] as f32 + jitter), clamp_u8(color[1] as f32 + jitter), clamp_u8(color[2] as f32 + jitter)];
         let a = clamp_u8(120.0 + rand01(&mut st) * 80.0);
         for dy in -r..=r {
             for dx in -r..=r {

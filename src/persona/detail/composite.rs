@@ -67,6 +67,12 @@ fn luma(c: [u8; 3]) -> f32 {
     0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32
 }
 
+/// Scale an sRGB colour toward black by `k` (0..1) with no hue shift — used to derive a mark's default
+/// colour from the render's own skin so it harmonises on any palette (a grayscale render → gray mark).
+fn darken(c: [u8; 3], k: f32) -> [u8; 3] {
+    [(c[0] as f32 * k) as u8, (c[1] as f32 * k) as u8, (c[2] as f32 * k) as u8]
+}
+
 /// Estimate the scene light from the face's own shading: a brightness gradient across the cheeks
 /// (horizontal) and forehead↔chin (vertical). Falls back to the top-left default if the face is flat.
 fn estimate_light(m: &FaceMetrics) -> Light {
@@ -238,7 +244,8 @@ pub fn composite_details_opts(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetri
             };
             let rad = face_px * 0.28;
             let fmask = disc_mask(base.width(), base.height(), centre, rad);
-            let colour = color_rgb(mark.color.as_ref(), [150, 95, 70]);
+            // freckles default to a lightly-darkened local skin tone (harmonises on any palette).
+            let colour = color_rgb(mark.color.as_ref(), darken(skin, 0.72));
             let field = overlay::freckle_field(&fmask, mark.density.unwrap_or(0.5), colour, mseed);
             stamp(&mut img, &mut mask, &field, 0.0 + field.width() as f32 / 2.0, field.height() as f32 / 2.0);
             placed += 1;
@@ -262,12 +269,14 @@ pub fn composite_details_opts(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetri
                 overlay::scar(len, wid, mark.orientation.unwrap_or(0.4), mark.maturity.unwrap_or(0.6), mark.relief.unwrap_or(0.5), skin, light)
             }
             "birthmark" => {
-                let colour = color_rgb(mark.color.as_ref(), [120, 85, 70]);
+                // default colour derives from the render's own skin (darkened) so it harmonises with
+                // a grayscale or stylised render instead of sitting on it as a coloured blob.
+                let colour = color_rgb(mark.color.as_ref(), darken(skin, 0.68));
                 overlay::birthmark(size as u32, mark.aspect.unwrap_or(1.0), mark.edge.as_deref().unwrap_or("soft"), mark.intensity.unwrap_or(0.7), colour, mseed)
             }
             // mole / beauty-mark / default
             _ => {
-                let colour = color_rgb(mark.color.as_ref(), [90, 58, 42]);
+                let colour = color_rgb(mark.color.as_ref(), darken(skin, 0.5));
                 overlay::mole(size as u32, colour, mark.raised.unwrap_or(0.5), light)
             }
         };
@@ -501,6 +510,6 @@ mod tests {
                 acc = (acc ^ c as u64).wrapping_mul(1099511628211);
             }
         }
-        assert_eq!(acc, 14264266837389475466, "composite corpus changed — update the golden intentionally");
+        assert_eq!(acc, 17414731240680731549, "composite corpus changed — update the golden intentionally");
     }
 }
