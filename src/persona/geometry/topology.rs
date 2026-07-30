@@ -105,9 +105,13 @@ pub fn named_region(name: &str) -> Option<&'static [usize]> {
         "right-jaw-angle" => &[4],
         "left-jaw-angle" => &[28],
         "chin" | "chin-crease" => &[CHIN],
-        // --- ears (approximate; contour temple endpoints, offset outward) ---
-        "right-lobe" | "right-helix" => &[0],
-        "left-lobe" | "left-helix" => &[32],
+        // --- ears (approximate; the contour endpoints 0/32 are at TEMPLE height, so the earlobe is a
+        // few points down the jaw — using 0/32 puts an earring at eyebrow level). Still coarse: on a
+        // hair-down frontal portrait the ear is usually occluded (§8.5). ---
+        "right-helix" => &[1],
+        "left-helix" => &[31],
+        "right-lobe" => &[3],
+        "left-lobe" => &[29],
         _ => return None,
     })
 }

@@ -163,9 +163,10 @@ pub fn birthmark(size_px: u32, aspect: f32, edge: &str, intensity: f32, color: [
 pub fn freckle_field(mask: &image::GrayImage, density: f32, color: [u8; 3], seed: u64) -> RgbaImage {
     let (w, h) = mask.dimensions();
     let mut img = RgbaImage::new(w, h);
-    // area of the region → number of freckles.
+    // area of the region → number of freckles. A freckle field is MANY fine, faint specks — sparse
+    // large dots read as moles, so this is deliberately dense + small + low-opacity.
     let area = mask.pixels().filter(|p| p.0[0] > 0).count() as f32;
-    let n = (area * density.clamp(0.0, 1.0) * 0.02) as u32;
+    let n = (area * density.clamp(0.0, 1.0) * 0.06) as u32;
     let mut st = seed ^ 0xF00D_FACE_1234_5678;
     for _ in 0..n {
         let fx = (rand01(&mut st) * w as f32) as u32;
@@ -173,11 +174,11 @@ pub fn freckle_field(mask: &image::GrayImage, density: f32, color: [u8; 3], seed
         if fx >= w || fy >= h || mask.get_pixel(fx, fy).0[0] == 0 {
             continue;
         }
-        let r = 1 + (rand01(&mut st) * 2.0) as i32;
+        let r = (rand01(&mut st) * 1.6) as i32; // 0–1 px: fine specks, not dots
         // neutral per-dot jitter (equal across channels) so a skin-derived grey stays grey.
         let jitter = (rand01(&mut st) - 0.5) * 24.0;
         let c = [clamp_u8(color[0] as f32 + jitter), clamp_u8(color[1] as f32 + jitter), clamp_u8(color[2] as f32 + jitter)];
-        let a = clamp_u8(120.0 + rand01(&mut st) * 80.0);
+        let a = clamp_u8(45.0 + rand01(&mut st) * 70.0); // 45–115: faint
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx * dx + dy * dy > r * r {
