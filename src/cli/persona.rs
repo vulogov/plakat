@@ -306,6 +306,9 @@ pub struct InterviewArgs {
     /// Replay a flat `path → value` answer map (HJSON) into a spec — scriptable + reproducible (§17.12).
     #[arg(long)]
     pub answers: Option<PathBuf>,
+    /// Launch the interactive composition TUI (§17) instead of the headless preview/replay.
+    #[arg(long)]
+    pub tui: bool,
 }
 
 #[derive(Args, Debug)]
@@ -355,6 +358,17 @@ fn run_interview(a: InterviewArgs) -> Result<()> {
     use crate::persona::lexicon::Lexicon;
     let lex = Lexicon::skeleton();
     let depth = Depth::parse(&a.depth);
+
+    // Interactive composition TUI (§17). Owns the terminal; returns when the user saves/quits.
+    #[cfg(feature = "ui")]
+    if a.tui {
+        let name = a.out.file_stem().and_then(|s| s.to_str()).unwrap_or("persona").to_string();
+        return crate::persona::tui::run(a.out.clone(), depth, name);
+    }
+    #[cfg(not(feature = "ui"))]
+    if a.tui {
+        anyhow::bail!("the composition TUI needs the `ui` feature (this is a --no-default-features build)");
+    }
 
     match &a.answers {
         // Non-interactive replay (§17.12): flat path→value map → spec.

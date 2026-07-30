@@ -18,6 +18,9 @@ pub mod compile;
 pub mod detail;
 pub mod edit;
 pub mod interview;
+pub mod preview;
+#[cfg(feature = "ui")]
+pub mod tui;
 pub mod geometry;
 pub mod lexicon;
 pub mod lint;
