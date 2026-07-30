@@ -17,7 +17,7 @@ Both are lint-clean (`plakat persona lint corpus/mira.hjson`).
 
 ```sh
 cargo build --release            # debug inference is ~50x slower
-corpus/persona_run.sh                    # both personas, sd15 + sd35 → corpus/out/
+corpus/persona_run.sh                    # both personas, sd15 + sd35 → corpus/images/persona/
 ```
 
 Knobs (env): `MODELS="sd15"`, `CAST_COUNT=3`, `KEEP_BEST=2`, `STEPS=16`, `PLAKAT=./target/debug/plakat`.
@@ -35,7 +35,7 @@ It runs, per persona:
 ## Output layout
 
 ```
-corpus/out/
+corpus/images/persona/
   <persona>/geometry/         mesh · wireframe · depth · skeleton · masks · dentition · figure
   <persona>/<model>/cast/     reference_set.json · references/ · candidates/
   <persona>/<model>/render.png · composited.png · repaired_eyes.png · detail_mask.png

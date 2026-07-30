@@ -24,7 +24,7 @@ MODELS="${MODELS:-sd15 sd35}"
 CAST_COUNT="${CAST_COUNT:-6}"
 KEEP_BEST="${KEEP_BEST:-3}"
 STEPS="${STEPS:-24}"
-OUT="corpus/out"
+OUT="corpus/images/persona"
 
 # The OOM guard reads macOS `free` pages (near-zero by design) and mis-fires under a tight render
 # loop; disable it here. LOWMEM lets sd35 run on a 24 GB Metal box.
@@ -81,7 +81,7 @@ for M in $MODELS; do
 
     # render the persona into a scene (Tier-B swap → restore → detail composite).
     run "$PLAKAT" persona render "$D/cast" --model "$M" --size "$SZ" --steps "$STEPS" \
-        --scene "a natural-light portrait photograph, plain background" --out "$D/render.png"
+        --scene "a colour portrait photograph, natural light, natural skin tones, plain background" --out "$D/render.png"
 
     # measure the render against the spec (scorecard: geometric scalars, colour, details, detect).
     run "$PLAKAT" persona verify "$SPEC" --image "$D/render.png" --model "$M"
@@ -97,7 +97,7 @@ for M in $MODELS; do
 
   # multiperson: both personas in one scene, each swapped into its own attributed figure (§14.2).
   run "$PLAKAT" persona render "$OUT/mira/$M/cast" --with "$OUT/idris/$M/cast" --model "$M" \
-      --size "$SZ" --steps "$STEPS" --scene "two people at a cafe table, photograph" \
+      --size "$SZ" --steps "$STEPS" --scene "two people at a cafe table, colour photograph, natural light" \
       --out "$OUT/multiperson_$M.png"
 done
 
