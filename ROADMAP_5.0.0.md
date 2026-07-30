@@ -156,8 +156,11 @@ SCRFD → swap canonical face → restore → detail-composite AFTER swap (hard 
 (IP-Adapter via `api::Portrait`) + `--tier auto|A|B` + rejection sampling (`--min-score`). **Live-
 verified** (release, sd15): cast wrote a reference set + coherence correctly flagged 3 unconditioned
 renders as different people; render produced a coherent garden scene with the swapped+restored face.
-**Deferred:** geometry-CN + multi-view/pose-CN casting (both need `t2i::Request.controls`, not on the
-`api` facade); Tier C baking (§11.6 → P6); resident render worker (§22, per-candidate model reload).
+**Geometry structural ControlNet in cast — DONE (post-cut polish, commit 1aa8fed):** `cast
+--geometry-control depth|pose` drives the geometry `depth_proxy` (topology-agnostic, sd15+sdxl) through
+a Depth ControlNet so authored proportions are realised via conditioning instead of competing for CLIP
+tokens; `api::Generate.control()` added. **Deferred:** multi-view/pose sheets (§11.2); Tier C baking
+(§11.6 → P6); resident render worker (§22, per-candidate model reload).
 
 ## Phase 6 — Cross-model (weights; the "all families" promise) — DONE
 
