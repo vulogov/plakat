@@ -1,0 +1,113 @@
+{
+  # PERSONA-1 corpus — "idris": a male persona exercising the other half of the schema
+  # (broad structural geometry, a full beard, a birthmark, glasses [prompt-path jewelry], an athletic
+  # figure, a deeper skin tone). Lint-clean. HJSON: quote strings that share a line with a brace.
+  schema: "persona/1"
+
+  identity: {
+    name: "idris"
+    apparent_age: 38
+    sex: "male"
+    notes: "corpus demo persona — facial hair + glasses + birthmark coverage"
+  }
+
+  face: {
+    shape: "square"
+    width: 0.62
+    asymmetry: 0.20
+    jaw: {
+      width: 0.70
+      definition: "sharp"
+    }
+    chin: {
+      projection: 0.60
+    }
+    cheekbones: {
+      prominence: 0.55
+    }
+  }
+
+  eyes: {
+    color: "brown"
+    shape: "round"
+    spacing: 0.48
+    canthal_tilt: 0.45
+    brow: {
+      thickness: 0.70
+    }
+  }
+
+  nose: {
+    profile: "aquiline"
+    length: 0.60
+  }
+
+  mouth: {
+    width: 0.50
+    lower_lip: 0.45
+  }
+
+  skin: {
+    tone: "fitzpatrick-5"
+    texture: 0.50
+  }
+
+  hair: {
+    color: "black"
+    length: "crop"
+    greying: 0.30
+  }
+
+  facial_hair: {
+    style: "full-beard"
+    density: 0.80
+    greying: 0.30
+  }
+
+  teeth: {
+    visibility: "auto"
+  }
+
+  marks: [
+    {
+      kind: "birthmark"
+      anchor: {
+        region: "left-jaw-mid"
+      }
+      size: 0.050
+      edge: "irregular"
+      color: "tan"
+      intensity: 0.60
+    }
+  ]
+
+  # glasses are presentation jewelry; the compositor routes them to the prompt path (§8.5), not a swap.
+  jewelry: {
+    identity_locked: true
+    items: [
+      {
+        kind: "glasses"
+        frame: "rectangular"
+        metal: "steel"
+      }
+    ]
+  }
+
+  figure: {
+    height_cm: 183
+    build: "mesomorph"
+    shoulders: 0.70
+    waist: 0.50
+    musculature: 0.65
+  }
+
+  defaults: {
+    expression: "neutral"
+    framing: "headshot"
+  }
+
+  provenance: {
+    method: "manual"
+    lexicon_version: "1.0"
+  }
+}

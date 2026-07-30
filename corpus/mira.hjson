@@ -1,0 +1,141 @@
+{
+  # PERSONA-1 corpus — "mira": a richly-authored female persona exercising most of the schema
+  # (geometry scalars, colours, a mole + a scar + a freckle field, a piercing + earring, visible
+  # teeth, figure). Lint-clean. HJSON: quote string values that share a line with a closing brace.
+  schema: "persona/1"
+
+  identity: {
+    name: "mira"
+    apparent_age: 31
+    sex: "female"
+    notes: "corpus demo persona — structural + surface + detail coverage"
+  }
+
+  face: {
+    shape: "oval"
+    width: 0.42
+    asymmetry: 0.25
+    jaw: {
+      width: 0.40
+      definition: "soft"
+    }
+    chin: {
+      projection: 0.55
+    }
+    cheekbones: {
+      height: 0.60
+      prominence: 0.70
+    }
+  }
+
+  eyes: {
+    color: "hazel"
+    shape: "almond"
+    spacing: 0.58
+    canthal_tilt: 0.62
+    brow: {
+      thickness: 0.45
+      arch: "soft"
+    }
+  }
+
+  nose: {
+    profile: "straight"
+    length: 0.48
+    bridge: {
+      width: 0.40
+    }
+  }
+
+  mouth: {
+    width: 0.55
+    lower_lip: 0.62
+    cupids_bow: "defined"
+  }
+
+  skin: {
+    tone: "fitzpatrick-2"
+    undertone: "warm"
+    texture: 0.30
+  }
+
+  hair: {
+    color: "auburn"
+    length: "shoulder"
+    texture: "wavy"
+  }
+
+  teeth: {
+    visibility: "visible"
+    alignment: "even"
+    shade: 0.25
+  }
+
+  # localized details — a positional mole, a linear scar, and a distributional freckle field.
+  marks: [
+    {
+      kind: "mole"
+      anchor: {
+        region: "left-cheek"
+      }
+      size: 0.030
+      raised: 0.70
+    }
+    {
+      kind: "scar"
+      anchor: {
+        region: "right-brow-outer"
+        offset: [0.0, -0.02]
+      }
+      form: "linear"
+      length: 0.10
+      width: 0.012
+      orientation: 0.40
+      maturity: 0.70
+      relief: 0.50
+    }
+    {
+      kind: "freckles"
+      region: "right-cheek"
+      density: 0.60
+    }
+  ]
+
+  piercings: [
+    {
+      site: "left-lobe"
+      count: 1
+    }
+  ]
+
+  jewelry: {
+    identity_locked: false
+    items: [
+      {
+        kind: "stud"
+        site: "left-lobe"
+        metal: "gold"
+        stone: "ruby"
+        size: 0.05
+      }
+    ]
+  }
+
+  figure: {
+    height_cm: 168
+    build: "mesomorph"
+    shoulders: 0.50
+    waist: 0.42
+    limb_length: 0.55
+  }
+
+  defaults: {
+    expression: "neutral"
+    framing: "headshot"
+  }
+
+  provenance: {
+    method: "manual"
+    lexicon_version: "1.0"
+  }
+}

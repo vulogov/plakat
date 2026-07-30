@@ -1,0 +1,21 @@
+{
+  # A scripted answer log for `persona interview --answers` (RFC §17.12): a flat `path → value` map
+  # replayed deterministically into a spec. A string "?" means "unknown" (omitted); [] asserts an
+  # empty collection. This is how a bug-report session or a CI fixture reproduces an exact authoring.
+  "identity.name": "mira-quick"
+  "identity.apparent_age": 31
+  "identity.sex": "female"
+  "face.width": 0.42
+  "face.cheekbones.prominence": 0.70
+  "eyes.color": "hazel"
+  "eyes.spacing": 0.58
+  "eyes.canthal_tilt": 0.62
+  "nose.profile": "straight"
+  "nose.length": 0.48
+  "mouth.width": 0.55
+  "skin.tone": "fitzpatrick-2"
+  "hair.color": "auburn"
+  "hair.length": "shoulder"
+  "face.chin.projection": "?"
+  "piercings": []
+}
