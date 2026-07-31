@@ -418,6 +418,17 @@ fn run_interview(a: InterviewArgs) -> Result<()> {
     }
 }
 
+/// Is the mouth actually open in the render? The spec's `teeth.visibility` says teeth *can* show, but
+/// a neutral expression renders a CLOSED mouth — inpainting teeth there paints white specks on the chin.
+/// Gate the dentition pass on the realised inner-lip aperture.
+fn realised_mouth_open(m: &crate::persona::scorecard::FaceMetrics) -> bool {
+    use crate::persona::geometry::topology::LIP_INNER;
+    let ys: Vec<f32> = LIP_INNER.map(|i| m.landmarks[i].1).collect();
+    let mn = ys.iter().cloned().fold(f32::MAX, f32::min);
+    let mx = ys.iter().cloned().fold(f32::MIN, f32::max);
+    (mx - mn) / m.face_h.max(1e-4) > 0.06
+}
+
 /// Full-frame feathered mask over an attribute's feature region, from the realised landmarks (§12.4
 /// mask source #1). Returns `None` for a section with no landmark region (caller falls back to detect).
 fn feature_mask(section: &str, m: &crate::persona::scorecard::FaceMetrics, fw: u32, fh: u32) -> Option<image::GrayImage> {
@@ -847,7 +858,7 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                     // aperture and regenerate it with a dentition-focused prompt. (The geometry
                     // dentition hint as a ControlNet cond needs the lower-level t2i path; prompt-only
                     // here — the facade can't pass controls.)
-                    if crate::persona::geometry::open_mouth(spec) {
+                    if crate::persona::geometry::open_mouth(spec) && realised_mouth_open(&m) {
                         if let (Some(dprompt), Some(mask)) = (compile::dentition_prompt(spec), feature_mask("teeth", &m, a.size, a.size).filter(|mk| mk.pixels().any(|p| p.0[0] > 0))) {
                             let cur = image::open(&a.out)?.to_rgb8();
                             let tmp = std::env::temp_dir().join(format!("persona_teeth_{}.png", a.seed));
