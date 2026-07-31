@@ -957,8 +957,9 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
 
     println!("  {} generating the group scene…", style("→").cyan());
     // Multi-figure scenes are prone to hand/anatomy failures — guard them explicitly.
-    let group_negative = "deformed hands, mutated hands, extra fingers, missing fingers, bad anatomy, \
-                          extra limbs, fused fingers, cgi, 3d render, collage, contact sheet";
+    let group_negative = "extra arms, extra limbs, third arm, extra hands, deformed hands, mutated hands, \
+                          extra fingers, missing fingers, fused fingers, bad anatomy, disfigured, \
+                          cgi, 3d render, collage, contact sheet";
     let imgs = crate::api::Generate::new(&a.model)
         .prompt(&prompt)
         .negative(group_negative)
