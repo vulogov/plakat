@@ -726,10 +726,13 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     let spec_path = a.spec.clone().unwrap_or_else(|| a.persona.join("spec.hjson"));
     let spec = PersonaSpec::load(&spec_path).ok();
     let appearance = spec.as_ref().map(|s| compile::compile_for_model(s, &Lexicon::skeleton(), &a.model)).unwrap_or_else(|| compile::compile_for_model(&PersonaSpec::default(), &Lexicon::skeleton(), &a.model));
+    // Lead with the persona subject (it already begins "a portrait photograph of a 38-year-old man,
+    // …"), THEN the scene. Scene-first buries the subject past CLIP's high-salience head, which can
+    // render an object instead of a person (the scene must contain a face for the swap to land).
     let prompt = if appearance.positive.is_empty() {
-        a.scene.clone()
+        format!("a portrait photograph of a person, {}", a.scene)
     } else {
-        format!("{}, {}", a.scene, appearance.positive)
+        format!("{}, {}", appearance.positive, a.scene)
     };
 
     println!("{}  {} into a scene  (model {})", style("persona render").bold(), set.persona, a.model);
@@ -763,26 +766,33 @@ async fn run_render(a: RenderArgs) -> Result<()> {
         img.save(&a.out)?;
         println!("  {} rendered via the face adapter", style("✓").green());
     } else {
-        // Tier B (§11.5, universal): native render → face swap → restore.
-        println!("  {} Tier B: generating the scene…", style("→").cyan());
-        let imgs = crate::api::Generate::new(&a.model)
-            .prompt(&prompt)
-            .negative(&appearance.negative)
-            .seed(a.seed)
-            .size(a.size, a.size)
-            .steps(a.steps)
-            .run()
-            .await
-            .context("scene render")?;
-        let Some(scene_img) = imgs.into_iter().next() else {
-            anyhow::bail!("scene render produced no image");
-        };
-        scene_img.save(&a.out)?;
-
+        // Tier B (§11.5, universal): native render → face swap → restore. Retry a few seeds if the
+        // scene render has no detectable face (a bad seed can render an object / empty scene).
         let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32).await?;
-        let faces = swapper.detect(&a.out).context("detecting the scene face")?;
-        let Some(target) = faces.into_iter().next() else {
-            println!("  {} no face in the scene render — leaving it un-swapped ({})", style("·").yellow(), a.out.display());
+        let mut target = None;
+        for attempt in 0..3 {
+            let seed = a.seed + attempt;
+            println!("  {} Tier B: generating the scene…{}", style("→").cyan(), if attempt > 0 { format!(" (retry {attempt}, no face)") } else { String::new() });
+            let imgs = crate::api::Generate::new(&a.model)
+                .prompt(&prompt)
+                .negative(&appearance.negative)
+                .seed(seed)
+                .size(a.size, a.size)
+                .steps(a.steps)
+                .run()
+                .await
+                .context("scene render")?;
+            let Some(scene_img) = imgs.into_iter().next() else {
+                anyhow::bail!("scene render produced no image");
+            };
+            scene_img.save(&a.out)?;
+            if let Some(f) = swapper.detect(&a.out).context("detecting the scene face")?.into_iter().next() {
+                target = Some(f);
+                break;
+            }
+        }
+        let Some(target) = target else {
+            println!("  {} no face in the scene render after 3 seeds — leaving it un-swapped ({}); try a more explicit scene", style("·").yellow(), a.out.display());
             return Ok(());
         };
         // Region-escalation ladder (§14.1): measure the face's frame area; a small face swaps + restores

@@ -3,7 +3,7 @@
 # PERSONA-1 feature-demonstration driver (RFC PERSONA-1, plakat 5.0.0).
 #
 # Runs the whole persona pipeline over the corpus specs (mira, idris) on two families — sd15 and
-# sd35 — and writes every artefact under corpus/out/. It exercises, in order:
+# sd35 — and writes every artefact under corpus/images/persona/. It exercises, in order:
 #
 #   lint · show · geometry (maps + calibration pre-distort) · interview replay · edit-diff        [weights-free]
 #   cast (candidates → coherence-checked reference set) · render (Tier-B swap bridge) · verify
@@ -81,7 +81,7 @@ for M in $MODELS; do
 
     # render the persona into a scene (Tier-B swap → restore → detail composite).
     run "$PLAKAT" persona render "$D/cast" --model "$M" --size "$SZ" --steps "$STEPS" \
-        --scene "a colour portrait photograph, natural light, natural skin tones, plain background" --out "$D/render.png"
+        --scene "colour photograph, natural light, plain background" --out "$D/render.png"
 
     # measure the render against the spec (scorecard: geometric scalars, colour, details, detect).
     run "$PLAKAT" persona verify "$SPEC" --image "$D/render.png" --model "$M"
