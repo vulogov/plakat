@@ -301,10 +301,10 @@ pub fn compile_for_model(spec: &PersonaSpec, lex: &Lexicon, model: &str) -> Comp
     // exclude child/underage drift explicitly so the render matches the adult spec.
     let mut negs = collection_negatives(spec);
     if spec.identity.is_some() {
-        // Anti-uncanny only — fight the plastic/illustration look the bare attribute list tends to
-        // produce. The subject's AGE is set by the positive clause (`a 31-year-old woman`), so a
-        // legitimately-authored age renders correctly; no age is suppressed here.
-        for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll"] {
+        // Anti-uncanny (fight the plastic/illustration look the bare attribute list tends to produce)
+        // + anti-collage (sd15 + a face adapter can render a contact-sheet/montage instead of a single
+        // portrait). The subject's AGE is set by the positive clause, so no age is suppressed here.
+        for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll", "collage", "contact sheet", "photo grid", "split image"] {
             negs.push(n.into());
         }
     }
@@ -560,7 +560,7 @@ mod tests {
         );
         assert_eq!(
             clip.negative,
-            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes, cgi, 3d render, illustration, plastic skin, airbrushed, doll"
+            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes, cgi, 3d render, illustration, plastic skin, airbrushed, doll, collage, contact sheet, photo grid, split image"
         );
         let t5 = compile_for_model(&s, &lex, "flux-dev");
         assert_eq!(
