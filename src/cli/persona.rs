@@ -956,8 +956,12 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
     };
 
     println!("  {} generating the group scene…", style("→").cyan());
+    // Multi-figure scenes are prone to hand/anatomy failures — guard them explicitly.
+    let group_negative = "deformed hands, mutated hands, extra fingers, missing fingers, bad anatomy, \
+                          extra limbs, fused fingers, cgi, 3d render, collage, contact sheet";
     let imgs = crate::api::Generate::new(&a.model)
         .prompt(&prompt)
+        .negative(group_negative)
         .seed(a.seed)
         .size(a.size, a.size)
         .steps(a.steps)
@@ -1048,7 +1052,9 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
             let tmp = std::env::temp_dir().join(format!("persona_mp_{band}.png"));
             sub.save(&tmp)?;
             if let Some(m) = scorecard::measure_landmarks(&tmp, &det, &pip)? {
-                let r = detail::composite_details(&sub, spec, &m, a.seed + band as u64);
+                // Skip worn jewelry in a group shot — the smaller, often-profile faces make ear/nose
+                // anchors unreliable (an earring lands on a nose). Marks + piercings still composite.
+                let r = detail::composite_details_opts(&sub, spec, &m, a.seed + band as u64, false);
                 // paste the composited sub-crop back into the scene.
                 image::imageops::overlay(&mut scene, &r.image, crop[0] as i64, crop[1] as i64);
                 println!("  {} composited {} detail(s) for {}", style("✓").green(), r.placed, personas[band].set.persona);
