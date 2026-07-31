@@ -957,13 +957,14 @@ async fn run_render_multi(a: RenderArgs) -> Result<()> {
         _ => format!("{n} people"),
     };
     let appearances: Vec<String> = personas.iter().map(|p| p.appearance.clone()).filter(|s| !s.is_empty()).collect();
-    // "…, each facing the camera" — the swap + SCRFD work best on frontal faces; a group scene
-    // otherwise tends to profiles/three-quarter views where identity transfer is weak (§14.2).
+    // "side by side, both fully in frame, facing the camera" — nudge the base model toward an even
+    // two-shot (one person otherwise dominates / the other is cut off) with frontal faces the swap +
+    // SCRFD can use (§14.2). Composition is still base-model-limited on weaker families.
+    let framing = format!("{count_word} sitting side by side, both fully in frame, facing the camera");
     let prompt = if appearances.is_empty() {
-        format!("a colour photograph of {count_word} facing the camera, {}", a.scene)
+        format!("a colour photograph of {framing}, {}", a.scene)
     } else {
-        // "a photograph of two people facing the camera, <scene>: a 31-year-old woman with auburn hair, and a 38-year-old man with a beard"
-        format!("a colour photograph of {count_word} facing the camera, {}: {}", a.scene, appearances.join(", and "))
+        format!("a colour photograph of {framing}, {}: {}", a.scene, appearances.join(", and "))
     };
 
     println!("  {} generating the group scene…", style("→").cyan());
