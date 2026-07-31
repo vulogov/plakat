@@ -1195,6 +1195,9 @@ async fn run_cast(a: CastArgs) -> Result<()> {
                 _ => {
                     let mut canvas = image::GrayImage::from_pixel(a.size, a.size, image::Luma([0]));
                     image::imageops::overlay(&mut canvas, &geometry::depth_proxy(&d.landmarks, inner), ox, oy);
+                    // Ground the floating face-oval as a head-and-shoulders bust so a weakly-bound
+                    // SD-UNet can't read the isolated blob as an object (the "wooden knife" failure).
+                    geometry::add_bust_base(&mut canvas, ox, oy, inner, inner);
                     image::DynamicImage::ImageLuma8(canvas).save(&path)
                 }
             };

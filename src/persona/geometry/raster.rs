@@ -159,6 +159,56 @@ pub fn depth_proxy(lm: &Template, size: u32) -> GrayImage {
     out
 }
 
+/// Ground a framed face conditioning map as a **bust** (§10.3): paint a soft neck column and shoulder
+/// mound into `canvas` *below* the already-overlaid face box `(fx, fy, fw, fh)` (canvas pixel space).
+///
+/// The bare `depth_proxy` is a disembodied face-oval floating on black. A well-prompted family reads it
+/// as a head; a weakly-bound SD-UNet can just as easily read the isolated oval as an *object* (a spoon,
+/// a wooden blade) and fill the void with gibberish text. Adding neck + shoulders makes the silhouette
+/// unambiguously a head-and-shoulders portrait, which robustly holds the render to a person. Depth
+/// ordering: face (nearest, ~1.0) → neck (~0.62) → shoulders (~0.42), so it stays a valid depth map.
+pub fn add_bust_base(canvas: &mut GrayImage, fx: i64, fy: i64, fw: u32, fh: u32) {
+    let (fwf, fhf) = (fw as f32, fh as f32);
+    let cx = fx as f32 + fwf * 0.5; // face centre-x
+    let chin_y = fy as f32 + fhf * 0.90; // ≈ chin line
+    let neck_hw = fwf * 0.20; // neck half-width at the jaw
+    let neck_bot = chin_y + fhf * 0.22;
+    let sh_hw = fwf * 0.95; // shoulder half-width
+    let sh_top = neck_bot - fhf * 0.03; // shoulders begin just under the neck
+    let curve = fhf * 0.38; // how fast the shoulder line drops away from the neck
+    for y in 0..canvas.height() {
+        let py = y as f32;
+        if py < chin_y {
+            continue;
+        }
+        for x in 0..canvas.width() {
+            let dx = (x as f32 - cx).abs();
+            let mut d = 0.0f32;
+            // neck column, flaring very slightly toward the shoulders.
+            if py < neck_bot {
+                let t = ((py - chin_y) / (neck_bot - chin_y).max(1.0)).clamp(0.0, 1.0);
+                let hw = neck_hw * (1.0 + 0.18 * t);
+                if dx < hw {
+                    d = d.max(0.62 - 0.10 * (dx / hw));
+                }
+            }
+            // shoulder mound: a parabola opening downward, brighter toward the centre.
+            if py >= sh_top && dx < sh_hw {
+                let top = sh_top + curve * (dx / sh_hw).powi(2);
+                if py >= top {
+                    d = d.max(0.42 * (1.0 - 0.45 * (dx / sh_hw)));
+                }
+            }
+            if d > 0.0 {
+                let v = (d * 255.0).round() as u8;
+                if v > canvas.get_pixel(x, y).0[0] {
+                    canvas.put_pixel(x, y, Luma([v]));
+                }
+            }
+        }
+    }
+}
+
 /// OpenPose head keypoints (nose, both eyes, both "ears" ≈ contour temples) drawn in the OpenPose
 /// colour convention, with the connecting bones — the cross-family OpenPose-union CN path (§10.3).
 pub fn face_skeleton(lm: &Template, size: u32) -> RgbImage {

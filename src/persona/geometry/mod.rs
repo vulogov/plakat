@@ -28,7 +28,7 @@ pub use figure::{
     BODY_ANCHOR_VOCAB,
 };
 pub use raster::{
-    dentition_hint, depth_proxy, detail_overlay, face_skeleton, mesh_map, region_mask, wireframe,
+    add_bust_base, dentition_hint, depth_proxy, detail_overlay, face_skeleton, mesh_map, region_mask, wireframe,
     MeshStyle, Region,
 };
 pub use template::{mean_template, Point, Template};
