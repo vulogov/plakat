@@ -67,6 +67,40 @@ fn luma(c: [u8; 3]) -> f32 {
     0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32
 }
 
+/// Mean sRGB over a small disc of a full-image (used to probe what is actually *at* a jewelry anchor
+/// — skin, or hair covering the ear).
+fn img_disc_rgb(im: &RgbImage, cx: f32, cy: f32, r: f32) -> [u8; 3] {
+    let (w, h) = (im.width() as f32, im.height() as f32);
+    let (mut rs, mut gs, mut bs, mut n) = (0u32, 0u32, 0u32, 0u32);
+    let (x0, y0) = ((cx - r).max(0.0) as u32, (cy - r).max(0.0) as u32);
+    let (x1, y1) = ((cx + r).min(w - 1.0) as u32, (cy + r).min(h - 1.0) as u32);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let p = im.get_pixel(x, y).0;
+            rs += p[0] as u32;
+            gs += p[1] as u32;
+            bs += p[2] as u32;
+            n += 1;
+        }
+    }
+    let n = n.max(1);
+    [(rs / n) as u8, (gs / n) as u8, (bs / n) as u8]
+}
+
+/// Does the patch `local` read as bare skin (vs hair / fabric / shadow occluding the anchor)? Compares
+/// against the render's own measured cheek `skin`: a large luminance drop OR a big hue swing means the
+/// ear (or wherever the piece would sit) is covered — so the piece must not be stamped on top of it.
+/// Deliberately lenient: only culls on a *clear* mismatch, so a slightly-shaded lobe still gets its stud.
+fn reads_as_skin(local: [u8; 3], skin: [u8; 3]) -> bool {
+    let (ls, ll) = (luma(skin).max(1.0), luma(local));
+    if ll < 0.55 * ls {
+        return false; // markedly darker than the cheek → hair or deep shadow
+    }
+    // hue/chroma: skin is warm (R ≥ G ≥ B). Compare the R−B warmth spread, normalised by luma.
+    let warm = |c: [u8; 3]| (c[0] as f32 - c[2] as f32) / luma(c).max(1.0);
+    (warm(local) - warm(skin)).abs() < 0.45
+}
+
 /// Scale an sRGB colour toward black by `k` (0..1) with no hue shift — used to derive a mark's default
 /// colour from the render's own skin so it harmonises on any palette (a grayscale render → gray mark).
 fn darken(c: [u8; 3], k: f32) -> [u8; 3] {
@@ -328,6 +362,17 @@ pub fn composite_details_opts(base: &RgbImage, spec: &PersonaSpec, m: &FaceMetri
                 continue;
             };
             let sz = (it.size.unwrap_or(0.05) * face_px).max(6.0) as u32;
+            // Occlusion awareness (§8.5): probe the render at the anchor. If the ear/lobe is covered by
+            // hair (or the site is in shadow/fabric), the metal reads as pasted-on — so cull it, don't
+            // stamp a stud over a curtain of hair. Ear sites only; facial sites (nostril/lip) are on skin.
+            let ear_site = site.contains("ear") || site.contains("lobe") || site.contains("helix");
+            if ear_site {
+                let local = img_disc_rgb(base, cx, cy, (sz as f32 * 0.6).max(3.0));
+                if !reads_as_skin(local, skin) {
+                    culled.push(Culled { kind: format!("jewelry:{kind}@{site}"), reason: "ear occluded (hair/shadow) — not composited on top (§8.5)".into() });
+                    continue;
+                }
+            }
             let metal = overlay::metal_colour(it.metal.as_deref().unwrap_or("silver"));
             let stone = it.stone.as_deref().map(overlay::stone_colour);
             let ov = overlay::jewelry(kind, sz, metal, stone);
