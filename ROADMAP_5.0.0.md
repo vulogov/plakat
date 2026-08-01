@@ -217,24 +217,39 @@ sub-interview). **Deferred (interactive UI, low verifiability w/o a PTY):** the 
 tooth widgets wired into the TUI loop, Tier-2 debounced diffusion preview (ChannelHook+CancelFlag), and
 workbench/evolve (§17.8–9).
 
-## Phase 9 — docs + release (5.0.0 cut) — DOCS DONE; CUT PENDING SAMPLE CORPUS
+## Phase 9 — docs + release (5.0.0 cut) — DONE
 
 - [x] Docs deliverables (§21): PERSONA.md, PERSONA_TUTORIAL.md, PERSONA_DETAILS_HOWTO.md,
       PERSONA_LEXICON.md, PERSONA_ANCHORS.md; `doctor` persona section; README what's-new.
 - [x] `./corpus`: two authored personas (mira, idris) + `persona_run.sh` feature driver (sd15/sd35) +
       PERSONA_CORPUS.md walkthrough (`persona`-specific; the gallery-index README was restored).
-- [ ] **Generate the sample corpus** (`corpus/persona_run.sh`) — the user runs this before the cut.
-- [ ] **Cut 5.0.0**: bump Cargo.toml **+ Cargo.lock** in sync; `cargo test --no-default-features --lib`
-      green; commit; FF `main`; push `v5.0.0` tag → CI 6-asset release + crates.io; `gh release edit`
-      notes. (Release-flow gotchas in the auto-memory.) **Held until the sample corpus lands.**
+- [x] **Sample corpus generated + render hardening.** The user ran `persona_run.sh` on Metal and a
+      render-quality feedback loop closed a batch of failure modes found on real output:
+      - **Geometry-CN casting wired** (`cast --geometry-control`, depth default) with the depth map
+        **framed as a head-and-shoulders bust** (`geometry::add_bust_base`) — kills the "wooden knife"
+        (a bare face-oval that a weakly-bound SD1.5 renders as an object).
+      - **Framing guard** (`compile::framing_guard`) — anti-macro crop phrase + negatives → no more
+        fractional/overflowing faces.
+      - **No-face retry on both tiers** — Tier A now rejects stylised/mosaic bad seeds like Tier B
+        already rejected empty scenes.
+      - **Anti-text negatives** — no gibberish signage on plain backgrounds.
+      - **Occlusion-aware worn jewelry** (`reads_as_skin`) — ear pieces under hair are culled, not
+        pasted.
+      - The **apparent-age gate was removed** by user decision (a persona of a child is a legitimate
+        request — e.g. a portrait; §23.1 resolver gate is dropped, not just bypassed).
+- [x] **Cut 5.0.0**: bump Cargo.toml + Cargo.lock in sync; `cargo test --no-default-features --lib`
+      green; FF `main`; push `v5.0.0` tag → CI 6-asset release + crates.io; `gh release edit` notes.
 
 ## Cross-cutting (span all phases)
 
 - [ ] **Resident scoring worker + memory residency** (§22) — 5 scoring models on top of a pipeline;
       generalize the Sana staged-free discipline; probe tiering (`local_anomaly` needs no model beyond
       the aligner); hard memory guards + cost estimates.
-- [ ] **Age-gate in the RESOLVER** (§23.1) — no surface bypasses; lint+emit+render redundant; lineage
-      re-runs it.
+- [x] ~~**Age-gate in the RESOLVER** (§23.1)~~ — **dropped by user decision.** A synthetic person of any
+      apparent age is a legitimate request (a child portrait is not an illicit signal); the lint gate and
+      the reactive child-negatives were removed. Age correctness is still asserted positively (the
+      subject's age leads the prompt so an adult spec doesn't drift young), which is a quality control,
+      not a gate.
 - [ ] **Lexicon neutrality review process** (§7.4/§23.3/§23.5) + jewelry trade-dress review (§10.5).
 - [ ] Verify-harness tiers (§24) + corpus scripts from P0 (P0–P3 mostly deterministic → CI without GPUs).
 

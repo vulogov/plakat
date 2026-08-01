@@ -45,8 +45,12 @@ Fully additive — no existing command or output changes. Highlights: a WFLW-98 
 no weights), a localized-detail subsystem (moles/scars/birthmarks/freckles/jewelry/dentition composited
 at anatomical anchors), per-family calibration, three honest identity tiers (IP-Adapter · universal
 face-swap · baked LoRA), multiperson attribution, a class-aware edit/repair loop, and a headless
-interview with a live wireframe TUI. Start at [`Documentation/PERSONA.md`](Documentation/PERSONA.md);
-worked demo in [`corpus/PERSONA_CORPUS.md`](corpus/PERSONA_CORPUS.md).
+interview with a live wireframe TUI. The render path is hardened against the characteristic
+text-to-portrait failure modes — extreme face-macros, stylised non-photos, gibberish signage, and
+jewelry pasted over hair — via a framing guard, a bust-grounded geometry conditioning map, a no-face
+retry on both identity tiers, and occlusion-aware compositing. Start at
+[`Documentation/PERSONA.md`](Documentation/PERSONA.md); worked demo in
+[`corpus/PERSONA_CORPUS.md`](corpus/PERSONA_CORPUS.md).
 
 ## What's new in 4.11.0 — finishing the edit verbs
 

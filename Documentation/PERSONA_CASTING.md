@@ -31,11 +31,16 @@ persona-alice/
   candidates/…            # every rendered candidate, for inspection
 ```
 
-**Honest scope today (P5).** Casting is **Tier B** (universal): candidates are rendered from the prompt
-and *selected* by the scorecard, then anchored by the swap bridge at render time. Geometry-ControlNet
-casting (feeding the §10 conditioning map, a Tier-A bonus on SD1.5/2.1) needs the lower-level
-`t2i::Request.controls` path and is a follow-on. Each candidate currently reloads the model — the
-resident scoring/render worker (§22) is deferred. Multi-view/expression sheets (§11.2) are P5c.
+**Scope today.** Candidates are rendered from the prompt and *selected* by the scorecard, then anchored
+by the swap bridge at render time. **Geometry-ControlNet casting is wired** (`cast --geometry-control
+depth|pose|off`, default `depth`, `--geometry-strength 0.55`): the §10 conditioning map drives an
+SD-UNet ControlNet (sd15/sdxl only — the DiT families hold the attribute list in T5/Gemma instead) so
+the authored proportions are realised via conditioning rather than competing for CLIP tokens. The
+depth map is **framed as a head-and-shoulders bust** (`geometry::add_bust_base`) — a bare face-oval
+floating on black is ambiguous enough that a weakly-bound SD1.5 renders it as an *object* (a spoon, a
+wooden blade), so a neck + shoulder mound grounds the silhouette as a person. Each candidate currently
+reloads the model — the resident scoring/render worker (§22) is deferred. Multi-view/expression sheets
+(§11.2) are P5c.
 
 ## Coherence
 
@@ -56,7 +61,8 @@ detect the scene face (SCRFD) → swap the canonical reference face in → resto
 gentle strength (identity-preserving) → run the detail compositing pass **after** the swap (a hard
 ordering constraint: the swap replaces the face region wholesale and would destroy any mark composited
 before it). `--no-restore` / `--no-details` opt out; `--spec` overrides the stashed spec. When the
-scene render produces no detectable face, the render is left un-swapped and that is reported.
+scene render produces no detectable face after a few seeds, the render is left un-swapped and that is
+reported.
 
 ## Tiers (§11.4)
 
@@ -71,6 +77,25 @@ forces the universal swap path, `--tier A` uses the adapter (falling back to B i
 compositing is tier-independent — the small distinguishing features that make a persona feel specific
 work identically on every family, because they never go through a sampler. **Tier C (baking) is
 deferred to P6.**
+
+## Render robustness
+
+A text-prompted portrait fails in a handful of characteristic ways; the render path guards each:
+
+- **Framing.** A bare "portrait photograph" lets an SD-UNet zoom to an extreme face-macro that overflows
+  the frame (a single eye + cheek). `compile::framing_guard` emits a framing-aware crop phrase
+  (headshot → "head-and-shoulders, the whole head in frame with headroom, centred") plus anti-macro
+  negatives, on both Tier A and Tier B.
+- **No-face retry (both tiers).** A bad seed can drive the render to a non-photo with no detectable
+  face — an empty scene (Tier B) or a stylised tiled mosaic (Tier A). Both tiers now retry up to 3 seeds
+  until the render contains a face, rather than shipping the garbage.
+- **Anti-text.** An SD-UNet scrawls gibberish signage/captions on plain backgrounds (the same tendency
+  that seeds "object + handwritten notes" hallucinations); the identity-render negatives suppress
+  `text, watermark, signature, letters, writing, caption`.
+- **Occlusion-aware jewelry.** Before compositing an earring/stud, the pass probes the render at the
+  resolved ear anchor; if those pixels read as hair or shadow rather than bare cheek skin
+  (`reads_as_skin`), the piece is culled and reported (`ear occluded`) instead of pasted over a curtain
+  of hair. Facial sites (nostril/lip) are always on skin, so only ear sites are gated.
 
 ## Rejection sampling (§12.3)
 
