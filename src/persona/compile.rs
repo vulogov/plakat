@@ -304,7 +304,9 @@ pub fn compile_for_model(spec: &PersonaSpec, lex: &Lexicon, model: &str) -> Comp
         // Anti-uncanny (fight the plastic/illustration look the bare attribute list tends to produce)
         // + anti-collage (sd15 + a face adapter can render a contact-sheet/montage instead of a single
         // portrait). The subject's AGE is set by the positive clause, so no age is suppressed here.
-        for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll", "collage", "contact sheet", "photo grid", "split image"] {
+        // + anti-text: an SD-UNet loves to scrawl gibberish signage/captions on a plain wall or
+        // background (it also seeds the "object + handwritten notes" hallucinations).
+        for n in ["cgi", "3d render", "illustration", "plastic skin", "airbrushed", "doll", "collage", "contact sheet", "photo grid", "split image", "text", "watermark", "signature", "letters", "writing", "caption"] {
             negs.push(n.into());
         }
     }
@@ -363,6 +365,19 @@ fn photo_lead(spec: &PersonaSpec) -> &'static str {
         Some("half-body") | Some("waist-up") => "a waist-up portrait photograph",
         Some("full-body") | Some("full-length") => "a full-body photograph",
         _ => "a portrait photograph",
+    }
+}
+
+/// A framing guard for the *scene* render (RFC §11.5): an explicit distance/crop phrase plus anti-macro
+/// negatives. A bare "portrait photograph" lets an SD-UNet zoom into an extreme face-macro that
+/// overflows the frame (an idris-sd15 render came back as a single eye + cheek) — leaving no room for a
+/// proper head-and-shoulders swap. Returns `(positive_hint, negative_hint)`, framing-aware.
+pub fn framing_guard(spec: &PersonaSpec) -> (&'static str, &'static str) {
+    let macro_neg = "extreme close-up, macro shot, cropped face, cropped head, face filling the frame, out of frame, zoomed in";
+    match spec.defaults.as_ref().and_then(|d| d.framing.as_deref()) {
+        Some("full-body") | Some("full-length") => ("full body visible from head to feet, standing, centred in frame", macro_neg),
+        Some("half-body") | Some("waist-up") => ("waist-up, head and torso fully in frame, centred", macro_neg),
+        _ => ("head-and-shoulders, the whole head and face in frame with headroom, centred, looking at the camera", macro_neg),
     }
 }
 
@@ -560,7 +575,7 @@ mod tests {
         );
         assert_eq!(
             clip.negative,
-            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes, cgi, 3d render, illustration, plastic skin, airbrushed, doll, collage, contact sheet, photo grid, split image"
+            "close-set eyes, beard, stubble, moustache, goatee, facial hair, moles, freckles, scars, blemishes, cgi, 3d render, illustration, plastic skin, airbrushed, doll, collage, contact sheet, photo grid, split image, text, watermark, signature, letters, writing, caption"
         );
         let t5 = compile_for_model(&s, &lex, "flux-dev");
         assert_eq!(

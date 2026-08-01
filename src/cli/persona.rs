@@ -740,11 +740,18 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     // Lead with the persona subject (it already begins "a portrait photograph of a 38-year-old man,
     // …"), THEN the scene. Scene-first buries the subject past CLIP's high-salience head, which can
     // render an object instead of a person (the scene must contain a face for the swap to land).
+    // A framing guard: without an explicit crop the SD-UNet can zoom to an extreme face-macro that
+    // overflows the frame (a single eye + cheek), leaving no head-and-shoulders for the swap (§11.5).
+    let (frame_pos, frame_neg) = spec
+        .as_ref()
+        .map(compile::framing_guard)
+        .unwrap_or(("head-and-shoulders, the whole head and face in frame with headroom, centred", "extreme close-up, macro shot, cropped face, out of frame"));
     let prompt = if appearance.positive.is_empty() {
-        format!("a portrait photograph of a person, {}", a.scene)
+        format!("a portrait photograph of a person, {frame_pos}, {}", a.scene)
     } else {
-        format!("{}, {}", appearance.positive, a.scene)
+        format!("{}, {frame_pos}, {}", appearance.positive, a.scene)
     };
+    let negative = format!("{}, {frame_neg}", appearance.negative);
 
     println!("{}  {} into a scene  (model {})", style("persona render").bold(), set.persona, a.model);
     if !set.coherence.passes {
@@ -754,28 +761,48 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     let device = candle_core::Device::Cpu;
     let tier = resolve_render_tier(&a.tier, &a.model);
 
+    // Face probes (SCRFD + PIPNet): the render-validity gate below, then the detail-composite step.
+    let (det, pip) = scorecard::load_probes(&device).await?;
+
     if tier == "A" {
         // Tier A (§11.4): IP-Adapter-Plus-Face from the reference set — identity from the adapter,
         // no swap. The face-reference generalises across the scene the sampler produces.
         let kind = identity_kind_for(&a.model).expect("tier A implies an adapter");
         let n = set.references.len().min(4);
         println!("  {} Tier A: generating with the face adapter ({n} reference photo(s))…", style("→").cyan());
-        let mut portrait = crate::api::Portrait::new(&a.model)
-            .prompt(&prompt)
-            .negative(&appearance.negative)
-            .identity(kind)
-            .size(a.size, a.size)
-            .steps(a.steps)
-            .seed(a.seed);
-        for r in set.references.iter().take(4) {
-            portrait = portrait.photo(a.persona.join(&r.image), r.centroid_cosine.max(0.1));
+        // A bad seed can drive the adapter to a stylised / tiled non-photo with no detectable face
+        // (a mosaic, a pattern). Retry a few seeds until the render actually contains a face (§11.4).
+        let mut ok = false;
+        for attempt in 0..3 {
+            let seed = a.seed + attempt;
+            if attempt > 0 {
+                println!("  {} Tier A: retry {attempt} (previous render had no detectable face)…", style("→").cyan());
+            }
+            let mut portrait = crate::api::Portrait::new(&a.model)
+                .prompt(&prompt)
+                .negative(&negative)
+                .identity(kind)
+                .size(a.size, a.size)
+                .steps(a.steps)
+                .seed(seed);
+            for r in set.references.iter().take(4) {
+                portrait = portrait.photo(a.persona.join(&r.image), r.centroid_cosine.max(0.1));
+            }
+            let imgs = portrait.run().await.context("Tier A portrait render")?;
+            let Some(img) = imgs.into_iter().next() else {
+                anyhow::bail!("portrait render produced no image");
+            };
+            img.save(&a.out)?;
+            if scorecard::measure_landmarks(&a.out, &det, &pip)?.is_some() {
+                ok = true;
+                break;
+            }
         }
-        let imgs = portrait.run().await.context("Tier A portrait render")?;
-        let Some(img) = imgs.into_iter().next() else {
-            anyhow::bail!("portrait render produced no image");
-        };
-        img.save(&a.out)?;
-        println!("  {} rendered via the face adapter", style("✓").green());
+        if ok {
+            println!("  {} rendered via the face adapter", style("✓").green());
+        } else {
+            println!("  {} face adapter gave no detectable face after 3 seeds — kept the last render ({}); try a different --seed or a more explicit scene", style("·").yellow(), a.out.display());
+        }
     } else {
         // Tier B (§11.5, universal): native render → face swap → restore. Retry a few seeds if the
         // scene render has no detectable face (a bad seed can render an object / empty scene).
@@ -786,7 +813,7 @@ async fn run_render(a: RenderArgs) -> Result<()> {
             println!("  {} Tier B: generating the scene…{}", style("→").cyan(), if attempt > 0 { format!(" (retry {attempt}, no face)") } else { String::new() });
             let imgs = crate::api::Generate::new(&a.model)
                 .prompt(&prompt)
-                .negative(&appearance.negative)
+                .negative(&negative)
                 .seed(seed)
                 .size(a.size, a.size)
                 .steps(a.steps)
@@ -847,7 +874,6 @@ async fn run_render(a: RenderArgs) -> Result<()> {
                 || spec.jewelry.as_ref().and_then(|j| j.items.as_ref()).is_some_and(|i| !i.is_empty())
                 || spec.piercings.as_ref().is_some_and(|p| !p.is_empty());
             if has_details {
-                let (det, pip) = scorecard::load_probes(&device).await?;
                 if let Some(m) = scorecard::measure_landmarks(&a.out, &det, &pip)? {
                     let base = image::open(&a.out)?.to_rgb8();
                     let r = detail::composite_details(&base, spec, &m, a.seed);
