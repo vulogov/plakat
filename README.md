@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v4.11.0 — finishing the edit verbs**: `remove --what` now **SAM-refines** the detected box to the object's outline (not just a rectangle), and `replace-bg --keep "<subject>"` picks the kept subject by text (OWL-ViT → SAM) instead of the automatic matte. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.11.0) · [Tutorial →](Documentation/Tutorials/EDIT_TUTORIAL.md)
+> **v5.0.0 — `plakat persona`**: the 5.x flagship (RFC PERSONA-1). Compose a **specific, reusable synthetic person** from a small HJSON spec and render that same person recognisably across scenes and model families — resolved deterministically, conditioned geometrically, small details *composited* (not prompted), anchored by a cast reference set, and **measured** by a scorecard. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v5.0.0) · [Guide →](Documentation/PERSONA.md) · [Worked demo →](corpus/PERSONA_CORPUS.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -15,7 +15,8 @@ inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking, **your own trained
 style _and_ subject (DreamBooth) LoRAs**, **InstantStyle** painterly style
 transfer, **regional prompting**, identity-preserving portraits, AnimateDiff
 video, ML upscaling, **SAM object selection**, **smart (U2Net) background
-removal**, **layered-scene compositing**, integral artefact compositing, and
+removal**, **layered-scene compositing**, integral artefact compositing,
+**controllable synthetic people** (`plakat persona`), and
 batch scenarios. All built on
 [candle](https://github.com/huggingface/candle). Pure Rust inference. No Python,
 no PyTorch, no external T2I services. Models are pulled from HuggingFace and
@@ -350,6 +351,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `img2img <INPUT>` | Image-to-image transform with `--prompt`; supply `--mask` for masked inpaint instead. SD 1.5 / 2.1 / SDXL, Flux (`--model flux-dev` for img2img, `--model flux-fill-dev` for inpaint, **`flux-kontext-dev`** for image editing — v0.18, with `--tiled` for 4K+ inpaint), and SD3 / SD3.5 (RePaint-style inpaint, `--tiled` for 2K+ outputs). v0.18: `--aspect 16:9` size derivation. |
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
+| `persona <SPEC>` | **v5.0 flagship (RFC PERSONA-1).** Compose a *specific, reusable synthetic person* from a small HJSON `PersonaSpec` and render that same person recognisably across scenes and model families. A WFLW-98 geometry engine (pure, no weights), landmark-anchored detail compositing (moles / scars / birthmarks / freckles / jewelry / dentition), per-family calibration, three identity tiers (IP-Adapter · universal face-swap · baked LoRA), multiperson attribution, a class-aware edit/repair loop, and a headless interview with a live wireframe TUI. Subcommands: `new` · `lint` · `show` · `geometry` · `calibrate` · `cast` · `render` · `verify` · `composite` · `repair` · `diff` · `bake` · `interview`. Fully additive. See [`PERSONA.md`](Documentation/PERSONA.md); worked demo in [`corpus/PERSONA_CORPUS.md`](corpus/PERSONA_CORPUS.md). |
 | `photos [DIR]` | **v3.0 flagship.** TUI photo & image collection manager: folder tree + thumbnail grid (RAW + every common format, EXIF), full image view, non-destructive curation (1–5 ratings, flag/reject, colour labels, tags) persisted per-album in a plain `album.hjson`, a live filter grammar + culling loupe, and a filesystem watcher. On by default (needs a graphics-capable terminal). See [`PHOTOS_TUTORIAL.md`](Documentation/Tutorials/PHOTOS_TUTORIAL.md). |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |
