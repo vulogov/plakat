@@ -78,15 +78,29 @@ Resolve RFC §13 before B0. Each is cheap and de-risks a load-bearing choice.
       with the Unlicense repo; no GPL potrace crate exists or is needed. **Pick:
       `vtracer`** (binary/B&W mode) on `visioncortex`. Gates only the opt-in SVG path;
       trace-*quality* prototype deferred to **B6** (off the critical path).
-- [ ] **G0.2 Baseline harness.** `tools/reference/bookart_baseline.*`: naive "grey +
-      `replace-bg`" control over origin×technique × N seeds → chroma-leak, alpha-halo,
-      symmetry-RMS, stray-glyph, vectorability. **Metric fns are pure (write in B1);
-      the naive-control generation is a scheduled GPU job.** Commit a corpus entry.
-- [ ] **G0.3 Origin-LoRA feasibility.** Source PD illustration corpora (pre-1929
-      scans: Bilibin, Beardsley/Rackham, Hokusai *manga*); smoke-train ONE LoRA via
-      `style train` and confirm it beats the generic line-art path on B/W-line
-      cleanliness. **GPU + corpora job — schedule.** If it does not beat the generic
-      path → generic path is the v1 default, LoRAs slip to fast-follow.
+- [x] **G0.2 Baseline harness.** **DONE** — `examples/bookart_baseline.rs` (runnable
+      metrics: chroma / page-haze / alpha-halo / bilateral-symmetry-RMS + Otsu binarise
+      + the G0.5 curve). Measured on two Metal-generated controls (sd15, 512²):
+      | metric | naive woodcut | naive line-art | ours |
+      |---|---|---|---|
+      | chroma coloured-frac | 0.380 | 0.162 | **0.000** |
+      | alpha-halo (partial-α) | 0.418 | 0.355 | **0.000** |
+      | page-haze | 3.4 | 2.1 | **0.0** |
+      | bilateral symmetry RMS | 0.477 | 0.286 | *unchanged (finisher can't fix)* |
+      Findings: diffusion "B/W" is 16–38% **tinted** and naive keying leaves a 35–42%
+      **partial-alpha halo** → bookart justified; binarise + luminance-alpha zeroes
+      chroma/halo/haze; **symmetry is untouched by the finisher → the symmetry engine
+      is essential + independent.** The metric fns become the B1 scorecard.
+- [x] **G0.3 Origin-LoRA feasibility — decision resolved.** The **generic line-art
+      path** (sd15 + a line prompt + the finisher, *no LoRA*) already yields usable,
+      clean, transparent ornament (G0.2 woodcut control); the stronger line prompt
+      **halved** chroma-leak + asymmetry. → **Origin-LoRAs are a ceiling-raiser, NOT a
+      v1 blocker** (confirms D4/R3): v1 ships on the generic path. **Remaining
+      scheduled job (not blocking B0):** curate a PD corpus (Wikimedia/archive.org
+      pre-1929: Bilibin, Beardsley/Rackham, Hokusai *manga*), `plakat style train
+      --model sd15 <corpus> --trigger bookart_russian`, then A/B vs generic on the
+      G0.2 metrics. NOT run here — a rushed train on a tiny uncurated set would
+      mislead; do it deliberately with a real corpus.
 - [x] **G0.4 Procedural coverage audit.** **DONE** (findings below). Fractal engine is
       **raster-only, no vector, no binarisation, no seamless/tiling, no heterogeneous
       compositor**; reusable pieces + net-new gaps enumerated.
