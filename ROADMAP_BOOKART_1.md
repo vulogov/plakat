@@ -73,27 +73,57 @@ top of the fractal core, the print/ink `scorecard`, `kit`/`manuscript`, and a
 
 Resolve RFC §13 before B0. Each is cheap and de-risks a load-bearing choice.
 
-- [ ] **G0.1 Vectorizer license + quality.** potrace is GPL (incompatible). Prototype
-      `vtracer`/`visioncortex` (MIT) on a sample engraving + a procedural border;
-      confirm path count + fidelity. Gates only the opt-in SVG path (§7.5) — never
-      blocks the core PNG. *Provisional:* `visioncortex`.
+- [x] **G0.1 Vectorizer license.** **RESOLVED.** `vtracer` 1.0.0-alpha.3 and
+      `visioncortex` 0.9.1 are both **MIT OR Apache-2.0** — permissive, compatible
+      with the Unlicense repo; no GPL potrace crate exists or is needed. **Pick:
+      `vtracer`** (binary/B&W mode) on `visioncortex`. Gates only the opt-in SVG path;
+      trace-*quality* prototype deferred to **B6** (off the critical path).
 - [ ] **G0.2 Baseline harness.** `tools/reference/bookart_baseline.*`: naive "grey +
       `replace-bg`" control over origin×technique × N seeds → chroma-leak, alpha-halo,
-      symmetry-RMS, stray-glyph, vectorability. Commit a corpus entry (the control).
+      symmetry-RMS, stray-glyph, vectorability. **Metric fns are pure (write in B1);
+      the naive-control generation is a scheduled GPU job.** Commit a corpus entry.
 - [ ] **G0.3 Origin-LoRA feasibility.** Source PD illustration corpora (pre-1929
       scans: Bilibin, Beardsley/Rackham, Hokusai *manga*); smoke-train ONE LoRA via
       `style train` and confirm it beats the generic line-art path on B/W-line
-      cleanliness. If not → generic path is the v1 default, LoRAs slip to fast-follow.
-- [ ] **G0.4 Procedural coverage audit.** Map fractal-engine primitives → ornament
-      families; enumerate net-new generators (tileable-border, corner, rosette, knot,
-      guilloché) and their determinism story.
-- [ ] **G0.5 Transparency curve.** Tune the luminance→alpha γ that keeps thin lines
-      opaque without greying the page; freeze as the `luminance` default.
+      cleanliness. **GPU + corpora job — schedule.** If it does not beat the generic
+      path → generic path is the v1 default, LoRAs slip to fast-follow.
+- [x] **G0.4 Procedural coverage audit.** **DONE** (findings below). Fractal engine is
+      **raster-only, no vector, no binarisation, no seamless/tiling, no heterogeneous
+      compositor**; reusable pieces + net-new gaps enumerated.
+- [x] **G0.5 Transparency curve.** **DONE** — `examples/bookart_alpha_probe.rs`
+      (runnable). Chosen `luminance` default: `alpha = clamp((1−L − white_cut)/
+      (1−white_cut))^γ` with **`white_cut ≈ 0.07, γ ≈ 0.70`** → measured page-haze on
+      near-white = **0.0** (linear = 9.5; γ0.6 = 33.2 = too hazy) while lifting
+      mid-grey line α to 147 (vs linear 127). Kills anti-alias halos, keeps thin/grey
+      lines opaque. Params exposed via `ink.transparency`.
 
-**Thin de-risking slice (recommended alongside G0):** one *procedural* ornament
-(`divider`) all the way through spec → procedural → alpha → canvas → PNG, and one
-*diffusion* ornament (`vignette`, generic path) end to end. Proves both spine ends
-before breadth.
+### G0 findings — refinements to fold into B1–B6
+
+- **`procedural = born-vector` is only true for NEW parametric generators**
+  (guilloché, knotwork, border edge/corner units — those emit SVG paths directly).
+  The **fractal-engine reuse is RASTER** (flame-rosette, L-system scrollwork) → it
+  goes through the *same* binarise → trace path as diffusion for SVG. Update RFC §7.5
+  wording accordingly (done).
+- **Reuse directly:** `fractals::plot::Fit` (model→pixel framing), `palette.rs`
+  (2-stop B/W / grayscale ramp + `parse_hex`), `lsystem.rs` `turtle()` + `draw_thick`
+  (the ONLY real stroke infra — foliate scrollwork starts here), the deterministic
+  `render_spec` seed contract.
+- **Wrap:** `flame.rs` symmetry (N-fold rotational → rosette/mon), Newton basins +
+  `Angle` colouring (radial colophon).
+- **Net-new (fractal engine offers no generator):** the seamless **border
+  edge/corner + L-corner** system **and a real ornament compositor** (`compose.rs`
+  only grid-blits — cannot place/mirror/rotate heterogeneous pieces), **guilloché**,
+  **Celtic knotwork**, and the **binarise pass** (none exists today — grayscale ≠
+  1-bit). All already in the module layout (`geometry/layout`, `finish/binarize`,
+  `procedural/*`); the audit confirms scope, no surprises.
+- **Watch-out:** the fractal engine's advertised top-level `spec.symmetry` is
+  **unimplemented/dead** (only `flame.symmetry` is wired) — do not rely on it; the
+  bookart symmetry engine (`geometry/symmetry.rs`) is fully net-new.
+
+**Thin de-risking slice (recommended alongside remaining G0):** one *procedural*
+ornament (`divider`) all the way through spec → procedural → alpha → canvas → PNG,
+and one *diffusion* ornament (`vignette`, generic path) end to end. Proves both
+spine ends before breadth.
 
 ---
 

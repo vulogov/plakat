@@ -397,10 +397,14 @@ The mandatory finisher ends at §7.4 + Layer-5 sizing: a **transparent,
 page-sized PNG** is always emitted. Vectorisation is **off by default** and runs
 only when `--format svg` (or `pdf`/`eps`) is requested:
 
-- **Procedural tier**: ornament is **born vector** — the generator emits SVG paths
-  directly, no tracing, mathematically exact (near-free when SVG is asked for).
-- **Diffusion / composite tier**: the finished raster → **trace** to SVG paths with
-  a **permissively-licensed** tracer (see §13 — *not* GPL potrace).
+- **Procedural tier — parametric generators** (guilloché, knotwork, border
+  edge/corner units): **born vector** — the generator emits SVG paths directly, no
+  tracing, mathematically exact (near-free when SVG is asked for). *Note (G0.4):* the
+  fractal-engine-backed procedural sources (flame-rosette, L-system scrollwork) are
+  **raster**, so those take the trace path below like diffusion.
+- **Diffusion / composite / fractal-raster**: the finished raster → **trace** to SVG
+  paths with a **permissively-licensed** tracer — **`vtracer`/`visioncortex`
+  (MIT/Apache-2.0)**, resolved in G0.1; *not* GPL potrace.
 - Transparency carried as path fill-opacity; export **SVG + EPS + PDF**. This is
   the escape hatch for users who need infinite-DPI / editable assets; it does not
   replace the PNG.
