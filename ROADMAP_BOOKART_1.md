@@ -199,9 +199,14 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
 ### B4 — diffusion path: generic line-art + 2–3 origin LoRAs  · GPU (first weights)
 - [ ] `render.rs` diffusion tier — compile prompt/negative → `api::Generate` +
       **lineart ControlNet** → XDoG finish → alpha. Generic path first (no LoRA).
-- [ ] Load origin LoRAs (`assets/bookart/origins/*.safetensors`) via existing LoRA
-      stacking; `bookart origins` lists origin×technique (reuse `style` catalog shape).
-- [ ] Train russian/english/japanese LoRAs (`style train`, G0.3 corpora).
+- [ ] Load origin LoRAs via existing LoRA stacking; `bookart origins` lists
+      origin×technique (reuse `style` catalog shape). **HF hosting convention (must
+      match the loader):** repo `vulogov98/plakat-bookart` (type model, public), files
+      `<origin>-sd15.safetensors` (russian/english/japanese). The lexicon maps
+      origin → (repo, file); missing file → fall back to the generic line-art path.
+- [ ] Train russian/english/japanese LoRAs (`style train --base sd15 --from-dir
+      datasets/bookart_training/<origin> --trigger "bookart_<origin> style" --out
+      bake/bookart-<origin>.safetensors`), then host on HF (commands handed to owner).
 
 ### B5 — composite tier + render router  · GPU
 - [ ] `render.rs` — router picks tier from ornament type + motif kind; **composite** =

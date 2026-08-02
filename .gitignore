@@ -37,3 +37,9 @@ target
 # files the OS sprinkles around.
 examples/tutorials/*/out/
 **/.DS_Store
+
+# bookart training corpus (RFC BOOKART-1). The downloaded public-domain image
+# BYTES are large and fully reproducible from tools/bookart/fetch_training_corpus.py,
+# so we ignore the per-artist folders but keep the script + the manifest README.
+datasets/bookart_training/*/
+!datasets/bookart_training/README.md
