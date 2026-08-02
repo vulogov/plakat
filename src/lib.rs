@@ -67,6 +67,7 @@ pub mod fractals;
 /// v5.0 flagship: `plakat persona` — controllable synthetic-person composition (RFC PERSONA-1).
 /// The deterministic compiler half (spec/lexicon/resolver/emitters) is pure and weight-free.
 pub mod persona;
+pub mod bookart;
 #[doc(hidden)]
 pub mod preset;
 #[doc(hidden)]

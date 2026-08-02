@@ -146,16 +146,25 @@ spine ends before breadth.
 Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
 `cargo test --no-default-features --lib` (no GPU); **GPU** = weights phase.
 
-### B0 — spec + resolver + lexicon + lint/show  · CI
-- [ ] `spec.rs` — `BookArtSpec` + sub-structs, permissive serde (all `Option`, string
-      enums, untagged colour, unknown-key tolerant), byte-stable.
-- [ ] `lexicon.rs` + `assets/bookart/lexicon.hjson` — origin/technique/motif presets,
-      per-ornament defaults, aspect/symmetry defaults.
-- [ ] `compile.rs::resolve(spec, lexicon) → RenderPlan` — layout params + tier
-      decision + finisher chain + canvas spec + (for diffusion) prompt/negative with
-      anti-text baked in. **Pure.**
-- [ ] `lint.rs` + `cli/bookart.rs` `new`/`lint`/`show`.
-- [ ] Goldens: `resolve` byte-stable; `show` output stable.
+### B0 — spec + resolver + lexicon + lint/show  · CI  · **DONE** (18 tests, full suite 1689 green)
+- [x] `spec.rs` — `BookArtSpec` + sub-structs, permissive serde (all `Option`, string
+      enums, `type`→`kind` rename, unknown-key tolerant), `from_hjson`/`load`. **HJSON
+      gotcha: quote string values in inline objects/arrays (deser_hjson quoteless
+      strings run to EOL) — specs/tests use JSON-style quoting.**
+- [x] `lexicon.rs` — built-in origin/technique/ornament vocab + defaults (origin
+      scaffolds, technique binarisers, per-type default tier/symmetry, nearest-match).
+      (`assets/bookart/lexicon.hjson` override loading deferred — built-in is the
+      always-present fallback.)
+- [x] `geometry/page.rs` — named sizes → exact px @ DPI (A4@300 = 2480×3508), custom,
+      orientation. (Text-block/margins → B2.)
+- [x] `compile.rs::resolve(spec) → RenderPlan` — fills lexicon defaults, resolves tier
+      (auto→concrete), symmetry, canvas, finisher (transparency mode + binariser), and
+      the diffusion prompt/negative with **anti-text + anti-colour baked in**. **Pure,
+      byte-stable.**
+- [x] `lint.rs` — schema/vocab(nearest-match)/ranges/page/ornament-xor-kit. `cli/
+      bookart.rs` `new`/`lint`/`show` wired into the CLI (`Command::Bookart`).
+- [x] Goldens: `resolve` byte-stable + a golden russian-woodcut-headpiece prompt;
+      determinism test; page px goldens.
 
 ### B1 — finisher (transparency + binarizers) + scorecard  · CI (matte/glyph lazy-GPU)
 - [ ] `finish/alpha.rs` — `luminance` (γ from G0.5), `threshold` (soft ramp), `fade`;

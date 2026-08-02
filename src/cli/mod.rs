@@ -28,6 +28,7 @@ pub mod models;
 pub mod motion_adapter;
 pub mod outpaint;
 pub mod persona;
+pub mod bookart;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -115,6 +116,10 @@ pub enum Command {
     /// A `PersonaSpec` HJSON → reproducible person. `new` scaffolds a spec; `lint`
     /// validates it (more subcommands land across the 5.0 phases).
     Persona(persona::PersonaArgs),
+    /// Controllable B/W book-ornament composition (RFC BOOKART-1). A `BookArtSpec`
+    /// HJSON → transparent, print-sized ornament. `new` scaffolds, `lint` validates,
+    /// `show` resolves (render tiers land across later phases).
+    Bookart(bookart::BookartArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -359,6 +364,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Bench(args) => bench::run(args).await,
         Command::Inspect(args) => inspect::run(args).await,
         Command::Persona(args) => persona::run(args).await,
+        Command::Bookart(args) => bookart::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]
