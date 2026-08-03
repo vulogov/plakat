@@ -6,7 +6,7 @@
 //! construction — the guarantee diffusion can't give.
 
 use image::{GrayImage, Luma};
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 /// A parametric path (a polyline in pixel space). Born-vector: B6 serialises these to SVG directly.
 pub type Polyline = Vec<(f32, f32)>;
@@ -64,47 +64,60 @@ fn fold_count(symmetry: &str) -> u32 {
 
 // --- ornament generators (return their born-vector polylines) --------------------------------------
 
-/// A radial rosette: bounding ring + a rose + an inner counter-rose + a centre dot. Colophon / fleuron /
-/// endpaper motif, and the heart of dividers/corners.
-fn rosette(w: u32, h: u32, folds: u32) -> Vec<Polyline> {
+/// A sine-wave polyline across `[x0,x1]` at baseline `cy` — a running ornament stroke.
+fn wave(x0: f32, x1: f32, cy: f32, amp: f32, cycles: f32, phase: f32) -> Polyline {
+    let n = 500;
+    (0..=n).map(|i| { let t = i as f32 / n as f32; (x0 + (x1 - x0) * t, cy + amp * (t * cycles * TAU + phase).sin()) }).collect()
+}
+
+/// An Archimedean spiral scroll (a flourish); `dir` = ±1 for handedness.
+fn scroll(cx: f32, cy: f32, r0: f32, r1: f32, turns: f32, start: f32, dir: f32) -> Polyline {
+    let n = 240;
+    (0..=n).map(|i| { let t = i as f32 / n as f32; let a = start + dir * t * turns * TAU; let r = r0 + (r1 - r0) * t; (cx + r * a.cos(), cy + r * a.sin()) }).collect()
+}
+
+/// A radial rosette: ring + a rose + an inner counter-rose + a guilloché ring + centre. `variant`
+/// perturbs the guilloché + counter-rose so a *set* of rosettes reads as kin, not clones.
+fn rosette(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
     let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
     let r = (w.min(h) as f32) * 0.44;
     let k = rose_k(folds);
+    let g = 3.0 + (variant % 3) as f32; // guilloché lobes vary
     vec![
         circle(cx, cy, r),
         circle(cx, cy, r * 0.62),
         rose(cx, cy, r, k),
-        rose(cx, cy, r * 0.6, k * 2.0),
+        rose(cx, cy, r * (0.54 + 0.08 * (variant % 2) as f32), k * 2.0),
+        hypotrochoid(cx, cy, r * 0.30, folds as f32 + g, g, g * 0.7), // a small central guilloché, not a fill
         circle(cx, cy, r * 0.08),
     ]
 }
 
-/// A horizontal rule: a central rosette flanked by symmetric tapering double-lines with end dots.
-fn divider(w: u32, h: u32, folds: u32) -> Vec<Polyline> {
+/// A horizontal rule: a central medallion flanked by symmetric guilloché-wave lines with fleuron ends —
+/// airy line ornament, not a black bar.
+fn divider(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
     let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
-    let hub = (h as f32 * 0.5).min(w as f32 * 0.12);
+    let hub = (h as f32 * 0.5).min(w as f32 * 0.10);
     let mut out = rosette_at(cx, cy, hub, folds);
-    let gap = hub * 1.2;
-    let end = w as f32 * 0.04;
-    let off = h as f32 * 0.12;
+    let (gap, end, off) = (hub * 1.25, w as f32 * 0.03, h as f32 * 0.10);
+    let cycles = 4.0 + (variant % 3) as f32;
     for &s in &[1.0f32, -1.0] {
-        // mirrored left/right double line
-        out.push(hline(cx + s * gap, cx + s * (w as f32 / 2.0 - end), cy - off));
-        out.push(hline(cx + s * gap, cx + s * (w as f32 / 2.0 - end), cy + off));
-        out.push(circle(cx + s * (w as f32 / 2.0 - end), cy, off * 0.9)); // end cap
+        let (x0, x1) = (cx + s * gap, cx + s * (w as f32 / 2.0 - end));
+        out.push(hline(x0, x1, cy));
+        out.push(wave(x0.min(x1), x0.max(x1), cy, off, cycles, 0.0));
+        out.extend(rosette_at(cx + s * (w as f32 / 2.0 - end), cy, off * 1.1, (folds / 2).max(3))); // end fleuron
     }
     out
 }
 
-/// A frame: two nested rectangles with a bead-and-reel run between them and corner rosettes.
-fn border(w: u32, h: u32, folds: u32) -> Vec<Polyline> {
+/// A frame: nested rectangles + a bead-and-reel run + corner rosettes. `variant` shifts bead density.
+fn border(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
     let m = (w.min(h) as f32) * 0.04;
     let m2 = m * 2.2;
     let mut out = vec![rect(m, m, w as f32 - m, h as f32 - m), rect(m2, m2, w as f32 - m2, h as f32 - m2)];
-    // beads along the mid-line of the two rectangles
     let bead_r = (m2 - m) * 0.28;
     let mid = (m + m2) / 2.0;
-    let step = bead_r * 3.2;
+    let step = bead_r * (3.0 + 0.4 * (variant % 3) as f32);
     let mut x = m2;
     while x < w as f32 - m2 {
         out.push(circle(x, mid, bead_r));
@@ -124,13 +137,60 @@ fn border(w: u32, h: u32, folds: u32) -> Vec<Polyline> {
     out
 }
 
-/// An L-corner flourish: two edge segments + a quarter-guilloché scroll at the inner angle.
-fn corner(w: u32, h: u32) -> Vec<Polyline> {
+/// A bold L-corner: double edge rules + a corner rosette + a spiral scroll flourish.
+fn corner(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
     let s = w.min(h) as f32;
-    let m = s * 0.12;
-    let mut out = vec![hline(m, s * 0.9, m), vec![(m, m), (m, s * 0.9)]];
-    // a scroll: a guilloché rosette tucked into the inner angle
-    out.push(hypotrochoid(s * 0.42, s * 0.42, s * 0.32, 5.0, 3.0, 5.0));
+    let (m, d) = (s * 0.08, s * 0.035);
+    let mut out = vec![
+        hline(m, s * 0.94, m),
+        hline(m, s * 0.94, m + d),
+        vec![(m, m), (m, s * 0.94)],
+        vec![(m + d, m), (m + d, s * 0.94)],
+    ];
+    out.extend(rosette_at(s * 0.30, s * 0.30, s * 0.18, folds));
+    out.push(scroll(s * 0.56, s * 0.56, s * 0.04, s * 0.30, 1.2 + 0.2 * (variant % 3) as f32, 0.0, 1.0));
+    out
+}
+
+/// A headpiece band (застАвка): top+bottom rules, a central medallion, interweaving guilloché waves
+/// flanking it, and fleuron ends — an airy ornamental band, not a black block. `variant` = wave freq.
+fn headpiece_band(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
+    let (wf, hf) = (w as f32, h as f32);
+    let (cx, cy) = (wf / 2.0, hf / 2.0);
+    let (m, top, bot) = (wf * 0.012, hf * 0.16, hf * 0.84);
+    let med_r = hf * 0.40;
+    let mut out = vec![hline(m, wf - m, top), hline(m, wf - m, bot)];
+    out.extend(rosette_at(cx, cy, med_r, folds));
+    let cycles = 3.0 + (variant % 4) as f32;
+    let amp = (bot - top) * 0.30;
+    let gap = med_r * 1.2;
+    for &(x0, x1) in &[(m + wf * 0.02, cx - gap), (cx + gap, wf - m - wf * 0.02)] {
+        out.push(wave(x0, x1, cy, amp, cycles, 0.0));
+        out.push(wave(x0, x1, cy, amp, cycles, PI)); // opposite phase → a braid
+    }
+    for &ex in &[m + wf * 0.015, wf - m - wf * 0.015] {
+        out.extend(rosette_at(ex, cy, (bot - top) * 0.16, (folds / 2).max(3)));
+    }
+    out
+}
+
+/// A tailpiece / cul-de-lampe: a central medallion above symmetric scrolls tapering to a point.
+fn tailpiece_taper(w: u32, h: u32, folds: u32, variant: u32) -> Vec<Polyline> {
+    let (wf, hf) = (w as f32, h as f32);
+    let cx = wf / 2.0;
+    let mut out = vec![hline(wf * 0.12, wf * 0.88, hf * 0.07)];
+    out.extend(rosette_at(cx, hf * 0.28, wf.min(hf) * 0.20, folds));
+    let rows = 3 + (variant % 3) as i32;
+    for i in 0..rows {
+        let t = (i as f32 + 1.0) / (rows as f32 + 1.0);
+        let y = hf * 0.42 + hf * 0.5 * t;
+        let spread = wf * 0.34 * (1.0 - t);
+        let sz = hf * 0.06 * (1.0 - 0.5 * t);
+        for &sgn in &[1.0f32, -1.0] {
+            out.push(scroll(cx + sgn * spread, y, sz * 0.15, sz, 0.75, PI, sgn));
+        }
+    }
+    out.push(circle(cx, hf * 0.95, hf * 0.018));
     out
 }
 
@@ -159,15 +219,18 @@ pub fn frame(symmetry: &str, w: u32, h: u32) -> (Vec<Polyline>, (u32, u32, u32, 
     (out, win)
 }
 
-/// The born-vector paths for an ornament type at a target pixel size.
-pub fn generate_paths(kind: &str, symmetry: &str, w: u32, h: u32) -> Vec<Polyline> {
+/// The born-vector paths for an ornament type at a target pixel size. `variant` diversifies a set
+/// (e.g. per-chapter ornaments) so they read as kin rather than clones.
+pub fn generate_paths(kind: &str, symmetry: &str, w: u32, h: u32, variant: u32) -> Vec<Polyline> {
     let folds = fold_count(symmetry);
     match kind {
-        "divider" | "rule" => divider(w, h, folds),
-        "border" | "endpaper" => border(w, h, folds),
-        "corner" => corner(w, h),
-        "rosette" | "colophon" | "fleuron" | "dinkus" | "marginalia" => rosette(w, h, folds),
-        _ => rosette(w, h, folds), // headpiece/tailpiece geometric fallback
+        "headpiece" => headpiece_band(w, h, folds, variant),
+        "tailpiece" => tailpiece_taper(w, h, folds, variant),
+        "divider" | "rule" => divider(w, h, folds, variant),
+        "border" | "endpaper" => border(w, h, folds, variant),
+        "corner" => corner(w, h, folds, variant),
+        "rosette" | "colophon" | "fleuron" | "dinkus" | "marginalia" => rosette(w, h, folds, variant),
+        _ => rosette(w, h, folds, variant),
     }
 }
 
@@ -209,8 +272,8 @@ pub fn rasterise(paths: &[Polyline], w: u32, h: u32, width: f32) -> GrayImage {
 }
 
 /// Generate a procedural ornament as a clean line-art `GrayImage` (ink on white).
-pub fn generate(kind: &str, symmetry: &str, w: u32, h: u32) -> GrayImage {
-    let paths = generate_paths(kind, symmetry, w, h);
+pub fn generate(kind: &str, symmetry: &str, w: u32, h: u32, variant: u32) -> GrayImage {
+    let paths = generate_paths(kind, symmetry, w, h, variant);
     let width = (w.min(h) as f32 * 0.004).max(1.5);
     rasterise(&paths, w, h, width)
 }
@@ -225,19 +288,26 @@ mod tests {
 
     #[test]
     fn generators_produce_ink_and_are_deterministic() {
-        for kind in ["rosette", "divider", "border", "corner", "colophon", "fleuron"] {
-            let a = generate(kind, "radial:8", 256, 256);
-            let b = generate(kind, "radial:8", 256, 256);
+        for kind in ["rosette", "divider", "border", "corner", "colophon", "fleuron", "headpiece", "tailpiece"] {
+            let a = generate(kind, "radial:8", 384, 384, 0);
+            let b = generate(kind, "radial:8", 384, 384, 0);
             assert_eq!(a.as_raw(), b.as_raw(), "{kind} not deterministic");
-            assert!(ink_frac(&a) > 0.005, "{kind} produced ~no ink ({})", ink_frac(&a));
+            assert!(ink_frac(&a) > 0.004, "{kind} produced ~no ink ({})", ink_frac(&a));
             assert!(ink_frac(&a) < 0.6, "{kind} is a slab ({})", ink_frac(&a));
         }
     }
 
     #[test]
+    fn variant_changes_the_ornament() {
+        let a = generate("headpiece", "bilateral", 512, 128, 0);
+        let b = generate("headpiece", "bilateral", 512, 128, 2);
+        assert_ne!(a.as_raw(), b.as_raw(), "variant should diversify");
+    }
+
+    #[test]
     fn rosette_is_radially_symmetric() {
         // an N-fold rosette rotated by 2π/N ≈ itself: compare ink counts in rotated quadrants.
-        let g = generate("rosette", "radial:4", 256, 256);
+        let g = generate("rosette", "radial:4", 256, 256, 0);
         let (w, h) = (g.width(), g.height());
         let quad = |qx: u32, qy: u32| {
             let mut c = 0u32;
@@ -258,7 +328,7 @@ mod tests {
 
     #[test]
     fn born_vector_paths_exist() {
-        let paths = generate_paths("rosette", "radial:6", 200, 200);
+        let paths = generate_paths("rosette", "radial:6", 200, 200, 0);
         assert!(paths.len() >= 3, "rosette should emit several curves");
         assert!(paths.iter().all(|p| p.len() >= 2));
     }

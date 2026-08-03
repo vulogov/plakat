@@ -3,7 +3,7 @@
   // (RFC BOOKART-1 §5.3). `vignette` gives a square-ish window; `tier: composite` forces the router.
   schema: "bookart/1"
   origin: "russian"
-  technique: "woodcut"
+  technique: "line"
   motif: ["firebird", "oak-leaf"]
   page: { size: "a5", dpi: 300 }
   ornament: {

@@ -361,9 +361,10 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
         let (hseed, tseed) = (kit::ornament_seed(base_seed, i * 2 + 1), kit::ornament_seed(base_seed, i * 2 + 2));
         let (hfile, tfile) = (format!("ch{n:02}_headpiece.png"), format!("ch{n:02}_tailpiece.png"));
         println!("\n{} [ch {n}/{}] {}  (headpiece seed {hseed})", style("→").cyan(), chapters.len(), ch.title);
-        // headpiece: a wide diffusion banner, seed-varied per chapter (a variation of the shared motif).
-        do_render(mk("headpiece", Some("diffusion")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} headpiece"))?;
-        // tailpiece: procedural (fast, no weights).
+        // headpiece: a procedural ornamental band (застАвка), varied per chapter by the seed lineage —
+        // clean airy line-work, not a heavy woodcut block. The pictorial motif lives in the frontispiece.
+        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} headpiece"))?;
+        // tailpiece: a procedural cul-de-lampe, also varied per chapter.
         do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} tailpiece"))?;
         all_files.push(hfile.clone());
         all_files.push(tfile.clone());
@@ -583,11 +584,12 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
     let tb = geometry::text_block(&plan.page, &spec);
     let layout = geometry::layout_for(&plan.ornament_kind, &tb);
     let r0 = layout.rects[0];
+    let variant = (seed % 8) as u32; // diversifies procedural ornament across a set/manuscript
 
     let ornament = match plan.tier.as_str() {
         // B3: vector-native, no weights.
         "procedural" => {
-            let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
+            let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h, variant);
             finish::finish_procedural(&gray, &plan)
         }
         // B4: diffusion + optional matte, with B6 scorecard rejection sampling.
@@ -662,7 +664,7 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
     // Opt-in born-vector SVG (§7.5) — procedural only; the raster trace is a documented fast-follow.
     if svg || plan.formats.iter().any(|f| f == "svg") {
         if plan.tier == "procedural" {
-            let paths = procedural::generate_paths(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
+            let paths = procedural::generate_paths(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h, variant);
             let stroke = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
             let all: Vec<_> = layout.rects.iter().flat_map(|r| finish::vector::transform_to_rect(&paths, r, r0.w, r0.h)).collect();
             let svg_str = finish::vector::polylines_to_svg(&all, plan.page.w_px, plan.page.h_px, plan.page.dpi, stroke, finish::parse_tint(&plan.tint));

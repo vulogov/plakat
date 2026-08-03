@@ -55,10 +55,10 @@ pub fn layout_for(kind: &str, tb: &Rect) -> Layout {
     let rects = match kind {
         // a band across the top of the text block, aspect ~5:1.
         "headpiece" => vec![Rect::new(tx, ty, tw, tw / 5)],
-        // a tapering ornament centred below the last line (its own bbox is ~1.6:1).
+        // a tapering cul-de-lampe centred below the last line — taller than wide so it reads as a point.
         "tailpiece" => {
-            let w = (tw as f32 * 0.6) as i32;
-            let h = (w as f32 * 0.6) as i32;
+            let w = (tw as f32 * 0.5) as i32;
+            let h = (tw as f32 * 0.55) as i32;
             vec![Rect::new(tx + (tw - w) / 2, ty + th - h, w, h)]
         }
         // a thin centred rule / mark.
