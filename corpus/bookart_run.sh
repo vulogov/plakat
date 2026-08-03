@@ -34,8 +34,8 @@ run "$PLAKAT" bookart render corpus/bookart_ornament.hjson --out "$OUT/border.pn
 run "$PLAKAT" bookart illustrate "a firebird among oak branches" --origin russian --type vignette \
     --steps "$STEPS" --out "$OUT/plate.png"
 
-# 3. A composite ornament (procedural frame + diffusion inlay).
-run "$PLAKAT" bookart render corpus/bookart_kit.hjson --out "$OUT/composite.png" --steps "$STEPS" 2>/dev/null || true
+# 3. A composite ornament (procedural frame + diffusion firebird inlay).
+run "$PLAKAT" bookart render corpus/bookart_composite.hjson --out "$OUT/composite.png" --steps "$STEPS"
 
 # 4. The flagship: a coherent kit (contact sheet + coherence + manifest).
 run "$PLAKAT" bookart kit corpus/bookart_kit.hjson --out "$OUT/kit" --steps "$STEPS"

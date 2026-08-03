@@ -31,8 +31,56 @@ pub fn transform_to_rect(paths: &[Polyline], r: &Rect, gen_w: u32, gen_h: u32) -
         .collect()
 }
 
+/// Perpendicular distance from `p` to the line through `a`,`b`.
+fn perp_dist(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-6 {
+        return ((p.0 - a.0).powi(2) + (p.1 - a.1).powi(2)).sqrt();
+    }
+    (dx * (a.1 - p.1) - (a.0 - p.0) * dy).abs() / len
+}
+
+fn rdp(pts: &[(f32, f32)], eps: f32, out: &mut Vec<(f32, f32)>) {
+    if pts.len() < 3 {
+        out.extend_from_slice(pts);
+        return;
+    }
+    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let (mut idx, mut dmax) = (0usize, 0.0f32);
+    for (i, &p) in pts.iter().enumerate().take(pts.len() - 1).skip(1) {
+        let d = perp_dist(p, a, b);
+        if d > dmax {
+            dmax = d;
+            idx = i;
+        }
+    }
+    if dmax > eps {
+        let mut left = Vec::new();
+        rdp(&pts[..=idx], eps, &mut left);
+        out.extend_from_slice(&left[..left.len() - 1]); // drop the shared join point
+        rdp(&pts[idx..], eps, out);
+    } else {
+        out.push(a);
+        out.push(b);
+    }
+}
+
+/// Ramer–Douglas–Peucker polyline simplification — collapses the densely-sampled parametric curves
+/// (circles/roses at ~1440 pts) to a handful of points within `eps` px, so the SVG stays tiny while the
+/// shape is print-identical. Closed curves fold correctly (the first split picks the far point).
+pub fn simplify(points: &Polyline, eps: f32) -> Polyline {
+    if points.len() < 3 {
+        return points.clone();
+    }
+    let mut out = Vec::new();
+    rdp(points, eps, &mut out);
+    out
+}
+
 /// Serialise polylines to a print-sized SVG: physical `mm` width/height (so a layout tool places it at
-/// the right size) over a pixel `viewBox`, stroked in the ink tint.
+/// the right size) over a pixel `viewBox`, stroked in the ink tint. Paths are RDP-simplified (sub-pixel
+/// epsilon) so the file is compact.
 pub fn polylines_to_svg(paths: &[Polyline], w: u32, h: u32, dpi: u32, stroke_px: f32, tint: [u8; 3]) -> String {
     let mm = |px: u32| px as f32 / dpi as f32 * 25.4;
     let color = format!("#{:02x}{:02x}{:02x}", tint[0], tint[1], tint[2]);
@@ -47,6 +95,7 @@ pub fn polylines_to_svg(paths: &[Polyline], w: u32, h: u32, dpi: u32, stroke_px:
         if path.len() < 2 {
             continue;
         }
+        let path = simplify(path, 0.8); // ~0.07 mm @ 300 DPI — imperceptible, ~30× smaller
         let mut d = format!("M{:.2} {:.2}", path[0].0, path[0].1);
         for &(x, y) in &path[1..] {
             d.push_str(&format!(" L{x:.2} {y:.2}"));
@@ -69,6 +118,21 @@ mod tests {
         assert!(svg.contains("mm\""));
         assert!(svg.contains("viewBox=\"0 0 300 300\""));
         assert_eq!(svg.matches("<path").count(), 2);
+    }
+
+    #[test]
+    fn simplify_collapses_a_dense_circle() {
+        // a 720-point circle → RDP should keep only a few dozen points, endpoints intact.
+        let pts: Polyline = (0..=720)
+            .map(|i| {
+                let t = i as f32 / 720.0 * std::f32::consts::TAU;
+                (100.0 + 50.0 * t.cos(), 100.0 + 50.0 * t.sin())
+            })
+            .collect();
+        let s = simplify(&pts, 0.8);
+        assert!(s.len() < 80, "should collapse (got {})", s.len());
+        assert!(s.len() > 8, "but keep the shape (got {})", s.len());
+        assert_eq!(s[0], pts[0]);
     }
 
     #[test]
