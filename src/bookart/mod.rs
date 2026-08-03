@@ -16,6 +16,7 @@ pub mod finish;
 pub mod geometry;
 pub mod lexicon;
 pub mod lint;
+pub mod procedural;
 pub mod scorecard;
 pub mod spec;
 

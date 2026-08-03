@@ -207,11 +207,23 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       transparent headpiece band, "resolution matches page". Transparent **+** exactly
       page-sized **+** symmetric.
 
-### B3 — procedural ornament generators  · CI
-- [ ] `procedural/{border,corner,rosette,knot,guilloche}.rs` — reuse
-      `fractals::{compose,coloring,control_source}`; emit raster **and** born-vector
-      paths. Deterministic, golden.
-- [ ] Router `procedural` tier live end-to-end (spec→procedural→finish→PNG[/SVG]).
+### B3 — procedural ornament generators  · CI  · **DONE** (3 tests, full suite 1711 green)
+- [x] `procedural/mod.rs` — **self-contained, vector-native** parametric generators
+      (NOT fractal-engine-coupled — `fractals` is off under `--no-default-features`, so
+      coupling would break the CI gate; the audit's fractal reuse becomes an optional
+      feature-gated enhancement later). Curve primitives: circle, rhodonea **rose**,
+      **hypotrochoid guilloché**, line. Ornaments: **rosette** (ring + rose + counter-
+      rose), **divider** (central rosette + mirrored tapering lines + end caps),
+      **border** (nested rects + bead-and-reel run + 4 corner rosettes), **corner**
+      (L + guilloché scroll). Emit **born-vector `Polyline`s** (ready for B6 SVG) →
+      `rasterise` strokes to clean antialiased line art. Deterministic, golden.
+- [x] `finish::finish_procedural` (skip binarise — procedural is born-clean → straight
+      to transparency). `bookart render <spec> --out` — **procedural tier live e2e**
+      (spec → generate → finish → symmetrise → place on page canvas → DPI PNG); bails
+      with a clear message on diffusion/composite (B4/B5).
+- **Verified live**: `border` → a publication-quality A5 frame (nested rects, even
+      bead run, 4 six-fold guilloché corner rosettes, crisp + exactly symmetric, zero
+      weights); `fleuron` → a clean 12-fold rosette; `divider`, `corner` (4 pieces) OK.
 
 ### B4 — diffusion path: generic line-art + 2–3 origin LoRAs  · GPU (first weights)
 - [ ] `render.rs` diffusion tier — compile prompt/negative → `api::Generate` +

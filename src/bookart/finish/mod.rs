@@ -28,6 +28,13 @@ pub fn finish_ornament(raw: &RgbImage, plan: &RenderPlan) -> RgbaImage {
     alpha::to_transparent(&b, &plan.transparency_mode, tint, plan.fade)
 }
 
+/// Finish an already-clean **procedural** line-art grayscale: skip binarisation (it's born 1-bit-clean)
+/// and go straight to transparency + tint, preserving the antialiased strokes.
+pub fn finish_procedural(gray: &GrayImage, plan: &RenderPlan) -> RgbaImage {
+    let tint = alpha::parse_tint(&plan.tint);
+    alpha::to_transparent(gray, &plan.transparency_mode, tint, plan.fade)
+}
+
 pub use alpha::{luminance_alpha, parse_tint, to_transparent};
 pub use binarize::{binarise, otsu};
 

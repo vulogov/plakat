@@ -32,6 +32,9 @@ pub enum BookartCmd {
     /// Finish a raw render (binarise → transparency) per a spec and score it (RFC §7/§9): chroma
     /// purity, alpha cleanliness, symmetry, ink coverage. `--out` writes the transparent PNG.
     Verify(VerifyArgs),
+    /// Render an ornament to a transparent, page-sized PNG. **B3: the `procedural` tier** (border /
+    /// corner / divider / fleuron / rosette — vector-native, no weights); diffusion/composite land in B4/B5.
+    Render(RenderArgs),
 }
 
 #[derive(Args, Debug)]
@@ -83,13 +86,53 @@ pub struct VerifyArgs {
     pub page: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct RenderArgs {
+    pub spec: PathBuf,
+    /// Output PNG (transparent, page-sized).
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
 pub async fn run(args: BookartArgs) -> Result<()> {
     match args.cmd {
         BookartCmd::New(a) => run_new(a),
         BookartCmd::Lint(a) => run_lint(a),
         BookartCmd::Show(a) => run_show(a),
         BookartCmd::Verify(a) => run_verify(a),
+        BookartCmd::Render(a) => run_render(a),
     }
+}
+
+fn run_render(a: RenderArgs) -> Result<()> {
+    use crate::bookart::{finish, geometry, procedural};
+    let spec = BookArtSpec::load(&a.spec)?;
+    let plan = compile::resolve(&spec);
+    if plan.tier != "procedural" {
+        anyhow::bail!(
+            "`bookart render` supports the `procedural` tier only for now (this spec resolves to `{}`); the diffusion/composite tiers land in B4/B5. Use a geometric ornament (border/corner/divider/fleuron/rosette) or set `ornament.tier: procedural`.",
+            plan.tier
+        );
+    }
+    let tb = geometry::text_block(&plan.page, &spec);
+    let layout = geometry::layout_for(&plan.ornament_kind, &tb);
+    let r0 = layout.rects[0];
+    let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
+    let orn = geometry::symmetrize(&finish::finish_procedural(&gray, &plan), &plan.symmetry);
+    let page = finish::canvas::place_on_canvas(&orn, &plan.page, &layout);
+    finish::canvas::save_png_dpi(&page, &a.out, plan.page.dpi)?;
+    println!(
+        "{} {}  ({} × {} px @ {} DPI · {} · {} · {} piece(s))",
+        style("wrote").green(),
+        a.out.display(),
+        page.width(),
+        page.height(),
+        plan.page.dpi,
+        plan.ornament_kind,
+        plan.symmetry,
+        layout.rects.len()
+    );
+    Ok(())
 }
 
 fn run_new(a: NewArgs) -> Result<()> {
