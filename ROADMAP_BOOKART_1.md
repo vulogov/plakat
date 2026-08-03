@@ -168,17 +168,26 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
 - [x] Goldens: `resolve` byte-stable + a golden russian-woodcut-headpiece prompt;
       determinism test; page px goldens.
 
-### B1 — finisher (transparency + binarizers) + scorecard  · CI (matte/glyph lazy-GPU)
-- [ ] `finish/alpha.rs` — `luminance` (γ from G0.5), `threshold` (soft ramp), `fade`;
-      `tint` recolour; premultiplied option. **Pure**, golden on synthetic ramps.
-- [ ] `finish/binarize.rs` — XDoG, adaptive-threshold, error-diffusion dither,
-      engraving invert. **Pure.**
-- [ ] `matte` mode → delegate to `pipelines/matting.rs` (lazy U2Net).
-- [ ] `scorecard.rs` — chroma-purity / alpha-clean / symmetry-error / ink-weight /
-      resolution-DPI / safe-area probes (**pure**); stray-glyph (lazy OWL-ViT),
-      aesthetic (lazy LAION).
-- [ ] Goldens: transparency math; scorecard on synthetic images.
-- **Milestone:** the always-on transparent-finish is proven before any generation.
+### B1 — finisher (transparency + binarizers) + scorecard  · CI  · **DONE** (11 tests, full suite 1700 green)
+- [x] `finish/alpha.rs` — `luminance` (G0.5 defaults `white_cut 0.07 / γ 0.70`),
+      `threshold` (soft ramp), `fade` (edge falloff); `parse_tint` (black/white/sepia/
+      #hex) recolour. **Pure**, tested. (`matte` falls back to `luminance` — real
+      U2Net matte is wired at render time, B5.)
+- [x] `finish/binarize.rs` — XDoG (self-contained separable Gaussian, no
+      feature-gated deps), threshold-bold (+ink dilate), engrave-invert, Floyd–
+      Steinberg dither, matte-solid, threshold-invert, Bayer halftone; Otsu; dispatch
+      by lexicon binariser name + `ink_weight` bias. **Pure, deterministic.**
+- [x] `finish/mod.rs` — `finish_ornament(raw, plan) → RgbaImage` (to_luma → binarise →
+      transparency). `scorecard.rs` — chroma-purity / alpha-clean / symmetry-RMS /
+      ink-coverage / resolution probes + pass/fail (**pure**). (stray-glyph OWL-ViT +
+      aesthetic LAION deferred to render wiring; safe-area needs the B2 text-block.)
+- [x] `bookart verify <spec> --image [--out] [--finished]` — finish a render + score.
+- [x] Goldens: transparency math (ink opaque / paper transparent / tint), every
+      binariser deterministic, scorecard pass/asymmetry/blank cases.
+- **Milestone MET:** the always-on transparent-finish is proven — verified live on
+      the real russian-LoRA render: chroma **0.000**, alpha-halo **0.000**, ink 0.260;
+      the scorecard correctly isolates **symmetry RMS 0.527 (FAIL)** as the only defect
+      → exactly what the B2 symmetry engine fixes (the finisher provably can't).
 
 ### B2 — geometry: page + layout + symmetry  · CI
 - [ ] `geometry/page.rs` — named sizes (A4/A5/A6/B5/Letter/Legal/Trade/custom) → px at

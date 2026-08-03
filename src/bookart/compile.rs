@@ -26,6 +26,8 @@ pub struct RenderPlan {
     pub page: PageResolved,
     pub transparent: bool,
     pub transparency_mode: String,
+    /// Edge fade for vignette/spot art, `[0,1]` (from `ornament.fade`).
+    pub fade: f32,
     pub binariser: String,
     pub ink_color: String,
     pub ink_weight: f32,
@@ -111,6 +113,7 @@ pub fn resolve(spec: &BookArtSpec) -> RenderPlan {
         page,
         transparent,
         transparency_mode,
+        fade: orn.fade.unwrap_or(0.0).clamp(0.0, 1.0),
         binariser,
         ink_color,
         ink_weight,

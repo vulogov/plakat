@@ -12,10 +12,14 @@
 //! Fully additive; nothing here changes existing behaviour.
 
 pub mod compile;
+pub mod finish;
 pub mod geometry;
 pub mod lexicon;
 pub mod lint;
+pub mod scorecard;
 pub mod spec;
 
 pub use compile::{resolve, RenderPlan};
+pub use finish::finish_ornament;
+pub use scorecard::{score, Scorecard};
 pub use spec::{BookArtSpec, SCHEMA_VERSION};

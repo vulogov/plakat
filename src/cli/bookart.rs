@@ -29,6 +29,9 @@ pub enum BookartCmd {
     /// Show what a spec resolves to: origin/technique/motif, the render tier, symmetry, the print
     /// canvas (px @ DPI), the finisher chain, and the compiled prompt/negative.
     Show(ShowArgs),
+    /// Finish a raw render (binarise → transparency) per a spec and score it (RFC §7/§9): chroma
+    /// purity, alpha cleanliness, symmetry, ink coverage. `--out` writes the transparent PNG.
+    Verify(VerifyArgs),
 }
 
 #[derive(Args, Debug)]
@@ -59,11 +62,26 @@ pub struct ShowArgs {
     pub spec: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    pub spec: PathBuf,
+    /// The render to finish + score (a raw diffusion/procedural render, or a finished PNG).
+    #[arg(long)]
+    pub image: PathBuf,
+    /// Write the finished transparent PNG here.
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Treat `--image` as already finished (score as-is; skip binarise + transparency).
+    #[arg(long, default_value_t = false)]
+    pub finished: bool,
+}
+
 pub async fn run(args: BookartArgs) -> Result<()> {
     match args.cmd {
         BookartCmd::New(a) => run_new(a),
         BookartCmd::Lint(a) => run_lint(a),
         BookartCmd::Show(a) => run_show(a),
+        BookartCmd::Verify(a) => run_verify(a),
     }
 }
 
@@ -136,6 +154,33 @@ fn run_show(a: ShowArgs) -> Result<()> {
     } else {
         println!("  {:14} {}", style("prompt").dim(), p.prompt);
         println!("  {:14} {}", style("negative").dim(), p.negative);
+    }
+    Ok(())
+}
+
+fn run_verify(a: VerifyArgs) -> Result<()> {
+    let spec = BookArtSpec::load(&a.spec)?;
+    let plan = compile::resolve(&spec);
+    let img = image::open(&a.image).with_context(|| format!("opening {}", a.image.display()))?;
+    let rgba = if a.finished {
+        img.to_rgba8()
+    } else {
+        crate::bookart::finish::finish_ornament(&img.to_rgb8(), &plan)
+    };
+    if let Some(out) = &a.out {
+        rgba.save(out).with_context(|| format!("writing {}", out.display()))?;
+        println!("{} {}", style("wrote").green(), out.display());
+    }
+    let sc = crate::bookart::scorecard::score(&rgba, &plan);
+    let verdict = if sc.passes { style("PASS").green() } else { style("FAIL").red() };
+    println!("{}  {}  ({}, {} × {})", style("bookart verify").bold(), a.image.display(), verdict, rgba.width(), rgba.height());
+    println!("  {:16} {:.3}", style("chroma").dim(), sc.chroma_frac);
+    println!("  {:16} {:.3}", style("alpha-halo").dim(), sc.alpha_partial_frac);
+    println!("  {:16} {}", style("symmetry RMS").dim(), sc.symmetry_rms.map(|r| format!("{r:.3}")).unwrap_or_else(|| "— (not symmetric)".into()));
+    println!("  {:16} {:.3}", style("ink coverage").dim(), sc.ink_coverage);
+    println!("  {:16} {}", style("resolution").dim(), if sc.resolution_ok { "matches page".into() } else { format!("{}×{} (page is {}×{}; sizing is B2)", rgba.width(), rgba.height(), plan.page.w_px, plan.page.h_px) });
+    for n in &sc.notes {
+        println!("  {} {}", style("!").yellow(), n);
     }
     Ok(())
 }
