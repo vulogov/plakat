@@ -125,6 +125,40 @@ fn gen_size(rw: u32, rh: u32) -> (u32, u32) {
     (snap(w), snap(h))
 }
 
+/// Generate one diffusion render (with the origin LoRA if not `generic`) at `w×h`. Returns the raw RGB
+/// plus the temp path it was written to (kept for an optional U2Net matte; the caller deletes it).
+async fn diffuse(model: &str, plan: &crate::bookart::RenderPlan, w: u32, h: u32, steps: usize, seed: u64) -> Result<(image::RgbImage, PathBuf)> {
+    let mut prompt = plan.prompt.clone();
+    let mut builder = crate::api::Generate::new(model).negative(&plan.negative).size(w, h).steps(steps).seed(seed);
+    if plan.origin != "generic" {
+        prompt = format!("{prompt}, bookart_{} style", plan.origin);
+        builder = builder.lora(format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin), 1.0);
+        println!("  {} origin LoRA: bookart_{} (sd15)", style("↳").cyan(), plan.origin);
+    } else {
+        println!("  {} generic line-art path (no LoRA)", style("↳").dim());
+    }
+    println!("  {} diffusion {w}×{h}, {steps} steps, seed {seed}…", style("→").cyan());
+    let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
+    let img = imgs.into_iter().next().context("diffusion produced no image")?;
+    let tmp = std::env::temp_dir().join(format!("bookart_diff_{seed}_{w}x{h}.png"));
+    img.save(&tmp)?;
+    let raw = image::open(&tmp).context("reopening the diffusion render")?.to_rgb8();
+    Ok((raw, tmp))
+}
+
+/// U2Net matte → a solid silhouette in the ink tint (the `transparency: matte` mode).
+async fn matte_silhouette(path: &std::path::Path, raw: &image::RgbImage, plan: &crate::bookart::RenderPlan) -> Result<image::RgbaImage> {
+    let device = crate::api::device("auto")?;
+    let (_fg, mask) = crate::pipelines::matting::matte(path, &device).await.context("U2Net matte")?;
+    let mask = if mask.dimensions() != raw.dimensions() { image::imageops::resize(&mask, raw.width(), raw.height(), image::imageops::FilterType::Triangle) } else { mask };
+    let tint = crate::bookart::finish::parse_tint(&plan.tint);
+    let mut out = image::RgbaImage::new(raw.width(), raw.height());
+    for (x, y, p) in out.enumerate_pixels_mut() {
+        *p = image::Rgba([tint[0], tint[1], tint[2], mask.get_pixel(x, y).0[0]]);
+    }
+    Ok(out)
+}
+
 async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::bookart::{finish, geometry, procedural};
     let spec = BookArtSpec::load(&a.spec)?;
@@ -140,35 +174,44 @@ async fn run_render(a: RenderArgs) -> Result<()> {
             let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
             finish::finish_procedural(&gray, &plan)
         }
-        // B4: diffusion — generic line-art path + the origin LoRA (if not `generic`).
+        // B4: diffusion — generic line-art path + the origin LoRA (if not `generic`); optional U2Net matte.
         "diffusion" => {
             let (gw, gh) = gen_size(r0.w, r0.h);
-            let mut prompt = plan.prompt.clone();
-            let mut builder = crate::api::Generate::new(&a.model).negative(&plan.negative).size(gw, gh).steps(a.steps).seed(a.seed);
-            if plan.origin != "generic" {
-                // weave the LoRA trigger + attach the hosted origin LoRA (hf-hub resolves it).
-                prompt = format!("{prompt}, bookart_{} style", plan.origin);
-                builder = builder.lora(format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin), 1.0);
-                println!("  {} origin LoRA: bookart_{} (sd15)", style("↳").cyan(), plan.origin);
+            let (raw, tmp) = diffuse(&a.model, &plan, gw, gh, a.steps, a.seed).await?;
+            let finished = if plan.transparency_mode == "matte" {
+                println!("  {} U2Net matte → silhouette", style("↳").cyan());
+                matte_silhouette(&tmp, &raw, &plan).await?
             } else {
-                println!("  {} generic line-art path (no LoRA)", style("↳").dim());
-            }
-            println!("  {} diffusion {gw}×{gh}, {} steps, seed {}…", style("→").cyan(), a.steps, a.seed);
-            let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
-            let img = imgs.into_iter().next().context("diffusion produced no image")?;
-            let tmp = std::env::temp_dir().join(format!("bookart_diff_{}.png", a.seed));
-            img.save(&tmp)?;
-            let raw = image::open(&tmp).context("reopening the diffusion render")?.to_rgb8();
+                finish::finish_ornament(&raw, &plan)
+            };
             let _ = std::fs::remove_file(&tmp);
-            finish::finish_ornament(&raw, &plan) // technique binarise + transparency
+            finished
         }
-        other => anyhow::bail!(
-            "`bookart render` supports `procedural` and `diffusion` tiers; this spec resolves to `{other}` (the composite tier lands in B5). Override with `ornament.tier: diffusion`."
-        ),
+        // B5: composite — a procedural frame with a diffusion line-art picture inlaid into its window
+        // (the persona geometry + detail-composite analog).
+        "composite" => {
+            let (frame_paths, (wx, wy, ww, wh)) = procedural::frame(&plan.symmetry, r0.w, r0.h);
+            let width = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
+            let frame_rgba = finish::finish_procedural(&procedural::rasterise(&frame_paths, r0.w, r0.h, width), &plan);
+            let (gw, gh) = gen_size(ww, wh);
+            let (raw, tmp) = diffuse(&a.model, &plan, gw, gh, a.steps, a.seed).await?;
+            let _ = std::fs::remove_file(&tmp);
+            // the inlay is always finished as clean LINE art (transparent paper), never a solid slab.
+            let inlay_gray = finish::binarize::binarise(&finish::to_luma(&raw), "xdog", plan.ink_weight);
+            let inlay = finish::alpha::to_transparent(&inlay_gray, "luminance", finish::parse_tint(&plan.tint), 0.0);
+            let mut canvas = image::RgbaImage::from_pixel(r0.w, r0.h, image::Rgba([0, 0, 0, 0]));
+            let pic = image::imageops::resize(&inlay, ww.max(1), wh.max(1), image::imageops::FilterType::Lanczos3);
+            image::imageops::overlay(&mut canvas, &pic, wx as i64, wy as i64);
+            image::imageops::overlay(&mut canvas, &frame_rgba, 0, 0);
+            println!("  {} composite: procedural frame + diffusion inlay", style("↳").cyan());
+            canvas
+        }
+        other => anyhow::bail!("unknown render tier `{other}`"),
     };
 
-    // Symmetry (a no-op for `none`) then place onto the exact page canvas.
-    let orn = geometry::symmetrize(&ornament, &plan.symmetry);
+    // Symmetry (a no-op for `none`); skipped for `composite` — the frame is already symmetric and the
+    // inlaid picture is a scene we don't want mirror-doubled.
+    let orn = if plan.tier == "composite" { ornament } else { geometry::symmetrize(&ornament, &plan.symmetry) };
     let page = finish::canvas::place_on_canvas(&orn, &plan.page, &layout);
     finish::canvas::save_png_dpi(&page, &a.out, plan.page.dpi)?;
     println!(

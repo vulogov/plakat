@@ -143,6 +143,22 @@ fn rosette_at(cx: f32, cy: f32, r: f32, folds: u32) -> Vec<Polyline> {
     vec![circle(cx, cy, r), rose(cx, cy, r, k), rose(cx, cy, r * 0.55, k * 2.0), circle(cx, cy, r * 0.12)]
 }
 
+/// A procedural **frame** for the composite tier (RFC §5.3): a nested-rectangle border with corner
+/// rosettes, plus the **inner window** rect `(x, y, w, h)` where a diffusion picture is inlaid.
+pub fn frame(symmetry: &str, w: u32, h: u32) -> (Vec<Polyline>, (u32, u32, u32, u32)) {
+    let folds = fold_count(symmetry);
+    let m = (w.min(h) as f32) * 0.045;
+    let m2 = m * 2.0;
+    let cr = (w.min(h) as f32) * 0.08;
+    let mut out = vec![rect(m, m, w as f32 - m, h as f32 - m), rect(m2, m2, w as f32 - m2, h as f32 - m2)];
+    for &(px, py) in &[(m2 + cr, m2 + cr), (w as f32 - m2 - cr, m2 + cr), (m2 + cr, h as f32 - m2 - cr), (w as f32 - m2 - cr, h as f32 - m2 - cr)] {
+        out.extend(rosette_at(px, py, cr, folds));
+    }
+    let inset = m2 + cr * 0.4;
+    let win = (inset as u32, inset as u32, (w as f32 - 2.0 * inset).max(1.0) as u32, (h as f32 - 2.0 * inset).max(1.0) as u32);
+    (out, win)
+}
+
 /// The born-vector paths for an ornament type at a target pixel size.
 pub fn generate_paths(kind: &str, symmetry: &str, w: u32, h: u32) -> Vec<Polyline> {
     let folds = fold_count(symmetry);

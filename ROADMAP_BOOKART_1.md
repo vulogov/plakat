@@ -241,10 +241,22 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       structure source → composite/img2img, B5); `bookart origins` listing;
       `assets/bookart/lexicon.hjson` override.
 
-### B5 — composite tier + render router  · GPU
-- [ ] `render.rs` — router picks tier from ornament type + motif kind; **composite** =
-      procedural frame (B3) + diffusion inlay (B4) alpha-composited into the frame
-      window (the persona geometry+detail-composite analog). `--tier`/`tier:` override.
+### B5 — composite tier + render router  · GPU  · **DONE** (live-verified)
+- [x] **Composite tier** — `procedural::frame(symmetry, w, h)` (nested rects + 4 corner
+      rosettes + an inner **window** rect) + a diffusion picture generated at the window
+      size, finished as clean **line art** (forced `xdog` + luminance so paper stays
+      transparent — never a solid slab), inlaid into the window, frame overlaid on top.
+      The persona geometry+detail-composite analog. Symmetry skipped for composite (frame
+      already symmetric; the picture is a scene, not mirror-doubled).
+- [x] **Render router** — `run_render` dispatches all three tiers (procedural/diffusion/
+      composite) off `plan.tier`; `diffuse()` helper shared by diffusion + composite.
+- [x] **U2Net matte mode** — `transparency: matte` → `matte_silhouette` (`pipelines::
+      matting::matte` → subject mask → solid tint silhouette). Wired; **U2Net is trained
+      on natural images so B/W-ornament matte quality is unverified** — a silhouette-
+      technique convenience, not the primary path.
+- **Verified live**: composite russian vignette → a crisp procedural frame (nested rects
+      + 4 guilloché corner rosettes) with a Bilibin firebird line-art inlay in the window,
+      transparent + A5 @300 DPI. Publication-quality cartouche.
 
 ### B6 — single-ornament end-to-end + opt-in vectorize  · GPU  · **v1 milestone**
 - [ ] `cli/bookart.rs` — `render` / `illustrate` / `vectorize` wired end to end.
