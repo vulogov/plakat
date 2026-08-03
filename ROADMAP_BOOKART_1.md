@@ -275,10 +275,22 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       Hokusai-style ukiyo-e line-art landscape plate. **v1 = single-ornament render across
       all 3 tiers + illustrate + born-vector SVG.**
 
-### B7 — kit: motif DNA + coherence  · GPU  · **flagship pt 1**
-- [ ] `kit.rs` — `KitSpec`, seed lineage, motif threading into every ornament,
-      generate the set, **kit-coherence** score (CLIP-embedding pairwise + ink-weight
-      consistency), re-derive below threshold. Output dir + contact-sheet PDF.
+### B7 — kit: motif DNA + coherence  · GPU  · **DONE — flagship pt 1** (4 tests, suite 1717 green)
+- [x] `bookart/kit.rs` (pure) — `ornament_seed` splitmix64 **seed lineage**,
+      `crop_to_content`, `thumb_on_white`, `contact_sheet` grid, `cosine` +
+      `pairwise_min_mean` coherence math. Golden-tested.
+- [x] `bookart kit <spec> --out DIR` — renders each `kit.ornaments` entry sharing the
+      top-level origin/technique/**motif DNA** + a per-ornament seed, via the shared
+      `do_render` (any tier). Emits `NN_<kind>.png` (+ SVG), a **contact sheet**, a
+      **CLIP style-coherence** score (min/mean pairwise cosine of `ClipEmbedder`
+      embeddings of each ornament cropped-to-content on white; `--no-coherence` opts
+      out), and a **`manifest.json`** (origin/technique/motif/seed + per-ornament
+      file/type/seed + coherence).
+- **Verified live**: a 5-piece russian kit (border/divider/fleuron/corner procedural +
+      firebird vignette diffusion) → a coherent matched set, contact sheet, coherence
+      min 0.536 / mean 0.696, manifest. *(Note: coherence is informational, not an
+      auto-re-derive gate — a kit legitimately spans geometric + pictorial types; a
+      PDF contact sheet vs the PNG one is a nicety deferred to B8.)*
 
 ### B8 — manuscript set + proof + font  · GPU  · **flagship pt 2**
 - [ ] `manuscript.rs` — parse Markdown / plain chapter-list (EPUB fast-follow) →

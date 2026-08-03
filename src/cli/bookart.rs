@@ -38,6 +38,10 @@ pub enum BookartCmd {
     /// Illustrate a single B/W plate from a prompt (a standalone frontispiece / spot via the diffusion
     /// tier) — the quick path when you don't want to author a spec.
     Illustrate(IllustrateArgs),
+    /// Render a coherent **kit** — a matched set of ornaments from a spec's `kit` block, sharing one
+    /// origin/technique, motif DNA, and seed lineage. Emits a directory + contact sheet + manifest,
+    /// and a CLIP style-coherence score (§10, flagship).
+    Kit(KitArgs),
 }
 
 #[derive(Args, Debug)]
@@ -138,6 +142,24 @@ pub struct IllustrateArgs {
     pub attempts: u32,
 }
 
+#[derive(Args, Debug)]
+pub struct KitArgs {
+    /// A spec with a `kit: { ornaments: [...] }` block.
+    pub spec: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long, default_value = "sd15")]
+    pub model: String,
+    #[arg(long, default_value_t = 28)]
+    pub steps: usize,
+    /// Also emit born-vector SVG per procedural ornament.
+    #[arg(long, default_value_t = false)]
+    pub svg: bool,
+    /// Skip the CLIP style-coherence probe (avoids loading the ~1.7 GB CLIP model).
+    #[arg(long = "no-coherence", default_value_t = false)]
+    pub no_coherence: bool,
+}
+
 pub async fn run(args: BookartArgs) -> Result<()> {
     match args.cmd {
         BookartCmd::New(a) => run_new(a),
@@ -146,7 +168,107 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Verify(a) => run_verify(a),
         BookartCmd::Render(a) => run_render(a).await,
         BookartCmd::Illustrate(a) => run_illustrate(a).await,
+        BookartCmd::Kit(a) => run_kit(a).await,
     }
+}
+
+async fn run_kit(a: KitArgs) -> Result<()> {
+    use crate::bookart::kit;
+    let spec = BookArtSpec::load(&a.spec)?;
+    let kitspec = spec.kit.clone().context("this spec has no `kit` block — add `kit: { ornaments: [...] }`")?;
+    let ornaments = kitspec.ornaments.clone().unwrap_or_default();
+    if ornaments.is_empty() {
+        anyhow::bail!("the kit has no ornaments");
+    }
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    let base_seed = kitspec.seed.unwrap_or(0);
+    println!("{}  {} ornament(s), origin {} → {}", style("bookart kit").bold(), ornaments.len(), spec.origin.as_deref().unwrap_or("generic"), a.out.display());
+
+    // Render each ornament sharing origin/technique/motif + a deterministic seed lineage.
+    let (mut files, mut kinds, mut seeds): (Vec<PathBuf>, Vec<String>, Vec<u64>) = (vec![], vec![], vec![]);
+    for (i, orn) in ornaments.iter().enumerate() {
+        let seed_i = kit::ornament_seed(base_seed, i);
+        let kind = orn.kind.clone().unwrap_or_else(|| "divider".into());
+        let per = crate::bookart::spec::BookArtSpec {
+            schema: spec.schema.clone(),
+            origin: spec.origin.clone(),
+            technique: spec.technique.clone(),
+            motif: spec.motif.clone(),
+            ink: spec.ink.clone(),
+            page: spec.page.clone(),
+            transparent: spec.transparent,
+            output: spec.output.clone(),
+            ornament: Some(orn.clone()),
+            kit: None,
+        };
+        let file = a.out.join(format!("{i:02}_{kind}.png"));
+        println!("\n{} [{}/{}] {kind}  (seed {seed_i})", style("→").cyan(), i + 1, ornaments.len());
+        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
+        files.push(file);
+        kinds.push(kind);
+        seeds.push(seed_i);
+    }
+
+    // Contact sheet: crop each page to its ink, thumb on white, tile.
+    let mut thumbs = Vec::new();
+    for f in &files {
+        let page = image::open(f)?.to_rgba8();
+        thumbs.push(kit::thumb_on_white(&kit::crop_to_content(&page), 320));
+    }
+    let sheet_path = a.out.join("contact_sheet.png");
+    kit::contact_sheet(&thumbs, 3).save(&sheet_path)?;
+    println!("\n{} contact sheet → {}", style("↳").cyan(), sheet_path.display());
+
+    // CLIP style-coherence (opt-out).
+    let coherence = if a.no_coherence {
+        None
+    } else {
+        match kit_coherence(&files).await {
+            Ok((min, mean)) => {
+                println!("{} kit coherence: min {min:.3}, mean {mean:.3}  (CLIP style similarity across the set)", style("↳").cyan());
+                Some((min, mean))
+            }
+            Err(e) => {
+                println!("{} coherence skipped: {e}", style("·").yellow());
+                None
+            }
+        }
+    };
+
+    // Manifest.
+    let manifest = serde_json::json!({
+        "schema": "bookart-kit/1",
+        "origin": spec.origin,
+        "technique": spec.technique,
+        "motif": spec.motif,
+        "seed": base_seed,
+        "ornaments": files.iter().zip(&kinds).zip(&seeds)
+            .map(|((f, k), s)| serde_json::json!({ "file": f.file_name().and_then(|n| n.to_str()), "type": k, "seed": s }))
+            .collect::<Vec<_>>(),
+        "coherence": coherence.map(|(min, mean)| serde_json::json!({ "min": min, "mean": mean })),
+    });
+    std::fs::write(a.out.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
+    println!("{} {} ornament(s) + contact sheet + manifest → {}", style("done:").bold(), files.len(), a.out.display());
+    Ok(())
+}
+
+/// Embed each kit ornament (cropped to content, on white) with CLIP and return (min, mean) pairwise
+/// cosine — the style-coherence of the set.
+async fn kit_coherence(files: &[PathBuf]) -> Result<(f32, f32)> {
+    use crate::bookart::kit;
+    let device = crate::api::device("auto")?;
+    let embedder = crate::pipelines::clip_embed::ClipEmbedder::load(&device).await?;
+    let mut embs = Vec::new();
+    for (i, f) in files.iter().enumerate() {
+        let page = image::open(f)?.to_rgba8();
+        let thumb = kit::thumb_on_white(&kit::crop_to_content(&page), 224);
+        let tmp = std::env::temp_dir().join(format!("bookart_kit_emb_{i}.png"));
+        thumb.save(&tmp)?;
+        let e = embedder.embed_image(&tmp)?;
+        let _ = std::fs::remove_file(&tmp);
+        embs.push(e);
+    }
+    Ok(kit::pairwise_min_mean(&embs))
 }
 
 /// A working generation size for the diffusion tier from a layout rect's aspect: ~512 short side,

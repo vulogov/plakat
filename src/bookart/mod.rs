@@ -14,6 +14,7 @@
 pub mod compile;
 pub mod finish;
 pub mod geometry;
+pub mod kit;
 pub mod lexicon;
 pub mod lint;
 pub mod procedural;
