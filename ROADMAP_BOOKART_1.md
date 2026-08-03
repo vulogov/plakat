@@ -225,17 +225,21 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       bead run, 4 six-fold guilloché corner rosettes, crisp + exactly symmetric, zero
       weights); `fleuron` → a clean 12-fold rosette; `divider`, `corner` (4 pieces) OK.
 
-### B4 — diffusion path: generic line-art + 2–3 origin LoRAs  · GPU (first weights)
-- [ ] `render.rs` diffusion tier — compile prompt/negative → `api::Generate` +
-      **lineart ControlNet** → XDoG finish → alpha. Generic path first (no LoRA).
-- [ ] Load origin LoRAs via existing LoRA stacking; `bookart origins` lists
-      origin×technique (reuse `style` catalog shape). **HF hosting convention (must
-      match the loader):** repo `vulogov98/plakat-bookart` (type model, public), files
-      `<origin>-sd15.safetensors` (russian/english/japanese). The lexicon maps
-      origin → (repo, file); missing file → fall back to the generic line-art path.
-- [ ] Train russian/english/japanese LoRAs (`style train --base sd15 --from-dir
-      datasets/bookart_training/<origin> --trigger "bookart_<origin> style" --out
-      bake/bookart-<origin>.safetensors`), then host on HF (commands handed to owner).
+### B4 — diffusion path: generic line-art + 2–3 origin LoRAs  · GPU  · **DONE** (live-verified)
+- [x] `bookart render` diffusion tier — compile prompt/negative → `api::Generate`
+      (sd15) → technique finish (binarise + transparency) → symmetrise → place on page.
+      `gen_size` derives a /8-snapped working res from the layout rect aspect.
+- [x] **Origin-LoRA loader** — non-`generic` origins attach the hosted LoRA via the
+      `repo#file` source form `vulogov98/plakat-bookart#<origin>-sd15.safetensors`
+      (hf-hub resolves + downloads) + weave the `bookart_<origin> style` trigger.
+      **`generic` origin = the LoRA-free fallback** (R3). Hosting convention: repo
+      `vulogov98/plakat-bookart` (public), `<origin>-sd15.safetensors`.
+- [x] Train + host russian/english/japanese LoRAs — done in G0.3.
+- **Verified live**: russian vignette → hosted LoRA resolved from HF (128/128 merged),
+      512² diffusion → a bold Bilibin-woodcut firebird-on-oak vignette, finished
+      transparent + placed on A5 @300 DPI. **Deferred:** lineart-ControlNet (needs a
+      structure source → composite/img2img, B5); `bookart origins` listing;
+      `assets/bookart/lexicon.hjson` override.
 
 ### B5 — composite tier + render router  · GPU
 - [ ] `render.rs` — router picks tier from ornament type + motif kind; **composite** =

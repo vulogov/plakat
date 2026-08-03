@@ -92,6 +92,15 @@ pub struct RenderArgs {
     /// Output PNG (transparent, page-sized).
     #[arg(long)]
     pub out: PathBuf,
+    /// Base model for the diffusion tier (the origin LoRAs are sd15).
+    #[arg(long, default_value = "sd15")]
+    pub model: String,
+    /// Seed (diffusion tier).
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Denoise steps (diffusion tier).
+    #[arg(long, default_value_t = 28)]
+    pub steps: usize,
 }
 
 pub async fn run(args: BookartArgs) -> Result<()> {
@@ -100,34 +109,76 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Lint(a) => run_lint(a),
         BookartCmd::Show(a) => run_show(a),
         BookartCmd::Verify(a) => run_verify(a),
-        BookartCmd::Render(a) => run_render(a),
+        BookartCmd::Render(a) => run_render(a).await,
     }
 }
 
-fn run_render(a: RenderArgs) -> Result<()> {
+/// A working generation size for the diffusion tier from a layout rect's aspect: ~512 short side,
+/// longest side capped at 768, snapped to /8 (sd15-friendly).
+fn gen_size(rw: u32, rh: u32) -> (u32, u32) {
+    let ar = rw.max(1) as f32 / rh.max(1) as f32;
+    let (mut w, mut h) = if ar >= 1.0 { (512.0 * ar, 512.0) } else { (512.0, 512.0 / ar) };
+    let scale = (768.0 / w.max(h)).min(1.0);
+    w *= scale;
+    h *= scale;
+    let snap = |v: f32| (((v / 8.0).round() * 8.0) as u32).clamp(256, 768);
+    (snap(w), snap(h))
+}
+
+async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::bookart::{finish, geometry, procedural};
     let spec = BookArtSpec::load(&a.spec)?;
     let plan = compile::resolve(&spec);
-    if plan.tier != "procedural" {
-        anyhow::bail!(
-            "`bookart render` supports the `procedural` tier only for now (this spec resolves to `{}`); the diffusion/composite tiers land in B4/B5. Use a geometric ornament (border/corner/divider/fleuron/rosette) or set `ornament.tier: procedural`.",
-            plan.tier
-        );
-    }
     let tb = geometry::text_block(&plan.page, &spec);
     let layout = geometry::layout_for(&plan.ornament_kind, &tb);
     let r0 = layout.rects[0];
-    let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
-    let orn = geometry::symmetrize(&finish::finish_procedural(&gray, &plan), &plan.symmetry);
+
+    // Produce the ornament at its layout resolution, per the resolved render tier.
+    let ornament = match plan.tier.as_str() {
+        // B3: vector-native, no weights.
+        "procedural" => {
+            let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h);
+            finish::finish_procedural(&gray, &plan)
+        }
+        // B4: diffusion — generic line-art path + the origin LoRA (if not `generic`).
+        "diffusion" => {
+            let (gw, gh) = gen_size(r0.w, r0.h);
+            let mut prompt = plan.prompt.clone();
+            let mut builder = crate::api::Generate::new(&a.model).negative(&plan.negative).size(gw, gh).steps(a.steps).seed(a.seed);
+            if plan.origin != "generic" {
+                // weave the LoRA trigger + attach the hosted origin LoRA (hf-hub resolves it).
+                prompt = format!("{prompt}, bookart_{} style", plan.origin);
+                builder = builder.lora(format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin), 1.0);
+                println!("  {} origin LoRA: bookart_{} (sd15)", style("↳").cyan(), plan.origin);
+            } else {
+                println!("  {} generic line-art path (no LoRA)", style("↳").dim());
+            }
+            println!("  {} diffusion {gw}×{gh}, {} steps, seed {}…", style("→").cyan(), a.steps, a.seed);
+            let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
+            let img = imgs.into_iter().next().context("diffusion produced no image")?;
+            let tmp = std::env::temp_dir().join(format!("bookart_diff_{}.png", a.seed));
+            img.save(&tmp)?;
+            let raw = image::open(&tmp).context("reopening the diffusion render")?.to_rgb8();
+            let _ = std::fs::remove_file(&tmp);
+            finish::finish_ornament(&raw, &plan) // technique binarise + transparency
+        }
+        other => anyhow::bail!(
+            "`bookart render` supports `procedural` and `diffusion` tiers; this spec resolves to `{other}` (the composite tier lands in B5). Override with `ornament.tier: diffusion`."
+        ),
+    };
+
+    // Symmetry (a no-op for `none`) then place onto the exact page canvas.
+    let orn = geometry::symmetrize(&ornament, &plan.symmetry);
     let page = finish::canvas::place_on_canvas(&orn, &plan.page, &layout);
     finish::canvas::save_png_dpi(&page, &a.out, plan.page.dpi)?;
     println!(
-        "{} {}  ({} × {} px @ {} DPI · {} · {} · {} piece(s))",
+        "{} {}  ({} × {} px @ {} DPI · {} · {} · {} · {} piece(s))",
         style("wrote").green(),
         a.out.display(),
         page.width(),
         page.height(),
         plan.page.dpi,
+        plan.tier,
         plan.ornament_kind,
         plan.symmetry,
         layout.rects.len()
