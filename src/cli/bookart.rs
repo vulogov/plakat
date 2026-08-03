@@ -74,6 +74,13 @@ pub struct VerifyArgs {
     /// Treat `--image` as already finished (score as-is; skip binarise + transparency).
     #[arg(long, default_value_t = false)]
     pub finished: bool,
+    /// Apply the plan's symmetry (bilateral / radial:N) to the finished ornament (§6.3).
+    #[arg(long, default_value_t = false)]
+    pub symmetrize: bool,
+    /// Place the ornament onto the exact page-size canvas at its layout rect (§6.4); `--out` is then
+    /// page-sized with the DPI recorded.
+    #[arg(long, default_value_t = false)]
+    pub page: bool,
 }
 
 pub async fn run(args: BookartArgs) -> Result<()> {
@@ -162,13 +169,27 @@ fn run_verify(a: VerifyArgs) -> Result<()> {
     let spec = BookArtSpec::load(&a.spec)?;
     let plan = compile::resolve(&spec);
     let img = image::open(&a.image).with_context(|| format!("opening {}", a.image.display()))?;
-    let rgba = if a.finished {
+    let mut rgba = if a.finished {
         img.to_rgba8()
     } else {
         crate::bookart::finish::finish_ornament(&img.to_rgb8(), &plan)
     };
+    // Symmetry engine (§6.3): a geometric guarantee the finisher can't provide.
+    if a.symmetrize {
+        rgba = crate::bookart::geometry::symmetrize(&rgba, &plan.symmetry);
+    }
+    // Canvas sizing (§6.4): place onto the exact page canvas at the ornament's layout rect.
+    if a.page {
+        let tb = crate::bookart::geometry::text_block(&plan.page, &spec);
+        let layout = crate::bookart::geometry::layout_for(&plan.ornament_kind, &tb);
+        rgba = crate::bookart::finish::canvas::place_on_canvas(&rgba, &plan.page, &layout);
+    }
     if let Some(out) = &a.out {
-        rgba.save(out).with_context(|| format!("writing {}", out.display()))?;
+        if a.page {
+            crate::bookart::finish::canvas::save_png_dpi(&rgba, out, plan.page.dpi).with_context(|| format!("writing {}", out.display()))?;
+        } else {
+            rgba.save(out).with_context(|| format!("writing {}", out.display()))?;
+        }
         println!("{} {}", style("wrote").green(), out.display());
     }
     let sc = crate::bookart::scorecard::score(&rgba, &plan);

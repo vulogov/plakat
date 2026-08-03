@@ -189,17 +189,23 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       the scorecard correctly isolates **symmetry RMS 0.527 (FAIL)** as the only defect
       → exactly what the B2 symmetry engine fixes (the finisher provably can't).
 
-### B2 — geometry: page + layout + symmetry  · CI
-- [ ] `geometry/page.rs` — named sizes (A4/A5/A6/B5/Letter/Legal/Trade/custom) → px at
-      DPI, text-block from margins+gutter, bleed. Golden.
-- [ ] `geometry/layout.rs` — per-type canonical layout vs text-block (headpiece band,
-      tapering tailpiece, corner-L, border assembly, initial cell, divider/fleuron).
-- [ ] `geometry/symmetry.rs` — fundamental-domain compute + replicate
-      (bilateral/radial:N/frieze) + mirror-blend. Golden on a synthetic domain.
-- [ ] `finish/canvas.rs` — composite finished ornament onto exact page canvas; write
-      pHYs DPI + physical-mm.
-- **Milestone:** primary output contract complete — transparent **and** exactly
-  page-sized PNG.
+### B2 — geometry: page + layout + symmetry  · CI  · **DONE** (8 tests, full suite 1708 green)
+- [x] `geometry/page.rs` — named sizes → px @ DPI (landed in B0).
+- [x] `geometry/layout.rs` — `text_block` (margins+gutter, book defaults) + `layout_for`
+      per type: headpiece top-band, tapering tailpiece, thin divider, centred
+      fleuron/dinkus, border/endpaper full-block, **4 inward-flipped corners**, initial
+      cell, page-fill frontispiece, centred vignette/colophon. Golden.
+- [x] `geometry/symmetry.rs` — `symmetrize`: **bilateral** (mirror-union, exact) +
+      **radial:N** (N-fold rotational union, bilinear) + frieze/none passthrough. Golden:
+      bilateral RMS→0, radial replicates the domain.
+- [x] `finish/canvas.rs` — `place_on_canvas` (resize + flip + alpha-over onto the exact
+      page canvas) + `save_png_dpi` (**pHYs DPI** via the `png` crate). Golden.
+- [x] `bookart verify --symmetrize --page` wires both into the CLI.
+- **Milestone MET — the primary output contract is complete.** Live on the russian-
+      LoRA render: `--symmetrize` drove **symmetry RMS 0.527 → 0.000 (PASS)** (the
+      finisher's one blind spot, fixed); `--page` produced a **1748×2480 A5 @300 DPI**
+      transparent headpiece band, "resolution matches page". Transparent **+** exactly
+      page-sized **+** symmetric.
 
 ### B3 — procedural ornament generators  · CI
 - [ ] `procedural/{border,corner,rosette,knot,guilloche}.rs` — reuse
