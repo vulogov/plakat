@@ -12,6 +12,7 @@
 //! Fully additive; nothing here changes existing behaviour.
 
 pub mod compile;
+pub mod edit;
 pub mod finish;
 pub mod geometry;
 pub mod kit;

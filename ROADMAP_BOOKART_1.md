@@ -307,9 +307,22 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       the diffusion headpieces. `bookart font` OTF export stays a **fast-follow**;
       per-chapter glyph-driven **initials** §6.5 deferred with it.)*
 
-### B9 — repair/edit loop + lineage  · mixed
-- [ ] `edit.rs` — class-aware repair (ink-weight → post-only; size/DPI → re-raster;
-      motif/origin → re-gen). Lineage: variant kit, origin blend.
+### B9 — repair/edit loop + lineage  · mixed  · **DONE** (3 tests, suite 1724 green)
+- [x] `bookart/edit.rs` (pure) — `EditClass` (Post / Reraster / Regen) + `classify(path)`
+      + `diff(old, new)` over the raw parsed-HJSON `Value`s (flatten → dotted paths →
+      classify each changed leaf), catching unknown/forward-compat keys too; `worst()`
+      = the cheapest sufficient action. Golden-tested.
+- [x] `bookart diff <old> <new>` — the classified change report (`post` tint/symmetry ·
+      `re-raster` page · `re-gen` origin/motif/prompt/…) + the overall action.
+- [x] `bookart edit <png> --out --tint/--symmetry` — the **cheap `post`-class repair on a
+      finished PNG, no GPU**: recolour the ink / re-apply symmetry.
+- [x] `bookart blend <a> <b> --out` — lineage: a cross-tradition spec (origin of A ×
+      technique of B, motifs unioned), linted.
+- **Verified live**: diff classed tint→post, page→re-raster, origin→re-gen; edit
+      re-tinted a border to sepia (no render); blend produced russian×japanese-line +
+      4 motifs. *(Full re-gen routing from `edit` and a `vary` command are niceties left
+      out — `diff` tells you what to re-run; the raw-render cache for post ink-weight is
+      a fast-follow.)*
 
 ### B10 — integration + docs + corpus  · **cut**
 - [ ] scenario `type: bookart`; compile `bookart:` directive; Bund `plakat.bookart.*`;

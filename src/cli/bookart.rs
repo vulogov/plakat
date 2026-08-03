@@ -48,6 +48,14 @@ pub enum BookartCmd {
     Manuscript(ManuscriptArgs),
     /// Build a contact sheet / page-proof from a directory of ornament PNGs.
     Proof(ProofArgs),
+    /// Classify the changes between two specs (§9): which edits are cheap `post` ops, which need a
+    /// `re-raster`, and which force a full `re-gen`.
+    Diff(DiffArgs),
+    /// Apply a cheap `post`-class edit to a *finished* ornament PNG — recolour the ink (`--tint`) or
+    /// re-apply symmetry (`--symmetry`) — with no re-render. Other changes need `bookart render`.
+    Edit(EditArgs),
+    /// Lineage: blend two traditions into a new spec (origin of A × technique of B, motifs unioned).
+    Blend(BlendArgs),
 }
 
 #[derive(Args, Debug)]
@@ -194,6 +202,34 @@ pub struct ProofArgs {
     pub out: PathBuf,
 }
 
+#[derive(Args, Debug)]
+pub struct DiffArgs {
+    pub old: PathBuf,
+    pub new: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct EditArgs {
+    /// A finished ornament PNG.
+    pub image: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Recolour the ink (`black` / `sepia` / `#rrggbb`).
+    #[arg(long)]
+    pub tint: Option<String>,
+    /// Re-apply symmetry (`bilateral` / `radial:N`).
+    #[arg(long)]
+    pub symmetry: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct BlendArgs {
+    pub a: PathBuf,
+    pub b: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
 pub async fn run(args: BookartArgs) -> Result<()> {
     match args.cmd {
         BookartCmd::New(a) => run_new(a),
@@ -205,7 +241,84 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Kit(a) => run_kit(a).await,
         BookartCmd::Manuscript(a) => run_manuscript(a).await,
         BookartCmd::Proof(a) => run_proof(a),
+        BookartCmd::Diff(a) => run_diff(a),
+        BookartCmd::Edit(a) => run_edit(a),
+        BookartCmd::Blend(a) => run_blend(a),
     }
+}
+
+fn run_diff(a: DiffArgs) -> Result<()> {
+    use crate::bookart::edit::{self, EditClass};
+    let load = |p: &PathBuf| -> Result<serde_json::Value> {
+        deser_hjson::from_str(&std::fs::read_to_string(p)?).map_err(|e| anyhow::anyhow!("parsing {}: {e}", p.display()))
+    };
+    let (old, new) = (load(&a.old)?, load(&a.new)?);
+    let changes = edit::diff(&old, &new);
+    if changes.is_empty() {
+        println!("{} the specs are identical", style("=").dim());
+        return Ok(());
+    }
+    println!("{}  {} → {}", style("bookart diff").bold(), a.old.display(), a.new.display());
+    for c in &changes {
+        let tag = match c.class {
+            EditClass::Post => style("post").green(),
+            EditClass::Reraster => style("re-raster").yellow(),
+            EditClass::Regen => style("re-gen").red(),
+        };
+        println!("  {:9} {}: {} → {}", tag, style(&c.path).cyan(), c.old.as_deref().unwrap_or("∅"), c.new.as_deref().unwrap_or("∅"));
+    }
+    let worst = edit::worst(&changes).unwrap();
+    println!("\n{} cheapest sufficient action: {}", style("→").bold(), style(worst.label()).bold());
+    Ok(())
+}
+
+fn run_edit(a: EditArgs) -> Result<()> {
+    let mut rgba = image::open(&a.image).with_context(|| format!("opening {}", a.image.display()))?.to_rgba8();
+    let mut ops = Vec::new();
+    if let Some(tint) = &a.tint {
+        let t = crate::bookart::finish::parse_tint(tint);
+        for p in rgba.pixels_mut() {
+            if p.0[3] > 0 {
+                p.0[0] = t[0];
+                p.0[1] = t[1];
+                p.0[2] = t[2];
+            }
+        }
+        ops.push(format!("re-tint {tint}"));
+    }
+    if let Some(sym) = &a.symmetry {
+        rgba = crate::bookart::geometry::symmetrize(&rgba, sym);
+        ops.push(format!("symmetry {sym}"));
+    }
+    if ops.is_empty() {
+        anyhow::bail!("nothing to edit — pass `--tint` and/or `--symmetry` (the `post` class). Origin/motif/page changes need `bookart render` (see `bookart diff`).");
+    }
+    rgba.save(&a.out)?;
+    println!("{} {}  [{}]", style("wrote").green(), a.out.display(), ops.join(", "));
+    Ok(())
+}
+
+fn run_blend(a: BlendArgs) -> Result<()> {
+    let (sa, sb) = (BookArtSpec::load(&a.a)?, BookArtSpec::load(&a.b)?);
+    let origin = sa.origin.clone().unwrap_or_else(|| "generic".into());
+    let technique = sb.technique.clone().or_else(|| sa.technique.clone()).unwrap_or_else(|| "line".into());
+    let mut motif = sa.motif.clone().unwrap_or_default();
+    for m in sb.motif.clone().unwrap_or_default() {
+        if !motif.contains(&m) {
+            motif.push(m);
+        }
+    }
+    let kind = sa.ornament.as_ref().and_then(|o| o.kind.clone()).unwrap_or_else(|| "vignette".into());
+    let page = sa.page.as_ref().and_then(|p| p.size.clone()).unwrap_or_else(|| "a5".into());
+    let motif_json = motif.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ");
+    let prompt_line = sa.ornament.as_ref().and_then(|o| o.prompt.clone()).map(|p| format!("\n    prompt: \"{p}\"")).unwrap_or_default();
+    let spec = format!(
+        "{{\n  schema: \"bookart/1\"\n  origin: \"{origin}\"\n  technique: \"{technique}\"\n  motif: [{motif_json}]\n  page: {{ size: \"{page}\" }}\n  ornament: {{\n    type: \"{kind}\"{prompt_line}\n  }}\n}}\n"
+    );
+    std::fs::write(&a.out, &spec).with_context(|| format!("writing {}", a.out.display()))?;
+    println!("{} {}  (blend: origin {} × technique {}, {} motif(s))", style("wrote").green(), a.out.display(), origin, technique, motif.len());
+    print_findings(&lint::lint(&BookArtSpec::load(&a.out)?));
+    Ok(())
 }
 
 async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
