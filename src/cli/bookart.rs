@@ -42,6 +42,12 @@ pub enum BookartCmd {
     /// origin/technique, motif DNA, and seed lineage. Emits a directory + contact sheet + manifest,
     /// and a CLIP style-coherence score (§10, flagship).
     Kit(KitArgs),
+    /// **Manuscript-aware** set (§11, flagship): parse a book's chapters (Markdown headings or a plain
+    /// list) → a frontispiece + a seed-varied headpiece & tailpiece per chapter, in one hand. Emits a
+    /// directory + manifest + contact sheet, and optional LaTeX includes.
+    Manuscript(ManuscriptArgs),
+    /// Build a contact sheet / page-proof from a directory of ornament PNGs.
+    Proof(ProofArgs),
 }
 
 #[derive(Args, Debug)]
@@ -160,6 +166,34 @@ pub struct KitArgs {
     pub no_coherence: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct ManuscriptArgs {
+    /// A manuscript: Markdown (chapters = `#`/`##` headings) or a plain one-title-per-line list.
+    pub book: PathBuf,
+    /// A spec supplying the shared style (origin/technique/motif/page); its `kit.seed` seeds the lineage.
+    #[arg(long)]
+    pub kit: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long, default_value = "sd15")]
+    pub model: String,
+    #[arg(long, default_value_t = 24)]
+    pub steps: usize,
+    #[arg(long, default_value_t = false)]
+    pub svg: bool,
+    /// Also emit a LaTeX include file (`\input{includes.tex}`).
+    #[arg(long, default_value_t = false)]
+    pub latex: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ProofArgs {
+    /// A directory of ornament PNGs.
+    pub dir: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+}
+
 pub async fn run(args: BookartArgs) -> Result<()> {
     match args.cmd {
         BookartCmd::New(a) => run_new(a),
@@ -169,7 +203,99 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Render(a) => run_render(a).await,
         BookartCmd::Illustrate(a) => run_illustrate(a).await,
         BookartCmd::Kit(a) => run_kit(a).await,
+        BookartCmd::Manuscript(a) => run_manuscript(a).await,
+        BookartCmd::Proof(a) => run_proof(a),
     }
+}
+
+async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
+    use crate::bookart::spec::{BookArtSpec, Ornament};
+    use crate::bookart::{kit, manuscript};
+    let text = std::fs::read_to_string(&a.book).with_context(|| format!("reading {}", a.book.display()))?;
+    let chapters = manuscript::parse_chapters(&text);
+    if chapters.is_empty() {
+        anyhow::bail!("no chapters found in {} (Markdown `#` headings, or one title per line)", a.book.display());
+    }
+    let theme = BookArtSpec::load(&a.kit)?;
+    let base_seed = theme.kit.as_ref().and_then(|k| k.seed).unwrap_or(0);
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    println!("{}  {} chapter(s), origin {} → {}", style("bookart manuscript").bold(), chapters.len(), theme.origin.as_deref().unwrap_or("generic"), a.out.display());
+
+    // Per-ornament spec = the shared theme + one ornament (tier overridable).
+    let mk = |kind: &str, tier: Option<&str>| BookArtSpec {
+        schema: theme.schema.clone(),
+        origin: theme.origin.clone(),
+        technique: theme.technique.clone(),
+        motif: theme.motif.clone(),
+        ink: theme.ink.clone(),
+        page: theme.page.clone(),
+        transparent: theme.transparent,
+        output: theme.output.clone(),
+        ornament: Some(Ornament { kind: Some(kind.into()), tier: tier.map(String::from), ..Default::default() }),
+        kit: None,
+    };
+
+    // Frontispiece (once).
+    let front = "frontispiece.png";
+    println!("\n{} frontispiece…", style("→").cyan());
+    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1).await.context("frontispiece")?;
+
+    let mut all_files = vec![front.to_string()];
+    let mut tex_ch = Vec::new();
+    let mut man_ch = Vec::new();
+    for (i, ch) in chapters.iter().enumerate() {
+        let n = i + 1;
+        let (hseed, tseed) = (kit::ornament_seed(base_seed, i * 2 + 1), kit::ornament_seed(base_seed, i * 2 + 2));
+        let (hfile, tfile) = (format!("ch{n:02}_headpiece.png"), format!("ch{n:02}_tailpiece.png"));
+        println!("\n{} [ch {n}/{}] {}  (headpiece seed {hseed})", style("→").cyan(), chapters.len(), ch.title);
+        // headpiece: a wide diffusion banner, seed-varied per chapter (a variation of the shared motif).
+        do_render(mk("headpiece", Some("diffusion")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} headpiece"))?;
+        // tailpiece: procedural (fast, no weights).
+        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} tailpiece"))?;
+        all_files.push(hfile.clone());
+        all_files.push(tfile.clone());
+        tex_ch.push((ch.title.clone(), hfile.clone(), tfile.clone()));
+        man_ch.push(serde_json::json!({ "chapter": n, "title": ch.title, "first_letter": ch.first_letter, "headpiece": hfile, "tailpiece": tfile, "headpiece_seed": hseed }));
+    }
+
+    // Contact sheet.
+    let mut thumbs = Vec::new();
+    for f in &all_files {
+        let page = image::open(a.out.join(f))?.to_rgba8();
+        thumbs.push(kit::thumb_on_white(&kit::crop_to_content(&page), 300));
+    }
+    kit::contact_sheet(&thumbs, 3).save(a.out.join("contact_sheet.png"))?;
+
+    // Manifest (+ optional LaTeX).
+    let manifest = serde_json::json!({ "schema": "bookart-manuscript/1", "origin": theme.origin, "technique": theme.technique, "motif": theme.motif, "seed": base_seed, "frontispiece": front, "chapters": man_ch });
+    std::fs::write(a.out.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
+    if a.latex {
+        std::fs::write(a.out.join("includes.tex"), manuscript::latex_includes(front, &tex_ch))?;
+        println!("{} LaTeX includes → includes.tex", style("↳").cyan());
+    }
+    println!("{} {} chapter(s), {} asset(s) + contact sheet + manifest → {}", style("done:").bold(), chapters.len(), all_files.len(), a.out.display());
+    Ok(())
+}
+
+fn run_proof(a: ProofArgs) -> Result<()> {
+    use crate::bookart::kit;
+    let mut pngs: Vec<PathBuf> = std::fs::read_dir(&a.dir)
+        .with_context(|| format!("reading {}", a.dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("png") && p.file_name().and_then(|n| n.to_str()) != Some("contact_sheet.png"))
+        .collect();
+    pngs.sort();
+    if pngs.is_empty() {
+        anyhow::bail!("no ornament PNGs in {}", a.dir.display());
+    }
+    let mut thumbs = Vec::new();
+    for f in &pngs {
+        let page = image::open(f)?.to_rgba8();
+        thumbs.push(kit::thumb_on_white(&kit::crop_to_content(&page), 320));
+    }
+    kit::contact_sheet(&thumbs, 3).save(&a.out)?;
+    println!("{} {} ornament(s) → {}", style("proof").green(), pngs.len(), a.out.display());
+    Ok(())
 }
 
 async fn run_kit(a: KitArgs) -> Result<()> {

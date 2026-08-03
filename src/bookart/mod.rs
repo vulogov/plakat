@@ -17,6 +17,7 @@ pub mod geometry;
 pub mod kit;
 pub mod lexicon;
 pub mod lint;
+pub mod manuscript;
 pub mod procedural;
 pub mod scorecard;
 pub mod spec;

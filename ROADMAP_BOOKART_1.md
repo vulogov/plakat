@@ -292,12 +292,20 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       auto-re-derive gate — a kit legitimately spans geometric + pictorial types; a
       PDF contact sheet vs the PNG one is a nicety deferred to B8.)*
 
-### B8 — manuscript set + proof + font  · GPU  · **flagship pt 2**
-- [ ] `manuscript.rs` — parse Markdown / plain chapter-list (EPUB fast-follow) →
-      per-chapter matched set (seed-varied headpiece variation, tailpiece, first-letter
-      initial, frontispiece) → `manifest.json` + optional LaTeX/InDesign includes.
-- [ ] `bookart proof` (contact sheet / page proof); `bookart font` (fleurons → OTF,
-      fast-follow candidate).
+### B8 — manuscript set + proof + font  · GPU  · **DONE — flagship pt 2** (4 tests, suite 1721 green)
+- [x] `bookart/manuscript.rs` (pure) — `parse_chapters` (Markdown `#` headings, else a
+      plain one-title-per-line list; first alphabetic letter per chapter, Cyrillic-aware)
+      + `latex_includes` (a `\newcommand` per ornament). Golden-tested.
+- [x] `bookart manuscript <book> --kit <style> --out DIR [--latex]` — a frontispiece +
+      a **seed-varied headpiece** (wide diffusion banner) & **tailpiece** (procedural)
+      **per chapter**, all in the shared hand; → per-file PNGs, `manifest.json`
+      (chapter→assets), a contact sheet, and optional `includes.tex`.
+- [x] `bookart proof <dir> --out sheet.png` — contact sheet from any ornament dir.
+- **Verified live**: a 3-chapter Markdown book (russian) → frontispiece + 3×(headpiece
+      banner + tailpiece rosette), manifest, LaTeX. *(Honest notes: procedural tailpieces
+      are identical across chapters — procedural is seed-independent; variation lives in
+      the diffusion headpieces. `bookart font` OTF export stays a **fast-follow**;
+      per-chapter glyph-driven **initials** §6.5 deferred with it.)*
 
 ### B9 — repair/edit loop + lineage  · mixed
 - [ ] `edit.rs` — class-aware repair (ink-weight → post-only; size/DPI → re-raster;
