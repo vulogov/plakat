@@ -1,0 +1,10 @@
+{
+  // A single procedural ornament (no weights) — `plakat bookart render ... --svg`.
+  schema: "bookart/1"
+  origin: "russian"
+  technique: "woodcut"
+  motif: ["firebird", "oak-leaf"]
+  page: { size: "a5", dpi: 300 }
+  output: { formats: ["png", "svg"] }
+  ornament: { type: "border" }
+}

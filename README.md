@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v5.0.0 — `plakat persona`**: the 5.x flagship (RFC PERSONA-1). Compose a **specific, reusable synthetic person** from a small HJSON spec and render that same person recognisably across scenes and model families — resolved deterministically, conditioned geometrically, small details *composited* (not prompted), anchored by a cast reference set, and **measured** by a scorecard. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v5.0.0) · [Guide →](Documentation/PERSONA.md) · [Worked demo →](corpus/PERSONA_CORPUS.md)
+> **v6.0.0 — `plakat bookart`**: the 6.x flagship (RFC BOOKART-1). Compose **reusable, print-ready, transparent black-and-white book ornaments** — headpieces, tailpieces, borders, corners, dividers, vignettes — from a small HJSON spec, in a chosen illustration tradition (Russian / English / Japanese …) and drawing technique, at an exact page size. A hybrid render router (vector-native procedural + trained-tradition diffusion + composite), B/W-native transparency, a coherent **kit** and **manuscript-aware** set. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.0.0) · [Guide →](Documentation/BOOKART.md) · [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,6 +24,37 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.0.0 — `plakat bookart`
+
+The 6.x flagship (RFC BOOKART-1): compose **reusable, print-ready, transparent black-and-white book
+ornaments** from a small HJSON spec — the decorative-ornament sibling of `persona`. Where a prompt
+gives an uneven grey picture with an opaque box behind it, `bookart` treats an ornament as structured
+data: resolved deterministically, rendered by a **hybrid router**, made transparent by a B/W-native
+model, and placed on an exact print canvas.
+
+```bash
+plakat bookart new alice.hjson --origin russian --technique woodcut --type headpiece
+plakat bookart render alice.hjson --out headpiece.png          # transparent, page-sized PNG
+plakat bookart illustrate "a firebird among oak branches" --origin russian --out plate.png
+plakat bookart kit alice.hjson --out kit/                       # a coherent matched set + contact sheet
+plakat bookart manuscript book.md --kit alice.hjson --out ornaments/   # a whole book's per-chapter set
+```
+
+Highlights: a **hybrid render router** — *procedural* (vector-native guilloché borders, rosettes,
+corners — crisp at any DPI, **zero weights**), *diffusion* (pictorial ornament in a trained tradition
+via sd15 + an origin LoRA), and *composite* (a procedural frame with a diffusion picture inlaid);
+**B/W-native transparency** (ink darkness *is* opacity — no halo, no page haze); a **symmetry engine**
+(a geometric guarantee diffusion can't hold); **exact print sizing** (named page sizes → px at DPI, DPI
+embedded); a print/ink **scorecard**; opt-in **born-vector SVG**; and the flagship **kit** (a coherent
+matched set) + **manuscript** (a book's per-chapter ornaments, one command). Three origin LoRAs
+(russian / english / japanese) are hosted and auto-resolved; a **generic line-art path** covers every
+origin×technique without a LoRA. Fully additive. Start at
+[`Documentation/BOOKART.md`](Documentation/BOOKART.md); the transparency model is in
+[`Documentation/BOOKART_TRANSPARENCY.md`](Documentation/BOOKART_TRANSPARENCY.md).
+
+*(Deferred to 6.1: scenario / compile / Bund / library-API integration — the feature is complete via
+its CLI; raster→SVG tracing and glyph-driven initials are documented fast-follows.)*
 
 ## What's new in 5.0.0 — `plakat persona`
 
@@ -352,6 +383,7 @@ Run `plakat <CMD> --help` for the flags on each subcommand.
 | `outpaint <INPUT>` | Extend an image past its borders. Per-side `--left`/`--right`/`--top`/`--bottom` or `--expand N` for all four. Defaults to `sdxl-inpaint`; `flux-fill-dev` works too. |
 | `portrait <PROMPT>` | Portrait generation, optionally guided by one or more reference photos with weighted merging. IP-Adapter-Plus-Face or FaceID on SD 1.5 / SDXL. |
 | `persona <SPEC>` | **v5.0 flagship (RFC PERSONA-1).** Compose a *specific, reusable synthetic person* from a small HJSON `PersonaSpec` and render that same person recognisably across scenes and model families. A WFLW-98 geometry engine (pure, no weights), landmark-anchored detail compositing (moles / scars / birthmarks / freckles / jewelry / dentition), per-family calibration, three identity tiers (IP-Adapter · universal face-swap · baked LoRA), multiperson attribution, a class-aware edit/repair loop, and a headless interview with a live wireframe TUI. Subcommands: `new` · `lint` · `show` · `geometry` · `calibrate` · `cast` · `render` · `verify` · `composite` · `repair` · `diff` · `bake` · `interview`. Fully additive. See [`PERSONA.md`](Documentation/PERSONA.md); worked demo in [`corpus/PERSONA_CORPUS.md`](corpus/PERSONA_CORPUS.md). |
+| `bookart <SPEC>` | **v6.0 flagship (RFC BOOKART-1).** Compose *reusable, print-ready, transparent black-and-white book ornaments* from a small HJSON spec, in a chosen illustration tradition × technique, at an exact page size. A hybrid render router (vector-native **procedural** guilloché/borders/rosettes with zero weights · **diffusion** pictorial via sd15 + origin LoRA · **composite** frame + inlay), B/W-native transparency, a symmetry engine, a print/ink scorecard, opt-in born-vector SVG, and the flagship coherent **kit** + **manuscript** (a book's per-chapter ornaments). Subcommands: `new` · `lint` · `show` · `render` · `illustrate` · `verify` · `kit` · `manuscript` · `proof` · `diff` · `edit` · `blend`. Fully additive. See [`BOOKART.md`](Documentation/BOOKART.md). |
 | `photos [DIR]` | **v3.0 flagship.** TUI photo & image collection manager: folder tree + thumbnail grid (RAW + every common format, EXIF), full image view, non-destructive curation (1–5 ratings, flag/reject, colour labels, tags) persisted per-album in a plain `album.hjson`, a live filter grammar + culling loupe, and a filesystem watcher. On by default (needs a graphics-capable terminal). See [`PHOTOS_TUTORIAL.md`](Documentation/Tutorials/PHOTOS_TUTORIAL.md). |
 | `scenario <FILE>` | Batch generation from an HJSON config: scenes × weather × tasks × personas × styles. `--resume` skips already-generated outputs; v0.19 adds `--only NAME[,NAME,…]` (named-task filter), `--limit N` (first N tasks), polished `--dry-run` summary. `-` reads stdin. |
 | `compile <PROMPTS>` | **v1.2**. Compile a prose `prompts.txt` (blank-line scenes + `key: value` commands) into a `scenario` HJSON — one task per block, model-family-aware prompt rewriting + auto-negatives via the `--enhance` stack. `--no-enhance`/`--no-negative` (deterministic), `--lint`, `--dry-run`, `--diff`, `--decompile`, `--compile-cache`. See [`COMPILE.md`](Documentation/COMPILE.md). |

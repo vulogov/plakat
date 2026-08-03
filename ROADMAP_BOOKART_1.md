@@ -324,13 +324,22 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       out — `diff` tells you what to re-run; the raw-render cache for post ink-weight is
       a fast-follow.)*
 
-### B10 — integration + docs + corpus  · **cut**
-- [ ] scenario `type: bookart`; compile `bookart:` directive; Bund `plakat.bookart.*`;
-      library API `BookArt` builder; `doctor` capability section (origins/techniques/
-      tracer/LoRA presence — [[feedback_capability_doctor]] rule).
-- [ ] Docs: `BOOKART.md`, `Tutorials/BOOKART_TUTORIAL.md`, `BOOKART_STYLES.md`,
-      `BOOKART_TRANSPARENCY.md`; docs-index + README announcement.
-- [ ] `./corpus`: 2–3 authored specs + a kit + a manuscript demo + a driver.
+### B10 — integration + docs + corpus + cut  · **DONE (build); CUTTING 6.0.0**
+- [x] `doctor` **bookart section** (weights-free vs weight-backed verbs, tiers, hosted
+      LoRAs, output contract, flagship). Shows in `plakat doctor`.
+- [x] Docs: `BOOKART.md` (reference), `BOOKART_TRANSPARENCY.md` (the B/W-alpha core),
+      `BOOKART_STYLES.md` (origins × techniques + hosted LoRAs),
+      `Tutorials/BOOKART_TUTORIAL.md`; **README** what's-new 6.0.0 + banner + command
+      row; **docs-index** entry.
+- [x] `./corpus`: `bookart_ornament.hjson` + `bookart_kit.hjson` + `bookart_book.md` +
+      `bookart_run.sh` driver + `BOOKART_CORPUS.md` walkthrough.
+- [x] Version 6.0.0 (Cargo.toml + Cargo.lock in sync; `--locked` build clean); CI gate
+      green (1724).
+- **Deferred to 6.1 (noted in README):** scenario `type: bookart` · compile `bookart:` ·
+      Bund `plakat.bookart.*` · library-API `BookArt` builder (integration parity — the
+      feature is complete via its CLI, exactly as persona deferred P10 parity to 5.1).
+- [ ] **CUT 6.0.0**: FF `main` · push `v6.0.0` tag → CI 6-asset release · `cargo publish
+      --locked` · `gh release edit` notes.
 
 ---
 

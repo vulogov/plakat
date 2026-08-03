@@ -317,6 +317,9 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
 
     // -------- v5.0.0: persona pipeline --------
     section_persona();
+
+    // -------- v6.0.0: bookart pipeline --------
+    section_bookart();
     println!();
 
     println!(
@@ -345,6 +348,23 @@ fn section_persona() {
     );
     note("landmark topology = WFLW-98; calibration tables ship provisional (see Documentation/PERSONA.md).");
     note("body identity is face-only (§11.7); the neutral lexicon is binding (§7.4/§23.3). No age gate — apparent_age grounds the render like any other model.");
+}
+
+/// v6.0.0: the `plakat bookart` pipeline (RFC BOOKART-1) — transparent, print-ready B/W book ornaments.
+fn section_bookart() {
+    section_header("bookart (6.0.0 — controllable B/W book-ornament composition)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · diff · edit · blend · proof · render (procedural tier)");
+    note("weight-backed: render/kit/manuscript on the diffusion & composite tiers (sd15) · kit coherence (CLIP)");
+    note(
+        "render tiers (§5.3): procedural = vector-native geometric ornament (border/rosette/divider/corner, \
+         ZERO weights) · diffusion = pictorial via sd15 + origin LoRA · composite = procedural frame + diffusion inlay.",
+    );
+    note(
+        "origins russian/english/japanese ship as sd15 LoRAs auto-resolved from vulogov98/plakat-bookart \
+         (<origin>-sd15.safetensors); `generic` is the LoRA-free line-art fallback so every origin×technique works.",
+    );
+    note("output contract: primary = transparent, exact-page-sized PNG (luminance-native alpha, DPI in pHYs). SVG is a by-request, procedural-only born-vector extra (§7.5).");
+    note("flagship: `kit` (a coherent matched set) + `manuscript` (a whole book's per-chapter ornaments). See Documentation/BOOKART.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

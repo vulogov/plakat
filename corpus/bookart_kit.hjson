@@ -1,0 +1,20 @@
+{
+  // A coherent Russian (Bilibin/lubok) book-ornament kit — RFC BOOKART-1, `plakat bookart kit`.
+  // All ornaments share the origin, technique, motif DNA, and a seed lineage → one hand.
+  schema: "bookart/1"
+  origin: "russian"
+  technique: "woodcut"
+  motif: ["firebird", "oak-leaf"]
+  page: { size: "a5", dpi: 300 }
+  ink: { transparency: "luminance" }
+  kit: {
+    seed: 7
+    ornaments: [
+      { type: "border" }                                   // procedural (zero weights)
+      { type: "divider", symmetry: "radial:6" }            // procedural
+      { type: "fleuron", symmetry: "radial:12" }           // procedural rosette
+      { type: "corner" }                                   // procedural (4 pieces)
+      { type: "vignette", prompt: "a firebird among oak branches" }  // diffusion (origin LoRA)
+    ]
+  }
+}
