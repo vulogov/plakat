@@ -338,8 +338,10 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
 - **Deferred to 6.1 (noted in README):** scenario `type: bookart` · compile `bookart:` ·
       Bund `plakat.bookart.*` · library-API `BookArt` builder (integration parity — the
       feature is complete via its CLI, exactly as persona deferred P10 parity to 5.1).
-- [ ] **CUT 6.0.0**: FF `main` · push `v6.0.0` tag → CI 6-asset release · `cargo publish
-      --locked` · `gh release edit` notes.
+- [x] **CUT 6.0.0 — SHIPPED (2026-08-03).** FF `main` (`d831d8b..9eb0aa9`) · `v6.0.0`
+      tag → CI **6-asset** release (macos-arm64 / linux x86_64+arm64+cuda / win / SHA256SUMS)
+      · `cargo publish --locked --allow-dirty` → crates.io (9.9 MiB) · `gh release edit`
+      notes (title + full body). main = v6.0.0 = 9eb0aa9. No Claude/Anthropic co-author.
 
 ---
 
