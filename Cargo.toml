@@ -38,6 +38,10 @@ exclude = [
     # (RFC_VERIFY.md). NEVER a plakat dependency: it authors golden tensors that are frozen
     # on HF; the shipped crate only consumes them. Excluded so the crate stays self-contained.
     "tools/",
+    # Local scratch/test content not part of the published crate.
+    "bake/",
+    "datasets/",
+    "assets/filipok.md",
 ]
 
 # docs.rs builds the CPU path (no GPU backend). metal/cuda are mutually

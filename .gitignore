@@ -43,3 +43,6 @@ examples/tutorials/*/out/
 # so we ignore the per-artist folders but keep the script + the manifest README.
 datasets/bookart_training/*/
 !datasets/bookart_training/README.md
+
+# bookart LoRA training output (host on HF, never commit)
+bake/
