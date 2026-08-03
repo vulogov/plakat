@@ -95,12 +95,14 @@ Resolve RFC §13 before B0. Each is cheap and de-risks a load-bearing choice.
       path** (sd15 + a line prompt + the finisher, *no LoRA*) already yields usable,
       clean, transparent ornament (G0.2 woodcut control); the stronger line prompt
       **halved** chroma-leak + asymmetry. → **Origin-LoRAs are a ceiling-raiser, NOT a
-      v1 blocker** (confirms D4/R3): v1 ships on the generic path. **Remaining
-      scheduled job (not blocking B0):** curate a PD corpus (Wikimedia/archive.org
-      pre-1929: Bilibin, Beardsley/Rackham, Hokusai *manga*), `plakat style train
-      --model sd15 <corpus> --trigger bookart_russian`, then A/B vs generic on the
-      G0.2 metrics. NOT run here — a rushed train on a tiny uncurated set would
-      mislead; do it deliberately with a real corpus.
+      v1 blocker** (confirms D4/R3): v1 ships on the generic path. **UPDATE — corpus
+      + train DONE, and the LoRA BEATS generic.** 120 PD images (40 each Bilibin/
+      Beardsley/Hokusai, Wikimedia, grayscale-prepped) → 3 sd15 LoRAs (rank 16, 256²,
+      180 steps) trained + **hosted at `vulogov98/plakat-bookart`**
+      (`<origin>-sd15.safetensors`). A/B on the G0.2 metrics (russian): LoRA render
+      **chroma 0.053 / symmetry-RMS 0.134** vs generic **0.16–0.38 / 0.29–0.48** — the
+      LoRA is measurably cleaner AND more symmetric. Scripts:
+      `tools/bookart/{fetch_training_corpus.py, prep_grayscale.py, train_origins.sh}`.
 - [x] **G0.4 Procedural coverage audit.** **DONE** (findings below). Fractal engine is
       **raster-only, no vector, no binarisation, no seamless/tiling, no heterogeneous
       compositor**; reusable pieces + net-new gaps enumerated.
