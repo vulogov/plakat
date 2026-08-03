@@ -258,11 +258,22 @@ Checkbox granularity mirrors `ROADMAP_5.0.0.md`. **CI** = testable under
       + 4 guilloché corner rosettes) with a Bilibin firebird line-art inlay in the window,
       transparent + A5 @300 DPI. Publication-quality cartouche.
 
-### B6 — single-ornament end-to-end + opt-in vectorize  · GPU  · **v1 milestone**
-- [ ] `cli/bookart.rs` — `render` / `illustrate` / `vectorize` wired end to end.
-- [ ] `finish/vectorize.rs` — opt-in SVG: born-vector (procedural) + trace (diffusion,
-      G0.1 tracer); EPS/PDF.
-- [ ] Rejection sampling via scorecard (`--min-score`/`--attempts`).
+### B6 — single-ornament end-to-end + opt-in vectorize  · GPU  · **DONE — v1 MILESTONE** (2 tests, suite 1713 green)
+- [x] `cli/bookart.rs` — shared `do_render` core (used by `render` + `illustrate`);
+      **`bookart illustrate "<prompt>"`** synthesises a diffusion-tier spec (frontispiece/
+      vignette) for a quick standalone B/W plate.
+- [x] `finish/vector.rs` — **born-vector SVG** for the procedural tier: serialise
+      `generate_paths` polylines (transformed to page rects, corner flips) → print-sized
+      SVG (physical `mm` + px `viewBox`, stroked). `render --svg` / spec `output.formats`.
+      **Raster→SVG *trace* (diffusion/composite) deferred** — `vtracer` pulls an old
+      `image 0.23` stack for a secondary feature; the born-vector procedural SVG is the
+      high-value path, the PNG is always the deliverable (§7.5).
+- [x] Rejection sampling — `render/illustrate --attempts N` (diffusion tier): try up to N
+      seeds, keep the first that clears the scorecard, else the fewest-issues one.
+- **Verified live**: border `--svg` → 120-path A5 born-vector SVG (148×210 mm, viewBox
+      1748×2480); `illustrate "wolf in a snowy pine forest" --origin japanese` → a clean
+      Hokusai-style ukiyo-e line-art landscape plate. **v1 = single-ornament render across
+      all 3 tiers + illustrate + born-vector SVG.**
 
 ### B7 — kit: motif DNA + coherence  · GPU  · **flagship pt 1**
 - [ ] `kit.rs` — `KitSpec`, seed lineage, motif threading into every ornament,

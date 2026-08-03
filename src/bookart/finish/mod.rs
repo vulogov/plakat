@@ -6,6 +6,7 @@
 pub mod alpha;
 pub mod binarize;
 pub mod canvas;
+pub mod vector;
 
 use crate::bookart::compile::RenderPlan;
 use image::{GrayImage, Luma, RgbImage, RgbaImage};
