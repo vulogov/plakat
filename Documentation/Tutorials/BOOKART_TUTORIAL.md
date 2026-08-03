@@ -64,22 +64,26 @@ wrote border.png  (1748 × 2480 px @ 300 DPI · procedural · border · bilatera
 ```
 
 Ask for the born-vector SVG too — procedural ornament is vector-native, so this is near-free and
-infinite-DPI:
+infinite-DPI (and compact — the paths are simplified sub-pixel):
 
 ```sh
 plakat bookart render border.hjson --out border.png --svg
 #   ↳ born-vector SVG → border.svg
 ```
 
-Try a few more geometric types with `new` + `render`: `fleuron` (a centred rosette), `divider` (a thin
-rule), `corner` (placed four times). All zero-weight.
+Try the rest of the geometric repertoire with `new` + `render` — all zero-weight, all crisp:
+`fleuron` (a guilloché rosette), `divider` (a rule with a running guilloché wave + fleuron ends),
+`corner` (a bold L placed four times), `headpiece` (a band — rules + central medallion +
+interweaving braid), `tailpiece` (a cul-de-lampe tapering to a point). Change `--seed` to *diversify* a
+piece — the same type renders as a sibling, not a copy, which is what keeps a kit or a book coherent
+without being repetitive.
 
 ## 4. Render a diffusion vignette (weights)
 
 Pictorial ornament comes from the diffusion tier. Scaffold a vignette and give it a prompt:
 
 ```sh
-plakat bookart new bird.hjson --type vignette --origin russian --technique woodcut
+plakat bookart new bird.hjson --type vignette --origin russian --technique line
 #   edit bird.hjson → ornament: { type: "vignette", prompt: "a firebird among oak branches" }
 plakat bookart render bird.hjson --out bird.png --steps 28 --seed 7
 ```
@@ -87,7 +91,12 @@ plakat bookart render bird.hjson --out bird.png --steps 28 --seed 7
 Because the origin is `russian`, the render resolves and attaches the hosted Bilibin LoRA
 automatically (`vulogov98/plakat-bookart#russian-sd15.safetensors`) and weaves its trigger; `generic`
 would use the LoRA-free line-art path instead (see [`../BOOKART_STYLES.md`](../BOOKART_STYLES.md)). The
-raw sd15 render is binarised to clean line art and transparented — no grey slab, no halo.
+raw sd15 render is binarised and transparented — no grey slab, no halo.
+
+**Pick the idiom on purpose.** `technique: line` (the default, and Bilibin's actual pen idiom) extracts
+clean delicate outlines — the airy, refined book-illustration look. `technique: woodcut` keeps bold
+black masses (authentic lubok, but heavy — better for a full-bleed plate than a small spot). If a
+diffusion piece comes out too dark, switch it to `line`.
 
 Don't want to author a spec at all? `illustrate` is the diffusion tier as a one-liner:
 
@@ -123,7 +132,7 @@ A kit is a matched *set* sharing one hand, one motif DNA, and one seed lineage. 
 {
   schema: "bookart/1"
   origin: "russian"
-  technique: "woodcut"
+  technique: "line"
   motif: ["firebird", "oak-leaf"]
   page: { size: "a5", dpi: 300 }
   ink: { transparency: "luminance" }
@@ -159,10 +168,14 @@ list, and supply a kit spec for the shared style:
 plakat bookart manuscript book.md --kit firebird-kit.hjson --out ornaments/ --latex
 ```
 
-It emits a **frontispiece** plus, per chapter, a **seed-varied headpiece** banner (a coherent
-*variation* of the motif, not a clone) and a **tailpiece**, all in one hand — with a chapter→assets
-`manifest.json`, a contact sheet, and (`--latex`) an `includes.tex` of `\newcommand`s you can `\input`
-straight into your document. Preview any ornament directory as a sheet at any time:
+It emits a **frontispiece** (the pictorial plate, diffusion) plus, per chapter, a **procedural
+headpiece band** (a заставка — rules, a central medallion, an interweaving guilloché braid, fleuron
+ends) and a **procedural tailpiece** (a cul-de-lampe tapering to a point). The per-chapter seed diversifies
+the bands so they read as *kin, not clones* — a denser braid here, a different scroll count there —
+while staying in one hand. You get a chapter→assets `manifest.json`, a contact sheet, and (`--latex`) an
+`includes.tex` of `\newcommand`s you can `\input` straight into your document. (Headpieces/tailpieces
+are procedural — clean, airy, weight-free line ornament; the motif lives in the frontispiece plate.)
+Preview any ornament directory as a sheet at any time:
 
 ```sh
 plakat bookart proof ornaments/ --out proof.png

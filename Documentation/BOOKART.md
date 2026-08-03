@@ -123,8 +123,10 @@ plakat bookart manuscript book.md --kit style.hjson --out ornaments/ --latex
 ```
 
 Parses a book's chapter structure (Markdown `#`/`##` headings, else one title per line) and emits a
-**frontispiece** plus, per chapter, a **seed-varied headpiece** (a wide diffusion banner — a coherent
-*variation* of the motif, not a clone) and a **tailpiece** (procedural), all in the shared hand. The
+**frontispiece** (the pictorial plate, diffusion) plus, per chapter, a **procedural headpiece band**
+(rules + central medallion + interweaving guilloché braid + fleuron ends) and a **procedural tailpiece**
+(a cul-de-lampe tapering to a point). The per-chapter seed *diversifies* the bands — a denser braid, a
+different scroll count — so they read as kin, not clones, while staying in one hand. The
 `--kit` spec supplies the style (origin/technique/motif/page) and its `kit.seed` seeds the lineage.
 Writes per-file PNGs, a chapter→assets `manifest.json`, a contact sheet, and (with `--latex`) an
 `includes.tex` of `\newcommand`s. See §11.
