@@ -59,6 +59,16 @@ pub enum BookartCmd {
     /// Trace a raster ornament into a compact SVG (B1; needs the `bookart-trace` feature). The
     /// procedural tier is already born-vector — this is for scanned / diffusion / composite art.
     Vectorize(VectorizeArgs),
+    /// List the origins × techniques × ornament vocabulary, which origins ship a hosted LoRA, and the
+    /// status of the optional `assets/bookart/lexicon.hjson` override.
+    Origins(OriginsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct OriginsArgs {
+    /// Also print each origin's prompt scaffold + default technique + motifs.
+    #[arg(long, default_value_t = false)]
+    pub details: bool,
 }
 
 #[derive(Args, Debug)]
@@ -269,6 +279,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Edit(a) => run_edit(a),
         BookartCmd::Blend(a) => run_blend(a),
         BookartCmd::Vectorize(a) => run_vectorize(a),
+        BookartCmd::Origins(a) => run_origins(a),
     }
 }
 
@@ -589,6 +600,46 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
     }
     if let Some(album) = import {
         import_ornament(out, album)?;
+    }
+    Ok(())
+}
+
+/// B3: `bookart origins` — list the vocabulary, LoRA hosting, and override status (mirrors
+/// `plakat style` / the `doctor` bookart section).
+fn run_origins(a: OriginsArgs) -> Result<()> {
+    use crate::bookart::lexicon;
+    println!("{}", style("bookart origins").bold());
+    for origin in lexicon::all_origins() {
+        let hosted = lexicon::has_hosted_lora(&origin);
+        let custom = !lexicon::ORIGINS.contains(&origin.as_str());
+        let tag = if hosted {
+            style("[hosted LoRA]").green().to_string()
+        } else if origin == "generic" {
+            style("[LoRA-free path]").dim().to_string()
+        } else {
+            style("[scaffold only]").yellow().to_string()
+        };
+        let custom_tag = if custom { style(" (custom)").cyan().to_string() } else { String::new() };
+        println!("  {:<10} {tag}{custom_tag}", style(&origin).bold());
+        if a.details {
+            let (scaffold, tech, motifs) = lexicon::origin_scaffold_dyn(&origin);
+            println!("      scaffold: {}", style(&scaffold).dim());
+            println!("      default technique: {tech}   ·   motifs: {}", motifs.join(", "));
+        }
+    }
+    println!("\n{}", style("techniques").bold());
+    for t in lexicon::TECHNIQUES {
+        println!("  {:<12} → binariser {} · {}", style(t).bold(), lexicon::technique_binariser(t), style(lexicon::technique_prompt(t)).dim());
+    }
+    println!("\n{}", style("ornaments").bold());
+    for k in lexicon::ORNAMENTS {
+        println!("  {:<12} tier {:<10} symmetry {}", style(k).bold(), lexicon::default_tier(k), lexicon::default_symmetry(k));
+    }
+    let path = lexicon::override_path();
+    println!();
+    match lexicon::lexicon_override() {
+        Some(ov) => println!("{} lexicon override: {} ({} custom origin(s))", style("✓").green(), path.display(), ov.origins.len()),
+        None => println!("{} no lexicon override ({} — built-in vocabulary). Add one to define custom traditions.", style("·").dim(), path.display()),
     }
     Ok(())
 }

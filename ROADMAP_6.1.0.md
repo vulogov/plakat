@@ -72,9 +72,16 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
 - **B2 — glyph-driven initials (§6.5).** `initial` renders the actual letter (any script, incl.
   Cyrillic) as a mask/ControlNet so a historiated initial is built *around* a legible letterform —
   the one intentional-text path. Needs a font rasteriser (reuse the `shaped-labels` ab_glyph path).
-- **B3 — `bookart origins`.** List the origin × technique presets + which origin LoRAs are present/
-  hosted (mirrors `plakat style` / the `doctor` section). Load `assets/bookart/lexicon.hjson` as an
-  override of the built-in lexicon (currently built-in only).
+- **B3 — `bookart origins` + lexicon override. DONE.** `bookart origins [--details]` lists origins
+  (with hosted-LoRA / scaffold-only / LoRA-free status + custom marker), techniques (→ binariser +
+  cue), and ornaments (→ tier + symmetry), plus the override-file status. Optional
+  `assets/bookart/lexicon.hjson` (env `PLAKAT_BOOKART_LEXICON`) adds/re-scaffolds traditions with no
+  rebuild — `lexicon::{LexiconOverride, origin_scaffold_dyn, has_hosted_lora, all_origins}` (OnceLock
+  cache; malformed file warns + falls back to built-in). The resolver uses `origin_scaffold_dyn`, so a
+  custom origin renders. **Correctness fix:** the LoRA attach + recipe now gate on
+  `has_hosted_lora` (russian/english/japanese) instead of `!= "generic"` — `american`/`european`/
+  `chinese` no longer try to resolve a non-existent `<origin>-sd15.safetensors` (404). Verified: custom
+  `byzantine` origin lists `(custom)` and its scaffold flows into the compiled prompt.
 - **B4 — `bookart font`.** Export a set of small ornaments (fleurons/dinkus) as an `.otf` dingbat font
   for inline use in InDesign/LaTeX.
 - **B5 — more origin LoRAs.** american / european / chinese, trained on PD corpora (extend the G0.3

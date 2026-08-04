@@ -61,12 +61,15 @@ fn gen_size(rw: u32, rh: u32) -> (u32, u32) {
 async fn diffuse(model: &str, plan: &RenderPlan, w: u32, h: u32, steps: usize, seed: u64) -> Result<(image::RgbImage, PathBuf)> {
     let mut prompt = plan.prompt.clone();
     let mut builder = crate::api::Generate::new(model).negative(&plan.negative).size(w, h).steps(steps).seed(seed);
-    if plan.origin != "generic" {
+    // Only attach a LoRA for origins that actually host one (B3): russian/english/japanese, or a custom
+    // origin that declares `hosted_lora`. Others (generic, american/european/chinese until B5) render on
+    // the scaffold-only path — attaching a missing `<origin>-sd15.safetensors` would 404.
+    if crate::bookart::lexicon::has_hosted_lora(&plan.origin) {
         prompt = format!("{prompt}, bookart_{} style", plan.origin);
         builder = builder.lora(format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin), 1.0);
         println!("  {} origin LoRA: bookart_{} (sd15)", style("↳").cyan(), plan.origin);
     } else {
-        println!("  {} generic line-art path (no LoRA)", style("↳").dim());
+        println!("  {} {} scaffold path (no hosted LoRA)", style("↳").dim(), plan.origin);
     }
     println!("  {} diffusion {w}×{h}, {steps} steps, seed {seed}…", style("→").cyan());
     let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
@@ -124,7 +127,7 @@ pub fn recipe_metadata(plan: &RenderPlan, model: &str, seed: u64, steps: usize) 
     if !plan.negative.trim().is_empty() {
         m.negative = plan.negative.clone();
     }
-    if plan.origin != "generic" {
+    if crate::bookart::lexicon::has_hosted_lora(&plan.origin) {
         m.loras = vec![format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin)];
     }
     m.extras = vec![

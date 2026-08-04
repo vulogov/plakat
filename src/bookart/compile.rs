@@ -48,7 +48,7 @@ fn resolve_tier(orn: &Ornament, kind: &str) -> String {
 
 /// Build the ornament's diffusion prompt from origin scaffold + technique cue + type + motif.
 fn build_prompt(origin: &str, technique: &str, kind: &str, motif: &[String], orn: &Ornament) -> String {
-    let (scaffold, _, _) = lexicon::origin_scaffold(origin);
+    let (scaffold, _, _) = lexicon::origin_scaffold_dyn(origin);
     let tech = lexicon::technique_prompt(technique);
     let subject = orn.prompt.clone().unwrap_or_else(|| format!("a {kind} ornament"));
     let motif_clause = if motif.is_empty() { String::new() } else { format!(", featuring {}", motif.join(" and ")) };
@@ -62,15 +62,15 @@ pub fn resolve(spec: &BookArtSpec) -> RenderPlan {
     let kind = orn.kind.clone().unwrap_or_else(|| "divider".into());
 
     let origin = spec.origin.clone().unwrap_or_else(|| "generic".into());
-    let (_, default_tech, default_motifs) = lexicon::origin_scaffold(&origin);
-    let technique = spec.technique.clone().unwrap_or_else(|| default_tech.to_string());
+    let (_, default_tech, default_motifs) = lexicon::origin_scaffold_dyn(&origin);
+    let technique = spec.technique.clone().unwrap_or(default_tech);
 
     // motif: per-ornament override, else top-level, else the origin's defaults.
     let motif = orn
         .motif
         .clone()
         .or_else(|| spec.motif.clone())
-        .unwrap_or_else(|| default_motifs.iter().map(|s| s.to_string()).collect());
+        .unwrap_or(default_motifs);
 
     let tier = resolve_tier(&orn, &kind);
     let symmetry = orn.symmetry.clone().unwrap_or_else(|| lexicon::default_symmetry(&kind).to_string());
