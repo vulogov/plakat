@@ -101,9 +101,14 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   scroll ↔ L-system leaf per fold with fold-scaled turn counts. Verified live: the 4 headpiece variants
   render distinct + clean (braid / Greek-key / vine / interlace, each with the rose medallion + fleuron
   ends).
-- **C2 — ink-weight as a real dial.** Cache the raw grayscale render so `ink.weight` / `transparency`
-  become `post`-class edits (today they force a re-gen — see `bookart/edit.rs`); wire `bookart edit`
-  to re-run the finisher without re-sampling.
+- **C2 — ink-weight as a real dial. DONE.** `bookart render|illustrate --cache-raw` writes the
+  pre-finish gray (`<out>.raw.png`) + the resolved plan (`<out>.plan.json`); `bookart edit
+  --ink-weight/--transparency/--fade` (+ `--tint`) then re-runs the finisher (binarise + transparency +
+  symmetry + page canvas) on the cached gray — **no re-sampling**. `Rendered.raw_gray` (procedural raster
+  gray / diffusion pre-binarise luma; `None` for composite/matte), `finish::finish_from_gray`,
+  `RenderPlan`+`PageResolved` are now `Serialize`. `classify()` moves `ink.weight`/`ink.transparency`/
+  `ornament.fade` from **re-gen → post**. Verified: `render --cache-raw` → `edit --transparency
+  threshold --tint sepia` re-finishes to a page-sized sepia ornament (bails helpfully without the cache).
 - **C3 — composite framing polish.** Band-shaped composite frames (a headpiece cartouche = a wide frame
   with a central window) so `headpiece`/`tailpiece` composites aren't squished into a square window.
 

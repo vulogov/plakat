@@ -31,6 +31,15 @@ pub fn finish_ornament(raw: &RgbImage, plan: &RenderPlan) -> RgbaImage {
     alpha::to_transparent(&b, &plan.transparency_mode, tint, plan.fade)
 }
 
+/// C2: re-finish from a cached **pre-binarise** grayscale (the diffusion raw luma). Same as
+/// [`finish_ornament`] but skips `to_luma` — so `bookart edit --ink-weight/--transparency` can re-run
+/// the binariser + transparency on the cached gray without re-sampling the diffusion model.
+pub fn finish_from_gray(gray: &GrayImage, plan: &RenderPlan) -> RgbaImage {
+    let b = binarize::binarise(gray, &plan.binariser, plan.ink_weight);
+    let tint = alpha::parse_tint(&plan.tint);
+    alpha::to_transparent(&b, &plan.transparency_mode, tint, plan.fade)
+}
+
 /// Finish an already-clean **procedural** line-art grayscale: skip binarisation (it's born 1-bit-clean)
 /// and go straight to transparency + tint, preserving the antialiased strokes.
 pub fn finish_procedural(gray: &GrayImage, plan: &RenderPlan) -> RgbaImage {

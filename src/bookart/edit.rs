@@ -40,10 +40,12 @@ pub fn classify(path: &str) -> EditClass {
     // strip any array index suffix for matching (`motif[0]` → `motif`)
     let head = path.split('[').next().unwrap_or(path);
     match head {
-        "ink.color" | "output.tint" | "ornament.symmetry" => EditClass::Post,
+        // C2: ink.weight / ink.transparency / ornament.fade are now `post` — `bookart edit` re-runs the
+        // finisher on the cached pre-finish gray (needs `render --cache-raw`), no re-sampling.
+        "ink.color" | "output.tint" | "ornament.symmetry" | "ink.weight" | "ink.transparency" | "ornament.fade" => EditClass::Post,
         p if p.starts_with("page") => EditClass::Reraster,
-        // everything else — origin/technique/motif/prompt/type/tier/frame/ink.weight/transparency/
-        // fade/taper/glyph, transparent — needs a fresh render.
+        // everything else — origin/technique/motif/prompt/type/tier/frame/glyph, transparent — needs a
+        // fresh render.
         _ => EditClass::Regen,
     }
 }
@@ -114,7 +116,9 @@ mod tests {
         assert_eq!(classify("page.size"), EditClass::Reraster);
         assert_eq!(classify("page.dpi"), EditClass::Reraster);
         assert_eq!(classify("origin"), EditClass::Regen);
-        assert_eq!(classify("ink.weight"), EditClass::Regen);
+        assert_eq!(classify("ink.weight"), EditClass::Post); // C2: re-finish from the cached gray
+        assert_eq!(classify("ink.transparency"), EditClass::Post);
+        assert_eq!(classify("ornament.fade"), EditClass::Post);
         assert_eq!(classify("motif[0]"), EditClass::Regen);
     }
 

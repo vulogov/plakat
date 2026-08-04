@@ -160,6 +160,10 @@ pub struct RenderArgs {
     /// Also land the ornament (+ its recipe sidecar) in a `plakat photos` album at this path.
     #[arg(long)]
     pub import: Option<PathBuf>,
+    /// C2: also cache the pre-finish gray + plan (`<out>.raw.png`/`.plan.json`) so `bookart edit
+    /// --ink-weight/--transparency` can re-finish without re-rendering.
+    #[arg(long = "cache-raw", default_value_t = false)]
+    pub cache_raw: bool,
 }
 
 #[derive(Args, Debug)]
@@ -188,6 +192,9 @@ pub struct IllustrateArgs {
     /// Also land the plate (+ its recipe sidecar) in a `plakat photos` album at this path.
     #[arg(long)]
     pub import: Option<PathBuf>,
+    /// C2: also cache the pre-finish gray + plan so `bookart edit --ink-weight/--transparency` works.
+    #[arg(long = "cache-raw", default_value_t = false)]
+    pub cache_raw: bool,
 }
 
 #[derive(Args, Debug)]
@@ -254,6 +261,16 @@ pub struct EditArgs {
     /// Re-apply symmetry (`bilateral` / `radial:N`).
     #[arg(long)]
     pub symmetry: Option<String>,
+    /// C2 (needs `render --cache-raw`): re-finish at a new ink weight `[0,1]` — re-runs the binariser +
+    /// transparency on the cached gray, no re-sampling.
+    #[arg(long = "ink-weight")]
+    pub ink_weight: Option<f32>,
+    /// C2 (needs `render --cache-raw`): re-finish with a new transparency mode (`luminance`/`threshold`/`fade`).
+    #[arg(long)]
+    pub transparency: Option<String>,
+    /// C2 (needs `render --cache-raw`): re-finish with a new edge fade `[0,1]`.
+    #[arg(long)]
+    pub fade: Option<f32>,
 }
 
 #[derive(Args, Debug)]
@@ -309,6 +326,10 @@ fn run_diff(a: DiffArgs) -> Result<()> {
 }
 
 fn run_edit(a: EditArgs) -> Result<()> {
+    // C2: ink-weight / transparency / fade need the pre-finish gray — route to the refinish path.
+    if a.ink_weight.is_some() || a.transparency.is_some() || a.fade.is_some() {
+        return run_refinish(&a);
+    }
     let mut rgba = image::open(&a.image).with_context(|| format!("opening {}", a.image.display()))?.to_rgba8();
     let mut ops = Vec::new();
     if let Some(tint) = &a.tint {
@@ -331,6 +352,43 @@ fn run_edit(a: EditArgs) -> Result<()> {
     }
     rgba.save(&a.out)?;
     println!("{} {}  [{}]", style("wrote").green(), a.out.display(), ops.join(", "));
+    Ok(())
+}
+
+/// C2: re-finish a cached ornament at a new ink weight / transparency / fade — the finisher only, no
+/// re-sampling. Reads `<image>.raw.png` + `<image>.plan.json` written by `render --cache-raw`, patches
+/// the plan, then re-runs finish → symmetry → page canvas.
+fn run_refinish(a: &EditArgs) -> Result<()> {
+    use crate::bookart::{compile::RenderPlan, finish, geometry};
+    let (gray_path, plan_path) = raw_cache_paths(&a.image);
+    if !gray_path.exists() || !plan_path.exists() {
+        anyhow::bail!(
+            "ink-weight/transparency/fade edits need the raw cache ({} + {}). Re-run `bookart render <spec> \
+             --out {} --cache-raw` first (these are `post` edits only when the pre-finish gray is cached).",
+            gray_path.display(), plan_path.display(), a.image.display()
+        );
+    }
+    let gray = image::open(&gray_path).with_context(|| format!("opening {}", gray_path.display()))?.to_luma8();
+    let mut plan: RenderPlan = serde_json::from_str(&std::fs::read_to_string(&plan_path)?)
+        .with_context(|| format!("parsing {}", plan_path.display()))?;
+    let mut ops = Vec::new();
+    if let Some(w) = a.ink_weight { plan.ink_weight = w.clamp(0.0, 1.0); ops.push(format!("ink-weight {w}")); }
+    if let Some(t) = &a.transparency { plan.transparency_mode = t.clone(); ops.push(format!("transparency {t}")); }
+    if let Some(f) = a.fade { plan.fade = f.clamp(0.0, 1.0); ops.push(format!("fade {f}")); }
+    if let Some(tint) = &a.tint { plan.tint = tint.clone(); ops.push(format!("tint {tint}")); }
+    // Re-finish from the cached gray: procedural skips binarise (born-clean); diffusion re-binarises.
+    let orn = if plan.tier == "procedural" {
+        finish::finish_procedural(&gray, &plan)
+    } else {
+        finish::finish_from_gray(&gray, &plan)
+    };
+    let sym = a.symmetry.clone().unwrap_or_else(|| plan.symmetry.clone());
+    let orn = geometry::symmetrize(&orn, &sym);
+    let tb = geometry::text_block(&plan.page, &BookArtSpec::default());
+    let layout = geometry::layout_for(&plan.ornament_kind, &tb);
+    let page = finish::canvas::place_on_canvas(&orn, &plan.page, &layout);
+    finish::canvas::save_png_dpi(&page, &a.out, plan.page.dpi)?;
+    println!("{} {}  [re-finish: {}]  (no re-render)", style("wrote").green(), a.out.display(), ops.join(", "));
     Ok(())
 }
 
@@ -387,7 +445,7 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
     // Frontispiece (once).
     let front = "frontispiece.png";
     println!("\n{} frontispiece…", style("→").cyan());
-    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1, None).await.context("frontispiece")?;
+    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1, None, false).await.context("frontispiece")?;
 
     let mut all_files = vec![front.to_string()];
     let mut tex_ch = Vec::new();
@@ -399,9 +457,9 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
         println!("\n{} [ch {n}/{}] {}  (headpiece seed {hseed})", style("→").cyan(), chapters.len(), ch.title);
         // headpiece: a procedural ornamental band (застАвка), varied per chapter by the seed lineage —
         // clean airy line-work, not a heavy woodcut block. The pictorial motif lives in the frontispiece.
-        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1, None).await.with_context(|| format!("chapter {n} headpiece"))?;
+        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1, None, false).await.with_context(|| format!("chapter {n} headpiece"))?;
         // tailpiece: a procedural cul-de-lampe, also varied per chapter.
-        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1, None).await.with_context(|| format!("chapter {n} tailpiece"))?;
+        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1, None, false).await.with_context(|| format!("chapter {n} tailpiece"))?;
         all_files.push(hfile.clone());
         all_files.push(tfile.clone());
         tex_ch.push((ch.title.clone(), hfile.clone(), tfile.clone()));
@@ -479,7 +537,7 @@ async fn run_kit(a: KitArgs) -> Result<()> {
         };
         let file = a.out.join(format!("{i:02}_{kind}.png"));
         println!("\n{} [{}/{}] {kind}  (seed {seed_i})", style("→").cyan(), i + 1, ornaments.len());
-        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1, None).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
+        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1, None, false).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
         files.push(file);
         kinds.push(kind);
         seeds.push(seed_i);
@@ -551,7 +609,7 @@ async fn kit_coherence(files: &[PathBuf]) -> Result<(f32, f32)> {
 /// longest side capped at 768, snapped to /8 (sd15-friendly).
 async fn run_render(a: RenderArgs) -> Result<()> {
     let spec = BookArtSpec::load(&a.spec)?;
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts, a.import.as_deref()).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts, a.import.as_deref(), a.cache_raw).await
 }
 
 async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
@@ -565,18 +623,23 @@ async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
         ornament: Some(Ornament { kind: Some(a.kind), tier: Some("diffusion".into()), prompt: Some(a.prompt), ..Default::default() }),
         ..Default::default()
     };
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref()).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref(), a.cache_raw).await
 }
 
 /// The shared render entry (used by `render`, `illustrate`, `kit`, `manuscript`): drive the library
 /// render core ([`crate::bookart::render::render_spec`]), then write the PNG (+ opt-in SVG) to disk.
-async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32, import: Option<&std::path::Path>) -> Result<()> {
+async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32, import: Option<&std::path::Path>, cache_raw: bool) -> Result<()> {
     use crate::bookart::render::{recipe_metadata, render_spec, RenderOpts};
     let r = render_spec(&spec, &RenderOpts { model: model.into(), seed, steps, svg, attempts }).await?;
     // A5: attach the reproducibility recipe (origin/technique/spec-hash) as a PNG tEXt chunk + `.json`
     // sidecar, so the ornament is searchable, re-runnable, and `--import`-ready.
     let meta = recipe_metadata(&r.plan, model, seed, steps);
     crate::bookart::finish::canvas::save_png_dpi_with_metadata(&r.page, out, r.plan.page.dpi, &meta)?;
+    // C2: cache the pre-finish gray + the resolved plan so `bookart edit --ink-weight/--transparency`
+    // can re-finish without re-sampling (procedural/diffusion only; composite/matte have no single gray).
+    if cache_raw {
+        write_raw_cache(out, &r)?;
+    }
     println!(
         "{} {}  ({} × {} px @ {} DPI · {} · {} · {} · {} piece(s))",
         style("wrote").green(),
@@ -601,6 +664,28 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
     if let Some(album) = import {
         import_ornament(out, album)?;
     }
+    Ok(())
+}
+
+/// C2: paths of the raw-refinish cache next to an ornament PNG.
+fn raw_cache_paths(out: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let mut gray = out.as_os_str().to_owned();
+    gray.push(".raw.png");
+    let mut plan = out.as_os_str().to_owned();
+    plan.push(".plan.json");
+    (std::path::PathBuf::from(gray), std::path::PathBuf::from(plan))
+}
+
+/// C2: write the pre-finish gray + the resolved plan next to the ornament (for `bookart edit`).
+fn write_raw_cache(out: &std::path::Path, r: &crate::bookart::render::Rendered) -> Result<()> {
+    let Some(gray) = &r.raw_gray else {
+        println!("  {} --cache-raw skipped: the `{}` tier has no single gray to re-finish", style("·").yellow(), r.plan.tier);
+        return Ok(());
+    };
+    let (gray_path, plan_path) = raw_cache_paths(out);
+    gray.save(&gray_path).with_context(|| format!("writing {}", gray_path.display()))?;
+    std::fs::write(&plan_path, serde_json::to_string(&r.plan)?).with_context(|| format!("writing {}", plan_path.display()))?;
+    println!("  {} raw cache → {} (edit ink-weight/transparency without re-render)", style("↳").cyan(), gray_path.display());
     Ok(())
 }
 

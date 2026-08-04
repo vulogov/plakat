@@ -14,7 +14,7 @@ pub const ANTI_TEXT: &str = "text, letters, words, watermark, signature, caption
 pub const ANTI_COLOR: &str = "color, colour, photograph, grey wash, gradient shading, soft focus, 3d render, blurry";
 
 /// A fully-resolved plan for one ornament: everything a downstream phase needs, deterministic.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RenderPlan {
     pub schema_ok: bool,
     pub origin: String,

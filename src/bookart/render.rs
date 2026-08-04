@@ -43,6 +43,10 @@ pub struct Rendered {
     pub scorecard: Scorecard,
     /// Number of placed pieces (e.g. 4 for a corner).
     pub pieces: usize,
+    /// C2: the ornament-level grayscale that fed the finisher (procedural raster gray, or the diffusion
+    /// pre-binarise luma) — cached so `bookart edit --ink-weight/--transparency` can re-finish without
+    /// re-sampling. `None` for the composite/matte tiers (no single gray).
+    pub raw_gray: Option<image::GrayImage>,
 }
 
 /// A /8-snapped working generation size from a layout rect's aspect (512 short side, cap 768).
@@ -151,11 +155,15 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
     let r0 = layout.rects[0];
     let variant = (opts.seed % 8) as u32; // diversifies procedural ornament across a set/manuscript
 
+    // C2: the ornament-level gray that fed the finisher, cached for `bookart edit` re-finishing.
+    let mut raw_gray: Option<image::GrayImage> = None;
     let ornament = match plan.tier.as_str() {
         // B3: vector-native, no weights.
         "procedural" => {
             let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h, variant);
-            finish::finish_procedural(&gray, &plan)
+            let finished = finish::finish_procedural(&gray, &plan);
+            raw_gray = Some(gray);
+            finished
         }
         // B4: diffusion + optional matte, with B6 scorecard rejection sampling.
         "diffusion" => {
@@ -164,6 +172,7 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
             let (mut best, mut fewest) = (None, usize::MAX);
             for i in 0..tries {
                 let (raw, tmp) = diffuse(&opts.model, &plan, gw, gh, opts.steps, opts.seed + i as u64).await?;
+                let gray = finish::to_luma(&raw); // pre-binarise luma (the C2 cache candidate)
                 let finished = if plan.transparency_mode == "matte" {
                     println!("  {} U2Net matte → silhouette", style("↳").cyan());
                     matte_silhouette(&tmp, &raw, &plan).await?
@@ -172,16 +181,19 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
                 };
                 let _ = std::fs::remove_file(&tmp);
                 let sc = scorecard::score(&finished, &plan);
+                let matte = plan.transparency_mode == "matte";
                 if sc.passes {
                     if tries > 1 {
                         println!("  {} scorecard PASS on attempt {}/{}", style("✓").green(), i + 1, tries);
                     }
                     best = Some(finished);
+                    raw_gray = if matte { None } else { Some(gray) };
                     break;
                 }
                 if sc.notes.len() < fewest {
                     fewest = sc.notes.len();
                     best = Some(finished);
+                    raw_gray = if matte { None } else { Some(gray) };
                 }
                 if tries > 1 {
                     println!("  {} attempt {}/{} FAIL ({} issue(s)), retrying…", style("·").yellow(), i + 1, tries, sc.notes.len());
@@ -225,7 +237,7 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
         None
     };
 
-    Ok(Rendered { page, svg, plan, scorecard: sc, pieces: layout.rects.len() })
+    Ok(Rendered { page, svg, plan, scorecard: sc, pieces: layout.rects.len(), raw_gray })
 }
 
 #[cfg(test)]
@@ -244,6 +256,8 @@ mod tests {
         assert!(r.page.pixels().any(|p| p.0[3] > 200), "has ink");
         assert!(r.svg.as_deref().is_some_and(|s| s.contains("<svg")), "born-vector SVG emitted");
         assert!(r.scorecard.chroma_frac < 0.01, "neutral B/W");
+        // C2: the procedural raster gray is cached for re-finishing.
+        assert!(r.raw_gray.is_some(), "procedural raw gray cached");
     }
 
     #[test]

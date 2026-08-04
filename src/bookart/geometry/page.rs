@@ -25,7 +25,7 @@ pub const SIZE_VOCAB: &[&str] = &["a4", "a5", "a6", "b5", "letter", "legal", "tr
 pub const DEFAULT_DPI: u32 = 300;
 
 /// A resolved canvas: exact pixels + the physical size + DPI (written to PNG `pHYs` / the SVG later).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PageResolved {
     pub w_px: u32,
     pub h_px: u32,
