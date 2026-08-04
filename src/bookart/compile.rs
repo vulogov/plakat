@@ -37,6 +37,9 @@ pub struct RenderPlan {
     pub prompt: String,
     /// Diffusion/composite negative (anti-text + anti-colour), empty for pure `procedural`.
     pub negative: String,
+    /// B2: the letter for a glyph-driven `initial` (any script), from `ornament.glyph`.
+    #[serde(default)]
+    pub initial: Option<String>,
 }
 
 fn resolve_tier(orn: &Ornament, kind: &str) -> String {
@@ -121,6 +124,7 @@ pub fn resolve(spec: &BookArtSpec) -> RenderPlan {
         formats,
         prompt,
         negative,
+        initial: orn.glyph.clone(),
     }
 }
 

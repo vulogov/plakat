@@ -69,9 +69,15 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   base build). CLI verbs + `--svg` are `#[cfg(feature)]`-gated with a clear "rebuild with
   `--features bookart-trace`" message when off; `doctor` reports on/off. Verified live: firebird plate
   → traced A5 SVG; composite `--svg` → 315 KB traced SVG.
-- **B2 — glyph-driven initials (§6.5).** `initial` renders the actual letter (any script, incl.
-  Cyrillic) as a mask/ControlNet so a historiated initial is built *around* a legible letterform —
-  the one intentional-text path. Needs a font rasteriser (reuse the `shaped-labels` ab_glyph path).
+- **B2 — glyph-driven initials (§6.5). DONE.** An `initial` ornament with `ornament.glyph: "<letter>"`
+  + `bookart render --font <ttf/otf>` rasterises the **real letterform** (any script, incl. Cyrillic)
+  via `ab_glyph` and frames it in a procedural border — a legible historiated initial, the one
+  intentional-text path (no diffusion hallucinating fake glyphs). `src/bookart/glyph.rs`
+  (`render_initial`: fit the glyph to ~82% of the cell, centre, rasterise to a gray mask), behind the
+  **`shaped-labels`** feature (the same `ab_glyph` dep the map labels use); without it / without a font,
+  `initial` falls through to the decorative composite path. `RenderPlan.initial` (from `ornament.glyph`),
+  `RenderOpts.font`. Verified live: a Cyrillic **Ф** (Georgia.ttf) rendered legibly in a rosette-cornered
+  frame.
 - **B3 — `bookart origins` + lexicon override. DONE.** `bookart origins [--details]` lists origins
   (with hosted-LoRA / scaffold-only / LoRA-free status + custom marker), techniques (→ binariser +
   cue), and ornaments (→ tier + symmetry), plus the override-file status. Optional

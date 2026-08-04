@@ -15,6 +15,8 @@ pub mod compile;
 pub mod edit;
 pub mod finish;
 pub mod geometry;
+#[cfg(feature = "shaped-labels")]
+pub mod glyph;
 pub mod kit;
 pub mod lexicon;
 pub mod lint;

@@ -66,6 +66,7 @@ pub async fn run_bookart_task(cfg: &BookartTaskCfg, task_seed: u64, _device: Dev
         steps: cfg.steps.unwrap_or(28),
         svg: cfg.svg.unwrap_or(false),
         attempts: cfg.attempts.unwrap_or(1),
+        font: None,
     };
     if dry_run {
         let plan = resolve(&spec);

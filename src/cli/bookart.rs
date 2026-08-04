@@ -164,6 +164,9 @@ pub struct RenderArgs {
     /// --ink-weight/--transparency` can re-finish without re-rendering.
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
+    /// B2: a TrueType/OpenType font for a glyph-driven `initial` (any script; needs `shaped-labels`).
+    #[arg(long)]
+    pub font: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -195,6 +198,9 @@ pub struct IllustrateArgs {
     /// C2: also cache the pre-finish gray + plan so `bookart edit --ink-weight/--transparency` works.
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
+    /// B2: a TrueType/OpenType font for a glyph-driven `initial` (needs `shaped-labels`).
+    #[arg(long)]
+    pub font: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -445,7 +451,7 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
     // Frontispiece (once).
     let front = "frontispiece.png";
     println!("\n{} frontispiece…", style("→").cyan());
-    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1, None, false).await.context("frontispiece")?;
+    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1, None, false, None).await.context("frontispiece")?;
 
     let mut all_files = vec![front.to_string()];
     let mut tex_ch = Vec::new();
@@ -457,9 +463,9 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
         println!("\n{} [ch {n}/{}] {}  (headpiece seed {hseed})", style("→").cyan(), chapters.len(), ch.title);
         // headpiece: a procedural ornamental band (застАвка), varied per chapter by the seed lineage —
         // clean airy line-work, not a heavy woodcut block. The pictorial motif lives in the frontispiece.
-        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1, None, false).await.with_context(|| format!("chapter {n} headpiece"))?;
+        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1, None, false, None).await.with_context(|| format!("chapter {n} headpiece"))?;
         // tailpiece: a procedural cul-de-lampe, also varied per chapter.
-        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1, None, false).await.with_context(|| format!("chapter {n} tailpiece"))?;
+        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1, None, false, None).await.with_context(|| format!("chapter {n} tailpiece"))?;
         all_files.push(hfile.clone());
         all_files.push(tfile.clone());
         tex_ch.push((ch.title.clone(), hfile.clone(), tfile.clone()));
@@ -537,7 +543,7 @@ async fn run_kit(a: KitArgs) -> Result<()> {
         };
         let file = a.out.join(format!("{i:02}_{kind}.png"));
         println!("\n{} [{}/{}] {kind}  (seed {seed_i})", style("→").cyan(), i + 1, ornaments.len());
-        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1, None, false).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
+        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1, None, false, None).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
         files.push(file);
         kinds.push(kind);
         seeds.push(seed_i);
@@ -609,7 +615,7 @@ async fn kit_coherence(files: &[PathBuf]) -> Result<(f32, f32)> {
 /// longest side capped at 768, snapped to /8 (sd15-friendly).
 async fn run_render(a: RenderArgs) -> Result<()> {
     let spec = BookArtSpec::load(&a.spec)?;
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts, a.import.as_deref(), a.cache_raw).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts, a.import.as_deref(), a.cache_raw, a.font.clone()).await
 }
 
 async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
@@ -623,14 +629,15 @@ async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
         ornament: Some(Ornament { kind: Some(a.kind), tier: Some("diffusion".into()), prompt: Some(a.prompt), ..Default::default() }),
         ..Default::default()
     };
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref(), a.cache_raw).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref(), a.cache_raw, a.font.clone()).await
 }
 
 /// The shared render entry (used by `render`, `illustrate`, `kit`, `manuscript`): drive the library
 /// render core ([`crate::bookart::render::render_spec`]), then write the PNG (+ opt-in SVG) to disk.
-async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32, import: Option<&std::path::Path>, cache_raw: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32, import: Option<&std::path::Path>, cache_raw: bool, font: Option<PathBuf>) -> Result<()> {
     use crate::bookart::render::{recipe_metadata, render_spec, RenderOpts};
-    let r = render_spec(&spec, &RenderOpts { model: model.into(), seed, steps, svg, attempts }).await?;
+    let r = render_spec(&spec, &RenderOpts { model: model.into(), seed, steps, svg, attempts, font }).await?;
     // A5: attach the reproducibility recipe (origin/technique/spec-hash) as a PNG tEXt chunk + `.json`
     // sidecar, so the ornament is searchable, re-runnable, and `--import`-ready.
     let meta = recipe_metadata(&r.plan, model, seed, steps);

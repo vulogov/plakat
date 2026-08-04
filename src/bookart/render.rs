@@ -25,11 +25,13 @@ pub struct RenderOpts {
     pub svg: bool,
     /// Diffusion-tier rejection sampling: try up to N seeds, keep the first that clears the scorecard.
     pub attempts: u32,
+    /// B2: a TrueType/OpenType font for glyph-driven `initial` ornaments (needs `shaped-labels`).
+    pub font: Option<std::path::PathBuf>,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        Self { model: "sd15".into(), seed: 0, steps: 28, svg: false, attempts: 1 }
+        Self { model: "sd15".into(), seed: 0, steps: 28, svg: false, attempts: 1, font: None }
     }
 }
 
@@ -154,6 +156,27 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
     let layout = geometry::layout_for(&plan.ornament_kind, &tb);
     let r0 = layout.rects[0];
     let variant = (opts.seed % 8) as u32; // diversifies procedural ornament across a set/manuscript
+
+    // B2: a glyph-driven initial — rasterise the real letterform (any script) into a procedural frame,
+    // no diffusion. The one intentional-text path (§6.5). Falls through to the tier match when the
+    // `shaped-labels` feature is off, or no font / letter is supplied (a decorative initial).
+    #[cfg(feature = "shaped-labels")]
+    if plan.ornament_kind == "initial" {
+        if let (Some(letter), Some(font)) = (plan.initial.clone(), opts.font.clone()) {
+            let (frame_paths, (wx, wy, ww, wh)) = procedural::frame("bilateral", r0.w, r0.h);
+            let stroke = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
+            let frame_rgba = finish::finish_procedural(&procedural::rasterise(&frame_paths, r0.w, r0.h, stroke), &plan);
+            let glyph_gray = crate::bookart::glyph::render_initial(&letter, &font, ww.max(1), wh.max(1))?;
+            let letter_rgba = finish::finish_procedural(&glyph_gray, &plan);
+            let mut canvas = image::RgbaImage::from_pixel(r0.w, r0.h, image::Rgba([0, 0, 0, 0]));
+            image::imageops::overlay(&mut canvas, &letter_rgba, wx as i64, wy as i64);
+            image::imageops::overlay(&mut canvas, &frame_rgba, 0, 0);
+            let page = finish::canvas::place_on_canvas(&canvas, &plan.page, &layout);
+            let sc = scorecard::score(&page, &plan);
+            println!("  {} glyph initial '{}' in a procedural frame", style("↳").cyan(), letter);
+            return Ok(Rendered { page, svg: None, plan, scorecard: sc, pieces: layout.rects.len(), raw_gray: Some(glyph_gray) });
+        }
+    }
 
     // C2: the ornament-level gray that fed the finisher, cached for `bookart edit` re-finishing.
     let mut raw_gray: Option<image::GrayImage> = None;

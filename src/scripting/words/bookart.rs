@@ -35,6 +35,7 @@ fn opts_from_config() -> anyhow::Result<RenderOpts> {
         steps: ctx.config.steps,
         svg: false,
         attempts: 1,
+        font: None,
     })
 }
 
