@@ -88,8 +88,14 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   `has_hosted_lora` (russian/english/japanese) instead of `!= "generic"` — `american`/`european`/
   `chinese` no longer try to resolve a non-existent `<origin>-sd15.safetensors` (404). Verified: custom
   `byzantine` origin lists `(custom)` and its scaffold flows into the compiled prompt.
-- **B4 — `bookart font`.** Export a set of small ornaments (fleurons/dinkus) as an `.otf` dingbat font
-  for inline use in InDesign/LaTeX.
+- **B4 — `bookart font`. DONE.** `bookart font --out dingbats.otf` exports the default ornament set
+  (`a`–`h` → fleurons / dinkus / rosettes / divider / corner) as a real **OpenType dingbat font**.
+  `src/bookart/font.rs` is a self-contained from-scratch **TrueType (glyf) writer** (no font-toolkit
+  dep): each ornament's born-vector polylines are RDP-simplified, every stroke segment becomes a thin
+  filled rectangle contour, and the sfnt (glyf/loca/cmap-fmt4/head/hhea/hmtx/maxp/name/post/OS2) is
+  assembled with correct checksums. Verified: the font loads + validates in fontTools (all glyphs
+  compile, 0 failures) and **renders in PIL** (type `a`–`h`, get ornaments). Gotcha fixed: the glyph
+  header bbox goes right after `numberOfContours`, *before* `endPtsOfContours`.
 - **B5 — more origin LoRAs.** american / european / chinese, trained on PD corpora (extend the G0.3
   `datasets/bookart_training` + `train_origins.sh` machinery) and hosted at `vulogov98/plakat-bookart`.
   The generic path already covers them; these raise the ceiling.

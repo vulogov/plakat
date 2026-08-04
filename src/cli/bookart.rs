@@ -62,6 +62,19 @@ pub enum BookartCmd {
     /// List the origins × techniques × ornament vocabulary, which origins ship a hosted LoRA, and the
     /// status of the optional `assets/bookart/lexicon.hjson` override.
     Origins(OriginsArgs),
+    /// Export a set of small procedural ornaments (fleurons/dinkus) as an OpenType dingbat font (B4) —
+    /// type a letter (`a`–`h`), get an ornament. For inline use in InDesign / LaTeX.
+    Font(FontArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct FontArgs {
+    /// Output font path (`.otf` / `.ttf`).
+    #[arg(long)]
+    pub out: PathBuf,
+    /// The font family name embedded in the file.
+    #[arg(long, default_value = "PlakatDingbats")]
+    pub family: String,
 }
 
 #[derive(Args, Debug)]
@@ -303,6 +316,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Blend(a) => run_blend(a),
         BookartCmd::Vectorize(a) => run_vectorize(a),
         BookartCmd::Origins(a) => run_origins(a),
+        BookartCmd::Font(a) => run_font(a),
     }
 }
 
@@ -713,6 +727,24 @@ fn write_raw_cache(out: &std::path::Path, r: &crate::bookart::render::Rendered) 
     gray.save(&gray_path).with_context(|| format!("writing {}", gray_path.display()))?;
     std::fs::write(&plan_path, serde_json::to_string(&r.plan)?).with_context(|| format!("writing {}", plan_path.display()))?;
     println!("  {} raw cache → {} (edit ink-weight/transparency without re-render)", style("↳").cyan(), gray_path.display());
+    Ok(())
+}
+
+/// B4: `bookart font` — export the default dingbat set as an OpenType font.
+fn run_font(a: FontArgs) -> Result<()> {
+    let set = crate::bookart::font::default_set();
+    let bytes = crate::bookart::font::build_font(&set, &a.family).context("building the dingbat font")?;
+    std::fs::write(&a.out, &bytes).with_context(|| format!("writing {}", a.out.display()))?;
+    let glyphs: String = set.iter().map(|d| d.ch).collect();
+    println!(
+        "{} {}  ({} · {} glyph(s) [{}] · {:.1} KB)",
+        style("wrote").green(),
+        a.out.display(),
+        a.family,
+        set.len(),
+        glyphs,
+        bytes.len() as f32 / 1024.0
+    );
     Ok(())
 }
 

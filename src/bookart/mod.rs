@@ -16,6 +16,7 @@ pub mod edit;
 #[cfg(feature = "epub")]
 pub mod epub;
 pub mod finish;
+pub mod font;
 pub mod geometry;
 #[cfg(feature = "shaped-labels")]
 pub mod glyph;
