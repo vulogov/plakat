@@ -91,9 +91,13 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 ));
             }
         }
-        o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
-        if !cs.negative.trim().is_empty() {
-            o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
+        // A bookart task folds the prompt into its spec block below and ignores the top-level
+        // prompt/negative — don't emit them (they'd be dead, and confusing).
+        if s.task_type.as_deref() != Some("bookart") {
+            o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
+            if !cs.negative.trim().is_empty() {
+                o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
+            }
         }
         if let Some(seed) = s.seed {
             o.push_str(&format!("      seed: {seed}\n"));
@@ -144,6 +148,30 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         }
         if let Some(v) = &s.map_provider {
             o.push_str(&format!("      map-provider: {}\n", q(v)));
+        }
+        // 6.1.0 A3: emit the bookart spec block so a `type: bookart` compile block → a bookart task.
+        if s.task_type.as_deref() == Some("bookart") {
+            o.push_str("      bookart: {\n        spec: {\n");
+            if let Some(v) = &s.bookart_origin {
+                o.push_str(&format!("          origin: {}\n", q(v)));
+            }
+            if let Some(v) = &s.bookart_technique {
+                o.push_str(&format!("          technique: {}\n", q(v)));
+            }
+            o.push_str("          ornament: {\n");
+            o.push_str(&format!("            type: {}\n", q(s.bookart_type.as_deref().unwrap_or("vignette"))));
+            if !cs.prompt.trim().is_empty() {
+                o.push_str(&format!("            prompt: {}\n", q(&cs.prompt)));
+            }
+            o.push_str("          }\n");
+            if let Some(v) = &s.bookart_page {
+                o.push_str(&format!("          page: {{ size: {} }}\n", q(v)));
+            }
+            o.push_str("        }\n");
+            if let Some(v) = &s.bookart_svg {
+                o.push_str(&format!("        svg: {v}\n"));
+            }
+            o.push_str("      }\n");
         }
         o.push_str("    }\n");
     }

@@ -62,6 +62,13 @@ pub struct ResolvedScene {
     pub map_sd_model: Option<String>,
     pub map_sd_lora: Vec<String>,
     pub map_provider: Option<String>,
+    // 6.1.0 A3: a `type: bookart` block compiles to a scenario `bookart` task. The prose (if any) is the
+    // ornament prompt; `bookart-*` directives fill the spec.
+    pub bookart_origin: Option<String>,
+    pub bookart_technique: Option<String>,
+    pub bookart_type: Option<String>,
+    pub bookart_page: Option<String>,
+    pub bookart_svg: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -203,6 +210,11 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             map_sd_model: last_wins(&vals(g, "map-sd-model"), &vals(Some(s), "map-sd-model")).map(str::to_string),
             map_sd_lora: list(&vals(g, "map-sd-lora"), &vals(Some(s), "map-sd-lora")),
             map_provider: last_wins(&vals(g, "map-provider"), &vals(Some(s), "map-provider")).map(str::to_string),
+            bookart_origin: last_wins(&vals(g, "bookart-origin"), &vals(Some(s), "bookart-origin")).map(str::to_string),
+            bookart_technique: last_wins(&vals(g, "bookart-technique"), &vals(Some(s), "bookart-technique")).map(str::to_string),
+            bookart_type: last_wins(&vals(g, "bookart-type"), &vals(Some(s), "bookart-type")).map(str::to_string),
+            bookart_page: last_wins(&vals(g, "bookart-page"), &vals(Some(s), "bookart-page")).map(str::to_string),
+            bookart_svg: last_wins(&vals(g, "bookart-svg"), &vals(Some(s), "bookart-svg")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

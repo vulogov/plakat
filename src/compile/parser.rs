@@ -118,9 +118,9 @@ pub fn parse(input: &str) -> Result<Document> {
     // global slot is almost always a misplaced global / a missing blank line.
     // Exception (MAP-4): a `type: map` task renders from its spec, not a prompt, so
     // a map block (or any block when the global declares `type: map`) needs none.
-    let global_is_map = doc.global.as_ref().is_some_and(declares_map_task);
+    let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g));
     for (i, s) in doc.scenes.iter().enumerate() {
-        if !s.has_free_text() && !global_is_map && !declares_map_task(s) {
+        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -136,6 +136,14 @@ pub fn parse(input: &str) -> Result<Document> {
 fn declares_map_task(b: &Block) -> bool {
     b.commands.iter().any(|(k, v)| {
         (k == "type" && v.eq_ignore_ascii_case("map")) || k.starts_with("map-")
+    })
+}
+
+/// Does this block declare a `bookart` task (6.1.0 A3)? Prose is optional — a procedural ornament has
+/// no prompt.
+fn declares_bookart_task(b: &Block) -> bool {
+    b.commands.iter().any(|(k, v)| {
+        (k == "type" && v.eq_ignore_ascii_case("bookart")) || k.starts_with("bookart-")
     })
 }
 

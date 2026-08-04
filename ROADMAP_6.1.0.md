@@ -30,8 +30,12 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   variant, `from_strs`, TaskDef `bookart:` field, cache-eviction, preflight validate, scene/weather
   skip, execution dispatch). Verified live: a 2-task scenario (procedural border + SVG, diffusion
   vignette) renders end-to-end + `--dry-run` validates.
-- **A3 — compile `bookart:` directive.** A `bookart:` block in a `compile` prompts file resolves to a
-  bookart task.
+- **A3 — compile `bookart:` directive. DONE.** A `type: bookart` block (+ `bookart-origin` /
+  `-technique` / `-type` / `-page` / `-svg` directives; the prose is the ornament prompt) in a `compile`
+  prompts file compiles to a scenario `bookart` task. Threaded parser (prose-optional detector),
+  resolver (5 `bookart_*` fields), emitter (nested `bookart: { spec: {…} }`; suppresses the dead
+  top-level prompt/negative). Verified: a 2-block prompts file → a scenario the runner dry-run-validates
+  (diffusion vignette + procedural border).
 - **A4 — Bund `plakat.bookart.*` words.** `plakat.bookart.render` · `.kit` · `.illustrate` ·
   `.vectorize` · `.verify`, pushing image handles into the existing image-handle pipeline (save /
   upscale / metadata), like `plakat.persona.*`.
