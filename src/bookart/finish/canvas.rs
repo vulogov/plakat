@@ -26,6 +26,38 @@ pub fn place_on_canvas(ornament: &RgbaImage, page: &PageResolved, layout: &Layou
 /// Save an RGBA as a PNG with the physical DPI recorded in a `pHYs` chunk (so print tools place it at
 /// the right size, not a default 72). Falls back to a plain PNG if the encode path errors.
 pub fn save_png_dpi(img: &RgbaImage, path: &std::path::Path, dpi: u32) -> anyhow::Result<()> {
+    save_png_dpi_inner(img, path, dpi, None)
+}
+
+/// 6.1.0 (A5): like [`save_png_dpi`], but also embed the bookart recipe as an Auto1111-style
+/// `parameters` PNG `tEXt` chunk **and** write the `<png>.json` sidecar next to it (so `--import`
+/// and every SD-ecosystem viewer can recover the origin / technique / spec-hash). Sidecar failure is
+/// non-fatal — the transparent PNG is always written first.
+pub fn save_png_dpi_with_metadata(
+    img: &RgbaImage,
+    path: &std::path::Path,
+    dpi: u32,
+    meta: &crate::imaging::metadata::GenerationMetadata,
+) -> anyhow::Result<()> {
+    save_png_dpi_inner(img, path, dpi, Some(meta))?;
+    let json_path = crate::imaging::io::sidecar_path(path);
+    match meta.to_json_pretty() {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&json_path, json) {
+                tracing::warn!(target: "plakat", "bookart sidecar write failed for {}: {e}", json_path.display());
+            }
+        }
+        Err(e) => tracing::warn!(target: "plakat", "bookart sidecar serialize failed for {}: {e}", json_path.display()),
+    }
+    Ok(())
+}
+
+fn save_png_dpi_inner(
+    img: &RgbaImage,
+    path: &std::path::Path,
+    dpi: u32,
+    meta: Option<&crate::imaging::metadata::GenerationMetadata>,
+) -> anyhow::Result<()> {
     use std::fs::File;
     use std::io::BufWriter;
     let file = File::create(path)?;
@@ -36,6 +68,10 @@ pub fn save_png_dpi(img: &RgbaImage, path: &std::path::Path, dpi: u32) -> anyhow
     // pixels-per-metre = dpi / 0.0254
     let ppm = (dpi as f32 / 0.0254).round() as u32;
     enc.set_pixel_dims(Some(png::PixelDimensions { xppu: ppm, yppu: ppm, unit: png::Unit::Meter }));
+    if let Some(m) = meta {
+        // A1111 / Civitai / ComfyUI all read the `parameters` key.
+        enc.add_text_chunk("parameters".to_string(), m.to_a1111_parameters_string())?;
+    }
     let mut writer = enc.write_header()?;
     writer.write_image_data(img.as_raw())?;
     Ok(())

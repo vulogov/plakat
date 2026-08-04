@@ -46,8 +46,17 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   guilloché frame; `.origin russian` + `.illustrate "…firebird…"` → Bilibin foliate line plate (LoRA
   128/128 merged). Corpus `corpus/bookart_script.bund`. (SVG is a file-only artefact, not a handle — use
   the CLI `bookart render --svg`.)
-- **A5 — sidecar + `--import`.** Write the bookart spec-hash + origin/technique into the PNG metadata;
-  accept `--import <album>` so an ornament lands in a `plakat photos` album with its recipe.
+- **A5 — sidecar + `--import`. DONE.** Every `bookart render` / `illustrate` (and each kit/manuscript
+  ornament) now writes its reproducibility recipe: `render::recipe_metadata(plan, model, seed, steps)`
+  → a `GenerationMetadata` carrying origin/technique/tier/ornament/symmetry/page + a stable **spec-hash**
+  (FNV-1a of the resolved plan identity) in `extras`, the hosted origin LoRA in `loras`, embedded as an
+  Auto1111 `parameters` PNG `tEXt` chunk (ASCII, alongside the pHYs DPI) **and** a `<png>.json` sidecar
+  (`canvas::save_png_dpi_with_metadata`). `bookart render|illustrate --import <album>` then lands the
+  ornament + sidecar in a `plakat photos` album via `photos::import::import_outputs` (auto-tagged from
+  the recipe: `ai`/`bookart`/origin/ornament); `--import` is `#[cfg(feature="photos")]` (a clear
+  "needs the photos feature" note when compiled out). Verified live: tEXt + sidecar + album.hjson all
+  carry the recipe; pHYs 300 DPI preserved. This completes **Track A** — bookart is now on every
+  automation surface (CLI, API, scenario, compile, Bund) and curates into photos.
 
 ## Track B — round out the feature (fast-follows deferred from B6–B10)
 

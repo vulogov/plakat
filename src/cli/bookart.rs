@@ -129,6 +129,9 @@ pub struct RenderArgs {
     /// Rejection sampling (diffusion tier): try up to N seeds, keep the first that clears the scorecard.
     #[arg(long, default_value_t = 1)]
     pub attempts: u32,
+    /// Also land the ornament (+ its recipe sidecar) in a `plakat photos` album at this path.
+    #[arg(long)]
+    pub import: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -154,6 +157,9 @@ pub struct IllustrateArgs {
     pub seed: u64,
     #[arg(long, default_value_t = 1)]
     pub attempts: u32,
+    /// Also land the plate (+ its recipe sidecar) in a `plakat photos` album at this path.
+    #[arg(long)]
+    pub import: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -351,7 +357,7 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
     // Frontispiece (once).
     let front = "frontispiece.png";
     println!("\n{} frontispiece…", style("→").cyan());
-    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1).await.context("frontispiece")?;
+    do_render(mk("frontispiece", Some("diffusion")), &a.out.join(front), &a.model, base_seed, a.steps, a.svg, 1, None).await.context("frontispiece")?;
 
     let mut all_files = vec![front.to_string()];
     let mut tex_ch = Vec::new();
@@ -363,9 +369,9 @@ async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
         println!("\n{} [ch {n}/{}] {}  (headpiece seed {hseed})", style("→").cyan(), chapters.len(), ch.title);
         // headpiece: a procedural ornamental band (застАвка), varied per chapter by the seed lineage —
         // clean airy line-work, not a heavy woodcut block. The pictorial motif lives in the frontispiece.
-        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} headpiece"))?;
+        do_render(mk("headpiece", Some("procedural")), &a.out.join(&hfile), &a.model, hseed, a.steps, a.svg, 1, None).await.with_context(|| format!("chapter {n} headpiece"))?;
         // tailpiece: a procedural cul-de-lampe, also varied per chapter.
-        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1).await.with_context(|| format!("chapter {n} tailpiece"))?;
+        do_render(mk("tailpiece", Some("procedural")), &a.out.join(&tfile), &a.model, tseed, a.steps, a.svg, 1, None).await.with_context(|| format!("chapter {n} tailpiece"))?;
         all_files.push(hfile.clone());
         all_files.push(tfile.clone());
         tex_ch.push((ch.title.clone(), hfile.clone(), tfile.clone()));
@@ -443,7 +449,7 @@ async fn run_kit(a: KitArgs) -> Result<()> {
         };
         let file = a.out.join(format!("{i:02}_{kind}.png"));
         println!("\n{} [{}/{}] {kind}  (seed {seed_i})", style("→").cyan(), i + 1, ornaments.len());
-        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
+        do_render(per, &file, &a.model, seed_i, a.steps, a.svg, 1, None).await.with_context(|| format!("kit ornament {i} ({kind})"))?;
         files.push(file);
         kinds.push(kind);
         seeds.push(seed_i);
@@ -515,7 +521,7 @@ async fn kit_coherence(files: &[PathBuf]) -> Result<(f32, f32)> {
 /// longest side capped at 768, snapped to /8 (sd15-friendly).
 async fn run_render(a: RenderArgs) -> Result<()> {
     let spec = BookArtSpec::load(&a.spec)?;
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts, a.import.as_deref()).await
 }
 
 async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
@@ -529,15 +535,18 @@ async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
         ornament: Some(Ornament { kind: Some(a.kind), tier: Some("diffusion".into()), prompt: Some(a.prompt), ..Default::default() }),
         ..Default::default()
     };
-    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts).await
+    do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref()).await
 }
 
 /// The shared render entry (used by `render`, `illustrate`, `kit`, `manuscript`): drive the library
 /// render core ([`crate::bookart::render::render_spec`]), then write the PNG (+ opt-in SVG) to disk.
-async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32) -> Result<()> {
-    use crate::bookart::render::{render_spec, RenderOpts};
+async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32, import: Option<&std::path::Path>) -> Result<()> {
+    use crate::bookart::render::{recipe_metadata, render_spec, RenderOpts};
     let r = render_spec(&spec, &RenderOpts { model: model.into(), seed, steps, svg, attempts }).await?;
-    crate::bookart::finish::canvas::save_png_dpi(&r.page, out, r.plan.page.dpi)?;
+    // A5: attach the reproducibility recipe (origin/technique/spec-hash) as a PNG tEXt chunk + `.json`
+    // sidecar, so the ornament is searchable, re-runnable, and `--import`-ready.
+    let meta = recipe_metadata(&r.plan, model, seed, steps);
+    crate::bookart::finish::canvas::save_png_dpi_with_metadata(&r.page, out, r.plan.page.dpi, &meta)?;
     println!(
         "{} {}  ({} × {} px @ {} DPI · {} · {} · {} · {} piece(s))",
         style("wrote").green(),
@@ -557,6 +566,26 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
     } else if (svg || r.plan.formats.iter().any(|f| f == "svg")) && r.plan.tier != "procedural" {
         println!("  {} SVG for the `{}` tier (raster trace) is a fast-follow — the PNG is the deliverable (§7.5)", style("·").yellow(), r.plan.tier);
     }
+    if let Some(album) = import {
+        import_ornament(out, album)?;
+    }
+    Ok(())
+}
+
+/// A5: land a rendered ornament (+ its `.json` sidecar) in a `plakat photos` album, curated with its
+/// bookart recipe. `photos` is an optional feature; when it's not compiled in, say so instead of
+/// silently dropping the request.
+#[cfg(feature = "photos")]
+fn import_ornament(out: &std::path::Path, album: &std::path::Path) -> Result<()> {
+    let n = crate::photos::import::import_outputs(album, &[out.to_path_buf()], false)
+        .with_context(|| format!("importing {} into album {}", out.display(), album.display()))?;
+    println!("  {} imported into album {} ({n} file(s))", style("↳").cyan(), album.display());
+    Ok(())
+}
+
+#[cfg(not(feature = "photos"))]
+fn import_ornament(_out: &std::path::Path, _album: &std::path::Path) -> Result<()> {
+    println!("  {} --import needs the `photos` feature (not compiled in) — skipped", style("·").yellow());
     Ok(())
 }
 

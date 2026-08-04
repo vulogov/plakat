@@ -90,6 +90,56 @@ async fn matte_silhouette(path: &std::path::Path, raw: &image::RgbImage, plan: &
     Ok(out)
 }
 
+/// A stable 64-bit fingerprint (FNV-1a, hex) of a resolved plan's identity — the "spec-hash" recorded
+/// in the sidecar so two ornaments that would render identically share a hash regardless of surface.
+/// Dependency-free and stable across builds (unlike `DefaultHasher`).
+fn spec_hash(plan: &RenderPlan) -> String {
+    let id = format!(
+        "{}|{}|{}|{}|{}|{}|{:.3}|{}|{}|{}x{}@{}",
+        plan.origin, plan.technique, plan.tier, plan.ornament_kind, plan.symmetry,
+        plan.tint, plan.ink_weight, plan.motif.join(","), plan.prompt,
+        plan.page.w_px, plan.page.h_px, plan.page.dpi,
+    );
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in id.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Build the reproducibility recipe for a rendered ornament (RFC BOOKART-1 §20, A5). Carries the
+/// origin / technique / tier / ornament / symmetry / page + a stable **spec-hash** in `extras`, the
+/// origin LoRA in `loras`, and the diffusion knobs — so the PNG `tEXt` chunk + `.json` sidecar make
+/// the ornament searchable and re-runnable, and `--import` lands it in an album already curated.
+pub fn recipe_metadata(plan: &RenderPlan, model: &str, seed: u64, steps: usize) -> crate::imaging::metadata::GenerationMetadata {
+    use crate::imaging::metadata::GenerationMetadata;
+    // Procedural ornaments have no prompt — synthesise a descriptive one so the recipe still reads.
+    let prompt = if plan.prompt.trim().is_empty() {
+        format!("bookart {} {} ({} ornament)", plan.origin, plan.ornament_kind, plan.tier)
+    } else {
+        plan.prompt.clone()
+    };
+    let mut m = GenerationMetadata::new(prompt, model, seed, steps, 0.0, "bookart", plan.page.w_px, plan.page.h_px);
+    if !plan.negative.trim().is_empty() {
+        m.negative = plan.negative.clone();
+    }
+    if plan.origin != "generic" {
+        m.loras = vec![format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin)];
+    }
+    m.extras = vec![
+        ("Bookart origin".into(), plan.origin.clone()),
+        ("Bookart technique".into(), plan.technique.clone()),
+        ("Bookart tier".into(), plan.tier.clone()),
+        ("Bookart ornament".into(), plan.ornament_kind.clone()),
+        ("Bookart symmetry".into(), plan.symmetry.clone()),
+        // ASCII `x` (not `×`) so the Latin-1 PNG tEXt chunk stays pure-ASCII and portable.
+        ("Bookart page".into(), format!("{}x{} @ {} DPI", plan.page.w_px, plan.page.h_px, plan.page.dpi)),
+        ("Bookart spec-hash".into(), spec_hash(plan)),
+    ];
+    m
+}
+
 /// Render a spec to an in-memory ornament — the single render core behind every bookart surface.
 pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Rendered> {
     let plan = compile::resolve(spec);
@@ -191,5 +241,27 @@ mod tests {
         assert!(r.page.pixels().any(|p| p.0[3] > 200), "has ink");
         assert!(r.svg.as_deref().is_some_and(|s| s.contains("<svg")), "born-vector SVG emitted");
         assert!(r.scorecard.chroma_frac < 0.01, "neutral B/W");
+    }
+
+    #[test]
+    fn recipe_carries_bookart_provenance_and_stable_spec_hash() {
+        let spec = BookArtSpec::from_hjson(r#"{"origin":"russian","technique":"line","ornament":{"type":"border"}}"#).unwrap();
+        let plan = compile::resolve(&spec);
+        let m = recipe_metadata(&plan, "sd15", 7, 28);
+        // Non-generic origin → the hosted origin LoRA is recorded for reproducibility.
+        assert_eq!(m.loras, vec!["vulogov98/plakat-bookart#russian-sd15.safetensors".to_string()]);
+        let get = |k: &str| m.extras.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("Bookart origin"), Some("russian"));
+        assert_eq!(get("Bookart technique"), Some("line"));
+        assert_eq!(get("Bookart ornament"), Some("border"));
+        let h = get("Bookart spec-hash").unwrap().to_string();
+        assert_eq!(h.len(), 16, "16-hex FNV-1a fingerprint");
+        // Stable: same plan → same hash.
+        assert_eq!(spec_hash(&compile::resolve(&spec)), h);
+        // Sensitive: a different origin → a different hash + no LoRA for `generic`.
+        let generic = BookArtSpec::from_hjson(r#"{"origin":"generic","ornament":{"type":"border"}}"#).unwrap();
+        let gm = recipe_metadata(&compile::resolve(&generic), "sd15", 7, 28);
+        assert!(gm.loras.is_empty(), "generic path records no origin LoRA");
+        assert_ne!(spec_hash(&compile::resolve(&generic)), h, "origin change moves the hash");
     }
 }
