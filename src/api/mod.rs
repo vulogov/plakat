@@ -1788,6 +1788,72 @@ fn collect_images(dir: &Path) -> Result<Vec<Image>> {
     paths.iter().map(Image::open).collect()
 }
 
+/// Compose a transparent, print-ready B/W **book ornament** from a `BookArtSpec` (RFC BOOKART-1).
+///
+/// Returns the finished ornament in memory — the transparent, page-sized `RgbaImage`, an optional
+/// born-vector SVG, the resolved plan, and the print/ink scorecard — via the shared render core, the
+/// same one `plakat bookart` drives.
+///
+/// ```no_run
+/// # async fn ex() -> anyhow::Result<()> {
+/// use plakat::api::BookArt;
+///
+/// let out = BookArt::load("border.hjson")?.svg(true).run().await?;
+/// out.page.save("border.png")?;                       // transparent, exact page size
+/// if let Some(svg) = out.svg { std::fs::write("border.svg", svg)?; }
+/// println!("scorecard passes: {}", out.scorecard.passes);
+/// # Ok(()) }
+/// ```
+pub struct BookArt {
+    spec: crate::bookart::BookArtSpec,
+    opts: crate::bookart::RenderOpts,
+}
+
+impl BookArt {
+    /// Load a spec from an HJSON file.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(Self { spec: crate::bookart::BookArtSpec::load(path.as_ref())?, opts: Default::default() })
+    }
+
+    /// Use an in-memory spec.
+    pub fn from_spec(spec: crate::bookart::BookArtSpec) -> Self {
+        Self { spec, opts: Default::default() }
+    }
+
+    /// Base model for the diffusion/composite tiers (default `sd15` — the origin LoRAs are sd15).
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.opts.model = model.into();
+        self
+    }
+
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.opts.seed = seed;
+        self
+    }
+
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.opts.steps = steps;
+        self
+    }
+
+    /// Also produce born-vector SVG (procedural tier).
+    pub fn svg(mut self, svg: bool) -> Self {
+        self.opts.svg = svg;
+        self
+    }
+
+    /// Diffusion-tier rejection sampling: try up to N seeds, keep the first that clears the scorecard.
+    pub fn attempts(mut self, attempts: u32) -> Self {
+        self.opts.attempts = attempts;
+        self
+    }
+
+    /// Render, returning the in-memory [`Rendered`](crate::bookart::Rendered) result.
+    pub async fn run(self) -> Result<crate::bookart::Rendered> {
+        crate::bookart::render::render_spec(&self.spec, &self.opts).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

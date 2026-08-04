@@ -17,11 +17,13 @@ The rule from every prior cycle: a feature stranded on one surface isn't finishe
 only exists as its own subcommand. Wire it into the automation surfaces, mirroring how `persona` /
 `fractals` were integrated.
 
-- **A1 — library API `BookArt` builder.** A `plakat::api::BookArt` facade returning in-memory results
-  (the transparent RGBA + optional SVG + the scorecard), mirroring `Generate`/`Portrait`. Requires
-  extracting the render core out of `cli/bookart.rs::do_render` into `src/bookart/render.rs` (a library
-  fn `render_spec(spec, opts) -> Result<Rendered>`), then both the CLI and the API call it. *Prereq for
-  the surfaces below.*
+- **A1 — library API `BookArt` builder. DONE.** Extracted the render core out of
+  `cli/bookart.rs::do_render` into `src/bookart/render.rs`: `render_spec(spec, &RenderOpts) → Rendered`
+  (in-memory transparent RGBA page + optional SVG + resolved plan + scorecard + piece count), with the
+  moved `gen_size`/`diffuse`/`matte_silhouette`. The CLI `do_render` is now a thin delegate + file I/O.
+  Added `plakat::api::BookArt` (`load`/`from_spec` · `model`/`seed`/`steps`/`svg`/`attempts` · `run`),
+  mirroring `Generate`/`Portrait`. CI test exercises the procedural core (no GPU); the CLI is unchanged
+  (smoke-tested). *Unblocks A2–A5.*
 - **A2 — scenario `type: bookart`.** A scenario task that renders an ornament / kit / manuscript from an
   inline or referenced spec; per-task overrides (page, steps, svg).
 - **A3 — compile `bookart:` directive.** A `bookart:` block in a `compile` prompts file resolves to a

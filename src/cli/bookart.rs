@@ -513,50 +513,6 @@ async fn kit_coherence(files: &[PathBuf]) -> Result<(f32, f32)> {
 
 /// A working generation size for the diffusion tier from a layout rect's aspect: ~512 short side,
 /// longest side capped at 768, snapped to /8 (sd15-friendly).
-fn gen_size(rw: u32, rh: u32) -> (u32, u32) {
-    let ar = rw.max(1) as f32 / rh.max(1) as f32;
-    let (mut w, mut h) = if ar >= 1.0 { (512.0 * ar, 512.0) } else { (512.0, 512.0 / ar) };
-    let scale = (768.0 / w.max(h)).min(1.0);
-    w *= scale;
-    h *= scale;
-    let snap = |v: f32| (((v / 8.0).round() * 8.0) as u32).clamp(256, 768);
-    (snap(w), snap(h))
-}
-
-/// Generate one diffusion render (with the origin LoRA if not `generic`) at `w×h`. Returns the raw RGB
-/// plus the temp path it was written to (kept for an optional U2Net matte; the caller deletes it).
-async fn diffuse(model: &str, plan: &crate::bookart::RenderPlan, w: u32, h: u32, steps: usize, seed: u64) -> Result<(image::RgbImage, PathBuf)> {
-    let mut prompt = plan.prompt.clone();
-    let mut builder = crate::api::Generate::new(model).negative(&plan.negative).size(w, h).steps(steps).seed(seed);
-    if plan.origin != "generic" {
-        prompt = format!("{prompt}, bookart_{} style", plan.origin);
-        builder = builder.lora(format!("vulogov98/plakat-bookart#{}-sd15.safetensors", plan.origin), 1.0);
-        println!("  {} origin LoRA: bookart_{} (sd15)", style("↳").cyan(), plan.origin);
-    } else {
-        println!("  {} generic line-art path (no LoRA)", style("↳").dim());
-    }
-    println!("  {} diffusion {w}×{h}, {steps} steps, seed {seed}…", style("→").cyan());
-    let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
-    let img = imgs.into_iter().next().context("diffusion produced no image")?;
-    let tmp = std::env::temp_dir().join(format!("bookart_diff_{seed}_{w}x{h}.png"));
-    img.save(&tmp)?;
-    let raw = image::open(&tmp).context("reopening the diffusion render")?.to_rgb8();
-    Ok((raw, tmp))
-}
-
-/// U2Net matte → a solid silhouette in the ink tint (the `transparency: matte` mode).
-async fn matte_silhouette(path: &std::path::Path, raw: &image::RgbImage, plan: &crate::bookart::RenderPlan) -> Result<image::RgbaImage> {
-    let device = crate::api::device("auto")?;
-    let (_fg, mask) = crate::pipelines::matting::matte(path, &device).await.context("U2Net matte")?;
-    let mask = if mask.dimensions() != raw.dimensions() { image::imageops::resize(&mask, raw.width(), raw.height(), image::imageops::FilterType::Triangle) } else { mask };
-    let tint = crate::bookart::finish::parse_tint(&plan.tint);
-    let mut out = image::RgbaImage::new(raw.width(), raw.height());
-    for (x, y, p) in out.enumerate_pixels_mut() {
-        *p = image::Rgba([tint[0], tint[1], tint[2], mask.get_pixel(x, y).0[0]]);
-    }
-    Ok(out)
-}
-
 async fn run_render(a: RenderArgs) -> Result<()> {
     let spec = BookArtSpec::load(&a.spec)?;
     do_render(spec, &a.out, &a.model, a.seed, a.steps, a.svg, a.attempts).await
@@ -576,104 +532,30 @@ async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
     do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts).await
 }
 
-/// The shared render core (used by `render` and `illustrate`): resolve → tier → finish → symmetry →
-/// page canvas → PNG (+ opt-in born-vector SVG for the procedural tier).
+/// The shared render entry (used by `render`, `illustrate`, `kit`, `manuscript`): drive the library
+/// render core ([`crate::bookart::render::render_spec`]), then write the PNG (+ opt-in SVG) to disk.
 async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: u64, steps: usize, svg: bool, attempts: u32) -> Result<()> {
-    use crate::bookart::{finish, geometry, procedural, scorecard};
-    let plan = compile::resolve(&spec);
-    let tb = geometry::text_block(&plan.page, &spec);
-    let layout = geometry::layout_for(&plan.ornament_kind, &tb);
-    let r0 = layout.rects[0];
-    let variant = (seed % 8) as u32; // diversifies procedural ornament across a set/manuscript
-
-    let ornament = match plan.tier.as_str() {
-        // B3: vector-native, no weights.
-        "procedural" => {
-            let gray = procedural::generate(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h, variant);
-            finish::finish_procedural(&gray, &plan)
-        }
-        // B4: diffusion + optional matte, with B6 scorecard rejection sampling.
-        "diffusion" => {
-            let (gw, gh) = gen_size(r0.w, r0.h);
-            let tries = attempts.max(1);
-            let (mut best, mut fewest) = (None, usize::MAX);
-            for i in 0..tries {
-                let (raw, tmp) = diffuse(model, &plan, gw, gh, steps, seed + i as u64).await?;
-                let finished = if plan.transparency_mode == "matte" {
-                    println!("  {} U2Net matte → silhouette", style("↳").cyan());
-                    matte_silhouette(&tmp, &raw, &plan).await?
-                } else {
-                    finish::finish_ornament(&raw, &plan)
-                };
-                let _ = std::fs::remove_file(&tmp);
-                let sc = scorecard::score(&finished, &plan);
-                if sc.passes {
-                    if tries > 1 {
-                        println!("  {} scorecard PASS on attempt {}/{}", style("✓").green(), i + 1, tries);
-                    }
-                    best = Some(finished);
-                    break;
-                }
-                if sc.notes.len() < fewest {
-                    fewest = sc.notes.len();
-                    best = Some(finished);
-                }
-                if tries > 1 {
-                    println!("  {} attempt {}/{} FAIL ({} issue(s)), retrying…", style("·").yellow(), i + 1, tries, sc.notes.len());
-                }
-            }
-            best.context("no diffusion image")?
-        }
-        // B5: composite — procedural frame + diffusion line-art inlay.
-        "composite" => {
-            let (frame_paths, (wx, wy, ww, wh)) = procedural::frame(&plan.symmetry, r0.w, r0.h);
-            let width = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
-            let frame_rgba = finish::finish_procedural(&procedural::rasterise(&frame_paths, r0.w, r0.h, width), &plan);
-            let (gw, gh) = gen_size(ww, wh);
-            let (raw, tmp) = diffuse(model, &plan, gw, gh, steps, seed).await?;
-            let _ = std::fs::remove_file(&tmp);
-            let inlay_gray = finish::binarize::binarise(&finish::to_luma(&raw), "xdog", plan.ink_weight);
-            let inlay = finish::alpha::to_transparent(&inlay_gray, "luminance", finish::parse_tint(&plan.tint), 0.0);
-            let mut canvas = image::RgbaImage::from_pixel(r0.w, r0.h, image::Rgba([0, 0, 0, 0]));
-            let pic = image::imageops::resize(&inlay, ww.max(1), wh.max(1), image::imageops::FilterType::Lanczos3);
-            image::imageops::overlay(&mut canvas, &pic, wx as i64, wy as i64);
-            image::imageops::overlay(&mut canvas, &frame_rgba, 0, 0);
-            println!("  {} composite: procedural frame + diffusion inlay", style("↳").cyan());
-            canvas
-        }
-        other => anyhow::bail!("unknown render tier `{other}`"),
-    };
-
-    // Symmetry (no-op for `none`); skipped for `composite` (frame already symmetric; picture is a scene).
-    let orn = if plan.tier == "composite" { ornament } else { geometry::symmetrize(&ornament, &plan.symmetry) };
-    let page = finish::canvas::place_on_canvas(&orn, &plan.page, &layout);
-    finish::canvas::save_png_dpi(&page, out, plan.page.dpi)?;
+    use crate::bookart::render::{render_spec, RenderOpts};
+    let r = render_spec(&spec, &RenderOpts { model: model.into(), seed, steps, svg, attempts }).await?;
+    crate::bookart::finish::canvas::save_png_dpi(&r.page, out, r.plan.page.dpi)?;
     println!(
         "{} {}  ({} × {} px @ {} DPI · {} · {} · {} · {} piece(s))",
         style("wrote").green(),
         out.display(),
-        page.width(),
-        page.height(),
-        plan.page.dpi,
-        plan.tier,
-        plan.ornament_kind,
-        plan.symmetry,
-        layout.rects.len()
+        r.page.width(),
+        r.page.height(),
+        r.plan.page.dpi,
+        r.plan.tier,
+        r.plan.ornament_kind,
+        r.plan.symmetry,
+        r.pieces
     );
-
-    // Opt-in born-vector SVG (§7.5) — procedural only; the raster trace is a documented fast-follow.
-    if svg || plan.formats.iter().any(|f| f == "svg") {
-        if plan.tier == "procedural" {
-            let paths = procedural::generate_paths(&plan.ornament_kind, &plan.symmetry, r0.w, r0.h, variant);
-            let stroke = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
-            let all: Vec<_> = layout.rects.iter().flat_map(|r| finish::vector::transform_to_rect(&paths, r, r0.w, r0.h)).collect();
-            let svg_str = finish::vector::polylines_to_svg(&all, plan.page.w_px, plan.page.h_px, plan.page.dpi, stroke, finish::parse_tint(&plan.tint));
-            let svg_path = out.with_extension("svg");
-            std::fs::write(&svg_path, svg_str).with_context(|| format!("writing {}", svg_path.display()))?;
-            println!("  {} born-vector SVG → {}", style("↳").cyan(), svg_path.display());
-        } else {
-            println!("  {} SVG for the `{}` tier (raster trace) is a fast-follow — the PNG is the deliverable (§7.5)", style("·").yellow(), plan.tier);
-        }
+    if let Some(svg_str) = &r.svg {
+        let svg_path = out.with_extension("svg");
+        std::fs::write(&svg_path, svg_str).with_context(|| format!("writing {}", svg_path.display()))?;
+        println!("  {} born-vector SVG → {}", style("↳").cyan(), svg_path.display());
+    } else if (svg || r.plan.formats.iter().any(|f| f == "svg")) && r.plan.tier != "procedural" {
+        println!("  {} SVG for the `{}` tier (raster trace) is a fast-follow — the PNG is the deliverable (§7.5)", style("·").yellow(), r.plan.tier);
     }
     Ok(())
 }

@@ -20,10 +20,12 @@ pub mod lexicon;
 pub mod lint;
 pub mod manuscript;
 pub mod procedural;
+pub mod render;
 pub mod scorecard;
 pub mod spec;
 
 pub use compile::{resolve, RenderPlan};
 pub use finish::finish_ornament;
+pub use render::{render_spec, RenderOpts, Rendered};
 pub use scorecard::{score, Scorecard};
 pub use spec::{BookArtSpec, SCHEMA_VERSION};
