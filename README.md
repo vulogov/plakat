@@ -5,7 +5,7 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v6.0.0 — `plakat bookart`**: the 6.x flagship (RFC BOOKART-1). Compose **reusable, print-ready, transparent black-and-white book ornaments** — headpieces, tailpieces, borders, corners, dividers, vignettes — from a small HJSON spec, in a chosen illustration tradition (Russian / English / Japanese …) and drawing technique, at an exact page size. A hybrid render router (vector-native procedural + trained-tradition diffusion + composite), B/W-native transparency, a coherent **kit** and **manuscript-aware** set. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.0.0) · [Guide →](Documentation/BOOKART.md) · [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
+> **v6.1.0 — `plakat bookart` everywhere, and finished**: the 6.x flagship (RFC BOOKART-1) now lives on **every automation surface** — scenario `type: bookart`, `compile`, Bund `plakat.bookart.*`, the `plakat::api::BookArt` builder, and `--import` into a `plakat photos` album — plus **six** trained origin traditions (Russian / English / Japanese / American / Chinese / European), raster→SVG **tracing**, glyph-driven **initials** (real letterforms, any script), **EPUB** manuscripts, an OpenType **dingbat font** export, and one-command **ink-weight re-finishing**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.1.0) · [Guide →](Documentation/BOOKART.md) · [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,6 +24,32 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.1.0 — `plakat bookart` everywhere, and finished
+
+The deferred tail of the 6.0 flagship: wire `bookart` into the rest of plakat and round out the feature.
+
+- **Ecosystem integration parity.** A bookart ornament is now a first-class citizen everywhere: a
+  scenario `type: bookart` task, a `compile` `type: bookart` block (prose → a bookart scenario), Bund
+  words `plakat.bookart.render` / `.illustrate` / `.origin` / `.technique` (transparent image handles
+  that flow into `plakat.save` / `.upscale`), the library facade `plakat::api::BookArt`, and
+  `bookart render|illustrate --import <album>` to land an ornament — with its **recipe sidecar + PNG
+  `tEXt` chunk** (origin / technique / spec-hash) — straight into a `plakat photos` album.
+- **Six origin traditions.** Three new trained sd15 origin LoRAs — **american** (Howard Pyle),
+  **european** (Gustave Doré engraving), **chinese** (woodblock outline) — join russian / english /
+  japanese, all hosted and auto-resolved. `bookart origins` lists them; an optional
+  `assets/bookart/lexicon.hjson` adds your own traditions with no rebuild.
+- **Raster→SVG tracing** (`bookart vectorize`, and `--svg` on the diffusion/composite tiers; feature
+  `bookart-trace`) · **glyph-driven initials** (`ornament.glyph` + `--font` renders a real letterform —
+  any script, incl. Cyrillic — inside an ornamental frame) · **EPUB manuscripts**
+  (`bookart manuscript book.epub`; feature `epub`) · an OpenType **dingbat font** (`bookart font` — type
+  `a`–`h`, get a fleuron) · **ink-weight / transparency re-finishing** without re-rendering
+  (`render --cache-raw` → `bookart edit --ink-weight …`) · richer procedural bands (Greek-key,
+  L-system foliate scroll, knotwork interlace) and band-shaped composite cartouches.
+
+*(`bookart-trace` and `epub` are opt-in Cargo features — the prebuilt release binaries build the
+default feature set, so those two need a source build with `--features bookart-trace` / `--features epub`.
+Glyph initials, the dingbat font, and all six origin LoRAs work in the release binaries.)*
 
 ## What's new in 6.0.0 — `plakat bookart`
 
