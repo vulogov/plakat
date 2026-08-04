@@ -360,10 +360,44 @@ fn rosette_at(cx: f32, cy: f32, r: f32, folds: u32) -> Vec<Polyline> {
     vec![circle(cx, cy, r), rose(cx, cy, r, k), rose(cx, cy, r * 0.55, k * 2.0), circle(cx, cy, r * 0.12)]
 }
 
+/// C3: a **band cartouche** frame for a wide/tall composite rect (headpiece / tailpiece) — two long
+/// rules + a rosette end-cap at each end + a long central window, instead of the squished square
+/// 4-corner frame. Built along the long axis, then mapped back so it works both landscape and portrait.
+fn frame_band(w: u32, h: u32, folds: u32) -> (Vec<Polyline>, (u32, u32, u32, u32)) {
+    let (wf, hf) = (w as f32, h as f32);
+    let horizontal = wf >= hf;
+    let (long, short) = if horizontal { (wf, hf) } else { (hf, wf) };
+    let m = short * 0.10;
+    let cr = (short * 0.5 - m * 0.6).max(4.0);
+    let map = |u: f32, v: f32| -> (f32, f32) { if horizontal { (u, v) } else { (v, u) } };
+    let mut out: Vec<Polyline> = Vec::new();
+    for &v in &[m, short - m] {
+        out.push(vec![map(m, v), map(long - m, v)]); // the two long rules
+    }
+    let cap = m + cr;
+    for &u in &[cap, long - cap] {
+        let (cx, cy) = map(u, short / 2.0);
+        out.extend(rosette_at(cx, cy, cr, folds)); // an end-cap medallion at each end
+    }
+    let (u0, u1) = (cap + cr + short * 0.05, long - cap - cr - short * 0.05);
+    let (v0, v1) = (m * 1.3, short - m * 1.3);
+    let (ax, ay) = map(u0, v0);
+    let (bx, by) = map(u1, v1);
+    let (x0, y0, x1, y1) = (ax.min(bx), ay.min(by), ax.max(bx), ay.max(by));
+    out.push(rect(x0, y0, x1, y1)); // the window frame
+    let win = (x0 as u32, y0 as u32, (x1 - x0).max(1.0) as u32, (y1 - y0).max(1.0) as u32);
+    (out, win)
+}
+
 /// A procedural **frame** for the composite tier (RFC §5.3): a nested-rectangle border with corner
-/// rosettes, plus the **inner window** rect `(x, y, w, h)` where a diffusion picture is inlaid.
+/// rosettes, plus the **inner window** rect `(x, y, w, h)` where a diffusion picture is inlaid. C3: a
+/// strongly non-square rect (a headpiece/tailpiece band) gets a band cartouche instead.
 pub fn frame(symmetry: &str, w: u32, h: u32) -> (Vec<Polyline>, (u32, u32, u32, u32)) {
     let folds = fold_count(symmetry);
+    let aspect = w as f32 / h.max(1) as f32;
+    if !(0.55..=1.8).contains(&aspect) {
+        return frame_band(w, h, folds);
+    }
     let m = (w.min(h) as f32) * 0.045;
     let m2 = m * 2.0;
     let cr = (w.min(h) as f32) * 0.08;
@@ -497,6 +531,19 @@ mod tests {
                 assert_ne!(bands[i].as_raw(), bands[j].as_raw(), "motifs {i} and {j} should differ");
             }
         }
+    }
+
+    #[test]
+    fn c3_band_frame_is_aspect_aware() {
+        // A wide headpiece band → a wide window (not a squished square).
+        let (_p, (_, _, ww, wh)) = frame("bilateral", 1200, 300);
+        assert!(ww > wh * 2, "wide band → wide window ({ww}x{wh})");
+        // A tall tailpiece band → a tall window.
+        let (_p, (_, _, tw, th)) = frame("bilateral", 300, 1200);
+        assert!(th > tw * 2, "tall band → tall window ({tw}x{th})");
+        // A square rect keeps the 4-corner frame (roughly square window).
+        let (_p, (_, _, sw, sh)) = frame("bilateral", 600, 600);
+        assert!((sw as i32 - sh as i32).abs() < sw as i32 / 3, "square frame window ~square ({sw}x{sh})");
     }
 
     #[test]

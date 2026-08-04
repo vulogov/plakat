@@ -109,8 +109,12 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   `RenderPlan`+`PageResolved` are now `Serialize`. `classify()` moves `ink.weight`/`ink.transparency`/
   `ornament.fade` from **re-gen → post**. Verified: `render --cache-raw` → `edit --transparency
   threshold --tint sepia` re-finishes to a page-sized sepia ornament (bails helpfully without the cache).
-- **C3 — composite framing polish.** Band-shaped composite frames (a headpiece cartouche = a wide frame
-  with a central window) so `headpiece`/`tailpiece` composites aren't squished into a square window.
+- **C3 — composite framing polish. DONE.** `procedural::frame` is now aspect-aware: a strongly
+  non-square rect (aspect outside `0.55..=1.8` — a headpiece/tailpiece band) gets a **band cartouche**
+  (`frame_band`: two long rules + a rosette end-cap at each end + a long central window, built along the
+  long axis so it works landscape *and* portrait) instead of the squished square 4-corner frame.
+  Verified live: a composite headpiece renders as a wide cartouche with the firebird inlay in a
+  full-width window.
 
 ---
 
