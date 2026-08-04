@@ -24,8 +24,12 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   Added `plakat::api::BookArt` (`load`/`from_spec` · `model`/`seed`/`steps`/`svg`/`attempts` · `run`),
   mirroring `Generate`/`Portrait`. CI test exercises the procedural core (no GPU); the CLI is unchanged
   (smoke-tested). *Unblocks A2–A5.*
-- **A2 — scenario `type: bookart`.** A scenario task that renders an ornament / kit / manuscript from an
-  inline or referenced spec; per-task overrides (page, steps, svg).
+- **A2 — scenario `type: bookart`. DONE.** `src/bookart/scenario_task.rs` (`BookartTaskCfg` = inline
+  `spec` or `spec_file` + model/seed/steps/svg/attempts; `validate` + `run_bookart_task` → the shared
+  `render_spec` → `<out>/<name>/ornament.{png,svg}`). Wired the 7 `scenario.rs` touchpoints (TaskKind
+  variant, `from_strs`, TaskDef `bookart:` field, cache-eviction, preflight validate, scene/weather
+  skip, execution dispatch). Verified live: a 2-task scenario (procedural border + SVG, diffusion
+  vignette) renders end-to-end + `--dry-run` validates.
 - **A3 — compile `bookart:` directive.** A `bookart:` block in a `compile` prompts file resolves to a
   bookart task.
 - **A4 — Bund `plakat.bookart.*` words.** `plakat.bookart.render` · `.kit` · `.illustrate` ·

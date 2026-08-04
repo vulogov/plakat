@@ -21,6 +21,7 @@ pub mod lint;
 pub mod manuscript;
 pub mod procedural;
 pub mod render;
+pub mod scenario_task;
 pub mod scorecard;
 pub mod spec;
 
