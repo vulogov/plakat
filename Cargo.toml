@@ -92,6 +92,11 @@ onnx = ["dep:candle-onnx"]
 # always compiled in. Photos-integration bits are `#[cfg(feature = "photos")]`-gated (Q7), so
 # `fractals` stays buildable without `photos`.
 fractals = ["dep:palette", "dep:rayon", "dep:num-complex", "dep:nalgebra", "dep:astro-float"]
+# 6.1.0 B1: `bookart vectorize` + `bookart render/illustrate --svg` on the diffusion/composite
+# tiers (raster→SVG trace). Off by default — vtracer pulls an older `image`/`tiff`/`visioncortex`
+# stack (duplicate crate versions) that would bloat the base build for a secondary feature. The
+# procedural tier's born-vector SVG (finish/vector.rs) ships in the base build regardless.
+bookart-trace = ["dep:vtracer"]
 
 [dependencies]
 # Hardware probe (doctor --capability): system RAM detection.
@@ -241,6 +246,8 @@ easy-error = "1"
 rustyline = "17"
 safetensors = "0.7.0"
 human-panic = "2.0.5"
+# 6.1.0 B1: raster→SVG tracer (MIT/Apache-2.0). Optional — enabled by the `bookart-trace` feature.
+vtracer = { version = "0.6.5", optional = true }
 
 [profile.release]
 opt-level = 3

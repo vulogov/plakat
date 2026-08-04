@@ -56,6 +56,24 @@ pub enum BookartCmd {
     Edit(EditArgs),
     /// Lineage: blend two traditions into a new spec (origin of A × technique of B, motifs unioned).
     Blend(BlendArgs),
+    /// Trace a raster ornament into a compact SVG (B1; needs the `bookart-trace` feature). The
+    /// procedural tier is already born-vector — this is for scanned / diffusion / composite art.
+    Vectorize(VectorizeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct VectorizeArgs {
+    /// Input raster (PNG/…); alpha is honoured (flattened onto white before tracing).
+    pub image: PathBuf,
+    /// Output SVG path.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Ink colour for the traced paths (`black`/`sepia`/`#rrggbb`).
+    #[arg(long, default_value = "black")]
+    pub tint: String,
+    /// DPI the raster was rendered at — sets the SVG's physical (mm) print size.
+    #[arg(long, default_value_t = 300)]
+    pub dpi: u32,
 }
 
 #[derive(Args, Debug)]
@@ -250,6 +268,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Diff(a) => run_diff(a),
         BookartCmd::Edit(a) => run_edit(a),
         BookartCmd::Blend(a) => run_blend(a),
+        BookartCmd::Vectorize(a) => run_vectorize(a),
     }
 }
 
@@ -559,17 +578,68 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
         r.plan.symmetry,
         r.pieces
     );
+    let want_svg = svg || r.plan.formats.iter().any(|f| f == "svg");
     if let Some(svg_str) = &r.svg {
         let svg_path = out.with_extension("svg");
         std::fs::write(&svg_path, svg_str).with_context(|| format!("writing {}", svg_path.display()))?;
         println!("  {} born-vector SVG → {}", style("↳").cyan(), svg_path.display());
-    } else if (svg || r.plan.formats.iter().any(|f| f == "svg")) && r.plan.tier != "procedural" {
-        println!("  {} SVG for the `{}` tier (raster trace) is a fast-follow — the PNG is the deliverable (§7.5)", style("·").yellow(), r.plan.tier);
+    } else if want_svg && r.plan.tier != "procedural" {
+        // B1: the pixel tiers can only be *traced* (the procedural tier is born-vector above).
+        maybe_trace_svg(&r.page, out, &r.plan)?;
     }
     if let Some(album) = import {
         import_ornament(out, album)?;
     }
     Ok(())
+}
+
+/// B1: trace a diffusion/composite page to SVG when `--svg` is asked for on a pixel tier. With the
+/// `bookart-trace` feature it writes the traced SVG; without it, a one-line note (the PNG is the
+/// deliverable — §7.5).
+#[cfg(feature = "bookart-trace")]
+fn maybe_trace_svg(page: &image::RgbaImage, out: &std::path::Path, plan: &crate::bookart::compile::RenderPlan) -> Result<()> {
+    let tint = crate::bookart::finish::parse_tint(&plan.tint);
+    let svg = crate::bookart::finish::trace::trace_rgba(page, tint, plan.page.dpi).context("tracing the render to SVG")?;
+    let svg_path = out.with_extension("svg");
+    std::fs::write(&svg_path, &svg).with_context(|| format!("writing {}", svg_path.display()))?;
+    println!("  {} traced SVG → {} ({:.1} KB)", style("↳").cyan(), svg_path.display(), svg.len() as f32 / 1024.0);
+    Ok(())
+}
+
+#[cfg(not(feature = "bookart-trace"))]
+fn maybe_trace_svg(_page: &image::RgbaImage, _out: &std::path::Path, plan: &crate::bookart::compile::RenderPlan) -> Result<()> {
+    println!(
+        "  {} SVG for the `{}` tier is a raster trace — rebuild with `--features bookart-trace` (the PNG is the deliverable §7.5)",
+        style("·").yellow(), plan.tier
+    );
+    Ok(())
+}
+
+/// B1: `bookart vectorize <raster> --out <svg>` — trace a raster ornament into a compact SVG. Behind
+/// the `bookart-trace` feature; a clear note (not a silent no-op) when it isn't compiled in.
+#[cfg(feature = "bookart-trace")]
+fn run_vectorize(a: VectorizeArgs) -> Result<()> {
+    let tint = crate::bookart::finish::parse_tint(&a.tint);
+    let svg = crate::bookart::finish::trace::trace_file(&a.image, tint, a.dpi)
+        .with_context(|| format!("tracing {}", a.image.display()))?;
+    std::fs::write(&a.out, &svg).with_context(|| format!("writing {}", a.out.display()))?;
+    println!(
+        "{} {}  ({} · {:.1} KB)",
+        style("traced").green(),
+        a.out.display(),
+        a.image.display(),
+        svg.len() as f32 / 1024.0
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "bookart-trace"))]
+fn run_vectorize(_a: VectorizeArgs) -> Result<()> {
+    anyhow::bail!(
+        "bookart vectorize needs the `bookart-trace` feature — rebuild with `--features bookart-trace` \
+         (it pulls an extra image-tracing stack, so it's opt-in). The procedural tier's `--svg` is \
+         born-vector and always available."
+    )
 }
 
 /// A5: land a rendered ornament (+ its `.json` sidecar) in a `plakat photos` album, curated with its

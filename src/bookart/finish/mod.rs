@@ -6,6 +6,8 @@
 pub mod alpha;
 pub mod binarize;
 pub mod canvas;
+#[cfg(feature = "bookart-trace")]
+pub mod trace;
 pub mod vector;
 
 use crate::bookart::compile::RenderPlan;

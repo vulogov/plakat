@@ -363,7 +363,13 @@ fn section_bookart() {
         "origins russian/english/japanese ship as sd15 LoRAs auto-resolved from vulogov98/plakat-bookart \
          (<origin>-sd15.safetensors); `generic` is the LoRA-free line-art fallback so every origin×technique works.",
     );
-    note("output contract: primary = transparent, exact-page-sized PNG (luminance-native alpha, DPI in pHYs). SVG is a by-request, procedural-only born-vector extra (§7.5).");
+    note("output contract: primary = transparent, exact-page-sized PNG (luminance-native alpha, DPI in pHYs). Procedural SVG is born-vector (always available); diffusion/composite SVG is a raster trace.");
+    note("integration (6.1): scenario `type: bookart` · compile `type: bookart` · Bund `plakat.bookart.*` · library `plakat::api::BookArt` · `render/illustrate --import <album>` (recipe sidecar + tEXt).");
+    if cfg!(feature = "bookart-trace") {
+        ok("raster→SVG trace ON: `bookart vectorize <raster>` + `render/illustrate --svg` on the diffusion/composite tiers (vtracer).");
+    } else {
+        note("raster→SVG trace OFF: `bookart vectorize` + pixel-tier `--svg` need `--features bookart-trace` (pulls an extra image stack; procedural `--svg` is always on).");
+    }
     note("flagship: `kit` (a coherent matched set) + `manuscript` (a whole book's per-chapter ornaments). See Documentation/BOOKART.md.");
 }
 

@@ -60,10 +60,15 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
 
 ## Track B — round out the feature (fast-follows deferred from B6–B10)
 
-- **B1 — raster→SVG trace.** `--format svg` on the diffusion/composite tiers + a standalone `bookart
-  vectorize <raster> --out svg`, via a **permissively-licensed** tracer (`vtracer`/`visioncortex`,
-  MIT — resolved in G0.1). Isolate it behind a feature/opt-in so the base build stays lean (vtracer
-  pulls an old `image` stack). Procedural born-vector SVG already ships.
+- **B1 — raster→SVG trace. DONE.** `bookart vectorize <raster> --out svg` (standalone) + `bookart
+  render|illustrate --svg` now traces the diffusion/composite pixel tiers instead of printing a
+  fast-follow note. `src/bookart/finish/trace.rs`: flatten the transparent ornament onto white →
+  `vtracer::convert` (Bw preset: Binary + spline) → retint every path to the ink colour + stamp the
+  physical mm print size. Behind the **`bookart-trace`** Cargo feature (vtracer 0.6.5, MIT/Apache —
+  pulls an older image/tiff/visioncortex stack, so opt-in; the procedural born-vector SVG stays in the
+  base build). CLI verbs + `--svg` are `#[cfg(feature)]`-gated with a clear "rebuild with
+  `--features bookart-trace`" message when off; `doctor` reports on/off. Verified live: firebird plate
+  → traced A5 SVG; composite `--svg` → 315 KB traced SVG.
 - **B2 — glyph-driven initials (§6.5).** `initial` renders the actual letter (any script, incl.
   Cyrillic) as a mask/ControlNet so a historiated initial is built *around* a legible letterform —
   the one intentional-text path. Needs a font rasteriser (reuse the `shaped-labels` ab_glyph path).
