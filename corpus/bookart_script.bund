@@ -1,0 +1,31 @@
+// ===================================================================
+// plakat proof corpus — `plakat.bookart.*` scripting (6.1.0 A4)
+// ===================================================================
+//   plakat run corpus/bookart_script.bund
+//
+// A Bund script can render a book ornament into an image handle, alongside
+// the generate -> upscale -> save chain. The handle is the transparent,
+// exactly-page-sized RGBA ornament, so `plakat.save` keeps the alpha.
+//
+// Stack effects:
+//   plakat.bookart.origin     ( origin    -- )          origin override for illustrate
+//   plakat.bookart.technique  ( technique -- )          technique override for illustrate
+//   plakat.bookart.render     ( spec-path -- handle )   any tier (procedural = no GPU)
+//   plakat.bookart.illustrate ( prompt    -- handle )   prose -> a B/W plate (GPU)
+//   plakat.save               ( handle path -- )
+
+// Deterministic seed (only the procedural variant / diffusion seed depend on it).
+"7" "seed" plakat.config.set
+
+// Render the committed russian border spec (procedural tier, no GPU) -> handle 1.
+"corpus/bookart_ornament.hjson" plakat.bookart.render
+
+// Save it (lands under the run's output dir ./out) — transparent A5 @ 300 DPI.
+"bookart-ornament.png" plakat.save
+
+// A diffusion plate needs a GPU + the origin LoRA, so it's commented out of the
+// deterministic proof; uncomment to render a Bilibin firebird frontispiece:
+//   "russian" plakat.bookart.origin
+//   "line"    plakat.bookart.technique
+//   "a firebird among oak branches" plakat.bookart.illustrate
+//   "bookart-firebird.png" plakat.save

@@ -303,6 +303,11 @@ pub struct ScriptCtx {
     /// `plakat.fractal.*` render/compose/animate/paint words. When `None`,
     /// the spec's own dimensions are used. Mirrors `--fractal-size`.
     pub fractal_size: Option<(u32, u32)>,
+    /// 6.1.0 (A4): bookart origin/technique overrides for `plakat.bookart.illustrate`,
+    /// set by `plakat.bookart.origin` / `plakat.bookart.technique`. `None` = each surface's
+    /// own default (`generic` / `line`). Mirror `bookart illustrate --origin/--technique`.
+    pub bookart_origin: Option<String>,
+    pub bookart_technique: Option<String>,
 }
 
 /// v0.24 phase 8: per-loaded-pipeline annotation cache. The
@@ -352,6 +357,8 @@ impl ScriptCtx {
             map_layout: None,
             map_erosion: None,
             fractal_size: None,
+            bookart_origin: None,
+            bookart_technique: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,
@@ -1563,6 +1570,8 @@ mod tests {
             map_layout: None,
             map_erosion: None,
             fractal_size: None,
+            bookart_origin: None,
+            bookart_technique: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,

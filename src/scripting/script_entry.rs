@@ -1830,6 +1830,8 @@ mod tests {
             map_layout: None,
             map_erosion: None,
             fractal_size: None,
+            bookart_origin: None,
+            bookart_technique: None,
             loaded_stylize: None,
             loaded_animatediff: None,
             loaded_animatediff_sdxl: None,

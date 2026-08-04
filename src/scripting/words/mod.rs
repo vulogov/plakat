@@ -12,6 +12,7 @@ use rust_multistackvm::multistackvm::VM;
 pub mod adetailer;
 pub mod animate;
 pub mod artefact;
+pub mod bookart;
 pub mod cascade;
 pub mod config;
 pub mod controlnet;
@@ -78,6 +79,15 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         vm.register_inline("plakat.fractal.animate".to_string(), fractals::plakat_fractal_animate)
             .map_err(|e| anyhow!("registering plakat.fractal.animate: {e}"))?;
     }
+    // 6.1.0 (A4): plakat.bookart.* namespace — render a book ornament into an image handle.
+    vm.register_inline("plakat.bookart.origin".to_string(), bookart::plakat_bookart_origin)
+        .map_err(|e| anyhow!("registering plakat.bookart.origin: {e}"))?;
+    vm.register_inline("plakat.bookart.technique".to_string(), bookart::plakat_bookart_technique)
+        .map_err(|e| anyhow!("registering plakat.bookart.technique: {e}"))?;
+    vm.register_inline("plakat.bookart.render".to_string(), bookart::plakat_bookart_render)
+        .map_err(|e| anyhow!("registering plakat.bookart.render: {e}"))?;
+    vm.register_inline("plakat.bookart.illustrate".to_string(), bookart::plakat_bookart_illustrate)
+        .map_err(|e| anyhow!("registering plakat.bookart.illustrate: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

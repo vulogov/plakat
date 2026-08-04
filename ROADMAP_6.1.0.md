@@ -36,9 +36,16 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   resolver (5 `bookart_*` fields), emitter (nested `bookart: { spec: {…} }`; suppresses the dead
   top-level prompt/negative). Verified: a 2-block prompts file → a scenario the runner dry-run-validates
   (diffusion vignette + procedural border).
-- **A4 — Bund `plakat.bookart.*` words.** `plakat.bookart.render` · `.kit` · `.illustrate` ·
-  `.vectorize` · `.verify`, pushing image handles into the existing image-handle pipeline (save /
-  upscale / metadata), like `plakat.persona.*`.
+- **A4 — Bund `plakat.bookart.*` words. DONE.** `src/scripting/words/bookart.rs`: `plakat.bookart.origin`
+  / `.technique` (illustrate overrides, `none`/`auto` clears) · `.render ( spec-path -- handle )` (any
+  tier; procedural = no GPU) · `.illustrate ( prompt -- handle )` (prose → a diffusion B/W plate, GPU +
+  origin LoRA). The pushed handle is the transparent, exactly-page-sized RGBA ornament — it flows into
+  the existing `plakat.save` / `plakat.metadata.write` / `plakat.upscale` words (alpha preserved).
+  model/seed/steps come from the shared `plakat.config.*` state. 2 new `ScriptCtx` fields
+  (`bookart_origin`/`bookart_technique`). Verified live: procedural border via `.render` → clean A5
+  guilloché frame; `.origin russian` + `.illustrate "…firebird…"` → Bilibin foliate line plate (LoRA
+  128/128 merged). Corpus `corpus/bookart_script.bund`. (SVG is a file-only artefact, not a handle — use
+  the CLI `bookart render --svg`.)
 - **A5 — sidecar + `--import`.** Write the bookart spec-hash + origin/technique into the PNG metadata;
   accept `--import <album>` so an ornament lands in a `plakat photos` album with its recipe.
 
