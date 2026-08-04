@@ -92,9 +92,15 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
 
 ## Track C — quality / polish
 
-- **C1 — procedural richness.** More band motifs (foliate scroll via a small L-system, Greek-key,
-  guilloché-rosette variety); per-fold tailpiece variation; a knotwork/interlace generator (the one
-  net-new from G0.4 not yet built).
+- **C1 — procedural richness. DONE.** Three net-new band motifs in `procedural/mod.rs`, routed by
+  `band_motif(variant % 4)` so a set/manuscript cycles through them: **Greek-key** meander (`greek_key`),
+  **foliate scroll** via a real tiny **L-system** (`lsystem_sprig`: axiom `X`, `X→F[+X][-X]FX`,
+  `F→FF`, turtle-interpreted → `foliate_band` tiles mirrored sprigs), and a **knotwork/interlace** plait
+  (`interlace_band`: counter-phase strands with over/under crossing gaps — the net-new from G0.4).
+  `headpiece_band` + `divider` now draw the variant-selected motif; `tailpiece_taper` alternates
+  scroll ↔ L-system leaf per fold with fold-scaled turn counts. Verified live: the 4 headpiece variants
+  render distinct + clean (braid / Greek-key / vine / interlace, each with the rose medallion + fleuron
+  ends).
 - **C2 — ink-weight as a real dial.** Cache the raw grayscale render so `ink.weight` / `transparency`
   become `post`-class edits (today they force a re-gen — see `bookart/edit.rs`); wire `bookart edit`
   to re-run the finisher without re-sampling.
