@@ -13,6 +13,8 @@
 
 pub mod compile;
 pub mod edit;
+#[cfg(feature = "epub")]
+pub mod epub;
 pub mod finish;
 pub mod geometry;
 #[cfg(feature = "shaped-labels")]

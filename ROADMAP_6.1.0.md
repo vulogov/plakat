@@ -93,8 +93,12 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
 - **B5 — more origin LoRAs.** american / european / chinese, trained on PD corpora (extend the G0.3
   `datasets/bookart_training` + `train_origins.sh` machinery) and hosted at `vulogov98/plakat-bookart`.
   The generic path already covers them; these raise the ceiling.
-- **B6 — EPUB manuscript input.** `bookart manuscript book.epub` (parse the spine) alongside the
-  Markdown / plain-list inputs.
+- **B6 — EPUB manuscript input. DONE.** `bookart manuscript book.epub` parses the book's chapters from
+  its TOC (NCX `navMap` → EPUB3 `nav` → spine `<title>` fallbacks) alongside the Markdown / plain-list
+  inputs. `src/bookart/epub.rs` (feature **`epub`** = `zip`): a light tag-scanner (no XML-parser dep)
+  reads `container.xml` → OPF → TOC, sharing `manuscript::chapter_from_title`. Feature-gated with a
+  clear note when off. Verified live: a 3-chapter EPUB (NCX) → frontispiece + per-chapter headpiece/
+  tailpiece + a manifest carrying the right titles.
 
 ## Track C — quality / polish
 

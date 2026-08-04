@@ -25,13 +25,15 @@ pub fn parse_chapters(text: &str) -> Vec<Chapter> {
     } else {
         text.lines().map(|l| l.trim().to_string()).filter(|s| !s.is_empty()).collect()
     };
-    titles
-        .into_iter()
-        .map(|title| {
-            let first_letter = title.chars().find(|c| c.is_alphabetic()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-            Chapter { title, first_letter }
-        })
-        .collect()
+    titles.into_iter().map(chapter_from_title).collect()
+}
+
+/// Build a [`Chapter`] from a title — the first alphabetic char (Cyrillic-aware) is its initial letter.
+/// Shared by the text parser and the B6 EPUB parser.
+pub fn chapter_from_title(title: impl Into<String>) -> Chapter {
+    let title = title.into();
+    let first_letter = title.chars().find(|c| c.is_alphabetic()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    Chapter { title, first_letter }
 }
 
 /// A LaTeX include file mapping each asset to an `\includegraphics`, grouped by chapter — a drop-in for

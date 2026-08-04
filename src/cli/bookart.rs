@@ -424,10 +424,16 @@ fn run_blend(a: BlendArgs) -> Result<()> {
 async fn run_manuscript(a: ManuscriptArgs) -> Result<()> {
     use crate::bookart::spec::{BookArtSpec, Ornament};
     use crate::bookart::{kit, manuscript};
-    let text = std::fs::read_to_string(&a.book).with_context(|| format!("reading {}", a.book.display()))?;
-    let chapters = manuscript::parse_chapters(&text);
+    // B6: an `.epub` is parsed via its spine/TOC (feature `epub`); anything else is Markdown / a plain list.
+    let is_epub = a.book.extension().is_some_and(|e| e.eq_ignore_ascii_case("epub"));
+    let chapters = if is_epub {
+        parse_epub_book(&a.book)?
+    } else {
+        let text = std::fs::read_to_string(&a.book).with_context(|| format!("reading {}", a.book.display()))?;
+        manuscript::parse_chapters(&text)
+    };
     if chapters.is_empty() {
-        anyhow::bail!("no chapters found in {} (Markdown `#` headings, or one title per line)", a.book.display());
+        anyhow::bail!("no chapters found in {} (Markdown `#` headings, one title per line, or an EPUB TOC)", a.book.display());
     }
     let theme = BookArtSpec::load(&a.kit)?;
     let base_seed = theme.kit.as_ref().and_then(|k| k.seed).unwrap_or(0);
@@ -672,6 +678,20 @@ async fn do_render(spec: BookArtSpec, out: &std::path::Path, model: &str, seed: 
         import_ornament(out, album)?;
     }
     Ok(())
+}
+
+/// B6: parse an EPUB's chapters (feature `epub`); a clear note when the feature isn't compiled in.
+#[cfg(feature = "epub")]
+fn parse_epub_book(path: &std::path::Path) -> Result<Vec<crate::bookart::manuscript::Chapter>> {
+    crate::bookart::epub::parse_epub_chapters(path)
+}
+
+#[cfg(not(feature = "epub"))]
+fn parse_epub_book(_path: &std::path::Path) -> Result<Vec<crate::bookart::manuscript::Chapter>> {
+    anyhow::bail!(
+        "EPUB input needs the `epub` feature — rebuild with `--features epub` (it pulls a zip/deflate \
+         stack). Or export the book's chapter list to Markdown / one-title-per-line."
+    )
 }
 
 /// C2: paths of the raw-refinish cache next to an ornament PNG.
