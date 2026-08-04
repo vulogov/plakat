@@ -10,15 +10,18 @@ unchanged apart from exposure normalisation. Writes `<artist>_gray/` next to eac
 """
 import glob
 import os
+import sys
 
 from PIL import Image, ImageOps
 
-ARTISTS = ["beardsley", "hokusai", "bilibin"]
+# B4 origins + B5 origins (american=pyle, european=dore, chinese). Override via argv.
+ARTISTS = ["beardsley", "hokusai", "bilibin", "pyle", "dore", "chinese"]
 ROOT = "datasets/bookart_training"
 
 
 def main():
-    for a in ARTISTS:
+    artists = sys.argv[1:] or ARTISTS
+    for a in artists:
         src, dst = f"{ROOT}/{a}", f"{ROOT}/{a}_gray"
         os.makedirs(dst, exist_ok=True)
         n = 0

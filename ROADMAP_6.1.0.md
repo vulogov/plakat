@@ -96,9 +96,16 @@ only exists as its own subcommand. Wire it into the automation surfaces, mirrori
   assembled with correct checksums. Verified: the font loads + validates in fontTools (all glyphs
   compile, 0 failures) and **renders in PIL** (type `a`–`h`, get ornaments). Gotcha fixed: the glyph
   header bbox goes right after `numberOfContours`, *before* `endPtsOfContours`.
-- **B5 — more origin LoRAs.** american / european / chinese, trained on PD corpora (extend the G0.3
-  `datasets/bookart_training` + `train_origins.sh` machinery) and hosted at `vulogov98/plakat-bookart`.
-  The generic path already covers them; these raise the ceiling.
+- **B5 — more origin LoRAs. DONE.** Trained + hosted three new sd15 origin LoRAs:
+  **american** (Howard Pyle), **european** (Gustave Doré engravings), **chinese** (Shan Hai Jing +
+  Gujin Tushu Jicheng woodblock line). Extended the machinery: `fetch_training_corpus.py`
+  (+3 traditions + argv filter; Chinese needed *leaf* categories with direct files — most "Chinese
+  woodblock" cats are container-only), `prep_grayscale.py`, `train_origins.sh` (`ORIGINS=` filter).
+  Uploaded to `vulogov98/plakat-bookart` (`american/european/chinese-sd15.safetensors`, ~40 imgs each,
+  rank 16 / 256² / 180 steps). Flipped `HOSTED_LORA_ORIGINS` → all six now attach a LoRA (B3's gate
+  already reserved them). New `corpus/bookart_origins.sh` renders a signature ornament per origin (all
+  six LoRAs resolve 128/128 from HF) + a contact sheet. Verified live: each origin renders in its own
+  hand (russian/american woodcut, english/european dense foliate line, japanese/chinese delicate).
 - **B6 — EPUB manuscript input. DONE.** `bookart manuscript book.epub` parses the book's chapters from
   its TOC (NCX `navMap` → EPUB3 `nav` → spine `<title>` fallbacks) alongside the Markdown / plain-list
   inputs. `src/bookart/epub.rs` (feature **`epub`** = `zip`): a light tag-scanner (no XML-parser dep)

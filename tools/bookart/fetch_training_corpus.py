@@ -68,6 +68,27 @@ ARTISTS = [
         "Postcards by Ivan Bilibin",
         "Magazine illustrations by Ivan Bilibin",
     ]),
+    # 6.1.0 B5 — three more origin traditions (american / european / chinese).
+    # american: Howard Pyle (d. 1911) — American golden-age pen-and-ink book illustration.
+    ("pyle", [
+        "Illustrations by Howard Pyle",
+        "Howard Pyle",
+    ]),
+    # european: Gustave Doré (d. 1883) — French wood-engraving, dense B/W line — the ideal engraving corpus.
+    ("dore", [
+        "Engravings by Gustave Doré",
+        "Illustrations by Gustave Doré",
+        "Gustave Doré",
+    ]),
+    # chinese: PD woodblock / baimiao outline. Shan Hai Jing (mythical-creature line woodcuts) +
+    # Gujin Tushu Jicheng (encyclopedia B/W line plates) are LEAF categories with direct files (many
+    # "Chinese woodblock" categories on Commons are container-only, so the fetcher — which reads direct
+    # file members — sees 0 there).
+    ("chinese", [
+        "Shan Hai Jing",
+        "Gujin Tushu Jicheng",
+        "Water Margin",
+    ]),
 ]
 
 ALLOWED_MIME = {"image/jpeg": "jpg", "image/png": "png"}
@@ -212,15 +233,19 @@ def fetch_artist(artist, categories):
 
 def main():
     os.makedirs(OUT_ROOT, exist_ok=True)
+    # Optional argv filter: fetch only the named artist keys (e.g. `pyle dore chinese`).
+    only = set(sys.argv[1:])
     totals = {}
     for artist, categories in ARTISTS:
+        if only and artist not in only:
+            continue
         totals[artist] = fetch_artist(artist, categories)
     print("\n==== corpus summary ====")
-    for artist, _ in ARTISTS:
+    for artist in totals:
         print("  %-10s %d images" % (artist, totals[artist]))
     grand = sum(totals.values())
     print("  %-10s %d images" % ("TOTAL", grand))
-    return 0 if grand > 0 else 1
+    return 0 if (grand > 0 or not totals) else 1
 
 
 if __name__ == "__main__":

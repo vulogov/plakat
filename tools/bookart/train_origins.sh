@@ -14,8 +14,16 @@ SIZE="${SIZE:-256}"
 PLAKAT="${PLAKAT:-./target/release/plakat}"
 mkdir -p bake
 
-# origin → training corpus (russian=Bilibin, english=Beardsley, japanese=Hokusai)
-PAIRS=("russian:bilibin" "english:beardsley" "japanese:hokusai")
+# origin → training corpus. russian=Bilibin, english=Beardsley, japanese=Hokusai (B4);
+# american=Pyle, european=Doré, chinese=Chinese woodcuts (B5). Override with e.g.
+#   ORIGINS="american european chinese" tools/bookart/train_origins.sh
+ALL_PAIRS=("russian:bilibin" "english:beardsley" "japanese:hokusai" "american:pyle" "european:dore" "chinese:chinese")
+if [ -n "${ORIGINS:-}" ]; then
+  PAIRS=()
+  for want in $ORIGINS; do for p in "${ALL_PAIRS[@]}"; do [ "${p%%:*}" = "$want" ] && PAIRS+=("$p"); done; done
+else
+  PAIRS=("${ALL_PAIRS[@]}")
+fi
 
 for pair in "${PAIRS[@]}"; do
   origin="${pair%%:*}"; artist="${pair##*:}"

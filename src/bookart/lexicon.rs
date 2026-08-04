@@ -90,10 +90,10 @@ pub fn default_symmetry(kind: &str) -> &'static str {
     }
 }
 
-/// The origins that ship a trained sd15 LoRA hosted at `vulogov98/plakat-bookart` (B4). The others in
-/// [`ORIGINS`] are valid vocabulary but render on the generic scaffold path (no LoRA) until B5 trains
-/// them — so we must NOT attach a `<origin>-sd15.safetensors` that doesn't exist (it would 404).
-pub const HOSTED_LORA_ORIGINS: &[&str] = &["russian", "english", "japanese"];
+/// The origins that ship a trained sd15 LoRA hosted at `vulogov98/plakat-bookart`: russian/english/
+/// japanese (B4) + american/european/chinese (B5). Any other [`ORIGINS`] entry renders on the generic
+/// scaffold path — we must NOT attach a `<origin>-sd15.safetensors` that doesn't exist (it would 404).
+pub const HOSTED_LORA_ORIGINS: &[&str] = &["russian", "english", "japanese", "american", "european", "chinese"];
 
 // ---------------------------------------------------------------------------------------------------
 // 6.1.0 (B3): optional `assets/bookart/lexicon.hjson` override. The built-in lexicon above is always
@@ -237,12 +237,10 @@ mod tests {
     #[test]
     fn only_trained_origins_report_a_hosted_lora() {
         // The correctness guard: attaching a `<origin>-sd15.safetensors` that doesn't exist would 404.
-        for o in ["russian", "english", "japanese"] {
-            assert!(has_hosted_lora(o), "{o} ships a LoRA");
+        for o in ["russian", "english", "japanese", "american", "european", "chinese"] {
+            assert!(has_hosted_lora(o), "{o} ships a LoRA (B4/B5)");
         }
-        for o in ["american", "european", "chinese", "generic"] {
-            assert!(!has_hosted_lora(o), "{o} has no hosted LoRA (scaffold path)");
-        }
+        assert!(!has_hosted_lora("generic"), "generic has no hosted LoRA (scaffold path)");
     }
 
     #[test]
