@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# BOOKART-1 feature-demonstration driver (RFC BOOKART-1, plakat 6.0.0).
+# BOOKART-1 feature-demonstration driver (RFC BOOKART-1, plakat 6.1).
 #
 # Renders the corpus bookart specs across the hybrid router — procedural (zero weights), diffusion
 # (origin LoRA auto-resolved from vulogov98/plakat-bookart), composite — plus the flagship kit and
@@ -44,4 +44,9 @@ run "$PLAKAT" bookart kit corpus/bookart_kit.hjson --out "$OUT/kit" --steps "$ST
 run "$PLAKAT" bookart manuscript corpus/bookart_book.md --kit corpus/bookart_kit.hjson \
     --out "$OUT/manuscript" --latex --steps "$STEPS"
 
+# 6. (6.1) The vocabulary + LoRA hosting, and an OpenType dingbat font (weights-free).
+run "$PLAKAT" bookart origins
+run "$PLAKAT" bookart font --out "$OUT/dingbats.otf"
+
 echo "==================== done → $OUT/ ===================="
+echo "For all six origin LoRAs side by side, run: corpus/bookart_origins.sh"

@@ -1,21 +1,25 @@
 # `plakat bookart` — corpus walkthrough
 
-A reproducible demonstration of the BOOKART-1 feature (plakat 6.0.0). Everything here renders from the
-small HJSON specs in this directory; run [`bookart_run.sh`](bookart_run.sh) to regenerate the images
+A reproducible demonstration of the BOOKART-1 feature (plakat 6.0 / 6.1). Everything here renders from
+the small HJSON specs in this directory; run [`bookart_run.sh`](bookart_run.sh) to regenerate the images
 under `corpus/images/bookart/`.
 
 ```bash
 cargo build --release --features metal   # once
 corpus/bookart_run.sh                     # renders the whole corpus
+corpus/bookart_origins.sh                 # all six origin LoRAs, side by side (6.1)
 ```
 
-## The specs
+## The specs & drivers
 
 | file | what it shows |
 |---|---|
 | [`bookart_ornament.hjson`](bookart_ornament.hjson) | a single **procedural** ornament (a Russian border) — vector-native, **zero weights**, `png` + born-vector `svg` |
+| [`bookart_composite.hjson`](bookart_composite.hjson) | a **composite** vignette — a procedural frame with a diffusion inlay |
 | [`bookart_kit.hjson`](bookart_kit.hjson) | a coherent **kit** — 5 ornaments (procedural border/divider/fleuron/corner + a diffusion firebird vignette) sharing one origin, technique, motif DNA, and seed lineage |
 | [`bookart_book.md`](bookart_book.md) | a 3-chapter book, input to `bookart manuscript` |
+| [`bookart_origins.sh`](bookart_origins.sh) | **(6.1)** a signature ornament in each of the six origin hands (russian/english/japanese + american/european/chinese) + generic, into one contact sheet |
+| [`bookart_script.bund`](bookart_script.bund) | **(6.1)** the same render from a Bund script (`plakat.bookart.*` words) → an image handle → `plakat.save` |
 
 ## What the driver produces
 
@@ -30,6 +34,9 @@ corpus/bookart_run.sh                     # renders the whole corpus
 5. **`bookart manuscript bookart_book.md --kit bookart_kit.hjson --latex`** → `manuscript/` — a
    frontispiece + a seed-varied headpiece & a tailpiece **per chapter**, a `manifest.json`, a contact
    sheet, and an `includes.tex` you can `\input` into a LaTeX book.
+6. **(6.1)** `bookart origins` prints the six origins × techniques × ornaments + LoRA hosting, and
+   `bookart font` → `dingbats.otf` — a real OpenType dingbat font (type `a`–`h`, get an ornament),
+   weights-free. Run [`bookart_origins.sh`](bookart_origins.sh) for all six origin LoRAs side by side.
 
 ## The idea
 
