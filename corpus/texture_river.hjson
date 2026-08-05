@@ -1,0 +1,17 @@
+{
+  schema: "texture/1"
+  // A WET dielectric: smooth river cobblestones under a thin sheet of moving water. A low scalar
+  // roughness gives the glossy wet sheen (from-albedo would read the stones as matte-dry); metallic
+  // stays 0 — water and stone are both dielectrics, the shine comes from low roughness, not metal.
+  material: "smooth wet river cobblestones under a thin sheet of flowing clear water, glossy, streaming"
+
+  seamless: { mode: "circular", axes: "both" }
+  channels: { height: "auto", roughness: 0.18, metallic: 0.0, normal_strength: 1.0, normal_y: "opengl" }
+  delight: true
+  page: { size: 1024, upscale: "none", tiling_check: true }
+  export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }
+
+  model: "sdxl"
+  seed: 5
+  steps: 28
+}

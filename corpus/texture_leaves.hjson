@@ -1,0 +1,16 @@
+{
+  schema: "texture/1"
+  // A richly-coloured organic dielectric: a carpet of fallen autumn leaves. from-albedo roughness
+  // lets the drier, paler leaves read as rougher than the darker, damper ones.
+  material: "scattered fallen autumn leaves on forest floor, maple and oak, red orange yellow and brown, overlapping"
+
+  seamless: { mode: "circular", axes: "both" }
+  channels: { height: "auto", roughness: "from-albedo", metallic: 0.0, normal_strength: 1.2, normal_y: "opengl" }
+  delight: true
+  page: { size: 1024, upscale: "none", tiling_check: true }
+  export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }
+
+  model: "sdxl"
+  seed: 11
+  steps: 28
+}

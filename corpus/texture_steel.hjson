@@ -1,0 +1,16 @@
+{
+  schema: "texture/1"
+  // A CONDUCTOR — the metallic counterpart to texture_stone. metallic:1.0 → a solid-white
+  // metallic.png (vs stone's black), so the corpus shows both ends of the dielectric/metal axis.
+  material: "brushed stainless steel panel, fine horizontal grain, subtle scratches"
+
+  seamless: { mode: "circular", axes: "both" }
+  channels: { height: "auto", roughness: 0.35, metallic: 1.0, normal_strength: 0.7, normal_y: "opengl" }
+  delight: true
+  page: { size: 1024, upscale: "none", tiling_check: true }
+  export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }
+
+  model: "sdxl"
+  seed: 7
+  steps: 26
+}

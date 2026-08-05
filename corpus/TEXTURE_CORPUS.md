@@ -13,7 +13,10 @@ corpus/texture_run.sh                     # renders the whole corpus
 
 | file | what it shows |
 |---|---|
-| [`texture_stone.hjson`](texture_stone.hjson) | a `texture/1` spec — weathered granite cobblestones, seamless (circular), `height: auto` (depth) + `roughness: from-albedo`, ORM + glTF + a lit preview |
+| [`texture_stone.hjson`](texture_stone.hjson) | a `texture/1` spec — weathered granite cobblestones, seamless (circular), `height: auto` (depth) + `roughness: from-albedo`, ORM + glTF + a lit preview. A matte **dielectric**: `metallic: 0.0` → `metallic.png` is solid **black** (stone is a non-metal — the physically correct value) |
+| [`texture_steel.hjson`](texture_steel.hjson) | the **conductor** counterpart — brushed stainless steel, `metallic: 1.0` → `metallic.png` is solid **white**. Shows the metallic channel working (stone black ⇄ steel white) |
+| [`texture_leaves.hjson`](texture_leaves.hjson) | a richly-coloured organic dielectric — a carpet of fallen autumn leaves, `roughness: from-albedo` so drier pale leaves read rougher than damp dark ones |
+| [`texture_river.hjson`](texture_river.hjson) | a **wet** dielectric — smooth river cobblestones under streaming water; a low scalar `roughness: 0.18` gives the glossy sheen (the shine is low roughness, **not** metal — `metallic: 0.0`) |
 
 ## What the driver produces
 

@@ -30,7 +30,15 @@ run "$PLAKAT" texture show corpus/texture_stone.hjson
 
 # 2. Generate a full seamless PBR material (the SDXL albedo downloads from HF on first use). Writes the
 #    channel maps + ORM + a lit preview + a glTF material + material.json (recipe + scorecard).
-run "$PLAKAT" texture render corpus/texture_stone.hjson --out "$OUT/stone"
+#    Four materials spanning the axes the maps encode:
+#      stone  — a matte DIELECTRIC (metallic.png is solid BLACK — stone is a non-metal)
+#      steel  — a CONDUCTOR       (metallic.png is solid WHITE — the metallic channel in action)
+#      leaves — a coloured organic dielectric, from-albedo roughness
+#      river  — a WET dielectric  (glossy: the shine is low roughness, NOT metal)
+run "$PLAKAT" texture render corpus/texture_stone.hjson  --out "$OUT/stone"
+run "$PLAKAT" texture render corpus/texture_steel.hjson  --out "$OUT/steel"
+run "$PLAKAT" texture render corpus/texture_leaves.hjson --out "$OUT/leaves"
+run "$PLAKAT" texture render corpus/texture_river.hjson  --out "$OUT/river"
 
 # 3. Weights-free tail: derive a full set from the generated albedo, score it, and re-pack for an engine.
 run "$PLAKAT" texture derive "$OUT/stone/albedo.png" --out "$OUT/stone_derived"
