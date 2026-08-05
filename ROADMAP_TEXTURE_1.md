@@ -41,14 +41,17 @@ tileability score, end-to-end, before building the rest.
 
 ## Milestones
 
-### B0 — spec + resolver + `lint`/`show` (pure, golden-tested)
-- **Modules:** `src/texture/{spec,compile,lint,mod}.rs`, `src/cli/texture.rs`; register in `lib.rs` +
-  `cli/mod.rs`. Mirrors bookart B0.
-- `TextureSpec` (permissive serde, HJSON, every field optional — RFC §5). `compile::resolve` →
-  `RenderPlan` (byte-stable: defaults, model family, color spaces, seamless mode/axes, channel plan,
-  export plan). `lint` (vocab + ranges + contradictions, non-zero exit). `show` (the resolved plan).
-- **Weight-free.** Tests: golden resolve, HJSON round-trip (quote-inline-strings gotcha from bookart),
-  `lint` catches. **CI: `cargo test --no-default-features --lib`.**
+### B0 — spec + resolver + `lint`/`show` (pure, golden-tested). DONE.
+- `src/texture/{spec,compile,lint,mod}.rs` + `src/cli/texture.rs`; registered in `lib.rs` + `cli/mod.rs`
+  (`Command::Texture`, not feature-gated). Mirrors bookart B0.
+- `TextureSpec` (permissive serde, HJSON, every field optional; roughness/metallic accept scalar OR
+  `"from-albedo"` OR a `"<prompt>"` via `serde_json::Value`). `compile::resolve` → `RenderPlan`
+  (Serialize+PartialEq, byte-stable: seamless mode/axes, `ChannelSource`/`HeightSource`, export plan,
+  the compiled albedo prompt with flat-light + tileable anchors + anti-shadow/anti-seam negative).
+  `lint` (vocab nearest-match + ranges, non-zero exit). `new`/`lint`/`show` CLI.
+- **Weight-free, 10 tests green** (bare/full-spec parse, scalar-or-string channels, deterministic
+  resolve, map-filtering, lint ranges + typo suggestions). Verified live: `new → lint → show`. Full
+  suite 1749 green.
 
 ### B1 — derivation core + scorecard + `verify`/`derive` (WEIGHT-FREE — ships value)
 - **Modules:** `src/texture/{derive,scorecard}.rs`.

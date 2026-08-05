@@ -29,6 +29,7 @@ pub mod motion_adapter;
 pub mod outpaint;
 pub mod persona;
 pub mod bookart;
+pub mod texture;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -120,6 +121,10 @@ pub enum Command {
     /// HJSON → transparent, print-sized ornament. `new` scaffolds, `lint` validates,
     /// `show` resolves (render tiers land across later phases).
     Bookart(bookart::BookartArgs),
+    /// Seamless PBR material synthesis (RFC TEXTURE-1). A `TextureSpec` HJSON → a
+    /// tileable albedo/normal/roughness/metallic/height/AO set. `new` scaffolds,
+    /// `lint` validates, `show` resolves (generation + derivation land across later phases).
+    Texture(texture::TextureArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -365,6 +370,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Inspect(args) => inspect::run(args).await,
         Command::Persona(args) => persona::run(args).await,
         Command::Bookart(args) => bookart::run(args).await,
+        Command::Texture(args) => texture::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]
