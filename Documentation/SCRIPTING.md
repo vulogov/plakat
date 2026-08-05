@@ -356,6 +356,32 @@ The full A1111-compatible writes flow:
   edits (e.g. upscale → re-save with original generation
   parameters)
 
+### `plakat.map.*` — fantasy maps (v1.4)
+
+Render a `plakat map` from a committed `MapSpec` into an image handle. `plakat.config.seed` seeds the
+terrain. Mirrors `--map-render` / `--map-render-sd` / `--map-render-tiles`.
+
+| Word | Stack effect | Notes |
+|---|---|---|
+| `plakat.map.layout` | `( style -- )` | Town-plan override for a subsequent render: `radial`/`grid`/`organic`/`none`. |
+| `plakat.map.erosion` | `( amount -- )` | Natural-feature erosion override (0..>1). |
+| `plakat.map.render` | `( spec-path style -- handle )` | Deterministic linework map (no GPU). `style` = `parchment`/`inked`/`blueprint`. |
+| `plakat.map.paint` | `( spec-path style -- handle )` | SD-painted map (img2img + Canny). GPU. |
+| `plakat.map.tiles` | `( spec-path style out-dir -- count )` | Slice into seamless `tile_rR_cC.png` + `world.png`; pushes the tile count. |
+
+### `plakat.fractal.*` — fractals (v4.3; needs the `fractals` feature)
+
+Render or paint a fractal into an image handle. `spec-source` is anything `--control-fractal` accepts:
+a spec `.json`/`.hjson` path, a `kind`/`kind:preset` shorthand (`flame`, `ifs:barnsley-fern`), or prose.
+
+| Word | Stack effect | Notes |
+|---|---|---|
+| `plakat.fractal.size` | `( w h -- )` | Output-size override for later fractal words; `0 0` clears. |
+| `plakat.fractal.render` | `( spec-source -- handle )` | Track-A CPU render (no GPU). |
+| `plakat.fractal.compose` | `( spec-source mode rows cols -- handle )` | Grid contact sheet (`julia-sweep`/`zoom-grid`/`palette-grid`/`variation-sweep`). |
+| `plakat.fractal.paint` | `( spec-source -- handle )` | Render Track A, then the AI paint pass. GPU. |
+| `plakat.fractal.animate` | `( spec-source mode frames fps out-path -- out-path )` | Render an animation to a file (`.mp4`/`.webm` need ffmpeg; `.gif` never does). |
+
 ### `plakat.bookart.*` — book ornaments (6.1)
 
 Render a transparent, page-sized B/W book ornament straight into an image handle, so a script can

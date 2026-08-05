@@ -438,7 +438,7 @@ let img = Map::from_prose("a rainy northern archipelago of fjords")
 ### `BookArt` — transparent B/W book ornaments
 
 Render a reusable, print-ready, **transparent** black-and-white book ornament (headpiece / border /
-vignette / …) from a [`BookArtSpec`](../Documentation/BOOKART.md) — the same render core the
+vignette / …) from a [`BookArtSpec`](BOOKART.md) — the same render core the
 `plakat bookart` CLI, the scenario `type: bookart` task, and the Bund `plakat.bookart.*` words drive.
 Build from an HJSON file or an in-memory spec, then `.run()` for an in-memory result.
 

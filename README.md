@@ -79,8 +79,9 @@ origin×technique without a LoRA. Fully additive. Start at
 [`Documentation/BOOKART.md`](Documentation/BOOKART.md); the transparency model is in
 [`Documentation/BOOKART_TRANSPARENCY.md`](Documentation/BOOKART_TRANSPARENCY.md).
 
-*(Deferred to 6.1: scenario / compile / Bund / library-API integration — the feature is complete via
-its CLI; raster→SVG tracing and glyph-driven initials are documented fast-follows.)*
+*(6.0 shipped the standalone CLI; **6.1 added** the scenario / compile / Bund / library-API integration,
+raster→SVG tracing, glyph-driven initials, three more origin traditions, an EPUB manuscript input, and an
+OpenType dingbat font — see the 6.1.0 notes above.)*
 
 ## What's new in 5.0.0 — `plakat persona`
 

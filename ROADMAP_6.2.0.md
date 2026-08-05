@@ -27,8 +27,13 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
   undocumented) with a worked example. Verified the compile example against the CLI and the API builder
   against the real `plakat::api::BookArt`. (Scenario `type: bookart` is covered by BOOKART.md's
   Integration-surfaces section from A1.)
-- **A3 — docs audit sweep.** Grep the whole `Documentation/` + `README` for version strings, dead
-  command names, and superseded guidance (e.g. "SVG procedural-only", "three origin LoRAs"). Fix drift.
+- **A3 — docs audit sweep. DONE.** Swept `Documentation/` + `README` for drift and fixed: the README's
+  stale "*Deferred to 6.1*" note (those items shipped → "6.1 added"); the `Documentation/README.md` index
+  descriptions for `BOOKART.md` (6.1 commands + integration + six origins) and the very-stale
+  `SCRIPTING.md` entry ("seven host words" → namespace-grouped); a broken self-link in `API.md`
+  (`../Documentation/BOOKART.md` → `BOOKART.md`); and the previously-undocumented `plakat.map.*` /
+  `plakat.fractal.*` Bund word namespaces (added to SCRIPTING.md). Verified: no age-gate drift, every
+  documented `bookart` command exists, no other broken self-links, anchors resolve.
 
 ## Track B — corpus regen + robustness soak
 
