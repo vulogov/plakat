@@ -95,11 +95,14 @@ fn to_rgb(img: &crate::api::Image) -> Result<image::RgbImage> {
 
 /// Generate (or load) the albedo, then make it seamless.
 async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
+    let is_photo = plan.from_image.is_some();
     let mut albedo = if let Some(path) = &plan.from_image {
-        // Image-to-material (B6 refines the crop-to-tileable); B4 loads + squares it.
+        // Image-to-material (B6): load + centre-square-crop + resize to the working size.
+        println!("  {} image-to-material from {path}", style("→").cyan());
         let img = image::open(path).with_context(|| format!("reading {path}"))?.to_rgb8();
         let s = img.width().min(img.height());
-        image::imageops::resize(&image::imageops::crop_imm(&img, 0, 0, s, s).to_image(), plan.size, plan.size, image::imageops::FilterType::Lanczos3)
+        let (ox, oy) = ((img.width() - s) / 2, (img.height() - s) / 2);
+        image::imageops::resize(&image::imageops::crop_imm(&img, ox, oy, s, s).to_image(), plan.size, plan.size, image::imageops::FilterType::Lanczos3)
     } else {
         println!("  {} albedo {}² · {} steps · seed {seed}…", style("→").cyan(), plan.size, plan.steps);
         let imgs = crate::api::Generate::new(&plan.model)
@@ -113,11 +116,17 @@ async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
             .context("albedo generation")?;
         to_rgb(imgs.first().context("generation produced no image")?)?
     };
-    // Seamless: a boundary feather (B4). The flat/tileable prompt keeps the field low-frequency so the
-    // wrap is gentle; a per-step latent roll is the escalation if the scorecard residual demands it.
+    // Seamless. A generated albedo is already near-tileable (flat/tileable prompt) → a boundary feather.
+    // A photo isn't → the offset-and-heal `make_tileable` (roll + central-cross feather).
     if plan.seamless_mode != "none" {
-        let band = (plan.size / 24).max(4);
-        albedo = seamless::feather_seam(&albedo, band, Axes::parse(&plan.seamless_axes));
+        let axes = Axes::parse(&plan.seamless_axes);
+        albedo = if is_photo {
+            // Offset-and-heal the interior seams, then a light boundary feather for any residual.
+            let t = seamless::make_tileable(&albedo, (plan.size / 12).max(8), axes);
+            seamless::feather_seam(&t, (plan.size / 24).max(4), axes)
+        } else {
+            seamless::feather_seam(&albedo, (plan.size / 24).max(4), axes)
+        };
     }
     Ok(albedo)
 }

@@ -127,10 +127,17 @@ tileability score, end-to-end, before building the rest.
   proper per-stone normal; **tiling survived the upscale (tileability x 0.12 / y 0.10, PASS)** — G0.5
   confirmed.
 
-### B6 — image-to-material + polish
-- `texture from <image> --out DIR` — crop-to-tileable (+ optional `--material` re-gen) + delight →
-  the full derive/export path. Rejection sampling shared with B4.
-- **GPU.**
+### B6 — image-to-material. DONE.
+- `texture from <image> --out DIR [--material --size --upscale --height]` — builds a `from_image` spec
+  and runs the render path. **No albedo generation** (weight-light): the photo is centre-square-cropped
+  → made tileable → delit → depth-height → derived → exported.
+- **Crop-to-tileable = offset-and-heal** (`seamless::make_tileable` — roll by half so the edge seams
+  move to the interior, then feather the central cross) **+ a boundary feather** for any residual. The
+  generated-albedo path keeps its lighter boundary feather (already near-tileable from the flat prompt).
+- **GPU (depth only). Live-verified**: a synthetic *non-tileable* lit brick photo (offset grid + a
+  top→bottom lighting gradient) → a tileable material — the gradient seam gone (delight), the brick
+  pattern healed; tileability **1.62 → 0.06 / 0.36 PASS**. (The heal softens a band at the moved seam —
+  the weight-free tradeoff, milder on real photos; a generative inpaint would be cleaner, a fast-follow.)
 
 ### B7 — integration parity (the bookart lesson — bookart A1–A5 as template)
 - `plakat::api::Texture` (full builder). Scenario `type: texture`. Compile `type: texture`

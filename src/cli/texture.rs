@@ -40,6 +40,30 @@ pub enum TextureCmd {
     Export(ExportArgs),
     /// Render a full seamless PBR material from a spec (generate albedo → delight → derive → export).
     Render(RenderArgs),
+    /// Image-to-material: turn a photo into a seamless PBR set (crop-to-tileable → delight → derive →
+    /// depth-height → export). No generation unless `--material` triggers it later.
+    From(FromArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct FromArgs {
+    /// The source photo.
+    pub image: PathBuf,
+    /// Output material directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Optional material label (recorded in the recipe).
+    #[arg(long)]
+    pub material: Option<String>,
+    /// Working / output size.
+    #[arg(long, default_value_t = 1024)]
+    pub size: u32,
+    /// Tiled upscale: `none` / `2k` / `4k`.
+    #[arg(long)]
+    pub upscale: Option<String>,
+    /// Derive height from a depth pass (`auto`) or the albedo luminance (`from-albedo`).
+    #[arg(long, default_value = "auto")]
+    pub height: String,
 }
 
 #[derive(Args, Debug)]
@@ -151,7 +175,27 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::Preview(a) => run_preview(a),
         TextureCmd::Export(a) => run_export(a),
         TextureCmd::Render(a) => run_render(a).await,
+        TextureCmd::From(a) => run_from(a).await,
     }
+}
+
+/// B6: image-to-material — build a `from_image` spec and render it (crop-to-tileable → delight →
+/// derive → export). No albedo generation.
+async fn run_from(a: FromArgs) -> Result<()> {
+    use crate::texture::render::{render_material, RenderOpts};
+    use crate::texture::spec::{Channels, Page};
+    let spec = TextureSpec {
+        schema: Some(crate::texture::SCHEMA_VERSION.into()),
+        from_image: Some(a.image.to_string_lossy().to_string()),
+        material: a.material.clone(),
+        channels: Some(Channels { height: Some(a.height.clone()), ..Default::default() }),
+        page: Some(Page { size: Some(a.size), upscale: a.upscale.clone(), ..Default::default() }),
+        ..Default::default()
+    };
+    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: 1, upscale: a.upscale.clone() }).await?;
+    print_scorecard(&sc);
+    println!("{} {}  (material from {})", style("wrote").green(), a.out.display(), a.image.display());
+    Ok(())
 }
 
 /// B4: render a full seamless PBR material from a spec (GPU).

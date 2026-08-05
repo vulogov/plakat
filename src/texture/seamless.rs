@@ -150,6 +150,46 @@ pub fn feather_seam(img: &RgbImage, band: u32, axes: Axes) -> RgbImage {
     out
 }
 
+/// Make a **non-tileable photo** tileable (image-to-material, B6): the classic *offset-and-heal*. Roll
+/// by half so the discontinuous edges move to the interior — the boundary is now the photo's continuous
+/// centre, so it tiles — then feather the resulting central cross (narrow band, strongest at the seam)
+/// to hide the moved discontinuity while preserving most texture.
+pub fn make_tileable(img: &RgbImage, band: u32, axes: Axes) -> RgbImage {
+    let (w, h) = img.dimensions();
+    let (cx, cy) = (w / 2, h / 2);
+    // roll by half.
+    let mut out = RgbImage::from_fn(w, h, |x, y| *img.get_pixel((x + cx) % w, (y + cy) % h));
+    let src = out.clone();
+    let blend = |a: image::Rgb<u8>, b: image::Rgb<u8>, t: f32| {
+        image::Rgb([0, 1, 2].map(|c| ((a.0[c] as f32) * (1.0 - t) + (b.0[c] as f32) * t).round() as u8))
+    };
+    if matches!(axes, Axes::Both | Axes::X) {
+        for dx in 1..=band.min(cx) {
+            let t = 0.5 * (1.0 - (dx as f32 - 0.5) / band as f32); // 0.5 at the seam → 0 outward
+            for y in 0..h {
+                let (l, r) = (*src.get_pixel(cx - dx, y), *src.get_pixel((cx + dx).min(w - 1), y));
+                out.put_pixel(cx - dx, y, blend(l, r, t));
+                if cx + dx < w {
+                    out.put_pixel(cx + dx, y, blend(r, l, t));
+                }
+            }
+        }
+    }
+    if matches!(axes, Axes::Both | Axes::Y) {
+        for dy in 1..=band.min(cy) {
+            let t = 0.5 * (1.0 - (dy as f32 - 0.5) / band as f32);
+            for x in 0..w {
+                let (tp, bt) = (*src.get_pixel(x, cy - dy), *src.get_pixel(x, (cy + dy).min(h - 1)));
+                out.put_pixel(x, cy - dy, blend(tp, bt, t));
+                if cy + dy < h {
+                    out.put_pixel(x, cy + dy, blend(bt, tp, t));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +223,23 @@ mod tests {
         assert_eq!(r.flatten_all().unwrap().to_vec1::<f32>().unwrap(), vec![3., 0., 1., 2.]);
         let back = roll2d(&r, -1, 0).unwrap();
         assert_eq!(back.flatten_all().unwrap().to_vec1::<f32>().unwrap(), vec![0., 1., 2., 3.]);
+    }
+
+    #[test]
+    fn make_tileable_kills_a_gradient_seam() {
+        // A left→right BRIGHTNESS RAMP has a hard wrap seam (col 0 black vs col w-1 white). Boundary
+        // feathering can't fix an interior-driven ramp; offset-and-heal does.
+        let img = RgbImage::from_fn(64, 16, |x, _| {
+            let v = (x as f32 / 63.0 * 255.0) as u8;
+            image::Rgb([v, v, v])
+        });
+        let seam = |im: &RgbImage| -> i32 {
+            let (w, h) = im.dimensions();
+            (0..h).map(|y| (im.get_pixel(0, y).0[0] as i32 - im.get_pixel(w - 1, y).0[0] as i32).abs()).sum()
+        };
+        let before = seam(&img);
+        let after = seam(&make_tileable(&img, 8, Axes::X));
+        assert!(after * 4 < before, "offset-and-heal should crush the ramp seam ({before} → {after})");
     }
 
     #[test]
