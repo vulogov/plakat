@@ -38,6 +38,19 @@ pub enum TextureCmd {
     Preview(PreviewArgs),
     /// Re-pack a material directory for an engine — naming convention, ORM, glTF (**no weights**).
     Export(ExportArgs),
+    /// Render a full seamless PBR material from a spec (generate albedo → delight → derive → export).
+    Render(RenderArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct RenderArgs {
+    pub spec: PathBuf,
+    /// Output material directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Rejection sampling: try up to N seeds, keep the first that clears the scorecard.
+    #[arg(long, default_value_t = 1)]
+    pub attempts: u32,
 }
 
 #[derive(Args, Debug)]
@@ -134,7 +147,18 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::Verify(a) => run_verify(a),
         TextureCmd::Preview(a) => run_preview(a),
         TextureCmd::Export(a) => run_export(a),
+        TextureCmd::Render(a) => run_render(a).await,
     }
+}
+
+/// B4: render a full seamless PBR material from a spec (GPU).
+async fn run_render(a: RenderArgs) -> Result<()> {
+    use crate::texture::render::{render_material, RenderOpts};
+    let spec = TextureSpec::load(&a.spec)?;
+    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: a.attempts }).await?;
+    print_scorecard(&sc);
+    println!("{} {}  (seamless PBR material)", style("wrote").green(), a.out.display());
+    Ok(())
 }
 
 /// B2: load a material directory into a `Material` (missing data maps → neutral fill).

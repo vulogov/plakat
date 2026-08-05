@@ -94,15 +94,18 @@ tileability score, end-to-end, before building the rest.
   hairline blend — the G0.2 VAE seam-repair) · `Axes{Both,X,Y}`.
 - **4 tests** (exact wrap, per-axis pad, roll circular+invertible, feather shrinks a seam). Full suite green.
 
-### B4 — seamless generation + delighting + `texture render` e2e (applies B3, measures)
-- **Modules:** `src/texture/render.rs`; a contained, **default-off** seamless hook in the SD sampler
-  (roll the latent by a per-step offset around `unet.forward`, unroll the prediction — byte-identical
-  when off, model-agnostic) + `feather_seam` on the decode.
-- Albedo via `api::Generate` with the seamless hook + flat/tileable prompt (§5) → IC-Light delight
-  (G0.3) → derive (B1) → **scorecard-measured tileability** → export (B2). Rejection sampling
-  `--attempts N`. **If the roll+feather residual fails the scorecard**, escalate to the vendored circular
-  ResNet (B3's `SeamlessConv2d`) — but only then.
-- **GPU.** Live-verified on Metal (a seamless, delit, derived material that clears the scorecard).
+### B4 — seamless generation + delighting + `texture render` e2e. DONE.
+- **Module:** `src/texture/render.rs`. **NO sampler surgery** — the measure-first bet paid off: albedo
+  via `api::Generate` with the **flat/tileable prompt** (§5) + a post-hoc `feather_seam` (B3) was enough.
+- **Delight = weight-free homomorphic flatten** (`derive::flatten_lighting` — divide out the low-freq
+  illumination; circular so it stays tileable). Chosen over IC-Light, which is subject-oriented
+  (expects an RGBA cut-out) and G0.3-dubious on a flat texture — the flat-lighting prompt + this flatten
+  are the primary path. → derive (B1) → scorecard → export (B2). Rejection sampling `--attempts N`.
+- `texture render <spec> --out DIR`. **GPU. Live-verified on Metal**: `mossy cobblestone` sdxl 1024²
+  → **tileability x 0.08 / y 0.07** (≪ 1.5), normal-valid 1.000, albedo-flat 0.013, PASS; the 2×2 tile
+  shows **no seam** at the join, the lit sphere is a proper material preview.
+- *(The per-step latent-roll + vendored `SeamlessConv2d` remain the escalation path if a future
+  high-frequency material's feather residual fails — but it clears the scorecard as-is.)*
 
 ### B4 — albedo generation + delighting + `texture render` e2e
 - **Modules:** `src/texture/render.rs` (the router: resolve → circular-conv albedo → IC-Light delight →

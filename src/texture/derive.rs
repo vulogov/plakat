@@ -170,6 +170,29 @@ pub fn metallic_from_albedo(albedo: &RgbImage) -> GrayImage {
     out
 }
 
+/// Weight-free **delighting** (RFC §9): divide out the low-frequency illumination so the albedo is
+/// flat-lit (no baked gradient/shadow), preserving colour + detail. A circular low-pass keeps it
+/// tileable. The texture-appropriate delight — IC-Light is subject-oriented (G0.3); the flat-lighting
+/// prompt + this homomorphic flatten are the primary path.
+pub fn flatten_lighting(albedo: &RgbImage) -> RgbImage {
+    let (w, h) = albedo.dimensions();
+    // low-frequency luminance (the baked lighting).
+    let mut luma = GrayImage::new(w, h);
+    for (x, y, p) in albedo.enumerate_pixels() {
+        luma.put_pixel(x, y, Luma([(luma01(p) * 255.0).round() as u8]));
+    }
+    let r = ((w.min(h) / 12) as i32).max(2);
+    let low = circular_box_blur(&luma, r);
+    let target: f32 = low.pixels().map(|p| p.0[0] as f32).sum::<f32>() / (w * h) as f32 / 255.0;
+    let mut out = RgbImage::new(w, h);
+    for (x, y, p) in albedo.enumerate_pixels() {
+        let l = (low.get_pixel(x, y).0[0] as f32 / 255.0).max(0.02);
+        let s = (target / l).clamp(0.4, 2.5); // divide out the low-freq lighting
+        out.put_pixel(x, y, Rgb([(p.0[0] as f32 * s).clamp(0.0, 255.0) as u8, (p.0[1] as f32 * s).clamp(0.0, 255.0) as u8, (p.0[2] as f32 * s).clamp(0.0, 255.0) as u8]));
+    }
+    out
+}
+
 fn normalize(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     let m = (x * x + y * y + z * z).sqrt().max(1e-9);
     (x / m, y / m, z / m)
