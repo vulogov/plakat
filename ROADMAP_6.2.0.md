@@ -58,12 +58,16 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
 
 ## Track C — performance profiling pass
 
-- **C1 — profile the hot paths.** Bench a representative set (t2i sd15/sdxl/sd3.5, a bookart render, a
-  fractal render) with the existing bench harness; capture a baseline and look for regressions since the
-  last perf pass (2.4.0).
-- **C2 — opportunistic wins.** Only land changes that are safe + measured (no speculative rewrites).
-  Candidates: redundant image round-trips (bookart writes temp PNGs for diffusion — could stay in-mem),
-  allocation churn in the finisher/procedural rasteriser.
+- **C1 — profile the hot paths. DONE.** Ran `plakat bench sd15 512² 20 --repeat 3` and compared to the
+  frozen 2.4.0 baseline (`out/baseline/baseline-sd15.json`): **no regression** — per-step **714 ms** vs
+  711, VAE tail 3225 vs 3154, encode+first 16 vs 23, and peak RSS *lower* (2.65 vs 3.53 GB, the own-UNet
+  default is leaner). The dominant cost is unchanged base diffusion (GPU); the bookart finisher /
+  procedural rasteriser are negligible beside it, so no speculative micro-opt is warranted.
+- **C2 — opportunistic win. DONE.** Removed the bookart diffusion **temp-PNG round-trip**: `diffuse()`
+  now converts the `api::Image` to an `RgbImage` in memory (was `img.save(tmp)` → `image::open(tmp)`
+  per render — a full PNG encode+decode + two disk ops, pure waste since PNG is lossless). The rare
+  `matte` transparency path writes its own short-lived temp (U2Net's `matte` takes a path). Output is
+  byte-identical; verified live (russian firebird renders correctly, no temp files). Suite 1739 green.
 
 ## Track D — bug backlog
 

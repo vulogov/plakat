@@ -12,7 +12,6 @@ use crate::bookart::spec::BookArtSpec;
 use crate::bookart::{finish, geometry, procedural};
 use anyhow::{Context, Result};
 use console::style;
-use std::path::PathBuf;
 
 /// Knobs for a bookart render.
 #[derive(Debug, Clone)]
@@ -62,9 +61,9 @@ fn gen_size(rw: u32, rh: u32) -> (u32, u32) {
     (snap(w), snap(h))
 }
 
-/// Generate one diffusion render (with the origin LoRA if not `generic`) at `w×h`. Returns the raw RGB
-/// plus the temp path it was written to (kept for an optional U2Net matte; the caller deletes it).
-async fn diffuse(model: &str, plan: &RenderPlan, w: u32, h: u32, steps: usize, seed: u64) -> Result<(image::RgbImage, PathBuf)> {
+/// Generate one diffusion render (with the origin LoRA if not `generic`) at `w×h`, returned **in memory**
+/// as an `RgbImage` — no PNG round-trip (C2). The `matte` transparency path writes its own temp file.
+async fn diffuse(model: &str, plan: &RenderPlan, w: u32, h: u32, steps: usize, seed: u64) -> Result<image::RgbImage> {
     let mut prompt = plan.prompt.clone();
     let mut builder = crate::api::Generate::new(model).negative(&plan.negative).size(w, h).steps(steps).seed(seed);
     // Only attach a LoRA for origins that actually host one (B3): russian/english/japanese, or a custom
@@ -80,16 +79,19 @@ async fn diffuse(model: &str, plan: &RenderPlan, w: u32, h: u32, steps: usize, s
     println!("  {} diffusion {w}×{h}, {steps} steps, seed {seed}…", style("→").cyan());
     let imgs = builder.prompt(&prompt).run().await.context("diffusion render")?;
     let img = imgs.into_iter().next().context("diffusion produced no image")?;
-    let tmp = std::env::temp_dir().join(format!("bookart_diff_{seed}_{w}x{h}.png"));
-    img.save(&tmp)?;
-    let raw = image::open(&tmp).context("reopening the diffusion render")?.to_rgb8();
-    Ok((raw, tmp))
+    image::RgbImage::from_raw(img.width(), img.height(), img.pixels().to_vec())
+        .context("diffusion render had a malformed buffer")
 }
 
-/// U2Net matte → a solid silhouette in the ink tint (the `transparency: matte` mode).
-async fn matte_silhouette(path: &std::path::Path, raw: &image::RgbImage, plan: &RenderPlan) -> Result<image::RgbaImage> {
+/// U2Net matte → a solid silhouette in the ink tint (the `transparency: matte` mode). U2Net's `matte`
+/// takes a path, so this writes a short-lived temp PNG (only the rare matte mode pays it).
+async fn matte_silhouette(raw: &image::RgbImage, plan: &RenderPlan) -> Result<image::RgbaImage> {
     let device = crate::api::device("auto")?;
-    let (_fg, mask) = crate::pipelines::matting::matte(path, &device).await.context("U2Net matte")?;
+    let tmp = std::env::temp_dir().join(format!("bookart_matte_{}x{}.png", raw.width(), raw.height()));
+    raw.save(&tmp).context("writing matte temp")?;
+    let matted = crate::pipelines::matting::matte(&tmp, &device).await.context("U2Net matte");
+    let _ = std::fs::remove_file(&tmp);
+    let (_fg, mask) = matted?;
     let mask = if mask.dimensions() != raw.dimensions() { image::imageops::resize(&mask, raw.width(), raw.height(), image::imageops::FilterType::Triangle) } else { mask };
     let tint = finish::parse_tint(&plan.tint);
     let mut out = image::RgbaImage::new(raw.width(), raw.height());
@@ -194,15 +196,14 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
             let tries = opts.attempts.max(1);
             let (mut best, mut fewest) = (None, usize::MAX);
             for i in 0..tries {
-                let (raw, tmp) = diffuse(&opts.model, &plan, gw, gh, opts.steps, opts.seed + i as u64).await?;
+                let raw = diffuse(&opts.model, &plan, gw, gh, opts.steps, opts.seed + i as u64).await?;
                 let gray = finish::to_luma(&raw); // pre-binarise luma (the C2 cache candidate)
                 let finished = if plan.transparency_mode == "matte" {
                     println!("  {} U2Net matte → silhouette", style("↳").cyan());
-                    matte_silhouette(&tmp, &raw, &plan).await?
+                    matte_silhouette(&raw, &plan).await?
                 } else {
                     finish::finish_ornament(&raw, &plan)
                 };
-                let _ = std::fs::remove_file(&tmp);
                 let sc = scorecard::score(&finished, &plan);
                 let matte = plan.transparency_mode == "matte";
                 if sc.passes {
@@ -230,8 +231,7 @@ pub async fn render_spec(spec: &BookArtSpec, opts: &RenderOpts) -> Result<Render
             let width = (r0.w.min(r0.h) as f32 * 0.004).max(1.5);
             let frame_rgba = finish::finish_procedural(&procedural::rasterise(&frame_paths, r0.w, r0.h, width), &plan);
             let (gw, gh) = gen_size(ww, wh);
-            let (raw, tmp) = diffuse(&opts.model, &plan, gw, gh, opts.steps, opts.seed).await?;
-            let _ = std::fs::remove_file(&tmp);
+            let raw = diffuse(&opts.model, &plan, gw, gh, opts.steps, opts.seed).await?;
             let inlay_gray = finish::binarize::binarise(&finish::to_luma(&raw), "xdog", plan.ink_weight);
             let inlay = finish::alpha::to_transparent(&inlay_gray, "luminance", finish::parse_tint(&plan.tint), 0.0);
             let mut canvas = image::RgbaImage::from_pixel(r0.w, r0.h, image::Rgba([0, 0, 0, 0]));
