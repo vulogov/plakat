@@ -83,13 +83,26 @@ tileability score, end-to-end, before building the rest.
   falloff + normal-mapped relief), unreal re-pack (`T_BaseColor`…`T_ORM`) + glTF. Full suite 1758 green.
   *(The whole weight-free half — derive + score + preview + export — is done + demoable.)*
 
-### B3 — the seamless engine (headline; post-G0.1)
-- **Modules:** `src/texture/seamless.rs`; **+`seamless` flag** into `sd_train/{unet,blocks}.rs` (the
-  only touch to an existing pipeline).
-- `circular_pad2d` + the conv wiring from G0.1, productionised (per-axis `x|y|both`). A `SeamlessScope`
-  (thread-local/opts-threaded) so generation opts carry it without changing every signature.
-- **GPU.** Tests: circular-pad shape/values (CPU, CI); the seam-reduction is measured live (Metal),
-  logged not asserted (per the Tier-2 CPU-canonical rule — don't assert Metal fp drift).
+### B3 — the seamless engine primitives (headline enabler). DONE.
+- **Module:** `src/texture/seamless.rs` — self-contained + CI-tested, so B4 applies them **without**
+  risky surgery on the shared corr-1.0 generation stack. (G0.1 finding: the own UNet's ResNet convs are
+  candle's, not plakat-owned; the disproportionate-risk full-vendor is escalated-to-only-if-measured, per
+  G0.2's measure-first rule.)
+- `circular_pad2d(t, px, py)` (per-axis, from the G0.1 probe) · `roll2d(t, dx, dy)` (circular shift — the
+  **per-step latent roll** that spreads the zero-pad conv seam across the tile, tileable diffusion with
+  no model change) · `SeamlessConv2d` (the vendored-ResNet escalation path) · `feather_seam` (weight-free
+  hairline blend — the G0.2 VAE seam-repair) · `Axes{Both,X,Y}`.
+- **4 tests** (exact wrap, per-axis pad, roll circular+invertible, feather shrinks a seam). Full suite green.
+
+### B4 — seamless generation + delighting + `texture render` e2e (applies B3, measures)
+- **Modules:** `src/texture/render.rs`; a contained, **default-off** seamless hook in the SD sampler
+  (roll the latent by a per-step offset around `unet.forward`, unroll the prediction — byte-identical
+  when off, model-agnostic) + `feather_seam` on the decode.
+- Albedo via `api::Generate` with the seamless hook + flat/tileable prompt (§5) → IC-Light delight
+  (G0.3) → derive (B1) → **scorecard-measured tileability** → export (B2). Rejection sampling
+  `--attempts N`. **If the roll+feather residual fails the scorecard**, escalate to the vendored circular
+  ResNet (B3's `SeamlessConv2d`) — but only then.
+- **GPU.** Live-verified on Metal (a seamless, delit, derived material that clears the scorecard).
 
 ### B4 — albedo generation + delighting + `texture render` e2e
 - **Modules:** `src/texture/render.rs` (the router: resolve → circular-conv albedo → IC-Light delight →

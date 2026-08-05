@@ -16,6 +16,7 @@ pub mod export;
 pub mod lint;
 pub mod preview;
 pub mod scorecard;
+pub mod seamless;
 pub mod spec;
 
 pub use compile::{resolve, ChannelSource, HeightSource, RenderPlan};
