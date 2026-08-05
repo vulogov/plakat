@@ -640,13 +640,18 @@ async fn run_render(a: RenderArgs) -> Result<()> {
 
 async fn run_illustrate(a: IllustrateArgs) -> Result<()> {
     use crate::bookart::spec::{BookArtSpec, Ornament, Page};
-    // A single B/W plate: synthesise a diffusion-tier spec from the prompt + flags.
+    // A single B/W plate: synthesise a diffusion-tier spec from the prompt + flags. D1: for `--type
+    // initial` the prompt's first letter becomes the glyph, so `--font` renders a real historiated
+    // initial (was a dead flag on `illustrate`); other types render the prompt as a pictorial plate.
+    let glyph = (a.kind == "initial")
+        .then(|| a.prompt.chars().find(|c| c.is_alphabetic()).map(|c| c.to_string()))
+        .flatten();
     let spec = BookArtSpec {
         schema: Some(crate::bookart::SCHEMA_VERSION.into()),
         origin: Some(a.origin),
         technique: Some(a.technique),
         page: Some(Page { size: Some(a.page), ..Default::default() }),
-        ornament: Some(Ornament { kind: Some(a.kind), tier: Some("diffusion".into()), prompt: Some(a.prompt), ..Default::default() }),
+        ornament: Some(Ornament { kind: Some(a.kind), tier: Some("diffusion".into()), prompt: Some(a.prompt), glyph, ..Default::default() }),
         ..Default::default()
     };
     do_render(spec, &a.out, &a.model, a.seed, a.steps, false, a.attempts, a.import.as_deref(), a.cache_raw, a.font.clone()).await

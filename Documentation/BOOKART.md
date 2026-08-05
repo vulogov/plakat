@@ -50,7 +50,7 @@ plakat bookart show       <spec>                                                
 plakat bookart origins    [--details]                                                 list origins × techniques × ornaments + LoRA hosting
 plakat bookart verify     <spec> --image IMG [--out O] [--finished] [--symmetrize] [--page]   the scorecard
 plakat bookart render     <spec> --out O [--model sd15 --seed 0 --steps 28] [--svg] [--attempts N] [--font F] [--cache-raw] [--import ALBUM]
-plakat bookart illustrate "<prompt>" --out O [--origin O --technique T --page a5 --type frontispiece …] [--cache-raw] [--import ALBUM]
+plakat bookart illustrate "<prompt>" --out O [--origin O --technique T --page a5 --type frontispiece …] [--font F] [--cache-raw] [--import ALBUM]
 plakat bookart kit        <spec> --out DIR [--model --steps --svg --no-coherence]     a coherent matched set (flagship)
 plakat bookart manuscript <book.md|list|book.epub> --kit <spec> --out DIR [--latex --svg]   a per-chapter set for a whole book
 plakat bookart proof      <dir> --out sheet.png                                       a contact sheet

@@ -71,10 +71,14 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
 
 ## Track D — bug backlog
 
-- **D1 — triage + fix.** Collect known issues (test-suite `#[ignore]`s worth revisiting, the map
-  `--verbose` clap-collision class of footguns, any Metal fp-drift asserts) and clear what's cheap.
-- **D2 — CI hygiene.** Confirm the `--no-default-features --lib` gate stays the source of truth; make
-  sure the opt-in features (`bookart-trace`, `epub`) at least *compile* in CI (a feature-matrix check).
+- **D1 — triage + fix. DONE.** Cleared the dead `illustrate --font` flag (found in A1): `illustrate
+  --type initial` now takes the prompt's first letter as the ornament glyph, so `--font` renders a real
+  historiated initial (verified live: `illustrate "A" --type initial --font Georgia.ttf` → "glyph
+  initial 'A' in a procedural frame"). Restored `--font` to the illustrate docs + tutorial.
+- **D2 — CI hygiene. DONE.** Added an **opt-in feature-matrix compile-check** to `ci.yml`
+  (`cargo build --no-default-features --features bookart-trace,epub,shaped-labels,templates`) so the
+  opt-in features can't bit-rot silently — the base `--no-default-features --lib` gate stays the source
+  of truth. Verified the combination compiles locally.
 
 ---
 

@@ -227,8 +227,10 @@ resolves `european-sd15.safetensors` from HuggingFace automatically. Add your ow
 `assets/bookart/lexicon.hjson`.
 
 ```sh
-# a spec with  ornament: { type: "initial", glyph: "A" }  →  render frames the real letterform:
-plakat bookart render initial.hjson --out A.png --font /Library/Fonts/Georgia.ttf   # historiated initial
+# a historiated initial around a real letter — from a spec (ornament: { type: "initial", glyph: "A" }):
+plakat bookart render initial.hjson --out A.png --font /Library/Fonts/Georgia.ttf
+# …or straight from illustrate — `--type initial` uses the prompt's first letter as the glyph:
+plakat bookart illustrate "A" --type initial --font /Library/Fonts/Georgia.ttf --out A.png
 plakat bookart font --out dingbats.otf                                # an OpenType dingbat font (type a–h)
 plakat bookart vectorize bird.png --out bird.svg                      # raster→SVG trace (feature: bookart-trace)
 plakat bookart manuscript book.epub --kit style.hjson --out orn/      # a whole EPUB's per-chapter set (feature: epub)

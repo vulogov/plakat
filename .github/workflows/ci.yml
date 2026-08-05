@@ -54,6 +54,12 @@ jobs:
       - name: test (CPU, lib)
         run: cargo test --no-default-features --lib
 
+      # Opt-in Cargo features aren't in the base build, so they can bit-rot silently.
+      # Compile-check them (they pull extra crates but no GPU): bookart-trace (vtracer),
+      # epub (zip), shaped-labels (ab_glyph — glyph initials + `bookart font` support).
+      - name: build (opt-in feature matrix)
+        run: cargo build --no-default-features --features bookart-trace,epub,shaped-labels,templates
+
       # RFC_VERIFY Tier 0 — structural / determinism invariants (CFG batch layout,
       # map-render determinism). Zero downloads, ~0.2s, deterministic → a reliable
       # correctness gate on every push. Non-zero exit fails the job.
