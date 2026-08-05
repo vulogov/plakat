@@ -951,6 +951,10 @@ struct TaskDef {
     /// The bookart task body (only consulted for `type: bookart` tasks — 6.1.0 A2).
     #[serde(default)]
     bookart: Option<crate::bookart::scenario_task::BookartTaskCfg>,
+
+    /// The texture task body (only consulted for `type: texture` tasks — 6.3.0 B7).
+    #[serde(default)]
+    texture: Option<crate::texture::scenario_task::TextureTaskCfg>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -1019,6 +1023,7 @@ enum TaskKind {
     #[cfg(feature = "fractals")]
     Fractal,
     Bookart,
+    Texture,
 }
 
 impl TaskKind {
@@ -1035,9 +1040,10 @@ impl TaskKind {
             #[cfg(feature = "fractals")]
             "fractal" | "fractals" => Ok(Self::Fractal),
             "bookart" => Ok(Self::Bookart),
+            "texture" => Ok(Self::Texture),
             other => bail!(
                 "scenario task type {other:?} not recognised \
-                 (expected: generate, animatediff, map, multiperson, fractal, bookart)"
+                 (expected: generate, animatediff, map, multiperson, fractal, bookart, texture)"
             ),
         }
     }
@@ -1083,11 +1089,11 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
         // A map / multiperson / fractal task loads its own SD pipeline(s) internally (or
         // none, for a pure Track-A fractal) — free any cached t2i / animate pipeline first.
         #[cfg(feature = "fractals")]
-        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Fractal | TaskKind::Bookart) => {
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Fractal | TaskKind::Bookart | TaskKind::Texture) => {
             CacheEviction::DropAll
         }
         #[cfg(not(feature = "fractals"))]
-        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Bookart) => {
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Bookart | TaskKind::Texture) => {
             CacheEviction::DropAll
         }
         // First task (last == None) or same-kind continuation —
@@ -1615,6 +1621,10 @@ pub async fn run_with_events(
                 let cfg = t.bookart.clone().unwrap_or_default();
                 crate::bookart::scenario_task::validate(&cfg).with_context(|| format!("task {:?} (bookart)", t.name))?;
             }
+            TaskKind::Texture => {
+                let cfg = t.texture.clone().unwrap_or_default();
+                crate::texture::scenario_task::validate(&cfg).with_context(|| format!("task {:?} (texture)", t.name))?;
+            }
         }
     }
 
@@ -1639,7 +1649,7 @@ pub async fn run_with_events(
         if matches!(tk, Ok(TaskKind::Fractal)) {
             continue;
         }
-        if matches!(tk, Ok(TaskKind::Bookart)) {
+        if matches!(tk, Ok(TaskKind::Bookart | TaskKind::Texture)) {
             continue;
         }
         if !scenes.contains_key(t.scene.as_str()) {
@@ -3060,6 +3070,43 @@ pub async fn run_with_events(
             .await;
             let rec_kind = "bookart".to_string();
             match bookart_result {
+                Ok(()) => task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: rec_kind,
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed),
+                    note: None,
+                    error: None,
+                }),
+                Err(e) => {
+                    crate::ui::progress::println(&format!("  {} task {:?}: {}", style("✗ failed").red().bold(), task.name, e));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: rec_kind,
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
+            seed_offset += count as u64;
+            continue;
+        }
+
+        // 6.3.0 B7: texture-task dispatch. Renders a seamless PBR material to `<out>/<name>/` via the
+        // shared render core.
+        if matches!(task_kind, TaskKind::Texture) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset);
+            let task_out = out_root.join(safe_name(&task.name));
+            let texture_result: Result<()> = async {
+                let cfg = task.texture.clone().unwrap_or_default();
+                crate::texture::scenario_task::run_texture_task(&cfg, task_seed, device.clone(), &task_out, args.dry_run).await
+            }
+            .await;
+            let rec_kind = "texture".to_string();
+            match texture_result {
                 Ok(()) => task_records.push(TaskRunRecord {
                     name: task.name.clone(),
                     kind: rec_kind,

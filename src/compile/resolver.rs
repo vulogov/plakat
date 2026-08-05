@@ -69,6 +69,13 @@ pub struct ResolvedScene {
     pub bookart_type: Option<String>,
     pub bookart_page: Option<String>,
     pub bookart_svg: Option<String>,
+    // 6.3.0 B7: a `type: texture` block compiles to a scenario `texture` task. The prose (if any) is the
+    // material prompt; `texture-*` directives fill the spec.
+    pub texture_from: Option<String>,
+    pub texture_size: Option<String>,
+    pub texture_upscale: Option<String>,
+    pub texture_seamless: Option<String>,
+    pub texture_height: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -215,6 +222,11 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             bookart_type: last_wins(&vals(g, "bookart-type"), &vals(Some(s), "bookart-type")).map(str::to_string),
             bookart_page: last_wins(&vals(g, "bookart-page"), &vals(Some(s), "bookart-page")).map(str::to_string),
             bookart_svg: last_wins(&vals(g, "bookart-svg"), &vals(Some(s), "bookart-svg")).map(str::to_string),
+            texture_from: last_wins(&vals(g, "texture-from"), &vals(Some(s), "texture-from")).map(str::to_string),
+            texture_size: last_wins(&vals(g, "texture-size"), &vals(Some(s), "texture-size")).map(str::to_string),
+            texture_upscale: last_wins(&vals(g, "texture-upscale"), &vals(Some(s), "texture-upscale")).map(str::to_string),
+            texture_seamless: last_wins(&vals(g, "texture-seamless"), &vals(Some(s), "texture-seamless")).map(str::to_string),
+            texture_height: last_wins(&vals(g, "texture-height"), &vals(Some(s), "texture-height")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

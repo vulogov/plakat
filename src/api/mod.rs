@@ -1854,6 +1854,71 @@ impl BookArt {
     }
 }
 
+/// Seamless PBR material synthesis (RFC TEXTURE-1). Turn a prompt or a photo into a tileable material
+/// set (albedo/normal/roughness/metallic/height/AO), written to a directory. Mirrors [`BookArt`].
+///
+/// ```no_run
+/// # async fn f() -> anyhow::Result<()> {
+/// use plakat::api::Texture;
+/// let scorecard = Texture::from_prompt("mossy cobblestone").upscale("2k").run("mat/").await?;
+/// println!("tileable: {}", scorecard.passes);
+/// # Ok(()) }
+/// ```
+pub struct Texture {
+    spec: crate::texture::TextureSpec,
+    opts: crate::texture::render::RenderOpts,
+}
+
+impl Texture {
+    /// Text-to-material.
+    pub fn from_prompt(material: impl Into<String>) -> Self {
+        Self { spec: crate::texture::TextureSpec { material: Some(material.into()), ..Default::default() }, opts: Default::default() }
+    }
+
+    /// Image-to-material — a photo → a tileable PBR set.
+    pub fn from_image(path: impl Into<String>) -> Self {
+        Self { spec: crate::texture::TextureSpec { from_image: Some(path.into()), ..Default::default() }, opts: Default::default() }
+    }
+
+    /// Use an in-memory spec.
+    pub fn from_spec(spec: crate::texture::TextureSpec) -> Self {
+        Self { spec, opts: Default::default() }
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.spec.model = Some(model.into());
+        self
+    }
+    pub fn size(mut self, size: u32) -> Self {
+        self.spec.page.get_or_insert_with(Default::default).size = Some(size);
+        self
+    }
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.spec.seed = Some(seed);
+        self
+    }
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.spec.steps = Some(steps);
+        self
+    }
+    /// Tiled upscale: `none` / `2k` / `4k`.
+    pub fn upscale(mut self, upscale: impl Into<String>) -> Self {
+        self.opts.upscale = Some(upscale.into());
+        self
+    }
+    /// Rejection sampling: try up to N seeds, keep the first that clears the scorecard.
+    pub fn attempts(mut self, attempts: u32) -> Self {
+        self.opts.attempts = attempts;
+        self
+    }
+
+    /// Render the material into `out` (a directory), returning its
+    /// [`Scorecard`](crate::texture::Scorecard).
+    pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::texture::Scorecard> {
+        crate::texture::render::render_material(&self.spec, out.as_ref(), &self.opts).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

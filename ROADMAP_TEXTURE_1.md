@@ -139,12 +139,20 @@ tileability score, end-to-end, before building the rest.
   pattern healed; tileability **1.62 → 0.06 / 0.36 PASS**. (The heal softens a band at the moved seam —
   the weight-free tradeoff, milder on real photos; a generative inpaint would be cleaner, a fast-follow.)
 
-### B7 — integration parity (the bookart lesson — bookart A1–A5 as template)
-- `plakat::api::Texture` (full builder). Scenario `type: texture`. Compile `type: texture`
-  (`texture-material:`/`-size:`/`-upscale:`/`-seamless:`). Bund `plakat.texture.*`
-  (render/derive/preview → image handles). `--import` a preview + recipe into a photos album.
-  `doctor` section.
-- Touchpoints mirror bookart's scenario_task (7) / compile (parser/resolver/emitter) / words / api.
+### B7 — integration parity. DONE.
+- **`plakat::api::Texture`** — `from_prompt`/`from_image`/`from_spec` · `model`/`size`/`seed`/`steps`/
+  `upscale`/`attempts` · `run(out) -> Scorecard`. Mirrors `BookArt`.
+- **scenario `type: texture`** — `src/texture/scenario_task.rs` (`TextureTaskCfg` = inline `spec` or
+  `spec_file` + seed/upscale/attempts; `validate` + `run_texture_task`) + the 7 `cli/scenario.rs`
+  touchpoints (TaskKind variant, from_strs, TaskDef field, evict ×2, preflight, scene-skip, dispatch).
+- **compile `type: texture`** — parser `declares_texture_task` (prose-optional for image-to-material),
+  resolver `texture_{from,size,upscale,seamless,height}`, emitter `texture: { spec: {…} }` (prose →
+  `material`; size emitted unquoted as u32).
+- **Bund `plakat.texture.{render,from,preview}`** — write the material dir + push the lit preview as an
+  image handle (`src/scripting/words/texture.rs`).
+- **`doctor`** — a texture section (weight-free vs weight-backed, output contract, seamless, integration).
+- Verified live: compile → a scenario the runner **dry-run-validates** (a material vignette + an
+  image-to-material); doctor + words register; full suite 1763 green.
 
 ### B8 — corpus + docs + the CUT
 - `corpus/texture_*.{hjson,sh}` + `TEXTURE_CORPUS.md`. `Documentation/TEXTURE.md` +

@@ -91,9 +91,9 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 ));
             }
         }
-        // A bookart task folds the prompt into its spec block below and ignores the top-level
+        // A bookart / texture task folds the prompt into its spec block below and ignores the top-level
         // prompt/negative — don't emit them (they'd be dead, and confusing).
-        if s.task_type.as_deref() != Some("bookart") {
+        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -172,6 +172,34 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 o.push_str(&format!("        svg: {v}\n"));
             }
             o.push_str("      }\n");
+        }
+        // 6.3.0 B7: emit the texture spec block so a `type: texture` compile block → a texture task. The
+        // prose is the material prompt (empty for an image-to-material `texture-from`).
+        if s.task_type.as_deref() == Some("texture") {
+            o.push_str("      texture: {\n        spec: {\n");
+            if !cs.prompt.trim().is_empty() {
+                o.push_str(&format!("          material: {}\n", q(&cs.prompt)));
+            }
+            if let Some(v) = &s.texture_from {
+                o.push_str(&format!("          from_image: {}\n", q(v)));
+            }
+            if let Some(v) = &s.texture_seamless {
+                o.push_str(&format!("          seamless: {{ mode: {} }}\n", q(v)));
+            }
+            if let Some(v) = &s.texture_height {
+                o.push_str(&format!("          channels: {{ height: {} }}\n", q(v)));
+            }
+            if s.texture_size.is_some() || s.texture_upscale.is_some() {
+                o.push_str("          page: {");
+                if let Some(v) = &s.texture_size {
+                    o.push_str(&format!(" size: {v}")); // u32 — unquoted
+                }
+                if let Some(v) = &s.texture_upscale {
+                    o.push_str(&format!(" upscale: {}", q(v)));
+                }
+                o.push_str(" }\n");
+            }
+            o.push_str("        }\n      }\n");
         }
         o.push_str("    }\n");
     }

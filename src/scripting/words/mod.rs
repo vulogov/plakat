@@ -13,6 +13,7 @@ pub mod adetailer;
 pub mod animate;
 pub mod artefact;
 pub mod bookart;
+pub mod texture;
 pub mod cascade;
 pub mod config;
 pub mod controlnet;
@@ -88,6 +89,13 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.bookart.render: {e}"))?;
     vm.register_inline("plakat.bookart.illustrate".to_string(), bookart::plakat_bookart_illustrate)
         .map_err(|e| anyhow!("registering plakat.bookart.illustrate: {e}"))?;
+    // 6.3.0 (B7): plakat.texture.* namespace — synthesise a seamless PBR material, push its preview.
+    vm.register_inline("plakat.texture.render".to_string(), texture::plakat_texture_render)
+        .map_err(|e| anyhow!("registering plakat.texture.render: {e}"))?;
+    vm.register_inline("plakat.texture.from".to_string(), texture::plakat_texture_from)
+        .map_err(|e| anyhow!("registering plakat.texture.from: {e}"))?;
+    vm.register_inline("plakat.texture.preview".to_string(), texture::plakat_texture_preview)
+        .map_err(|e| anyhow!("registering plakat.texture.preview: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

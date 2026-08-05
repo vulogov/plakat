@@ -322,6 +322,10 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     section_bookart();
     println!();
 
+    // -------- v6.3.0: texture pipeline --------
+    section_texture();
+    println!();
+
     println!(
         "  {}\n",
         style("If you've fixed any of the issues above, re-run `plakat doctor` to confirm.").dim()
@@ -371,6 +375,16 @@ fn section_bookart() {
         note("raster→SVG trace OFF: `bookart vectorize` + pixel-tier `--svg` need `--features bookart-trace` (pulls an extra image stack; procedural `--svg` is always on).");
     }
     note("flagship: `kit` (a coherent matched set) + `manuscript` (a whole book's per-chapter ornaments). See Documentation/BOOKART.md.");
+}
+
+fn section_texture() {
+    section_header("texture (6.3.0 — seamless PBR material synthesis)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · derive · verify · preview · export");
+    note("weight-backed: render (generate the albedo) · from (image-to-material; depth-height needs the depth model)");
+    note("output: a material dir — albedo/normal/roughness/metallic/height/AO PNGs + ORM pack + a lit preview + material.json (recipe + scorecard). Every channel exactly tileable.");
+    note("seamless (§7): the flat/tileable prompt + a boundary feather (generated), or offset-and-heal make_tileable (a photo). Native circular-conv / per-step latent-roll are the escalation path.");
+    note("height `auto` = Depth-Anything-V2 (macro relief) + a luminance high-pass (micro detail); derive normal (tangent-space) + AO from it. `page.upscale 2k|4k` = tiling-preserving Lanczos.");
+    note("integration (6.3): scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` · library `plakat::api::Texture`. See Documentation/TEXTURE.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

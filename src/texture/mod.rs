@@ -16,6 +16,7 @@ pub mod export;
 pub mod lint;
 pub mod preview;
 pub mod render;
+pub mod scenario_task;
 pub mod scorecard;
 pub mod seamless;
 pub mod spec;
