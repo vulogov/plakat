@@ -10,8 +10,12 @@ use serde::{Deserialize, Serialize};
 pub enum ChannelSource {
     /// A flat scalar map at this value (`[0,1]`).
     Scalar(f32),
-    /// Derived from the albedo by a luminance/heuristic pass.
+    /// Derived from the albedo by a luminance/heuristic pass (per-pixel, no spatial coherence).
     FromAlbedo,
+    /// **Spatially-coherent** derivation for COMPOSITE materials (6.4.0 / G0.A): a region-vote over the
+    /// per-pixel signal so distinct material regions (bare metal vs rust, wet vs dry) get a clean,
+    /// structured mask instead of per-pixel speckle. Circular window → tileable.
+    Auto,
     /// A dedicated albedo-conditioned diffusion pass with this prompt.
     Prompt(String),
 }
@@ -78,6 +82,7 @@ fn channel_source(v: Option<&serde_json::Value>, default: f32) -> ChannelSource 
     match v {
         Some(serde_json::Value::Number(n)) => ChannelSource::Scalar(n.as_f64().unwrap_or(default as f64) as f32),
         Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("from-albedo") => ChannelSource::FromAlbedo,
+        Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("auto") => ChannelSource::Auto,
         Some(serde_json::Value::String(s)) => ChannelSource::Prompt(s.clone()),
         _ => ChannelSource::Scalar(default),
     }

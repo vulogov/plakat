@@ -55,7 +55,7 @@ pub async fn run_texture_task(cfg: &TextureTaskCfg, task_seed: u64, _device: Dev
     } else if spec.seed.is_none() {
         spec.seed = Some(task_seed);
     }
-    let opts = RenderOpts { attempts: cfg.attempts.unwrap_or(1), upscale: cfg.upscale.clone() };
+    let opts = RenderOpts { attempts: cfg.attempts.unwrap_or(1), upscale: cfg.upscale.clone(), ..Default::default() };
     if dry_run {
         let plan = compile::resolve(&spec);
         let what = if plan.material.is_empty() { "image-to-material".to_string() } else { plan.material.clone() };

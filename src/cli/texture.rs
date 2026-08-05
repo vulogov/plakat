@@ -64,6 +64,12 @@ pub struct FromArgs {
     /// Derive height from a depth pass (`auto`) or the albedo luminance (`from-albedo`).
     #[arg(long, default_value = "auto")]
     pub height: String,
+    /// A hand-painted metallic mask PNG to use verbatim. White = metal.
+    #[arg(long)]
+    pub metallic_ref: Option<PathBuf>,
+    /// A hand-painted roughness mask PNG to use verbatim.
+    #[arg(long)]
+    pub roughness_ref: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -78,6 +84,12 @@ pub struct RenderArgs {
     /// Override the spec's tiled upscale: `none` / `2k` / `4k`.
     #[arg(long)]
     pub upscale: Option<String>,
+    /// A hand-painted metallic mask PNG to use verbatim (overrides the spec's metallic). White = metal.
+    #[arg(long)]
+    pub metallic_ref: Option<PathBuf>,
+    /// A hand-painted roughness mask PNG to use verbatim (overrides the spec's roughness).
+    #[arg(long)]
+    pub roughness_ref: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -123,6 +135,19 @@ pub struct DeriveArgs {
     /// Supply a height map instead of deriving one from the albedo's luminance.
     #[arg(long)]
     pub height: Option<PathBuf>,
+    /// Roughness source: `auto` (spatially-coherent, default) | `from-albedo` (per-pixel) | a scalar `0..1`.
+    #[arg(long, default_value = "auto")]
+    pub roughness: String,
+    /// Metallic source: `auto` (spatially-coherent region mask, default) | `from-albedo` | a scalar `0..1`.
+    /// For a known dielectric (stone, wood, fabric) pass `--metallic 0`; for a raw metal `--metallic 1`.
+    #[arg(long, default_value = "auto")]
+    pub metallic: String,
+    /// A hand-painted metallic mask PNG to use verbatim (overrides `--metallic`). White = metal.
+    #[arg(long)]
+    pub metallic_ref: Option<PathBuf>,
+    /// A hand-painted roughness mask PNG to use verbatim (overrides `--roughness`).
+    #[arg(long)]
+    pub roughness_ref: Option<PathBuf>,
     /// Normal slope gain.
     #[arg(long, default_value_t = 1.0)]
     pub normal_strength: f32,
@@ -132,6 +157,33 @@ pub struct DeriveArgs {
     /// Normal Y convention: `opengl` (+Y) or `directx` (-Y).
     #[arg(long, default_value = "opengl")]
     pub normal_y: String,
+}
+
+/// Parse a channel-source CLI string: `auto` | `from-albedo` | a scalar in `[0,1]`.
+fn parse_channel(s: &str) -> Result<ChannelSource> {
+    if s.eq_ignore_ascii_case("auto") {
+        Ok(ChannelSource::Auto)
+    } else if s.eq_ignore_ascii_case("from-albedo") {
+        Ok(ChannelSource::FromAlbedo)
+    } else if let Ok(v) = s.parse::<f32>() {
+        if (0.0..=1.0).contains(&v) {
+            Ok(ChannelSource::Scalar(v))
+        } else {
+            anyhow::bail!("scalar channel value must be in [0,1], got {v}")
+        }
+    } else {
+        anyhow::bail!("channel must be `auto`, `from-albedo`, or a scalar 0..1 (got `{s}`)")
+    }
+}
+
+/// Load a hand-painted mask PNG and resize (Lanczos) to the target dims — the A3 `--*-ref` override.
+fn load_mask_ref(path: &std::path::Path, w: u32, h: u32) -> Result<image::GrayImage> {
+    let g = image::open(path).with_context(|| format!("opening mask {}", path.display()))?.to_luma8();
+    Ok(if g.dimensions() == (w, h) {
+        g
+    } else {
+        image::imageops::resize(&g, w, h, image::imageops::FilterType::Lanczos3)
+    })
 }
 
 #[derive(Args, Debug)]
@@ -192,7 +244,12 @@ async fn run_from(a: FromArgs) -> Result<()> {
         page: Some(Page { size: Some(a.size), upscale: a.upscale.clone(), ..Default::default() }),
         ..Default::default()
     };
-    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: 1, upscale: a.upscale.clone() }).await?;
+    let sc = render_material(
+        &spec,
+        &a.out,
+        &RenderOpts { attempts: 1, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() },
+    )
+    .await?;
     print_scorecard(&sc);
     println!("{} {}  (material from {})", style("wrote").green(), a.out.display(), a.image.display());
     Ok(())
@@ -202,7 +259,12 @@ async fn run_from(a: FromArgs) -> Result<()> {
 async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::texture::render::{render_material, RenderOpts};
     let spec = TextureSpec::load(&a.spec)?;
-    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: a.attempts, upscale: a.upscale.clone() }).await?;
+    let sc = render_material(
+        &spec,
+        &a.out,
+        &RenderOpts { attempts: a.attempts, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() },
+    )
+    .await?;
     print_scorecard(&sc);
     println!("{} {}  (seamless PBR material)", style("wrote").green(), a.out.display());
     Ok(())
@@ -238,11 +300,13 @@ fn run_derive(a: DeriveArgs) -> Result<()> {
         Some(p) => Some(image::open(p).with_context(|| format!("opening {}", p.display()))?.to_luma8()),
         None => None,
     };
-    // `derive` has no spec → from-albedo channel sources on top of the resolved defaults.
+    // `derive` has no spec → channel sources from the CLI flags on top of the resolved defaults.
     let mut plan = compile::resolve(&TextureSpec::default());
-    plan.roughness = ChannelSource::FromAlbedo;
+    plan.roughness = parse_channel(&a.roughness)?;
+    plan.metallic = parse_channel(&a.metallic)?;
     plan.normal_y = if a.normal_y.eq_ignore_ascii_case("directx") { "directx".into() } else { "opengl".into() };
-    let m = Material::derive(
+    let (w, h) = albedo.dimensions();
+    let mut m = Material::derive(
         albedo,
         height,
         a.normal_strength,
@@ -251,6 +315,13 @@ fn run_derive(a: DeriveArgs) -> Result<()> {
         &plan.roughness,
         &plan.metallic,
     );
+    // A3: a hand-painted mask PNG overrides the derived channel verbatim (resized to fit).
+    if let Some(p) = &a.metallic_ref {
+        m.metallic = load_mask_ref(p, w, h)?;
+    }
+    if let Some(p) = &a.roughness_ref {
+        m.roughness = load_mask_ref(p, w, h)?;
+    }
     let sc = scorecard::score(&m);
     export::write_material(&m, &plan, &sc, &a.out)?;
     print_scorecard(&sc);
@@ -367,7 +438,8 @@ fn run_show(a: ShowArgs) -> Result<()> {
     let p = compile::resolve(&spec);
     let cs = |c: &ChannelSource| match c {
         ChannelSource::Scalar(v) => format!("scalar {v}"),
-        ChannelSource::FromAlbedo => "from-albedo".into(),
+        ChannelSource::FromAlbedo => "from-albedo (per-pixel)".into(),
+        ChannelSource::Auto => "auto (region-vote, spatially-coherent)".into(),
         ChannelSource::Prompt(s) => format!("prompt “{s}”"),
     };
     let hs = match &p.height {

@@ -18,12 +18,25 @@ pub struct RenderOpts {
     pub attempts: u32,
     /// Override the spec's `page.upscale` (`none`/`2k`/`4k`).
     pub upscale: Option<String>,
+    /// A3: a hand-painted metallic / roughness mask PNG to use verbatim (overrides derivation).
+    pub metallic_ref: Option<std::path::PathBuf>,
+    pub roughness_ref: Option<std::path::PathBuf>,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        Self { attempts: 1, upscale: None }
+        Self { attempts: 1, upscale: None, metallic_ref: None, roughness_ref: None }
     }
+}
+
+/// Load a hand-painted mask PNG and resize to `w×h` (the A3 `--*-ref` override).
+fn load_mask_ref(path: &std::path::Path, w: u32, h: u32) -> Result<image::GrayImage> {
+    let g = image::open(path).with_context(|| format!("opening mask {}", path.display()))?.to_luma8();
+    Ok(if g.dimensions() == (w, h) {
+        g
+    } else {
+        image::imageops::resize(&g, w, h, image::imageops::FilterType::Lanczos3)
+    })
 }
 
 fn upscale_target(s: &str) -> Option<u32> {
@@ -160,7 +173,7 @@ pub async fn render_material(spec: &TextureSpec, out: &std::path::Path, opts: &R
         } else {
             None
         };
-        let m = Material::derive(
+        let mut m = Material::derive(
             albedo,
             height,
             plan.normal_strength,
@@ -169,6 +182,14 @@ pub async fn render_material(spec: &TextureSpec, out: &std::path::Path, opts: &R
             &plan.roughness,
             &plan.metallic,
         );
+        // A3: a supplied mask overrides the derived channel verbatim (scored as the final channel).
+        let (mw, mh) = m.albedo.dimensions();
+        if let Some(p) = &opts.metallic_ref {
+            m.metallic = load_mask_ref(p, mw, mh)?;
+        }
+        if let Some(p) = &opts.roughness_ref {
+            m.roughness = load_mask_ref(p, mw, mh)?;
+        }
         let sc = scorecard::score(&m);
         let n_issues = sc.notes.len();
         if sc.passes {

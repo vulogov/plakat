@@ -77,6 +77,7 @@ fn spec_hash(plan: &RenderPlan) -> String {
     let rough = match &plan.roughness {
         ChannelSource::Scalar(v) => format!("s{v:.3}"),
         ChannelSource::FromAlbedo => "albedo".into(),
+        ChannelSource::Auto => "auto".into(),
         ChannelSource::Prompt(p) => format!("p:{p}"),
     };
     let height = match &plan.height {

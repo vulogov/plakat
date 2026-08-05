@@ -23,9 +23,27 @@ pub struct Scorecard {
     pub albedo_flatness: f32,
     /// All channels share one resolution.
     pub consistent: bool,
+    /// Whether the metallic / roughness maps carry spatial structure (a composite material) vs are flat
+    /// (a single-class material — for which a uniform map is *correct*, not a defect). See notes.
+    pub metallic_structured: bool,
+    pub roughness_structured: bool,
     pub passes: bool,
     pub notes: Vec<String>,
 }
+
+/// Std-dev of a gray map in `[0,1]` and its mean — the flat-vs-structured probe. Std above a small
+/// epsilon means the channel varies spatially (a composite material); at/below it the map is uniform.
+fn map_stats(g: &GrayImage) -> (f32, f32) {
+    let vals: Vec<f32> = g.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+    if vals.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+    let std = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt();
+    (std, mean)
+}
+/// A channel with std below this is "flat" (uniform / single-class).
+pub const STRUCTURE_MIN_STD: f32 = 0.02;
 
 fn rms(v: &[f32]) -> f32 {
     if v.is_empty() {
@@ -125,9 +143,26 @@ pub fn score(m: &Material) -> Scorecard {
     if albedo_flatness > FLATNESS_MAX {
         notes.push(format!("albedo-flatness {albedo_flatness:.3} > {FLATNESS_MAX} — baked lighting? (try delight)"));
     }
-    // Flatness is advisory; the hard gate is tiling + normal validity + consistency.
+
+    // Flat-vs-structured (A4): a uniform metallic/roughness is CORRECT for a single-class material — say
+    // so, so a flat map reads as a decision, not a bug. Structure means a composite material.
+    let (met_std, met_mean) = map_stats(&m.metallic);
+    let (rgh_std, _) = map_stats(&m.roughness);
+    let metallic_structured = met_std >= STRUCTURE_MIN_STD;
+    let roughness_structured = rgh_std >= STRUCTURE_MIN_STD;
+    if metallic_structured {
+        notes.push("metallic is structured — a composite (metal + dielectric) material".into());
+    } else {
+        let kind = if met_mean > 0.5 { "white = metal/conductor" } else { "black = dielectric" };
+        notes.push(format!("metallic is uniform ({kind}) — correct for a single-class material, not a defect"));
+    }
+    if !roughness_structured {
+        notes.push("roughness is uniform — correct for a single-class material".into());
+    }
+
+    // Flatness/structure are advisory; the hard gate is tiling + normal validity + consistency.
     let passes = tileability_x <= SEAM_MAX && tileability_y <= SEAM_MAX && normal_valid >= NORMAL_VALID_MIN && consistent;
-    Scorecard { tileability_x, tileability_y, normal_valid, albedo_flatness, consistent, passes, notes }
+    Scorecard { tileability_x, tileability_y, normal_valid, albedo_flatness, consistent, metallic_structured, roughness_structured, passes, notes }
 }
 
 #[cfg(test)]

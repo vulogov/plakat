@@ -34,10 +34,12 @@ impl Material {
         let ao = ao_from_height(&height, ao_strength);
         let roughness = match roughness {
             ChannelSource::Scalar(v) => flat_map(albedo.width(), albedo.height(), *v),
+            ChannelSource::Auto => roughness_auto(&albedo),
             _ => roughness_from_albedo(&albedo),
         };
         let metallic = match metallic {
             ChannelSource::Scalar(v) => flat_map(albedo.width(), albedo.height(), *v),
+            ChannelSource::Auto => metallic_auto(&albedo),
             _ => metallic_from_albedo(&albedo),
         };
         Material { albedo, height, normal, roughness, metallic, ao }
@@ -166,6 +168,70 @@ pub fn metallic_from_albedo(albedo: &RgbImage) -> GrayImage {
         let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
         let metal = if sat < 0.12 && l > 0.5 { ((l - 0.5) * 1.6).clamp(0.0, 1.0) } else { 0.0 };
         out.put_pixel(x, y, Luma([(metal * 255.0).round() as u8]));
+    }
+    out
+}
+
+/// Soft per-pixel metal-ness in `[0,1]` — low saturation AND bright → metal. Graded ramps (not a cliff)
+/// so the region vote is smooth. The seed the `auto` region-vote smooths (G0.A).
+fn metal_soft(albedo: &RgbImage) -> GrayImage {
+    let (w, h) = albedo.dimensions();
+    let mut out = GrayImage::new(w, h);
+    for (x, y, p) in albedo.enumerate_pixels() {
+        let l = luma01(p);
+        let (r, g, b) = (p.0[0] as f32, p.0[1] as f32, p.0[2] as f32);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+        // Saturation is the real metal↔dielectric separator in a flat albedo: raw metal is near-grey
+        // (measured steel sat ≈ 0.01), while grey DIELECTRICS (stone, concrete) still carry sat ≈ 0.1–0.2.
+        // So gate hard on VERY-low saturation; luma need only be mid (steel measured ≈ 0.56, not bright).
+        // The region-vote then collapses any residual scattered grey speckle on a dielectric to nothing.
+        let sat_term = ((0.05 - sat) / 0.03).clamp(0.0, 1.0); // 1 at sat≤0.02, 0 by sat 0.05
+        let lum_term = ((l - 0.40) / 0.12).clamp(0.0, 1.0); // 1 at luma≥0.52, 0 below 0.40
+        out.put_pixel(x, y, Luma([((sat_term * lum_term) * 255.0).round() as u8]));
+    }
+    out
+}
+
+/// The region-vote radius for a `w×h` image (G0.A used r=8 on 256px → ~size/32), clamped sane.
+fn vote_radius(w: u32, h: u32) -> i32 {
+    ((w.min(h) / 32) as i32).clamp(4, 48)
+}
+
+/// **Spatially-coherent metallic** (`metallic: "auto"`, 6.4.0 / G0.A). Soft per-pixel metal-ness →
+/// **circular region-vote** (a separable circular box = isotropic majority) → threshold. Gives a
+/// composite material (rusted iron, gilded frame, chipped paint) a clean, structured metal mask where
+/// the per-pixel heuristic leaves speckle; the circular window keeps it tileable. On a single-class
+/// material it correctly collapses to a flat mask (all-metal → white, all-dielectric → black).
+pub fn metallic_auto(albedo: &RgbImage) -> GrayImage {
+    let (w, h) = albedo.dimensions();
+    let soft = metal_soft(albedo);
+    let voted = circular_box_blur(&soft, vote_radius(w, h)); // majority over the neighbourhood
+    let mut out = GrayImage::new(w, h);
+    for (x, y, p) in voted.enumerate_pixels() {
+        out.put_pixel(x, y, Luma([if p.0[0] >= 128 { 255 } else { 0 }])); // ≥50% → metal
+    }
+    out
+}
+
+/// **Spatially-coherent roughness** (`roughness: "auto"`, 6.4.0). The from-albedo per-pixel roughness,
+/// region-smoothed (a smaller circular box) so distinct regions (wet/dry, polished/matte) read as
+/// coherent patches rather than pixel noise, AND pulled smoother inside detected-metal regions (bare
+/// metal is less rough than the surrounding dielectric). Circular → tileable.
+pub fn roughness_auto(albedo: &RgbImage) -> GrayImage {
+    let (w, h) = albedo.dimensions();
+    let base = roughness_from_albedo(albedo);
+    let coherent = circular_box_blur(&base, vote_radius(w, h) / 2); // region coherence
+    let metal = metallic_auto(albedo);
+    let mut out = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let r = coherent.get_pixel(x, y).0[0] as f32 / 255.0;
+            let m = metal.get_pixel(x, y).0[0] as f32 / 255.0;
+            let r = r * (1.0 - 0.45 * m); // metal regions read smoother
+            out.put_pixel(x, y, Luma([(r * 255.0).round() as u8]));
+        }
     }
     out
 }
@@ -311,5 +377,30 @@ mod tests {
         assert_eq!(a.normal.dimensions(), (24, 24));
         assert_eq!(a.metallic.get_pixel(0, 0).0[0], 0, "scalar-0 metallic is a flat 0 map");
         assert!(a.roughness.pixels().any(|p| p.0[0] != a.roughness.get_pixel(0, 0).0[0]), "from-albedo roughness varies");
+    }
+
+    #[test]
+    fn metallic_auto_is_region_coherent_and_tiles() {
+        // Half bare steel (bright, grey), half rust (saturated orange). `auto` should give a clean
+        // two-region mask — steel white, rust black — not per-pixel speckle. Circular window → tiles.
+        let a = RgbImage::from_fn(64, 64, |x, _| {
+            if x < 32 { Rgb([180, 182, 185]) } else { Rgb([150, 70, 30]) }
+        });
+        let m = Material::derive(a, None, 1.0, true, 1.0, &ChannelSource::Auto, &ChannelSource::Auto);
+        // steel side → metal (white), rust side → dielectric (black), away from the boundary.
+        assert!(m.metallic.get_pixel(8, 32).0[0] > 200, "bare-steel region should read metal");
+        assert_eq!(m.metallic.get_pixel(56, 32).0[0], 0, "rust region should read dielectric");
+        // binary mask (region-vote thresholded): only 0 or 255.
+        assert!(m.metallic.pixels().all(|p| p.0[0] == 0 || p.0[0] == 255), "auto metallic is a clean mask");
+        // roughness auto: metal side smoother than a naive from-albedo would give (pulled down).
+        assert!(m.roughness.get_pixel(8, 32).0[0] < m.roughness.get_pixel(56, 32).0[0], "metal reads smoother");
+    }
+
+    #[test]
+    fn metallic_auto_collapses_flat_for_a_single_class_material() {
+        // An all-dielectric (saturated) albedo → auto metallic collapses to a flat black mask (correct).
+        let a = RgbImage::from_fn(48, 48, |x, y| Rgb([40 + (x % 8) as u8 * 4, 120 + (y % 6) as u8 * 3, 30]));
+        let m = Material::derive(a, None, 1.0, true, 1.0, &ChannelSource::FromAlbedo, &ChannelSource::Auto);
+        assert!(m.metallic.pixels().all(|p| p.0[0] == 0), "a single-class dielectric → flat black metallic");
     }
 }
