@@ -96,10 +96,11 @@ you ask for SVG (`--svg`, or `output.formats` includes `svg`):
 - **Procedural tier — born vector.** The parametric generators emit polylines directly; the finisher
   serialises them to print-sized SVG paths (physical `mm` size + a px `viewBox`, stroked in the ink
   tint, with the layout's corner flips applied). Mathematically exact, near-free — no tracing.
-- **Diffusion / composite — raster trace.** Tracing a finished raster to SVG (with the permissive
-  `vtracer`/`visioncortex` tracer, MIT/Apache-2.0 — never GPL potrace) is a documented **fast-follow**;
-  today `render --svg` on a non-procedural tier keeps the PNG and prints a note. Transparency would ride
-  the traced paths as fill-opacity.
+- **Diffusion / composite — raster trace.** A finished raster is traced to SVG with the permissive
+  `vtracer`/`visioncortex` tracer (MIT/Apache-2.0 — never GPL potrace): flatten onto white → filled B/W
+  paths → retint to the ink colour + stamp the physical `mm` print size. Behind the **`bookart-trace`**
+  Cargo feature (it pulls an extra tracing stack); without it, `render --svg` on a non-procedural tier
+  keeps the PNG and prints a note. Also exposed standalone as `bookart vectorize <raster> --out svg`.
 
 So SVG is the escape hatch for infinite-DPI / editable procedural ornament; raster is the core for
 everything.

@@ -12,11 +12,14 @@ perf, and a bug backlog. Nothing here changes the public contract; every item is
 
 The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the docs current.
 
-- **A1 — bookart docs for the 6.1 surface.** `Documentation/BOOKART.md` + `BOOKART_STYLES.md` +
-  `Tutorials/BOOKART_TUTORIAL.md` still describe the 6.0 CLI. Add: `origins` (+ lexicon override),
-  `vectorize` + pixel-tier `--svg` (feature `bookart-trace`), `font`, `edit --ink-weight/--transparency`
-  (+ `render --cache-raw`), glyph-driven `initial` (+ `--font`), EPUB manuscripts (feature `epub`),
-  `--import`, and the six origins (now incl. american/european/chinese). Note which features are opt-in.
+- **A1 — bookart docs for the 6.1 surface. DONE.** Brought `BOOKART.md`, `BOOKART_STYLES.md`,
+  `BOOKART_TRANSPARENCY.md`, and `Tutorials/BOOKART_TUTORIAL.md` current: command table + sections for
+  `origins` (+ lexicon override), `vectorize` + pixel-tier `--svg` (feature `bookart-trace`), `font`,
+  `edit --ink-weight/--transparency/--fade` (+ `render --cache-raw`), glyph-driven `initial` (+ `--font`;
+  fixed the example to use `render`+spec, since `illustrate` doesn't wire `ornament.glyph`), EPUB
+  manuscripts (feature `epub`), `--import`, the six trained origins (Bilibin/Beardsley/Hokusai +
+  Pyle/Doré/woodblock), and an opt-in-features callout. Added an "Integration surfaces" section
+  (scenario/compile/Bund/API/photos). Every documented flag verified against `--help`.
 - **A2 — integration surfaces.** Document scenario `type: bookart`, compile `type: bookart`, the Bund
   `plakat.bookart.*` words, and `plakat::api::BookArt` in the relevant guides (scenario / compile / Bund
   / API docs), matching how `persona` / `fractals` are documented.

@@ -10,33 +10,39 @@ rendered*.
              origin  (tradition)  ─────────────────────────────►
 technique    russian   english   japanese   american  european  chinese  generic
  (method)  ┌────────────────────────────────────────────────────────────────────
-   line     │   ●         ●          ●          ○         ○         ○        ●
-   woodcut   │   ●         ●          ●          ○         ○         ○        ●
-   engraving │   ●         ●          ●          ○         ○         ○        ●
-   stipple   │   …         …          …          …         …         …        …
+   line     │   ●         ●          ●          ●         ●         ●        ○
+   woodcut   │   ●         ●          ●          ●         ●         ●        ○
+   engraving │   ●         ●          ●          ●         ●         ●        ○
+   stipple   │   ●         ●          ●          ●         ●         ●        ○
      …       │
 ```
 
-`●` = reachable via a trained origin LoRA; `○` = reachable via the generic line-art path (the origin's
-prompt scaffold + no LoRA). **Every cell renders** — no combination is a dead end.
+`●` = reachable via a trained origin LoRA; `○` = the LoRA-free `generic` line-art path (a prompt
+scaffold, no LoRA). All **six** named origins now ship a trained LoRA. **Every cell renders** — no
+combination is a dead end.
 
 ## Origins (traditions)
 
 The `origin` field selects a tradition preset: a prompt scaffold (a tradition cue), a default technique,
-a default motif set, and — for the three trained origins — a LoRA.
+a default motif set, and — for the six named origins — a trained LoRA.
 
 | Origin | Character | Default technique | Default motifs | Style source |
 |---|---|---|---|---|
-| **russian** | Bilibin folk borders, lubok, strong *застАвка*/*концовка* | woodcut | firebird · oak-leaf · vine | **LoRA** |
-| **english** | Beardsley line + Morris foliate ornament | line | rose · vine · peacock | **LoRA** |
-| **japanese** | ukiyo-e / sumi brush line | line | wave · crane · pine | **LoRA** |
-| **american** | golden-age bold woodcut | woodcut | oak-leaf · star | generic path |
-| **european** | Dürer / Doré engraving | engraving | acanthus · laurel | generic path |
-| **chinese** | baimiao outline + woodblock | line | lotus · crane · cloud | generic path |
+| **russian** | Bilibin folk borders, lubok, strong *застАвка*/*концовка* | woodcut | firebird · oak-leaf · vine | **LoRA** (Bilibin) |
+| **english** | Beardsley line + Morris foliate ornament | line | rose · vine · peacock | **LoRA** (Beardsley) |
+| **japanese** | ukiyo-e / sumi brush line | line | wave · crane · pine | **LoRA** (Hokusai) |
+| **american** | golden-age pen/woodcut illustration | woodcut | oak-leaf · star | **LoRA** (Howard Pyle) |
+| **european** | Dürer / Doré wood-engraving | engraving | acanthus · laurel | **LoRA** (Gustave Doré) |
+| **chinese** | baimiao outline + woodblock | line | lotus · crane · cloud | **LoRA** (Shan Hai Jing · Gujin Tushu Jicheng) |
 | **generic** | neutral clean-ink ornamental line | line | leaf · scroll | generic path (no LoRA) |
 
 The scaffold sets the tradition cue even without a LoRA — `european` prompts "in the tradition of
 European engraving, Dürer and Doré line" whether or not a weight file exists.
+
+**Custom traditions.** Drop an `assets/bookart/lexicon.hjson` (or point `PLAKAT_BOOKART_LEXICON` at one)
+to add or re-scaffold origins with no rebuild — each entry is `{ name, scaffold, default_technique,
+motif: [...], hosted_lora }`. A custom origin renders through its scaffold immediately; set `hosted_lora`
+only if you host a matching `<name>-sd15.safetensors`. `bookart origins` shows them tagged `(custom)`.
 
 ## Techniques (drawing methods)
 
@@ -61,23 +67,24 @@ biases each one.
 
 ## The origin LoRAs
 
-Three origins ship as **trained sd15 LoRAs**, hosted publicly at **`vulogov98/plakat-bookart`**:
+**Six** origins ship as **trained sd15 LoRAs**, hosted publicly at **`vulogov98/plakat-bookart`**:
 
 ```
 vulogov98/plakat-bookart
-  russian-sd15.safetensors
-  english-sd15.safetensors
-  japanese-sd15.safetensors
+  russian-sd15.safetensors     english-sd15.safetensors     japanese-sd15.safetensors
+  american-sd15.safetensors    european-sd15.safetensors    chinese-sd15.safetensors
 ```
 
-They were trained (via `plakat style train`, SD3.5-era mixed-precision LoRA workflow) on **120
-public-domain images** — 40 each of Bilibin, Beardsley, and Hokusai, from Wikimedia, grayscale-prepped
-— at rank 16, 256², 180 steps.
+Each was trained (via `plakat style train --base sd15`) on ~40 grayscale-prepped **public-domain**
+images from Wikimedia — Bilibin / Beardsley / Hokusai (russian/english/japanese), and Howard Pyle /
+Gustave Doré / Shan Hai Jing + Gujin Tushu Jicheng woodblock plates (american/european/chinese) — at
+rank 16, 256², 180 steps. The fetch → grayscale → train → host pipeline is scripted under
+`tools/bookart/` (`fetch_training_corpus.py`, `prep_grayscale.py`, `train_origins.sh`).
 
-**You never fetch these manually.** When a spec's `origin` is one of the three, the diffusion tier
+**You never fetch these manually.** When a spec's `origin` is one of the six, the diffusion tier
 resolves the LoRA by the `repo#file` source form
 `vulogov98/plakat-bookart#<origin>-sd15.safetensors`; hf-hub downloads and caches it, the loader merges
-it, and the render weaves the `bookart_<origin> style` trigger into the prompt:
+it (128/128 UNet targets), and the render weaves the `bookart_<origin> style` trigger into the prompt:
 
 ```
   ↳ origin LoRA: bookart_russian (sd15)
@@ -85,18 +92,19 @@ it, and the render weaves the `bookart_<origin> style` trigger into the prompt:
 
 The LoRAs are measurably cleaner than the generic path — on the baseline metrics the russian LoRA
 renders at chroma 0.053 / symmetry-RMS 0.134 versus the generic path's 0.16–0.38 / 0.29–0.48. They
-**raise the ceiling**; they are not on the critical path.
+**raise the ceiling**; they are not on the critical path. `corpus/bookart_origins.sh` renders a
+signature ornament in every origin's hand for side-by-side comparison.
 
 ## `generic` — the guaranteed fallback
 
-`generic` is the **LoRA-free** origin, and every non-trained origin also falls back to the generic
-line-art path. It renders from the origin's prompt scaffold + the technique cue through the finisher —
-**no LoRA required** — so every `origin × technique` combination works day one, with or without a weight
-file. This is the design's safety net (RFC R3): if an origin LoRA is unavailable or underperforms, v1
-still ships the whole matrix.
+`generic` is the **LoRA-free** origin. It renders from a neutral prompt scaffold + the technique cue
+through the finisher — **no LoRA required** — so every `origin × technique` combination works day one,
+with or without a weight file. This is the design's safety net (RFC R3): if an origin LoRA is
+unavailable, `generic` still renders the whole matrix. (A custom origin with no hosted LoRA renders the
+same way — through its scaffold.)
 
 ```
-  ↳ generic line-art path (no LoRA)
+  ↳ generic scaffold path (no hosted LoRA)
 ```
 
 ## Choosing a style
@@ -105,8 +113,8 @@ still ships the whole matrix.
   **weight-free** — origin/technique only tint its prompt-adjacent metadata; the geometry is the same
   crisp vector art regardless. Pick any origin.
 - **Pictorial ornament** (vignette, frontispiece, marginalia, colophon) is where origin×technique
-  actually shows — use a trained origin (russian/english/japanese) for the strongest hand, or the
-  generic path for anything else.
+  actually shows — use any of the six trained origins for its tradition's hand, or the generic path for
+  a neutral line look. `bookart origins` lists them.
 - **Composite ornament** (headpiece, tailpiece, initial) combines a procedural frame with a diffusion
   inlay, so both axes matter: the frame is geometry, the inlay carries the origin's hand.
 

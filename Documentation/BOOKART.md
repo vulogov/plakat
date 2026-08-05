@@ -47,16 +47,25 @@ seed-locked and reproducible on a given device.
 plakat bookart new        <out.hjson> [--origin O --technique T --type K --page a5]   scaffold a spec
 plakat bookart lint       <spec>                                                      validate (schema · vocab · ranges · page)
 plakat bookart show       <spec>                                                      what it resolves to (tier · symmetry · canvas · prompt)
+plakat bookart origins    [--details]                                                 list origins × techniques × ornaments + LoRA hosting
 plakat bookart verify     <spec> --image IMG [--out O] [--finished] [--symmetrize] [--page]   the scorecard
-plakat bookart render     <spec> --out O [--model sd15 --seed 0 --steps 28] [--svg] [--attempts N]
-plakat bookart illustrate "<prompt>" --out O [--origin O --technique T --page a5 --type frontispiece …]
+plakat bookart render     <spec> --out O [--model sd15 --seed 0 --steps 28] [--svg] [--attempts N] [--font F] [--cache-raw] [--import ALBUM]
+plakat bookart illustrate "<prompt>" --out O [--origin O --technique T --page a5 --type frontispiece …] [--cache-raw] [--import ALBUM]
 plakat bookart kit        <spec> --out DIR [--model --steps --svg --no-coherence]     a coherent matched set (flagship)
-plakat bookart manuscript <book.md|list> --kit <spec> --out DIR [--latex --svg]       a per-chapter set for a whole book
+plakat bookart manuscript <book.md|list|book.epub> --kit <spec> --out DIR [--latex --svg]   a per-chapter set for a whole book
 plakat bookart proof      <dir> --out sheet.png                                       a contact sheet
 plakat bookart diff       <old> <new>                                                 classify an edit (post · re-raster · re-gen)
-plakat bookart edit       <png> --out O [--tint T] [--symmetry S]                      cheap post-edit, no GPU
+plakat bookart edit       <png> --out O [--tint T] [--symmetry S] [--ink-weight W] [--transparency M] [--fade F]   cheap post-edit, no GPU
 plakat bookart blend      <a> <b> --out O                                             lineage: origin(A) × technique(B)
+plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                        raster→SVG trace   (feature: bookart-trace)
+plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
 ```
+
+> **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
+> include: **`bookart-trace`** (`vectorize` + `--svg` tracing on the diffusion/composite tiers) and
+> **`epub`** (`manuscript book.epub`). Build them with `cargo install plakat --features bookart-trace,epub`.
+> Glyph-driven initials use **`shaped-labels`**, which *is* on by default (via `photos`). `bookart font`
+> and all six origin LoRAs work in the release binaries as-is.
 
 ### `new` — scaffold a spec
 
@@ -80,12 +89,36 @@ diffusion prompt + negative (or `(procedural tier — no prompt)`).
 ### `render` — one ornament, end to end
 
 Resolves the spec, lays it out against the text block, dispatches the tier, finishes to transparency,
-applies symmetry, places it on the exact page canvas, and writes a DPI-tagged PNG. `--svg` also emits
-a born-vector SVG (**procedural tier only**; other tiers print a note — the raster trace is a
-fast-follow). `--attempts N` turns on rejection sampling for the diffusion tier: it tries up to N
-seeds and keeps the first that clears the scorecard (else the fewest-issues one). `--model` selects
-the diffusion base (`sd15`, which the origin LoRAs target); `--seed`/`--steps` tune the diffusion
-step.
+applies symmetry, places it on the exact page canvas, and writes a DPI-tagged PNG **plus a `.json`
+recipe sidecar** (origin / technique / tier / a stable spec-hash) that is also embedded as an Auto1111
+`parameters` PNG `tEXt` chunk — so an ornament is searchable and re-runnable. `--attempts N` turns on
+rejection sampling for the diffusion tier: it tries up to N seeds and keeps the first that clears the
+scorecard (else the fewest-issues one). `--model` selects the diffusion base (`sd15`, which the origin
+LoRAs target); `--seed`/`--steps` tune the diffusion step.
+
+- **`--svg`** emits a born-vector SVG on the **procedural** tier. On the diffusion/composite (pixel)
+  tiers it emits a **traced** SVG when built with the `bookart-trace` feature, else a one-line note (the
+  PNG is the deliverable). See `vectorize` below.
+- **`--font <ttf/otf>`** supplies a font for a glyph-driven `initial` — the ornament is built around the
+  real letterform in `ornament.glyph` (see the vocabulary table). Needs `shaped-labels` (default-on).
+- **`--cache-raw`** also writes `<out>.raw.png` (the pre-finish gray) + `<out>.plan.json`, so
+  `bookart edit --ink-weight/--transparency/--fade` can re-finish without re-rendering.
+- **`--import <album>`** lands the ornament + its recipe sidecar in a `plakat photos` album
+  (auto-tagged from the recipe). Needs the `photos` feature (default-on).
+
+### `origins` — the vocabulary + LoRA hosting
+
+```sh
+plakat bookart origins --details
+```
+
+Lists every **origin** (with its LoRA-hosting status — `[hosted LoRA]`, `[scaffold only]`, or the
+LoRA-free `generic` path — and `(custom)` for lexicon additions), every **technique** (→ its binariser
++ prompt cue), and every **ornament** type (→ default tier + symmetry), plus the status of the optional
+`assets/bookart/lexicon.hjson` override. `--details` also prints each origin's prompt scaffold + default
+technique + motifs. Six origins ship trained sd15 LoRAs — **russian / english / japanese** (Bilibin /
+Beardsley / Hokusai) and **american / european / chinese** (Pyle / Doré / woodblock outline) — hosted
+at `vulogov98/plakat-bookart` and auto-resolved; see [`BOOKART_STYLES.md`](BOOKART_STYLES.md).
 
 ### `illustrate` — a standalone B/W plate from a prompt
 
@@ -97,7 +130,7 @@ plakat bookart illustrate "a wolf in a snowy pine forest" --origin japanese --ou
 
 Synthesises a diffusion-tier spec (`--type frontispiece` page-fill by default, or `vignette` for a
 centred spot), styled to `--origin`×`--technique`, finished + page-placed like any render. Same
-`--model`/`--seed`/`--steps`/`--attempts`.
+`--model`/`--seed`/`--steps`/`--attempts`, and the same `--cache-raw` / `--import` as `render`.
 
 ### `verify` — the print/ink scorecard
 
@@ -122,7 +155,8 @@ informational, not an auto-gate — a kit legitimately spans geometric and picto
 plakat bookart manuscript book.md --kit style.hjson --out ornaments/ --latex
 ```
 
-Parses a book's chapter structure (Markdown `#`/`##` headings, else one title per line) and emits a
+Parses a book's chapter structure — Markdown `#`/`##` headings, one title per line, **or an `.epub`**
+(the spine/TOC is read via the NCX → nav → `<title>` fallbacks; needs the `epub` feature) — and emits a
 **frontispiece** (the pictorial plate, diffusion) plus, per chapter, a **procedural headpiece band**
 (rules + central medallion + interweaving guilloché braid + fleuron ends) and a **procedural tailpiece**
 (a cul-de-lampe tapering to a point). The per-chapter seed *diversifies* the bands — a denser braid, a
@@ -142,12 +176,39 @@ manuscript modes emit one automatically; this runs it over any directory.
   tint or symmetry change — recolour/re-tile a finished PNG, no GPU), `re-raster` (a page/size change —
   re-place the same raster), or `re-gen` (origin/motif/prompt/technique — a full re-render). It reports
   the overall cheapest sufficient action.
-- **`edit <png> --out --tint --symmetry`** applies the `post`-class repairs directly to a *finished*
-  PNG — recolour the ink (`--tint black|sepia|#rrggbb`) and/or re-apply symmetry
-  (`--symmetry bilateral|radial:N`) — with **no re-render**. Anything else needs `render`.
+- **`edit <png> --out …`** applies `post`-class repairs with **no re-render**. Two paths:
+  - *On a finished PNG* — recolour the ink (`--tint black|sepia|#rrggbb`) and/or re-apply symmetry
+    (`--symmetry bilateral|radial:N`), operating on the pixels directly.
+  - *Re-finishing from a cache* — `--ink-weight W` / `--transparency luminance|threshold|fade` /
+    `--fade F` re-run the finisher (binarise → transparency → symmetry → page) on the gray cached by
+    `render --cache-raw`, so ink weight and transparency become cheap edits instead of a full re-gen. It
+    bails with a clear note if the `<png>.raw.png` / `.plan.json` cache is absent.
 - **`blend <a> <b> --out`** is lineage: it writes a new spec crossing the **origin of A** with the
   **technique of B**, unioning both motifs, and lints it (e.g. Russian firebird motif drawn with a
   Japanese line hand).
+
+### `vectorize` — raster→SVG trace *(feature: `bookart-trace`)*
+
+```sh
+plakat bookart vectorize scan.png --out scan.svg --tint black --dpi 300
+```
+
+Traces any raster ornament (the diffusion/composite tiers, or a scan) into a compact SVG: the
+transparent art is flattened onto white, traced to filled B/W paths, retinted to the ink colour, and
+stamped with the physical (mm) print size from `--dpi`. The **procedural** tier is already born-vector
+(`render --svg`), so this is for the pixel tiers. Behind the `bookart-trace` feature (it pulls an extra
+tracing stack); without it the command explains how to enable it.
+
+### `font` — an OpenType dingbat font
+
+```sh
+plakat bookart font --out dingbats.otf --family PlakatDingbats
+```
+
+Exports a small set of procedural ornaments (`a`–`h` → fleurons / dinkus / rosettes / divider / corner)
+as a real **OpenType dingbat font** for inline use in InDesign / LaTeX — type a letter, get an ornament.
+Self-contained (a from-scratch TrueType writer, no font-toolkit dependency); the file loads + renders in
+any font-aware application.
 
 ## The ornament vocabulary
 
@@ -158,7 +219,7 @@ symmetry the resolver applies unless you override them:
 |---|---|---|---|
 | **headpiece** | a chapter-opening band (bandeau · *застАвка*) | composite | bilateral |
 | **tailpiece** | a chapter-closing tapering piece (cul-de-lampe · *концовка*) | composite | bilateral |
-| **initial** | a decorated drop-cap built around a legible letter (§ glyph path) | composite | none |
+| **initial** | a decorated drop-cap built around a legible letter² | composite | none |
 | **border** | a frame assembled from a tileable edge unit + corner unit | procedural | bilateral |
 | **corner** | an L-shaped piece placed at 4 corners by reflection | procedural | none¹ |
 | **divider** | a thin centred rule between sections | procedural | bilateral |
@@ -172,6 +233,10 @@ symmetry the resolver applies unless you override them:
 
 ¹ `corner` is *placed* four times by the layout engine (inward-flipped at each corner), so it needs no
 per-piece symmetry.
+
+² `initial` with `ornament.glyph: "<letter>"` + `render --font <ttf/otf>` rasterises the **real
+letterform** (any script, incl. Cyrillic) via `ab_glyph` and frames it — a legible historiated initial,
+no diffusion faking letters. Without a font/glyph it renders as a decorative composite cell.
 
 ## The `BookArtSpec` schema
 
@@ -242,7 +307,7 @@ kit: {
 ## The three render tiers
 
 The router picks a tier from the ornament type (geometric → procedural, pictorial → diffusion, framed-
-pictorial → composite); `ornament.tier` or `--tier`-style overrides win.
+pictorial → composite); an explicit `ornament.tier` in the spec overrides the router.
 
 - **`procedural`** — vector-native, **zero-weight** geometric ornament from self-contained parametric
   generators (rosette, guilloché, bead-and-reel border, L-corner scrollwork). Deterministic, crisp,
@@ -272,20 +337,36 @@ repairable. The reported probes (all pure — no weights):
 The scorecard drives `render --attempts N` rejection sampling. (The RFC's stray-glyph and aesthetic
 probes are wired at the render layer as a fast-follow; verify today reports the five above.)
 
+## Integration surfaces
+
+`bookart` is not only a subcommand — the same render core drives every automation surface (6.1):
+
+- **scenario** — a `type: bookart` task (inline `spec:` or `spec_file:` + `model`/`seed`/`steps`/`svg`)
+  renders ornaments inside a batch scenario.
+- **compile** — a `type: bookart` block (`bookart-origin` / `-technique` / `-type` / `-page` / `-svg`
+  directives; the prose is the ornament prompt) compiles a prose prompts file to a bookart scenario.
+- **Bund** — `plakat.bookart.render` / `.illustrate` / `.origin` / `.technique` push a **transparent,
+  page-sized image handle** into the existing `plakat.save` / `.metadata.write` / `.upscale` pipeline.
+- **library API** — `plakat::api::BookArt` (`load` / `from_spec` · `model`/`seed`/`steps`/`svg`/`attempts`
+  · `run` → an in-memory `Rendered`), mirroring `Generate` / `Portrait`.
+- **photos** — `render|illustrate --import <album>` lands an ornament in a `plakat photos` album,
+  curated with its recipe.
+
 ## Honest scope
 
 - **B/W only.** This is an ink idiom. `ink.color`/`output.tint` recolour the alpha channel (§7.4); they
   do not make colour art. No CMYK, no ICC — output is K-only / 1-bit / greyscale.
-- **SVG is procedural-only and by-request.** The born-vector path emits SVG for the procedural tier;
-  the raster→SVG *trace* for diffusion/composite is a documented fast-follow. The PNG is always the
-  deliverable.
-- **Origins are tradition-level, from public-domain corpora.** `russian`/`english`/`japanese` are
-  trained sd15 LoRAs; the other origins run the generic line-art path. Not any living illustrator's
-  exact hand. See [`BOOKART_STYLES.md`](BOOKART_STYLES.md).
+- **Procedural SVG is born-vector; pixel-tier SVG is a trace.** `render --svg` emits born-vector SVG for
+  the procedural tier (always). Diffusion/composite `--svg` and `bookart vectorize` *trace* the raster —
+  behind the `bookart-trace` feature. The PNG is always the deliverable.
+- **Origins are tradition-level, from public-domain corpora.** Six origins ship trained sd15 LoRAs
+  (russian/english/japanese + american/european/chinese); other origins run the generic line-art path.
+  Not any living illustrator's exact hand. See [`BOOKART_STYLES.md`](BOOKART_STYLES.md).
 - **`matte` transparency is a convenience.** U2Net is trained on natural photos, so its silhouette
   quality on B/W ornament is unverified — the luminance model (§7.2) is the primary path.
-- **Font export, glyph-driven initial *series*, EPUB parsing, and a repair command** are noted in the
-  RFC as fast-follows; the shipped surface is the twelve commands above.
+- **Glyph initials render one letter.** `ornament.glyph` + `--font` builds a historiated initial around
+  a real letterform (any script, incl. Cyrillic); an initial *series* / auto-drop-cap across a whole
+  book is still a fast-follow.
 
 ## Companion documents
 

@@ -198,6 +198,15 @@ plakat bookart edit border.png --out border-sepia.png --tint sepia          # re
 plakat bookart edit bird.png   --out bird-sym.png    --symmetry bilateral   # re-apply symmetry
 ```
 
+**Ink weight and transparency, without re-rendering.** Render once with `--cache-raw`, then re-finish
+from the cache — the (expensive) diffusion sampling is skipped:
+
+```sh
+plakat bookart illustrate "a firebird among oak branches" --origin russian --out bird.png --cache-raw
+plakat bookart edit bird.png --out bird-bold.png  --ink-weight 0.85          # heavier ink, no render
+plakat bookart edit bird.png --out bird-soft.png  --transparency threshold   # different alpha curve
+```
+
 Finally, lineage — cross two traditions into a new spec (origin of A × technique of B, motifs unioned),
 auto-linted:
 
@@ -205,6 +214,31 @@ auto-linted:
 plakat bookart blend firebird-kit.hjson wolf-japanese.hjson --out crossed.hjson
 # → a russian × japanese-line spec with both motif sets
 ```
+
+## 9. The rest of the toolbox (6.1)
+
+```sh
+plakat bookart origins --details              # the six origins × techniques × ornaments + LoRA hosting
+```
+
+Six origins ship trained LoRAs — russian / english / japanese (Bilibin / Beardsley / Hokusai) and
+american / european / chinese (Pyle / Doré / woodblock). `bookart illustrate "…" --origin european`
+resolves `european-sd15.safetensors` from HuggingFace automatically. Add your own tradition with an
+`assets/bookart/lexicon.hjson`.
+
+```sh
+# a spec with  ornament: { type: "initial", glyph: "A" }  →  render frames the real letterform:
+plakat bookart render initial.hjson --out A.png --font /Library/Fonts/Georgia.ttf   # historiated initial
+plakat bookart font --out dingbats.otf                                # an OpenType dingbat font (type a–h)
+plakat bookart vectorize bird.png --out bird.svg                      # raster→SVG trace (feature: bookart-trace)
+plakat bookart manuscript book.epub --kit style.hjson --out orn/      # a whole EPUB's per-chapter set (feature: epub)
+plakat bookart render border.hjson --out b.png --import ~/albums/ornaments   # land it in a plakat photos album
+```
+
+These are the 6.1 additions: glyph-driven **initials** (a real letterform, any script, framed), an
+OpenType **dingbat font**, raster→SVG **tracing**, **EPUB** manuscripts, and `--import` into a `plakat
+photos` album with the render's recipe. `bookart-trace` and `epub` are opt-in Cargo features (see
+[`../BOOKART.md`](../BOOKART.md)); the rest work in the prebuilt binaries.
 
 ## Where to go next
 
