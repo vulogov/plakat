@@ -236,4 +236,16 @@ mod tests {
     fn strip_nested_markup() {
         assert_eq!(strip_tags("<a href=\"x\">Chapter <b>One</b></a>"), "Chapter One");
     }
+
+    #[test]
+    fn malformed_epub_errors_not_panics() {
+        // B2: a non-zip / missing file must return Err (the CLI shows it), never panic.
+        let dir = std::env::temp_dir().join(format!("plakat-epub-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bogus = dir.join("not.epub");
+        std::fs::write(&bogus, b"this is not a zip file").unwrap();
+        assert!(parse_epub_chapters(&bogus).is_err(), "garbage epub should error");
+        assert!(parse_epub_chapters(&dir.join("missing.epub")).is_err(), "missing epub should error");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

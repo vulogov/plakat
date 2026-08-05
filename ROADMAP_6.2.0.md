@@ -37,11 +37,16 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
 
 ## Track B — corpus regen + robustness soak
 
-- **B1 — regenerate the proof corpus.** Re-run every corpus driver against the 6.1 binary; confirm
-  byte-plausible outputs. Wire the new `corpus/bookart_origins.sh` into the corpus index / `BOOKART_CORPUS.md`.
-- **B2 — robustness soak.** Exercise the edge paths surfaced during 6.1: faint `line`-technique renders,
-  empty/degenerate specs, missing font / missing `--cache-raw`, malformed EPUB / lexicon override,
-  origins with no hosted LoRA. Each should fail clearly or degrade gracefully — add tests where missing.
+- **B1 — regenerate the proof corpus. DONE.** Re-ran the full `bookart_run.sh` against the 6.1 binary
+  (+ B3 tuning): border/plate/composite/kit/manuscript all regenerate clean (kit coherence 0.631/0.748,
+  border.svg RDP-compacted to 48 KB). Updated the driver (6.0.0→6.1; added `origins` + `font` steps + a
+  pointer to `bookart_origins.sh`) and `BOOKART_CORPUS.md` (version, a specs-&-drivers table incl.
+  `bookart_composite.hjson` / `bookart_origins.sh` / `bookart_script.bund`, and the 6.1 step).
+- **B2 — robustness soak. DONE.** Added edge-path tests: malformed / name-less **lexicon override** →
+  parse-error (loader falls back, no panic); **degenerate spec** (unknown origin/technique/ornament) →
+  resolves to a usable plan + no LoRA-404, no panic; **solid-slab** ornament → scorecard flags it
+  (blank was already covered); **malformed / missing EPUB** → `Err`, not panic (feature `epub`). The
+  empty-spec → procedural-divider path was already covered. Faint-`line` was the B3 fix.
 - **B3 — quality nits from 6.1. DONE.** Root cause of faint `line`: `xdog` (a) **ignored `ink_weight`**
   entirely and (b) had no contrast normalisation, so a low-contrast LoRA render gave sparse specks.
   Fixed `binarize.rs`: `xdog(g, ink_weight)` now **autocontrasts** (1st/99th-pct stretch — no-op on

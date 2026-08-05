@@ -244,6 +244,17 @@ mod tests {
     }
 
     #[test]
+    fn malformed_override_is_rejected_not_panicked() {
+        // B2: a broken override file must fail to parse (the loader then warns + falls back to built-in),
+        // never panic. Garbage + a missing `name` both error.
+        assert!(deser_hjson::from_str::<LexiconOverride>("{ origins: [ { ").is_err());
+        assert!(deser_hjson::from_str::<LexiconOverride>(r#"{ origins: [ { scaffold: "no name" } ] }"#).is_err());
+        // An empty document is valid → no custom origins.
+        let empty: LexiconOverride = deser_hjson::from_str("{}").unwrap();
+        assert!(empty.origins.is_empty());
+    }
+
+    #[test]
     fn override_hjson_parses_custom_origins() {
         let text = r#"{
             origins: [

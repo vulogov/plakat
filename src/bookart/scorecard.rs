@@ -158,4 +158,15 @@ mod tests {
         assert!(sc.ink_coverage < INK_MIN);
         assert!(!sc.passes);
     }
+
+    #[test]
+    fn solid_slab_is_flagged() {
+        // B2: a near-fully-opaque ornament is a slab, not line art — the scorecard must flag it.
+        let slab = image::RgbaImage::from_pixel(64, 64, image::Rgba([0, 0, 0, 255]));
+        let plan = resolve(&BookArtSpec::default());
+        let sc = score(&slab, &plan);
+        assert!(sc.ink_coverage > INK_MAX, "coverage {}", sc.ink_coverage);
+        assert!(!sc.passes);
+        assert!(sc.notes.iter().any(|n| n.contains("slab")), "notes: {:?}", sc.notes);
+    }
 }

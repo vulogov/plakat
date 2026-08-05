@@ -164,6 +164,22 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_spec_resolves_without_panic() {
+        // B2: unknown enum values load (permissive serde) and resolve to a usable plan — `lint` flags
+        // them, but the resolver must never panic. Unknown origin → generic scaffold; unknown ornament
+        // → the diffusion default; page/ink fall back to defaults.
+        let spec = BookArtSpec::from_hjson(
+            r#"{"origin":"atlantean","technique":"quantum","ornament":{"type":"hologram","prompt":"x"}}"#,
+        )
+        .unwrap();
+        let plan = resolve(&spec);
+        assert_eq!(plan.origin, "atlantean"); // carried verbatim; no hosted LoRA
+        assert!(!plan.tier.is_empty() && !plan.binariser.is_empty());
+        assert_eq!((plan.page.w_px, plan.page.h_px), (1748, 2480)); // default a5@300
+        assert!(!crate::bookart::lexicon::has_hosted_lora("atlantean"), "unknown origin → no LoRA (no 404)");
+    }
+
+    #[test]
     fn resolve_is_deterministic() {
         let spec = BookArtSpec::from_hjson(r#"{"origin":"english","ornament":{"type":"vignette","prompt":"a wolf in a forest"}}"#).unwrap();
         assert_eq!(resolve(&spec), resolve(&spec));
