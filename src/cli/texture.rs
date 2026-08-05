@@ -51,6 +51,9 @@ pub struct RenderArgs {
     /// Rejection sampling: try up to N seeds, keep the first that clears the scorecard.
     #[arg(long, default_value_t = 1)]
     pub attempts: u32,
+    /// Override the spec's tiled upscale: `none` / `2k` / `4k`.
+    #[arg(long)]
+    pub upscale: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -155,7 +158,7 @@ pub async fn run(args: TextureArgs) -> Result<()> {
 async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::texture::render::{render_material, RenderOpts};
     let spec = TextureSpec::load(&a.spec)?;
-    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: a.attempts }).await?;
+    let sc = render_material(&spec, &a.out, &RenderOpts { attempts: a.attempts, upscale: a.upscale.clone() }).await?;
     print_scorecard(&sc);
     println!("{} {}  (seamless PBR material)", style("wrote").green(), a.out.display());
     Ok(())

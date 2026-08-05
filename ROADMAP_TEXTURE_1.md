@@ -115,11 +115,17 @@ tileability score, end-to-end, before building the rest.
   (regen albedo seed until tileability + flatness pass).
 - **GPU.** Live-verified on Metal (a seamless, delit, derived material).
 
-### B5 — height (depth-CN) + tiled upscale
-- `channels.height = auto` → a depth-ControlNet pass conditioned on albedo (reuse `controlnet`), else
-  `from-albedo`. `page.upscale = 2k|4k` → tiled upscale in a **tileability-preserving** mode (circular
-  tile seams; per G0.5 — add a circular mode to `tiled.rs` if needed). Derivation runs post-upscale.
-- **GPU.** Live-verified: a 2K seamless material with a generated height.
+### B5 — height (depth) + tiled upscale. DONE.
+- `channels.height = auto` → **Depth-Anything-V2** on the albedo (`pipelines::depth::DepthPipeline`,
+  reused from smart-zones/ControlNet-annotate) for the macro relief, **combined with a luminance
+  high-pass** for crisp micro-detail (depth alone gave a flat normal); else `from-albedo`. Best-effort
+  (falls back to luminance height on failure).
+- `page.upscale = 2k|4k` (+ a `--upscale` override) → `upscale_tileable` (circular-pad → Lanczos →
+  crop; Real-ESRGAN avoided — it tiles internally + hallucinates, breaking the seam) **before**
+  derivation so the detail maps carry full res.
+- **GPU. Live-verified on Metal**: the moss material → 2048² with a depth+detail height and a
+  proper per-stone normal; **tiling survived the upscale (tileability x 0.12 / y 0.10, PASS)** — G0.5
+  confirmed.
 
 ### B6 — image-to-material + polish
 - `texture from <image> --out DIR` — crop-to-tileable (+ optional `--material` re-gen) + delight →
