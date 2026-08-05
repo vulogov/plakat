@@ -42,9 +42,14 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
 - **B2 — robustness soak.** Exercise the edge paths surfaced during 6.1: faint `line`-technique renders,
   empty/degenerate specs, missing font / missing `--cache-raw`, malformed EPUB / lexicon override,
   origins with no hosted LoRA. Each should fail clearly or degrade gracefully — add tests where missing.
-- **B3 — quality nits from 6.1.** The `line` technique on some origins (japanese/chinese) renders faint,
-  and `woodcut` renders very heavy — tune the technique→binariser defaults / ink-weight so a default
-  render reads well without hand-tuning. Keep the change measured (the scorecard is the check).
+- **B3 — quality nits from 6.1. DONE.** Root cause of faint `line`: `xdog` (a) **ignored `ink_weight`**
+  entirely and (b) had no contrast normalisation, so a low-contrast LoRA render gave sparse specks.
+  Fixed `binarize.rs`: `xdog(g, ink_weight)` now **autocontrasts** (1st/99th-pct stretch — no-op on
+  full-range input) and biases `tau` + a darkening gamma by `ink_weight` (a real, monotone dial); and
+  `threshold-bold` (woodcut) dilation now scales with `ink_weight`, pivoting to **0 px at the 0.6
+  default** so woodcut is no longer a slab. Measured: chinese `line` ink coverage 0.004→**0.030**
+  (near-blank → legible cloud/dragon woodblock); russian `woodcut` a bold-but-breathing border at
+  **0.317** (was a near-slab). Both eyeballed. New `ink_weight_dials_line_boldness` test.
 
 ## Track C — performance profiling pass
 

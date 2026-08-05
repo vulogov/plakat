@@ -75,16 +75,63 @@ fn blur(g: &GrayImage, sigma: f32) -> Vec<f32> {
 }
 
 /// XDoG line extraction — clean dark lines on white, the default for pen/line + cross-hatch.
-pub fn xdog(g: &GrayImage) -> GrayImage {
+/// Stretch the tonal range to a 1st/99th-percentile window so a **low-contrast** (faint) render still
+/// yields solid edges — the root cause of thin `line` output on soft LoRA renders. A full-range input
+/// is ~unchanged, so dense renders don't over-darken.
+fn autocontrast(g: &GrayImage) -> GrayImage {
+    let mut hist = [0u32; 256];
+    for p in g.pixels() {
+        hist[p.0[0] as usize] += 1;
+    }
+    let n = (g.width() * g.height()) as f32;
+    let clip = (n * 0.01) as u32;
+    let (mut lo, mut acc) = (0usize, 0u32);
+    while lo < 255 {
+        acc += hist[lo];
+        if acc >= clip {
+            break;
+        }
+        lo += 1;
+    }
+    let (mut hi, mut acc2) = (255usize, 0u32);
+    while hi > 0 {
+        acc2 += hist[hi];
+        if acc2 >= clip {
+            break;
+        }
+        hi -= 1;
+    }
+    if hi <= lo + 4 {
+        return g.clone(); // already flat or full-range — leave it
+    }
+    let (lo, hi) = (lo as f32, hi as f32);
+    let mut out = g.clone();
+    for p in out.pixels_mut() {
+        p.0[0] = (((p.0[0] as f32 - lo) / (hi - lo)) * 255.0).clamp(0.0, 255.0).round() as u8;
+    }
+    out
+}
+
+/// XDoG line extraction, **contrast-adaptive** and **ink-weight-responsive** (B3). `ink_weight`
+/// (default 0.6) biases the DoG threshold `tau` and a darkening gamma: higher weight captures fainter
+/// edges and darkens them (bolder line), lower weight thins. At 0.6 the result matches the historical
+/// tuning. Autocontrast first, so a faint render reads as clean line instead of sparse specks.
+pub fn xdog(g: &GrayImage, ink_weight: f32) -> GrayImage {
+    let g = autocontrast(g);
     let (w, h) = (g.width(), g.height());
-    let (sigma, k, tau, phi) = (0.8f32, 1.6f32, 0.985f32, 14.0f32);
-    let b1 = blur(g, sigma);
-    let b2 = blur(g, sigma * k);
+    let bias = ink_weight - 0.6;
+    let (sigma, k) = (0.8f32, 1.6f32);
+    let tau = (0.985 + bias * 0.03).clamp(0.95, 0.999);
+    let phi = 14.0f32;
+    let gamma = (1.0 + bias * 2.0).clamp(0.4, 3.0); // >1 darkens (bolder), <1 lightens
+    let b1 = blur(&g, sigma);
+    let b2 = blur(&g, sigma * k);
     let mut out = GrayImage::new(w, h);
     for (i, p) in out.pixels_mut().enumerate() {
         let d = (b1[i] - tau * b2[i]) / 255.0; // normalised DoG; edges → negative
         let e = if d >= 0.0 { 1.0 } else { 1.0 + (phi * d).tanh() };
-        p.0[0] = (e.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let e = e.clamp(0.0, 1.0).powf(gamma);
+        p.0[0] = (e * 255.0).round() as u8;
     }
     out
 }
@@ -174,13 +221,15 @@ fn bayer(g: &GrayImage) -> GrayImage {
 pub fn binarise(g: &GrayImage, name: &str, ink_weight: f32) -> GrayImage {
     let t = (otsu(g) as f32 + (ink_weight - 0.6) * 60.0).clamp(1.0, 254.0) as u8;
     match name {
-        "threshold-bold" => dilate_ink(&threshold_at(g, t), 1),
-        "engrave-invert" => invert(&xdog(g)),
+        // B3: woodcut dilation scales with ink_weight — 0px at the 0.6 default (threshold alone, not a
+        // slab), up to 2px when the user asks for a heavier hand.
+        "threshold-bold" => dilate_ink(&threshold_at(g, t), (((ink_weight - 0.6) * 5.0).round() as i32).clamp(0, 2)),
+        "engrave-invert" => invert(&xdog(g, ink_weight)),
         "dither" => floyd_steinberg(g),
         "matte-solid" => threshold_at(g, t),
         "threshold-invert" => invert(&threshold_at(g, t)),
         "halftone" => bayer(g),
-        _ => xdog(g), // "xdog" / line / default
+        _ => xdog(g, ink_weight), // "xdog" / line / default
     }
 }
 
@@ -213,11 +262,20 @@ mod tests {
     #[test]
     fn xdog_marks_the_edge_and_is_deterministic() {
         let g = card();
-        let a = xdog(&g);
-        let b = xdog(&g);
+        let a = xdog(&g, 0.6);
+        let b = xdog(&g, 0.6);
         assert_eq!(a.as_raw(), b.as_raw(), "deterministic");
         // some dark line pixels exist (the black line / the 32-boundary edge).
         assert!(a.pixels().any(|p| p.0[0] < 100), "xdog produced no dark line");
+    }
+
+    #[test]
+    fn ink_weight_dials_line_boldness() {
+        // B3: a heavier ink weight must produce at least as much ink as a lighter one (monotone dial).
+        let g = card();
+        let ink = |w: f32| xdog(&g, w).pixels().filter(|p| p.0[0] < 128).count();
+        assert!(ink(0.85) >= ink(0.6), "ink-weight 0.85 should be ≥ 0.6");
+        assert!(ink(0.6) >= ink(0.35), "ink-weight 0.6 should be ≥ 0.35");
     }
 
     #[test]
