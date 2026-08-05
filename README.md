@@ -5,7 +5,9 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v6.2.0 — consolidation & polish**: a breather after four flagships. A **cleaner `bookart` default look** (the `line` binariser is now contrast-adaptive and ink-weight-responsive — no more faint origins; `woodcut` is no longer a slab), the **docs brought fully current** for the 6.1 surface, a **perf pass** (no regression vs the 2.4.0 baseline; dropped a redundant temp-PNG round-trip), and hardening (robustness tests + a CI feature-matrix). Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.2.0)
+> **v6.3.0 — `plakat texture`**: the 6.3 flagship (RFC TEXTURE-1). Turn a prompt or a photo into a **seamless, tileable PBR material set** — albedo · normal · roughness · metallic · height · ambient-occlusion — flat-lit, exported **engine-ready** (ORM pack, Unity/Unreal naming, glTF) with a pure-Rust lit **preview**. A material is structured data: a small HJSON `TextureSpec` resolved deterministically → generate → derive → *measure* (a tileability scorecard) → export. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.3.0) · [Guide →](Documentation/TEXTURE.md)
+>
+> **v6.2.0 — consolidation & polish**: a breather after four flagships — a cleaner `bookart` default look (contrast-adaptive `line` binariser), the docs brought current, a perf pass (no regression), and hardening. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.2.0)
 >
 > **v6.1.0 — `plakat bookart` everywhere, and finished**: the 6.x flagship (RFC BOOKART-1) on **every automation surface** — scenario `type: bookart`, `compile`, Bund `plakat.bookart.*`, the `plakat::api::BookArt` builder, and `--import` into a `plakat photos` album — plus **six** trained origin traditions (Russian / English / Japanese / American / Chinese / European), raster→SVG **tracing**, glyph-driven **initials**, **EPUB** manuscripts, an OpenType **dingbat font**, and one-command **ink-weight re-finishing**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.1.0) · [Guide →](Documentation/BOOKART.md)
 
@@ -26,6 +28,31 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.3.0 — `plakat texture`
+
+The 6.3 flagship (RFC TEXTURE-1): turn a **prompt or a photo** into a **seamless, tileable PBR material
+set** — the decorative/technical sibling of `bookart`. A prompt gives one lit, non-tiling RGB image;
+`plakat texture` gives a **material** you can drop into Unity / Unreal / Blender / a glTF and tile across
+a surface.
+
+```bash
+plakat texture render stone.hjson --out stone/     # a full seamless PBR set (albedo/normal/rough/metal/height/AO)
+plakat texture from   photo.jpg   --out mat/        # image-to-material (crop-to-tileable, no generation)
+plakat texture derive albedo.png  --out mat/        # the whole set from an albedo — no GPU
+plakat texture verify mat/                          # the tileability + PBR-validity scorecard
+plakat texture export mat/ --naming unreal --gltf   # re-pack for an engine
+```
+
+Highlights: **native-ish seamlessness** (a flat/tileable prompt + a boundary feather; offset-and-heal for
+photos — measured tileable, not post-hoc guessed), a **derived** channel set (tangent-space normal + AO
+via *circular* Sobel/cavity ops, so the maps tile), **`height: auto`** via Depth-Anything-V2 (macro
+relief) + a luminance high-pass (micro detail), weight-free **delighting** (homomorphic flatten), a
+**tileability-preserving** 2K/4K upscale, a pure-Rust lit **preview** (Cook-Torrance-lite), a
+**tileability scorecard** (`verify`), and **engine-ready export** (ORM pack, Unity/Unreal naming, glTF).
+The whole *derive → verify → preview → export* half runs with **no weights**. On every automation surface
+(scenario `type: texture`, compile, Bund `plakat.texture.*`, `plakat::api::Texture`). Fully additive.
+Start at [`Documentation/TEXTURE.md`](Documentation/TEXTURE.md).
 
 ## What's new in 6.2.0 — consolidation & polish
 

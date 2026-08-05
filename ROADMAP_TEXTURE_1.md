@@ -154,12 +154,11 @@ tileability score, end-to-end, before building the rest.
 - Verified live: compile → a scenario the runner **dry-run-validates** (a material vignette + an
   image-to-material); doctor + words register; full suite 1763 green.
 
-### B8 — corpus + docs + the CUT
-- `corpus/texture_*.{hjson,sh}` + `TEXTURE_CORPUS.md`. `Documentation/TEXTURE.md` +
-  `Tutorials/TEXTURE_TUTORIAL.md` + README what's-new + docs-index. **Release 6.3.0**: bump
-  Cargo.toml+lock, gate green, FF `git push 6.3.0:main`, tag v6.3.0 → CI 6-asset + `cargo publish
-  --locked --allow-dirty --no-default-features`, `gh release edit` (owner vulogov GH token; NO Claude
-  coauthor).
+### B8 — corpus + docs + the CUT. DONE (release in progress).
+- Corpus: `corpus/texture_stone.hjson` + `texture_run.sh` (lint/show → render → derive/verify/export) +
+  `TEXTURE_CORPUS.md`. Docs: `Documentation/TEXTURE.md` + `Tutorials/TEXTURE_TUTORIAL.md` (every
+  documented flag verified against `--help`) + README banner/what's-new + docs-index entry. Cargo bumped
+  6.2.0→6.3.0 (lock synced); gate 1763 green.
 
 ---
 

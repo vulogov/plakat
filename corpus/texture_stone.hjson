@@ -1,0 +1,14 @@
+{
+  schema: "texture/1"
+  material: "weathered granite cobblestones with moss in the cracks"
+
+  seamless: { mode: "circular", axes: "both" }
+  channels: { height: "auto", roughness: "from-albedo", metallic: 0.0, normal_strength: 1.0, normal_y: "opengl" }
+  delight: true
+  page: { size: 1024, upscale: "none", tiling_check: true }
+  export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }
+
+  model: "sdxl"
+  seed: 3
+  steps: 26
+}
