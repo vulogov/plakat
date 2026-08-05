@@ -68,17 +68,20 @@ tileability score, end-to-end, before building the rest.
   passes). Verified live: a tileable albedo → 6 correct maps (blue-dominant normal, cavity AO, dielectric
   metallic), scorecard PASS (tileability 1.14/0.84, normal-valid 1.000). Full suite 1754 green.
 
-### B2 — preview renderer + export
-- **Modules:** `src/texture/{preview,export}.rs`.
-- `preview.rs`: pure-Rust PBR shade (Cook-Torrance-lite, one directional + ambient, samples the tiled
-  material w/ the derived normal) → `preview.png`. `--shape sphere|plane`.
-- `export.rs`: ORM pack (R=AO/G=rough/B=metal), naming conventions (plakat/unity/unreal), optional glTF
-  2.0 material, correct color spaces (albedo sRGB / data linear; 16-bit height+normal option), recipe
-  sidecar + tEXt (reuse bookart `recipe_metadata` + `imaging::io`).
-- `texture preview` / `texture export`.
-- **Weight-free.** Tests: preview determinism + non-blank, ORM lossless pack/unpack, glTF parses, naming
-  maps. **CI-gated.** *(After B2: a full material can be derived + previewed + exported from a supplied
-  albedo — the whole weight-free half is done + demoable.)*
+### B2 — preview renderer + export. DONE.
+- `src/texture/{preview,export}.rs`.
+- `preview.rs`: pure-Rust **Cook-Torrance-lite** PBR shade (GGX D + Schlick-GGX G + Fresnel; one
+  directional + ambient·AO; sRGB→linear albedo; Reinhard+gamma) of a lit **sphere** or **plane** that
+  wrapped-bilinear-samples the tiled material through its perturbed (TBN) normal. `Shape::{Sphere,Plane}`.
+- `export.rs`: `orm_pack` (R=AO/G=rough/B=metal = the glTF metallicRoughness[GB]+occlusion[R] layout),
+  `channel_filename` (plakat / unity `_BumpMap`… / unreal `T_*`), a minimal **glTF 2.0** material doc,
+  and `material.json` manifest (recipe + written maps + scorecard + FNV **spec-hash**). `write_material`
+  = channels(named) + orm + preview + gltf + manifest.
+- `texture derive` now writes the full dir; `texture preview` / `texture export` re-render / re-pack.
+- **Weight-free, +4 tests** (preview deterministic+lit shading range, ORM pack values, naming maps,
+  full-dir write w/ valid glTF+manifest JSON). Verified live: a sphere+plane preview (proper diffuse
+  falloff + normal-mapped relief), unreal re-pack (`T_BaseColor`…`T_ORM`) + glTF. Full suite 1758 green.
+  *(The whole weight-free half — derive + score + preview + export — is done + demoable.)*
 
 ### B3 — the seamless engine (headline; post-G0.1)
 - **Modules:** `src/texture/seamless.rs`; **+`seamless` flag** into `sd_train/{unet,blocks}.rs` (the

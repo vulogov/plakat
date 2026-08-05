@@ -12,11 +12,14 @@
 
 pub mod compile;
 pub mod derive;
+pub mod export;
 pub mod lint;
+pub mod preview;
 pub mod scorecard;
 pub mod spec;
 
 pub use compile::{resolve, ChannelSource, HeightSource, RenderPlan};
 pub use derive::Material;
+pub use preview::Shape;
 pub use scorecard::{score, Scorecard};
 pub use spec::{TextureSpec, SCHEMA_VERSION};

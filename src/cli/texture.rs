@@ -34,6 +34,43 @@ pub enum TextureCmd {
     /// Score a material directory: tileability (x/y edge-wrap), normal validity, albedo flatness,
     /// channel consistency. **No weights.**
     Verify(VerifyArgs),
+    /// Re-render the lit PBR preview from a material directory (pure-Rust, **no GPU**).
+    Preview(PreviewArgs),
+    /// Re-pack a material directory for an engine — naming convention, ORM, glTF (**no weights**).
+    Export(ExportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PreviewArgs {
+    /// A material directory (contains `albedo.png`, `normal.png`, …).
+    pub dir: PathBuf,
+    /// Output preview PNG (default `<dir>/preview.png`).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Preview geometry: `sphere` (default) or `plane`.
+    #[arg(long, default_value = "sphere")]
+    pub shape: String,
+    /// Preview resolution.
+    #[arg(long, default_value_t = 512)]
+    pub size: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct ExportArgs {
+    /// A material directory to re-pack.
+    pub dir: PathBuf,
+    /// Output directory (default: in place).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Channel naming: `plakat` (default) | `unity` | `unreal`.
+    #[arg(long, default_value = "plakat")]
+    pub naming: String,
+    /// Also write the packed ORM.
+    #[arg(long, default_value_t = true)]
+    pub orm: bool,
+    /// Also write a glTF 2.0 material.
+    #[arg(long, default_value_t = false)]
+    pub gltf: bool,
 }
 
 #[derive(Args, Debug)]
@@ -95,63 +132,98 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::Show(a) => run_show(a),
         TextureCmd::Derive(a) => run_derive(a),
         TextureCmd::Verify(a) => run_verify(a),
+        TextureCmd::Preview(a) => run_preview(a),
+        TextureCmd::Export(a) => run_export(a),
     }
 }
 
-/// B1: derive the full PBR set from an albedo (weight-free) + score + write channel PNGs.
+/// B2: load a material directory into a `Material` (missing data maps → neutral fill).
+fn load_material(dir: &std::path::Path) -> Result<crate::texture::Material> {
+    use crate::texture::Material;
+    let albedo = image::open(dir.join("albedo.png"))
+        .with_context(|| format!("a material dir needs albedo.png ({})", dir.display()))?
+        .to_rgb8();
+    let (w, h) = albedo.dimensions();
+    let gray = |n: &str, d: u8| -> image::GrayImage {
+        image::open(dir.join(n)).ok().map(|i| i.to_luma8()).unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([d])))
+    };
+    let normal = image::open(dir.join("normal.png")).ok().map(|i| i.to_rgb8()).unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
+    Ok(Material {
+        albedo,
+        height: gray("height.png", 128),
+        normal,
+        roughness: gray("roughness.png", 153),
+        metallic: gray("metallic.png", 0),
+        ao: gray("ao.png", 255),
+    })
+}
+
+/// B1/B2: derive the full PBR set from an albedo (weight-free) → score → write the material dir
+/// (channels + ORM + preview + manifest).
 fn run_derive(a: DeriveArgs) -> Result<()> {
-    use crate::texture::{compile, scorecard, Material, TextureSpec};
+    use crate::texture::{compile, export, scorecard, Material, TextureSpec};
     let albedo = image::open(&a.albedo).with_context(|| format!("opening {}", a.albedo.display()))?.to_rgb8();
     let height = match &a.height {
         Some(p) => Some(image::open(p).with_context(|| format!("opening {}", p.display()))?.to_luma8()),
         None => None,
     };
-    // `derive` has no spec → sensible from-albedo channel sources on top of the resolved defaults.
-    let plan = compile::resolve(&TextureSpec::default());
+    // `derive` has no spec → from-albedo channel sources on top of the resolved defaults.
+    let mut plan = compile::resolve(&TextureSpec::default());
+    plan.roughness = ChannelSource::FromAlbedo;
+    plan.normal_y = if a.normal_y.eq_ignore_ascii_case("directx") { "directx".into() } else { "opengl".into() };
     let m = Material::derive(
         albedo,
         height,
         a.normal_strength,
-        a.normal_y.eq_ignore_ascii_case("opengl"),
+        plan.normal_y == "opengl",
         a.ao_strength,
-        &ChannelSource::FromAlbedo, // roughness
-        &ChannelSource::Scalar(0.0), // metallic (dielectric default)
+        &plan.roughness,
+        &plan.metallic,
     );
-    m.write_channels(&a.out, &plan.maps)?;
     let sc = scorecard::score(&m);
+    export::write_material(&m, &plan, &sc, &a.out)?;
     print_scorecard(&sc);
-    println!("{} {}  ({} maps)", style("wrote").green(), a.out.display(), plan.maps.len());
+    println!("{} {}  ({} maps + orm + preview + manifest)", style("wrote").green(), a.out.display(), plan.maps.len());
     Ok(())
 }
 
 /// B1: score an existing material directory.
 fn run_verify(a: VerifyArgs) -> Result<()> {
-    use crate::texture::{scorecard, Material};
-    let load_rgb = |n: &str| -> Result<image::RgbImage> {
-        let p = a.dir.join(n);
-        Ok(image::open(&p).with_context(|| format!("opening {}", p.display()))?.to_rgb8())
-    };
-    let load_gray = |n: &str, w: u32, h: u32| -> image::GrayImage {
-        a.dir.join(n).exists().then(|| image::open(a.dir.join(n)).ok().map(|i| i.to_luma8())).flatten().unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([128])))
-    };
-    let albedo = load_rgb("albedo.png").context("a material dir needs at least albedo.png")?;
-    let (w, h) = albedo.dimensions();
-    let normal = a.dir.join("normal.png").exists().then(|| image::open(a.dir.join("normal.png")).ok().map(|i| i.to_rgb8())).flatten().unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
-    let m = Material {
-        albedo,
-        height: load_gray("height.png", w, h),
-        normal,
-        roughness: load_gray("roughness.png", w, h),
-        metallic: load_gray("metallic.png", w, h),
-        ao: load_gray("ao.png", w, h),
-    };
-    let sc = scorecard::score(&m);
+    let m = load_material(&a.dir)?;
+    let sc = crate::texture::scorecard::score(&m);
     print_scorecard(&sc);
     if sc.passes {
         Ok(())
     } else {
         anyhow::bail!("{} scorecard issue(s)", sc.notes.len())
     }
+}
+
+/// B2: re-render the lit preview from a material directory.
+fn run_preview(a: PreviewArgs) -> Result<()> {
+    use crate::texture::{preview, Shape};
+    let m = load_material(&a.dir)?;
+    let img = preview::render(&m, Shape::parse(&a.shape), a.size);
+    let out = a.out.unwrap_or_else(|| a.dir.join("preview.png"));
+    img.save(&out).with_context(|| format!("writing {}", out.display()))?;
+    println!("{} {}  ({} · {}²)", style("wrote").green(), out.display(), a.shape, a.size);
+    Ok(())
+}
+
+/// B2: re-pack a material directory for an engine (naming / ORM / glTF).
+fn run_export(a: ExportArgs) -> Result<()> {
+    use crate::texture::{compile, export, scorecard, TextureSpec};
+    let m = load_material(&a.dir)?;
+    let sc = scorecard::score(&m);
+    let mut plan = compile::resolve(&TextureSpec::default());
+    plan.naming = a.naming.clone();
+    plan.orm = a.orm;
+    plan.gltf = a.gltf;
+    plan.preview = false; // re-packing doesn't re-render the preview
+    let out = a.out.unwrap_or_else(|| a.dir.clone());
+    export::write_material(&m, &plan, &sc, &out)?;
+    println!("{} {}  (naming {} · orm {} · gltf {})", style("packed").green(), out.display(), a.naming, a.orm, a.gltf);
+    Ok(())
 }
 
 fn print_scorecard(sc: &crate::texture::Scorecard) {
