@@ -20,9 +20,13 @@ The 6.1 cycle shipped a lot of surface with only roadmap-level notes. Bring the 
   manuscripts (feature `epub`), `--import`, the six trained origins (Bilibin/Beardsley/Hokusai +
   Pyle/Doré/woodblock), and an opt-in-features callout. Added an "Integration surfaces" section
   (scenario/compile/Bund/API/photos). Every documented flag verified against `--help`.
-- **A2 — integration surfaces.** Document scenario `type: bookart`, compile `type: bookart`, the Bund
-  `plakat.bookart.*` words, and `plakat::api::BookArt` in the relevant guides (scenario / compile / Bund
-  / API docs), matching how `persona` / `fractals` are documented.
+- **A2 — integration surfaces. DONE.** Documented the bookart integration in each home guide:
+  **API.md** gains a `BookArt` builder section (+ Contents entry), mirroring `Map`; **SCRIPTING.md** gains
+  a `plakat.bookart.*` words subsection (render/illustrate/origin/technique); **COMPILE.md** gains a new
+  "Task-type blocks (`type: …`)" section documenting `type: bookart` (+ `type: map`, previously
+  undocumented) with a worked example. Verified the compile example against the CLI and the API builder
+  against the real `plakat::api::BookArt`. (Scenario `type: bookart` is covered by BOOKART.md's
+  Integration-surfaces section from A1.)
 - **A3 — docs audit sweep.** Grep the whole `Documentation/` + `README` for version strings, dead
   command names, and superseded guidance (e.g. "SVG procedural-only", "three origin LoRAs"). Fix drift.
 

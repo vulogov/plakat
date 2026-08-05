@@ -66,6 +66,35 @@ the global model, else `--model`. It selects the prompt-writing profile: SD15 �
 comma-keyword & <75 tokens; SDXL → mixed prose/keywords 60–150; Flux → prose, short
 or empty negative.
 
+## Task-type blocks (`type: …`)
+
+A block can declare a **non-t2i task type** — it compiles to that task in the emitted scenario instead of
+a text-to-image render. A `type:`-typed block (or one carrying that type's directives) may **omit the
+prose description** — a procedural task needs no prompt. Two types are supported:
+
+- **`type: map`** — a `plakat map` task (`map-spec:` / `map-style:` / `map-paint:` / `map-scale:` /
+  `map-tiles:` / `map-sd-model:` / `map-sd-lora:` / `map-provider:`).
+- **`type: bookart`** — a `plakat bookart` ornament task. Directives: `bookart-origin:` /
+  `bookart-technique:` / `bookart-type:` (headpiece / border / vignette / …) / `bookart-page:` /
+  `bookart-svg:`. The block's free text becomes the **ornament prompt** (a procedural ornament needs
+  none). It emits a `type: "bookart"` task whose `bookart: { spec: { … } }` the scenario runner renders.
+
+```
+# global: every scene is a bookart ornament in the russian tradition
+type: bookart
+bookart-origin: russian
+bookart-technique: line
+
+a firebird among oak branches
+bookart-type: vignette
+bookart-svg: true
+
+bookart-type: border            # no prose → a procedural border
+```
+
+`plakat compile prompts.txt --out ornaments.hjson` then `plakat scenario ornaments.hjson` renders them.
+See [`BOOKART.md`](BOOKART.md#integration-surfaces).
+
 ## Flags
 
 | Flag | Default | Description |

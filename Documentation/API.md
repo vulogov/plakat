@@ -23,6 +23,7 @@ of ergonomic builder types — no shelling out, no reaching into internals.
 - [Image ops](#image-ops) — `Upscale`
 - [Video](#video) — `Animate`
 - [Worldbuilding](#worldbuilding) — `Map`
+- [Book ornaments](#book-ornaments) — `BookArt`
 - [Training](#training) — `StyleTrain`, `EmbeddingTrain`
 - [Correctness](#correctness) — `Verify`
 - [Re-exported types](#re-exported-types)
@@ -428,6 +429,41 @@ img.save("aldoria.png")?;
 // from prose (needs a configured LLM provider)
 let img = Map::from_prose("a rainy northern archipelago of fjords")
     .provider("...").render().await?;
+```
+
+---
+
+## Book ornaments
+
+### `BookArt` — transparent B/W book ornaments
+
+Render a reusable, print-ready, **transparent** black-and-white book ornament (headpiece / border /
+vignette / …) from a [`BookArtSpec`](../Documentation/BOOKART.md) — the same render core the
+`plakat bookart` CLI, the scenario `type: bookart` task, and the Bund `plakat.bookart.*` words drive.
+Build from an HJSON file or an in-memory spec, then `.run()` for an in-memory result.
+
+| method | default | meaning |
+|---|---|---|
+| `BookArt::load(path)` | — | load a `BookArtSpec` HJSON file |
+| `BookArt::from_spec(BookArtSpec)` | — | use an in-memory spec |
+| `.model(name)` | `"sd15"` | diffusion base for the diffusion/composite tiers (the origin LoRAs are sd15) |
+| `.seed(u64)` | `0` | diffusion seed (also diversifies procedural variants) |
+| `.steps(usize)` | `28` | diffusion steps |
+| `.svg(bool)` | `false` | also produce born-vector SVG (procedural tier) |
+| `.attempts(u32)` | `1` | diffusion rejection sampling — keep the first render that clears the scorecard |
+| `.run() -> Result<Rendered>` | | the in-memory result |
+
+`Rendered` carries `page: RgbaImage` (transparent, exactly page-sized), `svg: Option<String>`, the
+resolved `plan`, a print/ink `scorecard`, and `pieces`.
+
+```rust
+use plakat::api::BookArt;
+
+// a procedural border needs no weights:
+let out = BookArt::load("border.hjson")?.svg(true).run().await?;
+out.page.save("border.png")?;                         // transparent, exact page size @ DPI
+if let Some(svg) = out.svg { std::fs::write("border.svg", svg)?; }
+println!("scorecard passes: {}", out.scorecard.passes);
 ```
 
 ---

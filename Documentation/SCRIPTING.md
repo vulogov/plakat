@@ -59,7 +59,7 @@ symbols (`:foo`), control flow, and arithmetic — but plakat
 no network, no shell, no sudo). The full Bund stdlib is
 deliberately excluded per v0.21 RFC decision #2.
 
-## Host words (57 total)
+## Host words
 
 Stack-effect notation follows Forth: `( in1 in2 -- out1 )` means
 "pops in1 and in2; pushes out1." Top-of-stack is the rightmost
@@ -355,6 +355,29 @@ The full A1111-compatible writes flow:
 - `plakat.metadata.write` is for re-attaching metadata after
   edits (e.g. upscale → re-save with original generation
   parameters)
+
+### `plakat.bookart.*` — book ornaments (6.1)
+
+Render a transparent, page-sized B/W book ornament straight into an image handle, so a script can
+produce ornaments alongside generated images and hand them to `plakat.save` / `plakat.upscale` /
+`plakat.metadata.write` (the alpha is preserved). `model` / `seed` / `steps` come from the shared
+`plakat.config.*` state; the two render words drive the same core as `plakat bookart` / `plakat::api::BookArt`.
+
+| Word | Stack effect | Notes |
+|---|---|---|
+| `plakat.bookart.origin` | `( origin -- )` | Origin override for `.illustrate` (russian/english/japanese/american/european/chinese/…). `none`/`auto`/`""` clears → `generic`. |
+| `plakat.bookart.technique` | `( technique -- )` | Technique override for `.illustrate` (line/woodcut/engraving/…). Clears likewise. |
+| `plakat.bookart.render` | `( spec-path -- handle )` | Render a `BookArtSpec` file (any tier; procedural = no GPU) → a transparent page-sized RGBA handle. |
+| `plakat.bookart.illustrate` | `( prompt -- handle )` | Synthesise a diffusion-tier B/W plate from prose (a frontispiece/spot) → handle. GPU + origin LoRA. |
+
+```
+"russian" plakat.bookart.origin
+"a firebird among oak branches" plakat.bookart.illustrate
+"firebird.png" plakat.save
+```
+
+SVG is a file-only artefact (not an image handle) — use the CLI `bookart render --svg` for that. See
+[`BOOKART.md`](BOOKART.md).
 
 ## Post-process composition order
 
