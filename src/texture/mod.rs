@@ -11,8 +11,12 @@
 //!   * B1+ — derivation + scorecard + preview + export + seamless engine + generation (siblings).
 
 pub mod compile;
+pub mod derive;
 pub mod lint;
+pub mod scorecard;
 pub mod spec;
 
 pub use compile::{resolve, ChannelSource, HeightSource, RenderPlan};
+pub use derive::Material;
+pub use scorecard::{score, Scorecard};
 pub use spec::{TextureSpec, SCHEMA_VERSION};

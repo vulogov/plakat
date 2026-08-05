@@ -28,6 +28,39 @@ pub enum TextureCmd {
     Lint(LintArgs),
     /// Show what a spec resolves to: seamless mode, size, channel sources, export plan, compiled prompt.
     Show(ShowArgs),
+    /// Derive the full PBR channel set (normal/roughness/metallic/height/AO) from an existing albedo —
+    /// **no weights, no GPU**. `--height` supplies a height map instead of deriving one from luminance.
+    Derive(DeriveArgs),
+    /// Score a material directory: tileability (x/y edge-wrap), normal validity, albedo flatness,
+    /// channel consistency. **No weights.**
+    Verify(VerifyArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DeriveArgs {
+    /// The albedo (base color) PNG.
+    pub albedo: PathBuf,
+    /// Output material directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Supply a height map instead of deriving one from the albedo's luminance.
+    #[arg(long)]
+    pub height: Option<PathBuf>,
+    /// Normal slope gain.
+    #[arg(long, default_value_t = 1.0)]
+    pub normal_strength: f32,
+    /// AO strength.
+    #[arg(long, default_value_t = 1.0)]
+    pub ao_strength: f32,
+    /// Normal Y convention: `opengl` (+Y) or `directx` (-Y).
+    #[arg(long, default_value = "opengl")]
+    pub normal_y: String,
+}
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    /// A material directory (contains `albedo.png`, `normal.png`, …).
+    pub dir: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -60,7 +93,78 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::New(a) => run_new(a),
         TextureCmd::Lint(a) => run_lint(a),
         TextureCmd::Show(a) => run_show(a),
+        TextureCmd::Derive(a) => run_derive(a),
+        TextureCmd::Verify(a) => run_verify(a),
     }
+}
+
+/// B1: derive the full PBR set from an albedo (weight-free) + score + write channel PNGs.
+fn run_derive(a: DeriveArgs) -> Result<()> {
+    use crate::texture::{compile, scorecard, Material, TextureSpec};
+    let albedo = image::open(&a.albedo).with_context(|| format!("opening {}", a.albedo.display()))?.to_rgb8();
+    let height = match &a.height {
+        Some(p) => Some(image::open(p).with_context(|| format!("opening {}", p.display()))?.to_luma8()),
+        None => None,
+    };
+    // `derive` has no spec → sensible from-albedo channel sources on top of the resolved defaults.
+    let plan = compile::resolve(&TextureSpec::default());
+    let m = Material::derive(
+        albedo,
+        height,
+        a.normal_strength,
+        a.normal_y.eq_ignore_ascii_case("opengl"),
+        a.ao_strength,
+        &ChannelSource::FromAlbedo, // roughness
+        &ChannelSource::Scalar(0.0), // metallic (dielectric default)
+    );
+    m.write_channels(&a.out, &plan.maps)?;
+    let sc = scorecard::score(&m);
+    print_scorecard(&sc);
+    println!("{} {}  ({} maps)", style("wrote").green(), a.out.display(), plan.maps.len());
+    Ok(())
+}
+
+/// B1: score an existing material directory.
+fn run_verify(a: VerifyArgs) -> Result<()> {
+    use crate::texture::{scorecard, Material};
+    let load_rgb = |n: &str| -> Result<image::RgbImage> {
+        let p = a.dir.join(n);
+        Ok(image::open(&p).with_context(|| format!("opening {}", p.display()))?.to_rgb8())
+    };
+    let load_gray = |n: &str, w: u32, h: u32| -> image::GrayImage {
+        a.dir.join(n).exists().then(|| image::open(a.dir.join(n)).ok().map(|i| i.to_luma8())).flatten().unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([128])))
+    };
+    let albedo = load_rgb("albedo.png").context("a material dir needs at least albedo.png")?;
+    let (w, h) = albedo.dimensions();
+    let normal = a.dir.join("normal.png").exists().then(|| image::open(a.dir.join("normal.png")).ok().map(|i| i.to_rgb8())).flatten().unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
+    let m = Material {
+        albedo,
+        height: load_gray("height.png", w, h),
+        normal,
+        roughness: load_gray("roughness.png", w, h),
+        metallic: load_gray("metallic.png", w, h),
+        ao: load_gray("ao.png", w, h),
+    };
+    let sc = scorecard::score(&m);
+    print_scorecard(&sc);
+    if sc.passes {
+        Ok(())
+    } else {
+        anyhow::bail!("{} scorecard issue(s)", sc.notes.len())
+    }
+}
+
+fn print_scorecard(sc: &crate::texture::Scorecard) {
+    let mark = |ok: bool| if ok { style("✓").green() } else { style("✗").red() };
+    println!("{}", style("scorecard").bold());
+    println!("  {} tileability   x {:.2} · y {:.2}", mark(sc.tileability_x <= 1.5 && sc.tileability_y <= 1.5), sc.tileability_x, sc.tileability_y);
+    println!("  {} normal-valid  {:.3}", mark(sc.normal_valid >= 0.99), sc.normal_valid);
+    println!("  {} consistent    {}", mark(sc.consistent), sc.consistent);
+    println!("  {} albedo-flat   {:.3}", mark(sc.albedo_flatness <= 0.14), sc.albedo_flatness);
+    for n in &sc.notes {
+        println!("    {} {}", style("·").yellow(), n);
+    }
+    println!("  {}", if sc.passes { style("PASS").green().bold() } else { style("FAIL").red().bold() });
 }
 
 fn run_new(a: NewArgs) -> Result<()> {

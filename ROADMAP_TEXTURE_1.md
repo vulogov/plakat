@@ -53,17 +53,20 @@ tileability score, end-to-end, before building the rest.
   resolve, map-filtering, lint ranges + typo suggestions). Verified live: `new → lint → show`. Full
   suite 1749 green.
 
-### B1 — derivation core + scorecard + `verify`/`derive` (WEIGHT-FREE — ships value)
-- **Modules:** `src/texture/{derive,scorecard}.rs`.
-- `derive.rs`: **normal** from height (circular Sobel → tangent-space, `normal_strength`, OpenGL/DirectX
-  Y), **AO** from height (multi-dir circular cavity), **roughness/metallic** (scalar | from-albedo
-  heuristic). All pure, deterministic, circular (so derived maps tile).
-- `scorecard.rs`: tileability-x/-y, normal-validity, albedo-flatness, channel-consistency, value-range
-  (RFC §12).
-- `texture derive <albedo.png> --out DIR` (channels from a supplied albedo, **no GPU**) + `texture
-  verify <mat-dir>`.
-- **Weight-free.** Tests: normal from a known height fixture (feeds G0.4), tileability of a synthetic
-  seamless vs seam, ORM round-trip. **CI-gated.**
+### B1 — derivation core + scorecard + `verify`/`derive` (WEIGHT-FREE). DONE.
+- `src/texture/{derive,scorecard}.rs` + `Material` type.
+- `derive.rs`: `Material::derive(albedo, height?, …, roughness, metallic)` → the full set. **normal** via
+  circular Sobel → tangent-space (G0.4 math, `normal_strength` gain ×6, OpenGL/DirectX Y), **AO** via
+  circular cavity (below-neighbourhood occlusion), **height** from luminance (circular blur +
+  autocontrast), **roughness/metallic** scalar | from-albedo heuristic. All pure, deterministic,
+  **circular** (wrapped ops → derived maps tile). `write_channels`.
+- `scorecard.rs`: tileability-x/-y (edge-wrap join/interior), normal-validity (unit +Z fraction),
+  albedo-flatness (low-freq luma std), channel-consistency; hard gate = tiling + normal + consistency,
+  flatness advisory.
+- `texture derive <albedo> --out DIR [--height --normal-strength --normal-y]` + `texture verify <dir>`.
+- **Weight-free, 5 new tests** (flat/ramp normal + Y-flip, deterministic derive, seam flagged, wrapping
+  passes). Verified live: a tileable albedo → 6 correct maps (blue-dominant normal, cavity AO, dielectric
+  metallic), scorecard PASS (tileability 1.14/0.84, normal-valid 1.000). Full suite 1754 green.
 
 ### B2 — preview renderer + export
 - **Modules:** `src/texture/{preview,export}.rs`.
