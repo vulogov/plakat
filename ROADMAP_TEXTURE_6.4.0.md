@@ -49,7 +49,27 @@ Two novel decisions need a probe before committing the build, exactly as 6.3's G
   seam bar, Track B ships roll (no conv surgery); if not, escalate to the vendored `SeamlessConv2d`
   ResNet. Keep candle-Metal ≤4-D rule in mind (see the candle-metal memory).
 
-Both probes are `examples/texture_*_probe.rs`, env-gated, committed. Do G0 FIRST.
+Both probes are `examples/texture_*_probe.rs`, committed. Do G0 FIRST.
+
+### G0 RESULTS — both PASS with clear decisions (commit `8e87daa`)
+
+- **G0.A DONE → `examples/texture_metallic_probe.rs` (weight-free).** On a synthetic rusted-iron
+  fixture built with the exact per-pixel failure modes (dark scratches on steel → per-pixel *misses*;
+  pale desaturated rust patches → per-pixel *false-fires*), scored vs ground-truth metal mask by IoU:
+  baseline per-pixel **0.656** (prec 0.72 / rec 0.88), **region-vote (circular box r=8 majority) 0.904**
+  (prec 0.99 / rec 0.91), bilateral edge-aware 0.839. **Decision: Track A `metallic:"auto"` = soft
+  per-pixel metal-ness → circular region-vote → threshold** — region-coherent AND tileable (circular
+  window). Notable: bilateral *loses* to region-vote because its edge-stopping wrongly *preserves* the
+  pale-rust patches it should out-vote — so plain isotropic voting is the right call, not edge-aware.
+- **G0.B DONE → `examples/texture_roll_probe.rs` (Metal).** A linear conv proxy can't faithfully show
+  the *generative* per-step-roll benefit (lateral propagation ⇒ attenuation confounds the seam ratio),
+  so the probe proves the cleanly-provable MECHANISM instead: shift-averaging a zero-pad conv
+  (`roll(-s)∘F_zero∘roll(s)`) reaches seam **1.231** vs the circular-pad ideal **1.200** (zero-pad
+  1.516) — **closing 90%** of the zero-pad→circular gap. **Decision: ship B1 (per-step latent-roll)**,
+  and measure its definitive high-frequency number on a *real* material during the B1 build (the hook is
+  contained + default-off + byte-identical when off, so build-then-measure is safe); **B2 (vendored
+  circular ResNet) stays the guaranteed fallback — its feasibility is already proven by 6.3's G0.1**
+  (circular conv → seam ≈ 1.0 at any depth). No feasibility risk is left un-gated.
 
 ---
 
