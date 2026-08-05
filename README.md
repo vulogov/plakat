@@ -5,7 +5,9 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v6.1.0 — `plakat bookart` everywhere, and finished**: the 6.x flagship (RFC BOOKART-1) now lives on **every automation surface** — scenario `type: bookart`, `compile`, Bund `plakat.bookart.*`, the `plakat::api::BookArt` builder, and `--import` into a `plakat photos` album — plus **six** trained origin traditions (Russian / English / Japanese / American / Chinese / European), raster→SVG **tracing**, glyph-driven **initials** (real letterforms, any script), **EPUB** manuscripts, an OpenType **dingbat font** export, and one-command **ink-weight re-finishing**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.1.0) · [Guide →](Documentation/BOOKART.md) · [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
+> **v6.2.0 — consolidation & polish**: a breather after four flagships. A **cleaner `bookart` default look** (the `line` binariser is now contrast-adaptive and ink-weight-responsive — no more faint origins; `woodcut` is no longer a slab), the **docs brought fully current** for the 6.1 surface, a **perf pass** (no regression vs the 2.4.0 baseline; dropped a redundant temp-PNG round-trip), and hardening (robustness tests + a CI feature-matrix). Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.2.0)
+>
+> **v6.1.0 — `plakat bookart` everywhere, and finished**: the 6.x flagship (RFC BOOKART-1) on **every automation surface** — scenario `type: bookart`, `compile`, Bund `plakat.bookart.*`, the `plakat::api::BookArt` builder, and `--import` into a `plakat photos` album — plus **six** trained origin traditions (Russian / English / Japanese / American / Chinese / European), raster→SVG **tracing**, glyph-driven **initials**, **EPUB** manuscripts, an OpenType **dingbat font**, and one-command **ink-weight re-finishing**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.1.0) · [Guide →](Documentation/BOOKART.md)
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
@@ -24,6 +26,22 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.2.0 — consolidation & polish
+
+A deliberate breather after four consecutive flagships (photos → fractals → persona → bookart). No new
+flagship — harden what's there:
+
+- **A cleaner `bookart` default look.** The `line` binariser (XDoG) was ignoring `ink.weight` and had no
+  contrast normalisation, so low-contrast origins rendered faint. It's now **contrast-adaptive** and
+  **ink-weight-responsive** (a real boldness dial), and `woodcut` no longer floods to a slab at the
+  default weight. Faint origins (japanese / chinese) now read as clean line; heavy woodcuts breathe.
+- **Docs brought current** for the whole 6.1 surface — the `bookart` guide, styles, tutorial, and the
+  integration home-guides (`API.md` / `SCRIPTING.md` / `COMPILE.md`), plus a drift sweep.
+- **Perf pass** — benched against the frozen 2.4.0 baseline (no regression) and dropped a redundant
+  temp-PNG round-trip in the `bookart` diffusion path.
+- **Hardening** — robustness tests for the edge paths (degenerate specs, malformed lexicon / EPUB, solid
+  slabs) and a CI **feature-matrix** compile-check so the opt-in features can't bit-rot.
 
 ## What's new in 6.1.0 — `plakat bookart` everywhere, and finished
 
