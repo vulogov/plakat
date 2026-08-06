@@ -31,6 +31,12 @@ Trim/decal is mostly image compositing (low risk), with **one** algorithm worth 
 Other pieces (band atlas composite, alpha matte, UV-region sidecar) are deterministic image ops — covered
 by unit tests in-track, no separate gate.
 
+### G0.1 RESULT — RNM validated, PASS (commit `b47ef4f`, `examples/texture_rnm_probe.rs`)
+RNM vs a naive lerp on 3 falsifiable fixtures: flat detail over a tilted base → RNM returns the base
+tilt EXACT (err 0.000) where lerp flattens it (err 0.251); detail bump over a flat base → RNM keeps
+100% amplitude where lerp keeps 51%; bumps over a tilted base → base-mean preserved (err 0.024, u8
+quant), detail amplitude carried 87%, unit-length 100%. **→ Track B's decal compositor uses RNM.**
+
 ---
 
 ## Track A — Trim sheets
