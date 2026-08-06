@@ -138,10 +138,60 @@ async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
             let t = seamless::make_tileable(&albedo, (plan.size / 12).max(8), axes);
             seamless::feather_seam(&t, (plan.size / 24).max(4), axes)
         } else {
-            seamless::feather_seam(&albedo, (plan.size / 24).max(4), axes)
+            // ADAPTIVE feather (B1, measure-first): a wide feather removes a seam but SOFTENS a band —
+            // visible as a faint low-detail stripe on high-frequency materials. Since the flat/tileable
+            // prompt already makes the albedo near-tileable, measure the RAW seam and use only as wide a
+            // band as it needs — narrow when it's already near-seamless (least smear), wide only when a
+            // real seam demands it. (The dormant per-step latent-roll / vendored circular ResNet remain
+            // the escalation for a hypothetical material a feather truly can't tile — G0.B / 6.3 G0.1.)
+            let raw = raw_seam(&albedo, axes);
+            let band = if raw < 1.3 {
+                (plan.size / 96).max(3) // already near-tileable → a thin hairline erase, minimal smear
+            } else if raw < 2.5 {
+                (plan.size / 48).max(4)
+            } else {
+                (plan.size / 24).max(4) // a genuine seam → the full feather
+            };
+            seamless::feather_seam(&albedo, band, axes)
         };
     }
     Ok(albedo)
+}
+
+/// The larger of the x/y edge-wrap seam ratios of an image's luma (join discontinuity / interior),
+/// restricted to the seamed axes — drives the adaptive feather band. ~1 = already tiles.
+fn raw_seam(img: &image::RgbImage, axes: Axes) -> f32 {
+    let (w, h) = img.dimensions();
+    let l = |x: u32, y: u32| {
+        let p = img.get_pixel(x, y).0;
+        (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) / 255.0
+    };
+    let ratio = |join: &[f32], interior: &[f32]| -> f32 {
+        let rms = |v: &[f32]| (v.iter().map(|x| x * x).sum::<f32>() / v.len().max(1) as f32).sqrt();
+        rms(join) / rms(interior).max(1e-6)
+    };
+    let mut worst = 0.0f32;
+    if matches!(axes, Axes::Both | Axes::X) {
+        let (mut j, mut i) = (Vec::new(), Vec::new());
+        for y in 0..h {
+            j.push(l(0, y) - l(w - 1, y));
+            for x in 1..w {
+                i.push(l(x, y) - l(x - 1, y));
+            }
+        }
+        worst = worst.max(ratio(&j, &i));
+    }
+    if matches!(axes, Axes::Both | Axes::Y) {
+        let (mut j, mut i) = (Vec::new(), Vec::new());
+        for x in 0..w {
+            j.push(l(x, 0) - l(x, h - 1));
+            for y in 1..h {
+                i.push(l(x, y) - l(x, y - 1));
+            }
+        }
+        worst = worst.max(ratio(&j, &i));
+    }
+    worst
 }
 
 /// Render a spec to a material directory. Returns the scorecard of the written material.
@@ -214,4 +264,30 @@ pub async fn render_material(spec: &TextureSpec, out: &std::path::Path, opts: &R
     let sc = best_sc.unwrap();
     export::write_material(&m, &plan, &sc, out)?;
     Ok(sc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    #[test]
+    fn raw_seam_low_for_a_tiling_image_high_for_a_split() {
+        // A high-frequency field at INTEGER periods (so it wraps) → strong interior detail, tiny join →
+        // a cleanly low seam, like a real texture. A left-dark/right-bright split → a hard vertical seam.
+        let tiling = RgbImage::from_fn(48, 48, |x, y| {
+            let u = (x as f32 / 48.0 * std::f32::consts::TAU * 6.0).sin();
+            let v = (y as f32 / 48.0 * std::f32::consts::TAU * 6.0).cos();
+            let c = ((u * v) * 0.4 + 0.5).clamp(0.0, 1.0);
+            Rgb([(c * 200.0) as u8, (c * 180.0) as u8, (c * 150.0) as u8])
+        });
+        let split = RgbImage::from_fn(48, 48, |x, _| if x < 24 { Rgb([20, 20, 20]) } else { Rgb([220, 220, 220]) });
+        let s_tile = raw_seam(&tiling, Axes::Both);
+        let s_split = raw_seam(&split, Axes::Both);
+        // A wrapping texture reads near the tiles bound (→ a narrow feather); a hard split reads as a big
+        // seam (→ the full feather). The adaptive band keys off exactly this separation.
+        assert!(s_tile < 1.5, "a wrapping image should read near-tileable, got {s_tile}");
+        assert!(s_split > 2.5, "a hard split should read as a big seam, got {s_split}");
+        assert!(s_split > s_tile * 1.8, "split seam should dominate the tiling seam: {s_split} vs {s_tile}");
+    }
 }
