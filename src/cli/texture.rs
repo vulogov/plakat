@@ -43,6 +43,26 @@ pub enum TextureCmd {
     /// Image-to-material: turn a photo into a seamless PBR set (crop-to-tileable → delight → derive →
     /// depth-height → export). No generation unless `--material` triggers it later.
     From(FromArgs),
+    /// Blend two material directories through a mask into one PBR set (e.g. stone → moss). **No weights.**
+    Blend(BlendArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct BlendArgs {
+    /// Material directory A (mask 0 → all A).
+    pub dir_a: PathBuf,
+    /// Material directory B (mask 255 → all B).
+    pub dir_b: PathBuf,
+    /// Output material directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Blend mask: `mix` (default, tileable interleave) | `radial` (tileable) | `x` | `y` (transition
+    /// sheets that break tiling in that axis) | a path to a grayscale PNG mask.
+    #[arg(long, default_value = "mix")]
+    pub mask: String,
+    /// Channel naming for the export.
+    #[arg(long, default_value = "plakat")]
+    pub naming: String,
 }
 
 #[derive(Args, Debug)]
@@ -81,6 +101,14 @@ pub struct RenderArgs {
     /// Rejection sampling: try up to N seeds, keep the first that clears the scorecard.
     #[arg(long, default_value_t = 1)]
     pub attempts: u32,
+    /// Render N seed VARIANTS of the material side-by-side (into `<out>/var-0`, `var-1`, …). Distinct
+    /// from `--attempts` (which rejection-samples to one). With `--keep-best`, the top-scoring variant is
+    /// also written to `<out>` directly.
+    #[arg(long, default_value_t = 1)]
+    pub variations: u32,
+    /// With `--variations`, also copy the best-scoring variant to `<out>` itself.
+    #[arg(long, default_value_t = false)]
+    pub keep_best: bool,
     /// Override the spec's tiled upscale: `none` / `2k` / `4k`.
     #[arg(long)]
     pub upscale: Option<String>,
@@ -228,7 +256,31 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::Export(a) => run_export(a),
         TextureCmd::Render(a) => run_render(a).await,
         TextureCmd::From(a) => run_from(a).await,
+        TextureCmd::Blend(a) => run_blend(a),
     }
+}
+
+/// C3: blend two material directories through a mask into one PBR set.
+fn run_blend(a: BlendArgs) -> Result<()> {
+    use crate::texture::{blend, compile, export, scorecard, TextureSpec};
+    let ma = load_material(&a.dir_a)?;
+    let mb = load_material(&a.dir_b)?;
+    let (w, h) = ma.albedo.dimensions();
+    if mb.albedo.dimensions() != (w, h) {
+        anyhow::bail!("materials differ in size ({:?} vs {:?}) — re-render at a common size", (w, h), mb.albedo.dimensions());
+    }
+    let mask = match a.mask.as_str() {
+        "mix" | "x" | "y" | "radial" | "horizontal" | "vertical" => blend::gradient_mask(w, h, &a.mask),
+        path => blend::fit_mask(&image::open(path).with_context(|| format!("opening mask {path}"))?.to_luma8(), w, h),
+    };
+    let m = blend::blend(&ma, &mb, &mask);
+    let sc = scorecard::score(&m);
+    let mut plan = compile::resolve(&TextureSpec::default());
+    plan.naming = a.naming.clone();
+    export::write_material(&m, &plan, &sc, &a.out)?;
+    print_scorecard(&sc);
+    println!("{} {}  (blend of {} + {} · mask {})", style("wrote").green(), a.out.display(), a.dir_a.display(), a.dir_b.display(), a.mask);
+    Ok(())
 }
 
 /// B6: image-to-material — build a `from_image` spec and render it (crop-to-tileable → delight →
@@ -259,14 +311,47 @@ async fn run_from(a: FromArgs) -> Result<()> {
 async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::texture::render::{render_material, RenderOpts};
     let spec = TextureSpec::load(&a.spec)?;
-    let sc = render_material(
-        &spec,
-        &a.out,
-        &RenderOpts { attempts: a.attempts, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() },
-    )
-    .await?;
+    let opts = RenderOpts { attempts: a.attempts, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() };
+    if a.variations > 1 {
+        return run_variations(&spec, &a, &opts).await;
+    }
+    let sc = render_material(&spec, &a.out, &opts).await?;
     print_scorecard(&sc);
     println!("{} {}  (seamless PBR material)", style("wrote").green(), a.out.display());
+    Ok(())
+}
+
+/// C2: render N seed variants of a material into `<out>/var-i`; optionally copy the best to `<out>`.
+async fn run_variations(spec: &TextureSpec, a: &RenderArgs, opts: &crate::texture::render::RenderOpts) -> Result<()> {
+    let base_seed = spec.seed.unwrap_or(0);
+    let mut best: Option<(u32, f32, std::path::PathBuf)> = None; // (index, quality, dir)
+    for i in 0..a.variations {
+        let mut var = spec.clone();
+        var.seed = Some(base_seed + i as u64);
+        let dir = a.out.join(format!("var-{i}"));
+        println!("{} variant {}/{} (seed {})", style("▶").cyan().bold(), i + 1, a.variations, base_seed + i as u64);
+        let sc = crate::texture::render::render_material(&var, &dir, opts).await?;
+        // Quality rank: passing first, then fewer notes, then lower mean tileability.
+        let quality = (if sc.passes { 1000.0 } else { 0.0 }) - sc.notes.len() as f32 * 10.0 - (sc.tileability_x + sc.tileability_y);
+        print_scorecard(&sc);
+        if best.as_ref().map(|(_, q, _)| quality > *q).unwrap_or(true) {
+            best = Some((i, quality, dir));
+        }
+    }
+    if let Some((i, _, dir)) = &best {
+        println!("{} best variant: var-{i}", style("★").yellow().bold());
+        if a.keep_best {
+            // Copy the best variant's files up to <out>/ itself.
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    std::fs::copy(entry.path(), a.out.join(entry.file_name()))?;
+                }
+            }
+            println!("{} {}  (best variant copied)", style("wrote").green(), a.out.display());
+        }
+    }
+    println!("{} {} variant(s) → {}", style("wrote").green(), a.variations, a.out.display());
     Ok(())
 }
 

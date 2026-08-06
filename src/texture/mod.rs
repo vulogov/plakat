@@ -10,6 +10,7 @@
 //!   * B0 — spec + resolver + lint (this).
 //!   * B1+ — derivation + scorecard + preview + export + seamless engine + generation (siblings).
 
+pub mod blend;
 pub mod compile;
 pub mod derive;
 pub mod export;
