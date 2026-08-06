@@ -1911,12 +1911,76 @@ impl Texture {
         self.opts.attempts = attempts;
         self
     }
+    /// Metallic source: `"auto"` (spatially-coherent region mask), `"from-albedo"`, or a scalar `"0.5"`.
+    pub fn metallic(mut self, src: impl Into<String>) -> Self {
+        self.spec.channels.get_or_insert_with(Default::default).metallic = Some(serde_json::Value::String(src.into()));
+        self
+    }
+    /// Roughness source: `"auto"`, `"from-albedo"`, or a scalar `"0.5"`.
+    pub fn roughness(mut self, src: impl Into<String>) -> Self {
+        self.spec.channels.get_or_insert_with(Default::default).roughness = Some(serde_json::Value::String(src.into()));
+        self
+    }
+    /// Anisotropy for brushed/grained metals: `strength` in `[0,1]`, `angle_deg` = `None` for auto-detect.
+    pub fn anisotropy(mut self, strength: f32, angle_deg: Option<f32>) -> Self {
+        let ch = self.spec.channels.get_or_insert_with(Default::default);
+        ch.anisotropy = Some(strength);
+        ch.anisotropy_angle = angle_deg;
+        self
+    }
+    /// A hand-painted metallic mask PNG to use verbatim (overrides the metallic source).
+    pub fn metallic_ref(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.opts.metallic_ref = Some(path.into());
+        self
+    }
+    /// A hand-painted roughness mask PNG to use verbatim (overrides the roughness source).
+    pub fn roughness_ref(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.opts.roughness_ref = Some(path.into());
+        self
+    }
 
     /// Render the material into `out` (a directory), returning its
     /// [`Scorecard`](crate::texture::Scorecard).
     pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::texture::Scorecard> {
         crate::texture::render::render_material(&self.spec, out.as_ref(), &self.opts).await
     }
+}
+
+/// Blend two material directories through a mask into one PBR set (the `texture blend` op). `mask` is
+/// `"mix"` (tileable, default) / `"radial"` / `"x"` / `"y"` / a PNG path. Weight-free.
+pub fn texture_blend(
+    dir_a: impl AsRef<std::path::Path>,
+    dir_b: impl AsRef<std::path::Path>,
+    mask: &str,
+    out: impl AsRef<std::path::Path>,
+) -> Result<crate::texture::Scorecard> {
+    use crate::texture::{blend, compile, export, scorecard, Material, TextureSpec};
+    let load = |d: &std::path::Path| -> Result<Material> {
+        let albedo = image::open(d.join("albedo.png")).with_context(|| format!("albedo.png in {}", d.display()))?.to_rgb8();
+        let (w, h) = albedo.dimensions();
+        let gray = |n: &str, def: u8| image::open(d.join(n)).ok().map(|i| i.to_luma8()).unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([def])));
+        let normal = image::open(d.join("normal.png")).ok().map(|i| i.to_rgb8()).unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
+        Ok(Material {
+            albedo, normal,
+            height: gray("height.png", 128),
+            roughness: gray("roughness.png", 153),
+            metallic: gray("metallic.png", 0),
+            ao: gray("ao.png", 255),
+            anisotropy: image::open(d.join("anisotropy.png")).ok().map(|i| i.to_rgb8()),
+        })
+    };
+    let ma = load(dir_a.as_ref())?;
+    let mb = load(dir_b.as_ref())?;
+    let (w, h) = ma.albedo.dimensions();
+    let mask_img = match mask {
+        "mix" | "x" | "y" | "radial" | "horizontal" | "vertical" => blend::gradient_mask(w, h, mask),
+        path => blend::fit_mask(&image::open(path)?.to_luma8(), w, h),
+    };
+    let m = blend::blend(&ma, &mb, &mask_img);
+    let sc = scorecard::score(&m);
+    let plan = compile::resolve(&TextureSpec::default());
+    export::write_material(&m, &plan, &sc, out.as_ref())?;
+    Ok(sc)
 }
 
 #[cfg(test)]

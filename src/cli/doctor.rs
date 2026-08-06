@@ -378,13 +378,16 @@ fn section_bookart() {
 }
 
 fn section_texture() {
-    section_header("texture (6.3.0 — seamless PBR material synthesis)");
-    ok("weights-free (run anywhere, no GPU): new · lint · show · derive · verify · preview · export");
-    note("weight-backed: render (generate the albedo) · from (image-to-material; depth-height needs the depth model)");
+    section_header("texture (6.4.0 — seamless PBR material synthesis)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · derive · verify · preview · export · blend");
+    note("weight-backed: render (generate the albedo; `--variations N` for seed variants) · from (image-to-material; depth-height needs the depth model)");
     note("output: a material dir — albedo/normal/roughness/metallic/height/AO PNGs + ORM pack + a lit preview + material.json (recipe + scorecard). Every channel exactly tileable.");
-    note("seamless (§7): the flat/tileable prompt + a boundary feather (generated), or offset-and-heal make_tileable (a photo). Native circular-conv / per-step latent-roll are the escalation path.");
+    note("channels: metallic/roughness `auto` (6.4) = spatially-coherent region-vote for COMPOSITE materials (rust/gilding) — a structured mask, not per-pixel speckle; a single-class material collapses to a flat (correct) map. Also `from-albedo` | a scalar | a `<prompt>`. Known dielectric → `--metallic 0`.");
+    note("anisotropy (6.4): `channels.anisotropy` (strength) + `anisotropy_angle` (deg, omit=auto) → an anisotropy flow map + a preview highlight that stretches along the grain (brushed metal).");
+    note("blend (6.4): `texture blend A B --mask mix|radial|x|y|<png>` → one PBR set from two (mix/radial tile; x/y are transition sheets). painted-mask overrides: `--metallic-ref`/`--roughness-ref`.");
+    note("seamless (§7): flat/tileable prompt + an ADAPTIVE boundary feather (6.4: band sized to the measured raw seam), or offset-and-heal make_tileable (a photo). Native circular-conv / per-step latent-roll stay the dormant escalation.");
     note("height `auto` = Depth-Anything-V2 (macro relief) + a luminance high-pass (micro detail); derive normal (tangent-space) + AO from it. `page.upscale 2k|4k` = tiling-preserving Lanczos.");
-    note("integration (6.3): scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` · library `plakat::api::Texture`. See Documentation/TEXTURE.md.");
+    note("integration: scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` · library `plakat::api::Texture` (+ `api::texture_blend`). See Documentation/TEXTURE.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat
