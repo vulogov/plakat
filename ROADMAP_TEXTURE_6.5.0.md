@@ -1,146 +1,94 @@
-# ROADMAP — plakat 6.5.0 · "Native seamless generation"
+# ROADMAP — plakat 6.5.0 · "Trim sheets & decals"
 
-The headline deepening of `plakat texture` (RFC TEXTURE-1): make generation **genuinely seamless** so a
-material tiles because it was *generated* tiling — not because a post-hoc feather blended the edges. This
-redeems the escalation path documented since 6.3's G0.1 and deferred (measure-first) through 6.4's Track
-B. It eliminates the residual high-frequency **feather smear** (6.4 finding: ~24% seam-band detail loss
-on gravel). Fully additive; `texture`'s output contract is unchanged.
+A deepening of `plakat texture` (RFC TEXTURE-1) into **material layout** — beyond a single tiling
+texture. Two capabilities, both mostly **weight-free** (compositing existing material sets):
 
-Branch `6.5.0` (off `main` @ `b039514`, v6.4.0). Reference: `Documentation/RFC_TEXTURE_1.md`,
-`ROADMAP_TEXTURE_6.4.0.md` (Track B), the G0.1/G0.B probe findings.
+1. **Trim sheets** — compose several sub-materials into one **atlas** (stacked bands, each a strip that
+   tiles along its run axis), with a UV-region sidecar so an engine can map faces to bands. The standard
+   way games texture pipes / trims / panels / edges from one material.
+2. **Decals** — **alpha-masked overlay** materials (a rust streak, crack, sign, logo) that layer onto a
+   base material: an albedo+alpha + normal + roughness set, and a compositor that places a decal onto a
+   base PBR set (alpha-blended albedo, reoriented-normal blend, per-channel merge).
 
----
+Branch `6.5.0` (off `main` @ `b039514`, v6.4.0). Reference: `Documentation/RFC_TEXTURE_1.md`.
 
-## The problem, precisely
-
-`texture render` generates an albedo with a flat/tileable prompt, then **feathers** the boundary. That
-tiles (measured seam 0.05 even on worst-case gravel) but *softens a band* at the seam — because the
-generation itself is **not** tileable (a hi-freq albedo lands at raw-seam ~1.3–2.5). The only way to
-remove the smear is to make the **generation** wrap. Two mechanisms, both proven-feasible:
-
-- **Per-step latent-roll** (G0.B, 6.4): roll the latent by a random offset each denoise step around the
-  UNet forward, unroll the prediction — the zero-padded convs then see the boundary at every phase.
-  Shift-averaging recovers ~**90%** of the circular-conv seam gap. **No conv surgery.**
-- **Native circular convolution** (G0.1, 6.3): the UNet convs wrap (`circular_pad2d` → `padding:0`). Seam
-  ≈ 1.0 at any depth. But the own UNet **delegates its resnet convs to `candle_transformers::
-  ResnetBlock2D`** (`sd_train/blocks.rs:6`; SDXL in `sdxl_unet.rs`), so this means **vendoring** a
-  circular resnet stack (as plakat vendors CLIP) — a bigger, higher-risk lift.
-
-And a third surface that *also* touches the boundary: the **VAE decoder**. candle's `AutoEncoderKL`
-(`self.core.vae.decode()`) is zero-padded, so even a perfectly tileable latent can pick up a seam on
-decode. There's a **light** fix analogous to `upscale_tileable`: **circular-pad the tileable latent →
-decode → crop** the margin (the decoder's boundary artifact lands in the cropped-off pad). "Wrap it,
-don't rewrite it" — the same philosophy as `circular_pad2d` and the tiling-preserving upscale.
-
-**Scope:** `sd15` + `sdxl` (the own-UNet default; `texture` defaults to `sdxl`). Other backbones
-(Sana/Flux/SD3) are out of scope this cycle. Everything is **default-off** and byte-identical when off,
-so no other caller or family changes.
+> **Cycle history:** 6.5.0 opened as "native seamless generation," but G0 (on the real stack) proved
+> per-step latent-roll fails and native circular conv needs a ~1500-line vendor of candle's UNet blocks
+> for a mild smear feather already handles — so the cycle **pivoted** here. Those findings are preserved
+> in *Appendix A* + commits `4bb1bcb`/`f5a25a8`.
 
 ---
 
-## G0 — de-risk on the REAL generation stack (do FIRST; this cycle is the riskiest since the flagship)
+## G0 — de-risk the one non-trivial algorithm (decal normal compositing)
 
-Unlike 6.3/6.4's synthetic probes, G0 here must run against the actual sampler + VAE, because the risk is
-regressing the corr-1.0 generation path shared by 7 families.
+Trim/decal is mostly image compositing (low risk), with **one** algorithm worth a probe first:
 
-- **G0.1 — per-step latent-roll in the real sampler (LOAD-BEARING).** Add a contained, default-off
-  `seamless_roll` flag threaded `api::Generate` → `Request` → the **primary** SD denoise loop; roll the
-  latent per step around `unet.forward`, unroll the noise prediction. Measure: (a) **byte-identical when
-  off** across sd15/sdxl (hard regression gate — hash the latents), (b) hi-freq **gravel** seam with
-  roll-**on** / feather-**off** vs the 6.4 feather baseline + the smear-band metric, (c) Metal. **Exit:**
-  roll-on/feather-off gets seam ≤ the feather baseline AND kills the smear (band detail ≈ interior) →
-  Track A ships roll. If roll leaves a visible residual → Track B (vendored conv).
-- **G0.2 — VAE decode seam.** Decode a *synthetic exactly-tileable latent* through `AutoEncoderKL` and
-  measure the decoded image's edge-wrap seam; then measure the **pad-decode-crop** variant. **Exit:** if
-  the plain decode seam is negligible → no VAE work; else Track C ships pad-decode-crop (light) — and
-  only if *that* fails does the decoder get vendored.
-- **G0.3 — regression surface map.** Enumerate every denoise loop the flag could reach (base / tiled /
-  PAG / img2img) and confirm the flag is inert (untouched) in all of them when off. No silent coupling.
+- **G0.1 — reoriented normal blend.** Layering a decal's tangent-space normal over a base normal is NOT
+  a simple lerp (that flattens detail). Prototype **Reoriented Normal Mapping (RNM)** / the UDN blend on
+  a synthetic base+detail fixture; verify the blended normal stays unit-length and the detail rides the
+  base slope correctly (vs a naive lerp). Pure math, weight-free. Exit: RNM validated → Track B uses it.
 
-Probes are env-gated hooks (`PLAKAT_SEAMLESS_ROLL` in `t2i.rs`, `PLAKAT_TEXTURE_NO_FEATHER` in
-`texture::render`) + a 3-way gravel measurement, committed.
-
-### G0.1 RESULT — per-step latent-roll FAILS on real generation (decisive negative)
-3 gravel generations, same seed, SDXL/DDIM (single-step → no scheduler-history confound):
-
-| variant | seam x/y | smear (1=none) |
-|---|---|---|
-| baseline (feather on, shipped) | 0.05 / 0.05 | 0.77 |
-| raw (no feather, no roll) | 2.65 / 2.65 | 1.02 |
-| **roll on (no feather)** | **3.48 / 3.33** | 1.12 |
-
-**Per-step roll did NOT make generation tileable — it made the seam slightly WORSE than raw.** The
-synthetic G0.B "90%" modeled shift-averaging of a *fixed linear* operator; a generative denoise is
-different. Root cause (fundamental, not a tuning issue): a zero-padded conv's edge artifact sits at the
-tensor boundary regardless of *content* — rolling only moves which content receives it and never makes
-column 0 adjacent to column W−1. Only **circular padding** creates that adjacency so the model can paint
-opposite edges to match; re-framing each step also disrupts coherence. **→ Track A (roll) is DROPPED.**
-The only path to native seamless is **Track B (native circular convolution)** — reaching seam ≈ 1.0 per
-6.3's G0.1 — which requires vendoring the resnet stack (the convs are `candle_transformers`, not owned) +
-circular owned convs + circular VAE decode. A materially bigger, higher-risk lift than "preferred."
-This is exactly why G0 runs on the REAL stack. **Decision surfaced to owner before committing to B.**
-
-### G0.2 SCOPE FINDING — Track B is far larger than assumed
-The **inference** UNet is `sdxl_unet::SdUNet` (both sd15 and sdxl), built from **candle's upstream
-`unet_2d_blocks`** (`DownBlock2D`, `CrossAttnDownBlock2D`, `UpBlock2D`, `UNetMidBlock2DCrossAttn`) — NOT
-plakat's `sd_train` blocks (that's the *training* UNet). The seam-bearing 3×3 convs live inside
-candle's `ResnetBlock2D` / `Downsample2D` / `Upsample2D`, **constructed internally by candle's container
-blocks**. So circular padding can't be injected by aliasing the small `ResnetBlock2D` — it requires
-**vendoring candle's whole `unet_2d_blocks` (~1500 lines)** with circular padding + rewiring
-`sdxl_unet.rs` (one vendor covers sd15 + sdxl; attention/proj convs are 1×1 → no seam, exempt). Plus the
-VAE decode (light pad-decode-crop). This is a major multi-step build — the bulk of a cycle on its own.
-**Owner decision re-surfaced with the concrete scope.**
+Other pieces (band atlas composite, alpha matte, UV-region sidecar) are deterministic image ops — covered
+by unit tests in-track, no separate gate.
 
 ---
 
-## Tracks
+## Track A — Trim sheets
+- **A1 — `TrimSpec` + compose.** An HJSON spec: an ordered list of **bands**, each `{ material: <dir|
+  spec>, height: <fraction|px>, tile: x|y|none }`. Compose the bands into one atlas per channel
+  (albedo/normal/roughness/metallic/height/AO + ORM), stacked along V, each band resized to its slot and
+  tiled along its run axis. Weight-free when bands are pre-rendered dirs; a band given as a spec is
+  rendered first (GPU).
+- **A2 — UV-region sidecar.** `trim.json` — each band's normalized UV rect + label, so an engine / DCC
+  can map faces to bands. Plus per-band scorecard (does each band tile along its axis?).
+- **A3 — `texture trim <spec|dirs…> --out` + preview.** A preview that shows the atlas flat + a lit
+  strip. `--bands a=0.5,b=0.25,c=0.25` shorthand for quick trims from material dirs.
 
-### Track A — per-step latent-roll integration (the contained win; primary path)
-- **A1** — thread `seamless_roll: Option<Roll>` from `api::Generate` → the request/config → the primary
-  SD denoise loop. Roll the latent by a per-step deterministic offset (seeded, reproducible) around
-  `unet.forward`; unroll the prediction so the latent stays in canonical frame between steps. Default
-  off → byte-identical.
-- **A2** — apply in `texture::render` when `seamless.mode == circular`: generate with roll ON, then only
-  a *minimal* boundary cleanup (or none) instead of the adaptive feather. Keep the feather as the
-  fallback for `mode != circular` / non-roll models.
-- **A3** — the `raw_seam` measurement (6.4) now verifies the roll worked; scorecard unchanged.
+## Track B — Decals
+- **B1 — decal material.** A decal = base PBR channels + an **alpha** (opacity) mask. Build one from: a
+  procedural `--shape` (stripe/splatter/crack/ring), an `--image` (matte its background), or a `--mask`
+  PNG. `texture decal new` scaffolds; `texture decal make <src>` produces `albedo`(+alpha)/`normal`/
+  `roughness`/`height`/`opacity`.
+- **B2 — RNM normal blend (per G0.1).** The compositor blends the decal normal over the base via
+  Reoriented Normal Mapping so detail rides the base surface, not flattens it.
+- **B3 — `texture decal apply <base> <decal> --at x,y --scale s --rotate d --out`.** Composite a decal
+  onto a base material: alpha-blend albedo/roughness/metallic/height, RNM-blend normal, re-derive AO if
+  height changed, re-score. Weight-free. `--tile` for a repeating decal.
 
-### Track B — vendored circular ResNet (the deep fix; GATED on G0.1 residual)
-- Only if A's residual is visible: vendor a circular-padded `ResnetBlock2D` (candle_transformers is
-  Apache-2.0) into `src/pipelines/vendored_seamless.rs`; wire into the own UNet + `sdxl_unet` resnet
-  stacks behind the seamless flag; the owned `conv_in`/`conv_out`/down/up convs get `circular_pad2d`
-  directly. **Verify corr-1.0 is preserved when the flag is off** (dump-compare vs the current path).
-
-### Track C — circular VAE decode (GATED on G0.2)
-- Only if the VAE reintroduces a seam: **pad-decode-crop** — circular-pad the tileable latent by a few
-  latent px, `vae.decode`, crop the corresponding image margin. Light, no vendoring. (Escalate to a
-  vendored circular decoder only if pad-decode-crop is insufficient.)
-
-### Track D — corpus, docs, cut
-- **D1** — regenerate the hi-freq corpus materials (gravel + others) **genuinely seam-free** (roll on,
-  feather off); show the before/after smear numbers.
-- **D2** — docs: `Documentation/TEXTURE.md` Seamless section — native seamless is now the default for
-  `circular` on sd15/sdxl; feather is the fallback. Note the roll/vendored-conv/VAE decisions the cycle
-  actually made.
-- **D3** — integration parity: expose the seamless-generation control where sensible (`texture` spec
-  already implies it via `seamless.mode: circular`; `api::Generate` gets a `.seamless()` toggle for
-  general use). doctor refresh.
-- **D4** — CUT 6.5.0 (bump Cargo.toml+lock, gate `cargo test --no-default-features --lib`, FF `git push
+## Track C — integration, corpus, docs, cut
+- **C1 — integration parity.** Spec `type: trim` / `type: decal` in scenario + compile; Bund words
+  (`plakat.texture.trim` / `.decal`); `api::Texture` companions (`texture_trim`, `decal_apply`); doctor
+  refresh. (bookart/6.4 template.)
+- **C2 — corpus.** A trim-sheet demo (e.g. metal-panel + rivet-strip + pipe bands) and a decal demo
+  (rust-streak decal applied to the stone material). Wire into `texture_run.sh`; update TEXTURE_CORPUS.md.
+- **C3 — docs.** `Documentation/TEXTURE.md` — a "Trim sheets & decals" section (spec schema, the atlas +
+  UV-region model, the decal/RNM model, all new flags verified vs `--help`); tutorial passage.
+- **C4 — CUT 6.5.0** (bump Cargo.toml+lock, gate `cargo test --no-default-features --lib`, FF `git push
   6.5.0:main`, tag → CI 6-asset, `cargo publish --locked --allow-dirty --no-default-features`, `gh
   release edit` GH_TOKEN=vulogov + bg waiter, NO Claude/Anthropic coauthor).
 
 ---
 
-## Sequencing & risk posture
-
-G0.1 (+G0.2, G0.3) → **A** (roll integration — likely sufficient, per G0.B's 90%) → measure → **B**
-only if A's residual is visible → **C** only if G0.2 shows a VAE seam → **D** (cut). The bias is
-**measure-first and wrap-don't-rewrite**: prefer per-step-roll + pad-decode-crop (contained, reversible,
-default-off) over vendoring; vendor the resnet stack only if the measured residual demands it. Every
-change is byte-identical when the flag is off, so the corr-1.0 path for all 7 families is protected by
-construction.
+## Sequencing
+G0.1 (RNM) → **A** (trim, weight-free, front-loaded — value from supplied material dirs) → **B** (decals,
+uses the G0.1 RNM) → **C** (integration + corpus + docs + cut). Front-load the weight-free compositors;
+generation only enters when a band/decal is authored from a prompt.
 
 ## Non-goals
-- Not extending seamless generation to Sana/Flux/SD3 this cycle (own-UNet sd15/sdxl only).
-- Not a new output contract; `texture`'s maps/scorecard/export are unchanged.
-- Feather is not removed — it stays the fallback for non-circular modes and non-roll models.
+- Not a full UV-unwrapper or atlas-packer with arbitrary bin-packing (bands are ordered strips; decals
+  are placed, not auto-packed).
+- Not a runtime decal-projection system (this produces *baked* material sets, not a shader).
+- Normal compositing is RNM (an approximation), not a displacement-accurate resolve.
+
+---
+
+## Appendix A — dropped: native seamless generation (G0 findings, preserved)
+6.5.0's original headline. Dropped after measure-first G0 on the real stack:
+- **Per-step latent-roll FAILS** (commit `4bb1bcb`): 3-way gravel (SDXL/DDIM) — baseline-feather 0.05 /
+  raw-no-feather 2.65 / **roll-no-feather 3.48 (worse)**. A zero-pad conv's edge artifact is at the
+  tensor boundary regardless of content; rolling never makes opposite edges adjacent — only circular
+  padding does. The synthetic G0.B "90%" modeled a fixed linear operator, not a generative denoise.
+- **Native circular conv scope** (commit `f5a25a8`): inference uses candle's upstream `unet_2d_blocks`
+  (both sd15/sdxl), whose seam-bearing convs are built inside candle's containers → circular padding
+  needs vendoring the whole ~1500-line block module + rewiring + fork maintenance, for a mild smear
+  feather already handles (0.05). Deferred as a documented hard item; feather + adaptive band (6.4) stand.
