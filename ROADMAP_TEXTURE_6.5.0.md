@@ -80,6 +80,17 @@ The only path to native seamless is **Track B (native circular convolution)** �
 circular owned convs + circular VAE decode. A materially bigger, higher-risk lift than "preferred."
 This is exactly why G0 runs on the REAL stack. **Decision surfaced to owner before committing to B.**
 
+### G0.2 SCOPE FINDING — Track B is far larger than assumed
+The **inference** UNet is `sdxl_unet::SdUNet` (both sd15 and sdxl), built from **candle's upstream
+`unet_2d_blocks`** (`DownBlock2D`, `CrossAttnDownBlock2D`, `UpBlock2D`, `UNetMidBlock2DCrossAttn`) — NOT
+plakat's `sd_train` blocks (that's the *training* UNet). The seam-bearing 3×3 convs live inside
+candle's `ResnetBlock2D` / `Downsample2D` / `Upsample2D`, **constructed internally by candle's container
+blocks**. So circular padding can't be injected by aliasing the small `ResnetBlock2D` — it requires
+**vendoring candle's whole `unet_2d_blocks` (~1500 lines)** with circular padding + rewiring
+`sdxl_unet.rs` (one vendor covers sd15 + sdxl; attention/proj convs are 1×1 → no seam, exempt). Plus the
+VAE decode (light pad-decode-crop). This is a major multi-step build — the bulk of a cycle on its own.
+**Owner decision re-surfaced with the concrete scope.**
+
 ---
 
 ## Tracks
