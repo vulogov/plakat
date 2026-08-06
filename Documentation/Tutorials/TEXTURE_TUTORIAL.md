@@ -7,6 +7,10 @@ the integration surfaces. `texture` turns a prompt or a photo into a *seamless, 
 set — the reference is [`../TEXTURE.md`](../TEXTURE.md); the full design is
 [`../RFC_TEXTURE_1.md`](../RFC_TEXTURE_1.md).
 
+**New in 6.4** (section 8 below): spatially-varying `metallic: "auto"` / `roughness: "auto"` for
+composite materials, hand-painted `--metallic-ref` / `--roughness-ref` masks, `--anisotropy` grain maps,
+`texture blend` to cross-fade two materials, and `render --variations N` for seed spreads.
+
 Build the release binary first — debug diffusion is ~50× slower:
 
 ```sh
@@ -189,6 +193,87 @@ let card = plakat::api::Texture::from_prompt("worn rusted iron plating")
 `from_prompt` / `from_image` / `from_spec` pick the source; `model` / `size` / `seed` / `steps` /
 `upscale` / `attempts` tune it; `run(out)` writes the material directory and hands back the `Scorecard`
 you'd otherwise read with `verify`.
+
+## 8. Composite materials, the metallic channel, and the new 6.4 knobs
+
+### "Why is my metallic map black?" — it's correct
+
+The most common surprise is a **flat black metallic map**, read as a bug. It almost never is. **Metallic
+is near-binary per material**: a surface is *either* a raw **metal** (metallic `1.0`, white) *or* a
+**dielectric** — stone, wood, leaves, plastic, wet stone, paper (metallic `0.0`, black). Almost nothing
+sits in between. So for a **single-class** material a flat map is the **right answer**:
+
+- **flat black** for a dielectric — stone, leaves, a river, concrete, wood;
+- **flat white** for a conductor — brushed steel, gold, copper.
+
+`verify` says so out loud: for a single-class tile it prints *"metallic is uniform (black = dielectric) —
+correct for a single-class material, not a defect"*. A metallic map only carries spatial **structure**
+when the tile is a **composite** that mixes metal and non-metal in one image.
+
+### The composite case — rusted iron with `metallic: "auto"`
+
+Rusted iron is the textbook composite: **bare steel** (a conductor) and **rust** (a dielectric) share
+one tile. Here `metallic: "auto"` (the default) earns its keep — it runs a **spatially-coherent region
+vote** and returns a **structured** mask (bare-metal regions white, rust black) where the old per-pixel
+`from-albedo` scattered speckle:
+
+```sh
+plakat texture derive rusted_iron.png --out rust_mat/ --metallic auto --roughness auto
+plakat texture verify rust_mat/        # → "metallic is structured … composite material"
+```
+
+Open `rust_mat/metallic.png`: you'll see clean metal-vs-rust regions, not noise. For a **single-class**
+tile `auto` correctly **collapses to a flat map**, so it's safe to leave on — but when you *know* the
+class, say so, because metal-vs-dielectric is separated by **saturation** and a grey dielectric (stone,
+concrete) can read close to bare metal:
+
+```sh
+plakat texture derive stone.png  --out stone_mat/  --metallic 0    # known dielectric → flat black
+plakat texture derive gold.png   --out gold_mat/   --metallic 1    # known raw metal → flat white
+```
+
+The ultimate override is a **hand-painted mask**, used verbatim (white = metal), on `derive`, `render`,
+or `from`:
+
+```sh
+plakat texture derive rusted_iron.png --out rust_mat/ --metallic-ref my_metal_mask.png
+```
+
+### Anisotropy — brushed metal grain
+
+For a brushed or grained metal, `--anisotropy` writes an `anisotropy.png` flow map (RG = grain
+direction, B = strength) and makes the lit preview's highlight **stretch along the grain**. Give the
+angle or omit it to auto-detect from the height's structure tensor:
+
+```sh
+plakat texture derive brushed_steel.png --out steel_mat/ --metallic 1 --anisotropy 0.85 --anisotropy-angle 0
+plakat texture preview steel_mat/                    # the highlight is now a streak, not a dot
+```
+
+### `blend` — cross-fade two materials (no weights)
+
+Blend two finished material directories into one PBR set — stone → moss, clean → worn. Every channel
+lerps by the same mask and the normal is renormalised:
+
+```sh
+plakat texture blend stone_mat/ moss_mat/ --out mossy_stone/                 # mix (default) — still tiles
+plakat texture blend stone_mat/ moss_mat/ --out mossy_stone/ --mask radial   # radial — also tiles
+plakat texture blend clean_mat/ worn_mat/ --out wipe/ --mask x               # a transition sheet (breaks X tiling on purpose)
+plakat texture blend stone_mat/ moss_mat/ --out mossy_stone/ --mask patches.png   # your own grayscale mask
+```
+
+`mix` and `radial` keep the result **tileable**; `x` / `y` are intentional transition sheets that break
+tiling in that axis. No weights, no GPU.
+
+### `render --variations` — a spread to choose from
+
+`--attempts N` rejection-samples down to **one** passing material; `--variations N` instead renders N
+distinct seed **variants side-by-side** into `<out>/var-0/`, `var-1/`, … so you can pick. Add
+`--keep-best` to also copy the top-scoring variant to `<out>` itself:
+
+```sh
+plakat texture render iron.hjson --out iron_spread/ --variations 4 --keep-best
+```
 
 ## Where to go next
 

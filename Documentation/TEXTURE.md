@@ -6,6 +6,14 @@ metal/rough workflow: albedo · normal · roughness · metallic · height · amb
 [`RFC_TEXTURE_1.md`](RFC_TEXTURE_1.md)), and it is **fully additive** — no existing command or output
 changes.
 
+**6.4 deepened it.** Spatially-varying **`metallic: "auto"` / `roughness: "auto"`** turn a composite
+material (rusted iron, a gilded frame, chipped paint) into a *structured* mask instead of per-pixel
+speckle; **anisotropy** writes a grain flow map for brushed metals; hand-painted **`--metallic-ref` /
+`--roughness-ref`** masks are the ultimate override; **`texture blend`** cross-fades two materials
+(stone → moss) weight-free; **`render --variations N`** renders seed variants side-by-side; and the
+seamless **feather is now adaptive** (sized to the measured seam). All additive — no existing output
+changes.
+
 `texture` treats a material as **structured data**: a small HJSON document (a `TextureSpec`) is
 resolved deterministically, then **generate → derive → measure → export**. The reason is the same one
 behind `bookart` and `persona` — a text prompt is a poor instrument for a material. "a seamless rusted
@@ -51,6 +59,7 @@ depth touch a model.
 | `verify` | no — the scorecard is pure measurement |
 | `preview` | no — a Cook-Torrance-lite raster |
 | `export` | no — re-pack + rename |
+| `blend` | no — per-channel lerp through a mask |
 | `render` | **yes** — a diffusion model generates the albedo |
 | `from` | **depth only** — no generation; `height: auto` needs the depth model |
 
@@ -60,12 +69,13 @@ depth touch a model.
 plakat texture new     <out.hjson> [--material "…" --size 1024 --model sdxl]      scaffold a spec
 plakat texture lint    <spec>                                                     validate (no weights, non-zero exit on error)
 plakat texture show    <spec>                                                     the resolved plan
-plakat texture derive  <albedo.png> --out DIR [--height H.png --normal-strength 1.0 --ao-strength 1.0 --normal-y opengl|directx]   full PBR set from an albedo (NO GPU)
+plakat texture derive  <albedo.png> --out DIR [--height H.png --roughness auto|from-albedo|<0..1> --metallic auto|from-albedo|<0..1> --metallic-ref M.png --roughness-ref R.png --anisotropy 0..1 --anisotropy-angle DEG --normal-strength 1.0 --ao-strength 1.0 --normal-y opengl|directx]   full PBR set from an albedo (NO GPU)
 plakat texture verify  <mat-dir>                                                  the tileability / PBR scorecard (NO weights)
 plakat texture preview <mat-dir> [--out P.png --shape sphere|plane --size 512]    re-render the lit preview (NO GPU)
 plakat texture export  <mat-dir> [--out DIR --naming plakat|unity|unreal --orm --gltf]   re-pack for an engine (NO weights)
-plakat texture render  <spec> --out DIR [--attempts N --upscale none|2k|4k]       generate the material (GPU)
-plakat texture from    <image> --out DIR [--material "…" --size 1024 --upscale none|2k|4k --height auto|from-albedo]   image→material (GPU: depth only)
+plakat texture blend   <dirA> <dirB> --out DIR [--mask mix|radial|x|y|<mask.png> --naming plakat]   cross-fade two materials (NO weights)
+plakat texture render  <spec> --out DIR [--attempts N --variations N --keep-best --upscale none|2k|4k --metallic-ref M.png --roughness-ref R.png]   generate the material (GPU)
+plakat texture from    <image> --out DIR [--material "…" --size 1024 --upscale none|2k|4k --height auto|from-albedo --metallic-ref M.png --roughness-ref R.png]   image→material (GPU: depth only)
 ```
 
 ### `new` — scaffold a spec
@@ -97,6 +107,25 @@ and `--ao-strength` scale the derived relief and cavity; `--normal-y opengl|dire
 channel convention. Because every derivation is **circular** (see *Concepts*), the derived maps tile as
 long as the albedo does. This is also the stage `render` and `from` call internally.
 
+**Metallic / roughness sources.** `--metallic` and `--roughness` each accept a scalar `0..1` (a flat
+map), `from-albedo` (a per-pixel heuristic), or **`auto`** (the default — a spatially-coherent
+*region* vote, see *Spatially-varying metallic/roughness*). For a **composite** material (rusted iron =
+bare steel + rust in one tile) `auto` returns a *structured* mask where `from-albedo` left speckle; for
+a **single-class** material it collapses to the correct flat map. `auto` is **opt-in-by-default** but
+worth an override when you know the class: a grey **dielectric** (stone, concrete, paper) should pass
+`--metallic 0`, a raw **metal** `--metallic 1` — because metal-vs-dielectric is separated by
+*saturation* and a grey dielectric can read close to bare metal (see the nuance below).
+
+**Hand-painted overrides.** `--metallic-ref <png>` / `--roughness-ref <png>` take a grayscale mask PNG
+and use it **verbatim** (resized to fit) — the ultimate override, ahead of `--metallic` / `--roughness`.
+White = metal (for metallic). Available on `derive`, `render`, and `from`.
+
+**Anisotropy.** `--anisotropy <0..1>` (0 = isotropic, default) turns on a grain flow map for
+brushed/grained metals: it writes an `anisotropy.png` (RG = grain direction, B = strength) and makes
+the lit preview's highlight **stretch along the grain**. `--anisotropy-angle <deg>` sets the direction;
+omit it to **auto-detect** from the height's structure tensor. It is consumed by engine anisotropy
+workflows (glTF `KHR_materials_anisotropy`).
+
 ### `verify` — the tileability / PBR scorecard *(no weights)*
 
 Measures a material directory against what a good PBR set should be and prints the scorecard (below).
@@ -125,6 +154,12 @@ derives the whole channel set, measures the scorecard, and packs the directory. 
 the fewest-issues one). This is the one stochastic step; it is seed-locked and reproducible on a given
 device.
 
+`--variations N` is the **other** multi-seed mode: it renders N distinct seed *variants*
+**side-by-side** into `<out>/var-0/`, `var-1/`, … (a spread to choose from), where `--attempts`
+rejection-samples down to **one** passing result. Add `--keep-best` and the top-scoring variant is also
+copied to `<out>` itself. `--metallic-ref` / `--roughness-ref` override the spec's metallic/roughness
+with a hand-painted mask (see `derive`).
+
 ### `from` — image-to-material *(GPU: depth only)*
 
 Turns a **photo** into a material. It runs **no generation** — the photo *is* the albedo — so it is
@@ -132,7 +167,23 @@ much cheaper than `render`. It makes the photo tileable (offset-and-heal, see *C
 the channel set. The only model it may touch is the **depth** model, and only when `--height auto`:
 depth-from-albedo gives the macro relief. `--height from-albedo` keeps it fully weight-free (luminance
 height). `--material` lets you annotate the intent, `--size` the working resolution, `--upscale` the
-tileability-preserving upscale.
+tileability-preserving upscale. `--metallic-ref` / `--roughness-ref` supply hand-painted masks (see
+`derive`).
+
+### `blend` — cross-fade two materials *(no weights)*
+
+Blends two material directories through a mask into **one** PBR set — e.g. stone → moss, clean → worn.
+`<dirA>` is the material at mask 0, `<dirB>` at mask 255; **every channel lerps by the same mask** and
+the normal is renormalised. `--mask` picks the blend:
+
+- **`mix`** (default) — a **tileable** integer-frequency sine interleave; the blended material *still
+  tiles*.
+- **`radial`** — also **tileable** (a centred radial falloff).
+- **`x`** / **`y`** — an intentional **transition sheet** (a left→right or top→bottom wipe) that
+  **breaks tiling in that axis** on purpose.
+- a **path to a grayscale PNG** — your own mask, used verbatim.
+
+`--naming` packs the export in the engine idiom (`plakat` default). No weights, no GPU.
 
 ## The `TextureSpec` schema
 
@@ -156,8 +207,10 @@ schema tag is `"texture/1"`. A full spec:
 
   channels: {
     height:   "auto"          # auto (depth+high-pass) | from-albedo (luminance) | "<prompt>"
-    roughness: 0.6            # scalar 0..1 (a flat map) | "from-albedo" | "<prompt>"
-    metallic:  "from-albedo"  # scalar 0..1 | "from-albedo" | "<prompt>"
+    roughness: "auto"        # "auto" (region-vote, default) | scalar 0..1 | "from-albedo" | "<prompt>"
+    metallic:  "auto"         # "auto" (region-vote, default) | scalar 0..1 | "from-albedo" | "<prompt>"
+    anisotropy: 0.0           # 0..1 grain strength (0 = isotropic); omit for none
+    anisotropy_angle: 0       # grain direction in degrees; omit to auto-detect (structure tensor)
     normal_strength: 1.0
     ao_strength: 1.0
     normal_y: "opengl"        # opengl (+Y, default) | directx (flips G)
@@ -185,15 +238,22 @@ schema tag is `"texture/1"`. A full spec:
 }
 ```
 
-**The scalar-or-string channels are the subtlety.** A channel like `roughness` can be:
+**The scalar-or-string channels are the subtlety.** A channel like `roughness` or `metallic` can be:
 
+- **`"auto"`** (the default) — a **spatially-coherent region vote**: a structured mask for a composite
+  material, a flat map for a single-class one (see *Spatially-varying metallic/roughness*);
 - a **scalar** — `roughness: 0.6` — a flat, constant map (fastest, most predictable);
-- **`"from-albedo"`** — a heuristic derived from the albedo (bright/smooth → low roughness, etc.);
+- **`"from-albedo"`** — a **per-pixel** heuristic derived from the albedo (bright/smooth → low
+  roughness, etc.);
 - a **generation prompt** — `roughness: "worn patches"` — *currently falls back to `from-albedo` in
   `derive`* (a per-channel generation pass is a documented fast-follow).
 
-`height` follows the same pattern: `auto` (depth model + luminance high-pass), `from-albedo`
+`height` follows a similar pattern: `auto` (depth model + luminance high-pass), `from-albedo`
 (luminance), or a prompt.
+
+`anisotropy` (0..1) and `anisotropy_angle` (degrees) are optional — set the strength for a
+brushed/grained metal and omit the angle to auto-detect the grain direction from the height's structure
+tensor (CLI `--anisotropy` / `--anisotropy-angle`).
 
 ## How it works — the concepts
 
@@ -206,6 +266,10 @@ The RFC's headline was native **circular convolution**; the shipped approach is 
   threshold).
 - **Photo** — **offset-and-heal** (`make_tileable`): roll the image by half so the edge seams move to
   the *interior*, then feather the central cross where they now sit.
+
+The boundary feather is now **adaptive**: its band is sized to the material's **measured raw seam** — a
+thin band when the field is already near-tileable (so it smears less detail), the full band only for a
+genuine seam.
 
 A per-step **latent-roll** plus a **vendored circular ResNet** remain the documented **escalation
 path** if a material's residual ever fails the scorecard — the measure-first path clears it in practice.
@@ -231,12 +295,61 @@ Both are **derived from the height map** with **circular** Sobel (normal) and ca
 the circularity is what makes the derived maps tile. OpenGL **+Y** is the default; `normal_y: directx`
 flips the green channel.
 
+### Spatially-varying metallic/roughness
+
+`metallic: "auto"` / `roughness: "auto"` are the 6.4 headline. Where `from-albedo` decides **per pixel**
+— and so scatters **speckle** across a mixed surface — `auto` runs a **spatially-coherent region vote**:
+it segments the tile into regions and assigns each region one value, yielding a **structured** mask.
+
+- For a **composite** material (rusted iron = bare steel + rust in one tile; a gilded frame; chipped
+  paint) `auto` produces a clean mask — **bare-metal regions white, non-metal black** — instead of the
+  per-pixel noise `from-albedo` left behind.
+- For a **single-class** material it correctly **collapses to a flat map** (flat black for a dielectric,
+  flat white for a raw metal).
+
+**The nuance — why `auto` is opt-in.** Metal-vs-dielectric is separated by **saturation**: bare metal is
+near-grey (sat ≈ 0.01), but a grey *dielectric* like stone or concrete still carries some colour (sat ≈
+0.1–0.2), so the two can sit close on the axis. `auto` is therefore the sensible default but **not a
+substitute for knowing the class**. When you know it, say so: a grey dielectric (stone, concrete, paper)
+→ `--metallic 0`; a raw metal → `--metallic 1`. Reach for `auto` when the tile genuinely **mixes** metal
+and non-metal. The ultimate override is a hand-painted `--metallic-ref` / `--roughness-ref` mask.
+
+### Anisotropy
+
+For **brushed/grained metals**, `anisotropy` (strength 0..1) writes an `anisotropy.png` **flow map**
+(RG = grain direction, B = strength) and makes the lit preview's specular highlight **stretch along the
+grain** instead of staying a round dot. The direction comes from `anisotropy_angle` (degrees) or, if you
+omit it, is **auto-detected from the height's structure tensor**. Downstream it feeds engine anisotropy
+workflows (glTF `KHR_materials_anisotropy`).
+
 ### Upscale
 
 `2k` / `4k` is a **tileability-preserving Lanczos**: circular-pad → resize → crop, applied *before*
 derivation so the derived channels come out at the upscaled resolution. **Real-ESRGAN is deliberately
 avoided** — it tiles internally and hallucinates, both of which break the wrap. Tiling was verified to
 **survive** the upscale.
+
+## Reading the channels
+
+The single most common point of confusion is a **flat metallic map** read as a bug. It usually isn't.
+
+**Metallic is near-binary per material.** A surface is *either* a raw **metal** (metallic **1.0**,
+white) *or* a **dielectric** — stone, wood, leaves, plastic, wet stone, paper (metallic **0.0**, black).
+There is almost nothing in between. So for a **single-class** material a **flat** metallic map is the
+**correct, expected** answer:
+
+- **flat black** for a dielectric (stone, leaves, a river, concrete, wood);
+- **flat white** for a conductor (brushed steel, gold, copper).
+
+A metallic map only carries spatial **structure** when the tile is a **composite** that mixes metal and
+non-metal — rusted iron (bare steel + rust), a gilded frame, chipped paint. That is exactly what
+`metallic: "auto"` produces.
+
+`verify` says this out loud in the scorecard. For a mixed tile it reports *"metallic is structured …
+composite material"*; for a single-class tile *"metallic is uniform (black = dielectric) — correct for a
+single-class material, not a defect"*. Both are passes — a flat map is a fact about the material, not a
+failure of the pipeline. Corpus examples: **stone / leaves / river → flat black** (dielectrics),
+**brushed steel → flat white** (conductor), **rusted iron → structured**.
 
 ## The scorecard
 
@@ -253,6 +366,10 @@ repairable, and drives `render --attempts N` rejection sampling.
 
 The **hard gate** is **tiling + normal + consistency**; **flatness is advisory** (a legitimately
 uneven material can be dark in one corner). A material that clears the hard gate is shippable.
+
+The scorecard also **narrates the metallic channel** so a flat map isn't misread: *"metallic is
+structured … composite material"* for a mixed tile, or *"metallic is uniform (black = dielectric) —
+correct for a single-class material, not a defect"* for a single-class one (see *Reading the channels*).
 
 ## Integration surfaces
 

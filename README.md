@@ -5,7 +5,9 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v6.3.0 — `plakat texture`**: the 6.3 flagship (RFC TEXTURE-1). Turn a prompt or a photo into a **seamless, tileable PBR material set** — albedo · normal · roughness · metallic · height · ambient-occlusion — flat-lit, exported **engine-ready** (ORM pack, Unity/Unreal naming, glTF) with a pure-Rust lit **preview**. A material is structured data: a small HJSON `TextureSpec` resolved deterministically → generate → derive → *measure* (a tileability scorecard) → export. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.3.0) · [Guide →](Documentation/TEXTURE.md)
+> **v6.4.0 — deepen `plakat texture`**: composite materials now get **spatially-varying** channels — `metallic: "auto"` / `roughness: "auto"` region-vote a *structured* mask (bare metal vs rust, wet vs dry) where a single-class material still (correctly) stays flat — plus **anisotropy** for brushed/grained metals (a flow map + a grain-stretched preview highlight), a weight-free `texture blend` (two materials → one, through a tileable mask), `--variations N`, hand-painted `--metallic-ref`/`--roughness-ref` masks, and an *adaptive* seam feather. The `verify` scorecard now explains a flat map (*"uniform metallic — correct for a single-class material, not a defect"*). Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.4.0) · [Guide →](Documentation/TEXTURE.md)
+>
+> **v6.3.0 — `plakat texture`**: the flagship (RFC TEXTURE-1). Turn a prompt or a photo into a **seamless, tileable PBR material set** — albedo · normal · roughness · metallic · height · ambient-occlusion — flat-lit, exported **engine-ready** (ORM pack, Unity/Unreal naming, glTF) with a pure-Rust lit **preview**. A material is structured data: a small HJSON `TextureSpec` resolved deterministically → generate → derive → *measure* (a tileability scorecard) → export. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.3.0) · [Guide →](Documentation/TEXTURE.md)
 >
 > **v6.2.0 — consolidation & polish**: a breather after four flagships — a cleaner `bookart` default look (contrast-adaptive `line` binariser), the docs brought current, a perf pass (no regression), and hardening. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.2.0)
 >
@@ -29,9 +31,39 @@ cached locally.
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
 
+## What's new in 6.4.0 — deepen `plakat texture`
+
+A deepening cycle on the 6.3 flagship (RFC TEXTURE-1) that closes the two gaps the first corpus exposed —
+composite materials, and the residual seam on high-frequency textures — plus richness fast-follows. Fully
+additive.
+
+```bash
+# a COMPOSITE material — metallic:"auto" gives a STRUCTURED metal mask (bare steel white, rust black)
+plakat texture render rusted_iron.hjson --out rust/     # channels: { metallic: "auto", roughness: "auto" }
+plakat texture derive rust/albedo.png --out m/ --metallic auto      # the same, weight-free, from an albedo
+plakat texture derive steel.png --out m/ --anisotropy 0.85          # brushed grain → an anisotropy flow map
+plakat texture blend stone/ moss/ --out sm/ --mask mix              # two materials → one, still tiling
+plakat texture render stone.hjson --out v/ --variations 3 --keep-best   # seed variants, keep the best
+```
+
+- **Spatially-varying channels** — `metallic:"auto"` / `roughness:"auto"` region-vote a *structured* mask
+  for **composite** materials (rusted iron, gilding, chipped paint) where the per-pixel heuristic left
+  speckle; a **single-class** material still (correctly) collapses to a flat map. Metal↔dielectric is
+  separated by *saturation*, so `auto` is opt-in — a known grey dielectric uses `--metallic 0`.
+- **Reading the channels** — the `verify` scorecard now says *why* a flat map is right: a metallic channel
+  is near-binary per material (stone/leaves → flat **black** dielectrics; steel → flat **white**
+  conductor; rusted iron → **structured**). A flat map is a decision, not a bug.
+- **Anisotropy** for brushed/grained metals — an `anisotropy.png` flow map + a preview highlight that
+  **stretches along the grain** (auto-detected from the height, or a fixed angle).
+- **`texture blend`** (weight-free) — two materials → one PBR set through a **tileable** mask; plus
+  hand-painted `--metallic-ref` / `--roughness-ref` overrides, `--variations N`, and an **adaptive** seam
+  feather (band sized to the measured seam → less high-frequency smear).
+
+See [`Documentation/TEXTURE.md`](Documentation/TEXTURE.md) › *Reading the channels*.
+
 ## What's new in 6.3.0 — `plakat texture`
 
-The 6.3 flagship (RFC TEXTURE-1): turn a **prompt or a photo** into a **seamless, tileable PBR material
+The flagship (RFC TEXTURE-1): turn a **prompt or a photo** into a **seamless, tileable PBR material
 set** — the decorative/technical sibling of `bookart`. A prompt gives one lit, non-tiling RGB image;
 `plakat texture` gives a **material** you can drop into Unity / Unreal / Blender / a glTF and tile across
 a surface.
