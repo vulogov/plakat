@@ -144,11 +144,6 @@ async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
             // band as it needs — narrow when it's already near-seamless (least smear), wide only when a
             // real seam demands it. (The dormant per-step latent-roll / vendored circular ResNet remain
             // the escalation for a hypothetical material a feather truly can't tile — G0.B / 6.3 G0.1.)
-            // G0.1 (6.5.0 probe): skip the feather entirely so the RAW generated seam is measurable
-            // (isolates the per-step-roll effect). Env-gated; the shipped path is unaffected.
-            if std::env::var("PLAKAT_TEXTURE_NO_FEATHER").map(|v| v != "0" && !v.is_empty()).unwrap_or(false) {
-                return Ok(albedo);
-            }
             let raw = raw_seam(&albedo, axes);
             let band = if raw < 1.3 {
                 (plan.size / 96).max(3) // already near-tileable → a thin hairline erase, minimal smear
