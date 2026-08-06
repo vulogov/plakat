@@ -89,6 +89,15 @@ Both probes are `examples/texture_*_probe.rs`, committed. Do G0 FIRST.
 
 ## Track B — seamless for high-frequency materials
 
+### B RESULT — DONE (commit `3e8f0f2`): adaptive feather shipped; tileable-generation deferred (owner-confirmed)
+Measured fine gravel (worst case): feather tiles it cleanly (seam **0.05**, PASS), leaving only a mild
+smear (~24% seam-band detail loss). **Shipped the safe half — adaptive feather** (`raw_seam` sizes the
+band to the measured raw seam; halved gravel's smear-band width 43→21px, never worse than fixed).
+**B1-full (per-step roll) / B2 (vendored circular ResNet) NOT shipped** — invasive to the shared
+corr-1.0 sampler across 7 families, and the mild hi-freq-only residual doesn't justify the risk (owner
+chose "ship adaptive, move on"). `roll2d`/`SeamlessConv2d` stay the dormant, proven-feasible escalation.
+
+
 - **B1 — per-step latent-roll hook.** Per G0.B: a contained, default-off `tileable-diffusion` hook in
   the SD denoise loop (`roll2d` the latent per step, unroll the prediction — byte-identical when off).
   On for `texture render` when `seamless.mode == circular`. Measure hi-freq corpus materials.
