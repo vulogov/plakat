@@ -5,7 +5,9 @@
   material: "brushed stainless steel panel, fine horizontal grain, subtle scratches"
 
   seamless: { mode: "circular", axes: "both" }
-  channels: { height: "auto", roughness: 0.35, metallic: 1.0, normal_strength: 0.7, normal_y: "opengl" }
+  // anisotropy (6.4.0): a brushed panel has a directional grain → an anisotropy flow map + a preview
+  // highlight that stretches ALONG the grain (0° = horizontal). The one material that shows it.
+  channels: { height: "auto", roughness: 0.35, metallic: 1.0, normal_strength: 0.7, normal_y: "opengl", anisotropy: 0.85, anisotropy_angle: 0 }
   delight: true
   page: { size: 1024, upscale: "none", tiling_check: true }
   export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }

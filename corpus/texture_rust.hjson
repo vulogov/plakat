@@ -1,0 +1,18 @@
+{
+  schema: "texture/1"
+  // THE 6.4.0 headline: a COMPOSITE material (bare steel + orange rust in one tile). metallic:"auto"
+  // region-votes a STRUCTURED metal mask (bare-metal patches white, rust black) where a per-pixel
+  // heuristic leaves speckle; roughness:"auto" makes the rust rougher than the bare metal. This is the
+  // material stone/steel/leaves (all single-class) can't show — a metallic.png with real structure.
+  material: "rusted iron plate, flaking orange rust over patches of bare polished steel, weathered, industrial"
+
+  seamless: { mode: "circular", axes: "both" }
+  channels: { height: "auto", roughness: "auto", metallic: "auto", normal_strength: 1.2, normal_y: "opengl" }
+  delight: true
+  page: { size: 1024, upscale: "none", tiling_check: true }
+  export: { maps: ["albedo", "normal", "roughness", "metallic", "height", "ao"], orm: true, gltf: true, naming: "plakat", preview: true }
+
+  model: "sdxl"
+  seed: 9
+  steps: 30
+}

@@ -558,6 +558,10 @@ fn run_show(a: ShowArgs) -> Result<()> {
     println!("  metallic     {}", cs(&p.metallic));
     println!("  normal       strength {} · {}", p.normal_strength, p.normal_y);
     println!("  ao           strength {}", p.ao_strength);
+    if p.anisotropy > 0.0 {
+        let dir = p.anisotropy_angle.map(|a| format!("{a}°")).unwrap_or_else(|| "auto".into());
+        println!("  anisotropy   strength {} · grain {dir}", p.anisotropy);
+    }
     println!("  delight      {}", p.delight);
     println!("  maps         {}", p.maps.join(", "));
     println!("  export       orm {} · gltf {} · naming {} · preview {}", p.orm, p.gltf, p.naming, p.preview);

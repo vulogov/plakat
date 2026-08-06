@@ -108,6 +108,13 @@ chose "ship adaptive, move on"). `roll2d`/`SeamlessConv2d` stay the dormant, pro
 
 ## Track C — richness & fidelity fast-follows
 
+### C RESULT — DONE (C3/C2 `4592758`, C1 `c5b023b`). All three shipped, gate 1770.
+C1 anisotropy (`derive::anisotropy_map` flow+strength map, structure-tensor auto-direction, guarded
+preview highlight-stretch, `--anisotropy`/`--anisotropy-angle`, export `anisotropy.png`); C2
+`--variations N` (+`--keep-best`); C3 `texture blend A B --mask` (default tileable `mix` mask). Live:
+steel grain → horizontally-stretched highlight; stone+leaves `mix` blend tiles (0.10).
+
+
 - **C1 — anisotropy.** A directional roughness for brushed/grained metals: detect dominant grain
   direction (or take `anisotropy: {angle, strength}` from spec) → emit an anisotropy/direction map +
   grain-aware roughness. Preview shows the streak highlight. Scope-limited; steel is the test.
