@@ -54,6 +54,12 @@ pub struct Channels {
     pub ao_strength: Option<f32>,
     /// `opengl` (+Y, default) | `directx` (-Y).
     pub normal_y: Option<String>,
+    /// C1 (6.4.0): anisotropy strength `[0,1]` for brushed/grained metals (0 = isotropic, default).
+    /// Emits an anisotropy flow+strength map and stretches the preview highlight along the grain.
+    pub anisotropy: Option<f32>,
+    /// Grain direction in degrees. Omit for `auto` (dominant grain direction from the height's
+    /// structure tensor). Only used when `anisotropy > 0`.
+    pub anisotropy_angle: Option<f32>,
 }
 
 /// The raster target (RFC §5). The name echoes `bookart`'s `page`.

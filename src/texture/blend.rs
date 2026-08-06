@@ -76,6 +76,11 @@ fn blend_normal(a: &RgbImage, b: &RgbImage, mask: &GrayImage) -> RgbImage {
 pub fn blend(a: &Material, b: &Material, mask: &GrayImage) -> Material {
     let (w, h) = a.albedo.dimensions();
     let m = fit_mask(mask, w, h);
+    let anisotropy = match (&a.anisotropy, &b.anisotropy) {
+        (Some(pa), Some(pb)) => Some(blend_rgb(pa, pb, &m)),
+        (Some(p), None) | (None, Some(p)) => Some(p.clone()),
+        (None, None) => None,
+    };
     Material {
         albedo: blend_rgb(&a.albedo, &b.albedo, &m),
         height: blend_gray(&a.height, &b.height, &m),
@@ -83,6 +88,7 @@ pub fn blend(a: &Material, b: &Material, mask: &GrayImage) -> Material {
         roughness: blend_gray(&a.roughness, &b.roughness, &m),
         metallic: blend_gray(&a.metallic, &b.metallic, &m),
         ao: blend_gray(&a.ao, &b.ao, &m),
+        anisotropy,
     }
 }
 

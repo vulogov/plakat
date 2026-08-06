@@ -146,6 +146,15 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
             written.push(name);
         }
     }
+    // C1: the anisotropy flow+strength map is an optional extra (not in the canonical 6) — write it when
+    // present. Consumed by engine anisotropy workflows (e.g. glTF KHR_materials_anisotropy).
+    if m.anisotropy.is_some() {
+        if let Some(img) = m.channel("anisotropy") {
+            let name = channel_filename("anisotropy", &plan.naming);
+            img.save(dir.join(&name)).with_context(|| format!("writing {name}"))?;
+            written.push(name);
+        }
+    }
     let orm_name = if plan.orm {
         let name = channel_filename("orm", &plan.naming);
         orm_pack(m).save(dir.join(&name)).with_context(|| format!("writing {name}"))?;

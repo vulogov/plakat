@@ -76,6 +76,26 @@ fn shade(m: &Material, ng: V3, t: V3, bt: V3, u: f32, v: f32) -> V3 {
     let ndh = dot(n, h).max(0.0);
     let hdv = dot(h, view).max(0.0);
 
+    // C1: anisotropy — a directional roughness so the highlight ELONGATES along the grain (a brushed
+    // metal is sharp along its grooves, blurred across). Approximation: split roughness by the half-
+    // vector's alignment with the grain in the tangent plane. Guarded → isotropic path is untouched.
+    let rough = if let Some(aniso) = &m.anisotropy {
+        let a = sample_rgb(aniso, u, v);
+        let strength = a[2];
+        if strength > 0.004 {
+            let gd = norm([a[0] * 2.0 - 1.0, a[1] * 2.0 - 1.0, 0.0]); // grain dir in the (t,bt) basis
+            let ht = norm([dot(h, t), dot(h, bt), 0.0]); // half-vector projected to the tangent plane
+            let along = dot(gd, ht).abs().clamp(0.0, 1.0); // 1 = along grain, 0 = across
+            let sharp = rough * (1.0 - 0.6 * strength);
+            let blur = rough * (1.0 + 0.9 * strength);
+            (sharp + (blur - sharp) * (1.0 - along * along)).clamp(0.05, 1.0)
+        } else {
+            rough
+        }
+    } else {
+        rough
+    };
+
     // GGX-lite Cook-Torrance.
     let a2 = (rough * rough).powi(2);
     let d = a2 / (PI * ((ndh * ndh * (a2 - 1.0) + 1.0)).powi(2)).max(1e-6);

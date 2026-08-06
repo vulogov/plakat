@@ -14,6 +14,9 @@ pub struct Material {
     pub roughness: GrayImage,
     pub metallic: GrayImage,
     pub ao: GrayImage,
+    /// C1 (6.4.0): optional anisotropy flow+strength map (RG = grain direction, B = strength). `None`
+    /// for an isotropic material. Set post-derive from `plan.anisotropy` (see `anisotropy_map`).
+    pub anisotropy: Option<RgbImage>,
 }
 
 impl Material {
@@ -42,7 +45,7 @@ impl Material {
             ChannelSource::Auto => metallic_auto(&albedo),
             _ => metallic_from_albedo(&albedo),
         };
-        Material { albedo, height, normal, roughness, metallic, ao }
+        Material { albedo, height, normal, roughness, metallic, ao, anisotropy: None }
     }
 
     /// Look up a channel by its canonical name as a savable `DynamicImage`.
@@ -55,6 +58,7 @@ impl Material {
             "roughness" => ImageLuma8(self.roughness.clone()),
             "metallic" => ImageLuma8(self.metallic.clone()),
             "ao" => ImageLuma8(self.ao.clone()),
+            "anisotropy" => return self.anisotropy.clone().map(ImageRgb8),
             _ => return None,
         })
     }
@@ -236,6 +240,42 @@ pub fn roughness_auto(albedo: &RgbImage) -> GrayImage {
     out
 }
 
+/// C1 (6.4.0) — **anisotropy flow+strength map** for brushed/grained metals. Encodes the grain
+/// *direction* in RG (a unit 2D tangent vector → `[0,1]`) and the `strength` in B. `angle_deg`
+/// = `Some(θ)` for a uniform grain; `None` = auto-detect the dominant grain direction from the height's
+/// structure tensor (the direction along which height varies least = the grain runs). Uniform direction
+/// (a brushed panel has one grain) → trivially tileable.
+pub fn anisotropy_map(height: &GrayImage, angle_deg: Option<f32>, strength: f32) -> RgbImage {
+    let (w, h) = height.dimensions();
+    let theta = angle_deg.map(|d| d.to_radians()).unwrap_or_else(|| dominant_grain_angle(height));
+    // Grain direction (the flow) = along the structure (perpendicular to the dominant gradient).
+    let (dx, dy) = (theta.cos(), theta.sin());
+    let r = ((dx * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let g = ((dy * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let b = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
+    RgbImage::from_pixel(w, h, Rgb([r, g, b]))
+}
+
+/// Dominant grain orientation (radians) from a height map's structure tensor — the axis *along* which
+/// the surface varies least (a brushed groove runs along it). `θ = ½·atan2(2·Jxy, Jxx−Jyy)` gives the
+/// dominant *gradient* orientation; the grain runs perpendicular, so return `θ + π/2`.
+fn dominant_grain_angle(height: &GrayImage) -> f32 {
+    let (w, h) = height.dimensions();
+    let at = |x: i32, y: i32| height.get_pixel(wrap(x, w), wrap(y, h)).0[0] as f32 / 255.0;
+    let (mut jxx, mut jyy, mut jxy) = (0.0f32, 0.0f32, 0.0f32);
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let gx = (at(x + 1, y) - at(x - 1, y)) * 0.5;
+            let gy = (at(x, y + 1) - at(x, y - 1)) * 0.5;
+            jxx += gx * gx;
+            jyy += gy * gy;
+            jxy += gx * gy;
+        }
+    }
+    let grad_orient = 0.5 * (2.0 * jxy).atan2(jxx - jyy);
+    grad_orient + std::f32::consts::FRAC_PI_2 // grain runs perpendicular to the dominant gradient
+}
+
 /// Weight-free **delighting** (RFC §9): divide out the low-frequency illumination so the albedo is
 /// flat-lit (no baked gradient/shadow), preserving colour + detail. A circular low-pass keeps it
 /// tileable. The texture-appropriate delight — IC-Light is subject-oriented (G0.3); the flat-lighting
@@ -402,5 +442,20 @@ mod tests {
         let a = RgbImage::from_fn(48, 48, |x, y| Rgb([40 + (x % 8) as u8 * 4, 120 + (y % 6) as u8 * 3, 30]));
         let m = Material::derive(a, None, 1.0, true, 1.0, &ChannelSource::FromAlbedo, &ChannelSource::Auto);
         assert!(m.metallic.pixels().all(|p| p.0[0] == 0), "a single-class dielectric → flat black metallic");
+    }
+
+    #[test]
+    fn anisotropy_map_encodes_direction_and_strength() {
+        // A uniform grain at 0° → flow (1,0) → R=255,G=128; strength 0.5 → B≈128.
+        let h = GrayImage::from_pixel(16, 16, Luma([128]));
+        let a0 = anisotropy_map(&h, Some(0.0), 0.5);
+        let p = a0.get_pixel(4, 4).0;
+        assert!(p[0] > 250 && (p[1] as i32 - 128).abs() <= 2, "0° grain → flow ~(1,0), got {p:?}");
+        assert!((p[2] as i32 - 128).abs() <= 2, "strength 0.5 → B ~128");
+        // 90° grain → flow ~(0,1) → R≈128, G=255.
+        let a90 = anisotropy_map(&h, Some(90.0), 1.0);
+        let q = a90.get_pixel(4, 4).0;
+        assert!((q[0] as i32 - 128).abs() <= 2 && q[1] > 250, "90° grain → flow ~(0,1), got {q:?}");
+        assert!(q[2] > 250, "strength 1.0 → B 255");
     }
 }

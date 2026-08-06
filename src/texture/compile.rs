@@ -52,6 +52,10 @@ pub struct RenderPlan {
     pub normal_strength: f32,
     pub ao_strength: f32,
     pub normal_y: String, // opengl | directx
+    /// C1: anisotropy strength `[0,1]` (0 = isotropic). >0 emits an anisotropy flow+strength map.
+    pub anisotropy: f32,
+    /// Grain direction in degrees; `None` = auto-detect from the height structure tensor.
+    pub anisotropy_angle: Option<f32>,
 
     pub delight: bool,
 
@@ -131,6 +135,8 @@ pub fn resolve(spec: &TextureSpec) -> RenderPlan {
         normal_strength: ch.normal_strength.unwrap_or(1.0).clamp(0.0, 8.0),
         ao_strength: ch.ao_strength.unwrap_or(1.0).clamp(0.0, 4.0),
         normal_y: ch.normal_y.clone().unwrap_or_else(|| "opengl".into()),
+        anisotropy: ch.anisotropy.unwrap_or(0.0).clamp(0.0, 1.0),
+        anisotropy_angle: ch.anisotropy_angle,
         delight: spec.delight.unwrap_or(true),
         maps,
         orm: exp.orm.unwrap_or(true),

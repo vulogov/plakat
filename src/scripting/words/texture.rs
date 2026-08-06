@@ -81,7 +81,8 @@ fn do_preview(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let (w, h) = albedo.dimensions();
     let gray = |n: &str, def: u8| image::open(d.join(n)).ok().map(|i| i.to_luma8()).unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([def])));
     let normal = image::open(d.join("normal.png")).ok().map(|i| i.to_rgb8()).unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
-    let m = crate::texture::Material { albedo, height: gray("height.png", 128), normal, roughness: gray("roughness.png", 153), metallic: gray("metallic.png", 0), ao: gray("ao.png", 255) };
+    let anisotropy = image::open(d.join("anisotropy.png")).ok().map(|i| i.to_rgb8());
+    let m = crate::texture::Material { albedo, height: gray("height.png", 128), normal, roughness: gray("roughness.png", 153), metallic: gray("metallic.png", 0), ao: gray("ao.png", 255), anisotropy };
     let img = crate::texture::preview::render(&m, crate::texture::Shape::Sphere, 512);
     let handle = with_ctx_mut(|ctx| ctx.push_image(image::DynamicImage::ImageRgb8(img)))?;
     tracing::info!(target: "plakat", "{TAG}: {dir} → preview handle {handle}");

@@ -185,6 +185,13 @@ pub struct DeriveArgs {
     /// Normal Y convention: `opengl` (+Y) or `directx` (-Y).
     #[arg(long, default_value = "opengl")]
     pub normal_y: String,
+    /// Anisotropy strength `[0,1]` for brushed/grained metals (0 = isotropic, default). Emits an
+    /// anisotropy flow+strength map and stretches the preview highlight along the grain.
+    #[arg(long, default_value_t = 0.0)]
+    pub anisotropy: f32,
+    /// Grain direction in degrees (omit for auto-detect from the height structure tensor).
+    #[arg(long)]
+    pub anisotropy_angle: Option<f32>,
 }
 
 /// Parse a channel-source CLI string: `auto` | `from-albedo` | a scalar in `[0,1]`.
@@ -366,6 +373,7 @@ fn load_material(dir: &std::path::Path) -> Result<crate::texture::Material> {
         image::open(dir.join(n)).ok().map(|i| i.to_luma8()).unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([d])))
     };
     let normal = image::open(dir.join("normal.png")).ok().map(|i| i.to_rgb8()).unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
+    let anisotropy = image::open(dir.join("anisotropy.png")).ok().map(|i| i.to_rgb8());
     Ok(Material {
         albedo,
         height: gray("height.png", 128),
@@ -373,6 +381,7 @@ fn load_material(dir: &std::path::Path) -> Result<crate::texture::Material> {
         roughness: gray("roughness.png", 153),
         metallic: gray("metallic.png", 0),
         ao: gray("ao.png", 255),
+        anisotropy,
     })
 }
 
@@ -406,6 +415,10 @@ fn run_derive(a: DeriveArgs) -> Result<()> {
     }
     if let Some(p) = &a.roughness_ref {
         m.roughness = load_mask_ref(p, w, h)?;
+    }
+    // C1: anisotropy flow+strength map for brushed/grained metals.
+    if a.anisotropy > 0.0 {
+        m.anisotropy = Some(crate::texture::derive::anisotropy_map(&m.height, a.anisotropy_angle, a.anisotropy.clamp(0.0, 1.0)));
     }
     let sc = scorecard::score(&m);
     export::write_material(&m, &plan, &sc, &a.out)?;
