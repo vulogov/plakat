@@ -29,6 +29,21 @@ use crate::pipelines::lora::LoraSpec;
 use crate::pipelines::scheduler::SchedulerKind;
 use crate::ui::progress;
 
+/// G0.1 (6.5.0 · native seamless generation) — the per-step latent-roll offset for the given denoise
+/// step, or `None` when the feature is off. Env-gated (`PLAKAT_SEAMLESS_ROLL=1`) for the G0 probe; a
+/// real `Request.seamless` flag replaces this in Track A. The offset varies per step (co-prime strides,
+/// modulo'd by the latent dims inside `roll2d`) so the zero-padded convs see the boundary at every
+/// phase. Returns `None` unless the env var is truthy → the shipped path is byte-identical.
+fn seamless_roll_offset(step_i: usize) -> Option<(i64, i64)> {
+    match std::env::var("PLAKAT_SEAMLESS_ROLL") {
+        Ok(v) if v != "0" && !v.is_empty() => {
+            let s = step_i as i64;
+            Some((s * 37 + 11, s * 23 + 5))
+        }
+        _ => None,
+    }
+}
+
 // =====================================================================
 // Public types: single-shot Request/run (back-compat) + Pipeline API.
 // =====================================================================
@@ -1570,18 +1585,33 @@ impl Pipeline {
                 let progress = step_i as f32 / total_steps as f32;
                 let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
                     controls.iter().filter(|c| c.active_at(progress)).collect();
-                latents = self.denoise_step(
-                    unet_ref,
-                    &latents,
-                    timestep,
-                    embeds,
-                    sdxl_pooled,
-                    sdxl_time_ids,
-                    &mut scheduler,
-                    req.guidance,
-                    do_cfg,
-                    &active_controls,
-                )?;
+                // G0.1 (6.5.0 probe) — env-gated per-step LATENT-ROLL for native seamless generation.
+                // scheduler.step is elementwise, so rolling the input latent and unrolling the stepped
+                // output is exactly the per-step roll (the zero-padded convs see the boundary at every
+                // phase). Default OFF → the `else` arm is byte-identical to the shipped path. Skipped
+                // with active ControlNet (would desync the control image).
+                let roll = if active_controls.is_empty() { seamless_roll_offset(step_i) } else { None };
+                latents = if let Some((dx, dy)) = roll {
+                    let rolled = crate::texture::seamless::roll2d(&latents, dx, dy)?;
+                    let stepped = self.denoise_step(
+                        unet_ref, &rolled, timestep, embeds, sdxl_pooled, sdxl_time_ids,
+                        &mut scheduler, req.guidance, do_cfg, &active_controls,
+                    )?;
+                    crate::texture::seamless::roll2d(&stepped, -dx, -dy)?
+                } else {
+                    self.denoise_step(
+                        unet_ref,
+                        &latents,
+                        timestep,
+                        embeds,
+                        sdxl_pooled,
+                        sdxl_time_ids,
+                        &mut scheduler,
+                        req.guidance,
+                        do_cfg,
+                        &active_controls,
+                    )?
+                };
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
                 // RFC TUI-1 §0-R0-3: per-step hook (no-op when `hook` is None — the

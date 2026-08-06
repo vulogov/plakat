@@ -57,7 +57,28 @@ regressing the corr-1.0 generation path shared by 7 families.
 - **G0.3 — regression surface map.** Enumerate every denoise loop the flag could reach (base / tiled /
   PAG / img2img) and confirm the flag is inert (untouched) in all of them when off. No silent coupling.
 
-Probes are `examples/texture_seamlessgen_probe.rs` (+ reuse of the G0.1/G0.B primitives), committed.
+Probes are env-gated hooks (`PLAKAT_SEAMLESS_ROLL` in `t2i.rs`, `PLAKAT_TEXTURE_NO_FEATHER` in
+`texture::render`) + a 3-way gravel measurement, committed.
+
+### G0.1 RESULT — per-step latent-roll FAILS on real generation (decisive negative)
+3 gravel generations, same seed, SDXL/DDIM (single-step → no scheduler-history confound):
+
+| variant | seam x/y | smear (1=none) |
+|---|---|---|
+| baseline (feather on, shipped) | 0.05 / 0.05 | 0.77 |
+| raw (no feather, no roll) | 2.65 / 2.65 | 1.02 |
+| **roll on (no feather)** | **3.48 / 3.33** | 1.12 |
+
+**Per-step roll did NOT make generation tileable — it made the seam slightly WORSE than raw.** The
+synthetic G0.B "90%" modeled shift-averaging of a *fixed linear* operator; a generative denoise is
+different. Root cause (fundamental, not a tuning issue): a zero-padded conv's edge artifact sits at the
+tensor boundary regardless of *content* — rolling only moves which content receives it and never makes
+column 0 adjacent to column W−1. Only **circular padding** creates that adjacency so the model can paint
+opposite edges to match; re-framing each step also disrupts coherence. **→ Track A (roll) is DROPPED.**
+The only path to native seamless is **Track B (native circular convolution)** — reaching seam ≈ 1.0 per
+6.3's G0.1 — which requires vendoring the resnet stack (the convs are `candle_transformers`, not owned) +
+circular owned convs + circular VAE decode. A materially bigger, higher-risk lift than "preferred."
+This is exactly why G0 runs on the REAL stack. **Decision surfaced to owner before committing to B.**
 
 ---
 
