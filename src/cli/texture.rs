@@ -232,6 +232,9 @@ pub struct ExportArgs {
     /// Also write a glTF 2.0 material.
     #[arg(long, default_value_t = false)]
     pub gltf: bool,
+    /// Also write a MaterialX (`.mtlx`) `standard_surface` document.
+    #[arg(long, default_value_t = false)]
+    pub materialx: bool,
 }
 
 #[derive(Args, Debug)]
@@ -655,6 +658,7 @@ fn run_export(a: ExportArgs) -> Result<()> {
     plan.naming = a.naming.clone();
     plan.orm = a.orm;
     plan.gltf = a.gltf;
+    plan.materialx = a.materialx;
     plan.preview = false; // re-packing doesn't re-render the preview
     let out = a.out.unwrap_or_else(|| a.dir.clone());
     export::write_material(&m, &plan, &sc, &out)?;

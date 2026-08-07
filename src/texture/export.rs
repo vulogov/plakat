@@ -133,6 +133,8 @@ struct Manifest {
     maps: Vec<String>,
     orm: Option<String>,
     gltf: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    materialx: Option<String>,
     preview: Option<String>,
     spec_hash: String,
     scorecard: ScoreSummary,
@@ -214,6 +216,59 @@ fn gltf_document(naming: &str, has_anisotropy: bool) -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
+/// A MaterialX 1.38 `standard_surface` document (6.6.0) — a node graph wiring `<image>` nodes to
+/// base_color / metalness / specular_roughness / normal (via a `normalmap` node), with occlusion exposed
+/// as a separate graph output (standard_surface has no occlusion input; the DCC decides). The interchange
+/// format for USD / Arnold / Karma / Substance. References the naming-convention filenames.
+fn materialx_document(naming: &str) -> String {
+    let f = |m: &str| channel_filename(m, naming);
+    format!(
+        r#"<?xml version="1.0"?>
+<materialx version="1.38" colorspace="lin_rec709">
+  <nodegraph name="plakat_ng">
+    <image name="albedo_tex" type="color3">
+      <input name="file" type="filename" value="{albedo}"/>
+    </image>
+    <image name="metallic_tex" type="float">
+      <input name="file" type="filename" value="{metallic}"/>
+    </image>
+    <image name="roughness_tex" type="float">
+      <input name="file" type="filename" value="{roughness}"/>
+    </image>
+    <image name="ao_tex" type="float">
+      <input name="file" type="filename" value="{ao}"/>
+    </image>
+    <image name="normal_img" type="vector3">
+      <input name="file" type="filename" value="{normal}"/>
+    </image>
+    <normalmap name="normal_tex" type="vector3">
+      <input name="in" type="vector3" nodename="normal_img"/>
+    </normalmap>
+    <output name="base_color_out" type="color3" nodename="albedo_tex"/>
+    <output name="metalness_out" type="float" nodename="metallic_tex"/>
+    <output name="roughness_out" type="float" nodename="roughness_tex"/>
+    <output name="normal_out" type="vector3" nodename="normal_tex"/>
+    <output name="occlusion_out" type="float" nodename="ao_tex"/>
+  </nodegraph>
+  <standard_surface name="plakat_surface" type="surfaceshader">
+    <input name="base_color" type="color3" nodegraph="plakat_ng" output="base_color_out"/>
+    <input name="metalness" type="float" nodegraph="plakat_ng" output="metalness_out"/>
+    <input name="specular_roughness" type="float" nodegraph="plakat_ng" output="roughness_out"/>
+    <input name="normal" type="vector3" nodegraph="plakat_ng" output="normal_out"/>
+  </standard_surface>
+  <surfacematerial name="plakat_material" type="material">
+    <input name="surfaceshader" type="surfaceshader" nodename="plakat_surface"/>
+  </surfacematerial>
+</materialx>
+"#,
+        albedo = f("albedo"),
+        metallic = f("metallic"),
+        roughness = f("roughness"),
+        ao = f("ao"),
+        normal = f("normal"),
+    )
+}
+
 /// Write the full material directory: channel PNGs (named), ORM, preview, glTF, and `material.json`.
 pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -254,6 +309,12 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
     } else {
         None
     };
+    let mtlx_name = if plan.materialx {
+        std::fs::write(dir.join("material.mtlx"), materialx_document(&plan.naming)).context("writing material.mtlx")?;
+        Some("material.mtlx".to_string())
+    } else {
+        None
+    };
 
     let manifest = Manifest {
         schema: super::SCHEMA_VERSION.to_string(),
@@ -265,6 +326,7 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
         maps: written,
         orm: orm_name,
         gltf: gltf_name,
+        materialx: mtlx_name,
         preview: preview_name,
         spec_hash: spec_hash(plan),
         scorecard: ScoreSummary {
@@ -357,6 +419,40 @@ mod tests {
         assert_eq!(mat["occlusionTexture"]["strength"], 1.0);
         assert_eq!(mat["normalTexture"]["scale"], 1.0);
         assert!(gltf.get("extensionsUsed").is_none(), "no anisotropy → no extensions");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn materialx_document_wires_a_standard_surface() {
+        let mtlx = materialx_document("plakat");
+        // Well-formed-ish + the standard_surface graph is wired to the channel files.
+        assert!(mtlx.starts_with("<?xml"));
+        assert!(mtlx.contains(r#"<materialx version="1.38""#));
+        assert!(mtlx.contains("<standard_surface name=\"plakat_surface\""));
+        assert!(mtlx.contains("<surfacematerial"));
+        for tag in ["base_color", "metalness", "specular_roughness", "normal"] {
+            assert!(mtlx.contains(tag), "standard_surface wires {tag}");
+        }
+        for file in ["albedo.png", "metallic.png", "roughness.png", "normal.png", "ao.png"] {
+            assert!(mtlx.contains(file), "references {file}");
+        }
+        assert_eq!(mtlx.matches("<image ").count(), 5, "one image node per source channel");
+        // unreal naming flows through to the referenced filenames.
+        assert!(materialx_document("unreal").contains("T_BaseColor.png"));
+    }
+
+    #[test]
+    fn write_material_emits_mtlx_when_requested() {
+        let dir = std::env::temp_dir().join(format!("plakat-tex-mtlx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut plan = compile::resolve(&TextureSpec::default());
+        plan.materialx = true;
+        let m = Material::derive(RgbImage::from_pixel(8, 8, Rgb([120, 120, 120])), None, 1.0, true, 1.0, &ChannelSource::FromAlbedo, &ChannelSource::Scalar(0.0));
+        let sc = crate::texture::scorecard::score(&m);
+        write_material(&m, &plan, &sc, &dir).unwrap();
+        assert!(dir.join("material.mtlx").exists());
+        let man: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("material.json")).unwrap()).unwrap();
+        assert_eq!(man["materialx"], "material.mtlx");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

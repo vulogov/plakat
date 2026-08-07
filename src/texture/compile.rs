@@ -62,6 +62,9 @@ pub struct RenderPlan {
     pub maps: Vec<String>, // which channel maps to write, in order
     pub orm: bool,
     pub gltf: bool,
+    /// Also emit a MaterialX `standard_surface` `.mtlx` (6.6.0). Export-time only (set by the CLI /
+    /// `--engine`), not a spec field — defaults false.
+    pub materialx: bool,
     pub naming: String, // plakat | unity | unreal
     pub preview: bool,
 
@@ -141,6 +144,7 @@ pub fn resolve(spec: &TextureSpec) -> RenderPlan {
         maps,
         orm: exp.orm.unwrap_or(true),
         gltf: exp.gltf.unwrap_or(false),
+        materialx: false,
         naming: exp.naming.clone().unwrap_or_else(|| "plakat".into()),
         preview: exp.preview.unwrap_or(true),
         model: spec.model.clone().unwrap_or_else(|| "sdxl".into()),
