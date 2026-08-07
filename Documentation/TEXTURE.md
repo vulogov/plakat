@@ -14,6 +14,13 @@ speckle; **anisotropy** writes a grain flow map for brushed metals; hand-painted
 seamless **feather is now adaptive** (sized to the measured seam). All additive — no existing output
 changes.
 
+**6.5 adds trim sheets & decals.** **`texture trim`** composes several finished materials into ONE
+banded **trim-sheet atlas** (the game way to texture pipes/panels/edges from one material) with a UV
+sidecar; **`texture decal make`** / **`texture decal apply`** build an alpha-masked overlay and stamp it
+onto a base material, blending the normal by **Reoriented Normal Mapping (RNM)** so detail rides the
+base surface. Both are **weight-free** — see *Trim sheets & decals*. Still additive — no existing output
+changes.
+
 `texture` treats a material as **structured data**: a small HJSON document (a `TextureSpec`) is
 resolved deterministically, then **generate → derive → measure → export**. The reason is the same one
 behind `bookart` and `persona` — a text prompt is a poor instrument for a material. "a seamless rusted
@@ -60,6 +67,8 @@ depth touch a model.
 | `preview` | no — a Cook-Torrance-lite raster |
 | `export` | no — re-pack + rename |
 | `blend` | no — per-channel lerp through a mask |
+| `trim` | no — bands are pre-rendered material dirs; just composed into an atlas |
+| `decal make` · `decal apply` | no — mask build + alpha/RNM composite is all CPU |
 | `render` | **yes** — a diffusion model generates the albedo |
 | `from` | **depth only** — no generation; `height: auto` needs the depth model |
 
@@ -74,6 +83,9 @@ plakat texture verify  <mat-dir>                                                
 plakat texture preview <mat-dir> [--out P.png --shape sphere|plane --size 512]    re-render the lit preview (NO GPU)
 plakat texture export  <mat-dir> [--out DIR --naming plakat|unity|unreal --orm --gltf]   re-pack for an engine (NO weights)
 plakat texture blend   <dirA> <dirB> --out DIR [--mask mix|radial|x|y|<mask.png> --naming plakat]   cross-fade two materials (NO weights)
+plakat texture trim    <spec> --out DIR [--size N --naming plakat|unity|unreal]                    compose materials into a trim-sheet atlas + UV sidecar (NO weights)
+plakat texture decal make  --out DIR [--image PNG --mask PNG --shape circle|ring|stripe|splatter|crack --threshold 0..1 --color r,g,b --size N]   build a decal (NO weights)
+plakat texture decal apply <base> <decal> --out DIR [--at x,y --scale FRAC --rotate DEG --tile]    stamp a decal onto a base (RNM normal) (NO weights)
 plakat texture render  <spec> --out DIR [--attempts N --variations N --keep-best --upscale none|2k|4k --metallic-ref M.png --roughness-ref R.png]   generate the material (GPU)
 plakat texture from    <image> --out DIR [--material "…" --size 1024 --upscale none|2k|4k --height auto|from-albedo --metallic-ref M.png --roughness-ref R.png]   image→material (GPU: depth only)
 ```
@@ -184,6 +196,107 @@ the normal is renormalised. `--mask` picks the blend:
 - a **path to a grayscale PNG** — your own mask, used verbatim.
 
 `--naming` packs the export in the engine idiom (`plakat` default). No weights, no GPU.
+
+## Trim sheets & decals
+
+Two 6.5 additions that **compose finished materials** rather than generate new ones — so both are
+**weight-free**. A **trim sheet** packs several sub-materials into one banded atlas; a **decal** is an
+alpha-masked overlay you stamp onto a base. Neither touches a model.
+
+### `trim` — a trim-sheet atlas *(no weights)*
+
+A **trim sheet** is the standard way games texture pipes, panels, edges, and trims from *one*
+material: several sub-materials are composed into a **single atlas** of stacked horizontal **bands**,
+each band tiling along its run axis (**U**). A model maps different faces to different vertical slices
+of the atlas, so a whole prop set shares one texture.
+
+```
+plakat texture trim <spec> --out DIR [--size N] [--naming plakat|unity|unreal]
+```
+
+`<spec>` is a `TrimSpec` HJSON document; `--out` is the atlas material directory; `--size` overrides
+the atlas edge (px, square); `--naming` picks the channel-file idiom (`plakat` default | `unity` |
+`unreal`), exactly as `export`.
+
+**The `TrimSpec` schema.** Bands stack **top → bottom** and their heights **normalise to sum 1** (the
+last band absorbs rounding, so heights fill the atlas exactly):
+
+```hjson
+{
+  schema: "trim/1"
+  size: 1024
+  naming: "plakat"
+  bands: [
+    { material: "pipe_mat/",   height: 0.5,  tile: "x",    label: "pipe"   }
+    { material: "rivets_mat/",  height: 0.25, tile: "x",    label: "rivets" }
+    { material: "panel_mat/",   height: 0.25, tile: "none", label: "panel"  }
+  ]
+}
+```
+
+- **`material`** — a finished material directory (from `render` / `from` / `derive`).
+- **`height`** — a fraction of the atlas; all bands **normalise to sum 1**.
+- **`tile`** — `"x"` (default) repeats the sub-material **horizontally** along its run axis; `"none"`
+  **stretches** it to fill the band; `"y"` is accepted for completeness.
+- **`label`** — the band's name, carried into the UV sidecar.
+
+**Output.** The full channel set (albedo · normal · roughness · metallic · height · AO) + packed ORM,
+a **Plane** preview (the atlas tiles in **U**, not V — so a flat-plane preview reads it correctly where
+the sphere would not), and a **`trim.json`** UV-region sidecar. `trim.json` lists each band as
+`{ label, u0, v0, u1, v1, tile }` so an engine or DCC can map faces to the right band without guessing.
+Because the bands are **pre-rendered material dirs**, `trim` is pure composition — no weights, no GPU.
+
+### `decal make` / `decal apply` — alpha-masked overlays *(no weights)*
+
+A **decal** is a material plus an **opacity mask** (white = opaque) that layers onto a base material —
+a stencilled logo, a crack, a leak, a patch of grime. You **`make`** the decal once, then **`apply`**
+it onto any base.
+
+**`decal make` — build the overlay.**
+
+```
+plakat texture decal make --out DIR [--image PNG] [--mask PNG] [--shape KIND]
+                          [--threshold 0..1] [--color r,g,b] [--size N]
+```
+
+- **Albedo** comes from `--image <png>`, or — with no `--image` — from a solid `--color r,g,b` (0–255,
+  default `40,40,40`) for a **procedural** decal.
+- **Opacity** is resolved by precedence: **`--mask`** PNG (white = opaque) **>** **`--shape`**
+  (procedural: `circle` | `ring` | `stripe` | `splatter` | `crack`) **>** **`--threshold`** (remove
+  pixels **brighter** than this luma `[0,1]` — a white-background cutout) **>** all-opaque.
+- `--size` sets the decal edge (px, square, default `512`). Output is a decal directory: the channel
+  set + an `opacity.png`.
+
+**A procedural decal takes its relief from the *shape*, an image decal from its *albedo*.** This is the
+one nuance worth internalising. A procedural decal has a **flat solid-colour** albedo, which carries no
+normal detail — so its **relief is derived from the shape** (opacity → height). This is *correct*, not
+a workaround: RNM of a flat normal returns the base unchanged, so a flat-albedo decal with no shape
+relief would leave no mark on the base normal. An **image** decal instead derives its relief from the
+**albedo** (the image *is* the detail). So: give a procedural decal a `--shape` if you want it to read
+in the normal; an image decal already carries its own.
+
+**`decal apply` — stamp it onto a base.**
+
+```
+plakat texture decal apply <base> <decal> --out DIR [--at x,y] [--scale FRAC] [--rotate DEG] [--tile]
+```
+
+`<base>` is the base material directory, `<decal>` the decal directory (it needs `opacity.png`).
+`decal apply` **alpha-blends** albedo / roughness / metallic / height weighted by the decal's opacity,
+blends the **normal** via **Reoriented Normal Mapping (RNM)**, then **re-derives AO** from the new
+height. The base is **preserved wherever the decal is transparent**.
+
+- **`--at x,y`** — the decal's **normalised** centre on the base (default `0.5,0.5`).
+- **`--scale FRAC`** — decal size as a **fraction of the base edge** (default `0.5`).
+- **`--rotate DEG`** — decal rotation in degrees (default `0`).
+- **`--tile`** — repeat the decal across the **whole** base (a repeating detail) instead of a single
+  stamp.
+
+**Why RNM, not a lerp.** A naive normal lerp between base and decal **flattens both** — it washes out
+the base's surface tilt *and* the decal's own detail. **Reoriented Normal Mapping** instead reorients
+the decal's detail so it **rides the base surface**: a decal stamped on a curved or tilted material
+sits on the surface correctly instead of punching a flat patch through it. (This was validated in the
+project's G0 probe.) No weights, no GPU.
 
 ## The `TextureSpec` schema
 

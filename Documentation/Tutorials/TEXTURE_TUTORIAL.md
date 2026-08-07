@@ -11,6 +11,10 @@ set — the reference is [`../TEXTURE.md`](../TEXTURE.md); the full design is
 composite materials, hand-painted `--metallic-ref` / `--roughness-ref` masks, `--anisotropy` grain maps,
 `texture blend` to cross-fade two materials, and `render --variations N` for seed spreads.
 
+**New in 6.5** (section 9 below): `texture trim` composes finished materials into a banded trim-sheet
+atlas + a UV sidecar, and `texture decal make` / `decal apply` build an alpha-masked overlay and stamp
+it onto a base material (RNM normal blend). Both are weight-free.
+
 Build the release binary first — debug diffusion is ~50× slower:
 
 ```sh
@@ -274,6 +278,69 @@ distinct seed **variants side-by-side** into `<out>/var-0/`, `var-1/`, … so yo
 ```sh
 plakat texture render iron.hjson --out iron_spread/ --variations 4 --keep-best
 ```
+
+## 9. Trim sheets & decals (6.5, no weights)
+
+Both of these **compose materials you already have** — no generation, no GPU.
+
+### Compose a trim sheet from two materials
+
+A **trim sheet** stacks several finished materials into ONE banded atlas, each band tiling
+horizontally (along **U**) — the way games texture pipes, panels, and edges from a single material.
+Write a tiny `TrimSpec`:
+
+```hjson
+# pipes.hjson
+{
+  schema: "trim/1"
+  size: 1024
+  bands: [
+    { material: "pipe_mat/",  height: 0.6, tile: "x",    label: "pipe"  }
+    { material: "panel_mat/",  height: 0.4, tile: "none", label: "panel" }
+  ]
+}
+```
+
+Bands stack top → bottom and their heights **normalise to sum 1** (the last band absorbs rounding).
+`tile: "x"` repeats the sub-material across the band; `tile: "none"` stretches it. Compose:
+
+```sh
+plakat texture trim pipes.hjson --out pipe_trim/ --size 1024
+```
+
+Out comes a full material directory (albedo/normal/roughness/metallic/height/AO + ORM), a **Plane**
+preview (the atlas tiles in U, not V — so a plane reads it right where a sphere wouldn't), and a
+**`trim.json`** UV sidecar listing each band's `{ label, u0, v0, u1, v1, tile }` so an engine maps
+faces to the right slice. `--naming unity|unreal` packs the atlas in an engine idiom, same as `export`.
+
+### Make a crack decal and apply it onto a base
+
+A **decal** is a material + an **opacity mask** (white = opaque) you stamp onto a base. Build a
+procedural `crack` decal — no image, just a solid colour and a shape:
+
+```sh
+plakat texture decal make --out crack_decal/ --shape crack --color 20,20,20 --size 512
+```
+
+Opacity precedence is `--mask` PNG > `--shape` > `--threshold` > all-opaque; here the `crack` shape
+supplies it. **Why the shape matters for relief:** a procedural decal has a **flat solid-colour**
+albedo, which carries no normal detail — so its relief is derived from the **shape** (opacity → height).
+That is correct, not a workaround: RNM of a flat normal returns the base unchanged, so without a shape a
+solid-colour decal would leave no mark on the base normal. (An **image** decal instead takes its relief
+from its albedo — the image *is* the detail — so it needs no shape.)
+
+Now stamp it onto a base material:
+
+```sh
+plakat texture decal apply stone_mat/ crack_decal/ --out cracked_stone/ --at 0.5,0.5 --scale 0.6 --rotate 15
+```
+
+`decal apply` alpha-blends albedo/roughness/metallic/height, blends the normal via **Reoriented Normal
+Mapping (RNM)**, and re-derives AO from the new height — the base is preserved wherever the decal is
+transparent. `--at` is the normalised centre, `--scale` a fraction of the base edge, `--rotate` the
+angle; add `--tile` to repeat the decal across the whole base instead of a single stamp. RNM (not a
+naive lerp) is what lets the crack **ride** a curved or tilted surface instead of punching a flat patch
+through it.
 
 ## Where to go next
 

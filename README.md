@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.5.0 — `plakat texture` layout: trim sheets & decals**: compose several materials into one banded **trim-sheet atlas** (each strip tiling along its run axis) with a `trim.json` UV-region sidecar, and stamp **decals** — alpha-masked overlays (a crack, rust streak, sign) — onto a base material, blending the normal via **Reoriented Normal Mapping** so decal detail rides the base slope instead of flattening it. All weight-free. *(This cycle set out to make generation natively seamless; measure-first G0 showed per-step latent-roll doesn't work and native circular-conv would need vendoring candle's whole UNet block stack for a smear feather already handles — so it pivoted here; findings kept in the roadmap.)* Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.5.0) · [Guide →](Documentation/TEXTURE.md)
+>
 > **v6.4.0 — deepen `plakat texture`**: composite materials now get **spatially-varying** channels — `metallic: "auto"` / `roughness: "auto"` region-vote a *structured* mask (bare metal vs rust, wet vs dry) where a single-class material still (correctly) stays flat — plus **anisotropy** for brushed/grained metals (a flow map + a grain-stretched preview highlight), a weight-free `texture blend` (two materials → one, through a tileable mask), `--variations N`, hand-painted `--metallic-ref`/`--roughness-ref` masks, and an *adaptive* seam feather. The `verify` scorecard now explains a flat map (*"uniform metallic — correct for a single-class material, not a defect"*). Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.4.0) · [Guide →](Documentation/TEXTURE.md)
 >
 > **v6.3.0 — `plakat texture`**: the flagship (RFC TEXTURE-1). Turn a prompt or a photo into a **seamless, tileable PBR material set** — albedo · normal · roughness · metallic · height · ambient-occlusion — flat-lit, exported **engine-ready** (ORM pack, Unity/Unreal naming, glTF) with a pure-Rust lit **preview**. A material is structured data: a small HJSON `TextureSpec` resolved deterministically → generate → derive → *measure* (a tileability scorecard) → export. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.3.0) · [Guide →](Documentation/TEXTURE.md)
@@ -30,6 +32,33 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.5.0 — `plakat texture` layout: trim sheets & decals
+
+Material **layout** — beyond a single tiling texture. Both weight-free (compositing existing sets).
+
+```bash
+plakat texture trim trim.hjson --out panel/                 # compose sub-materials into a banded atlas
+plakat texture decal make --shape crack --out crack/        # an alpha-masked overlay (procedural / image / mask)
+plakat texture decal apply stone/ crack/ --out cracked/ --at 0.5,0.5 --scale 0.7   # stamp it on, RNM normal blend
+```
+
+- **Trim sheets** — `texture trim <spec>` composes several sub-materials into one **atlas** of stacked
+  horizontal bands, each tiling along its run axis (U), with a `trim.json` **UV-region sidecar** so an
+  engine maps faces to bands. The way games texture pipes / trims / panels from one material.
+- **Decals** — a decal is a material + an **opacity** mask (from an `--image`, a procedural `--shape`
+  circle/ring/stripe/splatter/crack, a `--mask` PNG, or a white-bg `--threshold`). `texture decal apply`
+  stamps it onto a base material — alpha-blending the channels and blending the normal via **Reoriented
+  Normal Mapping (RNM)** so the decal's detail rides the base slope instead of flattening it.
+- On every surface: CLI, `plakat::api::{texture_trim, texture_decal_apply}`, Bund `plakat.texture.trim` /
+  `.decal`, and `doctor`.
+
+> This cycle opened as "native seamless generation" but pivoted: measure-first G0 (on the real stack)
+> proved per-step latent-roll doesn't make generation tileable, and native circular convolution would
+> need vendoring candle's entire UNet block module for a mild smear feather already handles at 0.05. The
+> findings are preserved in `ROADMAP_TEXTURE_6.5.0.md`.
+
+See [`Documentation/TEXTURE.md`](Documentation/TEXTURE.md) › *Trim sheets & decals*.
 
 ## What's new in 6.4.0 — deepen `plakat texture`
 
