@@ -1,0 +1,12 @@
+{
+  // A trim sheet (6.5.0): three sub-materials composed into one banded atlas, each band tiling along U.
+  // The band `material` paths point at the material dirs the corpus driver renders first.
+  schema: "texture/1"
+  size: 1024
+  naming: "plakat"
+  bands: [
+    { material: "corpus/images/texture/steel",  height: 0.45, tile: "x", label: "panel" }
+    { material: "corpus/images/texture/rust",    height: 0.25, tile: "x", label: "rusted-strip" }
+    { material: "corpus/images/texture/stone",   height: 0.30, tile: "x", label: "base" }
+  ]
+}

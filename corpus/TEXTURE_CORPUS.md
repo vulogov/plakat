@@ -18,6 +18,7 @@ corpus/texture_run.sh                     # renders the whole corpus
 | [`texture_leaves.hjson`](texture_leaves.hjson) | a richly-coloured organic dielectric — a carpet of fallen autumn leaves, `roughness: from-albedo` so drier pale leaves read rougher than damp dark ones |
 | [`texture_river.hjson`](texture_river.hjson) | a **wet** dielectric — smooth river cobblestones under streaming water; a low scalar `roughness: 0.18` gives the glossy sheen (the shine is low roughness, **not** metal — `metallic: 0.0`) |
 | [`texture_rust.hjson`](texture_rust.hjson) | **6.4.0 headline — a COMPOSITE material.** Rusted iron (bare steel + orange rust in one tile) with `metallic: "auto"` + `roughness: "auto"` → a **structured** metal mask (bare-metal patches white, rust black) where single-class materials give a flat map. The one spec whose `metallic.png` carries real spatial detail |
+| [`texture_trim.hjson`](texture_trim.hjson) | **6.5.0 — a trim sheet.** Three sub-materials (steel / rust / stone) composed into one banded **atlas**, each band tiling along U, with a `trim.json` UV-region sidecar. `texture trim`. |
 
 ## What the driver produces
 
@@ -48,6 +49,17 @@ corpus/texture_run.sh                     # renders the whole corpus
    (the default `mix`; `radial` also tiles; `x`/`y` are intentional transition sheets). **No GPU.**
 9. **Variations** — `texture render texture_stone.hjson --variations 3 --keep-best` renders three seed
    variants side-by-side (`var-0/`…) and copies the best-scoring one to the output root.
+
+### New in 6.5.0 — material layout (all weight-free)
+
+10. **Trim sheet** — `texture trim texture_trim.hjson --out trim_panel/` composes steel/rust/stone into
+    one banded **atlas** (each strip tiles along U) + a `trim.json` UV-region sidecar mapping each band's
+    label to its UV rect. **No GPU.**
+11. **Decals** — `texture decal make --shape crack` (and `--shape splatter`) build alpha-masked overlay
+    materials; `texture decal apply <base> <decal> --at --scale` stamps them onto the stone — alpha-
+    blending the channels and blending the normal via **Reoriented Normal Mapping** so the crack/rust
+    relief rides the surface instead of flattening it. The driver layers both onto one weathered stone.
+    **No GPU.**
 
 `derive`, `blend`, `verify`, `preview`, `export`, `lint`, `show` all run **weight-free** — you can
 build, score, and re-pack a full engine-ready material (including the new auto channels, anisotropy, and

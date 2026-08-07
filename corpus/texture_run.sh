@@ -59,7 +59,17 @@ run "$PLAKAT" texture blend "$OUT/stone" "$OUT/leaves" --out "$OUT/stone_leaves"
 #    d) variations: three seed variants side-by-side, keep the best-scoring one at the top.
 run "$PLAKAT" texture render corpus/texture_stone.hjson --out "$OUT/stone_variants" --variations 3 --keep-best
 
+# 5. NEW in 6.5.0 — material LAYOUT (all weight-free):
+#    a) trim sheet: compose steel/rust/stone into one banded atlas + a trim.json UV-region sidecar.
+run "$PLAKAT" texture trim corpus/texture_trim.hjson --out "$OUT/trim_panel"
+#    b) decals: make a procedural crack + a rust-splatter, then stamp them onto the stone material.
+run "$PLAKAT" texture decal make --out "$OUT/decal_crack" --shape crack    --color "25,20,18"  --size 512
+run "$PLAKAT" texture decal make --out "$OUT/decal_rust"  --shape splatter --color "120,55,25" --size 512
+run "$PLAKAT" texture decal apply "$OUT/stone" "$OUT/decal_crack" --out "$OUT/stone_cracked" --at 0.5,0.5 --scale 0.7
+run "$PLAKAT" texture decal apply "$OUT/stone_cracked" "$OUT/decal_rust" --out "$OUT/stone_weathered" --at 0.35,0.6 --scale 0.5
+
 echo "==================== done → $OUT/ ===================="
+echo "Trim: open $OUT/trim_panel/preview.png (+ trim.json). Decals: $OUT/stone_weathered/preview.png."
 echo "Look: $OUT/rust/metallic.png (STRUCTURED, 6.4.0) vs $OUT/stone/metallic.png (flat black — correct)."
 echo "      $OUT/steel_aniso/preview.png (grain-stretched highlight) · $OUT/stone_leaves/preview.png (blend)."
 echo "Every channel tiles: open any preview.png, or place the maps on a surface in an engine."
