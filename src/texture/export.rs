@@ -164,42 +164,54 @@ fn spec_hash(plan: &RenderPlan) -> String {
     format!("{hh:016x}")
 }
 
-/// A minimal glTF 2.0 document describing the material (baseColor / normal / ORM). References the
-/// naming-convention filenames written alongside it. Material-only (no mesh) — a drop-in for import.
-fn gltf_document(naming: &str) -> String {
+/// A complete glTF 2.0 material document (baseColor / metallic-roughness = ORM GB / occlusion = ORM R
+/// with strength / normal with scale). References the naming-convention filenames written alongside it.
+/// When the material has an anisotropy map, emits the **`KHR_materials_anisotropy`** extension (its
+/// texture is our flow map: RG = tangent-space direction, B = strength — the KHR convention). Material-
+/// only (no mesh) — a drop-in for import. Built via `serde_json` so it's always valid.
+fn gltf_document(naming: &str, has_anisotropy: bool) -> String {
+    use serde_json::json;
     let f = |m: &str| channel_filename(m, naming);
-    format!(
-        r#"{{
-  "asset": {{ "version": "2.0", "generator": "plakat texture {ver}" }},
-  "images": [
-    {{ "uri": "{albedo}" }},
-    {{ "uri": "{normal}" }},
-    {{ "uri": "{orm}" }}
-  ],
-  "samplers": [ {{ "wrapS": 10497, "wrapT": 10497 }} ],
-  "textures": [
-    {{ "source": 0, "sampler": 0 }},
-    {{ "source": 1, "sampler": 0 }},
-    {{ "source": 2, "sampler": 0 }}
-  ],
-  "materials": [
-    {{
-      "name": "plakat_material",
-      "pbrMetallicRoughness": {{
-        "baseColorTexture": {{ "index": 0 }},
-        "metallicRoughnessTexture": {{ "index": 2 }}
-      }},
-      "normalTexture": {{ "index": 1 }},
-      "occlusionTexture": {{ "index": 2 }}
-    }}
-  ]
-}}
-"#,
-        ver = env!("CARGO_PKG_VERSION"),
-        albedo = f("albedo"),
-        normal = f("normal"),
-        orm = f("orm"),
-    )
+    // images/textures 0=albedo 1=normal 2=orm (+ 3=anisotropy when present).
+    let mut images = vec![json!({ "uri": f("albedo") }), json!({ "uri": f("normal") }), json!({ "uri": f("orm") })];
+    let mut textures = vec![
+        json!({ "source": 0, "sampler": 0 }),
+        json!({ "source": 1, "sampler": 0 }),
+        json!({ "source": 2, "sampler": 0 }),
+    ];
+    let mut material = json!({
+        "name": "plakat_material",
+        "pbrMetallicRoughness": {
+            "baseColorTexture": { "index": 0 },
+            "metallicRoughnessTexture": { "index": 2 }
+        },
+        "normalTexture": { "index": 1, "scale": 1.0 },
+        "occlusionTexture": { "index": 2, "strength": 1.0 }
+    });
+    let mut extensions_used: Vec<&str> = Vec::new();
+    if has_anisotropy {
+        images.push(json!({ "uri": f("anisotropy") }));
+        textures.push(json!({ "source": 3, "sampler": 0 }));
+        material["extensions"] = json!({
+            "KHR_materials_anisotropy": {
+                "anisotropyStrength": 1.0,
+                "anisotropyRotation": 0.0,
+                "anisotropyTexture": { "index": 3 }
+            }
+        });
+        extensions_used.push("KHR_materials_anisotropy");
+    }
+    let mut doc = json!({
+        "asset": { "version": "2.0", "generator": format!("plakat texture {}", env!("CARGO_PKG_VERSION")) },
+        "images": images,
+        "samplers": [ { "wrapS": 10497, "wrapT": 10497 } ],
+        "textures": textures,
+        "materials": [ material ]
+    });
+    if !extensions_used.is_empty() {
+        doc["extensionsUsed"] = json!(extensions_used);
+    }
+    serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
 /// Write the full material directory: channel PNGs (named), ORM, preview, glTF, and `material.json`.
@@ -237,7 +249,7 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
         None
     };
     let gltf_name = if plan.gltf {
-        std::fs::write(dir.join("material.gltf"), gltf_document(&plan.naming)).context("writing material.gltf")?;
+        std::fs::write(dir.join("material.gltf"), gltf_document(&plan.naming, m.anisotropy.is_some())).context("writing material.gltf")?;
         Some("material.gltf".to_string())
     } else {
         None
@@ -339,6 +351,35 @@ mod tests {
         let man: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("material.json")).unwrap()).unwrap();
         assert_eq!(man["naming"], "unreal");
         assert_eq!(man["spec_hash"].as_str().unwrap().len(), 16);
+        // A complete glTF: metallicRoughness + occlusion(strength) + normal(scale), no anisotropy ext here.
+        let mat = &gltf["materials"][0];
+        assert_eq!(mat["pbrMetallicRoughness"]["metallicRoughnessTexture"]["index"], 2, "metallicRoughness = ORM");
+        assert_eq!(mat["occlusionTexture"]["strength"], 1.0);
+        assert_eq!(mat["normalTexture"]["scale"], 1.0);
+        assert!(gltf.get("extensionsUsed").is_none(), "no anisotropy → no extensions");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gltf_emits_khr_anisotropy_when_the_material_has_a_flow_map() {
+        let mut m = Material::derive(
+            RgbImage::from_pixel(16, 16, Rgb([180, 180, 185])),
+            None, 1.0, true, 1.0, &ChannelSource::Scalar(0.3), &ChannelSource::Scalar(1.0),
+        );
+        // give it an anisotropy flow map (as `render` does for a brushed metal)
+        m.anisotropy = Some(RgbImage::from_pixel(16, 16, Rgb([255, 128, 217])));
+        let dir = std::env::temp_dir().join(format!("plakat-tex-aniso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut plan = compile::resolve(&TextureSpec::default());
+        plan.gltf = true;
+        let sc = crate::texture::scorecard::score(&m);
+        write_material(&m, &plan, &sc, &dir).unwrap();
+        assert!(dir.join("anisotropy.png").exists(), "anisotropy channel written");
+        let gltf: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("material.gltf")).unwrap()).unwrap();
+        assert_eq!(gltf["extensionsUsed"][0], "KHR_materials_anisotropy");
+        let ext = &gltf["materials"][0]["extensions"]["KHR_materials_anisotropy"];
+        assert_eq!(ext["anisotropyTexture"]["index"], 3, "the 4th texture is the flow map");
+        assert_eq!(ext["anisotropyStrength"], 1.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
