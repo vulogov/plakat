@@ -70,8 +70,52 @@ pub struct Cli {
     #[arg(long, global = true, help_heading = "Global options")]
     pub enable_multiple_instances: bool,
 
+    /// Write provenance etching (RFC ETCH-1) into images plakat produces. Off by default; silently
+    /// ignored by commands that don't write an image.
+    #[arg(long, global = true, env = "PLAKAT_ETCH", help_heading = "Provenance (etch)")]
+    pub etch: bool,
+
+    /// Key for `EtchId` derivation and carrier PRNG (public constant by default).
+    #[arg(long, global = true, env = "PLAKAT_ETCH_KEY", value_name = "KEY", help_heading = "Provenance (etch)")]
+    pub etch_key: Option<String>,
+
+    /// Override the derived `EtchId` with an explicit 64-bit hex value.
+    #[arg(long, global = true, value_name = "HEX16", help_heading = "Provenance (etch)")]
+    pub etch_id: Option<String>,
+
+    /// Comma-list of layers to write: `l0,l1,l2,l3` (default: all applicable).
+    #[arg(long, global = true, value_name = "LIST", help_heading = "Provenance (etch)")]
+    pub etch_layers: Option<String>,
+
+    /// L1 embedding strength, `0.0..=1.0` (default 0.35).
+    #[arg(long, global = true, value_name = "F32", default_value_t = 0.35, help_heading = "Provenance (etch)")]
+    pub etch_strength: f32,
+
+    /// L3 fingerprint store (`none` disables L3; default `$PLAKAT_HOME/etchdb`).
+    #[arg(long, global = true, value_name = "PATH|none", help_heading = "Provenance (etch)")]
+    pub etch_db: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Build the runtime [`EtchConfig`](crate::etch::EtchConfig) from the global `--etch*` flags.
+    pub fn etch_config(&self) -> crate::etch::EtchConfig {
+        let db = match self.etch_db.as_deref() {
+            Some("none") => None,
+            Some(p) => Some(std::path::PathBuf::from(p)),
+            None => crate::etch::default_db(),
+        };
+        crate::etch::EtchConfig {
+            enabled: self.etch,
+            key: self.etch_key.clone().unwrap_or_else(|| crate::etch::PUBLIC_KEY.to_string()),
+            id_override: self.etch_id.as_deref().and_then(crate::etch::EtchId::parse_hex),
+            layers: self.etch_layers.as_deref().map(crate::etch::Layer::parse_list).unwrap_or_default(),
+            strength: self.etch_strength.clamp(0.0, 1.0),
+            db,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -283,6 +327,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     if let Some(p) = cli.cache_dir.clone() {
         crate::hf::cache::set_override(p);
     }
+    // Install the process-wide etch config from the global `--etch*` flags (RFC ETCH-1). Off by default.
+    crate::etch::set_config(cli.etch_config());
     // Single-instance guard: refuse a second heavy run on the host (they share
     // unified memory and thrash). `--enable-multiple-instances` overrides.
     if cli.command.is_heavy() {

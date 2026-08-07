@@ -92,11 +92,20 @@ pub struct DoctorArgs {
     /// probe. Combine with `--json` for a machine-readable report.
     #[arg(help_heading = "Checks", long, default_value_t = false, conflicts_with = "benchmark")]
     pub capability: bool,
+
+    /// ETCH-1 (6.7): verify whether IMAGE originated from plakat — reads the surviving provenance layers
+    /// (L0 manifest offline; L1/L3 in later phases) into a graded verdict. `--verify` additionally runs
+    /// L2 (loads a model). Offline by default. Mutually exclusive with `--benchmark`.
+    #[arg(help_heading = "Checks", long, value_name = "PATH", conflicts_with = "benchmark")]
+    pub if_plakat: Option<std::path::PathBuf>,
 }
 
 pub async fn run(args: DoctorArgs) -> Result<()> {
     if args.benchmark {
         return run_benchmark(&args.device);
+    }
+    if let Some(path) = &args.if_plakat {
+        return run_if_plakat(path, args.verify, args.json);
     }
     if args.capability {
         return run_capability(&args).await;
@@ -375,6 +384,52 @@ fn section_bookart() {
         note("raster→SVG trace OFF: `bookart vectorize` + pixel-tier `--svg` need `--features bookart-trace` (pulls an extra image stack; procedural `--svg` is always on).");
     }
     note("flagship: `kit` (a coherent matched set) + `manuscript` (a whole book's per-chapter ornaments). See Documentation/BOOKART.md.");
+}
+
+/// ETCH-1 (6.7): `doctor --if-plakat <IMAGE>` — read the surviving provenance evidence into a graded
+/// verdict. Offline (L0; L1/L3 in later phases); `--verify` adds L2 (model load).
+fn run_if_plakat(path: &std::path::Path, verify: bool, json: bool) -> Result<()> {
+    use crate::etch::detect;
+    if !path.exists() {
+        anyhow::bail!("no such file: {}", path.display());
+    }
+    let report = detect::verify(path, verify);
+    let (w, h) = image::image_dimensions(path).unwrap_or((0, 0));
+    let fmt = path.extension().and_then(|s| s.to_str()).unwrap_or("?").to_uppercase();
+    if json {
+        let layer = |l: &detect::LayerStatus| serde_json::json!({ "state": l.state, "detail": l.detail });
+        let v = serde_json::json!({
+            "file": path.display().to_string(),
+            "width": w, "height": h, "format": fmt,
+            "verdict": report.verdict.slug(),
+            "meaning": report.verdict.meaning(),
+            "id": report.id.map(|i| i.hex()),
+            "parent": report.parent.map(|i| i.hex()),
+            "layers": { "l0": layer(&report.l0), "l1": layer(&report.l1), "l2": layer(&report.l2), "l3": layer(&report.l3) },
+            "note": report.note,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    println!();
+    println!("  Etch verification — {} ({w}x{h}, {fmt})", path.display());
+    println!();
+    let line = |tag: &str, name: &str, l: &detect::LayerStatus| {
+        println!("  {tag}  {name:<12} {:<10} {}", l.state, l.detail);
+    };
+    line("L0", "manifest", &report.l0);
+    line("L1", "pixel etch", &report.l1);
+    line("L2", "latent etch", &report.l2);
+    line("L3", "fingerprint", &report.l3);
+    println!();
+    println!("  Verdict: {}  ({})", style(report.verdict.slug()).bold(), report.verdict.meaning());
+    if let Some(id) = report.id {
+        println!("  EtchId:  {}", id.hex());
+    }
+    if let Some(n) = &report.note {
+        println!("  Note:    {n}");
+    }
+    Ok(())
 }
 
 fn section_texture() {

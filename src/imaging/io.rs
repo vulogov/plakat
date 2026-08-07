@@ -43,7 +43,7 @@ impl FromStr for OutputFormat {
 }
 
 pub fn save_rgb_u8(buf: &[u8], width: u32, height: u32, path: &Path) -> Result<()> {
-    save_rgb_u8_inner(buf, width, height, path, None)
+    save_rgb_u8_inner(buf, width, height, path, None, None)
 }
 
 /// v0.17 phase 3: save the RGB buffer as PNG **with** an
@@ -114,11 +114,18 @@ pub fn save_rgb_u8_with_metadata(
     path: &Path,
     metadata: &GenerationMetadata,
 ) -> Result<()> {
-    save_rgb_u8_inner(buf, width, height, path, Some(metadata))?;
+    // ETCH-1 L0 (6.7.0): when `--etch` is on, derive the manifest and write it into the PNG `etch` tEXt
+    // chunk + the JSON sidecar. Off by default → `etch_json` is `None` and the path is byte-identical.
+    let etch_json = crate::etch::l0_manifest_json(metadata);
+    save_rgb_u8_inner(buf, width, height, path, Some(metadata), etch_json.as_deref())?;
     // Write the JSON sidecar. Best-effort.
     let json_path = sidecar_path(path);
     match metadata.to_json_pretty() {
         Ok(json) => {
+            let json = match &etch_json {
+                Some(e) => inject_etch_into_sidecar(&json, e),
+                None => json,
+            };
             if let Err(e) = std::fs::write(&json_path, json) {
                 tracing::warn!(
                     target: "plakat",
@@ -138,12 +145,30 @@ pub fn save_rgb_u8_with_metadata(
     Ok(())
 }
 
+/// Insert the L0 `etch` object into the sidecar JSON (best-effort — returns the original on any parse
+/// failure so a malformed injection never loses the recipe).
+fn inject_etch_into_sidecar(pretty_json: &str, etch_json: &str) -> String {
+    match (
+        serde_json::from_str::<serde_json::Value>(pretty_json),
+        serde_json::from_str::<serde_json::Value>(etch_json),
+    ) {
+        (Ok(mut v), Ok(e)) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("etch".to_string(), e);
+            }
+            serde_json::to_string_pretty(&v).unwrap_or_else(|_| pretty_json.to_string())
+        }
+        _ => pretty_json.to_string(),
+    }
+}
+
 fn save_rgb_u8_inner(
     buf: &[u8],
     width: u32,
     height: u32,
     path: &Path,
     metadata: Option<&GenerationMetadata>,
+    etch_json: Option<&str>,
 ) -> Result<()> {
     let expected = (width as usize) * (height as usize) * 3;
     if buf.len() != expected {
@@ -189,7 +214,7 @@ fn save_rgb_u8_inner(
                 .with_context(|| format!("writing {}", path.display()))?;
             Ok(())
         }
-        (Some(meta), true) => write_png_with_text_chunk(buf, width, height, path, meta),
+        (Some(meta), true) => write_png_with_text_chunk(buf, width, height, path, meta, etch_json),
     }
 }
 
@@ -199,6 +224,7 @@ fn write_png_with_text_chunk(
     height: u32,
     path: &Path,
     metadata: &GenerationMetadata,
+    etch_json: Option<&str>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -219,6 +245,12 @@ fn write_png_with_text_chunk(
             metadata.to_a1111_parameters_string(),
         )
         .with_context(|| "add `parameters` tEXt chunk")?;
+    // ETCH-1 L0: the `etch` provenance chunk (6.7.0), when `--etch` is on.
+    if let Some(etch) = etch_json {
+        encoder
+            .add_text_chunk("etch".to_string(), etch.to_string())
+            .with_context(|| "add `etch` tEXt chunk")?;
+    }
     let mut writer = encoder
         .write_header()
         .with_context(|| format!("PNG header for {}", path.display()))?;
