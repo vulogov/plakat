@@ -5,7 +5,9 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
-> **v6.5.0 — `plakat texture` layout: trim sheets & decals**: compose several materials into one banded **trim-sheet atlas** (each strip tiling along its run axis) with a `trim.json` UV-region sidecar, and stamp **decals** — alpha-masked overlays (a crack, rust streak, sign) — onto a base material, blending the normal via **Reoriented Normal Mapping** so decal detail rides the base slope instead of flattening it. All weight-free. *(This cycle set out to make generation natively seamless; measure-first G0 showed per-step latent-roll doesn't work and native circular-conv would need vendoring candle's whole UNet block stack for a smear feather already handles — so it pivoted here; findings kept in the roadmap.)* Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.5.0) · [Guide →](Documentation/TEXTURE.md)
+> **v6.6.0 — `plakat texture` engine interop**: one `texture export --engine gltf|unreal|unity-hdrp|godot|materialx|plakat` picks the naming + packing + material document in a single flag — a **complete glTF 2.0** material (with **`KHR_materials_anisotropy`** driven by the brushed-metal flow map), a **MaterialX** (`.mtlx`) `standard_surface` for USD/Arnold/Substance, and the **Unity HDRP mask map** (which packs the same data *differently* from ORM: R=metal/G=AO/B=detail/A=smoothness). The packing conventions live in one verified table so a material drops into each engine correctly. Weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.6.0) · [Guide →](Documentation/TEXTURE.md)
+>
+> **v6.5.0/6.5.1 — `plakat texture` layout: trim sheets & decals**: compose several materials into one banded **trim-sheet atlas** (each strip tiling along its run axis) with a `trim.json` UV-region sidecar, and stamp **decals** — alpha-masked overlays (a crack, rust streak, sign) — onto a base material, blending the normal via **Reoriented Normal Mapping** so decal detail rides the base slope instead of flattening it. All weight-free. *(This cycle set out to make generation natively seamless; measure-first G0 showed per-step latent-roll doesn't work and native circular-conv would need vendoring candle's whole UNet block stack for a smear feather already handles — so it pivoted here; findings kept in the roadmap.)* Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.5.0) · [Guide →](Documentation/TEXTURE.md)
 >
 > **v6.4.0 — deepen `plakat texture`**: composite materials now get **spatially-varying** channels — `metallic: "auto"` / `roughness: "auto"` region-vote a *structured* mask (bare metal vs rust, wet vs dry) where a single-class material still (correctly) stays flat — plus **anisotropy** for brushed/grained metals (a flow map + a grain-stretched preview highlight), a weight-free `texture blend` (two materials → one, through a tileable mask), `--variations N`, hand-painted `--metallic-ref`/`--roughness-ref` masks, and an *adaptive* seam feather. The `verify` scorecard now explains a flat map (*"uniform metallic — correct for a single-class material, not a defect"*). Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.4.0) · [Guide →](Documentation/TEXTURE.md)
 >
@@ -32,6 +34,31 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.6.0 — `plakat texture` engine interop
+
+Make a plakat material drop cleanly into more engines/DCCs, each in its native convention. Weight-free
+(export-layer). Fully additive.
+
+```bash
+plakat texture export stone/ --out unreal/ --engine unreal        # T_BaseColor…T_ORM
+plakat texture export steel/ --out gltf/   --engine gltf          # glTF + KHR_materials_anisotropy
+plakat texture export stone/ --out hdrp/   --engine unity-hdrp    # a Unity HDRP mask map (≠ ORM)
+plakat texture export stone/ --out mtlx/   --engine materialx     # MaterialX 1.38 standard_surface
+```
+
+- **One `--engine` preset** picks naming + packing + material document in a single flag: `gltf` / `unreal`
+  / `unity-hdrp` / `godot` / `materialx` / `plakat`. Also on `render`/`derive`, in `plakat::api::
+  {texture_export, Texture::engine}`, and Bund `plakat.texture.export`.
+- **The packing conventions genuinely differ** — and getting them wrong fails *silently* in-engine — so
+  they live in one verified table: **ORM** (glTF/Unreal/Godot) = R:AO/G:rough/B:metal, vs the **Unity HDRP
+  mask map** = R:metal/G:AO/B:detail/A:smoothness. Same data, different layout.
+- **Complete glTF 2.0** (baseColor + metallic-roughness + occlusion-with-strength + normal-with-scale) that
+  emits **`KHR_materials_anisotropy`** from the 6.4 brushed-metal flow map.
+- **MaterialX** (`.mtlx`) `standard_surface` output — the interchange format for USD / Arnold / Karma /
+  Substance.
+
+See [`Documentation/TEXTURE.md`](Documentation/TEXTURE.md) › *Engine export*.
 
 ## What's new in 6.5.0 — `plakat texture` layout: trim sheets & decals
 

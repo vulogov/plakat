@@ -21,6 +21,13 @@ onto a base material, blending the normal by **Reoriented Normal Mapping (RNM)**
 base surface. Both are **weight-free** — see *Trim sheets & decals*. Still additive — no existing output
 changes.
 
+**6.6 adds engine export / interop.** One flag — `export <dir> --engine <target>` (also on `render` and
+`derive`) — picks an engine's naming convention **and** channel packing **and** material document in a
+single shot, so a material lands correctly in glTF, Unreal, Unity HDRP, Godot, or a MaterialX/USD
+pipeline. The point it guards against: engines pack the **same** PBR data **differently** (ORM vs the
+HDRP mask map), and getting it wrong fails silently in-engine — see *Engine export*. Weight-free and
+additive, like the rest of the command.
+
 `texture` treats a material as **structured data**: a small HJSON document (a `TextureSpec`) is
 resolved deterministically, then **generate → derive → measure → export**. The reason is the same one
 behind `bookart` and `persona` — a text prompt is a poor instrument for a material. "a seamless rusted
@@ -78,15 +85,15 @@ depth touch a model.
 plakat texture new     <out.hjson> [--material "…" --size 1024 --model sdxl]      scaffold a spec
 plakat texture lint    <spec>                                                     validate (no weights, non-zero exit on error)
 plakat texture show    <spec>                                                     the resolved plan
-plakat texture derive  <albedo.png> --out DIR [--height H.png --roughness auto|from-albedo|<0..1> --metallic auto|from-albedo|<0..1> --metallic-ref M.png --roughness-ref R.png --anisotropy 0..1 --anisotropy-angle DEG --normal-strength 1.0 --ao-strength 1.0 --normal-y opengl|directx]   full PBR set from an albedo (NO GPU)
+plakat texture derive  <albedo.png> --out DIR [--height H.png --roughness auto|from-albedo|<0..1> --metallic auto|from-albedo|<0..1> --metallic-ref M.png --roughness-ref R.png --anisotropy 0..1 --anisotropy-angle DEG --normal-strength 1.0 --ao-strength 1.0 --normal-y opengl|directx --engine gltf|unreal|unity-hdrp|godot|materialx|plakat]   full PBR set from an albedo (NO GPU)
 plakat texture verify  <mat-dir>                                                  the tileability / PBR scorecard (NO weights)
 plakat texture preview <mat-dir> [--out P.png --shape sphere|plane --size 512]    re-render the lit preview (NO GPU)
-plakat texture export  <mat-dir> [--out DIR --naming plakat|unity|unreal --orm --gltf]   re-pack for an engine (NO weights)
+plakat texture export  <mat-dir> [--out DIR --engine gltf|unreal|unity-hdrp|godot|materialx|plakat | --naming plakat|unity|unreal --orm --gltf --materialx]   re-pack for an engine (NO weights)
 plakat texture blend   <dirA> <dirB> --out DIR [--mask mix|radial|x|y|<mask.png> --naming plakat]   cross-fade two materials (NO weights)
 plakat texture trim    <spec> --out DIR [--size N --naming plakat|unity|unreal]                    compose materials into a trim-sheet atlas + UV sidecar (NO weights)
 plakat texture decal make  --out DIR [--image PNG --mask PNG --shape circle|ring|stripe|splatter|crack --threshold 0..1 --color r,g,b --size N]   build a decal (NO weights)
 plakat texture decal apply <base> <decal> --out DIR [--at x,y --scale FRAC --rotate DEG --tile]    stamp a decal onto a base (RNM normal) (NO weights)
-plakat texture render  <spec> --out DIR [--attempts N --variations N --keep-best --upscale none|2k|4k --metallic-ref M.png --roughness-ref R.png]   generate the material (GPU)
+plakat texture render  <spec> --out DIR [--attempts N --variations N --keep-best --upscale none|2k|4k --metallic-ref M.png --roughness-ref R.png --engine gltf|unreal|unity-hdrp|godot|materialx|plakat]   generate the material (GPU)
 plakat texture from    <image> --out DIR [--material "…" --size 1024 --upscale none|2k|4k --height auto|from-albedo --metallic-ref M.png --roughness-ref R.png]   image→material (GPU: depth only)
 ```
 
@@ -154,8 +161,13 @@ under one light — a sanity view, not a renderer (see *Honest scope*).
 
 Re-packs an existing material directory for a target engine without regenerating anything. `--naming
 plakat|unity|unreal` renames the maps to the engine idiom; `--orm` (re)writes the packed
-R=AO/G=roughness/B=metallic image; `--gltf` emits a glTF 2.0 material; `--out` picks the destination.
-So one generated material can be re-packed for Unity and Unreal from the same source with no GPU.
+R=AO/G=roughness/B=metallic image; `--gltf` emits a glTF 2.0 material; `--materialx` emits a MaterialX
+`standard_surface` document; `--out` picks the destination. So one generated material can be re-packed
+for Unity and Unreal from the same source with no GPU.
+
+The 6.6 **`--engine <target>`** preset does all of that in one flag (naming + packing + material doc) —
+see *Engine export* below. It is also on `render` and `derive` (`--engine`), so a freshly generated or
+derived material can land engine-ready without a second `export` call.
 
 ### `render` — generate the material *(GPU)*
 
@@ -196,6 +208,69 @@ the normal is renormalised. `--mask` picks the blend:
 - a **path to a grayscale PNG** — your own mask, used verbatim.
 
 `--naming` packs the export in the engine idiom (`plakat` default). No weights, no GPU.
+
+## Engine export
+
+**One flag, one target, everything correct.** `texture export <dir> --engine <target>` picks an engine's
+**naming convention**, its **channel packing**, and its **material document** in a single shot. The same
+preset is on `texture render` and `texture derive` (`--engine`), in the library as
+`plakat::api::texture_export(dir, engine, out)` and `Texture::engine(...)`, and in Bund as
+`plakat.texture.export`. Targets:
+
+```
+plakat texture export <dir> --engine gltf | unreal | unity-hdrp | godot | materialx | plakat [--out DIR]
+```
+
+`--engine` **overrides** `--naming` / `--orm` (it sets them for you). The manual flags still work when
+you want hand control instead of the preset — `--naming plakat|unity|unreal --orm --gltf --materialx`.
+
+### Why a preset — engines pack the same PBR data differently
+
+The trap the preset exists for: two engines take **identical** roughness / metallic / AO data and pack
+it into **different channels of a different image**. Feed one engine the other's packing and it *fails
+silently* — the material just looks wrong, with no error. The two conventions:
+
+| Convention | Targets | Image | R | G | B | A |
+|---|---|---|---|---|---|---|
+| **ORM** | `gltf` · `unreal` · `godot` | `orm.png` / `T_ORM.png` | ambient occlusion | roughness | metallic | — |
+| **HDRP mask map** | `unity-hdrp` | `mask_map.png` (RGBA) | metallic | ambient occlusion | detail mask | smoothness (= 1 − roughness) |
+
+The Unity HDRP mask map is **not** ORM: different channel order, a fourth **smoothness** channel that is
+the *inverse* of roughness, and a detail mask in B. `--engine unity-hdrp` writes the mask map; every ORM
+target writes ORM. Picking the wrong one is the classic silent failure this preset removes.
+
+### What each target writes
+
+| `--engine` | Naming | Packed map | Material document |
+|---|---|---|---|
+| `gltf` | plakat | `orm.png` (ORM) | `material.gltf` — a complete glTF 2.0 material |
+| `unreal` | `T_*` (`T_BaseColor`, `T_Normal`, …) | `T_ORM.png` (ORM) | — |
+| `unity-hdrp` | HDRP (`_MainTex`, `_BumpMap`, …) | `mask_map.png` (**mask map, not ORM**) | — |
+| `godot` | plakat | `orm.png` (ORM) | — |
+| `materialx` | plakat | `orm.png` (ORM) | `material.mtlx` — a MaterialX 1.38 `standard_surface` graph |
+| `plakat` | plakat (raw `albedo.png`, `normal.png`, …) | `orm.png` (ORM) | — |
+
+- **`gltf`** writes a complete **glTF 2.0** material (`material.gltf`): `baseColor` + `metallicRoughness`
+  (reading roughness/metallic from ORM's **G/B**) + `occlusion` (ORM's **R**, with an occlusion
+  *strength*) + `normal` (with a normal *scale*), plus the ORM image.
+- **`materialx`** writes a **MaterialX 1.38** `standard_surface` node graph (`material.mtlx`) — the
+  interchange format read by **USD / Arnold / Karma / Substance** — plus ORM.
+- **`unreal`** / **`godot`** / **`plakat`** write correctly-named channels + ORM; **`unity-hdrp`** writes
+  HDRP-named channels + the mask map.
+
+### glTF anisotropy
+
+When the material carries an **anisotropy** map (from the 6.4 anisotropy feature — a brushed/grained
+metal), the `gltf` export emits the **`KHR_materials_anisotropy`** extension (declared in the glTF's
+`extensionsUsed`), whose texture is the **anisotropy flow map**. So a brushed-metal material carries its
+grain direction into glTF instead of losing it at the export boundary.
+
+### Non-goals
+
+plakat emits the **textures**, a **standard material document** (glTF 2.0 / MaterialX 1.38), and
+**correctly-named, correctly-packed channels**. It does **not** write binary engine formats
+(`.uasset` / `.tres` / `.usdz`) or **KTX2**-compressed textures — importing the exported material into
+the engine is your step. The value is that what you import is already packed the way the engine expects.
 
 ## Trim sheets & decals
 

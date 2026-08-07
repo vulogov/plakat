@@ -15,6 +15,11 @@ composite materials, hand-painted `--metallic-ref` / `--roughness-ref` masks, `-
 atlas + a UV sidecar, and `texture decal make` / `decal apply` build an alpha-masked overlay and stamp
 it onto a base material (RNM normal blend). Both are weight-free.
 
+**New in 6.6** (section 10 below): `--engine <target>` — a one-flag engine-export preset (glTF / Unreal /
+Unity HDRP / Godot / MaterialX / plakat) that sets naming + channel packing + material document together,
+so a material lands correctly in each engine (ORM vs the HDRP mask map). Weight-free; also on `render`
+and `derive`.
+
 Build the release binary first — debug diffusion is ~50× slower:
 
 ```sh
@@ -341,6 +346,51 @@ transparent. `--at` is the normalised centre, `--scale` a fraction of the base e
 angle; add `--tile` to repeat the decal across the whole base instead of a single stamp. RNM (not a
 naive lerp) is what lets the crack **ride** a curved or tilted surface instead of punching a flat patch
 through it.
+
+## 10. Export one material to several engines (6.6, no weights)
+
+Step 3 packed a material with the manual `--naming` / `--orm` / `--gltf` flags. 6.6 adds a **one-flag
+engine preset**: `--engine <target>` sets the naming convention **and** the channel packing **and** the
+material document together, so the material lands correctly in each engine without you remembering which
+is which. Take the `iron_mat/` from step 2 and pack it two ways:
+
+```sh
+plakat texture export iron_mat/ --out iron_unreal/ --engine unreal        # T_* names + ORM (R=AO, G=roughness, B=metallic)
+plakat texture export iron_mat/ --out iron_hdrp/   --engine unity-hdrp    # HDRP names + a mask_map.png
+```
+
+**The one thing to notice** — those two outputs pack the *same* roughness/metallic/AO data
+**differently**, and mixing them up fails silently in-engine:
+
+- `--engine unreal` (and `gltf` / `godot`) writes **ORM**: `R = ambient occlusion`, `G = roughness`,
+  `B = metallic`.
+- `--engine unity-hdrp` writes a **mask map** (`mask_map.png`), which is **not** ORM: `R = metallic`,
+  `G = ambient occlusion`, `B = detail mask`, `A = smoothness` — and smoothness is `1 − roughness`, the
+  *inverse* of the roughness you'd feed ORM. Hand Unity an ORM image and it reads the channels wrong
+  with no error; the preset is what keeps you out of that trap.
+
+The other targets round out the set:
+
+```sh
+plakat texture export iron_mat/ --out iron_gltf/  --engine gltf        # + material.gltf (glTF 2.0 material)
+plakat texture export iron_mat/ --out iron_mtlx/  --engine materialx   # + material.mtlx (MaterialX standard_surface, for USD/Arnold/Substance)
+plakat texture export iron_mat/ --out iron_godot/ --engine godot       # ORM, Godot-ready
+```
+
+`--engine` also rides on `render` and `derive`, so a freshly generated or derived material can come out
+engine-ready in one call — no second `export`:
+
+```sh
+plakat texture derive myalbedo.png --out iron_mat/ --engine unreal
+plakat texture render iron.hjson   --out iron_gen/ --engine gltf
+```
+
+If the material has an **anisotropy** map (section 8), the `gltf` export also emits the
+`KHR_materials_anisotropy` extension so a brushed metal keeps its grain in glTF. And the manual flags are
+still there (`--naming plakat|unity|unreal --orm --gltf --materialx`) when you want to pack by hand
+instead of by preset. Note plakat emits the textures + a standard material doc + correctly-packed
+channels — **not** binary engine formats (`.uasset` / `.tres` / `.usdz`) or KTX2 compression; importing
+into the engine is your step.
 
 ## Where to go next
 
