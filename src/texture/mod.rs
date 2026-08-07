@@ -12,6 +12,7 @@
 
 pub mod blend;
 pub mod compile;
+pub mod decal;
 pub mod derive;
 pub mod export;
 pub mod lint;

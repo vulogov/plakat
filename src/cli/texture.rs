@@ -47,6 +47,70 @@ pub enum TextureCmd {
     Blend(BlendArgs),
     /// Compose sub-materials into a trim-sheet atlas (banded strips) + a UV-region sidecar. **No weights.**
     Trim(TrimArgs),
+    /// Decal materials: `make` an alpha-masked overlay, `apply` it onto a base material. **No weights.**
+    Decal(DecalArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DecalArgs {
+    #[command(subcommand)]
+    pub cmd: DecalCmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DecalCmd {
+    /// Build a decal material (base PBR + an opacity mask) from an image and/or a procedural shape.
+    Make(DecalMakeArgs),
+    /// Composite a decal onto a base material (alpha-blend channels + RNM normal + re-derive AO).
+    Apply(DecalApplyArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DecalMakeArgs {
+    /// Output decal directory (channels + `opacity.png`).
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Source image for the decal albedo. Omit with `--shape` for a solid-colour procedural decal.
+    #[arg(long)]
+    pub image: Option<PathBuf>,
+    /// A grayscale opacity mask PNG (white = opaque). Overrides `--shape`/`--threshold`.
+    #[arg(long)]
+    pub mask: Option<PathBuf>,
+    /// A procedural opacity shape: `circle` | `ring` | `stripe` | `splatter` | `crack`.
+    #[arg(long)]
+    pub shape: Option<String>,
+    /// Derive opacity from the image by removing pixels brighter than this luma `[0,1]` (white-bg cutout).
+    #[arg(long)]
+    pub threshold: Option<f32>,
+    /// Solid albedo colour `r,g,b` (0–255) for a procedural decal with no `--image`.
+    #[arg(long, default_value = "40,40,40")]
+    pub color: String,
+    /// Decal edge size (px, square).
+    #[arg(long, default_value_t = 512)]
+    pub size: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct DecalApplyArgs {
+    /// Base material directory.
+    pub base: PathBuf,
+    /// Decal directory (needs `opacity.png`).
+    pub decal: PathBuf,
+    /// Output material directory.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Decal centre in normalised base coords `x,y` (default `0.5,0.5`).
+    #[arg(long, default_value = "0.5,0.5")]
+    pub at: String,
+    /// Decal size as a fraction of the base edge.
+    #[arg(long, default_value_t = 0.5)]
+    pub scale: f32,
+    /// Decal rotation in degrees.
+    #[arg(long, default_value_t = 0.0)]
+    pub rotate: f32,
+    /// Tile the decal across the whole base (a repeating detail).
+    #[arg(long, default_value_t = false)]
+    pub tile: bool,
 }
 
 #[derive(Args, Debug)]
@@ -282,7 +346,79 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::From(a) => run_from(a).await,
         TextureCmd::Blend(a) => run_blend(a),
         TextureCmd::Trim(a) => run_trim(a),
+        TextureCmd::Decal(a) => match a.cmd {
+            DecalCmd::Make(m) => run_decal_make(m),
+            DecalCmd::Apply(ap) => run_decal_apply(ap),
+        },
     }
+}
+
+/// Track B1 (6.5.0): build a decal material (base PBR + an opacity mask) from an image and/or a shape.
+fn run_decal_make(a: DecalMakeArgs) -> Result<()> {
+    use crate::texture::compile::ChannelSource;
+    use crate::texture::{decal, Material};
+    // Albedo: the source image (resized square), or a solid colour for a procedural decal.
+    let albedo = if let Some(p) = &a.image {
+        let img = image::open(p).with_context(|| format!("opening {}", p.display()))?.to_rgb8();
+        image::imageops::resize(&img, a.size, a.size, image::imageops::FilterType::Lanczos3)
+    } else {
+        let c: Vec<u8> = a.color.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        let rgb = image::Rgb([*c.first().unwrap_or(&40), *c.get(1).unwrap_or(&40), *c.get(2).unwrap_or(&40)]);
+        image::RgbImage::from_pixel(a.size, a.size, rgb)
+    };
+    // Opacity: --mask > --shape > --threshold (white-bg cutout) > all-opaque.
+    let opacity = if let Some(m) = &a.mask {
+        let g = image::open(m).with_context(|| format!("opening {}", m.display()))?.to_luma8();
+        image::imageops::resize(&g, a.size, a.size, image::imageops::FilterType::Lanczos3)
+    } else if let Some(shape) = &a.shape {
+        decal::opacity_shape(shape, a.size)
+    } else if let Some(t) = a.threshold {
+        let cut = (t.clamp(0.0, 1.0) * 255.0) as u8;
+        image::GrayImage::from_fn(a.size, a.size, |x, y| {
+            let p = albedo.get_pixel(x, y).0;
+            let l = (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32) as u8;
+            image::Luma([if l < cut { 255 } else { 0 }])
+        })
+    } else {
+        image::GrayImage::from_pixel(a.size, a.size, image::Luma([255]))
+    };
+    // Derive the decal's own PBR channels. For a PROCEDURAL decal (no image) the albedo is flat, so its
+    // relief comes from the SHAPE (opacity) — opaque = raised, lightly blurred for smooth normals — so the
+    // decal has a normal to RNM-blend onto the base. An image decal derives relief from its albedo.
+    let height = a.image.is_none().then(|| image::imageops::blur(&opacity, 1.5));
+    let m = Material::derive(albedo, height, 1.0, true, 1.0, &ChannelSource::FromAlbedo, &ChannelSource::Scalar(0.0));
+    std::fs::create_dir_all(&a.out)?;
+    m.write_channels(&a.out, &crate::texture::compile::ALL_MAPS.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+    opacity.save(a.out.join("opacity.png")).context("writing opacity.png")?;
+    let opaque = opacity.pixels().filter(|p| p.0[0] > 128).count() as f32 / (a.size * a.size) as f32;
+    println!("{} {}  (decal · {:.0}% opaque)", style("wrote").green(), a.out.display(), opaque * 100.0);
+    Ok(())
+}
+
+/// Track B3 (6.5.0): composite a decal onto a base material.
+fn run_decal_apply(a: DecalApplyArgs) -> Result<()> {
+    use crate::texture::decal::{apply, Decal, Placement};
+    use crate::texture::{compile, export, scorecard, TextureSpec};
+    let base = load_material(&a.base)?;
+    let decal_mat = load_material(&a.decal)?;
+    let opacity = image::open(a.decal.join("opacity.png"))
+        .with_context(|| format!("decal needs opacity.png in {}", a.decal.display()))?
+        .to_luma8();
+    let xy: Vec<f32> = a.at.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let placement = Placement {
+        cx: *xy.first().unwrap_or(&0.5),
+        cy: *xy.get(1).unwrap_or(&0.5),
+        scale: a.scale.max(1e-3),
+        rotate_deg: a.rotate,
+        tile: a.tile,
+    };
+    let out_mat = apply(&base, &Decal { material: decal_mat, opacity }, &placement, 1.0);
+    let sc = scorecard::score(&out_mat);
+    let plan = compile::resolve(&TextureSpec::default());
+    export::write_material(&out_mat, &plan, &sc, &a.out)?;
+    print_scorecard(&sc);
+    println!("{} {}  (decal {} on {})", style("wrote").green(), a.out.display(), a.decal.display(), a.base.display());
+    Ok(())
 }
 
 /// Track A (6.5.0): compose a trim-sheet atlas from a spec + write the UV-region sidecar.
