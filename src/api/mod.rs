@@ -1983,6 +1983,88 @@ pub fn texture_blend(
     Ok(sc)
 }
 
+/// Load a material directory into a [`Material`](crate::texture::Material) (missing data maps →
+/// neutral fill). The shared loader for the `texture` compositing ops.
+pub fn texture_load_material(dir: impl AsRef<std::path::Path>) -> Result<crate::texture::Material> {
+    use crate::texture::Material;
+    let d = dir.as_ref();
+    let albedo = image::open(d.join("albedo.png")).with_context(|| format!("albedo.png in {}", d.display()))?.to_rgb8();
+    let (w, h) = albedo.dimensions();
+    let gray = |n: &str, def: u8| image::open(d.join(n)).ok().map(|i| i.to_luma8()).unwrap_or_else(|| image::GrayImage::from_pixel(w, h, image::Luma([def])));
+    let normal = image::open(d.join("normal.png")).ok().map(|i| i.to_rgb8()).unwrap_or_else(|| image::RgbImage::from_pixel(w, h, image::Rgb([128, 128, 255])));
+    Ok(Material {
+        albedo,
+        normal,
+        height: gray("height.png", 128),
+        roughness: gray("roughness.png", 153),
+        metallic: gray("metallic.png", 0),
+        ao: gray("ao.png", 255),
+        anisotropy: image::open(d.join("anisotropy.png")).ok().map(|i| i.to_rgb8()),
+    })
+}
+
+/// Compose a trim-sheet atlas from a `TrimSpec` file (banded strips of material dirs) + write the
+/// `trim.json` UV-region sidecar (the `texture trim` op). Weight-free.
+pub fn texture_trim(spec: impl AsRef<std::path::Path>, out: impl AsRef<std::path::Path>) -> Result<crate::texture::Scorecard> {
+    use crate::texture::trim::{self, BandInput, TrimAxis, TrimSpec};
+    use crate::texture::{compile, export, preview, scorecard, Shape, TextureSpec};
+    let spec = TrimSpec::load(spec.as_ref())?;
+    if spec.bands.is_empty() {
+        anyhow::bail!("trim spec has no bands");
+    }
+    let size = spec.size.unwrap_or(1024);
+    let n = spec.bands.len();
+    let bands: Vec<BandInput> = spec
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(i, b)| -> Result<BandInput> {
+            Ok(BandInput {
+                material: texture_load_material(&b.material)?,
+                height: b.height.unwrap_or(1.0 / n as f32),
+                tile: TrimAxis::parse(b.tile.as_deref().unwrap_or("x")),
+                label: b.label.clone().unwrap_or_else(|| format!("band{i}")),
+            })
+        })
+        .collect::<Result<_>>()?;
+    let (atlas, regions) = trim::compose(&bands, size);
+    let sc = scorecard::score(&atlas);
+    let mut plan = compile::resolve(&TextureSpec::default());
+    plan.naming = spec.naming.unwrap_or_else(|| "plakat".into());
+    plan.preview = false;
+    export::write_material(&atlas, &plan, &sc, out.as_ref())?;
+    preview::render(&atlas, Shape::Plane, 512).save(out.as_ref().join("preview.png"))?;
+    std::fs::write(out.as_ref().join("trim.json"), serde_json::to_string_pretty(&regions)?)?;
+    Ok(sc)
+}
+
+/// Composite a decal directory (needs `opacity.png`) onto a base material (the `texture decal apply`
+/// op) — alpha-blend channels + RNM normal + re-derive AO. `at` = normalised centre, `scale` = fraction
+/// of the base edge. Weight-free.
+pub fn texture_decal_apply(
+    base: impl AsRef<std::path::Path>,
+    decal: impl AsRef<std::path::Path>,
+    out: impl AsRef<std::path::Path>,
+    at: (f32, f32),
+    scale: f32,
+    rotate_deg: f32,
+    tile: bool,
+) -> Result<crate::texture::Scorecard> {
+    use crate::texture::decal::{apply, Decal, Placement};
+    use crate::texture::{compile, export, scorecard, TextureSpec};
+    let base_m = texture_load_material(&base)?;
+    let decal_m = texture_load_material(&decal)?;
+    let opacity = image::open(decal.as_ref().join("opacity.png"))
+        .with_context(|| format!("decal needs opacity.png in {}", decal.as_ref().display()))?
+        .to_luma8();
+    let placement = Placement { cx: at.0, cy: at.1, scale: scale.max(1e-3), rotate_deg, tile };
+    let m = apply(&base_m, &Decal { material: decal_m, opacity }, &placement, 1.0);
+    let sc = scorecard::score(&m);
+    let plan = compile::resolve(&TextureSpec::default());
+    export::write_material(&m, &plan, &sc, out.as_ref())?;
+    Ok(sc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -67,6 +67,45 @@ fn do_from(vm: &mut VM) -> anyhow::Result<&mut VM> {
     Ok(vm)
 }
 
+/// `plakat.texture.trim ( spec-path out-dir -- handle )` — compose a trim-sheet atlas + UV sidecar.
+pub fn plakat_texture_trim(vm: &mut VM) -> BundResult<'_> {
+    do_trim(vm).map_err(to_bund_err)
+}
+
+fn do_trim(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    const TAG: &str = "plakat.texture.trim";
+    require_depth(vm, 2, TAG)?;
+    let out_dir = value_to_string(pull(vm, TAG)?, "out-dir", TAG)?;
+    let spec_path = value_to_string(pull(vm, TAG)?, "spec-path", TAG)?;
+    let out = std::path::PathBuf::from(&out_dir);
+    crate::api::texture_trim(&spec_path, &out).with_context(|| format!("{TAG}: {spec_path}"))?;
+    let handle = push_preview(&out, TAG)?;
+    tracing::info!(target: "plakat", "{TAG}: {spec_path} → {out_dir} → preview handle {handle}");
+    push(vm, Value::from_int(handle));
+    Ok(vm)
+}
+
+/// `plakat.texture.decal ( base-dir decal-dir out-dir -- handle )` — stamp a decal onto a base material
+/// (centred, half-scale). Use the CLI for placement control.
+pub fn plakat_texture_decal(vm: &mut VM) -> BundResult<'_> {
+    do_decal(vm).map_err(to_bund_err)
+}
+
+fn do_decal(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    const TAG: &str = "plakat.texture.decal";
+    require_depth(vm, 3, TAG)?;
+    let out_dir = value_to_string(pull(vm, TAG)?, "out-dir", TAG)?;
+    let decal_dir = value_to_string(pull(vm, TAG)?, "decal-dir", TAG)?;
+    let base_dir = value_to_string(pull(vm, TAG)?, "base-dir", TAG)?;
+    let out = std::path::PathBuf::from(&out_dir);
+    crate::api::texture_decal_apply(&base_dir, &decal_dir, &out, (0.5, 0.5), 0.5, 0.0, false)
+        .with_context(|| format!("{TAG}: {decal_dir} on {base_dir}"))?;
+    let handle = push_preview(&out, TAG)?;
+    tracing::info!(target: "plakat", "{TAG}: {decal_dir} on {base_dir} → {out_dir} → preview handle {handle}");
+    push(vm, Value::from_int(handle));
+    Ok(vm)
+}
+
 /// `plakat.texture.preview ( mat-dir -- handle )` — re-render the lit preview of a material directory.
 pub fn plakat_texture_preview(vm: &mut VM) -> BundResult<'_> {
     do_preview(vm).map_err(to_bund_err)

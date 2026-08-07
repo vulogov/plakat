@@ -378,8 +378,10 @@ fn section_bookart() {
 }
 
 fn section_texture() {
-    section_header("texture (6.4.0 — seamless PBR material synthesis)");
-    ok("weights-free (run anywhere, no GPU): new · lint · show · derive · verify · preview · export · blend");
+    section_header("texture (6.5.0 — seamless PBR material synthesis)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · derive · verify · preview · export · blend · trim · decal");
+    note("trim sheets (6.5): `texture trim <spec> --out` composes sub-material dirs into a banded ATLAS (each strip tiles along its run axis) + a `trim.json` UV-region sidecar for engine face→band mapping.");
+    note("decals (6.5): `texture decal make` (opacity from an image / procedural shape [circle|ring|stripe|splatter|crack] / mask / white-bg threshold) + `texture decal apply <base> <decal> --at --scale --rotate --tile` (alpha-blend channels + Reoriented-Normal-Mapping normal blend so detail rides the base slope).");
     note("weight-backed: render (generate the albedo; `--variations N` for seed variants) · from (image-to-material; depth-height needs the depth model)");
     note("output: a material dir — albedo/normal/roughness/metallic/height/AO PNGs + ORM pack + a lit preview + material.json (recipe + scorecard). Every channel exactly tileable.");
     note("channels: metallic/roughness `auto` (6.4) = spatially-coherent region-vote for COMPOSITE materials (rust/gilding) — a structured mask, not per-pixel speckle; a single-class material collapses to a flat (correct) map. Also `from-albedo` | a scalar | a `<prompt>`. Known dielectric → `--metallic 0`.");
@@ -387,7 +389,7 @@ fn section_texture() {
     note("blend (6.4): `texture blend A B --mask mix|radial|x|y|<png>` → one PBR set from two (mix/radial tile; x/y are transition sheets). painted-mask overrides: `--metallic-ref`/`--roughness-ref`.");
     note("seamless (§7): flat/tileable prompt + an ADAPTIVE boundary feather (6.4: band sized to the measured raw seam), or offset-and-heal make_tileable (a photo). Native circular-conv / per-step latent-roll stay the dormant escalation.");
     note("height `auto` = Depth-Anything-V2 (macro relief) + a luminance high-pass (micro detail); derive normal (tangent-space) + AO from it. `page.upscale 2k|4k` = tiling-preserving Lanczos.");
-    note("integration: scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` · library `plakat::api::Texture` (+ `api::texture_blend`). See Documentation/TEXTURE.md.");
+    note("integration: scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` (render/from/preview/trim/decal) · library `plakat::api::Texture` (+ `texture_blend`/`texture_trim`/`texture_decal_apply`). See Documentation/TEXTURE.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

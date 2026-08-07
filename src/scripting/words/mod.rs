@@ -96,6 +96,10 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.texture.from: {e}"))?;
     vm.register_inline("plakat.texture.preview".to_string(), texture::plakat_texture_preview)
         .map_err(|e| anyhow!("registering plakat.texture.preview: {e}"))?;
+    vm.register_inline("plakat.texture.trim".to_string(), texture::plakat_texture_trim)
+        .map_err(|e| anyhow!("registering plakat.texture.trim: {e}"))?;
+    vm.register_inline("plakat.texture.decal".to_string(), texture::plakat_texture_decal)
+        .map_err(|e| anyhow!("registering plakat.texture.decal: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)
