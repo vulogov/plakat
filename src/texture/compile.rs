@@ -61,6 +61,9 @@ pub struct RenderPlan {
 
     pub maps: Vec<String>, // which channel maps to write, in order
     pub orm: bool,
+    /// Also write the Unity HDRP **mask map** (R=metal/G=AO/B=detail/A=smoothness) instead of / alongside
+    /// ORM (6.6.0). Export-time only (set by `--engine unity-hdrp`), not a spec field — defaults false.
+    pub mask_map: bool,
     pub gltf: bool,
     /// Also emit a MaterialX `standard_surface` `.mtlx` (6.6.0). Export-time only (set by the CLI /
     /// `--engine`), not a spec field — defaults false.
@@ -143,6 +146,7 @@ pub fn resolve(spec: &TextureSpec) -> RenderPlan {
         delight: spec.delight.unwrap_or(true),
         maps,
         orm: exp.orm.unwrap_or(true),
+        mask_map: false,
         gltf: exp.gltf.unwrap_or(false),
         materialx: false,
         naming: exp.naming.clone().unwrap_or_else(|| "plakat".into()),

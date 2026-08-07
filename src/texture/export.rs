@@ -84,6 +84,23 @@ impl Engine {
             _ => Packing::Orm,
         }
     }
+    /// Configure a plan for this engine in one shot (the `--engine` preset): naming + which packed map to
+    /// write (ORM vs HDRP mask map) + which material document (glTF / MaterialX).
+    pub fn apply_to_plan(&self, plan: &mut RenderPlan) {
+        plan.naming = self.naming().to_string();
+        match self.packing() {
+            Packing::Orm => {
+                plan.orm = true;
+                plan.mask_map = false;
+            }
+            Packing::MaskMap => {
+                plan.orm = false;
+                plan.mask_map = true;
+            }
+        }
+        plan.gltf = matches!(self, Engine::Gltf);
+        plan.materialx = matches!(self, Engine::MaterialX);
+    }
 }
 
 /// The on-disk filename for a channel under a naming convention.
@@ -132,6 +149,8 @@ struct Manifest {
     normal_y: String,
     maps: Vec<String>,
     orm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mask_map: Option<String>,
     gltf: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     materialx: Option<String>,
@@ -315,6 +334,13 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
     } else {
         None
     };
+    let mask_name = if plan.mask_map {
+        let name = "mask_map.png".to_string(); // Unity HDRP: R=metal/G=AO/B=detail/A=smoothness
+        mask_map_pack(m).save(dir.join(&name)).with_context(|| format!("writing {name}"))?;
+        Some(name)
+    } else {
+        None
+    };
 
     let manifest = Manifest {
         schema: super::SCHEMA_VERSION.to_string(),
@@ -325,6 +351,7 @@ pub fn write_material(m: &Material, plan: &RenderPlan, sc: &Scorecard, dir: &std
         normal_y: plan.normal_y.clone(),
         maps: written,
         orm: orm_name,
+        mask_map: mask_name,
         gltf: gltf_name,
         materialx: mtlx_name,
         preview: preview_name,
@@ -419,6 +446,37 @@ mod tests {
         assert_eq!(mat["occlusionTexture"]["strength"], 1.0);
         assert_eq!(mat["normalTexture"]["scale"], 1.0);
         assert!(gltf.get("extensionsUsed").is_none(), "no anisotropy → no extensions");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn engine_preset_configures_the_plan_and_writes_the_right_pack() {
+        // HDRP → mask map (not ORM), unity naming, no glTF; glTF → ORM + glTF; MaterialX → .mtlx.
+        let mut p = compile::resolve(&TextureSpec::default());
+        Engine::UnityHdrp.apply_to_plan(&mut p);
+        assert!(p.mask_map && !p.orm && p.naming == "unity" && !p.gltf);
+        let mut g = compile::resolve(&TextureSpec::default());
+        Engine::Gltf.apply_to_plan(&mut g);
+        assert!(g.orm && g.gltf && !g.mask_map);
+        let mut x = compile::resolve(&TextureSpec::default());
+        Engine::MaterialX.apply_to_plan(&mut x);
+        assert!(x.materialx && !x.mask_map);
+
+        // end-to-end: an HDRP export writes mask_map.png (RGBA) and NOT orm.
+        let dir = std::env::temp_dir().join(format!("plakat-tex-hdrp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let m = Material::derive(RgbImage::from_pixel(8, 8, Rgb([120, 120, 120])), None, 1.0, true, 1.0, &ChannelSource::Scalar(0.4), &ChannelSource::Scalar(0.9));
+        let sc = crate::texture::scorecard::score(&m);
+        write_material(&m, &p, &sc, &dir).unwrap();
+        assert!(dir.join("mask_map.png").exists(), "HDRP writes the mask map");
+        assert!(!dir.join("orm.png").exists(), "HDRP does not write ORM");
+        // it's RGBA and packs metal→R, AO→G, smoothness→A.
+        let mm = image::open(dir.join("mask_map.png")).unwrap().to_rgba8();
+        let px = mm.get_pixel(4, 4).0;
+        assert_eq!(px[0], 230, "R = metallic 0.9 → 230"); // 0.9*255=229.5→230
+        let man: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("material.json")).unwrap()).unwrap();
+        assert_eq!(man["mask_map"], "mask_map.png");
+        assert!(man.get("orm").map(|v| v.is_null()).unwrap_or(true), "no orm in the HDRP manifest");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

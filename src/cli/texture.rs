@@ -235,6 +235,10 @@ pub struct ExportArgs {
     /// Also write a MaterialX (`.mtlx`) `standard_surface` document.
     #[arg(long, default_value_t = false)]
     pub materialx: bool,
+    /// One-shot engine preset — sets naming + packing (ORM vs HDRP mask map) + material doc:
+    /// `gltf` | `unreal` | `unity-hdrp` | `godot` | `materialx` | `plakat`. Overrides `--naming`/`--orm`.
+    #[arg(long)]
+    pub engine: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -649,20 +653,35 @@ fn run_preview(a: PreviewArgs) -> Result<()> {
     Ok(())
 }
 
-/// B2: re-pack a material directory for an engine (naming / ORM / glTF).
+/// B2/C2: re-pack a material directory for an engine — either the `--engine` one-shot preset, or the
+/// manual `--naming`/`--orm`/`--gltf`/`--materialx` flags.
 fn run_export(a: ExportArgs) -> Result<()> {
     use crate::texture::{compile, export, scorecard, TextureSpec};
+    use crate::texture::export::Engine;
     let m = load_material(&a.dir)?;
     let sc = scorecard::score(&m);
     let mut plan = compile::resolve(&TextureSpec::default());
-    plan.naming = a.naming.clone();
-    plan.orm = a.orm;
-    plan.gltf = a.gltf;
-    plan.materialx = a.materialx;
+    if let Some(e) = &a.engine {
+        let engine = Engine::parse(e)
+            .ok_or_else(|| anyhow::anyhow!("unknown --engine `{e}`; known: gltf, unreal, unity-hdrp, godot, materialx, plakat"))?;
+        engine.apply_to_plan(&mut plan); // naming + packing + material doc in one shot
+        plan.gltf |= a.gltf; // explicit flags still add on top
+        plan.materialx |= a.materialx;
+    } else {
+        plan.naming = a.naming.clone();
+        plan.orm = a.orm;
+        plan.gltf = a.gltf;
+        plan.materialx = a.materialx;
+    }
     plan.preview = false; // re-packing doesn't re-render the preview
     let out = a.out.unwrap_or_else(|| a.dir.clone());
     export::write_material(&m, &plan, &sc, &out)?;
-    println!("{} {}  (naming {} · orm {} · gltf {})", style("packed").green(), out.display(), a.naming, a.orm, a.gltf);
+    let pack = if plan.mask_map { "hdrp-mask" } else if plan.orm { "orm" } else { "none" };
+    println!(
+        "{} {}  (naming {} · pack {}{}{})",
+        style("packed").green(), out.display(), plan.naming, pack,
+        if plan.gltf { " · gltf" } else { "" }, if plan.materialx { " · mtlx" } else { "" },
+    );
     Ok(())
 }
 
