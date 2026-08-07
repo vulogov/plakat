@@ -21,11 +21,14 @@ pub struct RenderOpts {
     /// A3: a hand-painted metallic / roughness mask PNG to use verbatim (overrides derivation).
     pub metallic_ref: Option<std::path::PathBuf>,
     pub roughness_ref: Option<std::path::PathBuf>,
+    /// 6.6.0: an engine export preset (`gltf`/`unreal`/`unity-hdrp`/`godot`/`materialx`/`plakat`) applied
+    /// to the output (naming + packing + material doc).
+    pub engine: Option<String>,
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        Self { attempts: 1, upscale: None, metallic_ref: None, roughness_ref: None }
+        Self { attempts: 1, upscale: None, metallic_ref: None, roughness_ref: None, engine: None }
     }
 }
 
@@ -196,7 +199,12 @@ fn raw_seam(img: &image::RgbImage, axes: Axes) -> f32 {
 
 /// Render a spec to a material directory. Returns the scorecard of the written material.
 pub async fn render_material(spec: &TextureSpec, out: &std::path::Path, opts: &RenderOpts) -> Result<Scorecard> {
-    let plan = compile::resolve(spec);
+    let mut plan = compile::resolve(spec);
+    if let Some(e) = &opts.engine {
+        crate::texture::export::Engine::parse(e)
+            .ok_or_else(|| anyhow::anyhow!("unknown engine `{e}`; known: gltf, unreal, unity-hdrp, godot, materialx, plakat"))?
+            .apply_to_plan(&mut plan);
+    }
     let tries = opts.attempts.max(1);
     let (mut best_m, mut best_sc, mut fewest) = (None, None, usize::MAX);
 

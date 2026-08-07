@@ -1938,6 +1938,11 @@ impl Texture {
         self.opts.roughness_ref = Some(path.into());
         self
     }
+    /// Engine export preset for the output (`gltf`/`unreal`/`unity-hdrp`/`godot`/`materialx`/`plakat`).
+    pub fn engine(mut self, engine: impl Into<String>) -> Self {
+        self.opts.engine = Some(engine.into());
+        self
+    }
 
     /// Render the material into `out` (a directory), returning its
     /// [`Scorecard`](crate::texture::Scorecard).
@@ -2001,6 +2006,25 @@ pub fn texture_load_material(dir: impl AsRef<std::path::Path>) -> Result<crate::
         ao: gray("ao.png", 255),
         anisotropy: image::open(d.join("anisotropy.png")).ok().map(|i| i.to_rgb8()),
     })
+}
+
+/// Re-pack a material directory for an engine (the `texture export --engine` op): naming + packing (ORM
+/// vs HDRP mask map) + material doc (glTF / MaterialX). `engine` = `gltf`/`unreal`/`unity-hdrp`/`godot`/
+/// `materialx`/`plakat`. Weight-free.
+pub fn texture_export(
+    dir: impl AsRef<std::path::Path>,
+    engine: &str,
+    out: impl AsRef<std::path::Path>,
+) -> Result<crate::texture::Scorecard> {
+    use crate::texture::export::{self, Engine};
+    use crate::texture::{compile, scorecard, TextureSpec};
+    let m = texture_load_material(&dir)?;
+    let sc = scorecard::score(&m);
+    let mut plan = compile::resolve(&TextureSpec::default());
+    Engine::parse(engine).ok_or_else(|| anyhow::anyhow!("unknown engine `{engine}`"))?.apply_to_plan(&mut plan);
+    plan.preview = false;
+    export::write_material(&m, &plan, &sc, out.as_ref())?;
+    Ok(sc)
 }
 
 /// Compose a trim-sheet atlas from a `TrimSpec` file (banded strips of material dirs) + write the

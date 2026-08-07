@@ -199,6 +199,9 @@ pub struct RenderArgs {
     /// A hand-painted roughness mask PNG to use verbatim (overrides the spec's roughness).
     #[arg(long)]
     pub roughness_ref: Option<PathBuf>,
+    /// Engine export preset applied to the output: `gltf`/`unreal`/`unity-hdrp`/`godot`/`materialx`/`plakat`.
+    #[arg(long)]
+    pub engine: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -280,6 +283,9 @@ pub struct DeriveArgs {
     /// Grain direction in degrees (omit for auto-detect from the height structure tensor).
     #[arg(long)]
     pub anisotropy_angle: Option<f32>,
+    /// Engine export preset for the output: `gltf`/`unreal`/`unity-hdrp`/`godot`/`materialx`/`plakat`.
+    #[arg(long)]
+    pub engine: Option<String>,
 }
 
 /// Parse a channel-source CLI string: `auto` | `from-albedo` | a scalar in `[0,1]`.
@@ -509,7 +515,7 @@ async fn run_from(a: FromArgs) -> Result<()> {
     let sc = render_material(
         &spec,
         &a.out,
-        &RenderOpts { attempts: 1, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() },
+        &RenderOpts { attempts: 1, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone(), engine: None },
     )
     .await?;
     print_scorecard(&sc);
@@ -521,7 +527,7 @@ async fn run_from(a: FromArgs) -> Result<()> {
 async fn run_render(a: RenderArgs) -> Result<()> {
     use crate::texture::render::{render_material, RenderOpts};
     let spec = TextureSpec::load(&a.spec)?;
-    let opts = RenderOpts { attempts: a.attempts, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone() };
+    let opts = RenderOpts { attempts: a.attempts, upscale: a.upscale.clone(), metallic_ref: a.metallic_ref.clone(), roughness_ref: a.roughness_ref.clone(), engine: a.engine.clone() };
     if a.variations > 1 {
         return run_variations(&spec, &a, &opts).await;
     }
@@ -622,6 +628,12 @@ fn run_derive(a: DeriveArgs) -> Result<()> {
     // C1: anisotropy flow+strength map for brushed/grained metals.
     if a.anisotropy > 0.0 {
         m.anisotropy = Some(crate::texture::derive::anisotropy_map(&m.height, a.anisotropy_angle, a.anisotropy.clamp(0.0, 1.0)));
+    }
+    // 6.6.0: an engine export preset applied to the derived material.
+    if let Some(e) = &a.engine {
+        crate::texture::export::Engine::parse(e)
+            .ok_or_else(|| anyhow::anyhow!("unknown --engine `{e}`; known: gltf, unreal, unity-hdrp, godot, materialx, plakat"))?
+            .apply_to_plan(&mut plan);
     }
     let sc = scorecard::score(&m);
     export::write_material(&m, &plan, &sc, &a.out)?;

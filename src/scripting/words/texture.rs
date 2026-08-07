@@ -106,6 +106,25 @@ fn do_decal(vm: &mut VM) -> anyhow::Result<&mut VM> {
     Ok(vm)
 }
 
+/// `plakat.texture.export ( mat-dir engine out-dir -- handle )` — re-pack a material for an engine
+/// (`gltf`/`unreal`/`unity-hdrp`/`godot`/`materialx`/`plakat`); pushes the source material's preview.
+pub fn plakat_texture_export(vm: &mut VM) -> BundResult<'_> {
+    do_export(vm).map_err(to_bund_err)
+}
+
+fn do_export(vm: &mut VM) -> anyhow::Result<&mut VM> {
+    const TAG: &str = "plakat.texture.export";
+    require_depth(vm, 3, TAG)?;
+    let out_dir = value_to_string(pull(vm, TAG)?, "out-dir", TAG)?;
+    let engine = value_to_string(pull(vm, TAG)?, "engine", TAG)?;
+    let mat_dir = value_to_string(pull(vm, TAG)?, "mat-dir", TAG)?;
+    crate::api::texture_export(&mat_dir, &engine, &out_dir).with_context(|| format!("{TAG}: {mat_dir} → {engine}"))?;
+    let handle = push_preview(std::path::Path::new(&mat_dir), TAG)?;
+    tracing::info!(target: "plakat", "{TAG}: {mat_dir} → {engine} → {out_dir} → preview handle {handle}");
+    push(vm, Value::from_int(handle));
+    Ok(vm)
+}
+
 /// `plakat.texture.preview ( mat-dir -- handle )` — re-render the lit preview of a material directory.
 pub fn plakat_texture_preview(vm: &mut VM) -> BundResult<'_> {
     do_preview(vm).map_err(to_bund_err)
