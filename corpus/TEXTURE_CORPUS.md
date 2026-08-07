@@ -65,6 +65,22 @@ corpus/texture_run.sh                     # renders the whole corpus
 build, score, and re-pack a full engine-ready material (including the new auto channels, anisotropy, and
 blends) from a supplied albedo before any generation is involved.
 
+### New in 6.6.0 — engine interop ([`texture_interop_run.sh`](texture_interop_run.sh))
+
+A separate driver demonstrates the export/interop breadth. It renders steel (with a brushed anisotropy
+grain) + stone, then **re-packs each to every engine target** with one `--engine` flag — showing how the
+naming + packing + material document differ:
+
+- `--engine gltf` → `material.gltf` (a complete glTF 2.0 material; steel's carries **`KHR_materials_
+  anisotropy`** from its flow map) + ORM.
+- `--engine unreal` → `T_BaseColor`…`T_ORM` (ORM = R:AO/G:rough/B:metal).
+- `--engine unity-hdrp` → **`mask_map.png`** (RGBA: R:metal/G:AO/B:detail/A:smoothness) — the *same data
+  packed differently* from ORM.
+- `--engine godot` → ORM. `--engine materialx` → `material.mtlx` (1.38 `standard_surface`, for USD /
+  Arnold / Substance).
+
+The re-pack half is **weight-free** (no GPU). Run [`texture_interop_run.sh`](texture_interop_run.sh).
+
 ## The idea
 
 A material is a **spec**, a **set of coherent tileable channels**, and a **measurement** — not a prompt
