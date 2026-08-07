@@ -12,11 +12,78 @@ use image::{GrayImage, Rgb, RgbImage};
 use serde::Serialize;
 
 /// Pack AO / roughness / metallic into one RGB image (R=AO, G=roughness, B=metallic) — the glTF
-/// `metallicRoughnessTexture` (GB) + `occlusionTexture` (R) layout, and Unreal's ORM.
+/// `metallicRoughnessTexture` (GB) + `occlusionTexture` (R) layout, and Unreal's / Godot's ORM.
 pub fn orm_pack(m: &Material) -> RgbImage {
     let (w, h) = m.ao.dimensions();
     let g = |img: &GrayImage, x: u32, y: u32| img.get_pixel(x.min(img.width() - 1), y.min(img.height() - 1)).0[0];
     RgbImage::from_fn(w, h, |x, y| Rgb([g(&m.ao, x, y), g(&m.roughness, x, y), g(&m.metallic, x, y)]))
+}
+
+/// Pack the **Unity HDRP mask map** — a DIFFERENT convention from ORM: `R=metallic, G=ambient-occlusion,
+/// B=detail-mask (neutral 128), A=smoothness (= 255 − roughness)`. (6.6.0 / G0.1.)
+pub fn mask_map_pack(m: &Material) -> image::RgbaImage {
+    let (w, h) = m.metallic.dimensions();
+    let g = |img: &GrayImage, x: u32, y: u32| img.get_pixel(x.min(img.width() - 1), y.min(img.height() - 1)).0[0];
+    image::RgbaImage::from_fn(w, h, |x, y| {
+        image::Rgba([g(&m.metallic, x, y), g(&m.ao, x, y), 128, 255 - g(&m.roughness, x, y)])
+    })
+}
+
+/// A material export target (6.6.0). Each pins a filename convention + how the packed channels lay out —
+/// the conventions genuinely differ per engine and a wrong pack fails *silently* in-engine, so they live
+/// in ONE place (this enum), verified by `packing_conventions_are_locked`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// Raw plakat names, ORM pack, no material doc.
+    Plakat,
+    /// glTF 2.0 material doc; ORM (metallicRoughness = GB, occlusion = R).
+    Gltf,
+    /// Unreal `T_*` names; ORM.
+    Unreal,
+    /// Godot names; ORM.
+    Godot,
+    /// Unity HDRP; the **mask map** pack (R=metal/G=AO/B=detail/A=smoothness), NOT ORM.
+    UnityHdrp,
+    /// MaterialX `.mtlx` `standard_surface`; separate channel textures.
+    MaterialX,
+}
+
+/// Which packed texture an engine consumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Packing {
+    /// R=AO, G=roughness, B=metallic (glTF / Unreal / Godot).
+    Orm,
+    /// R=metallic, G=AO, B=detail, A=smoothness (Unity HDRP).
+    MaskMap,
+}
+
+impl Engine {
+    pub fn parse(s: &str) -> Option<Engine> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "plakat" => Engine::Plakat,
+            "gltf" | "gltf2" => Engine::Gltf,
+            "unreal" => Engine::Unreal,
+            "godot" => Engine::Godot,
+            "unity-hdrp" | "hdrp" | "unity_hdrp" => Engine::UnityHdrp,
+            "materialx" | "mtlx" => Engine::MaterialX,
+            _ => return None,
+        })
+    }
+    /// The filename convention key (`channel_filename`'s `naming`).
+    pub fn naming(&self) -> &'static str {
+        match self {
+            Engine::Unreal => "unreal",
+            Engine::UnityHdrp => "unity",
+            _ => "plakat",
+        }
+    }
+    /// The packed-map convention this engine expects.
+    pub fn packing(&self) -> Packing {
+        match self {
+            Engine::UnityHdrp => Packing::MaskMap,
+            _ => Packing::Orm,
+        }
+    }
 }
 
 /// The on-disk filename for a channel under a naming convention.
@@ -214,6 +281,36 @@ mod tests {
         let p = orm.get_pixel(4, 4).0;
         assert_eq!(p[1], 179, "G = roughness 0.7 → 179"); // 0.7*255 = 178.5 → 179
         assert_eq!(p[2], 77, "B = metallic 0.3 → 77"); // 0.3*255 = 76.5 → 77
+    }
+
+    #[test]
+    fn packing_conventions_are_locked() {
+        use image::Luma;
+        // Distinct constant channels so the channel ORDER is unambiguous: AO=50, roughness=100, metal=200.
+        let flat = |v: u8| GrayImage::from_pixel(8, 8, Luma([v]));
+        let m = Material {
+            albedo: RgbImage::from_pixel(8, 8, Rgb([10, 20, 30])),
+            normal: RgbImage::from_pixel(8, 8, Rgb([128, 128, 255])),
+            height: flat(64),
+            roughness: flat(100),
+            metallic: flat(200),
+            ao: flat(50),
+            anisotropy: None,
+        };
+        // ORM (glTF metallicRoughness=GB, occlusion=R · Unreal/Godot): R=AO, G=rough, B=metal.
+        let orm = orm_pack(&m).get_pixel(4, 4).0;
+        assert_eq!(orm, [50, 100, 200], "ORM = R:AO G:rough B:metal");
+        // Unity HDRP mask map: R=metal, G=AO, B=detail(128), A=smoothness(=255-rough).
+        let mm = mask_map_pack(&m).get_pixel(4, 4).0;
+        assert_eq!(mm, [200, 50, 128, 155], "HDRP mask = R:metal G:AO B:detail A:smoothness(255-100)");
+        // The Engine table routes each target to the right packing + naming (one source of truth).
+        assert_eq!(Engine::parse("unity-hdrp"), Some(Engine::UnityHdrp));
+        assert_eq!(Engine::UnityHdrp.packing(), Packing::MaskMap);
+        assert_eq!(Engine::Gltf.packing(), Packing::Orm);
+        assert_eq!(Engine::Unreal.packing(), Packing::Orm);
+        assert_eq!(Engine::Unreal.naming(), "unreal");
+        assert_eq!(Engine::UnityHdrp.naming(), "unity");
+        assert_eq!(Engine::Gltf.naming(), "plakat");
     }
 
     #[test]
