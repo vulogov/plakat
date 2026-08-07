@@ -362,7 +362,7 @@ fn run_decal_make(a: DecalMakeArgs) -> Result<()> {
         let img = image::open(p).with_context(|| format!("opening {}", p.display()))?.to_rgb8();
         image::imageops::resize(&img, a.size, a.size, image::imageops::FilterType::Lanczos3)
     } else {
-        let c: Vec<u8> = a.color.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        let c: Vec<u8> = a.color.split(',').filter_map(|s| s.trim().parse::<u8>().ok()).collect();
         let rgb = image::Rgb([*c.first().unwrap_or(&40), *c.get(1).unwrap_or(&40), *c.get(2).unwrap_or(&40)]);
         image::RgbImage::from_pixel(a.size, a.size, rgb)
     };
@@ -404,7 +404,7 @@ fn run_decal_apply(a: DecalApplyArgs) -> Result<()> {
     let opacity = image::open(a.decal.join("opacity.png"))
         .with_context(|| format!("decal needs opacity.png in {}", a.decal.display()))?
         .to_luma8();
-    let xy: Vec<f32> = a.at.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let xy: Vec<f32> = a.at.split(',').filter_map(|s| s.trim().parse::<f32>().ok()).collect();
     let placement = Placement {
         cx: *xy.first().unwrap_or(&0.5),
         cy: *xy.get(1).unwrap_or(&0.5),
