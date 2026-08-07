@@ -21,6 +21,7 @@ pub mod scenario_task;
 pub mod scorecard;
 pub mod seamless;
 pub mod spec;
+pub mod trim;
 
 pub use compile::{resolve, ChannelSource, HeightSource, RenderPlan};
 pub use derive::Material;

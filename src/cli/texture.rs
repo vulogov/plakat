@@ -45,6 +45,23 @@ pub enum TextureCmd {
     From(FromArgs),
     /// Blend two material directories through a mask into one PBR set (e.g. stone → moss). **No weights.**
     Blend(BlendArgs),
+    /// Compose sub-materials into a trim-sheet atlas (banded strips) + a UV-region sidecar. **No weights.**
+    Trim(TrimArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TrimArgs {
+    /// A trim spec (`.hjson`): `{ size, bands: [ { material: <dir>, height: <frac>, tile: x|y|none, label } ] }`.
+    pub spec: PathBuf,
+    /// Output material directory (the atlas + `trim.json` UV sidecar).
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Override the atlas edge size (px, square).
+    #[arg(long)]
+    pub size: Option<u32>,
+    /// Channel naming: `plakat` (default) | `unity` | `unreal`.
+    #[arg(long)]
+    pub naming: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -264,7 +281,50 @@ pub async fn run(args: TextureArgs) -> Result<()> {
         TextureCmd::Render(a) => run_render(a).await,
         TextureCmd::From(a) => run_from(a).await,
         TextureCmd::Blend(a) => run_blend(a),
+        TextureCmd::Trim(a) => run_trim(a),
     }
+}
+
+/// Track A (6.5.0): compose a trim-sheet atlas from a spec + write the UV-region sidecar.
+fn run_trim(a: TrimArgs) -> Result<()> {
+    use crate::texture::trim::{self, BandInput, TrimAxis, TrimSpec};
+    use crate::texture::{compile, export, preview, scorecard, Shape, TextureSpec};
+    let spec = TrimSpec::load(&a.spec)?;
+    if spec.bands.is_empty() {
+        anyhow::bail!("trim spec has no bands");
+    }
+    let size = a.size.or(spec.size).unwrap_or(1024);
+    let n = spec.bands.len();
+    let bands: Vec<BandInput> = spec
+        .bands
+        .iter()
+        .enumerate()
+        .map(|(i, b)| -> Result<BandInput> {
+            let material = load_material(std::path::Path::new(&b.material))?;
+            Ok(BandInput {
+                material,
+                height: b.height.unwrap_or(1.0 / n as f32),
+                tile: TrimAxis::parse(b.tile.as_deref().unwrap_or("x")),
+                label: b.label.clone().unwrap_or_else(|| format!("band{i}")),
+            })
+        })
+        .collect::<Result<_>>()?;
+
+    let (atlas, regions) = trim::compose(&bands, size);
+    let sc = scorecard::score(&atlas);
+    let mut plan = compile::resolve(&TextureSpec::default());
+    plan.naming = a.naming.or(spec.naming).unwrap_or_else(|| "plakat".into());
+    plan.preview = false; // the atlas doesn't tile in V → a Plane preview, not the sphere
+    export::write_material(&atlas, &plan, &sc, &a.out)?;
+    // A Plane preview (shows the flat banded strips) + the UV-region sidecar.
+    preview::render(&atlas, Shape::Plane, 512).save(a.out.join("preview.png")).context("writing preview.png")?;
+    std::fs::write(a.out.join("trim.json"), serde_json::to_string_pretty(&regions)?).context("writing trim.json")?;
+
+    println!("{} {}  ({} band(s), {}² atlas + trim.json)", style("wrote").green(), a.out.display(), n, size);
+    for r in &regions {
+        println!("    {} {:<10} v {:.2}–{:.2} · tile {}", style("·").cyan(), r.label, r.v0, r.v1, r.tile);
+    }
+    Ok(())
 }
 
 /// C3: blend two material directories through a mask into one PBR set.
