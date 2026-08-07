@@ -36,6 +36,12 @@ conventions in a table + tests** before building the emitters.
   HDRP). Pure, weight-free. **Exit:** the table matches each engine's published docs and the tests lock
   it. (No probe run needed — the risk is correctness, not a measurement.)
 
+### G0.1 RESULT — DONE, PASS (commit `5510fa4`)
+`export::Engine` enum (Plakat/Gltf/Unreal/Godot/UnityHdrp/MaterialX) with `parse`/`naming`/`packing` as
+the single source of truth, + `mask_map_pack` (HDRP). The `packing_conventions_are_locked` test asserts
+on distinct constants: ORM = R:AO/G:rough/B:metal; HDRP mask = R:metal/G:AO/B:detail/A:smoothness; Engine
+routing (UnityHdrp -> MaskMap + "unity" naming, Gltf/Unreal -> Orm). Tracks A/B/C build on this table.
+
 ---
 
 ## Track A — a complete, validated glTF (+ anisotropy)
