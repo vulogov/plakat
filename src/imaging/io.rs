@@ -114,8 +114,11 @@ pub fn save_rgb_u8_with_metadata(
     path: &Path,
     metadata: &GenerationMetadata,
 ) -> Result<()> {
-    // ETCH-1 L0 (6.7.0): when `--etch` is on, derive the manifest and write it into the PNG `etch` tEXt
-    // chunk + the JSON sidecar. Off by default → `etch_json` is `None` and the path is byte-identical.
+    // ETCH-1 (6.7.0): when `--etch` is on — L1 embeds the pixel etch into the buffer, L0 derives the
+    // manifest written into the PNG `etch` tEXt chunk + JSON sidecar. Off by default → both are no-ops and
+    // the path is byte-identical. (RGB save carries no alpha, so L1 embeds everywhere.)
+    let l1 = crate::etch::l1_embed_rgb(buf, width, height, None, metadata);
+    let buf: &[u8] = l1.as_deref().unwrap_or(buf);
     let etch_json = crate::etch::l0_manifest_json(metadata);
     save_rgb_u8_inner(buf, width, height, path, Some(metadata), etch_json.as_deref())?;
     // Write the JSON sidecar. Best-effort.

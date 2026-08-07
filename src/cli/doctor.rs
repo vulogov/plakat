@@ -393,7 +393,7 @@ fn run_if_plakat(path: &std::path::Path, verify: bool, json: bool) -> Result<()>
     if !path.exists() {
         anyhow::bail!("no such file: {}", path.display());
     }
-    let report = detect::verify(path, verify);
+    let report = detect::verify(path, &crate::etch::effective_key(), verify);
     let (w, h) = image::image_dimensions(path).unwrap_or((0, 0));
     let fmt = path.extension().and_then(|s| s.to_str()).unwrap_or("?").to_uppercase();
     if json {

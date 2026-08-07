@@ -12,6 +12,7 @@
 pub mod detect;
 pub mod manifest;
 pub mod payload;
+pub mod pixel;
 
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
@@ -150,28 +151,53 @@ mod tests {
     // The full write→read loop: enabling etch writes the L0 chunk + sidecar; `detect` recovers it. This
     // test owns the process-global config (the only test that enables it).
     #[test]
-    fn l0_write_read_end_to_end() {
+    fn write_read_end_to_end_l0_and_l1() {
+        // Owns the process-global config (the only test that enables it). A 256² image so L1 survives too.
         set_config(EtchConfig { enabled: true, key: "testkey".into(), id_override: None, layers: vec![], strength: 0.35, db: None });
-        let meta = GenerationMetadata::new("a red poster", "sdxl", 7, 30, 7.0, "ddim", 4, 4);
+        let (w, h) = (512u32, 512u32); // native == canonical grid so L1 is exact (real gens are ≥512)
+        let meta = GenerationMetadata::new("a red poster", "sdxl", 7, 30, 7.0, "ddim", w, h);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.png");
-        let buf = vec![128u8; 4 * 4 * 3];
-        crate::imaging::io::save_rgb_u8_with_metadata(&buf, 4, 4, &path, &meta).unwrap();
+        // a mildly textured image (not flat — DCT needs some signal).
+        let buf: Vec<u8> = (0..(w * h) as usize)
+            .flat_map(|i| {
+                let g = (120 + (i % 37)) as u8;
+                [g, g.saturating_sub(4), g.saturating_add(3)]
+            })
+            .collect();
+        crate::imaging::io::save_rgb_u8_with_metadata(&buf, w, h, &path, &meta).unwrap();
 
-        let report = detect::verify(&path, false);
+        let report = detect::verify(&path, "testkey", false);
         assert_eq!(report.verdict, detect::Verdict::Generated);
         let expected = payload::derive_id("testkey", &manifest::canonical_manifest(&meta));
-        assert_eq!(report.id, Some(expected), "recovered id == derived id");
-        // sidecar carries the etch object too (plakat's `<image>.png.json` convention).
+        assert_eq!(report.id, Some(expected), "recovered id == derived id (L0)");
+        // L0 sidecar carries the etch object (plakat's `<image>.png.json` convention).
         let side = std::fs::read_to_string(crate::imaging::io::sidecar_path(&path)).unwrap();
-        assert!(side.contains("\"etch\""), "sidecar has the etch object");
-        assert!(side.contains(&expected.hex()));
+        assert!(side.contains("\"etch\"") && side.contains(&expected.hex()));
+        // L1 pixel etch also survived the PNG round-trip and decodes the SAME id.
+        assert_eq!(report.l1.state, "present", "L1 recovered: {}", report.l1.detail);
     }
 }
 
-/// The layers this build implements AND the config wants. Grows per phase (Phase 1: L0 only).
+/// The layers this build implements AND the config wants. Grows per phase (now L0 + L1).
 fn active_layers(cfg: &EtchConfig) -> Vec<Layer> {
-    [Layer::L0].into_iter().filter(|l| cfg.wants(*l)).collect()
+    [Layer::L0, Layer::L1].into_iter().filter(|l| cfg.wants(*l)).collect()
+}
+
+/// The verifier's key (from `--etch-key`), else the public constant — for reading L1/L3 back.
+pub fn effective_key() -> String {
+    CONFIG.get().map(|c| c.key.clone()).unwrap_or_else(|| PUBLIC_KEY.to_string())
+}
+
+/// L1 (6.7.0 Phase 2): embed the pixel etch into an RGB buffer, if etching is on and L1 is requested.
+/// Returns the marked buffer (the caller writes it). `alpha` (0 = transparent) excludes those regions.
+pub fn l1_embed_rgb(rgb: &[u8], w: u32, h: u32, alpha: Option<&[u8]>, metadata: &crate::imaging::metadata::GenerationMetadata) -> Option<Vec<u8>> {
+    let cfg = active()?;
+    if !active_layers(cfg).contains(&Layer::L1) {
+        return None;
+    }
+    let id = render_id(cfg, metadata);
+    Some(pixel::embed(rgb, w as usize, h as usize, id, &cfg.key, cfg.strength, alpha))
 }
 
 /// The `EtchId` for this render — the `--etch-id` override, else derived from the recipe + key.

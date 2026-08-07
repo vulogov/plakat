@@ -92,41 +92,67 @@ fn read_etch_chunk(path: &Path) -> Option<String> {
         .map(|c| c.text.clone())
 }
 
-/// Verify an image. **Phase 1: L0 only** (later phases run L1/L2/L3 and fuse). `run_l2` (the model-loading
-/// DDIM path) is honoured in Phase 4; here it only affects the L2 status line.
-pub fn verify(path: &Path, run_l2: bool) -> Report {
+/// Load an image as RGB + optional alpha (0 = transparent) + dims. `None` if unreadable.
+fn read_image(path: &Path) -> Option<(Vec<u8>, Option<Vec<u8>>, usize, usize)> {
+    let img = image::open(path).ok()?;
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let alpha = match &img {
+        image::DynamicImage::ImageRgba8(_) | image::DynamicImage::ImageLumaA8(_) => {
+            Some(img.to_rgba8().pixels().map(|p| p.0[3]).collect())
+        }
+        _ => None,
+    };
+    Some((img.to_rgb8().into_raw(), alpha, w, h))
+}
+
+/// Verify an image — fuse L0 (manifest) + L1 (pixel etch). `key` is the verifier's key (public by
+/// default). `run_l2` gates the model-loading L2 path (Phase 4). Offline for L0/L1.
+pub fn verify(path: &Path, key: &str, run_l2: bool) -> Report {
+    let l0 = read_l0(path);
+    // L1 — extract the pixel etch (offline).
+    let l1_res = read_image(path).and_then(|(rgb, alpha, w, h)| super::pixel::extract(&rgb, w, h, key, alpha.as_deref()));
     let l2 = if run_l2 {
         LayerStatus::skipped("L2 not yet implemented")
     } else {
         LayerStatus::skipped("--verify not given")
     };
-    match read_l0(path) {
-        Some(m) => {
-            let id = m.etch_id();
-            let parent = m.parent_id();
+    let l3 = LayerStatus::skipped("L3 not yet implemented");
+
+    // Fuse. A confident L1 decode (low p) or a present-and-consistent L0 ⇒ generated.
+    let l1_strong = l1_res.as_ref().map(|r| r.p_value < 1e-6).unwrap_or(false);
+    let l1_status = match &l1_res {
+        Some(r) if r.p_value < 1e-6 => LayerStatus { state: "present", detail: format!("{}/{} tiles, p = {:.1e}", r.tiles_ok, r.tiles_total, r.p_value) },
+        Some(r) => LayerStatus { state: "partial", detail: format!("{}/{} tiles, p = {:.1e}", r.tiles_ok, r.tiles_total, r.p_value) },
+        None => LayerStatus::absent("no pixel etch recovered"),
+    };
+    let l1_id = l1_res.as_ref().map(|r| r.id);
+    let l0_id = l0.as_ref().and_then(|m| m.etch_id());
+    let parent = l0.as_ref().and_then(|m| m.parent_id());
+
+    let (verdict, id, note) = match (&l0, l1_strong) {
+        (Some(m), _) => {
+            let id = l0_id;
             let note = parent.map(|p| format!("derivation chain: parent {}", p.hex()));
-            Report {
-                verdict: Verdict::Generated,
-                id,
-                parent,
-                l0: LayerStatus { state: "present", detail: format!("manifest v{}, tool {} {}", m.v, m.tool, m.tool_version) },
-                l1: LayerStatus::skipped("L1 not yet implemented"),
-                l2,
-                l3: LayerStatus::skipped("L3 not yet implemented"),
-                note,
-            }
+            // if L1 also decoded a different id, flag it.
+            let note = match (l1_id, id) {
+                (Some(a), Some(b)) if a != b => Some(format!("L0 id {} but L1 decoded {} — inconsistent", b.hex(), a.hex())),
+                _ => note,
+            };
+            let _ = m;
+            (Verdict::Generated, id, note)
         }
-        None => Report {
-            verdict: Verdict::NoEvidence,
-            id: None,
-            parent: None,
-            l0: LayerStatus::absent("stripped or never written"),
-            l1: LayerStatus::skipped("L1 not yet implemented"),
-            l2,
-            l3: LayerStatus::skipped("L3 not yet implemented"),
-            note: None,
+        (None, true) => (Verdict::Generated, l1_id, Some("recovered from the pixel etch (L1); L0 manifest was stripped".into())),
+        (None, false) => match &l1_res {
+            // a weak/partial L1 with no L0 — some evidence, not conclusive.
+            Some(r) if r.tiles_ok > 0 => (Verdict::Inconclusive, Some(r.id), Some("weak L1 signal — treat as inconclusive".into())),
+            _ => (Verdict::NoEvidence, None, None),
         },
-    }
+    };
+    let l0_status = match &l0 {
+        Some(m) => LayerStatus { state: "present", detail: format!("manifest v{}, tool {} {}", m.v, m.tool, m.tool_version) },
+        None => LayerStatus::absent("stripped or never written"),
+    };
+    Report { verdict, id, parent, l0: l0_status, l1: l1_status, l2, l3, note }
 }
 
 #[cfg(test)]
@@ -153,7 +179,7 @@ mod tests {
         let path = dir.path().join("a.png");
         let m = EtchManifest::new(EtchId(0xdeadbeefcafef00d), &[Layer::L0], Some(EtchId(0x1122334455667788)));
         write_png_with_etch(&path, Some(&m.to_json()));
-        let r = verify(&path, false);
+        let r = verify(&path, "k", false);
         assert_eq!(r.verdict, Verdict::Generated);
         assert_eq!(r.id, Some(EtchId(0xdeadbeefcafef00d)));
         assert_eq!(r.parent, Some(EtchId(0x1122334455667788)));
@@ -169,12 +195,12 @@ mod tests {
         write_png_with_etch(&path, None);
         let m = EtchManifest::new(EtchId(0x0102030405060708), &[Layer::L0], None);
         std::fs::write(crate::imaging::io::sidecar_path(&path), format!("{{\"etch\":{}}}", m.to_json())).unwrap();
-        let r = verify(&path, false);
+        let r = verify(&path, "k", false);
         assert_eq!(r.verdict, Verdict::Generated);
         assert_eq!(r.id, Some(EtchId(0x0102030405060708)));
         // a bare image with neither → no-evidence.
         let bare = dir.path().join("c.png");
         write_png_with_etch(&bare, None);
-        assert_eq!(verify(&bare, false).verdict, Verdict::NoEvidence);
+        assert_eq!(verify(&bare, "k", false).verdict, Verdict::NoEvidence);
     }
 }
