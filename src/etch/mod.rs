@@ -11,6 +11,7 @@
 
 pub mod detect;
 pub mod fingerprint;
+pub mod latent;
 pub mod manifest;
 pub mod payload;
 pub mod pixel;
@@ -180,9 +181,24 @@ mod tests {
     }
 }
 
-/// The layers this build implements AND the config wants. Grows per phase (now L0 + L1 + L3).
+/// The layers this build implements AND the config wants. Grows per phase (now L0 + L1 + L2 + L3).
 fn active_layers(cfg: &EtchConfig) -> Vec<Layer> {
-    [Layer::L0, Layer::L1, Layer::L3].into_iter().filter(|l| cfg.wants(*l)).collect()
+    [Layer::L0, Layer::L1, Layer::L2, Layer::L3].into_iter().filter(|l| cfg.wants(*l)).collect()
+}
+
+/// L2 (6.7.0 Phase 4): write the Fourier-ring mark into an SD initial latent `z_T` (4-channel SD1.5/SDXL
+/// noise), if etching is on and L2 is requested. A no-op clone otherwise → the sampler path is unchanged
+/// when off. Carries presence + the key publisher tag (`latent::key_tag`).
+pub fn l2_embed_latent(latents: &candle_core::Tensor) -> candle_core::Result<candle_core::Tensor> {
+    let Some(cfg) = active() else { return Ok(latents.clone()) };
+    if !active_layers(cfg).contains(&Layer::L2) {
+        return Ok(latents.clone());
+    }
+    // Only the 4-channel SD family latent shape is supported (SD3/Flux geometries differ — RFC Q5).
+    if latents.dims4().map(|(_, c, _, _)| c != 4).unwrap_or(true) {
+        return Ok(latents.clone());
+    }
+    latent::embed_rings(latents, &cfg.key, latent::key_tag(&cfg.key))
 }
 
 // L3 (6.7.0 Phase 3): images are enqueued at save time (sync) and fingerprinted in one batch at the end

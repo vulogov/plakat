@@ -111,10 +111,12 @@ pub fn verify(path: &Path, key: &str, run_l2: bool) -> Report {
     let l0 = read_l0(path);
     // L1 — extract the pixel etch (offline).
     let l1_res = read_image(path).and_then(|(rgb, alpha, w, h)| super::pixel::extract(&rgb, w, h, key, alpha.as_deref()));
+    // L2 is WRITTEN into z_T at generation (the ring codec), but reading it back needs DDIM inversion —
+    // a model-inversion pipeline deferred as the documented follow-up (RFC §L2 "most likely scoped down").
     let l2 = if run_l2 {
-        LayerStatus::skipped("L2 not yet implemented")
+        LayerStatus::skipped("DDIM-inversion detection is the documented L2 follow-up")
     } else {
-        LayerStatus::skipped("--verify not given")
+        LayerStatus::skipped("--verify not given (L2 read needs a model)")
     };
     let l3 = LayerStatus::skipped("L3 not yet implemented");
 

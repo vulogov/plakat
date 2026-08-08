@@ -19,8 +19,8 @@ fn dft_matrices(n: usize, device: &Device, dtype: DType) -> Result<(Tensor, Tens
 }
 
 /// 2D DFT of a real `(B,C,H,W)` tensor. Returns `(re, im)`, each `(B,C,H,W)`.
-/// `X[k,l] = Σ_{h,w} x[h,w] · exp(-2πi(kh/H + lw/W))`.
-fn fft2_real(x: &Tensor) -> Result<(Tensor, Tensor)> {
+/// `X[k,l] = Σ_{h,w} x[h,w] · exp(-2πi(kh/H + lw/W))`. (Public for ETCH-1 L2's Fourier-ring codec.)
+pub fn fft2_real(x: &Tensor) -> Result<(Tensor, Tensor)> {
     let (_b, _c, h, w) = x.dims4()?;
     let (cos_w, sin_w) = dft_matrices(w, x.device(), x.dtype())?;
     let (cos_h, sin_h) = dft_matrices(h, x.device(), x.dtype())?;
@@ -38,7 +38,7 @@ fn fft2_real(x: &Tensor) -> Result<(Tensor, Tensor)> {
 
 /// Inverse 2D DFT, returning the **real part** of `(1/HW) Σ X[k,l] exp(+2πi(...))` — the filtered
 /// image. (For our use the imaginary part is negligible; we only need the real reconstruction.)
-fn ifft2_real(re: &Tensor, im: &Tensor) -> Result<Tensor> {
+pub fn ifft2_real(re: &Tensor, im: &Tensor) -> Result<Tensor> {
     let (_b, _c, h, w) = re.dims4()?;
     let (cos_h, sin_h) = dft_matrices(h, re.device(), re.dtype())?;
     let (cos_w, sin_w) = dft_matrices(w, re.device(), re.dtype())?;

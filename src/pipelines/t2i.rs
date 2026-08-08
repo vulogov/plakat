@@ -1525,6 +1525,9 @@ impl Pipeline {
                 Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
                     .to_dtype(self.core.dtype)?
             };
+            // ETCH-1 L2 (6.7.0): write the Fourier-ring mark into z_T before the sigma scale (the codec
+            // expects ~N(0,1) noise). No-op clone when `--etch`/L2 is off → byte-identical.
+            latents = crate::etch::l2_embed_latent(&latents)?;
             latents = (latents * scheduler.init_noise_sigma())?;
 
             // Compute the index where to switch from base UNet to the
