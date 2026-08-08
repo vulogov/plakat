@@ -155,6 +155,47 @@ pub fn verify(path: &Path, key: &str, run_l2: bool) -> Report {
     Report { verdict, id, parent, l0: l0_status, l1: l1_status, l2, l3, note }
 }
 
+/// Fuse an L3 fingerprint match (from the store, at generation-time semantics) into the report. Called by
+/// the doctor after loading CLIP + querying the store (Phase 3). `avail`: whether L3 could even run.
+pub fn fuse_l3(mut report: Report, l3: Option<super::fingerprint::Match>, avail: &str) -> Report {
+    use super::fingerprint::{classify, L3Strength};
+    match l3 {
+        Some(m) => {
+            let strength = classify(m.cosine);
+            report.l3 = LayerStatus { state: if strength == L3Strength::Strong { "match" } else if strength == L3Strength::Probable { "weak-match" } else { "no-match" }, detail: format!("cosine {:.3} → {}", m.cosine, m.id.hex()) };
+            match (report.verdict, strength) {
+                // already conclusive from L0/L1 → L3 only confirms; flag an id mismatch.
+                (Verdict::Generated, L3Strength::Strong) => {
+                    if report.id.map(|id| id != m.id).unwrap_or(false) {
+                        report.note = Some(format!("L3 matched a different id ({}) than L0/L1 — check the edit chain", m.id.hex()));
+                    }
+                }
+                // no bit-level evidence but a strong semantic match ⇒ a probable derivative of a known output.
+                (Verdict::NoEvidence | Verdict::Inconclusive, L3Strength::Strong) => {
+                    report.verdict = Verdict::ProbableDerivative;
+                    report.id = Some(m.id);
+                    report.note = Some("no L0/L1 bits, but a strong CLIP match to a known plakat output".into());
+                }
+                (Verdict::NoEvidence | Verdict::Inconclusive, L3Strength::Probable) => {
+                    report.verdict = Verdict::ProbableDerivative;
+                    report.id = Some(m.id);
+                    report.note = Some("weak semantic match — treat with caution".into());
+                }
+                // partial L1 + L3 match ⇒ derived (a light generative edit).
+                _ if report.l1.state == "partial" && strength != L3Strength::None => {
+                    report.verdict = Verdict::Derived;
+                    report.note = Some("partial pixel etch + a semantic match — consistent with a light generative edit".into());
+                }
+                _ => {}
+            }
+        }
+        None => {
+            report.l3 = LayerStatus { state: "unavailable", detail: avail.to_string() };
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

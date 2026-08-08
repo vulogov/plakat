@@ -10,6 +10,7 @@
 //! covers it; the runtime `--etch` flag (default OFF) is the opt-in.
 
 pub mod detect;
+pub mod fingerprint;
 pub mod manifest;
 pub mod payload;
 pub mod pixel;
@@ -179,14 +180,79 @@ mod tests {
     }
 }
 
-/// The layers this build implements AND the config wants. Grows per phase (now L0 + L1).
+/// The layers this build implements AND the config wants. Grows per phase (now L0 + L1 + L3).
 fn active_layers(cfg: &EtchConfig) -> Vec<Layer> {
-    [Layer::L0, Layer::L1].into_iter().filter(|l| cfg.wants(*l)).collect()
+    [Layer::L0, Layer::L1, Layer::L3].into_iter().filter(|l| cfg.wants(*l)).collect()
+}
+
+// L3 (6.7.0 Phase 3): images are enqueued at save time (sync) and fingerprinted in one batch at the end
+// of the run — so CLIP loads at most once, and the sync save path stays sync. Gated on the encoder being
+// cached (never a surprise multi-GB download during a render).
+static L3_QUEUE: RwLock<Vec<(PathBuf, EtchId)>> = RwLock::new(Vec::new());
+
+/// Enqueue a just-saved image for L3 fingerprinting, if etching is on and L3 is requested + a db is set.
+/// Sync + cheap (records a path); the CLIP embed happens later in [`l3_flush`].
+pub fn l3_enqueue(path: &std::path::Path, metadata: &crate::imaging::metadata::GenerationMetadata) {
+    let Some(cfg) = active() else { return };
+    if !active_layers(cfg).contains(&Layer::L3) || cfg.db.is_none() {
+        return;
+    }
+    let id = render_id(cfg, metadata);
+    if let Ok(mut q) = L3_QUEUE.write() {
+        q.push((path.to_path_buf(), id));
+    }
+}
+
+/// Fingerprint every enqueued image into the store — called once at the end of the run. Best-effort;
+/// skipped (with a notice) if the CLIP encoder isn't already cached. Loads CLIP once for the batch.
+pub async fn l3_flush(device: &candle_core::Device) {
+    let batch: Vec<(PathBuf, EtchId)> = match L3_QUEUE.write() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => return,
+    };
+    if batch.is_empty() {
+        return;
+    }
+    let Some(db) = active().and_then(|c| c.db.clone()) else { return };
+    if !crate::pipelines::clip_embed::ClipEmbedder::is_cached() {
+        tracing::info!(target: "plakat", "etch L3: CLIP encoder not cached — {} image(s) not fingerprinted (L0/L1 still written; run a CLIP feature once to enable)", batch.len());
+        return;
+    }
+    let embedder = match crate::pipelines::clip_embed::ClipEmbedder::load(device).await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(target: "plakat", "etch L3: CLIP load failed: {e:#}");
+            return;
+        }
+    };
+    let store = match fingerprint::Store::open(&db) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "plakat", "etch L3: store open failed: {e:#}");
+            return;
+        }
+    };
+    let mut stored = 0;
+    for (path, id) in &batch {
+        match embedder.embed_image(path).and_then(|v| store.add(*id, &v)) {
+            Ok(()) => stored += 1,
+            Err(e) => tracing::warn!(target: "plakat", "etch L3: {} → {e:#}", path.display()),
+        }
+    }
+    tracing::info!(target: "plakat", "etch L3: fingerprinted {stored} image(s) → {}", db.display());
 }
 
 /// The verifier's key (from `--etch-key`), else the public constant — for reading L1/L3 back.
 pub fn effective_key() -> String {
     CONFIG.get().map(|c| c.key.clone()).unwrap_or_else(|| PUBLIC_KEY.to_string())
+}
+
+/// The L3 store to query on verify (from `--etch-db`, else the default), regardless of `--etch` enabled.
+pub fn effective_db() -> Option<PathBuf> {
+    match CONFIG.get() {
+        Some(c) => c.db.clone(),
+        None => default_db(),
+    }
 }
 
 /// L1 (6.7.0 Phase 2): embed the pixel etch into an RGB buffer, if etching is on and L1 is requested.

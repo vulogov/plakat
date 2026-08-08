@@ -334,7 +334,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     if cli.command.is_heavy() {
         crate::instance_guard::enforce_single_instance(cli.enable_multiple_instances)?;
     }
-    match cli.command {
+    let dispatch_result = match cli.command {
         Command::Generate(args) => {
             let device = crate::device::select(&cli.device)?;
             generate::run(args, device).await
@@ -443,5 +443,9 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             run::run(args, device).await
         }
         Command::Gallery(args) => gallery::run(args).await,
-    }
+    };
+    // ETCH-1 L3 (6.7): fingerprint any images this run enqueued at save time (best-effort; CLIP on CPU,
+    // loaded once, only if already cached). No-op unless `--etch` + L3 + a store are active.
+    crate::etch::l3_flush(&candle_core::Device::Cpu).await;
+    dispatch_result
 }

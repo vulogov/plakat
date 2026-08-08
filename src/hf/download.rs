@@ -180,6 +180,12 @@ pub fn is_cached(alias: &str) -> bool {
     cached_path(repo, "model_index.json", "main").is_some()
 }
 
+/// Whether a specific `repo`/`file` is already in the local cache (no download). Used by ETCH-1's L3 to
+/// honour the `doctor` charter — query the CLIP fingerprint offline only when the encoder is cached.
+pub fn file_is_cached(repo: &str, file: &str) -> bool {
+    cached_path(repo, file, "main").is_some()
+}
+
 /// hf-hub's cache directory for `repo` (`<root>/models--<org>--<name>`).
 fn repo_cache_dir(repo: &str) -> PathBuf {
     crate::hf::cache::hf_cache_root().join(format!("models--{}", repo.replace('/', "--")))

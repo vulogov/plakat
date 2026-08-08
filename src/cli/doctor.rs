@@ -105,7 +105,7 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
         return run_benchmark(&args.device);
     }
     if let Some(path) = &args.if_plakat {
-        return run_if_plakat(path, args.verify, args.json);
+        return run_if_plakat(path, args.verify, args.json).await;
     }
     if args.capability {
         return run_capability(&args).await;
@@ -388,12 +388,36 @@ fn section_bookart() {
 
 /// ETCH-1 (6.7): `doctor --if-plakat <IMAGE>` — read the surviving provenance evidence into a graded
 /// verdict. Offline (L0; L1/L3 in later phases); `--verify` adds L2 (model load).
-fn run_if_plakat(path: &std::path::Path, verify: bool, json: bool) -> Result<()> {
+async fn run_if_plakat(path: &std::path::Path, verify: bool, json: bool) -> Result<()> {
     use crate::etch::detect;
     if !path.exists() {
         anyhow::bail!("no such file: {}", path.display());
     }
     let report = detect::verify(path, &crate::etch::effective_key(), verify);
+    // L3 (Phase 3) — query the fingerprint store, offline, only when it exists AND the CLIP encoder is
+    // already cached (the doctor charter: no downloads). Otherwise report L3 `unavailable`.
+    let report = {
+        use crate::etch::fingerprint::Store;
+        use crate::pipelines::clip_embed::ClipEmbedder;
+        let db = crate::etch::effective_db();
+        let store_ok = db.as_deref().map(|d| d.join("index.etchdb").exists()).unwrap_or(false);
+        if !store_ok {
+            detect::fuse_l3(report, None, "no fingerprint store")
+        } else if !ClipEmbedder::is_cached() {
+            detect::fuse_l3(report, None, "CLIP encoder not cached — run a CLIP feature once to enable L3")
+        } else {
+            match async {
+                let emb = ClipEmbedder::load(&candle_core::Device::Cpu).await?;
+                let v = emb.embed_image(path)?;
+                Store::open(db.as_deref().unwrap())?.query(&v)
+            }
+            .await
+            {
+                Ok(m) => detect::fuse_l3(report, m, "queried"),
+                Err(e) => detect::fuse_l3(report, None, &format!("query failed: {e:#}")),
+            }
+        }
+    };
     let (w, h) = image::image_dimensions(path).unwrap_or((0, 0));
     let fmt = path.extension().and_then(|s| s.to_str()).unwrap_or("?").to_uppercase();
     if json {

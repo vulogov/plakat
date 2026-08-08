@@ -65,6 +65,13 @@ impl ClipEmbedder {
         Ok(Self { model, tokenizer, device: device.clone() })
     }
 
+    /// Whether the CLIP weights + tokenizer are already cached (no download) — for ETCH-1 L3's offline
+    /// charter.
+    pub fn is_cached() -> bool {
+        crate::hf::download::file_is_cached(CLIP_REPO, "model.safetensors")
+            && crate::hf::download::file_is_cached(CLIP_REPO, "tokenizer.json")
+    }
+
     /// L2-normalized image embedding (768 floats) for the file at `path`.
     pub fn embed_image(&self, path: &Path) -> Result<Vec<f32>> {
         let pixels = crate::imaging::preprocess::clip_image_tensor(path, 224, &self.device, DType::F32)?;

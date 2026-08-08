@@ -121,6 +121,8 @@ pub fn save_rgb_u8_with_metadata(
     let buf: &[u8] = l1.as_deref().unwrap_or(buf);
     let etch_json = crate::etch::l0_manifest_json(metadata);
     save_rgb_u8_inner(buf, width, height, path, Some(metadata), etch_json.as_deref())?;
+    // L3: enqueue this image for CLIP fingerprinting (drained once at end-of-run in `etch::l3_flush`).
+    crate::etch::l3_enqueue(path, metadata);
     // Write the JSON sidecar. Best-effort.
     let json_path = sidecar_path(path);
     match metadata.to_json_pretty() {
