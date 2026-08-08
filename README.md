@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.7.0 — provenance etching (`--etch` / `doctor --if-plakat`)**: opt-in `--etch` writes a 64-bit provenance id into images plakat produces by four independent evidence layers — an **L0** manifest (PNG chunk + sidecar), an **L1** pixel etch (a spread-spectrum DCT-QIM mark surviving transcode/rescale), an **L2** latent Fourier-ring mark, and an **L3** CLIP fingerprint (a local store that matches on *semantics*). `plakat doctor --if-plakat <IMAGE>` reads whatever survived into a **graded verdict** with a p-value — `generated` / `derived` / `probable-derivative` / `inconclusive` / `no-evidence` — degrading gracefully rather than off a cliff. Honest by design: it's verifiable through incidental editing, format churn, rescaling, and moderate generative edits — **not** a defence against a determined remover. Off by default; the module is always compiled. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.7.0) · [Guide →](Documentation/ETCH.md)
+>
 > **v6.6.0 — `plakat texture` engine interop**: one `texture export --engine gltf|unreal|unity-hdrp|godot|materialx|plakat` picks the naming + packing + material document in a single flag — a **complete glTF 2.0** material (with **`KHR_materials_anisotropy`** driven by the brushed-metal flow map), a **MaterialX** (`.mtlx`) `standard_surface` for USD/Arnold/Substance, and the **Unity HDRP mask map** (which packs the same data *differently* from ORM: R=metal/G=AO/B=detail/A=smoothness). The packing conventions live in one verified table so a material drops into each engine correctly. Weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.6.0) · [Guide →](Documentation/TEXTURE.md)
 >
 > **v6.5.0/6.5.1 — `plakat texture` layout: trim sheets & decals**: compose several materials into one banded **trim-sheet atlas** (each strip tiling along its run axis) with a `trim.json` UV-region sidecar, and stamp **decals** — alpha-masked overlays (a crack, rust streak, sign) — onto a base material, blending the normal via **Reoriented Normal Mapping** so decal detail rides the base slope instead of flattening it. All weight-free. *(This cycle set out to make generation natively seamless; measure-first G0 showed per-step latent-roll doesn't work and native circular-conv would need vendoring candle's whole UNet block stack for a smear feather already handles — so it pivoted here; findings kept in the roadmap.)* Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.5.0) · [Guide →](Documentation/TEXTURE.md)
@@ -34,6 +36,35 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.7.0 — provenance etching (RFC ETCH-1)
+
+Opt-in `--etch` writes a 64-bit provenance `EtchId` into images plakat produces, by four independent
+evidence layers of decreasing fragility; `plakat doctor --if-plakat <IMAGE>` reads whatever survived
+into a **graded verdict** with a p-value — not a boolean. Off by default.
+
+```bash
+plakat --etch generate "a red poster" --out out/            # etch what you make
+plakat doctor --if-plakat out/plakat-0.png                  # → a graded verdict
+```
+
+- **Four layers.** **L0** — a manifest (PNG `etch` tEXt chunk + JSON sidecar: recipe + id + a `parent`
+  chain). **L1** — a pixel etch (spread-spectrum QIM on a mid-band DCT coefficient of a canonical 512²
+  grid, tiled + ECC + key-permuted + alpha-excluded; survives transcode/rescale, ≥40 dB PSNR). **L2** — a
+  Tree-Ring mark in the initial latent `z_T` (SD 1.5 / SDXL; written this release, DDIM-inversion read is
+  a follow-up). **L3** — a CLIP fingerprint in a local store that matches on *semantics* (the layer that
+  covers img2img).
+- **Graded verdicts** — `generated` / `derived` / `probable-derivative` / `inconclusive` / `no-evidence`,
+  degrading `exact id → generated → probable-derivative → no-evidence` rather than off a cliff. Live: a
+  heavily-edited copy (rescaled + metadata-stripped, killing L0+L1) still matched semantically → the exact
+  origin id via L3 → `probable-derivative`.
+- **Honest by design.** No invisible watermark survives a determined remover or a high-strength
+  regeneration — a denoiser strips an off-manifold mark as a side effect of working. The defensible claim:
+  verifiable through incidental editing, format churn, rescaling, and moderate generative edits;
+  *unenforceable against a determined remover*. `no-evidence` is not proof of non-plakat origin. Fully
+  offline; the fingerprint store is a plain local directory, never a service.
+
+See [`Documentation/ETCH.md`](Documentation/ETCH.md).
 
 ## What's new in 6.6.0 — `plakat texture` engine interop
 
