@@ -63,6 +63,29 @@ pub fn compose(plan: &Plan, panel_images: &[Option<DynamicImage>]) -> RgbImage {
     page
 }
 
+/// Letter a composited `page` in place: for every panel, place + draw its caption/balloons within the
+/// panel's page rect (interior only — inset by the border so ink never lands on the panel frame). The
+/// balloon algorithm is [`super::balloon`]; face-aware exclusion masks arrive in P3. Returns how many
+/// dialogue lines were placed vs requested.
+pub fn letter(page: &mut RgbImage, plan: &Plan, spec: &super::ComicSpec) -> (usize, usize) {
+    let (mut placed, mut requested) = (0usize, 0usize);
+    let bw = plan.border as f32;
+    for r in &plan.panels {
+        let Some(panel) = spec.panels.get(r.panel) else { continue };
+        let lines = super::balloon::lines_for_panel(panel);
+        requested += lines.len();
+        // inset the drawable area by the border so balloons sit inside the frame.
+        let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
+        let laid = super::balloon::place(iw, ih, None, &lines);
+        placed += laid.len();
+        let (ox, oy) = ((r.x as f32 + bw) as i32, (r.y as f32 + bw) as i32);
+        for b in &laid {
+            super::balloon::draw(page, b, ox, oy);
+        }
+    }
+    (placed, requested)
+}
+
 /// The `panels.json` UV sidecar: each panel's page rect + reading index (an engine / DCC / re-lettering
 /// pass maps to panels by this).
 pub fn panels_json(plan: &Plan) -> String {

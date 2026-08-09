@@ -4,6 +4,7 @@
 //!
 //! Always compiled (the deterministic front half is weight-free).
 
+pub mod balloon;
 pub mod layout;
 pub mod lint;
 pub mod page;

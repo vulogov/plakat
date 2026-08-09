@@ -26,6 +26,8 @@ pub enum ComicCmd {
     Show(SpecArg),
     /// Composite supplied panel images (`--panels <dir>`) into a bordered page + `panels.json`. **No GPU.**
     Layout(LayoutArgs),
+    /// Like `layout`, then place + draw the captions/speech balloons over each panel. **No GPU.**
+    Letter(LayoutArgs),
 }
 
 #[derive(Args, Debug)]
@@ -54,7 +56,8 @@ pub async fn run(args: ComicArgs) -> Result<()> {
         ComicCmd::New(a) => run_new(a),
         ComicCmd::Lint(a) => run_lint(a),
         ComicCmd::Show(a) => run_show(a),
-        ComicCmd::Layout(a) => run_layout(a),
+        ComicCmd::Layout(a) => run_layout(a, false),
+        ComicCmd::Letter(a) => run_layout(a, true),
     }
 }
 
@@ -117,7 +120,7 @@ fn run_show(a: SpecArg) -> Result<()> {
     Ok(())
 }
 
-fn run_layout(a: LayoutArgs) -> Result<()> {
+fn run_layout(a: LayoutArgs, letter: bool) -> Result<()> {
     let spec = ComicSpec::load(&a.spec)?;
     let plan = layout::resolve(&spec);
     // load supplied panel images (sorted by name → panel index).
@@ -136,12 +139,21 @@ fn run_layout(a: LayoutArgs) -> Result<()> {
             imgs[i] = image::open(f).ok();
         }
     }
-    let pageimg = page::compose(&plan, &imgs);
+    let mut pageimg = page::compose(&plan, &imgs);
+    let lettered = if letter { Some(page::letter(&mut pageimg, &plan, &spec)) } else { None };
     pageimg.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
     let side = a.out.with_extension("panels.json");
     std::fs::write(&side, page::panels_json(&plan)).with_context(|| format!("writing {}", side.display()))?;
     let filled = imgs.iter().filter(|o| o.is_some()).count();
     println!("{} {}  ({} panels, {}/{} filled · {}×{} px)", style("wrote").green(), a.out.display(), plan.panels.len(), filled, spec.panels.len(), plan.w, plan.h);
+    if let Some((placed, requested)) = lettered {
+        let note = format!("{placed}/{requested} balloon line(s) placed");
+        if placed < requested {
+            println!("  {} {} (some didn't fit — widen panels or shorten text)", style("lettered").yellow(), note);
+        } else {
+            println!("  {} {}", style("lettered").green(), note);
+        }
+    }
     println!("  {} {}", style("sidecar").cyan(), side.display());
     Ok(())
 }
