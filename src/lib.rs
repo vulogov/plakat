@@ -71,6 +71,9 @@ pub mod bookart;
 /// v6.3 flagship: `plakat texture` — seamless PBR material synthesis (RFC TEXTURE-1). Always compiled
 /// (the deterministic front half + derivation are weight-free).
 pub mod texture;
+/// v6.8 flagship: `plakat comic` — multi-panel comic pages (RFC COMIC-1). Always compiled (the layout /
+/// balloon / page-composite half is weight-free).
+pub mod comic;
 /// v6.7 flagship: provenance etching (RFC ETCH-1) — `--etch` + `doctor --if-plakat`. Always compiled
 /// (not behind a cargo feature) so the `--no-default-features` gate covers it; the `--etch` flag opts in.
 pub mod etch;
