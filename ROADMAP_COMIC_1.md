@@ -21,6 +21,13 @@ genuinely novel piece is **speech-balloon placement + lettering**, so de-risk it
   all balloons placed, zero overlap, text fully inside, tails point the right way. **Exit:** a clean,
   measurable placement on a busy synthetic panel (≥4 balloons + a face mask). Pure/weight-free.
 
+### G0.1 RESULT — PASS (commit `d81c928`, `examples/comic_balloon_probe.rs`)
+Busy panel (face mask + 4 speakers): 4/4 placed, 0 overlaps, all off-mask, text fits, tails correct.
+Key insight: **shrink-retry** — try progressively narrower balloons until one fits an open gap (narrower
+wraps taller but squeezes into side gutters), what a letterer does when the reading corner is full.
+Monospace metric approximation; P2 swaps in `ab_glyph`. Tail-routing-around-mask is a P2 refinement. →
+**P2 uses this algorithm.**
+
 ---
 
 ## Phases
