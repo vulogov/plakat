@@ -32,11 +32,13 @@ Monospace metric approximation; P2 swaps in `ab_glyph`. Tail-routing-around-mask
 
 ## Phases
 
-### P1 — spec + layout engine + page composite (weight-free; front-loaded)
-`src/comic/{spec,compile,lint,layout,page,mod}.rs`: `ComicSpec` (permissive serde) → resolve → panel
-`Rect`s (rows of relative-width cells + gutter + border on a `bookart::Page` canvas) → composite
-**supplied** panel images into a bordered page + `panels.json` (rect + reading index). CLI `comic
-new|lint|show|layout` (`--panels <dir>`). **Ships a working page pipeline with no GPU.**
+### P1 — spec + layout engine + page composite (weight-free; front-loaded) — **DONE (commit `5181b3f`)**
+`src/comic/{spec,lint,layout,page,mod}.rs`: `ComicSpec` (permissive serde) → resolve → panel
+`Rect`s (rows of relative-width cells + gutter + border) → composite **supplied** panel images into a
+bordered page + `panels.json` (rect + reading index). CLI `comic new|lint|show|layout` (`--panels <dir>`),
+`Command::Comic` wired. 6 unit tests + full-pipeline smoke (us-letter 300dpi = 2550×3300, `[[1,1],[1],[1,1,1]]`
+resolves correctly); gate 1802 green. **Ships a working page pipeline with no GPU.** (No separate
+`compile.rs` — resolve lives in `layout.rs`.)
 
 ### P2 — balloons + lettering (the G0 algorithm)
 `src/comic/balloon.rs` (from G0): word-wrap/fit + open-space placement + tails; the four `kind`s
