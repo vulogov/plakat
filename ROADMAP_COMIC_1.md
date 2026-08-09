@@ -40,10 +40,15 @@ bordered page + `panels.json` (rect + reading index). CLI `comic new|lint|show|l
 resolves correctly); gate 1802 green. **Ships a working page pipeline with no GPU.** (No separate
 `compile.rs` — resolve lives in `layout.rs`.)
 
-### P2 — balloons + lettering (the G0 algorithm)
-`src/comic/balloon.rs` (from G0): word-wrap/fit + open-space placement + tails; the four `kind`s
-(speech/thought/shout/caption); reading-order-aware. CLI `comic letter`; balloons drawn in `comic
-layout`. In-track robustness tests (many balloons, tight panels).
+### P2 — balloons + lettering (the G0 algorithm) — **DONE (commit `09e3d52`)**
+`src/comic/balloon.rs` (from G0): word-wrap/fit (largest legible box) + open-space placement (off an
+optional mask, non-overlapping, `at`-anchor / top-reading-corner biased) + tails; the four `kind`s
+(speech = rounded+straight tail, thought = rounded+bubble trail, shout = spiky burst, caption =
+tinted/tailless); reading-order-aware. Lettering rides the always-compiled 5×7 bitmap face
+(`crate::map::labels`, all-caps; `--features shaped-labels` + font overrides for non-Latin).
+`page::letter()` draws each panel's dialogue border-inset; CLI `comic letter` = layout + lettering.
+2 unit tests + full-page visual smoke (7/7 lines placed, every kind legible + inside frame); gate 1804
+green. **Face-aware masks + real speaker tails deferred to P3** (need the persona cast + face centroids).
 
 ### P3 — scene art + character consistency
 `src/comic/render.rs`: per-panel `api::Generate` at the panel aspect; `chars` composited via the
