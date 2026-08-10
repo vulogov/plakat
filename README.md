@@ -27,21 +27,96 @@
 
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
-Local text-to-image **and animation** across the major open model families —
-SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, and Stable Cascade — with img2img,
-inpaint / outpaint, multi-ControlNet, LoRA / DoRA stacking, **your own trained
-style _and_ subject (DreamBooth) LoRAs**, **InstantStyle** painterly style
-transfer, **regional prompting**, identity-preserving portraits, AnimateDiff
-video, ML upscaling, **SAM object selection**, **smart (U2Net) background
-removal**, **layered-scene compositing**, integral artefact compositing,
-**controllable synthetic people** (`plakat persona`), and
-batch scenarios. All built on
-[candle](https://github.com/huggingface/candle). Pure Rust inference. No Python,
-no PyTorch, no external T2I services. Models are pulled from HuggingFace and
-cached locally.
+**plakat is a local, pure-Rust creative studio** — a great deal more than a text-to-image CLI. It
+generates across seven open model families, edits and composites images, trains your own styles and
+subjects, animates, and carries a set of **structured-authoring studios** (comics, book ornaments, PBR
+materials, fantasy maps, fractals) plus a **TUI photo manager**, a **provenance-etching** system, a
+**scripting language**, and a **stable library API**. All of it runs on
+[candle](https://github.com/huggingface/candle) — **no Python, no PyTorch, no external services** —
+across CPU / CUDA / Metal, pulling weights from HuggingFace and caching them locally.
 
-📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
-🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+📸 **[See the gallery →](gallery/)** · 🔬 **[Proof corpus →](corpus/)** — reproducible images with the tooling that regenerates and indexes them, proving every pipeline works end to end.
+
+## Everything plakat does
+
+<details open><summary><b>🎨 Image generation</b></summary>
+
+- **Seven model families** — SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, Stable Cascade, and **Sana** (a from-scratch candle port), each verified against reference dumps.
+- **Few-step / fast presets** — SDXL-Lightning, Hyper-SD, LCM, Turbo (`--fast`), plus a bench harness and step-caching / fused-SDPA speedups.
+- **Guidance & schedulers** — DPM++, UniPC, Euler / Euler-trailing; CFG-rescale, FreeU, PAG, dynamic thresholding, clip-skip.
+- **Prompt tooling** — wildcards, **regional prompting**, prompt weighting, family-aware auto-negatives.
+- **Composable weights** — **LoRA / DoRA** stacking, **Textual Inversion** embeddings, Civitai model/LoRA/embedding browse + download.
+- **Aesthetic curation** — LAION CLIP scoring, `rank`, `generate --keep-best`.
+
+</details>
+
+<details><summary><b>✂️ Image editing & control</b></summary>
+
+- **img2img · inpaint · outpaint**, **multi-ControlNet** (canny / depth / pose / tile / …), and a **ControlNet-Tile** diffusion upscaler.
+- **Object selection & editing** — SAM / MobileSAM click-to-select, **OWL-ViT** open-vocabulary text targeting (`remove --what "the car"`), one-shot **object removal**, and **background replacement** (U2Net matte).
+- **Relight** (IC-Light), **InstantStyle** painterly style transfer, **transparent / color-key**, **layered-scene compositing**, integral **artefact** compositing.
+- **Upscale** — classical (Lanczos) or diffusion (SUPIR-lite tile ControlNet); **restore-faces** (ADetailer).
+
+</details>
+
+<details><summary><b>🧑 People & identity</b></summary>
+
+- **`plakat persona`** — controllable, reproducible **synthetic people** from a `PersonaSpec` (the 5.0 flagship): spec → lexicon → resolver → prompt, with calibration and a scorecard.
+- **Portraits** — identity-preserving generation via IP-Adapter (Plus-Face / **FaceID**).
+- **Multiperson** — place several specific personas into one scene at relative positions.
+- **Face pipeline** — SCRFD detection, ArcFace embeddings, **inswapper** face-swap.
+
+</details>
+
+<details><summary><b>🏋️ Train your own</b></summary>
+
+- **Style LoRA training** (four base families), **DreamBooth** subject training, and **Textual Inversion** training — mixed precision + gradient checkpointing, tuned to fit **24 GB**.
+
+</details>
+
+<details><summary><b>🎬 Animation & video</b></summary>
+
+- **AnimateDiff** (motion adapters, FreeNoise) and prompt-embedding-lerp animation → **mp4 / gif**.
+
+</details>
+
+<details open><summary><b>🏗️ Structured-authoring studios — the part that's "more than an image generator"</b></summary>
+
+| Studio | What it makes |
+|---|---|
+| **`plakat comic`** | Multi-panel **comic pages** — panel layout, a recurring **face-locked cast**, speech-balloon placement + lettering, multi-page series (6.8). |
+| **`plakat texture`** | Seamless, tileable **PBR material sets** (albedo/normal/roughness/metallic/height/AO) exported engine-ready for glTF / Unreal / Unity / Godot (6.3). |
+| **`plakat bookart`** | B/W **book ornaments**, illuminated initials, manuscripts, and EPUBs from a `BookArtSpec` (6.0). |
+| **`plakat map`** | **Fantasy maps** from a prose world description — geometry → linework → painted render. |
+| **`plakat fractals`** | A pure-Rust **fractal studio** — 17 families, deep zoom, flame variations, a TUI explorer — plus AI-painted fractals (4.1). |
+
+Each is *structured data → deterministic resolve → render*, so the weight-free half (layout, lettering, geometry, derivation) runs with **no GPU**.
+
+</details>
+
+<details><summary><b>📚 Photo & asset management</b></summary>
+
+- **`plakat photos`** — a TUI **photo & image collection manager** (the 3.x flagship): EXIF / metadata, HEIC / AVIF, a derived index, **visual search at scale** (resident CLIP + int8 vectors + HNSW ANN), face clustering, and shared-volume **collaboration** (presence, 3-way merge).
+
+</details>
+
+<details><summary><b>🔏 Provenance & correctness</b></summary>
+
+- **`--etch`** — opt-in **provenance etching** (6.7): a 64-bit id written by four independent evidence layers (manifest / pixel DCT-QIM / latent Fourier-ring / CLIP fingerprint); `doctor --if-plakat` reads whatever survived into a **graded verdict**.
+- **`plakat verify`** — a tiered model-**correctness** harness (offline Tier 0 → hosted golden data), CI-gating.
+- **`plakat bench`** / **`plakat doctor`** — perf benchmarking and environment health checks.
+
+</details>
+
+<details><summary><b>⚙️ Workflow, scripting & library</b></summary>
+
+- **Batch & authoring** — `scenario` (HJSON batches), `compile` (prose → scenario), `init` (project scaffold), `gallery` (Markdown index).
+- **Bund scripting** — `plakat run` evaluates a **Bund** script whose `plakat.*` words drive the same pipelines the CLI uses.
+- **Library API** — [`plakat::api`](Documentation/API.md), a stable builder facade (`Generate`, `Img2img`, `Portrait`, `Persona`, `Comic`, `Texture`, …) for embedding plakat in your own Rust.
+- **Interactive TUI** — `plakat ui`.
+- **Metadata & provenance** — read the A1111 `parameters` chunk, `clone` a PNG back into a command, `inspect` safetensors, inspect embeddings / motion adapters, and manage the HF cache with `models`.
+
+</details>
 
 ## What's new in 6.8.0 — `plakat comic` (RFC COMIC-1)
 
