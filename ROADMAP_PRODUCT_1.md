@@ -11,14 +11,14 @@ The genuinely new piece is **grounding** — turning a subject alpha into a phys
 shadow + floor reflection so the subject sits on the ground instead of floating. Everything else is
 composition or reuse. Prove it before building the cycle.
 
-- **G0.1 — grounding probe (`examples/product_grounding_probe.rs`).** Given a subject cutout (alpha) + a
-  camera angle + `key_dir`, produce (a) a **contact shadow** — alpha projected to the ground plane,
-  offset opposite the key light, blurred with a distance-from-contact penumbra, faded by `falloff`; (b) an
-  optional **gloss reflection** — vertical-flip + perspective-squash by angle + fade + slight blur;
-  composite both onto a white/grey sweep under the subject. **Measure:** shadow anchored at the subject's
-  base (darkest at contact, soft away), reflection aligned to the subject foot-line, no bright halo around
-  the cutout, subject unaltered. PASS → P1 uses the algorithm; measure the perspective-shadow variant too
-  (RFC Q2).
+- **G0.1 — grounding probe (`examples/product_grounding_probe.rs`) — PASS.** Alpha → ground projection
+  (offset + foreshorten by height, fade with height) → clamp to the floor plane (so the blur can't bleed a
+  dark halo above the contact line — the one bug found + fixed) → soft-penumbra box blur; + a floor
+  reflection (flip about the foot-line, camera-squash, fade). Composite sweep ← reflection ← shadow ←
+  subject. **6/6 measures green**: both shadow models anchored at the base, perspective-cast rakes to the
+  side, reflection aligned to the foot-line (top row == ground), **no halo (Δ 0.0)**, subject intact.
+  **RFC Q2 SETTLED**: soft-contact = default; perspective-cast = a `shadow: "hard"` / low-camera option.
+  → **P1 uses this algorithm** (`src/product/ground.rs`); swap the synthetic bottle for a real alpha matte.
 
 ## P1 — spec + canvas/sweep + grounding + composite (weight-free; front-loaded)
 
