@@ -8,6 +8,7 @@ pub mod balloon;
 pub mod layout;
 pub mod lint;
 pub mod page;
+pub mod render;
 pub mod spec;
 
 pub use layout::{resolve, Plan, PanelRect};

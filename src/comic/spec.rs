@@ -19,6 +19,9 @@ pub struct ComicSpec {
     pub panels: Vec<Panel>,
     /// Diffusion base for the per-panel scene art (P3).
     pub model: Option<String>,
+    /// A shared art-style suffix appended to every panel prompt, so the whole page reads as one hand
+    /// (P3). Absent → a sensible comic-book default.
+    pub style: Option<String>,
     pub seed: Option<u64>,
     pub steps: Option<usize>,
 }

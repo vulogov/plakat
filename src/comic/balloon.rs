@@ -79,6 +79,10 @@ impl Anchor {
         };
         Some((fx, fy))
     }
+    /// The preferred x (px) for this anchor on a panel of width `pw`, or `None` for `Auto`.
+    pub fn pref_x(self, pw: f32) -> Option<f32> {
+        self.pref().map(|(fx, _)| fx * pw)
+    }
 }
 
 /// One line of dialogue destined for a balloon.
@@ -178,10 +182,10 @@ fn width_fractions(kind: Kind) -> &'static [f32] {
     }
 }
 
-/// Place `lines` (reading order) on a `pw × ph` panel, avoiding `mask` and each other, biased to each
-/// line's anchor (or the top reading corner) and toward its speaker. Lines that cannot be placed are
-/// dropped (never overlapped) — the caller can report the count.
-pub fn place(pw: f32, ph: f32, mask: Option<Rectf>, lines: &[Line]) -> Vec<Placed> {
+/// Place `lines` (reading order) on a `pw × ph` panel, avoiding every `mask` (e.g. detected faces) and
+/// each other, biased to each line's anchor (or the top reading corner) and toward its speaker. Lines that
+/// cannot be placed are dropped (never overlapped) — the caller can report the count.
+pub fn place(pw: f32, ph: f32, masks: &[Rectf], lines: &[Line]) -> Vec<Placed> {
     let max_scale = ((ph / 180.0) as u32).clamp(2, 9);
     let n = lines.len().max(1);
     let mut placed: Vec<Placed> = Vec::new();
@@ -205,7 +209,7 @@ pub fn place(pw: f32, ph: f32, mask: Option<Rectf>, lines: &[Line]) -> Vec<Place
                     if r.x < 0.0 || r.y < 0.0 || r.x + r.w > pw || r.y + r.h > ph {
                         continue;
                     }
-                    if mask.map(|m| r.overlaps(&m)).unwrap_or(false) || placed.iter().any(|p| r.overlaps(&p.rect)) {
+                    if masks.iter().any(|m| r.overlaps(m)) || placed.iter().any(|p| r.overlaps(&p.rect)) {
                         continue;
                     }
                     // score: bias to anchor (or top reading corner), then toward the speaker in x.
@@ -457,13 +461,13 @@ mod tests {
             Line { text: "SCANNING. TARGET ACQUIRED.".into(), kind: Kind::Shout, anchor: Anchor::TopRight, speaker: Some((640.0, 520.0)) },
             Line { text: "Run!".into(), kind: Kind::Speech, anchor: Anchor::Auto, speaker: Some((300.0, 540.0)) },
         ];
-        let mask = Some(Rectf { x: 180.0, y: 320.0, w: 440.0, h: 260.0 });
-        let placed = place(800.0, 600.0, mask, &lines);
+        let mask = Rectf { x: 180.0, y: 320.0, w: 440.0, h: 260.0 };
+        let placed = place(800.0, 600.0, &[mask], &lines);
         assert_eq!(placed.len(), 3, "all placed");
         for (i, p) in placed.iter().enumerate() {
             assert!(!p.lines.is_empty() && p.scale >= 1);
             // clear of the mask
-            assert!(!p.rect.overlaps(&mask.unwrap()), "balloon {i} off mask");
+            assert!(!p.rect.overlaps(&mask), "balloon {i} off mask");
             // clear of siblings
             for q in &placed[i + 1..] {
                 assert!(!p.rect.overlaps(&q.rect), "balloon {i} no sibling overlap");
@@ -477,7 +481,7 @@ mod tests {
 
     #[test]
     fn draw_puts_ink_and_letters() {
-        let placed = place(400.0, 300.0, None, &[Line { text: "HELLO".into(), kind: Kind::Speech, anchor: Anchor::Top, speaker: Some((200.0, 260.0)) }]);
+        let placed = place(400.0, 300.0, &[], &[Line { text: "HELLO".into(), kind: Kind::Speech, anchor: Anchor::Top, speaker: Some((200.0, 260.0)) }]);
         assert_eq!(placed.len(), 1);
         let mut page = RgbImage::from_pixel(400, 300, Rgb([120, 120, 120]));
         draw(&mut page, &placed[0], 0, 0);

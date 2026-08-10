@@ -76,7 +76,7 @@ pub fn letter(page: &mut RgbImage, plan: &Plan, spec: &super::ComicSpec) -> (usi
         requested += lines.len();
         // inset the drawable area by the border so balloons sit inside the frame.
         let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
-        let laid = super::balloon::place(iw, ih, None, &lines);
+        let laid = super::balloon::place(iw, ih, &[], &lines);
         placed += laid.len();
         let (ox, oy) = ((r.x as f32 + bw) as i32, (r.y as f32 + bw) as i32);
         for b in &laid {

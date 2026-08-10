@@ -7,8 +7,11 @@ use clap::{Args, Subcommand};
 use console::style;
 use std::path::PathBuf;
 
+use std::collections::HashMap;
+
+use crate::comic::balloon::Rectf;
 use crate::comic::lint::{self, Level};
-use crate::comic::{layout, page, ComicSpec};
+use crate::comic::{layout, page, render, ComicSpec};
 
 #[derive(Args, Debug)]
 pub struct ComicArgs {
@@ -28,6 +31,9 @@ pub enum ComicCmd {
     Layout(LayoutArgs),
     /// Like `layout`, then place + draw the captions/speech balloons over each panel. **No GPU.**
     Letter(LayoutArgs),
+    /// The full flagship: generate each panel's scene art (persona-consistent cast), composite, and
+    /// letter (face-aware when a detector is configured). **Needs a model.**
+    Render(RenderArgs),
 }
 
 #[derive(Args, Debug)]
@@ -51,6 +57,23 @@ pub struct LayoutArgs {
     pub panels: Option<PathBuf>,
 }
 
+#[derive(Args, Debug)]
+pub struct RenderArgs {
+    pub spec: PathBuf,
+    /// Output page PNG.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Keep the generated per-panel PNGs in this directory (else a temp dir, discarded).
+    #[arg(long)]
+    pub panels_out: Option<PathBuf>,
+    /// Device selector for generation + face detection.
+    #[arg(long, default_value = "auto")]
+    pub device: String,
+    /// Generate scene art only — skip balloon lettering.
+    #[arg(long)]
+    pub no_letter: bool,
+}
+
 pub async fn run(args: ComicArgs) -> Result<()> {
     match args.cmd {
         ComicCmd::New(a) => run_new(a),
@@ -58,6 +81,7 @@ pub async fn run(args: ComicArgs) -> Result<()> {
         ComicCmd::Show(a) => run_show(a),
         ComicCmd::Layout(a) => run_layout(a, false),
         ComicCmd::Letter(a) => run_layout(a, true),
+        ComicCmd::Render(a) => run_render(a).await,
     }
 }
 
@@ -66,7 +90,7 @@ fn run_new(a: NewArgs) -> Result<()> {
         anyhow::bail!("{} already exists — refusing to overwrite", a.out.display());
     }
     let template = format!(
-        "{{\n  schema: \"{schema}\"\n  page: {{ size: \"us-letter\", dpi: 300, gutter: 24, border: 6, bg: \"white\" }}\n  reading: \"ltr\"\n  layout: {{ rows: [[1,1],[1],[1,1,1]] }}\n\n  cast: [\n    {{ name: \"hero\", describe: \"a weary detective in a long coat\" }}\n  ]\n\n  panels: [\n    {{ scene: \"a rain-slick neon alley, wide establishing shot\", caption: \"Tuesday. 3 a.m.\" }}\n    {{ scene: \"the detective lights a cigarette\", chars: [\"hero\"], balloons: [ {{ by: \"hero\", say: \"Someone's been here.\", at: \"top-left\" }} ] }}\n    {{ scene: \"a shadow moves behind a dumpster\" }}\n    {{ scene: \"close on the detective's eyes, narrowed\", chars: [\"hero\"] }}\n    {{ scene: \"a hand reaches from the dark\" }}\n    {{ scene: \"the alley, empty now\", caption: \"Gone.\" }}\n  ]\n\n  model: \"sdxl\"  seed: 7  steps: 30\n}}\n",
+        "{{\n  schema: \"{schema}\"\n  page: {{ size: \"us-letter\", dpi: 300, gutter: 24, border: 6, bg: \"white\" }}\n  reading: \"ltr\"\n  layout: {{ rows: [[1,1],[1],[1,1,1]] }}\n\n  style: \"noir comic book art, heavy ink shadows, cel shading, cinematic\"\n\n  cast: [\n    {{ name: \"hero\", describe: \"a weary detective in a long coat\" }}\n  ]\n\n  panels: [\n    {{ scene: \"a rain-slick neon alley, wide establishing shot\", caption: \"Tuesday. 3 a.m.\" }}\n    {{ scene: \"the detective lights a cigarette\", chars: [\"hero\"], balloons: [ {{ by: \"hero\", say: \"Someone's been here.\", at: \"top-left\" }} ] }}\n    {{ scene: \"a shadow moves behind a dumpster\" }}\n    {{ scene: \"close on the detective's eyes, narrowed\", chars: [\"hero\"] }}\n    {{ scene: \"a hand reaches from the dark\" }}\n    {{ scene: \"the alley, empty now\", caption: \"Gone.\" }}\n  ]\n\n  model: \"sdxl\"  seed: 7  steps: 30\n}}\n",
         schema = crate::comic::SCHEMA_VERSION,
     );
     std::fs::write(&a.out, &template).with_context(|| format!("writing {}", a.out.display()))?;
@@ -110,6 +134,7 @@ fn run_show(a: SpecArg) -> Result<()> {
     println!("{}", b("plakat comic — resolved plan"));
     println!("  page       {}×{} px @ {} DPI · bg {:?}", plan.w, plan.h, plan.dpi, plan.bg);
     println!("  reading    {} · gutter {} · border {}", plan.reading, plan.gutter, plan.border);
+    println!("  model      {} · seed {} · {} steps", spec.model.as_deref().unwrap_or("sdxl"), spec.seed.unwrap_or(0), spec.steps.unwrap_or(30));
     println!("  cast       {}", if spec.cast.is_empty() { "(none)".into() } else { spec.cast.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ") });
     println!("  panels     {}", plan.panels.len());
     for r in &plan.panels {
@@ -153,6 +178,81 @@ fn run_layout(a: LayoutArgs, letter: bool) -> Result<()> {
         } else {
             println!("  {} {}", style("lettered").green(), note);
         }
+    }
+    println!("  {} {}", style("sidecar").cyan(), side.display());
+    Ok(())
+}
+
+async fn run_render(a: RenderArgs) -> Result<()> {
+    let spec = ComicSpec::load(&a.spec)?;
+    // hard-block on lint errors before spending model time.
+    let findings = lint::lint(&spec);
+    let errs: Vec<_> = findings.iter().filter(|f| f.level == Level::Error).collect();
+    if !errs.is_empty() {
+        for f in &errs {
+            println!("{} {}: {}", style("error").red().bold(), style(&f.path).bold(), f.message);
+        }
+        anyhow::bail!("{} lint error(s) — fix before render", errs.len());
+    }
+    let plan = layout::resolve(&spec);
+    let bw = plan.border as f32;
+    let model = spec.model.as_deref().unwrap_or("sdxl");
+
+    // where the per-panel PNGs go: a kept dir, or a temp dir discarded at the end.
+    let tmp = if a.panels_out.is_none() { Some(tempfile::tempdir().context("temp dir for panels")?) } else { None };
+    let panels_dir = match (&a.panels_out, &tmp) {
+        (Some(d), _) => {
+            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+            d.clone()
+        }
+        (None, Some(t)) => t.path().to_path_buf(),
+        _ => unreachable!(),
+    };
+
+    println!("{} {} panel(s) · model {} · {}", style("rendering").cyan(), plan.panels.len(), style(model).bold(), a.device);
+    let paths = render::render_panels(&spec, &plan, Some(&a.device), &panels_dir).await?;
+
+    // paths are in reading order; compose indexes by spec-panel index — bridge the two.
+    let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
+    for (r, p) in plan.panels.iter().zip(paths.iter()) {
+        if let Some(pp) = p {
+            imgs[r.panel] = image::open(pp).ok();
+        }
+    }
+    let mut pageimg = page::compose(&plan, &imgs);
+
+    // face-aware lettering: detect faces per panel, map into panel-interior coords.
+    let lettered = if a.no_letter {
+        None
+    } else {
+        let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
+        for (r, p) in plan.panels.iter().zip(paths.iter()) {
+            let Some(pp) = p else { continue };
+            let boxes = render::detect_faces(pp, Some(&a.device)).await;
+            if boxes.is_empty() {
+                continue;
+            }
+            if let Ok((sw, sh)) = image::image_dimensions(pp) {
+                let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
+                let v: Vec<Rectf> = boxes.iter().map(|b| render::cover_fit_box(*b, sw as f32, sh as f32, iw, ih)).collect();
+                faces.insert(r.index, v);
+            }
+        }
+        Some((render::letter_faceaware(&mut pageimg, &plan, &spec, &faces), faces.values().map(Vec::len).sum::<usize>()))
+    };
+
+    pageimg.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    let side = a.out.with_extension("panels.json");
+    std::fs::write(&side, page::panels_json(&plan)).with_context(|| format!("writing {}", side.display()))?;
+
+    let filled = imgs.iter().filter(|o| o.is_some()).count();
+    println!("{} {}  ({}/{} panels rendered · {}×{} px)", style("wrote").green(), a.out.display(), filled, spec.panels.len(), plan.w, plan.h);
+    if let Some(((placed, requested), nfaces)) = lettered {
+        let face_note = if nfaces > 0 { format!(" · {nfaces} face(s) → tails/masks") } else { String::new() };
+        println!("  {} {placed}/{requested} balloon line(s){face_note}", style("lettered").green());
+    }
+    if let Some(d) = &a.panels_out {
+        println!("  {} {}", style("panels").cyan(), d.display());
     }
     println!("  {} {}", style("sidecar").cyan(), side.display());
     Ok(())
