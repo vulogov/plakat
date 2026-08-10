@@ -1916,6 +1916,13 @@ impl Comic {
         self
     }
 
+    /// Reference-lock (M2): render each character once and face-swap that reference onto every panel so
+    /// identity holds across pages. Best-effort — needs the face-swap weights, else stays description-level.
+    pub fn lock(mut self, on: bool) -> Self {
+        self.opts.lock = on;
+        self
+    }
+
     /// Render the page to `out`, returning the [`Report`](crate::comic::render::Report).
     pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::comic::render::Report> {
         crate::comic::render::render_spec(&self.spec, out.as_ref(), &self.opts).await

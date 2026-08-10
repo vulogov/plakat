@@ -133,12 +133,30 @@ The shared **world** lives at the top of the spec; each **page** carries only it
 - **Deterministic seeds** — panels seed off a *global* counter across all pages, so every panel is
   distinct and reproducible book-wide.
 
-**What propagates today vs. what's coming.** Cast identity is injected as text (persona-compiled or
-`describe:`) into every panel on every page, and the style suffix rides along — so identity and look
-propagate *by construction*. That holds well across a few pages but is **description-level**: over dozens
-of pages a model reinterprets the description and the face drifts. The next step (M2) locks it with a
-**cast reference sheet** (render each character once, then condition every panel on it via IP-Adapter /
-face-swap) and a shared **style reference**.
+### Reference-lock — holding identity across pages
+
+Cast identity is injected as text into every panel, which propagates *by construction* but is
+**description-level**: over dozens of pages a model reinterprets the description and the face drifts.
+`--lock` fixes that visually:
+
+```bash
+plakat comic cast issue.hjson --out refs/          # render each character once → a reference sheet
+plakat comic render issue.hjson --out page.png --lock   # face-swap that reference onto every panel
+```
+
+- **Cast reference sheet** — `comic cast` renders one canonical portrait per character (`ref_<name>.png`
+  + a combined `cast_sheet.png`) from its persona/`describe`. `render --lock` builds the same references,
+  then **face-swaps** each character's reference onto its panel (SCRFD locate → ArcFace identity →
+  inswapper), so the same face recurs book-wide. It acts on **single-character panels** (unambiguous which
+  face is whom); multi-character panels stay description-level for now.
+- **Explicit reference** — `cast[].reference: "mira.png"` locks to your own image instead of a rendered
+  portrait. `cast[].lock: false` opts a character out.
+- **Style-lock** — `style_lora: "…"` (+ `style_lora_scale`, default 0.8) applies one LoRA to *every* panel
+  of *every* page, holding the look beyond the text style suffix.
+
+Reference-lock is **best-effort**: it needs the face-swap weights (SCRFD + ArcFace + inswapper); without
+them `--lock` prints a note and identity stays description-level. Small faces are swapped but may benefit
+from a follow-up `restore-faces` pass.
 
 ## Character consistency — why a comic needs `persona`
 
@@ -156,7 +174,8 @@ plakat comic lint   <spec.hjson>                      # schema / vocab / cast cr
 plakat comic show   <spec.hjson>                      # resolved page + panel rects + cast
 plakat comic layout <spec.hjson> --out page.png [--panels <dir>]   # composite supplied art
 plakat comic letter <spec.hjson> --out page.png [--panels <dir>]   # composite + balloons
-plakat comic render <spec.hjson> --out page.png [--panels-out <dir>] [--device auto] [--no-letter]
+plakat comic render <spec.hjson> --out page.png [--panels-out <dir>] [--device auto] [--no-letter] [--lock]
+plakat comic cast   <spec.hjson> --out refs/          # M2: build the cast reference sheet
 ```
 
 `--panels <dir>` supplies your own panel images (sorted by name → panel order); missing panels draw a

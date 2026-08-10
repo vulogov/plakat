@@ -31,6 +31,9 @@ pub enum ComicCmd {
     /// The full flagship: generate each panel's scene art (persona-consistent cast), composite, and
     /// letter (face-aware when a detector is configured). **Needs a model.**
     Render(RenderArgs),
+    /// Build the cast **reference sheet** (M2): render each character once → `ref_<name>.png` + a combined
+    /// `cast_sheet.png`, for `render --lock` to face-swap onto every panel. **Needs a model.**
+    Cast(CastArgs),
 }
 
 #[derive(Args, Debug)]
@@ -69,6 +72,20 @@ pub struct RenderArgs {
     /// Generate scene art only — skip balloon lettering.
     #[arg(long)]
     pub no_letter: bool,
+    /// M2 reference-lock: render each character once and face-swap that reference onto every panel so
+    /// identity holds across pages (needs the face-swap weights; falls back to description-level if absent).
+    #[arg(long)]
+    pub lock: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CastArgs {
+    pub spec: PathBuf,
+    /// Output directory for the reference portraits + `cast_sheet.png`.
+    #[arg(long)]
+    pub out: PathBuf,
+    #[arg(long, default_value = "auto")]
+    pub device: String,
 }
 
 pub async fn run(args: ComicArgs) -> Result<()> {
@@ -79,7 +96,50 @@ pub async fn run(args: ComicArgs) -> Result<()> {
         ComicCmd::Layout(a) => run_layout(a, false),
         ComicCmd::Letter(a) => run_layout(a, true),
         ComicCmd::Render(a) => run_render(a).await,
+        ComicCmd::Cast(a) => run_cast(a).await,
     }
+}
+
+async fn run_cast(a: CastArgs) -> Result<()> {
+    let spec = ComicSpec::load(&a.spec)?;
+    println!("{} reference sheet for {} cast member(s) · {}", style("building").cyan(), spec.cast.len(), a.device);
+    let refs = render::build_cast_references(&spec, Some(&a.device), &a.out).await?;
+    if refs.is_empty() {
+        println!("{} no lockable cast (need a persona/describe and lock ≠ false)", style("note").yellow());
+        return Ok(());
+    }
+    // compose a horizontal contact sheet, each portrait 384px tall with the name lettered under it.
+    let mut names: Vec<&String> = refs.keys().collect();
+    names.sort();
+    let (cell, pad, label_h) = (384u32, 12u32, 40u32);
+    let mut thumbs: Vec<(String, image::RgbImage)> = Vec::new();
+    for n in &names {
+        if let Ok(img) = image::open(&refs[*n]) {
+            let t = image::imageops::resize(&img.to_rgb8(), cell, cell, image::imageops::FilterType::Lanczos3);
+            thumbs.push(((*n).clone(), t));
+        }
+    }
+    if !thumbs.is_empty() {
+        let sheet_w = thumbs.len() as u32 * cell + (thumbs.len() as u32 + 1) * pad;
+        let sheet_h = cell + label_h + 2 * pad;
+        let mut sheet = image::RgbImage::from_pixel(sheet_w, sheet_h, image::Rgb([245, 245, 245]));
+        let mut x = pad;
+        for (name, t) in &thumbs {
+            image::imageops::overlay(&mut sheet, t, x as i64, pad as i64);
+            let scale = 3u32;
+            let tw = crate::map::labels::text_width(name, scale);
+            let tx = x + (cell.saturating_sub(tw)) / 2;
+            crate::map::labels::draw_text(&mut sheet, tx as i32, (pad + cell + 8) as i32, name, scale, [20, 20, 20]);
+            x += cell + pad;
+        }
+        let sheet_path = a.out.join("cast_sheet.png");
+        sheet.save(&sheet_path).with_context(|| format!("writing {}", sheet_path.display()))?;
+        println!("{} {}", style("wrote").green(), sheet_path.display());
+    }
+    for n in &names {
+        println!("  {} {} → {}", style("·").cyan(), n, refs[*n].display());
+    }
+    Ok(())
 }
 
 fn run_new(a: NewArgs) -> Result<()> {
@@ -210,7 +270,7 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     let model = spec.model.as_deref().unwrap_or("sdxl");
     println!("{} {} page(s) · model {} · {}", style("rendering").cyan(), n_pages, style(model).bold(), a.device);
 
-    let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter };
+    let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter, lock: a.lock };
     let rep = render::render_spec(&spec, &a.out, &opts).await?;
 
     let where_ = if rep.pages.len() > 1 { format!("{} pages", rep.pages.len()) } else { rep.page.display().to_string() };
@@ -221,6 +281,13 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     if !a.no_letter {
         let face_note = if rep.faces > 0 { format!(" · {} face(s) → tails/masks", rep.faces) } else { String::new() };
         println!("  {} {}/{} balloon line(s){face_note}", style("lettered").green(), rep.lines_placed, rep.lines_requested);
+    }
+    if a.lock {
+        if !rep.references.is_empty() {
+            println!("  {} {} panel(s) face-locked to {} reference(s)", style("locked").green(), rep.faces_locked, rep.references.len());
+        } else {
+            println!("  {} face-lock requested but unavailable (no face-swap weights) — identity stays description-level", style("lock").yellow());
+        }
     }
     if let Some(d) = &a.panels_out {
         println!("  {} {}", style("panels").cyan(), d.display());

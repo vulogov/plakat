@@ -145,12 +145,78 @@ pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::
         if let Some(d) = device {
             g = g.device(d);
         }
+        // M2 style-lock: the same LoRA on every panel of every page → one look book-wide.
+        if let Some(lora) = spec.style_lora.as_deref().filter(|s| !s.trim().is_empty()) {
+            g = g.lora(lora, spec.style_lora_scale.unwrap_or(0.8));
+        }
         let imgs = g.run().await.with_context(|| format!("rendering {prefix}panel #{}", r.index))?;
         let path = out_dir.join(format!("{prefix}panel_{:02}.png", r.index));
         imgs.first().context("panel render produced no image")?.save(&path)?;
         out.push(Some(path));
     }
     Ok(out)
+}
+
+/// M2 reference-lock context: the loaded face-swapper + a per-character ArcFace identity latent (built
+/// once from each character's reference face). Present only when the face-swap weights resolved.
+struct LockCtx {
+    swapper: crate::pipelines::faceswap::FaceSwapper,
+    latents: HashMap<String, candle_core::Tensor>,
+    references: Vec<PathBuf>,
+}
+
+/// Build the reference-lock context (best-effort): load the face-swapper, build/collect each lockable
+/// character's reference face, and embed it into an identity latent. Returns `Ok(None)` when the weights
+/// aren't available (→ identity stays description-level) or nothing is lockable.
+async fn build_lock_ctx(spec: &ComicSpec, device: Option<&str>, dir: &Path) -> Result<Option<LockCtx>> {
+    let dev = crate::api::device(device.unwrap_or("auto"))?;
+    let swapper = match crate::pipelines::faceswap::FaceSwapper::load_resolved(&dev, candle_core::DType::F32).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "plakat", "comic: face-lock unavailable ({e}); identity stays description-level");
+            return Ok(None);
+        }
+    };
+    let refs = build_cast_references(spec, device, dir).await?;
+    if refs.is_empty() {
+        return Ok(None);
+    }
+    let mut latents = HashMap::new();
+    let mut references = Vec::new();
+    for (name, path) in &refs {
+        match swapper.source_latent(path) {
+            Ok(t) => {
+                latents.insert(name.clone(), t);
+                references.push(path.clone());
+            }
+            Err(e) => tracing::warn!(target: "plakat", "comic: no usable face in reference for `{name}` ({e}); it stays description-level"),
+        }
+    }
+    if latents.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(LockCtx { swapper, latents, references }))
+}
+
+/// Face-swap the locked character's reference onto a rendered panel, in place. Only acts when **exactly
+/// one** locked character is in the panel (unambiguous) and a face is detected. Returns `true` if a swap
+/// landed. Best-effort — any failure leaves the panel as generated.
+fn lock_panel(ctx: &LockCtx, panel: &super::spec::Panel, path: &Path) -> bool {
+    let present: Vec<&String> = panel.chars.iter().filter(|c| ctx.latents.contains_key(c.as_str())).collect();
+    if present.len() != 1 {
+        return false; // 0 → nothing to lock; ≥2 → ambiguous which face is whom (v1 skips)
+    }
+    let latent = &ctx.latents[present[0]];
+    let Ok(faces) = ctx.swapper.detect(path) else { return false };
+    let Some(face) = faces.into_iter().next() else { return false }; // largest-first
+    let Ok(scene) = image::open(path).map(|i| i.to_rgb8()) else { return false };
+    match ctx.swapper.swap_into(&scene, face.landmarks, latent) {
+        Ok(swapped) => swapped.save(path).is_ok(),
+        Err(e) => {
+            tracing::warn!(target: "plakat", "comic: face-swap failed on {} ({e})", path.display());
+            false
+        }
+    }
 }
 
 /// Options for [`render_spec`] — the one orchestration the CLI, `api::Comic`, the scenario task, and the
@@ -163,6 +229,79 @@ pub struct RenderOpts {
     pub panels_out: Option<PathBuf>,
     /// Draw the balloons/captions after compositing (`false` → scene art only).
     pub letter: bool,
+    /// M2 reference-lock: build a per-character reference face (once) and face-swap it onto every panel so
+    /// identity holds book-wide (best-effort — needs the face-swap weights; falls back to description-level
+    /// when absent). Off unless requested.
+    pub lock: bool,
+}
+
+/// A stable per-name seed contribution (FNV-1a) so a character's reference portrait is reproducible
+/// without depending on iteration order or a RNG.
+fn name_salt(name: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in name.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn safe_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect()
+}
+
+/// Build a reference face image for each lockable cast member (M2). An explicit `reference:` wins;
+/// otherwise a canonical portrait is rendered **once** from the persona/describe (deterministic per name)
+/// and cached in `dir`. Members with `lock: false` or no identity are skipped.
+pub async fn build_cast_references(spec: &ComicSpec, device: Option<&str>, dir: &Path) -> Result<HashMap<String, PathBuf>> {
+    use crate::persona::{compile, lexicon::Lexicon, spec::PersonaSpec};
+    let model = spec.model.as_deref().unwrap_or("sdxl").to_string();
+    let lex = Lexicon::skeleton();
+    let steps = spec.steps.unwrap_or(30);
+    let base_seed = spec.seed.unwrap_or(0);
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+
+    let mut refs = HashMap::new();
+    for c in &spec.cast {
+        if c.lock == Some(false) || c.name.trim().is_empty() {
+            continue;
+        }
+        // an explicit reference face wins — no render.
+        if let Some(r) = c.reference.as_deref().filter(|s| !s.trim().is_empty()) {
+            refs.insert(c.name.clone(), PathBuf::from(r));
+            continue;
+        }
+        // else render one canonical portrait from the persona/describe.
+        let (prompt, neg) = if let Some(p) = c.persona.as_deref().filter(|s| !s.trim().is_empty()) {
+            let ps = PersonaSpec::load(Path::new(p)).with_context(|| format!("cast `{}`: loading persona {p}", c.name))?;
+            let comp = compile::compile_for_model(&ps, &lex, &model);
+            (format!("{}, character reference portrait, front view, head and shoulders, plain neutral background", comp.positive), comp.negative)
+        } else if let Some(d) = c.describe.as_deref().filter(|s| !s.trim().is_empty()) {
+            (format!("portrait headshot of {d}, front view, head and shoulders, plain neutral background, character reference sheet"), String::new())
+        } else {
+            continue;
+        };
+        let neg = if neg.trim().is_empty() {
+            "multiple people, full body, cropped, text, watermark, blurry, deformed".to_string()
+        } else {
+            format!("{neg}, multiple people, full body, text, watermark")
+        };
+        let seed = base_seed ^ name_salt(&c.name);
+        // Portrait at the model's native square (sd15 → 512, sdxl → 1024) so it renders fast + coherent.
+        let sz = model_base(&model);
+        let mut g = crate::api::Generate::new(&model).prompt(prompt).negative(neg).size(sz, sz).steps(steps).seed(seed).count(1);
+        if let Some(d) = device {
+            g = g.device(d);
+        }
+        if let Some(lora) = spec.style_lora.as_deref().filter(|s| !s.trim().is_empty()) {
+            g = g.lora(lora, spec.style_lora_scale.unwrap_or(0.8));
+        }
+        let imgs = g.run().await.with_context(|| format!("rendering reference portrait for `{}`", c.name))?;
+        let path = dir.join(format!("ref_{}.png", safe_name(&c.name)));
+        imgs.first().context("reference portrait produced no image")?.save(&path)?;
+        refs.insert(c.name.clone(), path);
+    }
+    Ok(refs)
 }
 
 /// What a full render produced. Aggregate totals across all pages; `pages`/`sidecars` list each page's
@@ -178,6 +317,11 @@ pub struct Report {
     pub lines_placed: usize,
     pub lines_requested: usize,
     pub faces: usize,
+    /// M2: how many panels had their character's face locked to a reference (0 when `lock` is off or the
+    /// face-swap weights weren't available).
+    pub faces_locked: usize,
+    /// M2: the per-character reference face images used (the "cast reference sheet").
+    pub references: Vec<PathBuf>,
 }
 
 /// The path for logical page `i` of `n`: single page → `out` unchanged; multi-page → `out` stem + `_NN`
@@ -214,6 +358,9 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
         _ => unreachable!(),
     };
 
+    // M2 reference-lock: build the cast reference sheet + face-swapper once, up front (best-effort).
+    let lock_ctx = if opts.lock { build_lock_ctx(spec, device, &panels_dir).await? } else { None };
+
     let mut rep = Report {
         page: PathBuf::new(),
         sidecar: PathBuf::new(),
@@ -224,6 +371,8 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
         lines_placed: 0,
         lines_requested: 0,
         faces: 0,
+        faces_locked: 0,
+        references: lock_ctx.as_ref().map(|c| c.references.clone()).unwrap_or_default(),
     };
     let mut seed_cursor = base_seed;
 
@@ -234,6 +383,18 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
 
         let paths = render_page_panels(spec, &plan, &lp.panels, &cast, device, &panels_dir, seed_cursor, &prefix).await?;
         seed_cursor = seed_cursor.wrapping_add(lp.panels.len().max(1) as u64);
+
+        // M2: lock each panel's single unambiguous character to its reference face (before composite, so
+        // the composited page + the face-aware balloons both see the locked face).
+        if let Some(ctx) = &lock_ctx {
+            for (r, p) in plan.panels.iter().zip(paths.iter()) {
+                if let (Some(pp), Some(panel)) = (p, lp.panels.get(r.panel)) {
+                    if lock_panel(ctx, panel, pp) {
+                        rep.faces_locked += 1;
+                    }
+                }
+            }
+        }
 
         // paths are in reading order; compose indexes by page-panel index — bridge the two.
         let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; lp.panels.len().max(1)];
@@ -356,7 +517,7 @@ mod tests {
 
     fn spec_with(scene: &str, chars: &[&str]) -> (ComicSpec, Panel) {
         let mut spec = ComicSpec::default();
-        spec.cast = vec![super::super::spec::CastMember { name: "mika".into(), persona: None, describe: Some("a woman with short black hair and a red scarf".into()) }];
+        spec.cast = vec![super::super::spec::CastMember { name: "mika".into(), persona: None, describe: Some("a woman with short black hair and a red scarf".into()), reference: None, lock: None }];
         let panel = Panel { scene: Some(scene.into()), chars: chars.iter().map(|s| s.to_string()).collect(), caption: None, balloons: vec![] };
         (spec, panel)
     }
@@ -389,6 +550,13 @@ mod tests {
         assert_eq!(h % 64, 0);
         let (w2, _) = panel_size(&wide, "sd15");
         assert!(w2 <= 1024, "sd15 base is smaller: {w2}");
+    }
+
+    #[test]
+    fn name_salt_is_deterministic_and_distinct() {
+        assert_eq!(name_salt("mira"), name_salt("mira"), "stable per name");
+        assert_ne!(name_salt("mira"), name_salt("bot"), "distinct names → distinct salt");
+        assert_eq!(safe_name("Mira Vex!"), "Mira_Vex_");
     }
 
     #[test]

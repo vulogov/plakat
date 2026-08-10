@@ -27,6 +27,8 @@ pub struct ComicTaskCfg {
     pub seed: Option<u64>,
     /// Draw the balloons/captions (default `true`); `false` renders scene art only.
     pub letter: Option<bool>,
+    /// M2 reference-lock: face-swap each character to a reference so identity holds across pages.
+    pub lock: Option<bool>,
     /// Keep the generated per-panel PNGs (relative to the task output dir).
     pub panels_out: Option<String>,
 }
@@ -74,6 +76,7 @@ pub async fn run_comic_task(cfg: &ComicTaskCfg, task_seed: u64, device: Device, 
         device: Some(dev_sel.to_string()),
         panels_out: cfg.panels_out.as_ref().map(|d| out_dir.join(d)),
         letter: cfg.letter.unwrap_or(true),
+        lock: cfg.lock.unwrap_or(false),
     };
     let _rep = render::render_spec(&spec, &out_dir.join("page.png"), &opts).await?;
     Ok(())

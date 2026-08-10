@@ -33,6 +33,11 @@ pub struct ComicSpec {
     /// A shared art-style suffix appended to every panel prompt, so the whole page reads as one hand
     /// (P3). Absent → a sensible comic-book default.
     pub style: Option<String>,
+    /// M2 style-lock: a LoRA (path or HF repo) applied to *every* panel of *every* page, so the whole
+    /// book holds one look beyond the text style. Absent → no LoRA.
+    pub style_lora: Option<String>,
+    /// Scale for [`style_lora`](Self::style_lora) (default 0.8).
+    pub style_lora_scale: Option<f32>,
     pub seed: Option<u64>,
     pub steps: Option<usize>,
 }
@@ -93,6 +98,12 @@ pub struct CastMember {
     pub persona: Option<String>,
     /// Or a stable text description (seed-locked) when no persona.
     pub describe: Option<String>,
+    /// M2 reference-lock: an explicit reference face image. When set, the character's face is locked to
+    /// this image on every panel (face-swap); absent → a canonical portrait is rendered once from the
+    /// persona/describe and used as the reference.
+    pub reference: Option<String>,
+    /// Opt this character out of the face-lock (still description-consistent). Default: locked.
+    pub lock: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -169,6 +180,8 @@ impl ComicSpec {
             scenes,
             model: self.model.or(base.model),
             style: self.style.or(base.style),
+            style_lora: self.style_lora.or(base.style_lora),
+            style_lora_scale: self.style_lora_scale.or(base.style_lora_scale),
             seed: self.seed.or(base.seed),
             steps: self.steps.or(base.steps),
         }
