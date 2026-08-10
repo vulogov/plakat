@@ -50,11 +50,17 @@ tinted/tailless); reading-order-aware. Lettering rides the always-compiled 5×7 
 2 unit tests + full-page visual smoke (7/7 lines placed, every kind legible + inside frame); gate 1804
 green. **Face-aware masks + real speaker tails deferred to P3** (need the persona cast + face centroids).
 
-### P3 — scene art + character consistency
-`src/comic/render.rs`: per-panel `api::Generate` at the panel aspect; `chars` composited via the
-`persona` identity layer (a `persona:` cast member renders that specific person; `describe:` = seed-locked)
-→ `comic render`. Verify persona holds across varied panel actions (RFC Q1); a per-panel pose hint if
-needed.
+### P3 — scene art + character consistency — **DONE (commit `0e40520`)**
+`src/comic/render.rs`: per-panel `api::Generate` at the panel aspect; `chars` injected via the `persona`
+identity layer (a `persona:` cast member → the deterministic persona compile, bare attributes; `describe:`
+= seed-locked text) + a shared `style` suffix so the page reads as one hand. Negatives always exclude drawn
+text (we letter separately). **Face-aware lettering closes the P2 deferral**: `detect_faces` (SCRFD,
+best-effort) → cover-fit-mapped into panel-interior coords → balloon masks + tails toward the nearest face,
+falling back to P2 defaults when no detector/faces. `balloon::place` now takes multiple masks. CLI `comic
+render` (`--panels-out`/`--device`/`--no-letter`). map 5×7 font gained `? ! " ( )` for dialogue (previously
+blank → place-name corpus byte-stable). 5 unit tests + **live Metal render** (3-panel strip: 3/3 panels,
+3/3 balloons, persona held across panels 1–2, 2 faces → face-aware tails); gate 1808 green. RFC Q1 (persona
+holds across varied actions) confirmed live. Per-panel pose hint: not needed for P3 (deferred as optional).
 
 ### P4 — integration + corpus + docs + cut
 Parity (scenario `type: comic` / compile / Bund `plakat.comic.*` / `api::Comic` / doctor — bookart A1–A5
