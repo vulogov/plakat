@@ -9,7 +9,7 @@ value alone; **visual reference-lock** (identity/style that actually holds at bo
 
 ## Phases
 
-### M1 — multi-page structure (weight-free)
+### M1 — multi-page structure (weight-free) — **DONE (commit `d76e713`)**
 - `ComicSpec` gains `pages: [ { name?, layout?, reading?, panels[] } ]`. The top-level `cast`/`style`/
   `model`/`seed`/`steps`/`page` are the **shared world**; each page carries only its own layout + panels.
   A single-page spec (top-level `panels`, no `pages`) still works unchanged (back-compat).

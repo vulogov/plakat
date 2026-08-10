@@ -96,6 +96,50 @@ When `comic render` generates the art, a configured face detector (SCRFD) makes 
 **face-aware**: tails point at the actual face, and balloons steer clear of it. Without a detector, it
 falls back to the open-space defaults — still correct, just not face-locked.
 
+## Multi-page comics (6.8.1)
+
+A strip spans many pages that share a cast, a style, and an engine while the panels and dialogue change.
+The shared **world** lives at the top of the spec; each **page** carries only its own layout + panels.
+
+```hjson
+{
+  cast:   [ { name: "mira", persona: "mira.hjson" } ]   // the world — propagates to every page
+  style:  "noir comic book art, heavy ink"
+  model:  "sdxl"  seed: 7
+  scenes: { alley: "a rain-slick neon alley", booth: "a payphone booth" }  // named, reusable
+
+  pages: [
+    { name: "opening", layout: { rows: [[1,1]] },
+      panels: [ { scene: "@alley", chars: ["mira"], caption: "Midnight." },
+                { scene: "@booth", balloons: [ { by: "mira", say: "Who's there?", kind: "shout" } ] } ] }
+    { name: "turn", layout: { rows: [[1],[1,1]] },
+      panels: [ { scene: "@alley", caption: "Nobody." }, { scene: "a shadow moves" }, { scene: "@alley" } ] }
+  ]
+}
+```
+
+`comic render page.png` writes **`page_00.png`, `page_01.png`, …** (a single-page spec still writes
+`page.png`). Each page inherits the cast/style/model/page-format; only `panels` and `layout` differ.
+
+- **Named scenes** — `scenes: { alley: "…" }` defines a setting once; a panel `scene: "@alley"` references
+  it, so the same establishing shot recurs across pages without re-typing it.
+- **`extends`** — split the world and the pages into separate files. A per-issue spec inherits a series
+  file:
+  ```hjson
+  { extends: "series.hjson", pages: [ … ] }   // series.hjson holds cast/style/model/scenes
+  ```
+  Merge rules: the base provides defaults; the child overrides scalars, merges `cast`/`scenes` by name,
+  and replaces `panels`/`pages` when it provides them.
+- **Deterministic seeds** — panels seed off a *global* counter across all pages, so every panel is
+  distinct and reproducible book-wide.
+
+**What propagates today vs. what's coming.** Cast identity is injected as text (persona-compiled or
+`describe:`) into every panel on every page, and the style suffix rides along — so identity and look
+propagate *by construction*. That holds well across a few pages but is **description-level**: over dozens
+of pages a model reinterprets the description and the face drifts. The next step (M2) locks it with a
+**cast reference sheet** (render each character once, then condition every panel on it via IP-Adapter /
+face-swap) and a shared **style reference**.
+
 ## Character consistency — why a comic needs `persona`
 
 A prompt can't keep a character the same across panels; that's the whole reason `persona` exists. In a
