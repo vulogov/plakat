@@ -1923,6 +1923,12 @@ impl Comic {
         self
     }
 
+    /// Restore-faces pass (D3): after `lock`, refine panels whose swapped face is small. Best-effort.
+    pub fn restore_faces(mut self, on: bool) -> Self {
+        self.opts.restore = on;
+        self
+    }
+
     /// Render the page to `out`, returning the [`Report`](crate::comic::render::Report).
     pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::comic::render::Report> {
         crate::comic::render::render_spec(&self.spec, out.as_ref(), &self.opts).await

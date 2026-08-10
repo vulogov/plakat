@@ -129,7 +129,10 @@ pub fn panel_size(rect: &PanelRect, model: &str) -> (u32, u32) {
 /// Generate the scene art for one page's panels → `out_dir/<prefix>panel_NN.png` (reading index). Panels
 /// with no entry yield `None`. Deterministic: each panel seeds off `seed_base + reading-index` (the caller
 /// advances `seed_base` by the panel count so seeds are unique across pages).
-pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::spec::Panel], cast: &HashMap<String, CharDesc>, device: Option<&str>, out_dir: &Path, seed_base: u64, prefix: &str) -> Result<Vec<Option<PathBuf>>> {
+///
+/// 6.8.2 D2: `art_ids` accumulates `panel.id → rendered art path` across pages; a panel with `reuse: "@id"`
+/// yields that path (no generation), so an establishing shot repeats *identically* book-wide.
+pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::spec::Panel], cast: &HashMap<String, CharDesc>, device: Option<&str>, out_dir: &Path, seed_base: u64, prefix: &str, art_ids: &mut HashMap<String, PathBuf>) -> Result<Vec<Option<PathBuf>>> {
     let model = spec.model.as_deref().unwrap_or("sdxl").to_string();
     let steps = spec.steps.unwrap_or(30);
     let mut out = Vec::with_capacity(plan.panels.len());
@@ -138,6 +141,16 @@ pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::
             out.push(None);
             continue;
         };
+        // D2: reuse a labelled panel's already-rendered art instead of generating.
+        if let Some(key) = panel.reuse.as_deref().map(|s| s.trim_start_matches('@').trim()).filter(|s| !s.is_empty()) {
+            match art_ids.get(key) {
+                Some(src) => {
+                    out.push(Some(src.clone()));
+                    continue;
+                }
+                None => tracing::warn!(target: "plakat", "comic: panel reuse `@{key}` not found (unrendered / unknown id) — generating instead"),
+            }
+        }
         let (pos, neg) = panel_prompt(spec, panel, cast);
         let (w, h) = panel_size(r, &model);
         let seed = seed_base.wrapping_add(r.index as u64);
@@ -152,6 +165,10 @@ pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::
         let imgs = g.run().await.with_context(|| format!("rendering {prefix}panel #{}", r.index))?;
         let path = out_dir.join(format!("{prefix}panel_{:02}.png", r.index));
         imgs.first().context("panel render produced no image")?.save(&path)?;
+        // D2: register this panel's id so later panels can reuse its art.
+        if let Some(id) = panel.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            art_ids.insert(id.to_string(), path.clone());
+        }
         out.push(Some(path));
     }
     Ok(out)
@@ -198,25 +215,90 @@ async fn build_lock_ctx(spec: &ComicSpec, device: Option<&str>, dir: &Path) -> R
     Ok(Some(LockCtx { swapper, latents, references }))
 }
 
-/// Face-swap the locked character's reference onto a rendered panel, in place. Only acts when **exactly
-/// one** locked character is in the panel (unambiguous) and a face is detected. Returns `true` if a swap
-/// landed. Best-effort — any failure leaves the panel as generated.
-fn lock_panel(ctx: &LockCtx, panel: &super::spec::Panel, path: &Path) -> bool {
-    let present: Vec<&String> = panel.chars.iter().filter(|c| ctx.latents.contains_key(c.as_str())).collect();
-    if present.len() != 1 {
-        return false; // 0 → nothing to lock; ≥2 → ambiguous which face is whom (v1 skips)
-    }
-    let latent = &ctx.latents[present[0]];
-    let Ok(faces) = ctx.swapper.detect(path) else { return false };
-    let Some(face) = faces.into_iter().next() else { return false }; // largest-first
-    let Ok(scene) = image::open(path).map(|i| i.to_rgb8()) else { return false };
-    match ctx.swapper.swap_into(&scene, face.landmarks, latent) {
-        Ok(swapped) => swapped.save(path).is_ok(),
+/// D3: run one restore-faces (ADetailer) pass over `panels` (small swapped faces), refining each face
+/// with a light img2img so the swap crisps up. Best-effort — returns how many panels were touched, 0 on
+/// any setup failure (missing SD/SCRFD weights). Loads the model once.
+async fn restore_small_faces(spec: &ComicSpec, device: Option<&str>, panels: &[PathBuf]) -> usize {
+    let dev = match crate::api::device(device.unwrap_or("auto")) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let mut cfg = crate::pipelines::adetailer::Config::defaults();
+    cfg.model = spec.model.as_deref().unwrap_or("sdxl").to_string();
+    cfg.working_size = model_base(&cfg.model);
+    cfg.strength = 0.35; // crisp detail without drifting the swapped identity
+    cfg.device = dev;
+    match crate::pipelines::adetailer::refine_files(&cfg, panels, None).await {
+        Ok(_n) => panels.len(),
         Err(e) => {
-            tracing::warn!(target: "plakat", "comic: face-swap failed on {} ({e})", path.display());
-            false
+            tracing::warn!(target: "plakat", "comic: restore-faces pass skipped ({e})");
+            0
         }
     }
+}
+
+/// Return the indices of `centroids` (face x-positions) in reading order: left→right for `ltr`,
+/// right→left for `rtl`. Stable for equal x. Position i of the result ↔ character i in `panel.chars`.
+fn reading_order(centroids: &[f32], rtl: bool) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..centroids.len()).collect();
+    idx.sort_by(|&a, &b| {
+        let o = centroids[a].partial_cmp(&centroids[b]).unwrap_or(std::cmp::Ordering::Equal);
+        if rtl { o.reverse() } else { o }
+    });
+    idx
+}
+
+/// The outcome of locking one panel: how many faces were swapped, and whether any swapped face was
+/// **small** relative to the panel (→ a candidate for the D3 restore pass).
+#[derive(Debug, Clone, Copy, Default)]
+struct LockResult {
+    locked: usize,
+    small: bool,
+}
+
+/// A swapped face shorter than this fraction of the panel height is "small" (distant / group shot) and
+/// benefits from a restore-faces refine (6.8.2 D3).
+const SMALL_FACE_FRAC: f32 = 0.22;
+
+/// Face-swap the locked characters' references onto a rendered panel, in place. Handles **multiple**
+/// characters (6.8.2 D1): detected faces are matched to `panel.chars` by **reading-order position** — the
+/// author controls who's where by the order of `chars` (left→right for `ltr`, right→left for `rtl`).
+/// Swaps chain onto the same scene. Returns a [`LockResult`]. Best-effort.
+fn lock_panel(ctx: &LockCtx, panel: &super::spec::Panel, path: &Path, rtl: bool) -> LockResult {
+    // characters present that have a reference, in author (= reading) order.
+    let present: Vec<&String> = panel.chars.iter().filter(|c| ctx.latents.contains_key(c.as_str())).collect();
+    if present.is_empty() {
+        return LockResult::default();
+    }
+    let Ok(mut faces) = ctx.swapper.detect(path) else { return LockResult::default() };
+    if faces.is_empty() {
+        return LockResult::default();
+    }
+    // order faces spatially by face-centroid x so position i ↔ character i.
+    let order = reading_order(&faces.iter().map(|f| (f.bbox[0] + f.bbox[2]) * 0.5).collect::<Vec<_>>(), rtl);
+    let ordered: Vec<_> = order.into_iter().map(|i| faces[i].clone()).collect();
+    faces = ordered;
+    let Ok(mut scene) = image::open(path).map(|i| i.to_rgb8()) else { return LockResult::default() };
+    let ph = scene.height() as f32;
+    let n = present.len().min(faces.len());
+    let mut res = LockResult::default();
+    for i in 0..n {
+        let latent = &ctx.latents[present[i]];
+        match ctx.swapper.swap_into(&scene, faces[i].landmarks, latent) {
+            Ok(swapped) => {
+                scene = swapped;
+                res.locked += 1;
+                if (faces[i].bbox[3] - faces[i].bbox[1]) < SMALL_FACE_FRAC * ph {
+                    res.small = true;
+                }
+            }
+            Err(e) => tracing::warn!(target: "plakat", "comic: face-swap failed for `{}` on {} ({e})", present[i], path.display()),
+        }
+    }
+    if res.locked > 0 && scene.save(path).is_err() {
+        return LockResult::default();
+    }
+    res
 }
 
 /// Options for [`render_spec`] — the one orchestration the CLI, `api::Comic`, the scenario task, and the
@@ -233,6 +315,9 @@ pub struct RenderOpts {
     /// identity holds book-wide (best-effort — needs the face-swap weights; falls back to description-level
     /// when absent). Off unless requested.
     pub lock: bool,
+    /// D3: after locking, run a restore-faces (ADetailer) refine over panels whose swapped face is small,
+    /// to crisp the detail. Best-effort (needs the restore pipeline). Off unless requested.
+    pub restore: bool,
 }
 
 /// A stable per-name seed contribution (FNV-1a) so a character's reference portrait is reproducible
@@ -322,6 +407,8 @@ pub struct Report {
     pub faces_locked: usize,
     /// M2: the per-character reference face images used (the "cast reference sheet").
     pub references: Vec<PathBuf>,
+    /// D3: how many small swapped faces were refined by the restore pass.
+    pub faces_restored: usize,
 }
 
 /// The path for logical page `i` of `n`: single page → `out` unchanged; multi-page → `out` stem + `_NN`
@@ -373,29 +460,53 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
         faces: 0,
         faces_locked: 0,
         references: lock_ctx.as_ref().map(|c| c.references.clone()).unwrap_or_default(),
+        faces_restored: 0,
     };
     let mut seed_cursor = base_seed;
+    let mut art_ids: HashMap<String, PathBuf> = HashMap::new(); // D2: panel.id → rendered art, book-wide
+    let mut restore_panels: Vec<PathBuf> = Vec::new(); // D3: panels with a small swapped face
 
+    // Phase A — render + lock every page's panels. Compositing is deferred to Phase B so the D3 restore
+    // pass (which mutates panel images) runs BEFORE the page is assembled.
+    let mut pending: Vec<(usize, super::layout::Plan, Vec<Option<PathBuf>>)> = Vec::with_capacity(n_pages);
     for (pi, lp) in logical.iter().enumerate() {
         let plan = super::layout::resolve_page(spec, lp);
-        let bw = plan.border as f32;
         let prefix = if n_pages <= 1 { String::new() } else { format!("p{pi:02}_") };
 
-        let paths = render_page_panels(spec, &plan, &lp.panels, &cast, device, &panels_dir, seed_cursor, &prefix).await?;
+        let paths = render_page_panels(spec, &plan, &lp.panels, &cast, device, &panels_dir, seed_cursor, &prefix, &mut art_ids).await?;
         seed_cursor = seed_cursor.wrapping_add(lp.panels.len().max(1) as u64);
 
-        // M2: lock each panel's single unambiguous character to its reference face (before composite, so
-        // the composited page + the face-aware balloons both see the locked face).
+        // M2/D1: lock each panel's characters to their reference faces (multi-character: matched by
+        // reading-order position). Reused panels (D2) already carry a locked source → skip.
         if let Some(ctx) = &lock_ctx {
+            let rtl = plan.reading.eq_ignore_ascii_case("rtl");
             for (r, p) in plan.panels.iter().zip(paths.iter()) {
                 if let (Some(pp), Some(panel)) = (p, lp.panels.get(r.panel)) {
-                    if lock_panel(ctx, panel, pp) {
-                        rep.faces_locked += 1;
+                    if panel.reuse.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                        continue;
+                    }
+                    let res = lock_panel(ctx, panel, pp, rtl);
+                    rep.faces_locked += res.locked;
+                    if opts.restore && res.small {
+                        restore_panels.push(pp.clone());
                     }
                 }
             }
         }
+        pending.push((pi, plan, paths));
+    }
 
+    // D3 — one restore-faces (ADetailer) pass over the small swapped faces, before compositing.
+    if !restore_panels.is_empty() {
+        restore_panels.sort();
+        restore_panels.dedup();
+        rep.faces_restored = restore_small_faces(spec, device, &restore_panels).await;
+    }
+
+    // Phase B — composite + letter each page (now that panel images are final).
+    for (pi, plan, paths) in &pending {
+        let lp = &logical[*pi];
+        let bw = plan.border as f32;
         // paths are in reading order; compose indexes by page-panel index — bridge the two.
         let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; lp.panels.len().max(1)];
         for (r, p) in plan.panels.iter().zip(paths.iter()) {
@@ -403,7 +514,7 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
                 imgs[r.panel] = image::open(pp).ok();
             }
         }
-        let mut page = super::page::compose(&plan, &imgs);
+        let mut page = super::page::compose(plan, &imgs);
 
         if opts.letter {
             let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
@@ -419,15 +530,15 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
                 }
             }
             rep.faces += faces.values().map(Vec::len).sum::<usize>();
-            let (pl, rq) = letter_faceaware(&mut page, &plan, &lp.panels, &faces);
+            let (pl, rq) = letter_faceaware(&mut page, plan, &lp.panels, &faces);
             rep.lines_placed += pl;
             rep.lines_requested += rq;
         }
 
-        let page_out = page_path(out, pi, n_pages);
+        let page_out = page_path(out, *pi, n_pages);
         page.save(&page_out).with_context(|| format!("writing {}", page_out.display()))?;
         let sidecar = page_out.with_extension("panels.json");
-        std::fs::write(&sidecar, super::page::panels_json(&plan)).with_context(|| format!("writing {}", sidecar.display()))?;
+        std::fs::write(&sidecar, super::page::panels_json(plan)).with_context(|| format!("writing {}", sidecar.display()))?;
 
         rep.panels_rendered += imgs.iter().filter(|o| o.is_some()).count();
         rep.panels_total += lp.panels.len();
@@ -518,7 +629,7 @@ mod tests {
     fn spec_with(scene: &str, chars: &[&str]) -> (ComicSpec, Panel) {
         let mut spec = ComicSpec::default();
         spec.cast = vec![super::super::spec::CastMember { name: "mika".into(), persona: None, describe: Some("a woman with short black hair and a red scarf".into()), reference: None, lock: None }];
-        let panel = Panel { scene: Some(scene.into()), chars: chars.iter().map(|s| s.to_string()).collect(), caption: None, balloons: vec![] };
+        let panel = Panel { scene: Some(scene.into()), chars: chars.iter().map(|s| s.to_string()).collect(), caption: None, balloons: vec![], id: None, reuse: None };
         (spec, panel)
     }
 
@@ -550,6 +661,14 @@ mod tests {
         assert_eq!(h % 64, 0);
         let (w2, _) = panel_size(&wide, "sd15");
         assert!(w2 <= 1024, "sd15 base is smaller: {w2}");
+    }
+
+    #[test]
+    fn reading_order_maps_faces_to_chars_by_position() {
+        // three faces at x = 300 (mid), 60 (left), 500 (right).
+        let cx = [300.0f32, 60.0, 500.0];
+        assert_eq!(reading_order(&cx, false), vec![1, 0, 2], "ltr: left→right");
+        assert_eq!(reading_order(&cx, true), vec![2, 0, 1], "rtl: right→left");
     }
 
     #[test]

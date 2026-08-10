@@ -147,16 +147,36 @@ plakat comic render issue.hjson --out page.png --lock   # face-swap that referen
 - **Cast reference sheet** — `comic cast` renders one canonical portrait per character (`ref_<name>.png`
   + a combined `cast_sheet.png`) from its persona/`describe`. `render --lock` builds the same references,
   then **face-swaps** each character's reference onto its panel (SCRFD locate → ArcFace identity →
-  inswapper), so the same face recurs book-wide. It acts on **single-character panels** (unambiguous which
-  face is whom); multi-character panels stay description-level for now.
+  inswapper), so the same face recurs book-wide — including **multi-character panels** (faces matched to
+  `chars` by reading-order position; see below).
 - **Explicit reference** — `cast[].reference: "mira.png"` locks to your own image instead of a rendered
   portrait. `cast[].lock: false` opts a character out.
 - **Style-lock** — `style_lora: "…"` (+ `style_lora_scale`, default 0.8) applies one LoRA to *every* panel
   of *every* page, holding the look beyond the text style suffix.
 
 Reference-lock is **best-effort**: it needs the face-swap weights (SCRFD + ArcFace + inswapper); without
-them `--lock` prints a note and identity stays description-level. Small faces are swapped but may benefit
-from a follow-up `restore-faces` pass.
+them `--lock` prints a note and identity stays description-level.
+
+**Multi-character panels (6.8.2)** lock too: detected faces are matched to `chars` by **reading-order
+position** — left→right (`ltr`) or right→left (`rtl`). Position is the only weight-free signal, so the
+pairing is only as good as the match between the `chars` order and how the model *arranged* the figures:
+if the model happens to draw them in the other order, the faces swap onto the wrong bodies. **Order
+`chars` to match the composition** (and phrase the `scene` to pin who's where — "a woman on the left, a
+man on the right"), or keep a character alone in the panel for a guaranteed pairing. When a swapped face
+is small (a distant or group shot), add **`--restore-faces`** to run a restore refine over those panels
+and crisp the detail.
+
+**Scene-art reuse (6.8.2)** — recurring `@scene` *names* re-generate (different art each time). To repeat a
+setting **identically**, label a panel with `id:` and have another panel `reuse: "@id"` — it renders as an
+exact copy of the labelled panel's art, book-wide:
+
+```hjson
+panels: [
+  { id: "est", scene: "@alley", caption: "3 a.m." }   // page 1: rendered once
+  …
+  { reuse: "@est", caption: "Back where it began." }   // page 4: the same image, new caption
+]
+```
 
 ## Character consistency — why a comic needs `persona`
 

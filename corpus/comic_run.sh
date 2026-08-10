@@ -53,7 +53,9 @@ if [ "$RENDER" = "1" ]; then
   # 6. Reference-lock (6.8.1 M2): the cast reference sheet + a two-page issue whose character is
   #    face-locked to that reference so identity holds across both pages.
   run "$PLAKAT" comic cast "$ISSUE" --out "$OUT/refs"
-  run "$PLAKAT" comic render "$ISSUE" --out "$OUT/issue.png" --lock --panels-out "$OUT/issue_panels"
+  # --lock face-swaps the cast to their references; --restore-faces (6.8.2 D3) crisps small swapped faces;
+  # the issue's `reuse: "@establishing"` panel (6.8.2 D2) repeats the exact opening art on the last page.
+  run "$PLAKAT" comic render "$ISSUE" --out "$OUT/issue.png" --lock --restore-faces --panels-out "$OUT/issue_panels"
 else
   echo "· RENDER=0 — skipping the model steps (weight-free pages are at $OUT/noir_lettered_placeholder.png + $OUT/issue_00.png)"
 fi

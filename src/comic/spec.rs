@@ -116,6 +116,11 @@ pub struct Panel {
     /// A narration/caption box (no tail).
     pub caption: Option<String>,
     pub balloons: Vec<Balloon>,
+    /// 6.8.2 D2: a label for this panel so another panel can reuse its rendered art (`reuse: "@id"`).
+    pub id: Option<String>,
+    /// 6.8.2 D2: render this panel as an **exact copy** of a labelled panel's art (`"@id"`), book-wide —
+    /// an establishing shot that repeats identically instead of re-generating from a recurring `@scene`.
+    pub reuse: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

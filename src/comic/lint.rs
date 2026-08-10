@@ -88,15 +88,21 @@ pub fn lint(spec: &ComicSpec) -> Vec<Finding> {
             }
         }
     }
-    // unresolved `@scene` references (against the raw panels, before expansion).
+    // unresolved `@scene` references (against the raw panels, before expansion) + reuse ids (6.8.2 D2).
     let raw_pages: Vec<&Vec<super::spec::Panel>> = if spec.pages.is_empty() { vec![&spec.panels] } else { spec.pages.iter().map(|p| &p.panels).collect() };
-    for panels in raw_pages {
-        for panel in panels {
+    let ids: std::collections::HashSet<&str> = raw_pages.iter().flat_map(|ps| ps.iter()).filter_map(|p| p.id.as_deref().map(str::trim)).collect();
+    for panels in &raw_pages {
+        for panel in panels.iter() {
             if let Some(s) = panel.scene.as_deref() {
                 if let Some(key) = s.strip_prefix('@') {
                     if !spec.scenes.contains_key(key.trim()) {
                         f.push(Finding::warn("scene", format!("`@{}` is not in the `scenes` library", key.trim())));
                     }
+                }
+            }
+            if let Some(re) = panel.reuse.as_deref().map(|s| s.trim_start_matches('@').trim()).filter(|s| !s.is_empty()) {
+                if !ids.contains(re) {
+                    f.push(Finding::warn("reuse", format!("`@{re}` is not a panel `id` — reuse will fall back to generating")));
                 }
             }
         }
@@ -119,5 +125,16 @@ mod tests {
         assert!(!f.iter().any(|x| x.level == Level::Error));
         assert!(f.iter().any(|x| x.message.contains("ghost")), "unknown cast flagged");
         assert!(f.iter().any(|x| x.message.contains("whisper")), "unknown balloon kind flagged");
+    }
+
+    #[test]
+    fn reuse_flags_unknown_id_only() {
+        let s = ComicSpec::from_hjson(
+            r#"{ panels: [ { id: "est", scene: "an alley" }, { reuse: "@est" }, { reuse: "@ghost" } ] }"#,
+        )
+        .unwrap();
+        let f = lint(&s);
+        assert!(f.iter().any(|x| x.message.contains("ghost")), "unknown reuse id flagged");
+        assert!(!f.iter().any(|x| x.message.contains("@est")), "known reuse id not flagged");
     }
 }

@@ -76,6 +76,10 @@ pub struct RenderArgs {
     /// identity holds across pages (needs the face-swap weights; falls back to description-level if absent).
     #[arg(long)]
     pub lock: bool,
+    /// D3: after `--lock`, run a restore-faces refine over panels whose swapped face is small (distant /
+    /// group shots) to crisp the detail. Needs the restore pipeline.
+    #[arg(long)]
+    pub restore_faces: bool,
 }
 
 #[derive(Args, Debug)]
@@ -270,7 +274,7 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     let model = spec.model.as_deref().unwrap_or("sdxl");
     println!("{} {} page(s) · model {} · {}", style("rendering").cyan(), n_pages, style(model).bold(), a.device);
 
-    let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter, lock: a.lock };
+    let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter, lock: a.lock, restore: a.restore_faces };
     let rep = render::render_spec(&spec, &a.out, &opts).await?;
 
     let where_ = if rep.pages.len() > 1 { format!("{} pages", rep.pages.len()) } else { rep.page.display().to_string() };
@@ -284,7 +288,8 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     }
     if a.lock {
         if !rep.references.is_empty() {
-            println!("  {} {} panel(s) face-locked to {} reference(s)", style("locked").green(), rep.faces_locked, rep.references.len());
+            let restore_note = if a.restore_faces && rep.faces_restored > 0 { format!(" · {} panel(s) restore-refined", rep.faces_restored) } else { String::new() };
+            println!("  {} {} face(s) locked to {} reference(s){restore_note}", style("locked").green(), rep.faces_locked, rep.references.len());
         } else {
             println!("  {} face-lock requested but unavailable (no face-swap weights) — identity stays description-level", style("lock").yellow());
         }

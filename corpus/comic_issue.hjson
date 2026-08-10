@@ -11,7 +11,7 @@
     { name: "midnight"
       layout: { rows: [[1,1],[1]] }
       panels: [
-        { scene: "@alley", chars: ["mira"], caption: "The message said midnight." }
+        { id: "establishing", scene: "@alley", chars: ["mira"], caption: "The message said midnight." }
         { scene: "close on mira looking back over her shoulder, wary", chars: ["mira"],
           balloons: [ { by: "mira", say: "Someone's following me.", at: "top-left" } ] }
         { scene: "@booth", balloons: [ { by: "mira", say: "So why am I here?", kind: "thought", at: "top-right" } ] }
@@ -24,7 +24,7 @@
       panels: [
         { scene: "@roof", chars: ["mira"], balloons: [ { by: "mira", say: "Not tonight.", at: "top" } ] }
         { scene: "a black car's headlights flare at the end of the alley", balloons: [ { say: "GET DOWN!", kind: "shout", at: "top" } ] }
-        { scene: "@alley", caption: "She was already gone." }
+        { reuse: "@establishing", caption: "She was already gone." }   // 6.8.2 D2: the exact opening shot, repeated
       ]
     }
   ]

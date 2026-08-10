@@ -45,10 +45,11 @@ reference.
    weight-free). *(No GPU.)*
 7. **`refs/cast_sheet.png`** — `comic cast` renders one canonical portrait per character. *(Needs a
    model.)*
-8. **`issue_00.png` / `issue_01.png` (locked)** — `comic render --lock` generates each page's art and
-   **face-swaps the reference onto every single-character panel**, so the same face holds across both
-   pages (identity that survives beyond description-level drift). *(Needs a model + the face-swap
-   weights.)*
+8. **`issue_00.png` / `issue_01.png` (locked)** — `comic render --lock --restore-faces` generates each
+   page's art and **face-swaps the reference onto every panel** (single- and multi-character, matched by
+   reading-order position), so the same face holds across both pages beyond description-level drift; the
+   `reuse: "@establishing"` panel (6.8.2 D2) repeats the **exact** opening shot on the last page, and
+   `--restore-faces` (D3) crisps any small swapped faces. *(Needs a model + the face-swap weights.)*
 
 ## The idea
 
