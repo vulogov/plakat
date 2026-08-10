@@ -139,15 +139,10 @@ shadow/reflection input) · `api::Generate` / `replace-bg` (generate a subject o
 - **Packaging text fidelity.** A generated subject may distort logos/labels; supply a **cutout** to keep
   the product pixel-exact (composited, no VAE roundtrip).
 
-## Open questions (for the owner)
+## Open questions — resolved (owner, 2026-08-10)
 
-- **Q1 — scope:** full studio (multi-rig + lighting turntable + reflections/shadows/sweeps + generated
-  scenes + contact sheets) phased over P1–P4, or an MVP first (single subject on a sweep + contact shadow
-  + a couple of rigs)? *Recommendation:* the full phased build, **MVP-first** — P1 ships a weight-free
-  packshot pipeline that already produces sellable white-sweep shots.
-- **Q2 — grounding realism bar:** is a soft alpha-projected contact shadow + gloss reflection enough for
-  v1, or do we want a horizon-aware perspective shadow (needs the camera angle to skew the projection)?
-  G0 measures both.
-- **Q3 — relight default:** relight ON by default (rig-consistent look, but a model step) or OFF (keep the
-  supplied cutout's light, fully weight-free)? *Recommendation:* OFF by default; `--relight` / `lighting`
-  opts in.
+- **Q1 — scope:** ✅ **Full phased, MVP-first** (G0→P4; P1 ships the weight-free packshot pipeline first).
+- **Q2 — grounding realism bar:** measured *in* G0 — both a soft alpha-projected contact shadow and a
+  horizon-aware perspective shadow; the probe decides.
+- **Q3 — relight default:** ✅ **OFF by default** — keep the cutout's own light (weight-free); `--relight`
+  / a `lighting:` block opts in.

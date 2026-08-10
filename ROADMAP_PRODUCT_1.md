@@ -55,6 +55,11 @@ coauthor).
 subject-gen) → **P3** (catalog / sheet / turntable / scenes) → **P4** (cut). Front-load the weight-free
 half — a supplied cutout → a sellable white-sweep shot with a real contact shadow, no GPU.
 
-## Scope decision (RFC Q1) — pending owner
-Recommendation: the full phased build, **MVP-first** (P1 alone is a shippable weight-free packshot tool).
-Await the owner's call on scope + Q2 (perspective shadow) + Q3 (relight default) before starting G0.
+## Scope decision (RFC Q1/Q3) — DECIDED by owner 2026-08-10
+- **Q1 scope = FULL phased, MVP-first** — build G0→P4 as written; P1 ships the weight-free packshot
+  pipeline first, then P2/P3 deepen, P4 cuts 6.9.0.
+- **Q3 relight default = OFF** — `product render` keeps the supplied cutout's own light and stays
+  weight-free; `--relight` / a `lighting:` block opts in.
+- **Q2 (perspective vs soft contact shadow)** — measured *in* G0 (both variants), decided from the probe.
+
+Ready to start **G0** (the grounding probe).
