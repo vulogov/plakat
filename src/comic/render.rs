@@ -126,30 +126,27 @@ pub fn panel_size(rect: &PanelRect, model: &str) -> (u32, u32) {
     (snap(w), snap(h))
 }
 
-/// Generate the scene art for every panel → `out_dir/panel_NN.png` (reading index). Panels with no spec
-/// entry yield `None`. Deterministic: each panel seeds off `spec.seed + reading-index`.
-pub async fn render_panels(spec: &ComicSpec, plan: &Plan, device: Option<&str>, out_dir: &Path) -> Result<Vec<Option<PathBuf>>> {
+/// Generate the scene art for one page's panels → `out_dir/<prefix>panel_NN.png` (reading index). Panels
+/// with no entry yield `None`. Deterministic: each panel seeds off `seed_base + reading-index` (the caller
+/// advances `seed_base` by the panel count so seeds are unique across pages).
+pub async fn render_page_panels(spec: &ComicSpec, plan: &Plan, panels: &[super::spec::Panel], cast: &HashMap<String, CharDesc>, device: Option<&str>, out_dir: &Path, seed_base: u64, prefix: &str) -> Result<Vec<Option<PathBuf>>> {
     let model = spec.model.as_deref().unwrap_or("sdxl").to_string();
-    let cast = resolve_cast(spec)?;
     let steps = spec.steps.unwrap_or(30);
-    let base_seed = spec.seed.unwrap_or(0);
-    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
-
     let mut out = Vec::with_capacity(plan.panels.len());
     for r in &plan.panels {
-        let Some(panel) = spec.panels.get(r.panel) else {
+        let Some(panel) = panels.get(r.panel) else {
             out.push(None);
             continue;
         };
-        let (pos, neg) = panel_prompt(spec, panel, &cast);
+        let (pos, neg) = panel_prompt(spec, panel, cast);
         let (w, h) = panel_size(r, &model);
-        let seed = base_seed.wrapping_add(r.index as u64);
+        let seed = seed_base.wrapping_add(r.index as u64);
         let mut g = crate::api::Generate::new(&model).prompt(pos).negative(neg).size(w, h).steps(steps).seed(seed).count(1);
         if let Some(d) = device {
             g = g.device(d);
         }
-        let imgs = g.run().await.with_context(|| format!("rendering panel #{}", r.index))?;
-        let path = out_dir.join(format!("panel_{:02}.png", r.index));
+        let imgs = g.run().await.with_context(|| format!("rendering {prefix}panel #{}", r.index))?;
+        let path = out_dir.join(format!("{prefix}panel_{:02}.png", r.index));
         imgs.first().context("panel render produced no image")?.save(&path)?;
         out.push(Some(path));
     }
@@ -168,11 +165,14 @@ pub struct RenderOpts {
     pub letter: bool,
 }
 
-/// What a full render produced.
+/// What a full render produced. Aggregate totals across all pages; `pages`/`sidecars` list each page's
+/// PNG + sidecar in order (`page`/`sidecar` are the first, for the common single-page case).
 #[derive(Debug, Clone)]
 pub struct Report {
     pub page: PathBuf,
     pub sidecar: PathBuf,
+    pub pages: Vec<PathBuf>,
+    pub sidecars: Vec<PathBuf>,
     pub panels_rendered: usize,
     pub panels_total: usize,
     pub lines_placed: usize,
@@ -180,15 +180,30 @@ pub struct Report {
     pub faces: usize,
 }
 
-/// The full flagship: generate every panel's scene art → composite → (optionally) letter face-aware →
-/// write `out` + its `panels.json` sidecar. This is the shared core behind `comic render`,
-/// `api::Comic`, the scenario `type: comic` task, and `plakat.comic.render`.
-pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Result<Report> {
-    let plan = super::layout::resolve(spec);
-    let bw = plan.border as f32;
-    let device = opts.device.as_deref();
+/// The path for logical page `i` of `n`: single page → `out` unchanged; multi-page → `out` stem + `_NN`
+/// with the same extension (`page.png` → `page_00.png`, `page_01.png`, …).
+pub fn page_path(out: &Path, i: usize, n: usize) -> PathBuf {
+    if n <= 1 {
+        return out.to_path_buf();
+    }
+    let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("page");
+    let ext = out.extension().and_then(|s| s.to_str()).unwrap_or("png");
+    out.with_file_name(format!("{stem}_{i:02}.{ext}"))
+}
 
-    // per-panel PNGs → a kept dir or a temp dir.
+/// The full flagship: for every logical page, generate its panels' scene art → composite → (optionally)
+/// letter face-aware → write the page PNG + its `panels.json` sidecar. Shared core behind `comic render`,
+/// `api::Comic`, the scenario `type: comic` task, and `plakat.comic.render`. Multi-page (`pages:` in the
+/// spec) writes `out_00.png, out_01.png, …`; a single-page spec writes `out` unchanged.
+pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Result<Report> {
+    let device = opts.device.as_deref();
+    let cast = resolve_cast(spec)?;
+    let base_seed = spec.seed.unwrap_or(0);
+    let logical = spec.logical_pages();
+    let n_pages = logical.len();
+
+    // per-panel PNGs → a kept dir or a temp dir (shared across pages; a per-page filename prefix keeps
+    // them distinct).
     let tmp = if opts.panels_out.is_none() { Some(tempfile::tempdir().context("temp dir for panels")?) } else { None };
     let panels_dir = match (&opts.panels_out, &tmp) {
         (Some(d), _) => {
@@ -199,50 +214,69 @@ pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Res
         _ => unreachable!(),
     };
 
-    let paths = render_panels(spec, &plan, device, &panels_dir).await?;
+    let mut rep = Report {
+        page: PathBuf::new(),
+        sidecar: PathBuf::new(),
+        pages: Vec::with_capacity(n_pages),
+        sidecars: Vec::with_capacity(n_pages),
+        panels_rendered: 0,
+        panels_total: 0,
+        lines_placed: 0,
+        lines_requested: 0,
+        faces: 0,
+    };
+    let mut seed_cursor = base_seed;
 
-    // paths are in reading order; compose indexes by spec-panel index — bridge the two.
-    let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
-    for (r, p) in plan.panels.iter().zip(paths.iter()) {
-        if let Some(pp) = p {
-            imgs[r.panel] = image::open(pp).ok();
-        }
-    }
-    let mut page = super::page::compose(&plan, &imgs);
+    for (pi, lp) in logical.iter().enumerate() {
+        let plan = super::layout::resolve_page(spec, lp);
+        let bw = plan.border as f32;
+        let prefix = if n_pages <= 1 { String::new() } else { format!("p{pi:02}_") };
 
-    let (mut placed, mut requested, mut nfaces) = (0usize, 0usize, 0usize);
-    if opts.letter {
-        let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
+        let paths = render_page_panels(spec, &plan, &lp.panels, &cast, device, &panels_dir, seed_cursor, &prefix).await?;
+        seed_cursor = seed_cursor.wrapping_add(lp.panels.len().max(1) as u64);
+
+        // paths are in reading order; compose indexes by page-panel index — bridge the two.
+        let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; lp.panels.len().max(1)];
         for (r, p) in plan.panels.iter().zip(paths.iter()) {
-            let Some(pp) = p else { continue };
-            let boxes = detect_faces(pp, device).await;
-            if boxes.is_empty() {
-                continue;
-            }
-            if let Ok((sw, sh)) = image::image_dimensions(pp) {
-                let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
-                faces.insert(r.index, boxes.iter().map(|b| cover_fit_box(*b, sw as f32, sh as f32, iw, ih)).collect());
+            if let Some(pp) = p {
+                imgs[r.panel] = image::open(pp).ok();
             }
         }
-        nfaces = faces.values().map(Vec::len).sum();
-        let (pl, rq) = letter_faceaware(&mut page, &plan, spec, &faces);
-        placed = pl;
-        requested = rq;
+        let mut page = super::page::compose(&plan, &imgs);
+
+        if opts.letter {
+            let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
+            for (r, p) in plan.panels.iter().zip(paths.iter()) {
+                let Some(pp) = p else { continue };
+                let boxes = detect_faces(pp, device).await;
+                if boxes.is_empty() {
+                    continue;
+                }
+                if let Ok((sw, sh)) = image::image_dimensions(pp) {
+                    let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
+                    faces.insert(r.index, boxes.iter().map(|b| cover_fit_box(*b, sw as f32, sh as f32, iw, ih)).collect());
+                }
+            }
+            rep.faces += faces.values().map(Vec::len).sum::<usize>();
+            let (pl, rq) = letter_faceaware(&mut page, &plan, &lp.panels, &faces);
+            rep.lines_placed += pl;
+            rep.lines_requested += rq;
+        }
+
+        let page_out = page_path(out, pi, n_pages);
+        page.save(&page_out).with_context(|| format!("writing {}", page_out.display()))?;
+        let sidecar = page_out.with_extension("panels.json");
+        std::fs::write(&sidecar, super::page::panels_json(&plan)).with_context(|| format!("writing {}", sidecar.display()))?;
+
+        rep.panels_rendered += imgs.iter().filter(|o| o.is_some()).count();
+        rep.panels_total += lp.panels.len();
+        rep.pages.push(page_out);
+        rep.sidecars.push(sidecar);
     }
 
-    page.save(out).with_context(|| format!("writing {}", out.display()))?;
-    let sidecar = out.with_extension("panels.json");
-    std::fs::write(&sidecar, super::page::panels_json(&plan)).with_context(|| format!("writing {}", sidecar.display()))?;
-
-    Ok(Report {
-        page: out.to_path_buf(),
-        sidecar,
-        panels_rendered: imgs.iter().filter(|o| o.is_some()).count(),
-        panels_total: spec.panels.len(),
-        lines_placed: placed,
-        lines_requested: requested,
-        faces: nfaces,
-    })
+    rep.page = rep.pages.first().cloned().unwrap_or_else(|| out.to_path_buf());
+    rep.sidecar = rep.sidecars.first().cloned().unwrap_or_else(|| out.with_extension("panels.json"));
+    Ok(rep)
 }
 
 // ---- face-aware lettering (closes the P2 deferral) ----
@@ -283,11 +317,11 @@ pub fn cover_fit_box(b: [f32; 4], sw: f32, sh: f32, iw: f32, ih: f32) -> Rectf {
 /// Letter a composited `page`, using per-panel detected faces (interior-local coordinates, keyed by
 /// panel *reading index*) as balloon-exclusion masks + tail targets. Panels without faces fall back to
 /// the P2 open-space defaults. Returns (lines placed, lines requested).
-pub fn letter_faceaware(page: &mut image::RgbImage, plan: &Plan, spec: &ComicSpec, faces: &HashMap<usize, Vec<Rectf>>) -> (usize, usize) {
+pub fn letter_faceaware(page: &mut image::RgbImage, plan: &Plan, panels: &[super::spec::Panel], faces: &HashMap<usize, Vec<Rectf>>) -> (usize, usize) {
     let (mut placed, mut requested) = (0usize, 0usize);
     let bw = plan.border as f32;
     for r in &plan.panels {
-        let Some(panel) = spec.panels.get(r.panel) else { continue };
+        let Some(panel) = panels.get(r.panel) else { continue };
         let mut lines = balloon::lines_for_panel(panel);
         requested += lines.len();
         let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
@@ -355,6 +389,14 @@ mod tests {
         assert_eq!(h % 64, 0);
         let (w2, _) = panel_size(&wide, "sd15");
         assert!(w2 <= 1024, "sd15 base is smaller: {w2}");
+    }
+
+    #[test]
+    fn page_path_single_vs_multi() {
+        let out = std::path::Path::new("out/page.png");
+        assert_eq!(page_path(out, 0, 1), std::path::PathBuf::from("out/page.png"));
+        assert_eq!(page_path(out, 0, 3), std::path::PathBuf::from("out/page_00.png"));
+        assert_eq!(page_path(out, 2, 3), std::path::PathBuf::from("out/page_02.png"));
     }
 
     #[test]

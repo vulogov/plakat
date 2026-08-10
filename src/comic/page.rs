@@ -67,11 +67,11 @@ pub fn compose(plan: &Plan, panel_images: &[Option<DynamicImage>]) -> RgbImage {
 /// panel's page rect (interior only — inset by the border so ink never lands on the panel frame). The
 /// balloon algorithm is [`super::balloon`]; face-aware exclusion masks arrive in P3. Returns how many
 /// dialogue lines were placed vs requested.
-pub fn letter(page: &mut RgbImage, plan: &Plan, spec: &super::ComicSpec) -> (usize, usize) {
+pub fn letter(page: &mut RgbImage, plan: &Plan, panels: &[super::spec::Panel]) -> (usize, usize) {
     let (mut placed, mut requested) = (0usize, 0usize);
     let bw = plan.border as f32;
     for r in &plan.panels {
-        let Some(panel) = spec.panels.get(r.panel) else { continue };
+        let Some(panel) = panels.get(r.panel) else { continue };
         let lines = super::balloon::lines_for_panel(panel);
         requested += lines.len();
         // inset the drawable area by the border so balloons sit inside the frame.

@@ -2,7 +2,7 @@
 //! page pixel size + an ordered list of panel rectangles (rows of relative-width cells + gutter + border),
 //! in reading order (`ltr`/`rtl`). No GPU.
 
-use super::spec::ComicSpec;
+use super::spec::{ComicSpec, Layout, LogicalPage, Page};
 use serde::Serialize;
 
 /// A resolved panel rectangle on the page (px), with its reading index and the spec panel it holds.
@@ -57,10 +57,17 @@ fn parse_bg(s: &str) -> (u8, u8, u8) {
     }
 }
 
-/// Resolve the spec → a [`Plan`]. Layout `rows` (relative-width cells) drive the grid; absent → the panels
-/// are auto-gridded into a near-square.
+/// Resolve the spec → a [`Plan`] for its **first** logical page (back-compat: a single-page spec resolves
+/// as before; a multi-page spec resolves page 0). Use [`resolve_page`] to resolve a specific page.
 pub fn resolve(spec: &ComicSpec) -> Plan {
-    let page = spec.page.clone().unwrap_or_default();
+    let pages = spec.logical_pages();
+    resolve_page(spec, &pages[0])
+}
+
+/// Resolve one logical page → a [`Plan`], using the spec's shared page format + this page's layout /
+/// reading / panel count. `panels[].panel` indexes into **this page's** panels.
+pub fn resolve_page(spec: &ComicSpec, page_content: &LogicalPage) -> Plan {
+    let page: Page = spec.page.clone().unwrap_or_default();
     let dpi = page.dpi.unwrap_or(300).clamp(72, 1200);
     let (win, hin) = page
         .size
@@ -72,19 +79,16 @@ pub fn resolve(spec: &ComicSpec) -> Plan {
     let gutter = page.gutter.unwrap_or(dpi / 12).min(w / 4); // ~24px @ 300dpi
     let border = page.border.unwrap_or(dpi / 50); // ~6px @ 300dpi
     let bg = parse_bg(page.bg.as_deref().unwrap_or("white"));
-    let reading = spec.reading.clone().unwrap_or_else(|| "ltr".into());
+    let reading = page_content.reading.clone().unwrap_or_else(|| "ltr".into());
     let rtl = reading.eq_ignore_ascii_case("rtl");
 
     // the grid: rows of cell weights.
-    let n = spec.panels.len().max(1);
-    let rows: Vec<Vec<f32>> = spec
-        .layout
-        .as_ref()
+    let n = page_content.panels.len().max(1);
+    let layout: Option<&Layout> = page_content.layout.as_ref();
+    let rows: Vec<Vec<f32>> = layout
         .and_then(|l| l.rows.clone())
         .unwrap_or_else(|| auto_grid(n));
-    let row_heights = spec
-        .layout
-        .as_ref()
+    let row_heights = layout
         .and_then(|l| l.row_heights.clone())
         .filter(|v| v.len() == rows.len())
         .unwrap_or_else(|| vec![1.0; rows.len()]);
@@ -116,7 +120,7 @@ pub fn resolve(spec: &ComicSpec) -> Plan {
         let order: Vec<usize> = if rtl { (0..row_rects.len()).rev().collect() } else { (0..row_rects.len()).collect() };
         for &ci in &order {
             let (cx, cell_w) = row_rects[ci];
-            panels.push(PanelRect { index: reading_idx, panel: panel_idx.min(spec.panels.len().saturating_sub(1)), x: cx, y, w: cell_w, h: row_h });
+            panels.push(PanelRect { index: reading_idx, panel: panel_idx.min(page_content.panels.len().saturating_sub(1)), x: cx, y, w: cell_w, h: row_h });
             reading_idx += 1;
             panel_idx += 1;
         }

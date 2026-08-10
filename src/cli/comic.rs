@@ -126,57 +126,72 @@ fn run_lint(a: SpecArg) -> Result<()> {
 
 fn run_show(a: SpecArg) -> Result<()> {
     let spec = ComicSpec::load(&a.spec)?;
-    let plan = layout::resolve(&spec);
+    let pages = spec.logical_pages();
     let b = |s: &str| style(s.to_string()).bold();
     println!("{}", b("plakat comic — resolved plan"));
-    println!("  page       {}×{} px @ {} DPI · bg {:?}", plan.w, plan.h, plan.dpi, plan.bg);
-    println!("  reading    {} · gutter {} · border {}", plan.reading, plan.gutter, plan.border);
     println!("  model      {} · seed {} · {} steps", spec.model.as_deref().unwrap_or("sdxl"), spec.seed.unwrap_or(0), spec.steps.unwrap_or(30));
     println!("  cast       {}", if spec.cast.is_empty() { "(none)".into() } else { spec.cast.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ") });
-    println!("  panels     {}", plan.panels.len());
-    for r in &plan.panels {
-        let scene = spec.panels.get(r.panel).and_then(|p| p.scene.as_deref()).unwrap_or("(empty)");
-        let short: String = scene.chars().take(48).collect();
-        println!("    {} #{:<2} {:>4}×{:<4} at ({:>4},{:>4})  {}", style("·").cyan(), r.index, r.w, r.h, r.x, r.y, style(short).dim());
+    if !spec.scenes.is_empty() {
+        println!("  scenes     {}", spec.scenes.keys().map(|k| format!("@{k}")).collect::<Vec<_>>().join(", "));
+    }
+    println!("  pages      {}", pages.len());
+    for (pi, lp) in pages.iter().enumerate() {
+        let plan = layout::resolve_page(&spec, lp);
+        let label = lp.name.clone().map(|n| format!(" — {n}")).unwrap_or_default();
+        println!("  {} page {pi}{label}: {}×{} px @ {} DPI · reading {} · {} panel(s)", style("▸").cyan(), plan.w, plan.h, plan.dpi, plan.reading, plan.panels.len());
+        for r in &plan.panels {
+            let scene = lp.panels.get(r.panel).and_then(|p| p.scene.as_deref()).unwrap_or("(empty)");
+            let short: String = scene.chars().take(46).collect();
+            println!("      {} #{:<2} {:>4}×{:<4} at ({:>4},{:>4})  {}", style("·").cyan(), r.index, r.w, r.h, r.x, r.y, style(short).dim());
+        }
     }
     Ok(())
 }
 
 fn run_layout(a: LayoutArgs, letter: bool) -> Result<()> {
     let spec = ComicSpec::load(&a.spec)?;
-    let plan = layout::resolve(&spec);
-    // load supplied panel images (sorted by name → panel index).
-    let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
+    let pages = spec.logical_pages();
+    let n_pages = pages.len();
+
+    // supplied panel images (sorted by name), assigned in GLOBAL order across pages.
+    let mut supplied: Vec<PathBuf> = Vec::new();
     if let Some(dir) = &a.panels {
-        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        supplied = std::fs::read_dir(dir)
             .with_context(|| format!("reading {}", dir.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| matches!(p.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()).as_deref(), Some("png" | "jpg" | "jpeg" | "webp")))
             .collect();
-        files.sort();
-        for (i, f) in files.iter().enumerate() {
-            if i >= imgs.len() {
-                break;
+        supplied.sort();
+    }
+
+    let mut cursor = 0usize; // global panel index into `supplied`
+    for (pi, lp) in pages.iter().enumerate() {
+        let plan = layout::resolve_page(&spec, lp);
+        let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; lp.panels.len().max(1)];
+        for slot in imgs.iter_mut() {
+            if cursor < supplied.len() {
+                *slot = image::open(&supplied[cursor]).ok();
+                cursor += 1;
             }
-            imgs[i] = image::open(f).ok();
         }
-    }
-    let mut pageimg = page::compose(&plan, &imgs);
-    let lettered = if letter { Some(page::letter(&mut pageimg, &plan, &spec)) } else { None };
-    pageimg.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
-    let side = a.out.with_extension("panels.json");
-    std::fs::write(&side, page::panels_json(&plan)).with_context(|| format!("writing {}", side.display()))?;
-    let filled = imgs.iter().filter(|o| o.is_some()).count();
-    println!("{} {}  ({} panels, {}/{} filled · {}×{} px)", style("wrote").green(), a.out.display(), plan.panels.len(), filled, spec.panels.len(), plan.w, plan.h);
-    if let Some((placed, requested)) = lettered {
-        let note = format!("{placed}/{requested} balloon line(s) placed");
-        if placed < requested {
-            println!("  {} {} (some didn't fit — widen panels or shorten text)", style("lettered").yellow(), note);
-        } else {
-            println!("  {} {}", style("lettered").green(), note);
+        let mut pageimg = page::compose(&plan, &imgs);
+        let lettered = if letter { Some(page::letter(&mut pageimg, &plan, &lp.panels)) } else { None };
+        let out = render::page_path(&a.out, pi, n_pages);
+        pageimg.save(&out).with_context(|| format!("writing {}", out.display()))?;
+        let side = out.with_extension("panels.json");
+        std::fs::write(&side, page::panels_json(&plan)).with_context(|| format!("writing {}", side.display()))?;
+        let filled = imgs.iter().filter(|o| o.is_some()).count();
+        println!("{} {}  ({} panels, {}/{} filled · {}×{} px)", style("wrote").green(), out.display(), plan.panels.len(), filled, lp.panels.len(), plan.w, plan.h);
+        if let Some((placed, requested)) = lettered {
+            let note = format!("{placed}/{requested} balloon line(s) placed");
+            if placed < requested {
+                println!("  {} {} (some didn't fit — widen panels or shorten text)", style("lettered").yellow(), note);
+            } else {
+                println!("  {} {}", style("lettered").green(), note);
+            }
         }
+        println!("  {} {}", style("sidecar").cyan(), side.display());
     }
-    println!("  {} {}", style("sidecar").cyan(), side.display());
     Ok(())
 }
 
@@ -191,14 +206,18 @@ async fn run_render(a: RenderArgs) -> Result<()> {
         }
         anyhow::bail!("{} lint error(s) — fix before render", errs.len());
     }
-    let plan = layout::resolve(&spec);
+    let n_pages = spec.logical_pages().len();
     let model = spec.model.as_deref().unwrap_or("sdxl");
-    println!("{} {} panel(s) · model {} · {}", style("rendering").cyan(), plan.panels.len(), style(model).bold(), a.device);
+    println!("{} {} page(s) · model {} · {}", style("rendering").cyan(), n_pages, style(model).bold(), a.device);
 
     let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter };
     let rep = render::render_spec(&spec, &a.out, &opts).await?;
 
-    println!("{} {}  ({}/{} panels rendered · {}×{} px)", style("wrote").green(), rep.page.display(), rep.panels_rendered, rep.panels_total, plan.w, plan.h);
+    let where_ = if rep.pages.len() > 1 { format!("{} pages", rep.pages.len()) } else { rep.page.display().to_string() };
+    println!("{} {}  ({}/{} panels rendered)", style("wrote").green(), where_, rep.panels_rendered, rep.panels_total);
+    for p in &rep.pages {
+        println!("    {} {}", style("·").cyan(), p.display());
+    }
     if !a.no_letter {
         let face_note = if rep.faces > 0 { format!(" · {} face(s) → tails/masks", rep.faces) } else { String::new() };
         println!("  {} {}/{} balloon line(s){face_note}", style("lettered").green(), rep.lines_placed, rep.lines_requested);
@@ -206,6 +225,5 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     if let Some(d) = &a.panels_out {
         println!("  {} {}", style("panels").cyan(), d.display());
     }
-    println!("  {} {}", style("sidecar").cyan(), rep.sidecar.display());
     Ok(())
 }

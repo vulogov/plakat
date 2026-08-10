@@ -59,10 +59,13 @@ fn do_letter(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let panels_dir = value_to_string(pull(vm, TAG)?, "panels-dir", TAG)?;
     let spec_path = value_to_string(pull(vm, TAG)?, "spec-path", TAG)?;
     let spec = crate::comic::ComicSpec::load(std::path::Path::new(&spec_path)).with_context(|| format!("{TAG}: loading {spec_path}"))?;
-    let plan = crate::comic::layout::resolve(&spec);
-    let imgs = load_panels(&panels_dir, spec.panels.len());
+    // The weight-free Bund letter path composes the FIRST page from a flat panels dir.
+    let pages = spec.logical_pages();
+    let lp = &pages[0];
+    let plan = crate::comic::layout::resolve_page(&spec, lp);
+    let imgs = load_panels(&panels_dir, lp.panels.len());
     let mut page = crate::comic::page::compose(&plan, &imgs);
-    crate::comic::page::letter(&mut page, &plan, &spec);
+    crate::comic::page::letter(&mut page, &plan, &lp.panels);
     let out = std::path::PathBuf::from(&out_path);
     page.save(&out).with_context(|| format!("{TAG}: writing {out_path}"))?;
     std::fs::write(out.with_extension("panels.json"), crate::comic::page::panels_json(&plan)).ok();
@@ -83,8 +86,9 @@ fn do_layout(vm: &mut VM) -> anyhow::Result<&mut VM> {
     let out_path = value_to_string(pull(vm, TAG)?, "out-path", TAG)?;
     let spec_path = value_to_string(pull(vm, TAG)?, "spec-path", TAG)?;
     let spec = crate::comic::ComicSpec::load(std::path::Path::new(&spec_path)).with_context(|| format!("{TAG}: loading {spec_path}"))?;
-    let plan = crate::comic::layout::resolve(&spec);
-    let empty: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
+    let pages = spec.logical_pages();
+    let plan = crate::comic::layout::resolve_page(&spec, &pages[0]);
+    let empty: Vec<Option<image::DynamicImage>> = vec![None; pages[0].panels.len().max(1)];
     let page = crate::comic::page::compose(&plan, &empty);
     let out = std::path::PathBuf::from(&out_path);
     page.save(&out).with_context(|| format!("{TAG}: writing {out_path}"))?;

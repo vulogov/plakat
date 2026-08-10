@@ -51,33 +51,52 @@ pub fn lint(spec: &ComicSpec) -> Vec<Finding> {
             f.push(Finding::warn("reading", format!("unknown `{r}`; expected ltr|rtl")));
         }
     }
-    if spec.panels.is_empty() {
+    // Multi-page (6.8.1): validate across every logical page. `panel_path` names findings by page.
+    let pages = spec.logical_pages();
+    let multi = spec.pages.len() > 1 || !spec.pages.is_empty();
+    if pages.iter().all(|p| p.panels.is_empty()) {
         f.push(Finding::warn("panels", "no panels — resolves to a single empty page"));
     }
-    // grid cell count vs panel count.
-    if let Some(rows) = spec.layout.as_ref().and_then(|l| l.rows.as_ref()) {
-        let cells: usize = rows.iter().map(|r| r.len()).sum();
-        if cells != spec.panels.len() {
-            f.push(Finding::warn("layout", format!("{cells} grid cell(s) but {} panel(s) — extra cells are empty / extra panels are dropped", spec.panels.len())));
-        }
-    }
-    // cross-refs: panel chars + balloon `by` must name a cast member.
     let cast: std::collections::HashSet<&str> = spec.cast.iter().map(|c| c.name.as_str()).collect();
-    for (i, panel) in spec.panels.iter().enumerate() {
-        for c in &panel.chars {
-            if !cast.contains(c.as_str()) {
-                f.push(Finding::warn(&format!("panels[{i}].chars"), format!("`{c}` is not in the cast")));
+    for (pi, lp) in pages.iter().enumerate() {
+        let pfx = |field: &str| if multi { format!("pages[{pi}].{field}") } else { field.to_string() };
+        // grid cell count vs panel count for this page.
+        if let Some(rows) = lp.layout.as_ref().and_then(|l| l.rows.as_ref()) {
+            let cells: usize = rows.iter().map(|r| r.len()).sum();
+            if cells != lp.panels.len() {
+                f.push(Finding::warn(&pfx("layout"), format!("{cells} grid cell(s) but {} panel(s) — extra cells are empty / extra panels are dropped", lp.panels.len())));
             }
         }
-        for (b, balloon) in panel.balloons.iter().enumerate() {
-            if let Some(by) = &balloon.by {
-                if !cast.contains(by.as_str()) {
-                    f.push(Finding::warn(&format!("panels[{i}].balloons[{b}].by"), format!("`{by}` is not in the cast (no tail target)")));
+        // cross-refs: panel chars + balloon `by` must name a cast member. (`@scene` refs already expanded.)
+        for (i, panel) in lp.panels.iter().enumerate() {
+            for c in &panel.chars {
+                if !cast.contains(c.as_str()) {
+                    f.push(Finding::warn(&pfx(&format!("panels[{i}].chars")), format!("`{c}` is not in the cast")));
                 }
             }
-            if let Some(k) = &balloon.kind {
-                if !KINDS.contains(&k.to_ascii_lowercase().as_str()) {
-                    f.push(Finding::warn(&format!("panels[{i}].balloons[{b}].kind"), format!("unknown `{k}`; known: {}", KINDS.join(", "))));
+            for (b, balloon) in panel.balloons.iter().enumerate() {
+                if let Some(by) = &balloon.by {
+                    if !cast.contains(by.as_str()) {
+                        f.push(Finding::warn(&pfx(&format!("panels[{i}].balloons[{b}].by")), format!("`{by}` is not in the cast (no tail target)")));
+                    }
+                }
+                if let Some(k) = &balloon.kind {
+                    if !KINDS.contains(&k.to_ascii_lowercase().as_str()) {
+                        f.push(Finding::warn(&pfx(&format!("panels[{i}].balloons[{b}].kind")), format!("unknown `{k}`; known: {}", KINDS.join(", "))));
+                    }
+                }
+            }
+        }
+    }
+    // unresolved `@scene` references (against the raw panels, before expansion).
+    let raw_pages: Vec<&Vec<super::spec::Panel>> = if spec.pages.is_empty() { vec![&spec.panels] } else { spec.pages.iter().map(|p| &p.panels).collect() };
+    for panels in raw_pages {
+        for panel in panels {
+            if let Some(s) = panel.scene.as_deref() {
+                if let Some(key) = s.strip_prefix('@') {
+                    if !spec.scenes.contains_key(key.trim()) {
+                        f.push(Finding::warn("scene", format!("`@{}` is not in the `scenes` library", key.trim())));
+                    }
                 }
             }
         }
