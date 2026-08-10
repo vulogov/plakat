@@ -24,12 +24,16 @@ value alone; **visual reference-lock** (identity/style that actually holds at bo
 - CLI `comic show`/`lint`/`layout`/`letter`/`render` all page-aware; `--page N` to target one.
 - Docs + corpus (a 2-page series) + the walkthrough.
 
-### M2 — visual reference-lock (needs a model)
-- **Cast reference sheet**: persona renders each character once → a canonical portrait; every panel
-  conditions on it (IP-Adapter / face-swap — plakat has `ip_adapter` + `inswapper`) so the *same face*
-  survives book-wide, beyond description-level drift.
-- **Shared style lock**: a style LoRA / InstantStyle reference applied to every panel of every page.
-- Scene-art reuse: a panel may reuse a previously-rendered panel's image (exact repeat of a setting).
+### M2 — visual reference-lock (needs a model) — **DONE (commit `0f5403e`)**
+- **Cast reference sheet** — `comic cast` renders one canonical portrait per character (`ref_<name>.png` +
+  a lettered `cast_sheet.png`) at the model native square. `render --lock` builds them, loads
+  `FaceSwapper::load_resolved` (SCRFD+ArcFace+inswapper), embeds each reference to an identity latent, and
+  face-swaps it onto every **single-character** panel (unambiguous). Best-effort — no weights → stays
+  description-level. **Live-proven Metal**: 2-page issue, 3 panels locked, same face on pages 0 + 1.
+- **Style lock** — spec `style_lora` (+ `style_lora_scale`) on every panel + the reference portraits.
+- `cast[].reference` overrides the rendered portrait; `cast[].lock:false` opts out.
+- **Deferred**: multi-character-panel disambiguation (v1 skips ≥2 locked chars); scene-art reuse of a
+  prior panel image; a `restore-faces` cleanup pass on small swapped faces.
 
 ### M3 — integration + cut 6.8.1
 Parity refresh (scenario/compile/Bund/api/doctor page-aware), corpus + docs, **CUT 6.8.1** (Cargo+lock,
