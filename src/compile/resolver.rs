@@ -76,6 +76,9 @@ pub struct ResolvedScene {
     pub texture_upscale: Option<String>,
     pub texture_seamless: Option<String>,
     pub texture_height: Option<String>,
+    // 6.8.0 P4: a `type: comic` block compiles to a scenario `comic` task. `comic-spec-file` points at a
+    // ComicSpec; otherwise the prose (if any) becomes a single-panel page.
+    pub comic_spec_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -227,6 +230,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             texture_upscale: last_wins(&vals(g, "texture-upscale"), &vals(Some(s), "texture-upscale")).map(str::to_string),
             texture_seamless: last_wins(&vals(g, "texture-seamless"), &vals(Some(s), "texture-seamless")).map(str::to_string),
             texture_height: last_wins(&vals(g, "texture-height"), &vals(Some(s), "texture-height")).map(str::to_string),
+            comic_spec_file: last_wins(&vals(g, "comic-spec-file"), &vals(Some(s), "comic-spec-file")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

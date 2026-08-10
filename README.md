@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.8.0 — `plakat comic`**: the flagship (RFC COMIC-1). A small HJSON `ComicSpec` becomes a **lettered, multi-panel comic page** — a panel grid, per-panel **scene art**, a **recurring cast** whose identity holds across panels (a `persona:` member compiles through the deterministic persona layer; a `describe:` member is seed-locked), and **speech balloons + captions** placed and lettered over the art. The balloon algorithm is the novel piece: fit the largest legible box → place it in open space (off detected faces, non-overlapping, biased to the reading corner) → draw one of four kinds (speech · thought · shout · caption) with a tail toward the speaker. The **weight-free half** (layout · balloons · composite) needs no GPU — bring your own panels with `comic layout/letter --panels <dir>`; only `comic render` generates the art, and lettering rides an asset-free all-caps bitmap face. Wired everywhere: scenario `type: comic`, `compile`, Bund `plakat.comic.*`, `plakat::api::Comic`. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.0) · [Guide →](Documentation/COMIC.md)
+>
 > **v6.7.0 — provenance etching (`--etch` / `doctor --if-plakat`)**: opt-in `--etch` writes a 64-bit provenance id into images plakat produces by four independent evidence layers — an **L0** manifest (PNG chunk + sidecar), an **L1** pixel etch (a spread-spectrum DCT-QIM mark surviving transcode/rescale), an **L2** latent Fourier-ring mark, and an **L3** CLIP fingerprint (a local store that matches on *semantics*). `plakat doctor --if-plakat <IMAGE>` reads whatever survived into a **graded verdict** with a p-value — `generated` / `derived` / `probable-derivative` / `inconclusive` / `no-evidence` — degrading gracefully rather than off a cliff. Honest by design: it's verifiable through incidental editing, format churn, rescaling, and moderate generative edits — **not** a defence against a determined remover. Off by default; the module is always compiled. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.7.0) · [Guide →](Documentation/ETCH.md)
 >
 > **v6.6.0 — `plakat texture` engine interop**: one `texture export --engine gltf|unreal|unity-hdrp|godot|materialx|plakat` picks the naming + packing + material document in a single flag — a **complete glTF 2.0** material (with **`KHR_materials_anisotropy`** driven by the brushed-metal flow map), a **MaterialX** (`.mtlx`) `standard_surface` for USD/Arnold/Substance, and the **Unity HDRP mask map** (which packs the same data *differently* from ORM: R=metal/G=AO/B=detail/A=smoothness). The packing conventions live in one verified table so a material drops into each engine correctly. Weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.6.0) · [Guide →](Documentation/TEXTURE.md)
@@ -36,6 +38,36 @@ cached locally.
 
 📸 **[See the gallery →](gallery/)** — example images with their prompts and settings.
 🔬 **[Proof corpus →](corpus/)** — a reproducible body of images, plus the tooling to regenerate and index it, proving every pipeline works end to end.
+
+## What's new in 6.8.0 — `plakat comic` (RFC COMIC-1)
+
+A small HJSON `ComicSpec` becomes a **lettered, multi-panel comic page**. A comic is a *composition* —
+a grid of framed panels, a character who must be the **same** person in panel 5 as in panel 1, and
+dialogue that has to land in open space without covering a face — so the page is authored, not prompted.
+
+```bash
+plakat comic new strip.hjson                                  # scaffold a template
+plakat comic render strip.hjson --out page.png                # generate art + letter it
+plakat comic letter strip.hjson --panels my_art/ --out page.png  # bring your own panels (no GPU)
+```
+
+- **Panel layout** — a `page` (`us-letter`/`a4`/`square`/… × DPI) split by `layout.rows` of relative-width
+  cells + gutter + border, in reading order (`rtl` reverses within rows for manga). A `panels.json`
+  sidecar records each panel's page rect + reading index.
+- **Scene art + a recurring cast** — each panel is one generation at the panel aspect; a `persona:` cast
+  member compiles through the deterministic **persona** layer (a `describe:` member is seed-locked text)
+  so the same face/wardrobe recurs panel to panel. A shared `style` keeps the page in one hand.
+- **Balloons + lettering (the novel piece)** — fit the largest legible box → place it in open space (off
+  detected faces, non-overlapping, biased to the `at` hint or the top reading corner) → draw one of four
+  kinds: **speech** (rounded, tail) · **thought** (bubble trail) · **shout** (spiky burst) · **caption**
+  (tinted, tailless). Lettering rides an asset-free all-caps bitmap face (byte-stable);
+  `--features shaped-labels` + a font handles non-Latin.
+- **The weight-free half needs no GPU** — layout, balloons, and composite are pure CPU; supply your own
+  panel images with `comic layout/letter --panels <dir>` to skip the model entirely.
+- **Wired everywhere** — scenario `type: comic`, `plakat compile`, Bund `plakat.comic.*`, the
+  `plakat::api::Comic` builder, and `plakat doctor`. Fully additive.
+
+See [`Documentation/COMIC.md`](Documentation/COMIC.md).
 
 ## What's new in 6.7.0 — provenance etching (RFC ETCH-1)
 

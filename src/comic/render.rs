@@ -156,6 +156,95 @@ pub async fn render_panels(spec: &ComicSpec, plan: &Plan, device: Option<&str>, 
     Ok(out)
 }
 
+/// Options for [`render_spec`] — the one orchestration the CLI, `api::Comic`, the scenario task, and the
+/// Bund word all share.
+#[derive(Debug, Clone, Default)]
+pub struct RenderOpts {
+    /// Device selector for generation + face detection (`None` → `auto`).
+    pub device: Option<String>,
+    /// Keep the generated per-panel PNGs here (else a temp dir, discarded).
+    pub panels_out: Option<PathBuf>,
+    /// Draw the balloons/captions after compositing (`false` → scene art only).
+    pub letter: bool,
+}
+
+/// What a full render produced.
+#[derive(Debug, Clone)]
+pub struct Report {
+    pub page: PathBuf,
+    pub sidecar: PathBuf,
+    pub panels_rendered: usize,
+    pub panels_total: usize,
+    pub lines_placed: usize,
+    pub lines_requested: usize,
+    pub faces: usize,
+}
+
+/// The full flagship: generate every panel's scene art → composite → (optionally) letter face-aware →
+/// write `out` + its `panels.json` sidecar. This is the shared core behind `comic render`,
+/// `api::Comic`, the scenario `type: comic` task, and `plakat.comic.render`.
+pub async fn render_spec(spec: &ComicSpec, out: &Path, opts: &RenderOpts) -> Result<Report> {
+    let plan = super::layout::resolve(spec);
+    let bw = plan.border as f32;
+    let device = opts.device.as_deref();
+
+    // per-panel PNGs → a kept dir or a temp dir.
+    let tmp = if opts.panels_out.is_none() { Some(tempfile::tempdir().context("temp dir for panels")?) } else { None };
+    let panels_dir = match (&opts.panels_out, &tmp) {
+        (Some(d), _) => {
+            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+            d.clone()
+        }
+        (None, Some(t)) => t.path().to_path_buf(),
+        _ => unreachable!(),
+    };
+
+    let paths = render_panels(spec, &plan, device, &panels_dir).await?;
+
+    // paths are in reading order; compose indexes by spec-panel index — bridge the two.
+    let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
+    for (r, p) in plan.panels.iter().zip(paths.iter()) {
+        if let Some(pp) = p {
+            imgs[r.panel] = image::open(pp).ok();
+        }
+    }
+    let mut page = super::page::compose(&plan, &imgs);
+
+    let (mut placed, mut requested, mut nfaces) = (0usize, 0usize, 0usize);
+    if opts.letter {
+        let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
+        for (r, p) in plan.panels.iter().zip(paths.iter()) {
+            let Some(pp) = p else { continue };
+            let boxes = detect_faces(pp, device).await;
+            if boxes.is_empty() {
+                continue;
+            }
+            if let Ok((sw, sh)) = image::image_dimensions(pp) {
+                let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
+                faces.insert(r.index, boxes.iter().map(|b| cover_fit_box(*b, sw as f32, sh as f32, iw, ih)).collect());
+            }
+        }
+        nfaces = faces.values().map(Vec::len).sum();
+        let (pl, rq) = letter_faceaware(&mut page, &plan, spec, &faces);
+        placed = pl;
+        requested = rq;
+    }
+
+    page.save(out).with_context(|| format!("writing {}", out.display()))?;
+    let sidecar = out.with_extension("panels.json");
+    std::fs::write(&sidecar, super::page::panels_json(&plan)).with_context(|| format!("writing {}", sidecar.display()))?;
+
+    Ok(Report {
+        page: out.to_path_buf(),
+        sidecar,
+        panels_rendered: imgs.iter().filter(|o| o.is_some()).count(),
+        panels_total: spec.panels.len(),
+        lines_placed: placed,
+        lines_requested: requested,
+        faces: nfaces,
+    })
+}
+
 // ---- face-aware lettering (closes the P2 deferral) ----
 
 /// Detect faces in `path`, best-effort. Returns their `[x1,y1,x2,y2]` boxes in the image's own pixels, or

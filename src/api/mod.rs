@@ -1854,6 +1854,74 @@ impl BookArt {
     }
 }
 
+/// Multi-panel comic pages (RFC COMIC-1). Turn a `ComicSpec` into a lettered comic page — panel grid,
+/// per-panel scene art, a persona-consistent cast, and placed speech balloons — written to a PNG (plus
+/// its `panels.json` sidecar). Structural sibling of [`BookArt`] (page + lettering) and the persona
+/// identity layer. Lettering is on by default; [`letter(false)`](Comic::letter) renders scene art only.
+///
+/// ```no_run
+/// # async fn f() -> anyhow::Result<()> {
+/// use plakat::api::Comic;
+/// let report = Comic::load("strip.hjson")?.model("sdxl").seed(7).run("page.png").await?;
+/// println!("{}/{} panels · {}/{} balloons", report.panels_rendered, report.panels_total, report.lines_placed, report.lines_requested);
+/// # Ok(()) }
+/// ```
+pub struct Comic {
+    spec: crate::comic::ComicSpec,
+    opts: crate::comic::render::RenderOpts,
+}
+
+impl Comic {
+    /// Load a `ComicSpec` from an HJSON file.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(Self { spec: crate::comic::ComicSpec::load(path.as_ref())?, opts: crate::comic::render::RenderOpts { letter: true, ..Default::default() } })
+    }
+
+    /// Use an in-memory spec.
+    pub fn from_spec(spec: crate::comic::ComicSpec) -> Self {
+        Self { spec, opts: crate::comic::render::RenderOpts { letter: true, ..Default::default() } }
+    }
+
+    /// Diffusion base for the per-panel scene art (default `sdxl`).
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.spec.model = Some(model.into());
+        self
+    }
+
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.spec.seed = Some(seed);
+        self
+    }
+
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.spec.steps = Some(steps);
+        self
+    }
+
+    /// Device selector for generation + face detection (default `auto`).
+    pub fn device(mut self, spec: impl Into<String>) -> Self {
+        self.opts.device = Some(spec.into());
+        self
+    }
+
+    /// Keep the generated per-panel PNGs in this directory (else a temp dir, discarded).
+    pub fn panels_out(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.opts.panels_out = Some(dir.into());
+        self
+    }
+
+    /// Draw the balloons/captions (default `true`); `false` renders scene art only.
+    pub fn letter(mut self, on: bool) -> Self {
+        self.opts.letter = on;
+        self
+    }
+
+    /// Render the page to `out`, returning the [`Report`](crate::comic::render::Report).
+    pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::comic::render::Report> {
+        crate::comic::render::render_spec(&self.spec, out.as_ref(), &self.opts).await
+    }
+}
+
 /// Seamless PBR material synthesis (RFC TEXTURE-1). Turn a prompt or a photo into a tileable material
 /// set (albedo/normal/roughness/metallic/height/AO), written to a directory. Mirrors [`BookArt`].
 ///

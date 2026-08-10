@@ -334,6 +334,9 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     // -------- v6.3.0: texture pipeline --------
     section_texture();
     println!();
+    // -------- v6.8.0: comic pipeline --------
+    section_comic();
+    println!();
 
     println!(
         "  {}\n",
@@ -470,6 +473,17 @@ fn section_texture() {
     note("seamless (§7): flat/tileable prompt + an ADAPTIVE boundary feather (6.4: band sized to the measured raw seam), or offset-and-heal make_tileable (a photo). Native circular-conv / per-step latent-roll stay the dormant escalation.");
     note("height `auto` = Depth-Anything-V2 (macro relief) + a luminance high-pass (micro detail); derive normal (tangent-space) + AO from it. `page.upscale 2k|4k` = tiling-preserving Lanczos.");
     note("integration: scenario `type: texture` · compile `type: texture` · Bund `plakat.texture.*` (render/from/preview/trim/decal) · library `plakat::api::Texture` (+ `texture_blend`/`texture_trim`/`texture_decal_apply`). See Documentation/TEXTURE.md.");
+}
+
+fn section_comic() {
+    section_header("comic (6.8.0 — multi-panel comic pages)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · layout · letter");
+    note("authoring: a `ComicSpec` HJSON — page{size/dpi/gutter/border/bg} · reading(ltr|rtl) · layout(rows of relative-width cells) · cast[{persona|describe}] · panels[{scene,chars,caption,balloons[{by,say,at,kind}]}] · shared `style`.");
+    note("layout engine: page px = named-size × DPI; panel rects from rows-of-cells + gutter + border, in reading order (rtl reverses within rows); auto-grid when no `layout`. `panels.json` sidecar = each panel's page rect + reading index.");
+    note("balloons + lettering (the novel piece): word-wrap + fit the largest legible box → place in open space (off detected faces, non-overlapping, `at`-anchor / top-reading-corner biased) → draw. Kinds: speech (tail) · thought (bubble trail) · shout (burst) · caption (tinted, tailless). All-caps 5×7 bitmap face (byte-stable); `--features shaped-labels` + a font for non-Latin.");
+    note("weight-backed: `comic render` — each panel is one api::Generate at the panel aspect; a `persona:` cast member injects its deterministic persona description (a `describe:` member = seed-locked text) so the same person recurs panel to panel. Face-aware balloons when SCRFD weights are configured (tails at the face, masks off it); falls back to open-space defaults otherwise.");
+    note("output: a bordered comic page PNG + `panels.json`. Supply your own art with `comic layout/letter --panels <dir>` (no model).");
+    note("integration: scenario `type: comic` · compile `type: comic` · Bund `plakat.comic.*` (render/letter/layout) · library `plakat::api::Comic`. See Documentation/COMIC.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

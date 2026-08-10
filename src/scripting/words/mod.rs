@@ -14,6 +14,7 @@ pub mod animate;
 pub mod artefact;
 pub mod bookart;
 pub mod texture;
+pub mod comic;
 pub mod cascade;
 pub mod config;
 pub mod controlnet;
@@ -102,6 +103,13 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.texture.decal: {e}"))?;
     vm.register_inline("plakat.texture.export".to_string(), texture::plakat_texture_export)
         .map_err(|e| anyhow!("registering plakat.texture.export: {e}"))?;
+    // 6.8.0 (P4): plakat.comic.* namespace — build a multi-panel comic page, push the finished page.
+    vm.register_inline("plakat.comic.render".to_string(), comic::plakat_comic_render)
+        .map_err(|e| anyhow!("registering plakat.comic.render: {e}"))?;
+    vm.register_inline("plakat.comic.letter".to_string(), comic::plakat_comic_letter)
+        .map_err(|e| anyhow!("registering plakat.comic.letter: {e}"))?;
+    vm.register_inline("plakat.comic.layout".to_string(), comic::plakat_comic_layout)
+        .map_err(|e| anyhow!("registering plakat.comic.layout: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

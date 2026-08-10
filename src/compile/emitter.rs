@@ -91,9 +91,9 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 ));
             }
         }
-        // A bookart / texture task folds the prompt into its spec block below and ignores the top-level
-        // prompt/negative — don't emit them (they'd be dead, and confusing).
-        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture")) {
+        // A bookart / texture / comic task folds the prompt into its spec block below and ignores the
+        // top-level prompt/negative — don't emit them (they'd be dead, and confusing).
+        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -200,6 +200,17 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 o.push_str(" }\n");
             }
             o.push_str("        }\n      }\n");
+        }
+        // 6.8.0 P4: emit the comic task block. `comic-spec-file` points at a full ComicSpec; otherwise the
+        // prose (if any) becomes a single-panel page.
+        if s.task_type.as_deref() == Some("comic") {
+            if let Some(v) = &s.comic_spec_file {
+                o.push_str(&format!("      comic: {{ spec_file: {} }}\n", q(v)));
+            } else {
+                o.push_str("      comic: {\n        spec: {\n          panels: [\n");
+                o.push_str(&format!("            {{ scene: {} }}\n", q(&cs.prompt)));
+                o.push_str("          ]\n        }\n      }\n");
+            }
         }
         o.push_str("    }\n");
     }

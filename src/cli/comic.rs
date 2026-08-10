@@ -7,9 +7,6 @@ use clap::{Args, Subcommand};
 use console::style;
 use std::path::PathBuf;
 
-use std::collections::HashMap;
-
-use crate::comic::balloon::Rectf;
 use crate::comic::lint::{self, Level};
 use crate::comic::{layout, page, render, ComicSpec};
 
@@ -195,65 +192,20 @@ async fn run_render(a: RenderArgs) -> Result<()> {
         anyhow::bail!("{} lint error(s) — fix before render", errs.len());
     }
     let plan = layout::resolve(&spec);
-    let bw = plan.border as f32;
     let model = spec.model.as_deref().unwrap_or("sdxl");
-
-    // where the per-panel PNGs go: a kept dir, or a temp dir discarded at the end.
-    let tmp = if a.panels_out.is_none() { Some(tempfile::tempdir().context("temp dir for panels")?) } else { None };
-    let panels_dir = match (&a.panels_out, &tmp) {
-        (Some(d), _) => {
-            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
-            d.clone()
-        }
-        (None, Some(t)) => t.path().to_path_buf(),
-        _ => unreachable!(),
-    };
-
     println!("{} {} panel(s) · model {} · {}", style("rendering").cyan(), plan.panels.len(), style(model).bold(), a.device);
-    let paths = render::render_panels(&spec, &plan, Some(&a.device), &panels_dir).await?;
 
-    // paths are in reading order; compose indexes by spec-panel index — bridge the two.
-    let mut imgs: Vec<Option<image::DynamicImage>> = vec![None; spec.panels.len().max(1)];
-    for (r, p) in plan.panels.iter().zip(paths.iter()) {
-        if let Some(pp) = p {
-            imgs[r.panel] = image::open(pp).ok();
-        }
-    }
-    let mut pageimg = page::compose(&plan, &imgs);
+    let opts = render::RenderOpts { device: Some(a.device.clone()), panels_out: a.panels_out.clone(), letter: !a.no_letter };
+    let rep = render::render_spec(&spec, &a.out, &opts).await?;
 
-    // face-aware lettering: detect faces per panel, map into panel-interior coords.
-    let lettered = if a.no_letter {
-        None
-    } else {
-        let mut faces: HashMap<usize, Vec<Rectf>> = HashMap::new();
-        for (r, p) in plan.panels.iter().zip(paths.iter()) {
-            let Some(pp) = p else { continue };
-            let boxes = render::detect_faces(pp, Some(&a.device)).await;
-            if boxes.is_empty() {
-                continue;
-            }
-            if let Ok((sw, sh)) = image::image_dimensions(pp) {
-                let (iw, ih) = ((r.w as f32 - 2.0 * bw).max(1.0), (r.h as f32 - 2.0 * bw).max(1.0));
-                let v: Vec<Rectf> = boxes.iter().map(|b| render::cover_fit_box(*b, sw as f32, sh as f32, iw, ih)).collect();
-                faces.insert(r.index, v);
-            }
-        }
-        Some((render::letter_faceaware(&mut pageimg, &plan, &spec, &faces), faces.values().map(Vec::len).sum::<usize>()))
-    };
-
-    pageimg.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
-    let side = a.out.with_extension("panels.json");
-    std::fs::write(&side, page::panels_json(&plan)).with_context(|| format!("writing {}", side.display()))?;
-
-    let filled = imgs.iter().filter(|o| o.is_some()).count();
-    println!("{} {}  ({}/{} panels rendered · {}×{} px)", style("wrote").green(), a.out.display(), filled, spec.panels.len(), plan.w, plan.h);
-    if let Some(((placed, requested), nfaces)) = lettered {
-        let face_note = if nfaces > 0 { format!(" · {nfaces} face(s) → tails/masks") } else { String::new() };
-        println!("  {} {placed}/{requested} balloon line(s){face_note}", style("lettered").green());
+    println!("{} {}  ({}/{} panels rendered · {}×{} px)", style("wrote").green(), rep.page.display(), rep.panels_rendered, rep.panels_total, plan.w, plan.h);
+    if !a.no_letter {
+        let face_note = if rep.faces > 0 { format!(" · {} face(s) → tails/masks", rep.faces) } else { String::new() };
+        println!("  {} {}/{} balloon line(s){face_note}", style("lettered").green(), rep.lines_placed, rep.lines_requested);
     }
     if let Some(d) = &a.panels_out {
         println!("  {} {}", style("panels").cyan(), d.display());
     }
-    println!("  {} {}", style("sidecar").cyan(), side.display());
+    println!("  {} {}", style("sidecar").cyan(), rep.sidecar.display());
     Ok(())
 }

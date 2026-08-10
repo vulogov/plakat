@@ -9,6 +9,7 @@ pub mod layout;
 pub mod lint;
 pub mod page;
 pub mod render;
+pub mod scenario_task;
 pub mod spec;
 
 pub use layout::{resolve, Plan, PanelRect};

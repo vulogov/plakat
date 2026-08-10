@@ -62,12 +62,16 @@ blank → place-name corpus byte-stable). 5 unit tests + **live Metal render** (
 3/3 balloons, persona held across panels 1–2, 2 faces → face-aware tails); gate 1808 green. RFC Q1 (persona
 holds across varied actions) confirmed live. Per-panel pose hint: not needed for P3 (deferred as optional).
 
-### P4 — integration + corpus + docs + cut
-Parity (scenario `type: comic` / compile / Bund `plakat.comic.*` / `api::Comic` / doctor — bookart A1–A5
-template); a demo page (`corpus/comic_*` + driver); `Documentation/COMIC.md` + tutorial + README; **CUT
-6.8.0** (bump Cargo+lock, gate `--no-default-features --lib`, **pin turbofish on new `.parse()`**, FF
-`git push 6.8.0:main`, tag → CI 6-asset, `cargo publish --locked --allow-dirty --no-default-features`, `gh
-release edit` + bg waiter, **verify the Windows leg**, NO Claude/Anthropic coauthor).
+### P4 — integration + corpus + docs + cut — **DONE (integration + docs + corpus); CUT in progress**
+Full parity, all live-smoked: **`api::Comic`** builder (+ shared `render::render_spec` core the CLI /
+scenario / Bund all call) · scenario **`type: comic`** task (`src/comic/scenario_task.rs`, dry-run OK) ·
+Bund **`plakat.comic.*`** (render/letter/layout) · **`compile`** (`type: comic` → `comic: { spec_file }`
+or a one-panel page, verified) · **doctor** `section_comic`. Corpus: `corpus/comic_noir.hjson` +
+`corpus/comic_run.sh` (weight-free `RENDER=0` path) + `corpus/COMIC_CORPUS.md`. Docs:
+`Documentation/COMIC.md` + README flagship blockquote + body section. **CUT 6.8.0**: Cargo+lock bumped to
+6.8.0; gate `--no-default-features --lib`; no new `.parse()` added; FF `git push 6.8.0:main`, tag → CI
+6-asset, `cargo publish --locked --allow-dirty --no-default-features`, `gh release edit` + bg waiter,
+verify the Windows leg. NO Claude/Anthropic coauthor.
 
 ## Sequencing
 G0.1 (balloon algorithm) → **P1** (weight-free page pipeline, ships value alone) → **P2** (balloons) →

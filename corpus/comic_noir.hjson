@@ -1,0 +1,40 @@
+// COMIC-1 corpus demo (RFC COMIC-1, plakat 6.8) — a six-panel noir page.
+//
+// A ComicSpec is authored, not prompted: a panel grid, a recurring cast (here a `describe:` character,
+// seed-locked so she recurs panel to panel), per-panel scene art, and speech balloons + captions placed
+// and lettered over the art. The weight-free half (layout / letter / composite) needs no GPU; only
+// `comic render` generates the scene art.
+{
+  schema: "comic/1"
+  page:    { size: "us-letter", dpi: 150, gutter: 20, border: 5, bg: "white" }
+  reading: "ltr"
+  layout:  { rows: [[1,1],[1],[1,1,1]] }   // 2 | 1 wide | 3
+  style:   "noir comic book art, bold clean ink lineart, heavy shadows, cel shading, cinematic"
+
+  model: "sdxl"  seed: 7  steps: 30
+
+  cast: [
+    { name: "mira", describe: "a young woman with short black hair, a red scarf, and a grey trench coat" }
+  ]
+
+  panels: [
+    { scene: "a rain-slick neon city street at night, wide establishing shot",
+      caption: "The message said midnight." }
+
+    { scene: "a woman in a trench coat stands under a flickering streetlight",
+      chars: ["mira"],
+      balloons: [ { by: "mira", say: "Nobody comes to a place like this to talk.", at: "top-left" } ] }
+
+    { scene: "close on a payphone ringing in an empty booth, dramatic angle",
+      balloons: [ { by: "mira", say: "So why am I here?", kind: "thought", at: "top-right" } ] }
+
+    { scene: "the woman picks up the phone, wary",
+      chars: ["mira"] }
+
+    { scene: "a black car's headlights flare at the end of the alley",
+      balloons: [ { say: "GET DOWN!", kind: "shout", at: "top" } ] }
+
+    { scene: "the empty alley in the rain, the phone left dangling",
+      caption: "She was already gone." }
+  ]
+}
