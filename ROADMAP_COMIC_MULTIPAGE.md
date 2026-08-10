@@ -35,10 +35,13 @@ value alone; **visual reference-lock** (identity/style that actually holds at bo
 - **Deferred**: multi-character-panel disambiguation (v1 skips ≥2 locked chars); scene-art reuse of a
   prior panel image; a `restore-faces` cleanup pass on small swapped faces.
 
-### M3 — integration + cut 6.8.1
-Parity refresh (scenario/compile/Bund/api/doctor page-aware), corpus + docs, **CUT 6.8.1** (Cargo+lock,
-gate `--no-default-features --lib`, pin turbofish on new `.parse()`, FF main, tag → 6-asset CI,
-`cargo publish`, `gh release edit`, verify the Windows leg, NO Claude/Anthropic coauthor).
+### M3 — integration + cut 6.8.1 — **IN PROGRESS**
+Parity already page-aware from M1/M2 (scenario `lock:`, `api::Comic::lock`, doctor, compile unchanged).
+Corpus: `comic_series.hjson` (shared world) + `comic_issue.hjson` (`extends`, 2 pages) + `comic_run.sh`
+multi-page/cast/lock steps + `COMIC_CORPUS.md`. Docs: COMIC.md multi-page + reference-lock; README 6.8.1
+blockquote. **CUT 6.8.1**: Cargo+lock → 6.8.1; gate `--no-default-features --lib`; no new `.parse()`; FF
+`git push 6.8.1:main`; tag → 6-asset CI; `cargo publish --locked --allow-dirty --no-default-features`;
+`gh release edit` + bg waiter; verify the Windows leg. NO Claude/Anthropic coauthor.
 
 ## Sequencing
 **M1** (structure, ships value weight-free) → **M2** (reference-lock, the visual hold) → **M3** (cut).

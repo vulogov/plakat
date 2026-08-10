@@ -1,0 +1,31 @@
+// COMIC-1 multi-page demo (RFC COMIC-1, plakat 6.8.1) — one two-page issue.
+//
+// `extends` inherits the shared world (cast / style / model / page / scenes) from comic_series.hjson;
+// this file supplies only the PAGES. `comic render comic_issue.hjson --out issue.png` writes
+// issue_00.png + issue_01.png; the cast/style propagate to both, and `@alley` recurs by reference.
+{
+  extends: "comic_series.hjson"
+
+  pages: [
+    // Page 1 — the setup.
+    { name: "midnight"
+      layout: { rows: [[1,1],[1]] }
+      panels: [
+        { scene: "@alley", chars: ["mira"], caption: "The message said midnight." }
+        { scene: "close on mira looking back over her shoulder, wary", chars: ["mira"],
+          balloons: [ { by: "mira", say: "Someone's following me.", at: "top-left" } ] }
+        { scene: "@booth", balloons: [ { by: "mira", say: "So why am I here?", kind: "thought", at: "top-right" } ] }
+      ]
+    }
+
+    // Page 2 — the turn.
+    { name: "the turn"
+      layout: { rows: [[1],[1,1]] }
+      panels: [
+        { scene: "@roof", chars: ["mira"], balloons: [ { by: "mira", say: "Not tonight.", at: "top" } ] }
+        { scene: "a black car's headlights flare at the end of the alley", balloons: [ { say: "GET DOWN!", kind: "shout", at: "top" } ] }
+        { scene: "@alley", caption: "She was already gone." }
+      ]
+    }
+  ]
+}

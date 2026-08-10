@@ -32,6 +32,24 @@ with `caption`s and `balloons` (speech · thought · shout).
    (when a face detector is configured, tails point at the actual face and balloons steer clear of it).
    Per-panel PNGs are kept under `panels/`. *(Needs a model.)*
 
+## Multi-page & reference-lock (6.8.1)
+
+[`comic_series.hjson`](comic_series.hjson) holds the **shared world** — cast, style, engine, page format,
+and a named `scenes` library. [`comic_issue.hjson`](comic_issue.hjson) **`extends`** it and supplies only
+the **pages**; the cast/style/scenes propagate to every page, and `@alley` recurs across pages by
+reference.
+
+5. **`comic lint` / `comic show`** on the issue — the plan is page-aware (two pages, each with its own
+   layout + panels; `@scene` refs expanded). *(No GPU.)*
+6. **`issue_00.png` / `issue_01.png`** — `comic letter` writes one file per page (here over placeholders,
+   weight-free). *(No GPU.)*
+7. **`refs/cast_sheet.png`** — `comic cast` renders one canonical portrait per character. *(Needs a
+   model.)*
+8. **`issue_00.png` / `issue_01.png` (locked)** — `comic render --lock` generates each page's art and
+   **face-swaps the reference onto every single-character panel**, so the same face holds across both
+   pages (identity that survives beyond description-level drift). *(Needs a model + the face-swap
+   weights.)*
+
 ## The idea
 
 A comic is **structured data**, not a prompt. "Six noir panels, this woman, these lines, in this order"

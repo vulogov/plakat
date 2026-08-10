@@ -1,0 +1,24 @@
+// COMIC-1 multi-page demo (RFC COMIC-1, plakat 6.8.1) — the shared "world" of a series.
+//
+// This file holds only the WORLD: the cast, the style, the engine, the page format, and a named scene
+// library. A per-issue file `extends` it and supplies just the pages (see comic_issue.hjson). The same
+// cast/style/scenes then propagate to every page of every issue without re-authoring them.
+{
+  schema: "comic/1"
+  page:   { size: "us-letter", dpi: 150, gutter: 20, border: 5, bg: "white" }
+  style:  "noir comic book art, bold clean ink lineart, heavy shadows, cel shading"
+  model:  "sdxl"  seed: 7  steps: 30
+
+  // The recurring cast. `describe:` is seed-locked text; `comic render --lock` renders a reference face
+  // once and face-swaps it onto every panel so the same person holds across pages.
+  cast: [
+    { name: "mira", describe: "a young woman with short black hair, a red scarf, and a grey trench coat" }
+  ]
+
+  // Named, reusable settings — a panel `scene: "@alley"` recurs the same establishing shot across pages.
+  scenes: {
+    alley: "a rain-slick neon alley at night, wide establishing shot"
+    booth: "a lone payphone ringing in an empty glass booth, dramatic angle"
+    roof:  "a windswept city rooftop at dusk, skyline behind"
+  }
+}
