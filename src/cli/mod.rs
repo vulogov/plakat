@@ -31,6 +31,7 @@ pub mod persona;
 pub mod bookart;
 pub mod texture;
 pub mod comic;
+pub mod product;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -174,6 +175,10 @@ pub enum Command {
     /// `new` scaffolds, `lint` validates, `show` resolves the plan, `layout` composites
     /// supplied panel images (scene art + balloons land across later phases).
     Comic(comic::ComicArgs),
+    /// Studio product-shots / packshots (RFC PRODUCT-1). A `ProductSpec` HJSON + a subject
+    /// cutout → a sweep + a grounded contact shadow + reflection. `new` scaffolds, `lint`
+    /// validates, `show` resolves, `render` composites (weight-free; relight lands in P2).
+    Product(product::ProductArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -423,6 +428,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Bookart(args) => bookart::run(args).await,
         Command::Texture(args) => texture::run(args).await,
         Command::Comic(args) => comic::run(args).await,
+        Command::Product(args) => product::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]

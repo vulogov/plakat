@@ -20,12 +20,14 @@ composition or reuse. Prove it before building the cycle.
   **RFC Q2 SETTLED**: soft-contact = default; perspective-cast = a `shadow: "hard"` / low-camera option.
   → **P1 uses this algorithm** (`src/product/ground.rs`); swap the synthetic bottle for a real alpha matte.
 
-## P1 — spec + canvas/sweep + grounding + composite (weight-free; front-loaded)
-
-`src/product/{spec,lint,compile,ground,compose,mod}.rs`: `ProductSpec` (permissive serde) → resolve →
-canvas + **sweep** (white / grey-sweep / gradient) → **grounding** (from G0) → composite subject (scale/
-anchor) → `shot.png` + `shot.meta.json` sidecar. Subject = a supplied **cutout** (photo→matte reuse is
-P2). CLI `product new|lint|show|render` (weight-free). **Ships a working packshot pipeline with no GPU.**
+## P1 — spec + canvas/sweep + grounding + composite (weight-free) — **DONE (commit pending)**
+`src/product/{spec,lint,ground,compose,render,mod}.rs`: `ProductSpec` (permissive serde) → `compose::
+resolve` → canvas + **sweep** (white / grey-sweep / gradient) → **grounding** (`ground.rs`, the G0
+algorithm generalized to any canvas: `contact_shadow` soft/hard + floor `reflection`, key-dir offset,
+camera squash) → place subject (trim-to-alpha + scale/anchor) → composite sweep←reflection←shadow←subject
+→ `shot.png` + `shot.meta.json`. Subject = a supplied **cutout** (photo/prompt = P2, errors with a clear
+message). CLI `product new|lint|show|render` (weight-free). 7 unit tests + live smoke (soft grey-sweep +
+hard/mirror packshots from a mug cutout, no GPU). **Ships a working packshot pipeline with no GPU.**
 
 ## P2 — the model half: subject generation + relight
 
