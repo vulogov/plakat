@@ -29,12 +29,16 @@ camera squash) → place subject (trim-to-alpha + scale/anchor) → composite sw
 message). CLI `product new|lint|show|render` (weight-free). 7 unit tests + live smoke (soft grey-sweep +
 hard/mirror packshots from a mug cutout, no GPU). **Ships a working packshot pipeline with no GPU.**
 
-## P2 — the model half: subject generation + relight
-
-`src/product/render.rs`: **subject from a photo** (`matting::matte`) or **from a prompt** (`api::Generate`
-→ matte); **relight** the cutout to the `lighting` rig via IC-Light (rig + `key_dir` + `warmth` → the
-lighting prompt), `--no-relight` / relight-off default (RFC Q3). `product render` full. Verify a rig looks
-consistent across two different subjects.
+## P2 — the model half: subject generation + relight — **DONE (commit pending)**
+`src/product/render.rs` now async: **subject from a photo** (`matting::matte` → cutout) or **a prompt**
+(`api::Generate` → save → matte → cutout); **relight** the cutout to the `lighting` rig via IC-Light
+(`lighting_prompt` compiles rig + `key_dir` + `warmth`; `ic_light::Pipeline::load`+`relight` → re-matte
+the relit frame). Relight opt-in per RFC Q3: `--relight` / a `lighting:` block on; `--no-relight` off.
+Weight-free path preserved (cutout + no relight → no model). CLI `--relight`/`--no-relight`/`--device`;
+report shows subject source + relit. **Live-proven Metal**: (1) mug cutout → three-point warm rig relit +
+grounded; (2) prompt "glass perfume bottle, gold cap" → generated → U2Net-matted → grounded = a
+professional packshot. **Honest caveat**: IC-Light relights *and* recolors — use `warmth: 0` / a neutral
+`lighting.prompt` to preserve the product hue (document in P4).
 
 ## P3 — catalog: variants, contact sheet, lighting turntable, scenes
 

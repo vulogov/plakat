@@ -46,9 +46,20 @@ pub struct RenderArgs {
     /// Output packshot PNG.
     #[arg(long)]
     pub out: PathBuf,
-    /// Override `subject.image` with this cutout (transparent PNG).
+    /// Override `subject.image` with this cutout / photo (a `subject.photo`/`prompt` in the spec is matted
+    /// / generated with a model).
     #[arg(long)]
     pub subject: Option<PathBuf>,
+    /// Relight the subject to the `lighting` rig (IC-Light). On by default when the spec has a `lighting:`
+    /// block; this forces it on even without one.
+    #[arg(long)]
+    pub relight: bool,
+    /// Force relight off (keep the subject's own light) even when a `lighting:` block is present.
+    #[arg(long)]
+    pub no_relight: bool,
+    /// Device for the model steps (matte / generate / relight).
+    #[arg(long, default_value = "auto")]
+    pub device: String,
 }
 
 pub async fn run(args: ProductArgs) -> Result<()> {
@@ -56,7 +67,7 @@ pub async fn run(args: ProductArgs) -> Result<()> {
         ProductCmd::New(a) => run_new(a),
         ProductCmd::Lint(a) => run_lint(a),
         ProductCmd::Show(a) => run_show(a),
-        ProductCmd::Render(a) => run_render(a),
+        ProductCmd::Render(a) => run_render(a).await,
     }
 }
 
@@ -126,7 +137,7 @@ fn run_show(a: SpecArg) -> Result<()> {
     Ok(())
 }
 
-fn run_render(a: RenderArgs) -> Result<()> {
+async fn run_render(a: RenderArgs) -> Result<()> {
     let spec = ProductSpec::load(&a.spec)?;
     let errs: Vec<_> = lint::lint(&spec).into_iter().filter(|f| f.level == Level::Error).collect();
     if !errs.is_empty() {
@@ -135,9 +146,12 @@ fn run_render(a: RenderArgs) -> Result<()> {
         }
         anyhow::bail!("{} lint error(s) — fix before render", errs.len());
     }
-    let opts = render::RenderOpts { subject: a.subject.clone(), relight: false, device: None };
-    let rep = render::render_spec(&spec, &a.out, &opts)?;
-    println!("{} {}  ({}×{} px · weight-free)", style("wrote").green(), rep.shot.display(), rep.w, rep.h);
+    // relight: --no-relight forces off; --relight forces on; else a `lighting:` block opts in (RFC Q3).
+    let relight = if a.no_relight { false } else { a.relight || spec.lighting.is_some() };
+    let opts = render::RenderOpts { subject: a.subject.clone(), relight, device: Some(a.device.clone()) };
+    let rep = render::render_spec(&spec, &a.out, &opts).await?;
+    let mode = if rep.weight_free { "weight-free".to_string() } else { format!("subject: {}{}", rep.subject_source, if rep.relit { " · relit" } else { "" }) };
+    println!("{} {}  ({}×{} px · {mode})", style("wrote").green(), rep.shot.display(), rep.w, rep.h);
     println!("  {} {}", style("sidecar").cyan(), rep.sidecar.display());
     Ok(())
 }
