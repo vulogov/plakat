@@ -51,14 +51,16 @@ grounded subject over it. `render.rs` refactored: `render_image` (shared) → `r
 (MAIN/BOTTLE/BOX, same rig); scene-bg render. **Non-goal reaffirmed**: no object-rotation novel-view —
 turntable rotates the *light*, not the object; supply angle cutouts via `variants` for a real catalog.
 
-## P4 — integration + corpus + docs + cut 6.9.0
-
-Parity (scenario `type: product` / compile / Bund `plakat.product.*` / `api::Product` / doctor — the
-comic P4 template); a demo (`corpus/product_*` + driver + a white-sweep + a scene shot); `PRODUCT.md`
-+ README; **CUT 6.9.0** (bump Cargo+lock, gate `--no-default-features --lib`, **pin turbofish on new
-`.parse()`**, FF `git push 6.9.0:main`, tag → 6-asset CI, `cargo publish --locked --allow-dirty
---no-default-features`, `gh release edit` + bg waiter, **verify the Windows leg**, NO Claude/Anthropic
-coauthor).
+## P4 — integration + corpus + docs + cut 6.9.0 — **DONE (integration+corpus+docs); CUT in progress**
+Full parity, all live-smoked: **`api::Product`** (load/from_spec/subject/relight/device → run/sheet/
+turntable) · scenario **`type: product`** (`ProductTaskCfg`, dry-run OK) · Bund **`plakat.product.*`**
+(render/sheet) · **`compile`** `type: product` → prose becomes `subject.prompt` (verified) · **doctor**
+`section_product`. Corpus: committed cutouts + `product_bottle.hjson`/`product_catalog.hjson` +
+`product_run.sh` (RENDER=0 weight-free) + `PRODUCT_CORPUS.md`. Docs: `Documentation/PRODUCT.md` + README
+blockquote + body section + studios table. **CUT 6.9.0**: Cargo+lock → 6.9.0; gate `--no-default-features
+--lib`; no new `.parse()`; FF `git push 6.9.0:main`; tag → CI 6-asset; `cargo publish --locked
+--allow-dirty --no-default-features`; `gh release edit` + bg waiter; verify the Windows leg. NO
+Claude/Anthropic coauthor.
 
 ## Sequencing
 **G0** (grounding algorithm) → **P1** (weight-free packshot pipeline, ships value) → **P2** (relight +

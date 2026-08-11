@@ -15,6 +15,7 @@ pub mod artefact;
 pub mod bookart;
 pub mod texture;
 pub mod comic;
+pub mod product;
 pub mod cascade;
 pub mod config;
 pub mod controlnet;
@@ -110,6 +111,11 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.comic.letter: {e}"))?;
     vm.register_inline("plakat.comic.layout".to_string(), comic::plakat_comic_layout)
         .map_err(|e| anyhow!("registering plakat.comic.layout: {e}"))?;
+    // 6.9.0 (P4): plakat.product.* namespace — render a studio packshot / catalog sheet, push the image.
+    vm.register_inline("plakat.product.render".to_string(), product::plakat_product_render)
+        .map_err(|e| anyhow!("registering plakat.product.render: {e}"))?;
+    vm.register_inline("plakat.product.sheet".to_string(), product::plakat_product_sheet)
+        .map_err(|e| anyhow!("registering plakat.product.sheet: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

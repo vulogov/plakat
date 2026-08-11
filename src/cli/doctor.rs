@@ -337,6 +337,9 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     // -------- v6.8.0: comic pipeline --------
     section_comic();
     println!();
+    // -------- v6.9.0: product pipeline --------
+    section_product();
+    println!();
 
     println!(
         "  {}\n",
@@ -487,6 +490,16 @@ fn section_comic() {
     note("6.8.2: MULTI-CHARACTER panels lock too — detected faces are matched to `chars` by reading-order position (left→right / rtl right→left; author controls who's where by list order). Scene-ART reuse: `id:` labels a panel, `reuse: \"@id\"` renders another panel as an EXACT copy of it book-wide (an establishing shot that repeats). `render --lock --restore-faces` runs a restore-faces refine over panels whose swapped face is small (distant / group shots).");
     note("output: a bordered comic page PNG + `panels.json`. Supply your own art with `comic layout/letter --panels <dir>` (no model).");
     note("integration: scenario `type: comic` · compile `type: comic` · Bund `plakat.comic.*` (render/letter/layout) · library `plakat::api::Comic`. See Documentation/COMIC.md.");
+}
+
+fn section_product() {
+    section_header("product (6.9.0 — studio product-shots / packshots)");
+    ok("weights-free (run anywhere, no GPU): new · lint · show · render/sheet with a supplied cutout (no relight)");
+    note("authoring: a `ProductSpec` HJSON — subject{image(cutout)/photo/prompt, scale, anchor} · canvas{size, px, bg: white|grey-sweep|gradient:..|scene} · lighting{rig, key_dir, warmth} · camera{angle} · ground{shadow: soft|hard|none, reflection: gloss|mirror|none, softness, falloff} · variants[] .");
+    note("grounding (the novel weight-free algorithm): a subject ALPHA → a physically-plausible contact shadow (projected to the ground plane, key-dir offset, floor-clamped so the blur can't halo) + a floor reflection (flip about the foot-line, camera squash, fade), composited sweep←reflection←shadow←subject. A supplied cutout keeps logos pixel-exact (no VAE roundtrip).");
+    note("weight-backed: subject from a `photo` (U2Net matte) or a `prompt` (generate → matte); `--relight` / a `lighting:` block relights to the rig via IC-Light (relights AND recolors — use `warmth: 0` / a neutral prompt to keep the product hue); `bg: \"scene\"` generates an environment plate to composite over.");
+    note("catalog: `product sheet` (main + `variants[]` angles, SAME rig/ground, tiled + labelled) · `product turntable --frames N` (one subject, key light swept across N directions, relit each). NON-GOAL: no 3D novel-view — the turntable rotates the LIGHT; supply angle cutouts for a real multi-angle catalog.");
+    note("integration: scenario `type: product` · compile `type: product` · Bund `plakat.product.*` (render/sheet) · library `plakat::api::Product`. See Documentation/PRODUCT.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

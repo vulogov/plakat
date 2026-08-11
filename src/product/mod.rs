@@ -9,6 +9,7 @@ pub mod compose;
 pub mod ground;
 pub mod lint;
 pub mod render;
+pub mod scenario_task;
 pub mod spec;
 
 pub use compose::{resolve, Plan};

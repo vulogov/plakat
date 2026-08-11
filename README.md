@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.9.0 — `plakat product`**: the flagship (RFC PRODUCT-1). Turn a **subject** — a cutout, a photo, or a text prompt — into a studio **product-shot / packshot**: the subject on a controlled background (white / grey sweep / gradient / a generated scene), **grounded** with a physically-plausible contact shadow and floor reflection derived from its alpha, at a chosen camera angle, optionally relit to a named lighting rig (IC-Light). A packshot is *structured data* — the same rig and grounding reproduce across a whole catalog. **`product sheet`** tiles a subject's angles into a labelled contact sheet; **`product turntable`** sweeps the key light. The grounding / sweep / composite half is **weight-free** — a supplied cutout → a sellable shot with no GPU; only relight + subject-generation need a model. Wired everywhere: scenario `type: product`, `compile`, Bund `plakat.product.*`, `plakat::api::Product`. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.9.0) · [Guide →](Documentation/PRODUCT.md)
+>
 > **v6.8.2 — `plakat comic` reference-lock, finished**: closes the three 6.8.1 deferrals. **Multi-character panels** now face-lock too — detected faces are matched to the `chars` list by reading-order position (left→right, or right→left for `rtl`), so a two-shot keeps *both* identities. **Scene-art reuse**: label a panel with `id:` and another `reuse: "@id"` renders it as the **exact** same image, book-wide (an establishing shot that repeats identically, not a re-generated recurrence). And **`--restore-faces`** runs a restore-faces refine over panels whose swapped face is small (distant / group shots) to crisp the detail. All best-effort on top of the face-swap weights; the reuse/id half is weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.2) · [Guide →](Documentation/COMIC.md)
 >
 > **v6.8.1 — `plakat comic` goes multi-page**: a comic strip spans pages that share a cast, style, and engine while the panels and dialogue change. A `ComicSpec` gains `pages: [...]` (the top-level cast/style/model is the shared **world** propagated to every page → `page_00.png, page_01.png, …`), a named `scenes: { alley: "…" }` library that a panel references with `@alley` so a setting recurs, and `extends: "series.hjson"` to inherit a base spec. **Reference-lock** (`comic cast` + `render --lock`) renders each character once and **face-swaps** that reference onto every single-character panel (SCRFD+ArcFace+inswapper) so the same face holds across pages — beyond description-level drift — plus a `style_lora` that locks the look book-wide. The multi-page/scenes/extends half is weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.1) · [Guide →](Documentation/COMIC.md)
@@ -85,6 +87,7 @@ across CPU / CUDA / Metal, pulling weights from HuggingFace and caching them loc
 | Studio | What it makes |
 |---|---|
 | **`plakat comic`** | Multi-panel **comic pages** — panel layout, a recurring **face-locked cast**, speech-balloon placement + lettering, multi-page series (6.8). |
+| **`plakat product`** | Studio **product-shots / packshots** — a subject grounded on a sweep with a physically-plausible contact shadow + reflection, optional relight rig, catalog contact sheets (6.9). |
 | **`plakat texture`** | Seamless, tileable **PBR material sets** (albedo/normal/roughness/metallic/height/AO) exported engine-ready for glTF / Unreal / Unity / Godot (6.3). |
 | **`plakat bookart`** | B/W **book ornaments**, illuminated initials, manuscripts, and EPUBs from a `BookArtSpec` (6.0). |
 | **`plakat map`** | **Fantasy maps** from a prose world description — geometry → linework → painted render. |
@@ -117,6 +120,40 @@ Each is *structured data → deterministic resolve → render*, so the weight-fr
 - **Metadata & provenance** — read the A1111 `parameters` chunk, `clone` a PNG back into a command, `inspect` safetensors, inspect embeddings / motion adapters, and manage the HF cache with `models`.
 
 </details>
+
+## What's new in 6.9.0 — `plakat product` (RFC PRODUCT-1)
+
+A **subject** — a cutout, a photo, or a text prompt — becomes a **studio product-shot**. A packshot is a
+*composition*: the same lighting and grounding must reproduce across a whole catalog of different products,
+and the subject has to sit on the ground with a real contact shadow on a background that is actually pure
+white. So it's authored, not prompted.
+
+```bash
+plakat product new shot.hjson                                 # scaffold a spec
+plakat product render shot.hjson --out shot.png --subject sneaker.png   # cutout → grounded packshot (no GPU)
+plakat product sheet shot.hjson --out sheet.png               # a catalog contact sheet
+```
+
+- **Grounding — the novel weight-free algorithm.** From the subject's **alpha** alone: a contact shadow
+  (projected to the ground, offset by the key light, floor-clamped so the blur can't halo) + a floor
+  reflection (flipped about the foot-line, camera-foreshortened, faded). `shadow: soft|hard`,
+  `reflection: gloss|mirror|none`.
+- **Subject sources** — a transparent **cutout** (used pixel-exact — logos never distort), a **photo**
+  (matted via U2Net), or a **prompt** (generated then matted).
+- **Relight** — opt in with `--relight` or a `lighting:` block to re-illuminate the subject to a rig
+  (three-point / softbox / rim / …) via IC-Light.
+- **Backgrounds** — `white` · `grey-sweep` · `gradient:…` · or a generated **scene** plate.
+- **Catalog** — `product sheet` tiles the main subject + `variants[]` angles with the same rig/ground;
+  `product turntable` sweeps the key light across N directions.
+- **Weight-free with a cutout** — the sweep, grounding, and composite need no GPU; only relight + subject
+  generation load a model. Wired everywhere: scenario `type: product`, `compile`, Bund `plakat.product.*`,
+  `plakat::api::Product`, `plakat doctor`.
+
+**Honest limits:** no 3D novel-view (the turntable rotates the *light*, not the object — supply angle
+cutouts for a real multi-angle catalog); the grounding is a plausible approximation, not a ray-traced
+render; relight recolors, so use `warmth: 0` / a cutout to keep the product hue exact.
+
+See [`Documentation/PRODUCT.md`](Documentation/PRODUCT.md).
 
 ## What's new in 6.8.0 — `plakat comic` (RFC COMIC-1)
 

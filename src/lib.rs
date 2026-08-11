@@ -6,7 +6,8 @@
 //! **[`plakat::api`](crate::api) is the supported, stable, documented surface.** Start there:
 //! builder types (`Generate`, `Img2img`, `Upscale`, `Relight`, `Stylize`, `Transparent`,
 //! `Segment`, `Portrait`, `Multiperson`, `Map`, `Animate`, `StyleTrain`, `EmbeddingTrain`,
-//! `Verify`, `BookArt`, `Texture`, `Comic`) cover everything the CLI does except the interactive UI.
+//! `Verify`, `BookArt`, `Texture`, `Comic`, `Product`) cover everything the CLI does except the
+//! interactive UI.
 //!
 //! ```no_run
 //! # async fn ex() -> anyhow::Result<()> {

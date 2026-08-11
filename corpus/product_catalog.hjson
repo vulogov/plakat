@@ -1,0 +1,14 @@
+// PRODUCT-1 corpus demo (RFC PRODUCT-1, plakat 6.9) — a catalog contact sheet, weight-free.
+//
+// The main subject + each `variants[]` angle are rendered with the SAME rig + grounding, then tiled into
+// a labelled contact sheet (`product sheet`). All from cutouts → no GPU.
+{
+  schema: "product/1"
+  subject: { image: "corpus/images/product/subject_bottle.png", scale: 0.6, anchor: "bottom" }
+  canvas:  { size: "square", px: 700, bg: "grey-sweep" }
+  ground:  { shadow: "soft", reflection: "gloss" }
+  variants: [
+    { image: "corpus/images/product/subject_bottle_side.png", label: "side" }
+  ]
+  seed: 7
+}

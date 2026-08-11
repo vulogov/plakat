@@ -91,9 +91,9 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 ));
             }
         }
-        // A bookart / texture / comic task folds the prompt into its spec block below and ignores the
-        // top-level prompt/negative — don't emit them (they'd be dead, and confusing).
-        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic")) {
+        // A bookart / texture / comic / product task folds the prompt into its spec block below and
+        // ignores the top-level prompt/negative — don't emit them (they'd be dead, and confusing).
+        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -210,6 +210,17 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 o.push_str("      comic: {\n        spec: {\n          panels: [\n");
                 o.push_str(&format!("            {{ scene: {} }}\n", q(&cs.prompt)));
                 o.push_str("          ]\n        }\n      }\n");
+            }
+        }
+        // 6.9.0 P4: emit the product task block. `product-spec-file` points at a ProductSpec; otherwise the
+        // prose becomes the subject prompt (generate → matte → ground).
+        if s.task_type.as_deref() == Some("product") {
+            if let Some(v) = &s.product_spec_file {
+                o.push_str(&format!("      product: {{ spec_file: {} }}\n", q(v)));
+            } else {
+                o.push_str("      product: {\n        spec: {\n");
+                o.push_str(&format!("          subject: {{ prompt: {} }}\n", q(&cs.prompt)));
+                o.push_str("          canvas: { bg: \"grey-sweep\" }\n        }\n      }\n");
             }
         }
         o.push_str("    }\n");

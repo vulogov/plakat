@@ -959,6 +959,10 @@ struct TaskDef {
     /// The comic task body (only consulted for `type: comic` tasks — 6.8.0 P4).
     #[serde(default)]
     comic: Option<crate::comic::scenario_task::ComicTaskCfg>,
+
+    /// The product task body (only consulted for `type: product` tasks — 6.9.0 P4).
+    #[serde(default)]
+    product: Option<crate::product::scenario_task::ProductTaskCfg>,
 }
 
 /// v0.15 phase 7a: per-task enhancement override. Accepts a string
@@ -1029,6 +1033,7 @@ enum TaskKind {
     Bookart,
     Texture,
     Comic,
+    Product,
 }
 
 impl TaskKind {
@@ -1047,9 +1052,10 @@ impl TaskKind {
             "bookart" => Ok(Self::Bookart),
             "texture" => Ok(Self::Texture),
             "comic" => Ok(Self::Comic),
+            "product" => Ok(Self::Product),
             other => bail!(
                 "scenario task type {other:?} not recognised \
-                 (expected: generate, animatediff, map, multiperson, fractal, bookart, texture, comic)"
+                 (expected: generate, animatediff, map, multiperson, fractal, bookart, texture, comic, product)"
             ),
         }
     }
@@ -1095,11 +1101,11 @@ fn evict_decision(last: Option<TaskKind>, current: TaskKind) -> CacheEviction {
         // A map / multiperson / fractal task loads its own SD pipeline(s) internally (or
         // none, for a pure Track-A fractal) — free any cached t2i / animate pipeline first.
         #[cfg(feature = "fractals")]
-        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Fractal | TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic) => {
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Fractal | TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic | TaskKind::Product) => {
             CacheEviction::DropAll
         }
         #[cfg(not(feature = "fractals"))]
-        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic) => {
+        (Some(TaskKind::Generate) | Some(TaskKind::Animate), TaskKind::Map | TaskKind::Multiperson | TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic | TaskKind::Product) => {
             CacheEviction::DropAll
         }
         // First task (last == None) or same-kind continuation —
@@ -1635,6 +1641,10 @@ pub async fn run_with_events(
                 let cfg = t.comic.clone().unwrap_or_default();
                 crate::comic::scenario_task::validate(&cfg).with_context(|| format!("task {:?} (comic)", t.name))?;
             }
+            TaskKind::Product => {
+                let cfg = t.product.clone().unwrap_or_default();
+                crate::product::scenario_task::validate(&cfg).with_context(|| format!("task {:?} (product)", t.name))?;
+            }
         }
     }
 
@@ -1659,7 +1669,7 @@ pub async fn run_with_events(
         if matches!(tk, Ok(TaskKind::Fractal)) {
             continue;
         }
-        if matches!(tk, Ok(TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic)) {
+        if matches!(tk, Ok(TaskKind::Bookart | TaskKind::Texture | TaskKind::Comic | TaskKind::Product)) {
             continue;
         }
         if !scenes.contains_key(t.scene.as_str()) {
@@ -3117,6 +3127,43 @@ pub async fn run_with_events(
             .await;
             let rec_kind = "texture".to_string();
             match texture_result {
+                Ok(()) => task_records.push(TaskRunRecord {
+                    name: task.name.clone(),
+                    kind: rec_kind,
+                    status: if args.dry_run { "dry-run" } else { "ok" }.to_string(),
+                    seed: Some(task_seed),
+                    note: None,
+                    error: None,
+                }),
+                Err(e) => {
+                    crate::ui::progress::println(&format!("  {} task {:?}: {}", style("✗ failed").red().bold(), task.name, e));
+                    task_records.push(TaskRunRecord {
+                        name: task.name.clone(),
+                        kind: rec_kind,
+                        status: "failed".to_string(),
+                        seed: Some(task_seed),
+                        note: None,
+                        error: Some(e.to_string()),
+                    });
+                    any_task_failed = true;
+                }
+            }
+            seed_offset += count as u64;
+            continue;
+        }
+
+        // 6.9.0 P4: product-task dispatch. Renders a studio packshot to `<out>/<name>/shot.png` (or a
+        // catalog `sheet.png`) via the shared render core.
+        if matches!(task_kind, TaskKind::Product) {
+            let task_seed = task.seed.unwrap_or(seed + seed_offset);
+            let task_out = out_root.join(safe_name(&task.name));
+            let product_result: Result<()> = async {
+                let cfg = task.product.clone().unwrap_or_default();
+                crate::product::scenario_task::run_product_task(&cfg, task_seed, device.clone(), &task_out, args.dry_run).await
+            }
+            .await;
+            let rec_kind = "product".to_string();
+            match product_result {
                 Ok(()) => task_records.push(TaskRunRecord {
                     name: task.name.clone(),
                     kind: rec_kind,

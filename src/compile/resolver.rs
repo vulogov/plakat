@@ -79,6 +79,9 @@ pub struct ResolvedScene {
     // 6.8.0 P4: a `type: comic` block compiles to a scenario `comic` task. `comic-spec-file` points at a
     // ComicSpec; otherwise the prose (if any) becomes a single-panel page.
     pub comic_spec_file: Option<String>,
+    // 6.9.0 P4: a `type: product` block compiles to a scenario `product` task. `product-spec-file` points
+    // at a ProductSpec; otherwise the prose (if any) becomes the subject prompt.
+    pub product_spec_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -231,6 +234,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             texture_seamless: last_wins(&vals(g, "texture-seamless"), &vals(Some(s), "texture-seamless")).map(str::to_string),
             texture_height: last_wins(&vals(g, "texture-height"), &vals(Some(s), "texture-height")).map(str::to_string),
             comic_spec_file: last_wins(&vals(g, "comic-spec-file"), &vals(Some(s), "comic-spec-file")).map(str::to_string),
+            product_spec_file: last_wins(&vals(g, "product-spec-file"), &vals(Some(s), "product-spec-file")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

@@ -1935,6 +1935,67 @@ impl Comic {
     }
 }
 
+/// Studio product-shots / packshots (RFC PRODUCT-1). Turn a subject — a cutout, a photo, or a prompt —
+/// into a grounded packshot on a studio sweep (or a generated scene), with an optional lighting rig. The
+/// grounding (contact shadow + reflection) is weight-free; a cutout with relight off needs no GPU.
+///
+/// ```no_run
+/// # async fn f() -> anyhow::Result<()> {
+/// use plakat::api::Product;
+/// let report = Product::load("shot.hjson")?.subject("sneaker.png").run("shot.png").await?;
+/// println!("{}×{} · weight-free {}", report.w, report.h, report.weight_free);
+/// # Ok(()) }
+/// ```
+pub struct Product {
+    spec: crate::product::ProductSpec,
+    opts: crate::product::render::RenderOpts,
+}
+
+impl Product {
+    /// Load a `ProductSpec` from an HJSON file.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Ok(Self { spec: crate::product::ProductSpec::load(path.as_ref())?, opts: Default::default() })
+    }
+
+    /// Use an in-memory spec.
+    pub fn from_spec(spec: crate::product::ProductSpec) -> Self {
+        Self { spec, opts: Default::default() }
+    }
+
+    /// Override the subject cutout (a transparent PNG).
+    pub fn subject(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.opts.subject = Some(path.into());
+        self
+    }
+
+    /// Relight the subject to the `lighting` rig (IC-Light). Off by default (weight-free).
+    pub fn relight(mut self, on: bool) -> Self {
+        self.opts.relight = on;
+        self
+    }
+
+    /// Device selector for the model steps (matte / generate / relight).
+    pub fn device(mut self, spec: impl Into<String>) -> Self {
+        self.opts.device = Some(spec.into());
+        self
+    }
+
+    /// Render one packshot to `out`.
+    pub async fn run(self, out: impl AsRef<std::path::Path>) -> Result<crate::product::render::Report> {
+        crate::product::render::render_spec(&self.spec, out.as_ref(), &self.opts).await
+    }
+
+    /// Render a catalog contact sheet (main subject + `variants[]`) to `out`; returns the cell count.
+    pub async fn sheet(self, out: impl AsRef<std::path::Path>) -> Result<usize> {
+        crate::product::render::render_sheet(&self.spec, &self.opts, out.as_ref()).await
+    }
+
+    /// Render a lighting turntable (`frames` key-light directions) to `out`; returns the frame count.
+    pub async fn turntable(self, frames: usize, out: impl AsRef<std::path::Path>) -> Result<usize> {
+        crate::product::render::render_turntable(&self.spec, &self.opts, frames, out.as_ref()).await
+    }
+}
+
 /// Seamless PBR material synthesis (RFC TEXTURE-1). Turn a prompt or a photo into a tileable material
 /// set (albedo/normal/roughness/metallic/height/AO), written to a directory. Mirrors [`BookArt`].
 ///

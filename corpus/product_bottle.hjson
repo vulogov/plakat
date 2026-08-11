@@ -1,0 +1,14 @@
+// PRODUCT-1 corpus demo (RFC PRODUCT-1, plakat 6.9) — a weight-free packshot from a subject cutout.
+//
+// A cutout PNG (images/product/subject_bottle.png) is placed on a grey studio sweep and grounded with a
+// soft contact shadow + a gloss floor reflection — all derived from the subject's ALPHA, no GPU. Only
+// relight (a `lighting:` block) and a generated subject/scene would need a model.
+{
+  schema: "product/1"
+  // paths are relative to the working directory (repo root, where the driver runs) — like all plakat paths.
+  subject: { image: "corpus/images/product/subject_bottle.png", scale: 0.55, anchor: "bottom" }
+  canvas:  { size: "square", px: 800, bg: "grey-sweep" }
+  camera:  { angle: "eye" }
+  ground:  { shadow: "soft", reflection: "gloss", softness: 0.5, falloff: 0.6 }
+  seed: 7
+}
