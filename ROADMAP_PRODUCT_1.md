@@ -40,12 +40,16 @@ grounded; (2) prompt "glass perfume bottle, gold cap" → generated → U2Net-ma
 professional packshot. **Honest caveat**: IC-Light relights *and* recolors — use `warmth: 0` / a neutral
 `lighting.prompt` to preserve the product hue (document in P4).
 
-## P3 — catalog: variants, contact sheet, lighting turntable, scenes
-
-Multi-angle `variants` composited with the **same** rig/ground; `product sheet` (contact sheet, lettered
-labels via the 5×7 face like `comic`); **lighting turntable** (one subject, key light rotated across N
-frames → sheet or gif); optional **generated scene** backgrounds (`bg: "scene"` → `t2i` / replace-bg
-path). Honest non-goal reaffirmed: no object-rotation novel-view (supply angle cutouts).
+## P3 — catalog: variants, contact sheet, lighting turntable, scenes — **DONE (commit pending)**
+`product sheet` — the main subject + each `variants[]` angle rendered with the **same** rig/ground, tiled
+into a labelled contact sheet (`compose::contact_sheet`, 5×7 lettering like `comic`); weight-free with
+cutouts. `product turntable --frames N` — one subject, the key light swept across N directions
+(`TURN_DIRS`, relit each) → a labelled sheet. `bg: "scene"` — `render_image` generates an empty
+environment plate (`scene_bg`, `api::Generate` on `scene.prompt`) and `compose_with_bg` composites the
+grounded subject over it. `render.rs` refactored: `render_image` (shared) → `render_spec`/`render_sheet`/
+`render_turntable`. 8 unit tests (+ contact_sheet tiling) + live: weight-free 3-product catalog sheet
+(MAIN/BOTTLE/BOX, same rig); scene-bg render. **Non-goal reaffirmed**: no object-rotation novel-view —
+turntable rotates the *light*, not the object; supply angle cutouts via `variants` for a real catalog.
 
 ## P4 — integration + corpus + docs + cut 6.9.0
 

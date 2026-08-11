@@ -28,6 +28,10 @@ pub enum ProductCmd {
     Show(SpecArg),
     /// A supplied cutout → sweep + contact shadow + reflection → a finished packshot. **No GPU.**
     Render(RenderArgs),
+    /// A catalog **contact sheet**: the main subject + each `variants[]` angle, same rig/ground, tiled.
+    Sheet(SheetArgs),
+    /// A lighting **turntable**: one subject, the key light swept across N directions (relit each).
+    Turntable(TurntableArgs),
 }
 
 #[derive(Args, Debug)]
@@ -62,12 +66,43 @@ pub struct RenderArgs {
     pub device: String,
 }
 
+#[derive(Args, Debug)]
+pub struct SheetArgs {
+    pub spec: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Override the main subject cutout.
+    #[arg(long)]
+    pub subject: Option<PathBuf>,
+    /// Relight every cell to the `lighting` rig (else keep each cutout's own light).
+    #[arg(long)]
+    pub relight: bool,
+    #[arg(long, default_value = "auto")]
+    pub device: String,
+}
+
+#[derive(Args, Debug)]
+pub struct TurntableArgs {
+    pub spec: PathBuf,
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Number of key-light directions to sweep (2–8).
+    #[arg(long, default_value_t = 5)]
+    pub frames: usize,
+    #[arg(long)]
+    pub subject: Option<PathBuf>,
+    #[arg(long, default_value = "auto")]
+    pub device: String,
+}
+
 pub async fn run(args: ProductArgs) -> Result<()> {
     match args.cmd {
         ProductCmd::New(a) => run_new(a),
         ProductCmd::Lint(a) => run_lint(a),
         ProductCmd::Show(a) => run_show(a),
         ProductCmd::Render(a) => run_render(a).await,
+        ProductCmd::Sheet(a) => run_sheet(a).await,
+        ProductCmd::Turntable(a) => run_turntable(a).await,
     }
 }
 
@@ -153,5 +188,24 @@ async fn run_render(a: RenderArgs) -> Result<()> {
     let mode = if rep.weight_free { "weight-free".to_string() } else { format!("subject: {}{}", rep.subject_source, if rep.relit { " · relit" } else { "" }) };
     println!("{} {}  ({}×{} px · {mode})", style("wrote").green(), rep.shot.display(), rep.w, rep.h);
     println!("  {} {}", style("sidecar").cyan(), rep.sidecar.display());
+    Ok(())
+}
+
+async fn run_sheet(a: SheetArgs) -> Result<()> {
+    let spec = ProductSpec::load(&a.spec)?;
+    let relight = a.relight || spec.lighting.is_some();
+    let opts = render::RenderOpts { subject: a.subject.clone(), relight, device: Some(a.device.clone()) };
+    println!("{} catalog contact sheet ({} variant(s)) · {}", style("building").cyan(), spec.variants.len(), a.device);
+    let n = render::render_sheet(&spec, &opts, &a.out).await?;
+    println!("{} {}  ({n} cell(s))", style("wrote").green(), a.out.display());
+    Ok(())
+}
+
+async fn run_turntable(a: TurntableArgs) -> Result<()> {
+    let spec = ProductSpec::load(&a.spec)?;
+    let opts = render::RenderOpts { subject: a.subject.clone(), relight: true, device: Some(a.device.clone()) };
+    println!("{} lighting turntable ({} frame(s), relit) · {}", style("building").cyan(), a.frames.clamp(2, 8), a.device);
+    let n = render::render_turntable(&spec, &opts, a.frames, &a.out).await?;
+    println!("{} {}  ({n} frame(s))", style("wrote").green(), a.out.display());
     Ok(())
 }

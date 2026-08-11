@@ -184,13 +184,18 @@ fn darken(dst: &mut RgbImage, shadow: &[f32], max_dark: f32) {
     }
 }
 
-/// Compose the packshot: sweep ← reflection ← shadow ← subject. `subject_cutout` is a transparent PNG.
-pub fn compose(plan: &Plan, subject_cutout: &DynamicImage) -> RgbImage {
+/// Compose the packshot: background ← reflection ← shadow ← subject. `subject_cutout` is a transparent
+/// PNG. The background is the studio sweep unless `bg` supplies a generated scene (P3), which is scaled to
+/// cover the canvas.
+pub fn compose_with_bg(plan: &Plan, subject_cutout: &DynamicImage, bg: Option<&RgbImage>) -> RgbImage {
     let (w, h) = (plan.w as usize, plan.h as usize);
     let placed = place_subject(plan, &subject_cutout.to_rgba8());
     let alpha: Vec<f32> = placed.pixels().map(|p| p.0[3] as f32 / 255.0).collect();
 
-    let mut out = sweep(plan);
+    let mut out = match bg {
+        Some(scene) => image::imageops::resize(scene, plan.w, plan.h, image::imageops::FilterType::Lanczos3),
+        None => sweep(plan),
+    };
     // reflection (under everything but the sweep)
     let refl = ground::reflection(&placed, plan.ground_y as usize, plan.reflection, ground::camera_squash(plan.camera_angle.as_deref()), plan.falloff);
     over(&mut out, &refl);
@@ -200,6 +205,41 @@ pub fn compose(plan: &Plan, subject_cutout: &DynamicImage) -> RgbImage {
     // subject on top (pixel-exact)
     over(&mut out, &placed);
     out
+}
+
+/// Compose the packshot on the studio sweep (the common case).
+pub fn compose(plan: &Plan, subject_cutout: &DynamicImage) -> RgbImage {
+    compose_with_bg(plan, subject_cutout, None)
+}
+
+/// Whether the canvas asks for a generated scene background (P3).
+pub fn wants_scene(spec: &ProductSpec) -> bool {
+    spec.canvas.as_ref().and_then(|c| c.bg.as_deref()).map(|b| b.eq_ignore_ascii_case("scene")).unwrap_or(false)
+}
+
+/// Tile finished packshots into a labelled contact sheet (near-square grid), lettering each label under
+/// its cell with the always-compiled 5×7 bitmap face (like `comic`). Weight-free.
+pub fn contact_sheet(cells: &[(RgbImage, String)], cell_px: u32) -> RgbImage {
+    let n = cells.len().max(1);
+    let cols = (n as f32).sqrt().ceil() as u32;
+    let rows = ((n as u32) + cols - 1) / cols;
+    let (pad, label_h) = (16u32, 30u32);
+    let cw = cell_px + pad;
+    let ch = cell_px + label_h + pad;
+    let mut sheet = RgbImage::from_pixel(cols * cw + pad, rows * ch + pad, Rgb([248, 248, 250]));
+    for (i, (img, label)) in cells.iter().enumerate() {
+        let (r, c) = (i as u32 / cols, i as u32 % cols);
+        let thumb = image::imageops::resize(img, cell_px, cell_px, image::imageops::FilterType::Lanczos3);
+        let (ox, oy) = (pad + c * cw, pad + r * ch);
+        image::imageops::overlay(&mut sheet, &thumb, ox as i64, oy as i64);
+        if !label.trim().is_empty() {
+            let scale = 2u32;
+            let tw = crate::map::labels::text_width(label, scale);
+            let tx = ox + (cell_px.saturating_sub(tw)) / 2;
+            crate::map::labels::draw_text(&mut sheet, tx as i32, (oy + cell_px + 8) as i32, label, scale, [30, 30, 30]);
+        }
+    }
+    sheet
 }
 
 /// The `shot.meta.json` sidecar: the resolved rig / camera / ground / canvas, for reproducibility.
@@ -256,5 +296,17 @@ mod tests {
         // sidecar carries the resolved ground.
         let js: serde_json::Value = serde_json::from_str(&meta_json(&spec, &plan)).unwrap();
         assert_eq!(js["ground"]["shadow"], "soft");
+    }
+
+    #[test]
+    fn contact_sheet_tiles_labelled_cells() {
+        let cells: Vec<(RgbImage, String)> = (0..3)
+            .map(|i| (RgbImage::from_pixel(300, 300, Rgb([10 + i * 40, 120, 200])), format!("angle-{i}")))
+            .collect();
+        let sheet = contact_sheet(&cells, 200);
+        // 3 cells → 2 cols × 2 rows grid, so the sheet is wider/taller than one padded cell.
+        assert!(sheet.width() >= 2 * 200 && sheet.height() >= 2 * 200, "grid holds the cells: {:?}", sheet.dimensions());
+        // there's dark ink somewhere (the lettered labels).
+        assert!(sheet.pixels().any(|p| p.0[0] < 60 && p.0[1] < 60 && p.0[2] < 60), "labels lettered");
     }
 }

@@ -145,14 +145,109 @@ async fn resolve_subject(spec: &ProductSpec, opts: &RenderOpts, tmp: &Path) -> R
     Ok((cutout, source, relit, used_model))
 }
 
+/// A generation size at the model base, matching the canvas aspect (snapped to /64).
+fn fit_gen(w: u32, h: u32, base: u32) -> (u32, u32) {
+    let ar = w.max(1) as f32 / h.max(1) as f32;
+    let (fw, fh) = if ar >= 1.0 { (base as f32, base as f32 / ar) } else { (base as f32 * ar, base as f32) };
+    let snap = |v: f32| (((v / 64.0).round().max(1.0) as u32) * 64).clamp(512, 1536);
+    (snap(fw), snap(fh))
+}
+
+/// Generate a scene-background plate (P3): `canvas.bg: "scene"` → an empty environment from `scene.prompt`.
+async fn scene_bg(spec: &ProductSpec, opts: &RenderOpts, w: u32, h: u32, tmp: &Path) -> Result<RgbImage> {
+    let prompt = spec.scene.as_ref().and_then(|s| s.prompt.as_deref()).filter(|s| !s.trim().is_empty()).unwrap_or("a clean studio surface, soft daylight");
+    let model = spec.model.as_deref().unwrap_or("sdxl").to_string();
+    let (gw, gh) = fit_gen(w, h, model_base(&model));
+    let mut g = crate::api::Generate::new(&model)
+        .prompt(format!("{prompt}, empty background plate, no products, no objects in focus"))
+        .negative("product, object, person, text, watermark")
+        .size(gw, gh)
+        .steps(spec.steps.unwrap_or(24))
+        .seed(spec.seed.unwrap_or(0).wrapping_add(0x5ce6e))
+        .count(1);
+    if let Some(d) = &opts.device {
+        g = g.device(d);
+    }
+    let imgs = g.run().await.context("generating scene background")?;
+    let scene_png = tmp.join("scene_bg.png");
+    imgs.first().context("scene generation produced no image")?.save(&scene_png)?;
+    Ok(image::open(&scene_png)?.to_rgb8())
+}
+
+/// Resolve subject + (optional) scene background → the composed packshot image.
+async fn render_image(spec: &ProductSpec, opts: &RenderOpts, tmp: &Path) -> Result<(RgbImage, &'static str, bool, bool)> {
+    let plan: Plan = compose::resolve(spec);
+    let (cutout, source, relit, mut used) = resolve_subject(spec, opts, tmp).await?;
+    let bg = if compose::wants_scene(spec) {
+        used = true;
+        Some(scene_bg(spec, opts, plan.w, plan.h, tmp).await?)
+    } else {
+        None
+    };
+    let shot = compose::compose_with_bg(&plan, &DynamicImage::ImageRgba8(cutout), bg.as_ref());
+    Ok((shot, source, relit, used))
+}
+
 /// The full render: resolve the subject (models as needed) → ground + composite → write shot + sidecar.
 pub async fn render_spec(spec: &ProductSpec, out: &Path, opts: &RenderOpts) -> Result<Report> {
     let plan: Plan = compose::resolve(spec);
     let tmp = tempfile::tempdir().context("temp dir for product render")?;
-    let (cutout, source, relit, used_model) = resolve_subject(spec, opts, tmp.path()).await?;
-    let shot = compose::compose(&plan, &DynamicImage::ImageRgba8(cutout));
+    let (shot, source, relit, used_model) = render_image(spec, opts, tmp.path()).await?;
     shot.save(out).with_context(|| format!("writing {}", out.display()))?;
     let sidecar = out.with_extension("meta.json");
     std::fs::write(&sidecar, compose::meta_json(spec, &plan)).with_context(|| format!("writing {}", sidecar.display()))?;
     Ok(Report { shot: out.to_path_buf(), sidecar, w: plan.w, h: plan.h, weight_free: !used_model, subject_source: source, relit })
+}
+
+/// Render a **catalog contact sheet** (P3): the main subject + each `variants[]` angle, all with the same
+/// rig / ground, tiled + labelled. Returns the sheet + how many cells it holds.
+pub async fn render_sheet(spec: &ProductSpec, opts: &RenderOpts, out: &Path) -> Result<usize> {
+    let tmp = tempfile::tempdir().context("temp dir for sheet")?;
+    let mut cells: Vec<(RgbImage, String)> = Vec::new();
+    // the main subject (if any source is set)
+    if opts.subject.is_some() || spec.subject_image().is_some() || spec.subject.as_ref().map(|s| s.photo.is_some() || s.prompt.is_some()).unwrap_or(false) {
+        let (img, _, _, _) = render_image(spec, opts, tmp.path()).await.context("rendering the main subject")?;
+        cells.push((img, "main".to_string()));
+    }
+    // each variant angle, overriding the subject cutout (same rig/ground)
+    for (i, v) in spec.variants.iter().enumerate() {
+        let Some(vi) = v.image.as_deref().filter(|s| !s.trim().is_empty()) else { continue };
+        let mut o = opts.clone();
+        o.subject = Some(PathBuf::from(vi));
+        let label = v.label.clone().unwrap_or_else(|| format!("v{}", i + 1));
+        match render_image(spec, &o, tmp.path()).await {
+            Ok((img, _, _, _)) => cells.push((img, label)),
+            Err(e) => tracing::warn!(target: "plakat", "product: sheet variant `{vi}` failed ({e})"),
+        }
+    }
+    anyhow::ensure!(!cells.is_empty(), "no subject / variants to sheet");
+    let sheet = compose::contact_sheet(&cells, 480);
+    sheet.save(out).with_context(|| format!("writing {}", out.display()))?;
+    Ok(cells.len())
+}
+
+/// The directions a lighting turntable sweeps the key light through.
+const TURN_DIRS: &[&str] = &["left", "top-left", "top", "top-right", "right"];
+
+/// Render a **lighting turntable** (P3): one subject, the key light swept across `frames` directions
+/// (relit each), tiled + labelled. Needs the relight model. Returns the frame count.
+pub async fn render_turntable(spec: &ProductSpec, opts: &RenderOpts, frames: usize, out: &Path) -> Result<usize> {
+    let tmp = tempfile::tempdir().context("temp dir for turntable")?;
+    let n = frames.clamp(2, 8);
+    let mut cells: Vec<(RgbImage, String)> = Vec::new();
+    for i in 0..n {
+        let dir = TURN_DIRS[i * (TURN_DIRS.len() - 1) / (n - 1)];
+        let mut s = spec.clone();
+        let mut l = s.lighting.clone().unwrap_or_default();
+        l.key_dir = Some(dir.to_string());
+        l.prompt = None; // let the rig+dir recompile per frame
+        s.lighting = Some(l);
+        let mut o = opts.clone();
+        o.relight = true;
+        let (img, _, _, _) = render_image(&s, &o, tmp.path()).await.with_context(|| format!("turntable frame {dir}"))?;
+        cells.push((img, dir.to_ascii_uppercase()));
+    }
+    let sheet = compose::contact_sheet(&cells, 420);
+    sheet.save(out).with_context(|| format!("writing {}", out.display()))?;
+    Ok(n)
 }
