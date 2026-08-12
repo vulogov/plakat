@@ -32,6 +32,7 @@ pub mod bookart;
 pub mod texture;
 pub mod comic;
 pub mod product;
+pub mod naturalize;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -179,6 +180,10 @@ pub enum Command {
     /// cutout → a sweep + a grounded contact shadow + reflection. `new` scaffolds, `lint`
     /// validates, `show` resolves, `render` composites (weight-free; relight lands in P2).
     Product(product::ProductArgs),
+    /// Reduce the "AI-generated" fingerprint of an image (RFC QUALITY-1): an analog post-pass —
+    /// film grain, chromatic aberration, vignette, bloom, a desaturating film grade. Weight-free;
+    /// carries plakat provenance forward (`--no-reetch` for a clean output).
+    Naturalize(naturalize::NaturalizeArgs),
     /// Resize an image larger using a classical filter (Lanczos by default).
     Upscale(upscale::UpscaleArgs),
     /// Score images by aesthetic quality (LAION CLIP predictor) and rank them,
@@ -429,6 +434,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Texture(args) => texture::run(args).await,
         Command::Comic(args) => comic::run(args).await,
         Command::Product(args) => product::run(args).await,
+        Command::Naturalize(args) => naturalize::run(args).await,
         #[cfg(feature = "onnx")]
         Command::ConvertOnnx(args) => convert_onnx::run(args).await,
         #[cfg(feature = "ui")]

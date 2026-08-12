@@ -78,6 +78,9 @@ pub mod comic;
 /// v6.9 flagship: `plakat product` — studio product-shots / packshots (RFC PRODUCT-1). Always compiled
 /// (the sweep / grounding / composite half is weight-free).
 pub mod product;
+/// v6.10: `plakat naturalize` — the analog post-pass that reduces the "AI-generated" fingerprint
+/// (RFC QUALITY-1). Deterministic + weight-free.
+pub mod naturalize;
 /// v6.7 flagship: provenance etching (RFC ETCH-1) — `--etch` + `doctor --if-plakat`. Always compiled
 /// (not behind a cargo feature) so the `--no-default-features` gate covers it; the `--etch` flag opts in.
 pub mod etch;

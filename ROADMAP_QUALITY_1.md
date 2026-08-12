@@ -18,22 +18,26 @@ into one that reads as physical media, *without destroying it*. Prove it before 
   (vignette), luminance-correlation **0.948** (structure preserved — degraded the fingerprint, not the
   picture). Two measurement-placement bugs found + fixed (grain measured in a flat region; the aberration
   edge moved to a large-radius corner on a uniform surround). → **P1 uses this algorithm**
-  (`src/naturalize/`). Default preset (RFC Q3) = `subtle` — G0 strengths (grain 0.4/aberr 0.6/vig 0.35)
-  are the `photo` preset.
+  (`src/naturalize/`). Default preset (RFC Q3) = `subtle`. The probe's demonstration strengths (grain 0.4 /
+  aberr 0.6 / vig 0.35) are stronger than the shipped presets — owner feedback: naturalize aims at
+  contemporary **realism, NOT a retro/"vintage" look**, so the shipped grade only desaturates (kills the
+  oversaturation tell) and keeps warm/vignette small; the `Vintage` preset was removed.
 
-## P1 — `plakat naturalize` (weight-free post-pass; front-loaded)
+## P1 — `plakat naturalize` (weight-free post-pass; front-loaded) — **DONE (commit pending)**
+`src/naturalize/mod.rs` (the analog stages from G0 + `Params`/`Preset` — realism-focused: `subtle`
+(default) / `photo` / `painting`, **no vintage**) + `src/cli/naturalize.rs`. CLI `naturalize IN --out OUT
+[--preset …] [--grain/--aberration/--vignette/--bloom/--desaturate/--warm/--defocus] [--no-reetch]`. 2 unit
+tests (fingerprint-degrade-but-preserve-structure + deterministic/preset-parse) + live (subtle/photo on a
+real render — grain on the smooth sky, aberration on trunk edges, gentle vignette; structure held). **Etch
+bar DONE**: L0 JSON sidecar carried forward + PNG `tEXt`/`zTXt`/`iTXt` chunks verbatim-spliced (so
+`plakat metadata`/`clone` + the etch tEXt carrier survive); `--no-reetch` writes a clean output.
+**`generate --naturalize` MOVED to P2** (it pairs with `--quality` and needs the naturalize-before-etch
+order inside the generate flow). **Ships value alone** — any image → a more human look, no GPU.
 
-`src/naturalize/{grain,aberration,vignette,bloom,grade,mod}.rs` + `src/cli/naturalize.rs`: the analog
-stages from G0, driven by params + presets (`subtle`/`photo`/`painting`/`vintage`). CLI `naturalize IN
---out OUT [--preset …] [--grain/--aberration/--vignette/--bloom/--grade/--desaturate/--defocus]` and
-`generate --naturalize [preset]` (post-pass on the generate path). **Ships value alone** — any image →
-a more analog/human look, no GPU. **Etch bar (mandatory, RFC §Etch preservation):** carry the incoming L0
-`tEXt` chunk + sidecar forward on save; in `generate`, naturalize runs BEFORE `--etch` so the etch is
-written last into the final pixels.
+## P2 — the model-backed quality half: `generate --naturalize` + `--quality` preset + hi-res fix + signature removal
 
-## P2 — the model-backed quality half: `--quality` preset + hi-res fix + signature removal
-
-`--quality <low|medium|high>` on `generate` — per-family tuned CFG-rescale + FreeU + PAG +
+`generate --naturalize [preset]` — apply the P1 pass after generation, **before `--etch`** (so the etch
+writes into the final pixels). `--quality <low|medium|high>` on `generate` — per-family tuned CFG-rescale + FreeU + PAG +
 dynamic-threshold + ADetailer + a **hi-res fix** (native gen → `upscale --diffusion` tile-CN refine to
 inject real detail; fixes cloud-foliage / dissolving backgrounds / incoherent geometry). Naturalize gains
 an optional `--refine` (img2img/tile detail pass) and **ghost-signature removal** (OWL-ViT "signature"

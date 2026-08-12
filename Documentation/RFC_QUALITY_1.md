@@ -39,14 +39,15 @@ A deterministic image-processing pass that stamps **physical-media imperfections
 - **Defocus** *(optional)* — a faint edge/lens softness so the frame isn't uniformly razor-sharp.
 
 ```
-plakat naturalize IN.png --out OUT.png [--preset photo|painting|vintage|subtle]
+plakat naturalize IN.png --out OUT.png [--preset subtle|photo|painting]
   [--grain 0.4] [--aberration 0.3] [--vignette 0.3] [--bloom 0.2] [--grade film] [--desaturate 0.1] [--defocus 0.0]
 ```
 
-Presets bundle sensible values (e.g. `photo` = subtle grain+aberration+vignette+neutral grade; `painting`
-= paper-texture + desaturate + soft grade; `vintage` = heavy grain + warm grade + strong vignette). Also
-reachable as `generate --naturalize [preset]` (post-pass after generation) and `api::Naturalize` / Bund
-`plakat.naturalize`.
+Presets bundle sensible values — `subtle` (default), `photo` (a real-camera look), `painting` (canvas-like
+for painterly renders). **All aim at contemporary realism, NOT a retro/"vintage" look**: the grade only
+*desaturates* (kills the AI oversaturation tell); the warm lift and vignette stay small, because a strong
+warm grade + heavy vignette read as an applied *filter* — its own artifact, not naturalness. Also reachable
+as `generate --naturalize [preset]` and `api::Naturalize` / Bund `plakat.naturalize`.
 
 ### 2. `--quality` — better generation defaults (bundle the levers we already have)
 
