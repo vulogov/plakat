@@ -84,6 +84,26 @@ The guidance bundle (`--cfg-rescale` / `--freeu` / PAG / `--dynamic-threshold`),
 (SUPIR-lite tile-ControlNet) for the hi-res fix, `pipelines::aesthetic::AestheticScorer` for the scorer,
 OWL-ViT (`remove --what "signature"`) + the inpaint path for signature removal, `img2img` for refine.
 
+## Etch preservation (mandatory)
+
+Removing **foreign** AI traces (a training-data ghost signature) must never strip plakat's **own**
+provenance etch (RFC ETCH-1). The naturalize pass mutates pixels — grain, aberration, desaturate — which
+would degrade the L1 pixel mark, and a naive re-save drops the L0 `tEXt` chunk. So the whole quality
+pipeline is **etch-aware**:
+
+- **Order in `generate`:** naturalize / removal run **before** the etch, so `--etch` writes L0 + L1 into
+  the *final* naturalized pixels and they survive intact. (Naturalize → etch, never etch → naturalize.)
+- **Standalone `naturalize` / signature-removal on an already-etched image:** detect the incoming plakat
+  etch first; apply the pass; then **re-etch** — carry the original `EtchId` forward as the `parent`
+  (ETCH-1's parent-chain), **re-embed L1** into the new pixels, **re-fingerprint L3**, and re-write the L0
+  `tEXt` chunk + sidecar. The output stays a valid, verifiable plakat artifact (`doctor --if-plakat` still
+  resolves it, now as a derivative of the original).
+- **Signature/trace removal is scoped to foreign artifacts** (corner signature smudge, model watermarks) —
+  it explicitly excludes plakat's own etch carriers.
+- **Minimum bar (P1):** even the weight-free pass carries the L0 metadata forward on save; full re-etch
+  (L1/L3) lands with the etch integration in P2. A `--no-reetch` escape hatch exists for users who want a
+  clean non-etched output.
+
 ## Non-goals / honest limits
 
 - **Naturalize does not fix physical reasoning.** Muddled reflections, impossible joinery, and wrong

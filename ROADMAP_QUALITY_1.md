@@ -10,13 +10,16 @@ aesthetic scorer, and OWL-ViT + inpaint.
 The novel piece is the **analog-imperfection math** — turning a too-clean, over-saturated digital image
 into one that reads as physical media, *without destroying it*. Prove it before building the cycle.
 
-- **G0.1 — naturalize probe (`examples/naturalize_probe.rs`).** Apply film grain + chromatic aberration +
-  vignette + bloom + a desaturating film grade to a synthetic "too-clean, over-saturated" image (flat
-  gradients + a hard-edged shape + a uniform high-freq tile standing in for "AI-painterly" texture).
-  **Measure an "AI-tell" delta**: mean HSV **saturation drops**, high-frequency **noise/variance rises**
-  (grain breaks the uniform texture), a **radial channel offset** appears (aberration), **corners darken**
-  (vignette) — while **structure is preserved** (content correlation to the input stays high, i.e. we
-  degraded the fingerprint, not the picture). PASS → P1 uses the algorithm; settles RFC Q3 (default preset).
+- **G0.1 — naturalize probe (`examples/naturalize_probe.rs`) — PASS.** Film grain + chromatic aberration
+  (radial R-out/B-in ∝ r²) + vignette + bloom + a desaturating warm film grade on a synthetic over-clean
+  image (flat gradient + a uniform high-freq "AI-painterly" checker + a hard corner edge). **5/5 measures
+  green**: saturation **0.74 → 0.66**, flat-region hi-freq variance **0.02 → 6.17** (grain breaks the
+  uniform texture), R/B edge separation **0.0 → 4.3px** (aberration), corner luminance **120 → 84**
+  (vignette), luminance-correlation **0.948** (structure preserved — degraded the fingerprint, not the
+  picture). Two measurement-placement bugs found + fixed (grain measured in a flat region; the aberration
+  edge moved to a large-radius corner on a uniform surround). → **P1 uses this algorithm**
+  (`src/naturalize/`). Default preset (RFC Q3) = `subtle` — G0 strengths (grain 0.4/aberr 0.6/vig 0.35)
+  are the `photo` preset.
 
 ## P1 — `plakat naturalize` (weight-free post-pass; front-loaded)
 
@@ -24,7 +27,9 @@ into one that reads as physical media, *without destroying it*. Prove it before 
 stages from G0, driven by params + presets (`subtle`/`photo`/`painting`/`vintage`). CLI `naturalize IN
 --out OUT [--preset …] [--grain/--aberration/--vignette/--bloom/--grade/--desaturate/--defocus]` and
 `generate --naturalize [preset]` (post-pass on the generate path). **Ships value alone** — any image →
-a more analog/human look, no GPU.
+a more analog/human look, no GPU. **Etch bar (mandatory, RFC §Etch preservation):** carry the incoming L0
+`tEXt` chunk + sidecar forward on save; in `generate`, naturalize runs BEFORE `--etch` so the etch is
+written last into the final pixels.
 
 ## P2 — the model-backed quality half: `--quality` preset + hi-res fix + signature removal
 
@@ -32,8 +37,11 @@ a more analog/human look, no GPU.
 dynamic-threshold + ADetailer + a **hi-res fix** (native gen → `upscale --diffusion` tile-CN refine to
 inject real detail; fixes cloud-foliage / dissolving backgrounds / incoherent geometry). Naturalize gains
 an optional `--refine` (img2img/tile detail pass) and **ghost-signature removal** (OWL-ViT "signature"
-detect → inpaint, with a weight-free corner-clean fallback). Verify the preset lifts a fixed prompt across
-two families.
+detect → inpaint, scoped to FOREIGN artifacts only, with a weight-free corner-clean fallback). **Etch
+integration (mandatory):** standalone naturalize / removal on an already-etched image detects the plakat
+etch, then **re-etches** — original `EtchId` carried as `parent`, L1 re-embedded into the new pixels, L3
+re-fingerprinted, L0 re-written; `--no-reetch` opts out; verify `doctor --if-plakat` still resolves the
+naturalized image (as a derivative). Verify the `--quality` preset lifts a fixed prompt across two families.
 
 ## P3 — AI-tell scorer + keep-best selection
 
