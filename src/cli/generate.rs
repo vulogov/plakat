@@ -154,6 +154,13 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Quality tuning", long, default_value_t = false)]
     pub score: bool,
 
+    /// Apply the naturalize analog post-pass to each output (RFC QUALITY-1) — reduces the "AI-generated"
+    /// fingerprint. A compact spec: a preset and/or focuses, e.g. `--naturalize photo` or
+    /// `--naturalize "photo vegetation=1 sky=0.5"`; bare `--naturalize` = the `subtle` preset. The PNG
+    /// metadata (incl. the `--etch` L0 chunk) is preserved.
+    #[arg(help_heading = "Quality tuning", long = "naturalize", value_name = "SPEC", num_args = 0..=1, default_missing_value = "subtle")]
+    pub naturalize: Option<String>,
+
     /// Negative prompt.
     #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
@@ -820,10 +827,11 @@ pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
     let import = args.import.clone();
     import.validate()?; // fail before a multi-minute generation if `--import` needs the photos build
     let out_dir = args.out.clone();
-    // Snapshot the out-dir before generating so we only touch this run's outputs — needed for both
-    // `--keep-best`/`--score` (scoring) and `--import` (which files to land in the album).
+    let naturalize_spec = args.naturalize.clone();
+    // Snapshot the out-dir before generating so we only touch this run's outputs — needed for
+    // `--keep-best`/`--score`, `--import`, and `--naturalize`.
     let before =
-        (want_score || import.import.is_some()).then(|| image_snapshot(&out_dir));
+        (want_score || import.import.is_some() || naturalize_spec.is_some()).then(|| image_snapshot(&out_dir));
 
     run_inner(args, device.clone()).await?;
 
@@ -831,9 +839,15 @@ pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
         let new_files: Vec<PathBuf> =
             image_snapshot(&out_dir).difference(&before).cloned().collect();
         if !new_files.is_empty() {
-            // Score first (writes the aesthetic score into each sidecar), THEN import — so the
-            // album record carries the score. `--keep-best` may have deleted the pruned files, but
-            // it only removes files this run created, so re-diff to import just the survivors.
+            // Naturalize FIRST (so a later score reflects the naturalized image), preserving each PNG's
+            // metadata (incl. the etch L0 chunk); THEN score, THEN import.
+            if let Some(spec) = &naturalize_spec {
+                for f in &new_files {
+                    if let Err(e) = crate::cli::naturalize::apply_inplace(f, spec) {
+                        tracing::warn!(target: "plakat", "naturalize {}: {e}", f.display());
+                    }
+                }
+            }
             if want_score {
                 score_outputs(new_files, keep_best, &device).await?;
             }
@@ -1937,6 +1951,7 @@ mod tests {
             dynamic_threshold: 0.0,
             keep_best: None,
             score: false,
+            naturalize: None,
             negative: String::new(),
             negative_preset: None,
             seed: None,

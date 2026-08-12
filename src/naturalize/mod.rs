@@ -6,6 +6,8 @@
 //! It reduces the machine *fingerprint*; it does **not** fix physical-reasoning errors (bad reflections,
 //! impossible geometry) — that's a model-capability limit, addressed by the hi-res fix in P2.
 
+pub mod refine;
+
 use image::{Rgb, RgbImage};
 
 /// The analog-imperfection strengths (each roughly `0.0..=1.0`; higher = more).
@@ -64,6 +66,136 @@ impl Preset {
             Preset::Painting => Params { grain: 0.36, aberration: 0.10, vignette: 0.10, bloom: 0.08, desaturate: 0.20, warm: 0.05, defocus: 0.10 },
         }
     }
+}
+
+/// A **content focus** (RFC QUALITY-1): each subject has a characteristic AI tell, so pre-tuning the pass
+/// to it de-AIs more effectively. A focus is a full target [`Params`] the base is blended toward (see
+/// [`blend_focus`]); the weight `N` says how strongly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    /// AI **skin** is plastic / waxy / over-saturated → more desaturation + fine grain, minimal aberration
+    /// & vignette (fringing/darkening look wrong on faces).
+    People,
+    /// AI **skies** band and are too-smooth → fine de-banding grain, little else.
+    Sky,
+    /// AI **foliage** is a cloud-like repeating mush → stronger broadband grain + a little defocus variation
+    /// to break the uniform texture.
+    Vegetation,
+    /// AI **cityscapes** have razor-clean geometry / repeating windows → grain + edge chromatic aberration
+    /// (lens) + a touch of defocus.
+    Cityscape,
+    /// General **landscape / scenery** → grain + a gentle atmospheric vignette + desaturation (haze).
+    Landscape,
+    /// **Seascape** surface → specular-highlight bloom + fine surface grain, cool/desaturated. (Fixing the
+    /// water *reflections* is structural — a P2 model refine, not this analog pass.)
+    Sea,
+    /// **Riverscape** surface → like [`Sea`](Focus::Sea) with a touch of defocus.
+    River,
+    /// **Mechanical apparatus / transports** surface → metal specular bloom + edge chromatic aberration
+    /// (lens on hard edges) + grain. (Fixing mechanical *structure* is a P2 refine.)
+    Mechanics,
+    /// **Household / indoor** scene → soft indoor grain + gentle vignette, low aberration.
+    Household,
+}
+
+impl Focus {
+    /// Parse an **analog** focus name (the weight-free surface-look ones). The corrective focuses
+    /// (`geometry`/`anatomy`/`no-twins`) are model-backed and handled separately — not here.
+    pub fn parse(s: &str) -> Option<Focus> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "people" | "portrait" => Some(Focus::People),
+            "sky" => Some(Focus::Sky),
+            "vegetation" | "foliage" => Some(Focus::Vegetation),
+            "cityscape" | "city" => Some(Focus::Cityscape),
+            "landscape" => Some(Focus::Landscape),
+            "sea" | "seascape" | "ocean" => Some(Focus::Sea),
+            "river" | "riverscape" => Some(Focus::River),
+            "mechanics" | "mechanical" | "transport" => Some(Focus::Mechanics),
+            "household" | "indoor" => Some(Focus::Household),
+            _ => None,
+        }
+    }
+
+    fn profile(self) -> Params {
+        match self {
+            Focus::People => Params { grain: 0.30, aberration: 0.05, vignette: 0.04, bloom: 0.06, desaturate: 0.18, warm: 0.03, defocus: 0.0 },
+            Focus::Sky => Params { grain: 0.28, aberration: 0.05, vignette: 0.06, bloom: 0.10, desaturate: 0.10, warm: 0.02, defocus: 0.0 },
+            Focus::Vegetation => Params { grain: 0.42, aberration: 0.10, vignette: 0.08, bloom: 0.06, desaturate: 0.14, warm: 0.03, defocus: 0.08 },
+            Focus::Cityscape => Params { grain: 0.30, aberration: 0.30, vignette: 0.10, bloom: 0.10, desaturate: 0.10, warm: 0.03, defocus: 0.05 },
+            Focus::Landscape => Params { grain: 0.30, aberration: 0.14, vignette: 0.16, bloom: 0.10, desaturate: 0.16, warm: 0.04, defocus: 0.02 },
+            Focus::Sea => Params { grain: 0.30, aberration: 0.10, vignette: 0.10, bloom: 0.15, desaturate: 0.16, warm: 0.0, defocus: 0.02 },
+            Focus::River => Params { grain: 0.32, aberration: 0.10, vignette: 0.10, bloom: 0.11, desaturate: 0.14, warm: 0.03, defocus: 0.05 },
+            Focus::Mechanics => Params { grain: 0.28, aberration: 0.24, vignette: 0.10, bloom: 0.15, desaturate: 0.10, warm: 0.03, defocus: 0.03 },
+            Focus::Household => Params { grain: 0.28, aberration: 0.10, vignette: 0.10, bloom: 0.10, desaturate: 0.12, warm: 0.05, defocus: 0.02 },
+        }
+    }
+}
+
+fn to_arr(p: &Params) -> [f32; 7] {
+    [p.grain, p.aberration, p.vignette, p.bloom, p.desaturate, p.warm, p.defocus]
+}
+fn from_arr(a: [f32; 7]) -> Params {
+    Params { grain: a[0], aberration: a[1], vignette: a[2], bloom: a[3], desaturate: a[4], warm: a[5], defocus: a[6] }
+}
+
+/// Blend the base params toward each active [`Focus`] by its weight — a weighted average where the base
+/// always carries weight 1 (so with no focuses the base is returned unchanged, and a single `focus:1.0`
+/// gives the midpoint of base and that profile). Weights ≤ 0 are ignored.
+pub fn blend_focus(base: Params, focuses: &[(Focus, f32)]) -> Params {
+    let mut acc = to_arr(&base);
+    let mut wsum = 1.0f32;
+    for (f, w) in focuses {
+        let w = w.max(0.0);
+        if w <= 0.0 {
+            continue;
+        }
+        let pf = to_arr(&f.profile());
+        for i in 0..7 {
+            acc[i] += pf[i] * w;
+        }
+        wsum += w;
+    }
+    for v in acc.iter_mut() {
+        *v /= wsum;
+    }
+    from_arr(acc)
+}
+
+/// Parse a compact naturalize **spec** string (for `generate --naturalize` / a scenario `naturalize:`
+/// field) into analog [`Params`]: a preset name and/or `key=value` tokens (space/comma separated), where
+/// `key` is an analog focus (`vegetation=1`) or a param (`grain=0.3`). Empty / "on" / "true" → the default
+/// `subtle` preset. Example: `"photo vegetation=1 sky=0.5 grain=0.35"`.
+pub fn from_spec(spec: &str) -> Params {
+    let mut base = Preset::Subtle;
+    let mut focuses: Vec<(Focus, f32)> = Vec::new();
+    let mut overrides: Vec<(String, f32)> = Vec::new();
+    for tok in spec.split([' ', ',', ';']).map(str::trim).filter(|t| !t.is_empty()) {
+        if let Some((k, v)) = tok.split_once('=') {
+            let val: f32 = v.trim().parse().unwrap_or(0.0);
+            if let Some(f) = Focus::parse(k) {
+                focuses.push((f, val));
+            } else {
+                overrides.push((k.trim().to_ascii_lowercase(), val));
+            }
+        } else if let Some(p) = Preset::parse(tok) {
+            base = p;
+        }
+        // bare "on"/"true"/unknown tokens just keep the default preset.
+    }
+    let mut p = blend_focus(base.params(), &focuses);
+    for (k, v) in overrides {
+        match k.as_str() {
+            "grain" => p.grain = v,
+            "aberration" => p.aberration = v,
+            "vignette" => p.vignette = v,
+            "bloom" => p.bloom = v,
+            "desaturate" => p.desaturate = v,
+            "warm" => p.warm = v,
+            "defocus" => p.defocus = v,
+            _ => {}
+        }
+    }
+    p
 }
 
 fn lum(r: f32, g: f32, b: f32) -> f32 {
@@ -257,6 +389,32 @@ mod tests {
         assert!(mean_sat(&out) < mean_sat(&src) - 0.01, "saturation drops");
         assert!(flat_var(&out) > flat_var(&src) + 1.0, "grain raises flat-region variance");
         assert!(corr(&src, &out) > 0.9, "structure preserved");
+    }
+
+    #[test]
+    fn focus_blends_toward_the_subject_profile() {
+        let base = Preset::Subtle.params();
+        // no focus → unchanged.
+        let same = blend_focus(base, &[]);
+        assert_eq!(to_arr(&same), to_arr(&base));
+        // vegetation focus raises grain (breaks the cloud-foliage mush); people focus raises desaturation
+        // (waxy skin) without adding much aberration.
+        let veg = blend_focus(base, &[(Focus::Vegetation, 1.0)]);
+        assert!(veg.grain > base.grain, "vegetation raises grain");
+        let ppl = blend_focus(base, &[(Focus::People, 1.0)]);
+        assert!(ppl.desaturate > base.desaturate && ppl.aberration <= base.aberration + 1e-3, "people → desaturate up, aberration not up");
+    }
+
+    #[test]
+    fn from_spec_parses_preset_focuses_and_overrides() {
+        // bare / unknown → subtle default.
+        assert_eq!(to_arr(&from_spec("")), to_arr(&Preset::Subtle.params()));
+        // preset + combined focuses + a param override.
+        let p = from_spec("photo vegetation=1 sky=1 grain=0.5");
+        assert_eq!(p.grain, 0.5, "explicit grain override wins");
+        let base_photo = blend_focus(Preset::Photo.params(), &[(Focus::Vegetation, 1.0), (Focus::Sky, 1.0)]);
+        // aberration/vignette come from the blended photo+focuses (grain was overridden).
+        assert!((p.aberration - base_photo.aberration).abs() < 1e-4);
     }
 
     #[test]

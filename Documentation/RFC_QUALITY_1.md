@@ -49,6 +49,16 @@ for painterly renders). **All aim at contemporary realism, NOT a retro/"vintage"
 warm grade + heavy vignette read as an applied *filter* — its own artifact, not naturalness. Also reachable
 as `generate --naturalize [preset]` and `api::Naturalize` / Bund `plakat.naturalize`.
 
+**Content focus qualifiers** (owner-proposed) — different subjects have different AI tells, so the pass can
+be pre-tuned to one: `--people N` (plastic/waxy skin → more desaturation + fine grain, minimal aberration/
+vignette which look wrong on faces), `--sky N` (banding → fine de-banding grain), `--vegetation N` (the
+cloud-like repeating foliage mush → stronger broadband grain + a little defocus), `--cityscape N`
+(razor-clean geometry → edge chromatic aberration), `--landscape N` (atmosphere → gentle vignette +
+desaturation). Each `N` is a blend weight (0 = off, 1 = midpoint of the preset and that subject's de-AI
+profile, >1 = stronger); qualifiers **combine** (a forest = `--vegetation 1 --sky 1`). *v1 is global
+(one profile for the whole frame); **region-aware** local naturalization — segment sky/skin/foliage and
+treat each locally — is a stronger follow-up that needs a segmenter (P2+).*
+
 ### 2. `--quality` — better generation defaults (bundle the levers we already have)
 
 A per-family curated preset so good-looking output is the default, not a tuning exercise:

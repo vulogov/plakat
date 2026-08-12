@@ -147,6 +147,10 @@ struct ScenarioFile {
     seed: Option<u64>,
     out: Option<PathBuf>,
 
+    /// 6.10.0: apply the naturalize analog post-pass (RFC QUALITY-1) to every image this scenario
+    /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
+    naturalize: Option<String>,
+
     #[serde(default)]
     loras: Vec<String>,
     #[serde(rename = "lora-scale")]
@@ -1894,6 +1898,25 @@ pub async fn run_with_events(
         .clone()
         .or_else(|| s.out.clone())
         .unwrap_or_else(|| PathBuf::from("./out"));
+    // 6.10.0: if the scenario asks to naturalize, snapshot the existing PNGs so we only touch this run's.
+    fn collect_pngs(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
+        let mut set = std::collections::HashSet::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.extension().and_then(|x| x.to_str()) == Some("png") {
+                        set.insert(p);
+                    }
+                }
+            }
+        }
+        set
+    }
+    let nat_before = s.naturalize.as_ref().map(|_| collect_pngs(&out_root));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -5112,6 +5135,19 @@ pub async fn run_with_events(
             style("·").dim(),
             path.display()
         ));
+    }
+
+    // 6.10.0: naturalize this run's outputs (analog post-pass), preserving each PNG's metadata.
+    if let (Some(spec), Some(before)) = (s.naturalize.as_ref(), nat_before.as_ref()) {
+        let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
+        if !new.is_empty() {
+            crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", new.len()));
+            for f in &new {
+                if let Err(e) = crate::cli::naturalize::apply_inplace(f, spec) {
+                    crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
+                }
+            }
+        }
     }
 
     // v0.34 phase 2: if any task failed, exit non-zero. Summary

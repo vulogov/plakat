@@ -46,6 +46,57 @@ pub struct NaturalizeArgs {
     /// Override radial defocus (0..1).
     #[arg(long)]
     pub defocus: Option<f32>,
+
+    // ---- content focus qualifiers (RFC QUALITY-1): pre-tune the pass to a subject's AI tell. `N` is the
+    // blend weight (0 = off, 1 = midpoint of the preset and that subject's de-AI profile, >1 = stronger).
+    /// Focus for **people / portraits** (plastic skin) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub people: Option<f32>,
+    /// Focus for **skies** (banding / too-smooth) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub sky: Option<f32>,
+    /// Focus for **vegetation / foliage** (cloud-like repeating mush) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub vegetation: Option<f32>,
+    /// Focus for **cityscapes** (razor-clean geometry) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub cityscape: Option<f32>,
+    /// Focus for **landscape / scenery** (atmosphere) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub landscape: Option<f32>,
+    /// Focus for **seascape** surface — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub sea: Option<f32>,
+    /// Focus for **riverscape** surface — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub river: Option<f32>,
+    /// Focus for **mechanical apparatus / transports** surface — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub mechanics: Option<f32>,
+    /// Focus for **household / indoor** scenes — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub household: Option<f32>,
+
+    // ---- corrective focuses (model-backed: img2img / inpaint, NOT the analog pass) ----
+    /// Fix **geometry** (incoherent structure / joinery) via img2img — weight N.
+    #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
+    pub geometry: Option<f32>,
+    /// Fix **anatomy** (proportions / hands) via img2img — weight N.
+    #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
+    pub anatomy: Option<f32>,
+    /// Make **lookalike faces distinct** (detect + inpaint each duplicate) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
+    pub no_twins: Option<f32>,
+    /// Model for the corrective img2img / inpaint passes.
+    #[arg(long, default_value = "sdxl", help_heading = "Corrective (needs a model)")]
+    pub model: String,
+    /// Steps for the corrective passes.
+    #[arg(long, default_value_t = 24, help_heading = "Corrective (needs a model)")]
+    pub refine_steps: usize,
+    /// Device for the corrective passes.
+    #[arg(long, default_value = "auto", help_heading = "Corrective (needs a model)")]
+    pub device: String,
+
     /// Write a clean, un-etched output — do NOT carry plakat provenance forward.
     #[arg(long)]
     pub no_reetch: bool,
@@ -56,7 +107,19 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
         None => Preset::Subtle,
     };
-    let mut p: Params = base.params();
+    // content focus: blend the preset toward each active subject's de-AI profile, THEN apply explicit
+    // per-param overrides (which always win).
+    let focuses: Vec<(naturalize::Focus, f32)> = [
+        (naturalize::Focus::People, a.people),
+        (naturalize::Focus::Sky, a.sky),
+        (naturalize::Focus::Vegetation, a.vegetation),
+        (naturalize::Focus::Cityscape, a.cityscape),
+        (naturalize::Focus::Landscape, a.landscape),
+    ]
+    .into_iter()
+    .filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v)))
+    .collect();
+    let mut p: Params = naturalize::blend_focus(base.params(), &focuses);
     if let Some(v) = a.grain {
         p.grain = v;
     }
@@ -79,7 +142,22 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         p.defocus = v;
     }
 
-    let img = image::open(&a.input).with_context(|| format!("reading {}", a.input.display()))?.to_rgb8();
+    // Corrective refine (model-backed) runs FIRST, so the analog pass grains the fixed structure.
+    let corrective = naturalize::refine::Corrective {
+        geometry: a.geometry.unwrap_or(0.0),
+        anatomy: a.anatomy.unwrap_or(0.0),
+        no_twins: a.no_twins.unwrap_or(0.0),
+    };
+    let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
+    let src_for_analog = if corrective.any() {
+        let refined = tmp.path().join("refined.png");
+        naturalize::refine::refine(&a.input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
+        refined
+    } else {
+        a.input.clone()
+    };
+
+    let img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();
     let out = naturalize::apply(&img, &p);
     out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
 
@@ -90,7 +168,13 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
 
     let preset_label = a.preset.as_deref().unwrap_or("subtle");
-    println!("{} {}  (naturalize · {preset_label})", style("wrote").green(), a.out.display());
+    let focus_note = if focuses.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = focuses.iter().map(|(f, n)| format!("{}:{n}", format!("{f:?}").to_ascii_lowercase())).collect();
+        format!(" · focus {}", names.join(","))
+    };
+    println!("{} {}  (naturalize · {preset_label}{focus_note})", style("wrote").green(), a.out.display());
     if carried {
         println!("  {} plakat provenance carried forward (L0). Note: pixels changed — a full re-etch (L1) lands in P2; `--no-reetch` for a clean output.", style("etch").cyan());
     }
@@ -119,48 +203,77 @@ fn carry_provenance(src: &Path, dst: &Path) -> Result<bool> {
     Ok(any)
 }
 
-/// Copy every `tEXt`/`zTXt`/`iTXt` chunk from `src` into `dst`, inserted right after `IHDR`. Verbatim
-/// (length+type+data+CRC), so no re-CRC is needed. Best-effort; returns whether any chunk was carried.
-fn splice_png_text_chunks(src: &Path, dst: &Path) -> Result<bool> {
-    const SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    let src_bytes = std::fs::read(src)?;
-    let dst_bytes = std::fs::read(dst)?;
-    if src_bytes.len() < 8 || src_bytes[..8] != SIG || dst_bytes.len() < 8 || dst_bytes[..8] != SIG {
-        return Ok(false);
+const PNG_SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+/// Extract every `tEXt`/`zTXt`/`iTXt` chunk (raw: length+type+data+CRC) from PNG `bytes`.
+fn extract_text_chunks(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    if bytes.len() < 8 || bytes[..8] != PNG_SIG {
+        return out;
     }
-    // collect text chunks (raw, including length+type+data+crc) from src.
-    let mut text: Vec<&[u8]> = Vec::new();
     let mut i = 8usize;
-    while i + 8 <= src_bytes.len() {
-        let len = u32::from_be_bytes([src_bytes[i], src_bytes[i + 1], src_bytes[i + 2], src_bytes[i + 3]]) as usize;
-        let ty = &src_bytes[i + 4..i + 8];
-        let end = i + 12 + len; // 4 len + 4 type + len data + 4 crc
-        if end > src_bytes.len() {
+    while i + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+        let ty = &bytes[i + 4..i + 8];
+        let end = i + 12 + len;
+        if end > bytes.len() {
             break;
         }
         if matches!(ty, b"tEXt" | b"zTXt" | b"iTXt") {
-            text.push(&src_bytes[i..end]);
+            out.push(bytes[i..end].to_vec());
         }
         if ty == b"IEND" {
             break;
         }
         i = end;
     }
-    if text.is_empty() {
-        return Ok(false);
+    out
+}
+
+/// Insert raw text `chunks` into the PNG at `path`, right after `IHDR` (verbatim, CRCs already valid).
+fn inject_text_chunks(path: &Path, chunks: &[Vec<u8>]) -> Result<()> {
+    if chunks.is_empty() {
+        return Ok(());
     }
-    // find the end of IHDR in dst (first chunk after the signature).
-    let ihdr_len = u32::from_be_bytes([dst_bytes[8], dst_bytes[9], dst_bytes[10], dst_bytes[11]]) as usize;
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < 8 || bytes[..8] != PNG_SIG {
+        return Ok(());
+    }
+    let ihdr_len = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
     let ihdr_end = 8 + 12 + ihdr_len;
-    if ihdr_end > dst_bytes.len() {
-        return Ok(false);
+    if ihdr_end > bytes.len() {
+        return Ok(());
     }
-    let mut out = Vec::with_capacity(dst_bytes.len() + text.iter().map(|c| c.len()).sum::<usize>());
-    out.extend_from_slice(&dst_bytes[..ihdr_end]);
-    for c in &text {
+    let mut out = Vec::with_capacity(bytes.len() + chunks.iter().map(|c| c.len()).sum::<usize>());
+    out.extend_from_slice(&bytes[..ihdr_end]);
+    for c in chunks {
         out.extend_from_slice(c);
     }
-    out.extend_from_slice(&dst_bytes[ihdr_end..]);
-    std::fs::write(dst, out).with_context(|| format!("re-writing {} with carried text chunks", dst.display()))?;
+    out.extend_from_slice(&bytes[ihdr_end..]);
+    std::fs::write(path, out).with_context(|| format!("re-writing {} with text chunks", path.display()))?;
+    Ok(())
+}
+
+/// Copy the `tEXt`/`zTXt`/`iTXt` chunks from `src` into `dst`. Returns whether any were carried.
+fn splice_png_text_chunks(src: &Path, dst: &Path) -> Result<bool> {
+    let chunks = extract_text_chunks(&std::fs::read(src)?);
+    if chunks.is_empty() {
+        return Ok(false);
+    }
+    inject_text_chunks(dst, &chunks)?;
     Ok(true)
+}
+
+/// Apply the analog naturalize pass to `path` IN PLACE from a compact spec, preserving the PNG text
+/// chunks (the L0 etch carrier; the JSON sidecar is a separate file and is left untouched). Used by
+/// `generate --naturalize` and the scenario `naturalize:` field. Weight-free.
+pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
+    let params = crate::naturalize::from_spec(spec);
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let chunks = extract_text_chunks(&bytes);
+    let img = image::load_from_memory(&bytes).with_context(|| format!("decoding {}", path.display()))?.to_rgb8();
+    let out = crate::naturalize::apply(&img, &params);
+    out.save(path).with_context(|| format!("writing {}", path.display()))?;
+    inject_text_chunks(path, &chunks)?;
+    Ok(())
 }
