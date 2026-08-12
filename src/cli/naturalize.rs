@@ -97,6 +97,14 @@ pub struct NaturalizeArgs {
     #[arg(long, default_value = "auto", help_heading = "Corrective (needs a model)")]
     pub device: String,
 
+    /// Remove a **ghost signature** smudge from a corner (`br`/`bl`/`tr`/`tl`) — a weight-free
+    /// content-aware dissolve. Foreign-artifact only; never touches plakat's own etch.
+    #[arg(long, value_name = "CORNER")]
+    pub designature: Option<String>,
+    /// Strength of the ghost-signature dissolve (0..1).
+    #[arg(long, default_value_t = 0.9)]
+    pub designature_strength: f32,
+
     /// Write a clean, un-etched output — do NOT carry plakat provenance forward.
     #[arg(long)]
     pub no_reetch: bool,
@@ -157,8 +165,15 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         a.input.clone()
     };
 
-    let img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();
+    let mut img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();
+    let ai_before = naturalize::ai_tell_score(&img);
+    // ghost-signature removal (weight-free) before the analog pass.
+    if let Some(cs) = a.designature.as_deref() {
+        let corner = naturalize::Corner::parse(cs).with_context(|| format!("unknown corner `{cs}` (br|bl|tr|tl)"))?;
+        img = naturalize::designature(&img, corner, a.designature_strength);
+    }
     let out = naturalize::apply(&img, &p);
+    let ai_after = naturalize::ai_tell_score(&out);
     out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
 
     // Etch bar: carry plakat provenance forward (unless opted out).
@@ -175,6 +190,8 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         format!(" · focus {}", names.join(","))
     };
     println!("{} {}  (naturalize · {preset_label}{focus_note})", style("wrote").green(), a.out.display());
+    let _ = ai_before;
+    println!("  {} AI-tell {:.3} (0=human … 1=AI; a batch-ranking heuristic)", style("score").cyan(), ai_after);
     if carried {
         println!("  {} plakat provenance carried forward (L0). Note: pixels changed — a full re-etch (L1) lands in P2; `--no-reetch` for a clean output.", style("etch").cyan());
     }

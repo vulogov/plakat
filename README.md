@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.10.0 — `plakat naturalize` (make it read human-sourced)**: reduce the "AI-generated" fingerprint of an image (RFC QUALITY-1). A weight-free **analog post-pass** — film grain · chromatic aberration · vignette · bloom · a *desaturating* film grade — breaks the too-clean, over-saturated digital look (realism, **not** vintage). **Content focus qualifiers** pre-tune it to a subject's tell — `--people` (waxy skin), `--sky` (banding), `--vegetation` (cloud-foliage mush), `--cityscape`, `--landscape`, `--sea`/`--river`, `--mechanics`, `--household` — all combining. **Corrective focuses** (model-backed) fix what grain can't: `--geometry`/`--anatomy` (img2img re-resolve) and `--no-twins` (detect + inpaint duplicate faces). Plus `--designature` (dissolve a foreign ghost-signature smudge), a `--quality low|medium|high` generation preset (bundles CFG-rescale/FreeU/PAG/dynamic-threshold/ADetailer), and `generate --naturalize` / scenario `naturalize:` passes that **preserve the `--etch` provenance**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.10.0) · [Guide →](Documentation/QUALITY.md)
+>
 > **v6.9.0 — `plakat product`**: the flagship (RFC PRODUCT-1). Turn a **subject** — a cutout, a photo, or a text prompt — into a studio **product-shot / packshot**: the subject on a controlled background (white / grey sweep / gradient / a generated scene), **grounded** with a physically-plausible contact shadow and floor reflection derived from its alpha, at a chosen camera angle, optionally relit to a named lighting rig (IC-Light). A packshot is *structured data* — the same rig and grounding reproduce across a whole catalog. **`product sheet`** tiles a subject's angles into a labelled contact sheet; **`product turntable`** sweeps the key light. The grounding / sweep / composite half is **weight-free** — a supplied cutout → a sellable shot with no GPU; only relight + subject-generation need a model. Wired everywhere: scenario `type: product`, `compile`, Bund `plakat.product.*`, `plakat::api::Product`. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.9.0) · [Guide →](Documentation/PRODUCT.md)
 >
 > **v6.8.2 — `plakat comic` reference-lock, finished**: closes the three 6.8.1 deferrals. **Multi-character panels** now face-lock too — detected faces are matched to the `chars` list by reading-order position (left→right, or right→left for `rtl`), so a two-shot keeps *both* identities. **Scene-art reuse**: label a panel with `id:` and another `reuse: "@id"` renders it as the **exact** same image, book-wide (an establishing shot that repeats identically, not a re-generated recurrence). And **`--restore-faces`** runs a restore-faces refine over panels whose swapped face is small (distant / group shots) to crisp the detail. All best-effort on top of the face-swap weights; the reuse/id half is weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.2) · [Guide →](Documentation/COMIC.md)
@@ -120,6 +122,40 @@ Each is *structured data → deterministic resolve → render*, so the weight-fr
 - **Metadata & provenance** — read the A1111 `parameters` chunk, `clone` a PNG back into a command, `inspect` safetensors, inspect embeddings / motion adapters, and manage the HF cache with `models`.
 
 </details>
+
+## What's new in 6.10.0 — `plakat naturalize` (RFC QUALITY-1)
+
+Diffusion output has a fingerprint — too clean, over-saturated, grain-free, with a repeating "painterly"
+texture and sometimes a ghost-signature smudge. `naturalize` reduces it so an image reads as **contemporary
+and human-made — not aged/vintage, and not obviously AI**.
+
+```bash
+plakat naturalize in.png --out out.png --preset photo --vegetation 1 --sky 1   # weight-free
+plakat generate "a forest" --quality high --naturalize photo                   # at generation time
+```
+
+- **Analog post-pass (weight-free)** — film grain · chromatic aberration · vignette · bloom · a
+  *desaturating* film grade. Realism-focused: the grade only desaturates (the loudest tell); warm/vignette
+  stay small so it never reads as a retro filter. Presets `subtle` / `photo` / `painting`.
+- **Content focus qualifiers** (all combine) — `--people` (waxy skin), `--sky` (banding), `--vegetation`
+  (cloud-foliage mush), `--cityscape`, `--landscape`, `--sea`/`--river`, `--mechanics`, `--household`, each
+  blending that subject's de-AI profile.
+- **Corrective focuses** (model-backed — grain can't fix structure) — `--geometry`/`--anatomy` re-resolve
+  incoherent structure/proportions via img2img; `--no-twins` detects faces and inpaints duplicates so
+  lookalikes diverge.
+- **Ghost-signature removal** — `--designature br|bl|tr|tl` dissolves a foreign training-data signature,
+  scoped so it **never touches plakat's own `--etch` provenance**.
+- **`--quality low|medium|high`** on `generate` bundles the anti-AI levers (CFG-rescale + FreeU + PAG +
+  dynamic-threshold + ADetailer). **`generate --naturalize`** and a scenario **`naturalize:`** field apply
+  the pass to outputs, preserving the etch metadata.
+- **AI-tell score** — a weight-free oversaturation/over-smoothness heuristic for ranking the least-AI
+  candidate.
+
+**Honest limits:** naturalize reduces the machine *fingerprint*, not physical-reasoning errors (reflections/
+geometry are model-capability limits; the corrective img2img helps but won't invent correct physics). The
+AI-tell score is a coarse ranking heuristic; a full L1 re-etch after naturalize is a documented follow-up.
+
+See [`Documentation/QUALITY.md`](Documentation/QUALITY.md).
 
 ## What's new in 6.9.0 — `plakat product` (RFC PRODUCT-1)
 

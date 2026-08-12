@@ -1996,6 +1996,40 @@ impl Product {
     }
 }
 
+/// The analog **naturalize** post-pass (RFC QUALITY-1) — reduce the "AI-generated" fingerprint of an
+/// image (film grain / aberration / vignette / desaturating grade), driven by a compact spec string.
+/// Weight-free.
+///
+/// ```no_run
+/// # fn f() -> anyhow::Result<()> {
+/// use plakat::api::Naturalize;
+/// Naturalize::new("photo vegetation=1 sky=0.5").run("in.png", "out.png")?;
+/// # Ok(()) }
+/// ```
+pub struct Naturalize {
+    spec: String,
+}
+
+impl Naturalize {
+    /// A compact spec: a preset and/or `key=value` focuses/params, e.g. `"photo vegetation=1 grain=0.3"`.
+    pub fn new(spec: impl Into<String>) -> Self {
+        Self { spec: spec.into() }
+    }
+
+    /// Apply the analog pass to `input`, writing `out`.
+    pub fn run(&self, input: impl AsRef<std::path::Path>, out: impl AsRef<std::path::Path>) -> Result<()> {
+        let params = crate::naturalize::from_spec(&self.spec);
+        let img = image::open(input.as_ref())?.to_rgb8();
+        crate::naturalize::apply(&img, &params).save(out.as_ref())?;
+        Ok(())
+    }
+
+    /// The weight-free AI-tell score of an image in `0..1` (higher = reads more AI-generated).
+    pub fn ai_tell_score(path: impl AsRef<std::path::Path>) -> Result<f32> {
+        Ok(crate::naturalize::ai_tell_score(&image::open(path.as_ref())?.to_rgb8()))
+    }
+}
+
 /// Seamless PBR material synthesis (RFC TEXTURE-1). Turn a prompt or a photo into a tileable material
 /// set (albedo/normal/roughness/metallic/height/AO), written to a directory. Mirrors [`BookArt`].
 ///

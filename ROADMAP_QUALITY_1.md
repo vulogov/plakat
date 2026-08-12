@@ -34,7 +34,7 @@ bar DONE**: L0 JSON sidecar carried forward + PNG `tEXt`/`zTXt`/`iTXt` chunks ve
 **`generate --naturalize` MOVED to P2** (it pairs with `--quality` and needs the naturalize-before-etch
 order inside the generate flow). **Ships value alone** — any image → a more human look, no GPU.
 
-## P2 — the model-backed quality half: `generate --naturalize` + `--quality` preset + hi-res fix + signature removal
+## P2 — the model-backed quality half — DONE (partial: --quality preset + ghost-signature removal; hi-res fix + full re-etch deferred)
 
 `generate --naturalize [preset]` — apply the P1 pass after generation, **before `--etch`** (so the etch
 writes into the final pixels). `--quality <low|medium|high>` on `generate` — per-family tuned CFG-rescale + FreeU + PAG +
@@ -47,13 +47,13 @@ etch, then **re-etches** — original `EtchId` carried as `parent`, L1 re-embedd
 re-fingerprinted, L0 re-written; `--no-reetch` opts out; verify `doctor --if-plakat` still resolves the
 naturalized image (as a derivative). Verify the `--quality` preset lifts a fixed prompt across two families.
 
-## P3 — AI-tell scorer + keep-best selection
+## P3 — AI-tell scorer — DONE (weight-free ai_tell_score + reported per run + api::Naturalize::ai_tell_score; rank --ai-tells deferred)
 
 Extend `pipelines::aesthetic` with an **AI-tell penalty** (oversaturation + texture-uniformity +
 ghost-signature); `generate --keep-best K` ranks on *aesthetic − ai-tell*; `plakat rank --ai-tells`
 surfaces the score. Selects the least-AI-looking candidate from a batch.
 
-## P4 — integration + corpus + docs + cut 6.10.0
+## P4 — integration + corpus + docs + cut 6.10.0 — DONE (api::Naturalize + Bund + doctor + QUALITY.md + corpus + README; cutting)
 
 Parity (`api::Naturalize` + `Generate::naturalize` · Bund `plakat.naturalize` · doctor); a before/after
 corpus (a deliberately over-clean render → naturalized) + driver; `Documentation/QUALITY.md` + README;

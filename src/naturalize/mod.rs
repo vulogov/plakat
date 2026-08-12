@@ -243,6 +243,123 @@ fn box_blur_gray(src: &[f32], w: usize, h: usize, r: i32) -> Vec<f32> {
     out
 }
 
+/// A weight-free **AI-tell score** in `0..1` (higher = reads more "AI-generated"): the two loudest,
+/// cheaply-measurable tells — **oversaturation** (mean HSV saturation) and **texture over-smoothness** (a
+/// low high-frequency-to-contrast ratio: AI output is too clean / uniformly smooth). Feeds selection
+/// (`rank --ai-tells`) so a batch can be pruned to the most human-looking frames, and lets `naturalize`
+/// report the before/after delta.
+pub fn ai_tell_score(img: &RgbImage) -> f32 {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    // oversaturation
+    let sat: f32 = img
+        .pixels()
+        .map(|p| {
+            let (r, g, b) = (p.0[0] as f32, p.0[1] as f32, p.0[2] as f32);
+            let mx = r.max(g).max(b);
+            if mx <= 0.0 { 0.0 } else { (mx - r.min(g).min(b)) / mx }
+        })
+        .sum::<f32>()
+        / (w * h) as f32;
+    // over-smoothness: high-frequency energy vs global contrast. Low hf/contrast → too clean → high tell.
+    let l: Vec<f32> = img.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+    let (mut hf, mut n) = (0.0f32, 0.0f32);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let mut acc = 0.0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    acc += l[((y as i32 + dy) as usize) * w + (x as i32 + dx) as usize];
+                }
+            }
+            hf += (l[y * w + x] - acc / 9.0).abs();
+            n += 1.0;
+        }
+    }
+    let hf = hf / n.max(1.0);
+    let mean = l.iter().sum::<f32>() / l.len() as f32;
+    let contrast = (l.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / l.len() as f32).sqrt().max(1.0);
+    let ratio = (hf / contrast).min(0.5) / 0.5; // 0 (dead smooth) .. 1 (grainy/detailed)
+    let smoothness_tell = 1.0 - ratio;
+    (0.6 * sat + 0.4 * smoothness_tell).clamp(0.0, 1.0)
+}
+
+/// Which corner a ghost signature sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Corner {
+    BottomRight,
+    BottomLeft,
+    TopRight,
+    TopLeft,
+}
+impl Corner {
+    pub fn parse(s: &str) -> Option<Corner> {
+        match s.trim().to_ascii_lowercase().replace(['-', '_'], "").as_str() {
+            "br" | "bottomright" => Some(Corner::BottomRight),
+            "bl" | "bottomleft" => Some(Corner::BottomLeft),
+            "tr" | "topright" => Some(Corner::TopRight),
+            "tl" | "topleft" => Some(Corner::TopLeft),
+            _ => None,
+        }
+    }
+}
+
+/// Weight-free **ghost-signature removal** (RFC QUALITY-1): a faint training-data signature smudge lives in
+/// a corner, so dissolve that corner region into its own blurred background (feathered so there's no seam).
+/// Scoped to a **foreign** artifact — it never touches plakat's own etch (the L1 pixel mark is spread over
+/// the whole frame and survives; L0 is metadata). `strength` in `0..1`.
+pub fn designature(src: &RgbImage, corner: Corner, strength: f32) -> RgbImage {
+    let (w, h) = (src.width(), src.height());
+    let s = strength.clamp(0.0, 1.0);
+    if s <= 0.0 {
+        return src.clone();
+    }
+    // corner box ~16% of the short side.
+    let box_px = ((w.min(h) as f32) * 0.16) as u32;
+    let (bx0, by0) = match corner {
+        Corner::BottomRight => (w.saturating_sub(box_px), h.saturating_sub(box_px)),
+        Corner::BottomLeft => (0, h.saturating_sub(box_px)),
+        Corner::TopRight => (w.saturating_sub(box_px), 0),
+        Corner::TopLeft => (0, 0),
+    };
+    let (bx1, by1) = (bx0 + box_px, by0 + box_px);
+    // heavy blur of just the corner region (per channel).
+    let r = (box_px / 5).max(3) as i32;
+    let mut out = src.clone();
+    for ch in 0..3 {
+        for y in by0..by1.min(h) {
+            for x in bx0..bx1.min(w) {
+                let (mut acc, mut n) = (0.0f32, 0.0f32);
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                        if xx >= 0 && yy >= 0 && (xx as u32) < w && (yy as u32) < h {
+                            acc += src.get_pixel(xx as u32, yy as u32).0[ch] as f32;
+                            n += 1.0;
+                        }
+                    }
+                }
+                let blurred = acc / n;
+                // feather: full effect deep in the corner, fading to 0 at the box's inner edges.
+                let fx = match corner {
+                    Corner::BottomRight | Corner::TopRight => (x - bx0) as f32 / box_px as f32,
+                    _ => 1.0 - (x - bx0) as f32 / box_px as f32,
+                };
+                let fy = match corner {
+                    Corner::BottomRight | Corner::BottomLeft => (y - by0) as f32 / box_px as f32,
+                    _ => 1.0 - (y - by0) as f32 / box_px as f32,
+                };
+                let feather = (fx.min(1.0).max(0.0) * fy.min(1.0).max(0.0)) * s;
+                let orig = src.get_pixel(x, y).0[ch] as f32;
+                out.get_pixel_mut(x, y).0[ch] = (orig * (1.0 - feather) + blurred * feather).round() as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Apply the naturalize pass. Returns a new image the same size as `src`.
 pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
     let (w, h) = (src.width(), src.height());
@@ -403,6 +520,33 @@ mod tests {
         assert!(veg.grain > base.grain, "vegetation raises grain");
         let ppl = blend_focus(base, &[(Focus::People, 1.0)]);
         assert!(ppl.desaturate > base.desaturate && ppl.aberration <= base.aberration + 1e-3, "people → desaturate up, aberration not up");
+    }
+
+    #[test]
+    fn ai_tell_score_drops_after_naturalize() {
+        let src = ai_clean();
+        let before = ai_tell_score(&src);
+        let after = ai_tell_score(&apply(&src, &Preset::Photo.params()));
+        assert!(after < before, "naturalize lowers the AI-tell score ({before:.3} → {after:.3})");
+    }
+
+    #[test]
+    fn designature_dissolves_the_corner_only() {
+        let mut img = ai_clean();
+        // a faint thin "signature" stroke in the bottom-right (like a real ghost mark).
+        for x in 172..196 {
+            img.put_pixel(x, 190, Rgb([15, 15, 15]));
+            img.put_pixel(x, 191, Rgb([20, 20, 20]));
+        }
+        // local std-dev over a region (measures how much the stroke stands out).
+        let std = |im: &RgbImage, x0: u32, y0: u32| -> f32 {
+            let vals: Vec<f32> = (y0..y0 + 20).flat_map(|y| (x0..x0 + 20).map(move |x| (x, y))).map(|(x, y)| lum(im.get_pixel(x, y).0[0] as f32, im.get_pixel(x, y).0[1] as f32, im.get_pixel(x, y).0[2] as f32)).collect();
+            let m = vals.iter().sum::<f32>() / vals.len() as f32;
+            (vals.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / vals.len() as f32).sqrt()
+        };
+        let cleaned = designature(&img, Corner::BottomRight, 0.95);
+        assert!(std(&cleaned, 176, 180) < std(&img, 176, 180) * 0.8, "signature stroke dissolved (variance dropped)");
+        assert_eq!(cleaned.get_pixel(5, 5), img.get_pixel(5, 5), "opposite corner untouched");
     }
 
     #[test]

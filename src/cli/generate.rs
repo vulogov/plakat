@@ -161,6 +161,13 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Quality tuning", long = "naturalize", value_name = "SPEC", num_args = 0..=1, default_missing_value = "subtle")]
     pub naturalize: Option<String>,
 
+    /// Quality preset (RFC QUALITY-1): bundle the guidance levers that fight the "AI look" —
+    /// `low`/`medium`/`high` progressively enable CFG-rescale (kills oversaturation), FreeU + PAG
+    /// (coherence/detail), dynamic thresholding, and (high) ADetailer. Only fills knobs left at their
+    /// default, so explicit `--freeu`/`--pag-scale`/… always win.
+    #[arg(help_heading = "Quality tuning", long = "quality", value_name = "low|medium|high")]
+    pub quality: Option<String>,
+
     /// Negative prompt.
     #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
@@ -821,7 +828,42 @@ fn image_snapshot(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
         .collect()
 }
 
-pub async fn run(args: GenerateArgs, device: Device) -> Result<()> {
+/// Apply a `--quality` preset: enable the anti-"AI-look" guidance levers, but only where the user left the
+/// knob at its default (so explicit flags always win). `low` → CFG-rescale + FreeU; `medium` → + PAG +
+/// dynamic-threshold; `high` → + ADetailer.
+fn apply_quality(args: &mut GenerateArgs) {
+    let Some(tier) = args.quality.as_deref().map(|s| s.trim().to_ascii_lowercase()) else { return };
+    let (low, medium, high) = match tier.as_str() {
+        "low" => (true, false, false),
+        "medium" | "med" => (true, true, false),
+        "high" => (true, true, true),
+        _ => (false, false, false),
+    };
+    if low {
+        if args.guidance_rescale == 0.0 {
+            args.guidance_rescale = 0.7; // rescale the guided prediction → less oversaturation/burn
+        }
+        args.freeu = true; // reweight the UNet up-blocks → detail + coherence
+    }
+    if medium {
+        if args.pag_scale == 0.0 {
+            args.pag_scale = 2.0; // perturbed-attention guidance → sharper structure at low CFG
+        }
+        if args.dynamic_threshold == 0.0 {
+            args.dynamic_threshold = 99.5; // clamp per-step latent extremes (Imagen default)
+        }
+    }
+    if high {
+        args.adetailer = true; // face refine
+    }
+    crate::ui::progress::println(&format!(
+        "  quality {tier}: cfg-rescale {:.2} · freeu {} · pag {:.1} · dyn-thresh {:.1}{}",
+        args.guidance_rescale, args.freeu, args.pag_scale, args.dynamic_threshold, if high { " · adetailer" } else { "" }
+    ));
+}
+
+pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
+    apply_quality(&mut args);
     let keep_best = args.keep_best;
     let want_score = args.score || keep_best.is_some();
     let import = args.import.clone();
@@ -1952,6 +1994,7 @@ mod tests {
             keep_best: None,
             score: false,
             naturalize: None,
+            quality: None,
             negative: String::new(),
             negative_preset: None,
             seed: None,

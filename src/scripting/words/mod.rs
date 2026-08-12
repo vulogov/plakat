@@ -16,6 +16,7 @@ pub mod bookart;
 pub mod texture;
 pub mod comic;
 pub mod product;
+pub mod naturalize;
 pub mod cascade;
 pub mod config;
 pub mod controlnet;
@@ -116,6 +117,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
         .map_err(|e| anyhow!("registering plakat.product.render: {e}"))?;
     vm.register_inline("plakat.product.sheet".to_string(), product::plakat_product_sheet)
         .map_err(|e| anyhow!("registering plakat.product.sheet: {e}"))?;
+    // 6.10.0: plakat.naturalize — the analog post-pass, push the naturalized image.
+    vm.register_inline("plakat.naturalize".to_string(), naturalize::plakat_naturalize)
+        .map_err(|e| anyhow!("registering plakat.naturalize: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)

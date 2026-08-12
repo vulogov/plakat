@@ -340,6 +340,9 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
     // -------- v6.9.0: product pipeline --------
     section_product();
     println!();
+    // -------- v6.10.0: naturalize / quality --------
+    section_quality();
+    println!();
 
     println!(
         "  {}\n",
@@ -500,6 +503,17 @@ fn section_product() {
     note("weight-backed: subject from a `photo` (U2Net matte) or a `prompt` (generate → matte); `--relight` / a `lighting:` block relights to the rig via IC-Light (relights AND recolors — use `warmth: 0` / a neutral prompt to keep the product hue); `bg: \"scene\"` generates an environment plate to composite over.");
     note("catalog: `product sheet` (main + `variants[]` angles, SAME rig/ground, tiled + labelled) · `product turntable --frames N` (one subject, key light swept across N directions, relit each). NON-GOAL: no 3D novel-view — the turntable rotates the LIGHT; supply angle cutouts for a real multi-angle catalog.");
     note("integration: scenario `type: product` · compile `type: product` · Bund `plakat.product.*` (render/sheet) · library `plakat::api::Product`. See Documentation/PRODUCT.md.");
+}
+
+fn section_quality() {
+    section_header("naturalize / quality (6.10.0 — reduce the AI-generated fingerprint)");
+    ok("weights-free (run anywhere, no GPU): `naturalize` analog pass + content focuses + ghost-signature removal + AI-tell score");
+    note("`plakat naturalize IN --out OUT` — the analog post-pass: film grain + chromatic aberration + vignette + bloom + a DESATURATING film grade (realism, NOT vintage — warm/vignette stay small). Presets subtle/photo/painting; or tune --grain/--aberration/--vignette/--bloom/--desaturate/--warm/--defocus.");
+    note("content focus qualifiers (analog, combine): --people (waxy skin) · --sky (banding) · --vegetation (cloud-foliage mush) · --cityscape · --landscape · --sea · --river · --mechanics · --household <N>. Each blends a subject-specific de-AI profile.");
+    note("corrective focuses (model-backed img2img/inpaint — grain can't fix structure): --geometry / --anatomy <N> (re-resolve incoherent structure/proportions) · --no-twins <N> (SCRFD-detect + inpaint duplicate faces so lookalikes diverge).");
+    note("ghost-signature removal: `--designature br|bl|tr|tl` dissolves a foreign training-data signature smudge (weight-free) — never touches plakat's own etch. AI-tell score (oversaturation + over-smoothness) reported per run + via `api::Naturalize::ai_tell_score`.");
+    note("`--quality low|medium|high` on `generate` bundles the anti-AI levers (CFG-rescale + FreeU + PAG + dynamic-threshold + [high] ADetailer), filling only knobs left at default. `generate --naturalize [spec]` + scenario `naturalize:` apply the pass to outputs, preserving the --etch L0 chunk.");
+    note("integration: `generate --naturalize`/`--quality` · scenario `naturalize:` · Bund `plakat.naturalize` · library `plakat::api::Naturalize`. Etch bar: L0 carried forward (full L1 re-etch = follow-up). See Documentation/QUALITY.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat
