@@ -123,6 +123,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         (naturalize::Focus::Vegetation, a.vegetation),
         (naturalize::Focus::Cityscape, a.cityscape),
         (naturalize::Focus::Landscape, a.landscape),
+        (naturalize::Focus::Sea, a.sea),
+        (naturalize::Focus::River, a.river),
+        (naturalize::Focus::Mechanics, a.mechanics),
+        (naturalize::Focus::Household, a.household),
     ]
     .into_iter()
     .filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v)))
