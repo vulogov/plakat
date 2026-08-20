@@ -178,12 +178,20 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
     let out = naturalize::apply(&img, &p);
     let ai_after = naturalize::ai_tell_score(&out);
-    out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
 
-    // Etch bar: carry plakat provenance forward (unless opted out).
+    // Etch bar (QUALITY-2 P2): if the input was plakat-etched, re-etch the output — re-embed L1 into the
+    // new pixels + chain the original as `parent` — so `doctor --if-plakat` resolves it as a derivative.
+    // Otherwise plain-save and (for non-etched images) carry any metadata sidecar/chunks forward.
+    let mut reetched: Option<crate::etch::EtchId> = None;
     let mut carried = false;
     if !a.no_reetch {
-        carried = carry_provenance(&a.input, &a.out).unwrap_or(false);
+        reetched = crate::etch::reetch(&a.input, out.as_raw(), out.width(), out.height(), &a.out).unwrap_or(None);
+    }
+    if reetched.is_none() {
+        out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+        if !a.no_reetch {
+            carried = carry_provenance(&a.input, &a.out).unwrap_or(false);
+        }
     }
 
     let preset_label = a.preset.as_deref().unwrap_or("subtle");
@@ -196,8 +204,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     println!("{} {}  (naturalize · {preset_label}{focus_note})", style("wrote").green(), a.out.display());
     let _ = ai_before;
     println!("  {} AI-tell {:.3} (0=human … 1=AI; a batch-ranking heuristic)", style("score").cyan(), ai_after);
-    if carried {
-        println!("  {} plakat provenance carried forward (L0). Note: pixels changed — a full re-etch (L1) lands in P2; `--no-reetch` for a clean output.", style("etch").cyan());
+    if let Some(id) = reetched {
+        println!("  {} re-etched (fresh L1 in the new pixels, id {:016x}, source chained as parent) — `doctor --if-plakat` verifies it, provenance preserved.", style("etch").green(), id.0);
+    } else if carried {
+        println!("  {} metadata carried forward (input not plakat-etched).", style("etch").cyan());
     }
     Ok(())
 }

@@ -152,7 +152,7 @@ pub fn save_rgb_u8_with_metadata(
 
 /// Insert the L0 `etch` object into the sidecar JSON (best-effort — returns the original on any parse
 /// failure so a malformed injection never loses the recipe).
-fn inject_etch_into_sidecar(pretty_json: &str, etch_json: &str) -> String {
+pub(crate) fn inject_etch_into_sidecar(pretty_json: &str, etch_json: &str) -> String {
     match (
         serde_json::from_str::<serde_json::Value>(pretty_json),
         serde_json::from_str::<serde_json::Value>(etch_json),
@@ -167,7 +167,7 @@ fn inject_etch_into_sidecar(pretty_json: &str, etch_json: &str) -> String {
     }
 }
 
-fn save_rgb_u8_inner(
+pub(crate) fn save_rgb_u8_inner(
     buf: &[u8],
     width: u32,
     height: u32,

@@ -10,7 +10,7 @@ low-res tells (cloud-foliage, dissolving background, incoherent geometry) that t
 Fold into `--quality high` (→ `--hires 1.5`). Order: gen → hires → naturalize → etch. Reuse `cli::upscale`
 diffusion path. Verify it lifts detail on a fixed prompt without changing composition.
 
-## P2 — full L1 re-etch after naturalize
+## P2 — full L1 re-etch after naturalize — DONE (commit pending)
 `naturalize` on an etched image (unless `--no-reetch`): read the input `EtchId` (L0 manifest) →
 `etch::set_parent(id)` → save the naturalized buffer via `imaging::io::save_rgb_u8_with_metadata`
 (re-embeds L1 into the new pixels + L0 with the parent chain + enqueues L3). `doctor --if-plakat` then

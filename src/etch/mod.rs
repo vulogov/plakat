@@ -137,6 +137,39 @@ mod tests {
     use crate::imaging::metadata::GenerationMetadata;
 
     #[test]
+    fn reetch_chains_a_derivative_to_the_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (64u32, 64u32);
+        let buf: Vec<u8> = (0..(w * h * 3)).map(|i| (i % 251) as u8).collect();
+        // 1. author an "etched" input directly (bypassing the global config): L1 + an L0 manifest.
+        let parent = payload::derive_id(PUBLIC_KEY, "orig-test");
+        let marked = pixel::embed(&buf, w as usize, h as usize, parent, PUBLIC_KEY, 0.35, None);
+        let l0 = manifest::EtchManifest::new(parent, &[Layer::L0, Layer::L1], None).to_json();
+        let meta = GenerationMetadata::new("orig", "sdxl", 1, 4, 5.0, "default", w, h);
+        let inp = dir.path().join("in.png");
+        crate::imaging::io::save_rgb_u8_inner(&marked, w, h, &inp, Some(&meta), Some(&l0)).unwrap();
+        assert_eq!(detect::read_l0(&inp).and_then(|m| m.etch_id()), Some(parent), "input carries the parent id");
+
+        // 2. re-etch a (pretend-naturalized) buffer → a derivative chained to the parent.
+        let out = dir.path().join("out.png");
+        let new_id = reetch(&inp, &buf, w, h, &out).unwrap().expect("input was etched → re-etched");
+        assert_ne!(new_id, parent, "derivative gets a fresh id");
+        let m = detect::read_l0(&out).expect("output carries an L0 manifest");
+        assert_eq!(m.etch_id(), Some(new_id), "output id is the derivative id");
+        assert_eq!(m.parent_id(), Some(parent), "output chains to the source as parent");
+        // `doctor --if-plakat` resolves it as a VALID etch (fresh L1 matches the new id), with the source
+        // recorded as `parent` — a first-class artifact, not a stale/lost mark.
+        let report = detect::verify(&out, PUBLIC_KEY, false);
+        assert_eq!(report.verdict, detect::Verdict::Generated, "re-etched output is a valid etch");
+        assert_eq!(report.id, Some(new_id), "L1 in the new pixels verifies the derivative id");
+
+        // 3. a NON-etched input → reetch is a no-op (nothing invented).
+        let plain = dir.path().join("plain.png");
+        image::RgbImage::from_raw(w, h, buf.clone()).unwrap().save(&plain).unwrap();
+        assert!(reetch(&plain, &buf, w, h, &dir.path().join("plain_out.png")).unwrap().is_none());
+    }
+
+    #[test]
     fn etch_id_hex_roundtrips() {
         let id = EtchId(0x9f2c4a17b3e08d5c);
         assert_eq!(id.hex(), "9f2c4a17b3e08d5c");
@@ -297,4 +330,39 @@ pub fn l0_manifest_json(metadata: &crate::imaging::metadata::GenerationMetadata)
     }
     let id = render_id(cfg, metadata);
     Some(manifest::EtchManifest::new(id, &layers, parent()).to_json())
+}
+
+/// Re-etch a pixel-edited **derivative** of an already-etched image (RFC QUALITY-2 P2, used by
+/// `naturalize`): read the input's `EtchId` as the `parent`, embed a fresh L1 mark into the NEW pixels,
+/// and write the L0 manifest + sidecar with the parent chain, so `doctor --if-plakat OUT` resolves it as
+/// a **verifiable derivative** (a valid L1 in the current pixels, not a stale mark). Returns the new
+/// derivative id, or `None` when the input was never plakat-etched (nothing is invented). Self-contained —
+/// it bypasses the process-wide `--etch` config, which a post-pass verb doesn't have.
+pub fn reetch(input: &std::path::Path, rgb: &[u8], w: u32, h: u32, out: &std::path::Path) -> anyhow::Result<Option<EtchId>> {
+    let Some(parent_id) = detect::read_l0(input).and_then(|m| m.etch_id()) else {
+        return Ok(None); // input not plakat-etched → nothing to carry
+    };
+    let key = PUBLIC_KEY;
+    // a deterministic derivative id (differs from the parent), chained to it as `parent`.
+    let new_id = payload::derive_id(key, &format!("parent={:016x} op=naturalize", parent_id.0));
+    // L1: embed the new id into the (already naturalized) pixels.
+    let marked = pixel::embed(rgb, w as usize, h as usize, new_id, key, 0.35, None);
+    // L0: manifest with the parent chain. L0+L1 only — L2 (latent) / L3 (semantic re-fingerprint) don't
+    // apply to a pixel post-pass without re-running the model.
+    let l0 = manifest::EtchManifest::new(new_id, &[Layer::L0, Layer::L1], Some(parent_id)).to_json();
+    // preserve the input's recipe metadata if present, else a minimal record.
+    let meta = reetch_metadata(input).unwrap_or_else(|| crate::imaging::metadata::GenerationMetadata::new("naturalized derivative", "", 0, 0, 0.0, "", w, h));
+    // write the marked PNG + the `parameters`/`etch` tEXt chunks.
+    crate::imaging::io::save_rgb_u8_inner(&marked, w, h, out, Some(&meta), Some(&l0))?;
+    // write the JSON sidecar with the etch object too (the read_l0 sidecar fallback).
+    if let Ok(json) = meta.to_json_pretty() {
+        let side = crate::imaging::io::sidecar_path(out);
+        let _ = std::fs::write(side, crate::imaging::io::inject_etch_into_sidecar(&json, &l0));
+    }
+    Ok(Some(new_id))
+}
+
+fn reetch_metadata(path: &std::path::Path) -> Option<crate::imaging::metadata::GenerationMetadata> {
+    let side = crate::imaging::io::sidecar_path(path);
+    serde_json::from_str(&std::fs::read_to_string(side).ok()?).ok()
 }
