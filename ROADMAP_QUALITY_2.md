@@ -18,10 +18,13 @@ resolves the output as a **derived** image with a valid L1 (not a stale mark). U
 invented. Closes the QUALITY-1 P1/P2 honest limit. Verify `doctor --if-plakat` on a naturalized etched
 image reports `derived`.
 
-## P3 — AI-tell ranking
-`rank --ai-tells` sorts by `naturalize::ai_tell_score` (ascending — least-AI first) + writes `ai_tell`
-into the sidecar; `generate --keep-best K --ai-tells` ranks on *aesthetic − λ·ai-tell* to prune a batch to
-the most human-looking frames. Weight-free. Reuse `pipelines::aesthetic` + `naturalize::ai_tell_score`.
+## P3 — AI-tell ranking — DONE (commit pending)
+`rank --ai-tells` sorts by `naturalize::ai_tell_score` (ascending — least-AI first, weight-free, no scorer
+load) + writes `ai_tell` into the sidecar; `generate --keep-best K --ai-tells` ranks on
+*aesthetic − λ·ai-tell* (λ=2.0) to prune a batch to the most human-looking frames, recording both `score`
+and `ai_tell`. New `GenerationMetadata.ai_tell` field + `imaging::io::patch_sidecar_ai_tell`. Reuses
+`pipelines::aesthetic` + `naturalize::ai_tell_score`. 1 unit test (sidecar round-trip + score coexists +
+no-sidecar no-op).
 
 ## P4 — parity + docs + cut 6.11.0
 Extend `Documentation/QUALITY.md` (hires / re-etch / ai-tells) + doctor note + README; a corpus step for

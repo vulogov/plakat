@@ -26,6 +26,11 @@ pub struct RankArgs {
     /// sort key). No-op for images without a sidecar.
     #[arg(help_heading = "Ranking", long, default_value_t = false)]
     pub write: bool,
+
+    /// Rank by the weight-free **AI-tell** score (0..1, lower = more human-looking) instead of the
+    /// LAION aesthetic score — least-AI-looking first. No model download. `--write` records `ai_tell`.
+    #[arg(help_heading = "Ranking", long, default_value_t = false)]
+    pub ai_tells: bool,
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp"];
@@ -61,6 +66,41 @@ fn collect_images(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
 pub async fn run(args: RankArgs, device: Device) -> Result<()> {
     let files = collect_images(&args.inputs)?;
     anyhow::ensure!(!files.is_empty(), "no images found in the given paths");
+
+    // AI-tell ranking is weight-free — score each image by `naturalize::ai_tell_score` (0..1, lower =
+    // more human-looking) and sort ASCENDING (least AI first). No scorer / device load.
+    if args.ai_tells {
+        let mut scored: Vec<(PathBuf, f32)> = Vec::with_capacity(files.len());
+        for f in &files {
+            let img = image::open(f)
+                .with_context(|| format!("opening {}", f.display()))?
+                .to_rgb8();
+            scored.push((f.clone(), crate::naturalize::ai_tell_score(&img)));
+        }
+        // Ascending (least-AI first).
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if args.write {
+            for (p, s) in &scored {
+                let _ = crate::imaging::io::patch_sidecar_ai_tell(p, *s as f64);
+            }
+        }
+        if let Some(n) = args.top {
+            scored.truncate(n);
+        }
+        if args.json {
+            let items: Vec<String> = scored
+                .iter()
+                .map(|(p, s)| format!("  {{\"path\": {:?}, \"ai_tell\": {:.4}}}", p.display().to_string(), s))
+                .collect();
+            println!("[\n{}\n]", items.join(",\n"));
+        } else {
+            for (rank, (p, s)) in scored.iter().enumerate() {
+                let tag = if rank == 0 { style("★").green().to_string() } else { " ".to_string() };
+                println!("{tag} {:6.3}  {}", s, p.display());
+            }
+        }
+        return Ok(());
+    }
 
     let scorer = AestheticScorer::load(&device)
         .await

@@ -154,6 +154,12 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Quality tuning", long, default_value_t = false)]
     pub score: bool,
 
+    /// Fold the weight-free **AI-tell** score into `--keep-best`/`--score`: rank on
+    /// `aesthetic − λ·ai_tell` so the batch keeps the most human-looking frames (not just the
+    /// prettiest). Records `ai_tell` alongside `score`. λ defaults to `2.0`.
+    #[arg(help_heading = "Quality tuning", long = "ai-tells", default_value_t = false)]
+    pub ai_tells: bool,
+
     /// Apply the naturalize analog post-pass to each output (RFC QUALITY-1) — reduces the "AI-generated"
     /// fingerprint. A compact spec: a preset and/or focuses, e.g. `--naturalize photo` or
     /// `--naturalize "photo vegetation=1 sky=0.5"`; bare `--naturalize` = the `subtle` preset. The PNG
@@ -927,6 +933,7 @@ fn apply_quality(args: &mut GenerateArgs) {
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
     let keep_best = args.keep_best;
+    let ai_tells = args.ai_tells;
     let want_score = args.score || keep_best.is_some();
     let import = args.import.clone();
     import.validate()?; // fail before a multi-minute generation if `--import` needs the photos build
@@ -958,7 +965,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                 }
             }
             if want_score {
-                score_outputs(new_files, keep_best, &device).await?;
+                score_outputs(new_files, keep_best, ai_tells, &device).await?;
             }
             if import.import.is_some() {
                 let survivors: Vec<PathBuf> =
@@ -973,27 +980,47 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
 /// Score `files` with the aesthetic predictor, write each score into its `.json` sidecar (the
 /// collection manager's sort key), and — when `keep_best` is set — keep only the top-K, deleting the
 /// rest (PNG + sidecar). Pre-existing files are never touched (the caller passes only this run's).
-async fn score_outputs(files: Vec<PathBuf>, keep_best: Option<usize>, device: &Device) -> Result<()> {
+async fn score_outputs(files: Vec<PathBuf>, keep_best: Option<usize>, ai_tells: bool, device: &Device) -> Result<()> {
+    /// λ weighting the AI-tell penalty against the aesthetic score in `--ai-tells` ranking.
+    const AI_TELL_LAMBDA: f32 = 2.0;
+
     let scorer = crate::pipelines::aesthetic::AestheticScorer::load(device)
         .await
         .context("loading the aesthetic scorer")?;
-    let mut scored: Vec<(PathBuf, f32)> = Vec::with_capacity(files.len());
+    // (path, aesthetic, ai_tell, ranking_key). Without `--ai-tells` the key IS the aesthetic score;
+    // with it the key is `aesthetic − λ·ai_tell` (prefer human-looking frames, not just pretty ones).
+    let mut scored: Vec<(PathBuf, f32, f32, f32)> = Vec::with_capacity(files.len());
     for f in &files {
-        let s = scorer.score_path(f).with_context(|| format!("scoring {}", f.display()))?;
-        scored.push((f.clone(), s));
+        let aesthetic = scorer.score_path(f).with_context(|| format!("scoring {}", f.display()))?;
+        let ai_tell = if ai_tells {
+            let img = image::open(f).with_context(|| format!("opening {}", f.display()))?.to_rgb8();
+            crate::naturalize::ai_tell_score(&img)
+        } else {
+            0.0
+        };
+        let key = aesthetic - if ai_tells { AI_TELL_LAMBDA * ai_tell } else { 0.0 };
+        scored.push((f.clone(), aesthetic, ai_tell, key));
     }
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    for (rank, (path, score)) in scored.iter().enumerate() {
+    scored.sort_by(|a, b| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal));
+    for (rank, (path, aesthetic, ai_tell, key)) in scored.iter().enumerate() {
         let drop = keep_best.map(|k| rank >= k).unwrap_or(false);
+        let shown = if ai_tells {
+            format!("{:6.3} (aes {:.2} ai-tell {:.2})", key, aesthetic, ai_tell)
+        } else {
+            format!("{:6.3}", aesthetic)
+        };
         if drop {
             let _ = std::fs::remove_file(path);
             let _ = std::fs::remove_file(crate::imaging::io::sidecar_path(path));
-            crate::ui::progress::println(&format!("  drop  {:6.3}  {}", score, path.display()));
+            crate::ui::progress::println(&format!("  drop  {}  {}", shown, path.display()));
         } else {
-            // Persist the score into the sidecar (kept images / plain --score).
-            let _ = crate::imaging::io::patch_sidecar_score(path, *score as f64);
+            // Persist the score(s) into the sidecar (kept images / plain --score).
+            let _ = crate::imaging::io::patch_sidecar_score(path, *aesthetic as f64);
+            if ai_tells {
+                let _ = crate::imaging::io::patch_sidecar_ai_tell(path, *ai_tell as f64);
+            }
             let tag = if keep_best.is_some() { "keep" } else { "score" };
-            crate::ui::progress::println(&format!("  {tag}  {:6.3}  {}", score, path.display()));
+            crate::ui::progress::println(&format!("  {tag}  {}  {}", shown, path.display()));
         }
     }
     if let Some(k) = keep_best {
@@ -2087,6 +2114,7 @@ mod tests {
             dynamic_threshold: 0.0,
             keep_best: None,
             score: false,
+            ai_tells: false,
             naturalize: None,
             quality: None,
             hires: None,

@@ -91,6 +91,26 @@ pub fn patch_sidecar_score(image_path: &Path, score: f64) -> Result<()> {
     Ok(())
 }
 
+/// Write the AI-tell score (0..1, lower = more human) into the image's `.json` sidecar. The 6.11
+/// `rank --ai-tells` / `generate --keep-best --ai-tells` sort key. No-op for images without a sidecar.
+pub fn patch_sidecar_ai_tell(image_path: &Path, ai_tell: f64) -> Result<()> {
+    let sidecar = sidecar_path(image_path);
+    if !sidecar.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&sidecar)
+        .with_context(|| format!("reading sidecar {}", sidecar.display()))?;
+    let mut meta: crate::imaging::metadata::GenerationMetadata =
+        serde_json::from_str(&text).with_context(|| format!("parsing sidecar {}", sidecar.display()))?;
+    meta.ai_tell = Some(ai_tell);
+    let json = meta
+        .to_json_pretty()
+        .with_context(|| format!("serialising sidecar {}", sidecar.display()))?;
+    std::fs::write(&sidecar, json)
+        .with_context(|| format!("writing sidecar {}", sidecar.display()))?;
+    Ok(())
+}
+
 pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
@@ -411,5 +431,29 @@ mod tests {
             read_parameters_chunk(&webp_path).is_none(),
             "WebP outputs must not carry the PNG tEXt chunk"
         );
+    }
+
+    #[test]
+    fn patch_sidecar_ai_tell_writes_field_and_survives_score() {
+        let tmp = tempfile::tempdir().unwrap();
+        let png_path = tmp.path().join("img.png");
+        let sidecar = tmp.path().join("img.png.json");
+        let buf: Vec<u8> = (0..4).flat_map(|_| [10u8, 20, 30]).collect();
+        let meta = GenerationMetadata::new("a fox", "sd15", 42, 28, 7.5, "euler-a", 2, 2);
+        save_rgb_u8_with_metadata(&buf, 2, 2, &png_path, &meta).unwrap();
+        assert!(sidecar.exists());
+
+        // Both keys coexist: aesthetic score AND the AI-tell score.
+        patch_sidecar_score(&png_path, 6.5).unwrap();
+        patch_sidecar_ai_tell(&png_path, 0.42).unwrap();
+        let reread: GenerationMetadata =
+            serde_json::from_str(&std::fs::read_to_string(&sidecar).unwrap()).unwrap();
+        assert_eq!(reread.score, Some(6.5));
+        assert_eq!(reread.ai_tell, Some(0.42));
+
+        // No sidecar → no-op (no panic, no file created).
+        let orphan = tmp.path().join("nope.png");
+        patch_sidecar_ai_tell(&orphan, 0.1).unwrap();
+        assert!(!tmp.path().join("nope.png.json").exists());
     }
 }

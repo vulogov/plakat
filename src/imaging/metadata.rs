@@ -186,6 +186,10 @@ pub struct GenerationMetadata {
     /// The 3.x collection manager's sort/filter key. Absent until an image is scored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f64>,
+    /// 6.11: AI-tell score (0..1, lower = more human-looking), written by `rank --ai-tells` /
+    /// `generate --keep-best --ai-tells`. A coarse ranking heuristic, not a verdict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_tell: Option<f64>,
 }
 
 impl GenerationMetadata {
@@ -234,6 +238,7 @@ impl GenerationMetadata {
             enhancement: None,
             free_noise: None,
             score: None,
+            ai_tell: None,
         }
     }
 
