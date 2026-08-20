@@ -3,7 +3,7 @@
 Close the three 6.10 naturalize deferrals. A **depth** cycle (no new studio, no novel weight-free
 algorithm → **no G0**); each phase reuses an existing piece and ships value alone.
 
-## P1 — hi-res fix (the structural half of "less AI")
+## P1 — hi-res fix — DONE (commit pending)
 `generate --hires <factor>`: after generation, **before `--etch`**, run the existing `upscale --diffusion`
 (tile-ControlNet / SUPIR-lite) at ×factor on each output to inject real, coherent detail — fixes the
 low-res tells (cloud-foliage, dissolving background, incoherent geometry) that the analog pass can't.

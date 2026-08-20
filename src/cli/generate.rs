@@ -164,9 +164,16 @@ pub struct GenerateArgs {
     /// Quality preset (RFC QUALITY-1): bundle the guidance levers that fight the "AI look" —
     /// `low`/`medium`/`high` progressively enable CFG-rescale (kills oversaturation), FreeU + PAG
     /// (coherence/detail), dynamic thresholding, and (high) ADetailer. Only fills knobs left at their
-    /// default, so explicit `--freeu`/`--pag-scale`/… always win.
+    /// default, so explicit `--freeu`/`--pag-scale`/… always win. `high` also implies `--hires 1.5`.
     #[arg(help_heading = "Quality tuning", long = "quality", value_name = "low|medium|high")]
     pub quality: Option<String>,
+
+    /// Hi-res fix (RFC QUALITY-2): after generation, run a **tile-ControlNet diffusion upscale** ×FACTOR
+    /// on each output to inject real, coherent detail (fixes low-res tells — cloud-foliage / dissolving
+    /// backgrounds / incoherent geometry — that the analog `--naturalize` pass can't). Runs before
+    /// `--naturalize` and before `--etch`. Needs a model.
+    #[arg(help_heading = "Quality tuning", long = "hires", value_name = "FACTOR")]
+    pub hires: Option<f32>,
 
     /// Negative prompt.
     #[arg(help_heading = "Prompt & text", long, default_value = "")]
@@ -828,6 +835,58 @@ fn image_snapshot(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
         .collect()
 }
 
+/// Hi-res fix (RFC QUALITY-2): tile-ControlNet diffusion-upscale each file ×`factor`, in place, preserving
+/// its metadata (PNG text chunks + the sidecar). Loads the refine pipeline once. Best-effort per file.
+async fn hires_refine(files: &[PathBuf], factor: f32, gen_model: &str, device: &Device) -> Result<()> {
+    use crate::pipelines::diffusion_upscale::Options;
+    use crate::pipelines::{portrait, scheduler::SchedulerKind};
+    // Tile-ControlNet is SD 1.5 / SDXL; match the generation family for a consistent look.
+    let sdxl = gen_model.to_ascii_lowercase().contains("xl");
+    let (model, tile) = if sdxl { ("sdxl", 1024u32) } else { ("sd15", 512u32) };
+    let pipeline = portrait::Pipeline::load(portrait::LoadRequest {
+        model: model.to_string(),
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        identity: None,
+        shared_clip_h: None,
+    })
+    .await
+    .map_err(|e| crate::error_hints::decorate_oom(e, crate::error_hints::OomContext::Upscale))?;
+
+    for f in files {
+        let chunks = std::fs::read(f).map(|b| crate::cli::naturalize::extract_text_chunks(&b)).unwrap_or_default();
+        let tmp = f.with_extension("hires.png");
+        let opts = Options {
+            input: f.clone(),
+            out_path: tmp.clone(),
+            scale: factor.clamp(1.1, 4.0),
+            tile,
+            overlap: 96.min(tile.saturating_sub(8)),
+            tile_strength: 0.4,
+            cn_strength: 1.0,
+            steps: 20,
+            guidance: 6.0,
+            prompt: "highly detailed, sharp focus, intricate natural texture".to_string(),
+            negative: "blurry, lowres, jpeg artifacts, oversmoothed".to_string(),
+            seed: 0,
+            scheduler: SchedulerKind::default(),
+        };
+        match pipeline.diffusion_upscale(&opts).await {
+            Ok(()) => {
+                if std::fs::rename(&tmp, f).is_ok() {
+                    let _ = crate::cli::naturalize::inject_text_chunks(f, &chunks); // sidecar is separate → kept
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                tracing::warn!(target: "plakat", "hires {}: {e}", f.display());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Apply a `--quality` preset: enable the anti-"AI-look" guidance levers, but only where the user left the
 /// knob at its default (so explicit flags always win). `low` → CFG-rescale + FreeU; `medium` → + PAG +
 /// dynamic-threshold; `high` → + ADetailer.
@@ -855,6 +914,9 @@ fn apply_quality(args: &mut GenerateArgs) {
     }
     if high {
         args.adetailer = true; // face refine
+        if args.hires.is_none() {
+            args.hires = Some(1.5); // inject real detail / fix low-res geometry
+        }
     }
     crate::ui::progress::println(&format!(
         "  quality {tier}: cfg-rescale {:.2} · freeu {} · pag {:.1} · dyn-thresh {:.1}{}",
@@ -870,10 +932,12 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     import.validate()?; // fail before a multi-minute generation if `--import` needs the photos build
     let out_dir = args.out.clone();
     let naturalize_spec = args.naturalize.clone();
+    let hires = args.hires;
+    let hires_model = args.model.clone();
     // Snapshot the out-dir before generating so we only touch this run's outputs — needed for
-    // `--keep-best`/`--score`, `--import`, and `--naturalize`.
+    // `--keep-best`/`--score`, `--import`, `--naturalize`, and `--hires`.
     let before =
-        (want_score || import.import.is_some() || naturalize_spec.is_some()).then(|| image_snapshot(&out_dir));
+        (want_score || import.import.is_some() || naturalize_spec.is_some() || hires.is_some()).then(|| image_snapshot(&out_dir));
 
     run_inner(args, device.clone()).await?;
 
@@ -881,8 +945,11 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
         let new_files: Vec<PathBuf> =
             image_snapshot(&out_dir).difference(&before).cloned().collect();
         if !new_files.is_empty() {
-            // Naturalize FIRST (so a later score reflects the naturalized image), preserving each PNG's
-            // metadata (incl. the etch L0 chunk); THEN score, THEN import.
+            // Hi-res fix FIRST (inject real detail / fix geometry), THEN naturalize the surface look,
+            // THEN score / import. (Both preserve metadata; the etch order is finished in QUALITY-2 P2.)
+            if let Some(factor) = hires.filter(|f| *f > 1.0) {
+                hires_refine(&new_files, factor, &hires_model, &device).await?;
+            }
             if let Some(spec) = &naturalize_spec {
                 for f in &new_files {
                     if let Err(e) = crate::cli::naturalize::apply_inplace(f, spec) {
@@ -1966,6 +2033,33 @@ mod tests {
     use super::*;
     use crate::imaging::metadata::GenerationMetadata;
 
+    #[test]
+    fn quality_preset_enables_levers_and_hires_only_where_default() {
+        // high → all levers + hires 1.5, filling only defaults.
+        let mut a = mk_default_args("x");
+        a.quality = Some("high".into());
+        apply_quality(&mut a);
+        assert!(a.guidance_rescale > 0.0 && a.freeu && a.pag_scale > 0.0 && a.dynamic_threshold > 0.0 && a.adetailer);
+        assert_eq!(a.hires, Some(1.5));
+        // low → only cfg-rescale + freeu, no pag/adetailer/hires.
+        let mut b = mk_default_args("x");
+        b.quality = Some("low".into());
+        apply_quality(&mut b);
+        assert!(b.guidance_rescale > 0.0 && b.freeu && b.pag_scale == 0.0 && !b.adetailer && b.hires.is_none());
+        // explicit knobs win: a user-set pag/hires is not overwritten.
+        let mut c = mk_default_args("x");
+        c.quality = Some("high".into());
+        c.pag_scale = 4.0;
+        c.hires = Some(2.0);
+        apply_quality(&mut c);
+        assert_eq!(c.pag_scale, 4.0);
+        assert_eq!(c.hires, Some(2.0));
+        // no preset → untouched.
+        let mut d = mk_default_args("x");
+        apply_quality(&mut d);
+        assert!(d.hires.is_none() && !d.freeu);
+    }
+
     /// v0.20: helper to construct a `GenerateArgs` with clap's
     /// declared defaults. Mirrors the `#[arg(default_value = ...)]`
     /// attributes above. Used by the recipe-override tests.
@@ -1995,6 +2089,7 @@ mod tests {
             score: false,
             naturalize: None,
             quality: None,
+            hires: None,
             negative: String::new(),
             negative_preset: None,
             seed: None,

@@ -227,7 +227,7 @@ fn carry_provenance(src: &Path, dst: &Path) -> Result<bool> {
 const PNG_SIG: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
 
 /// Extract every `tEXt`/`zTXt`/`iTXt` chunk (raw: length+type+data+CRC) from PNG `bytes`.
-fn extract_text_chunks(bytes: &[u8]) -> Vec<Vec<u8>> {
+pub(crate) fn extract_text_chunks(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     if bytes.len() < 8 || bytes[..8] != PNG_SIG {
         return out;
@@ -252,7 +252,7 @@ fn extract_text_chunks(bytes: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Insert raw text `chunks` into the PNG at `path`, right after `IHDR` (verbatim, CRCs already valid).
-fn inject_text_chunks(path: &Path, chunks: &[Vec<u8>]) -> Result<()> {
+pub(crate) fn inject_text_chunks(path: &Path, chunks: &[Vec<u8>]) -> Result<()> {
     if chunks.is_empty() {
         return Ok(());
     }
