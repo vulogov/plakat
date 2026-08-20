@@ -26,9 +26,10 @@ and `ai_tell`. New `GenerationMetadata.ai_tell` field + `imaging::io::patch_side
 `pipelines::aesthetic` + `naturalize::ai_tell_score`. 1 unit test (sidecar round-trip + score coexists +
 no-sidecar no-op).
 
-## P4 — parity + docs + cut 6.11.0
-Extend `Documentation/QUALITY.md` (hires / re-etch / ai-tells) + doctor note + README; a corpus step for
-the hi-res + re-etch demo. **CUT 6.11.0** (bump Cargo+lock, gate `--no-default-features --lib`, **pin
+## P4 — parity + docs + cut 6.11.0 — DONE (commit pending)
+Extended `Documentation/QUALITY.md` (hires / re-etch / ai-tells sections) + doctor note (3 new 6.11 lines) +
+README (new v6.11.0 banner + body) + corpus (`naturalize_run.sh` §6b rank --ai-tells + §7c hires + §7d
+keep-best --ai-tells). **CUT 6.11.0** (bump Cargo+lock, gate `--no-default-features --lib`, **pin
 turbofish on new `.parse()`**, FF `git push 6.11.0:main`, tag → 6-asset CI, `cargo publish --locked
 --allow-dirty --no-default-features`, `gh release edit` + bg waiter, **verify the Windows leg**, NO
 Claude/Anthropic coauthor).

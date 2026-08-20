@@ -1,0 +1,28 @@
+{
+  "schema": "texture/1",
+  "material": "smooth wet river cobblestones under a thin sheet of flowing clear water, glossy, streaming",
+  "seamless": "circular:both",
+  "size": 1024,
+  "naming": "plakat",
+  "normal_y": "opengl",
+  "maps": [
+    "albedo.png",
+    "normal.png",
+    "roughness.png",
+    "metallic.png",
+    "height.png",
+    "ao.png"
+  ],
+  "orm": "orm.png",
+  "gltf": "material.gltf",
+  "preview": "preview.png",
+  "spec_hash": "3c627aea7acdcfbb",
+  "scorecard": {
+    "tileability_x": 0.11441318,
+    "tileability_y": 0.11219956,
+    "normal_valid": 1.0,
+    "albedo_flatness": 0.012535392,
+    "passes": true
+  },
+  "generator": "plakat 6.3.0"
+}

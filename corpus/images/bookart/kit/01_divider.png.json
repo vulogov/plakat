@@ -1,0 +1,44 @@
+{
+  "prompt": "bookart russian divider (procedural ornament)",
+  "model": "sd15",
+  "seed": 309689372594955804,
+  "steps": 24,
+  "guidance": 0.0,
+  "scheduler": "bookart",
+  "width": 1748,
+  "height": 2480,
+  "loras": [
+    "vulogov98/plakat-bookart#russian-sd15.safetensors"
+  ],
+  "extras": [
+    [
+      "Bookart origin",
+      "russian"
+    ],
+    [
+      "Bookart technique",
+      "line"
+    ],
+    [
+      "Bookart tier",
+      "procedural"
+    ],
+    [
+      "Bookart ornament",
+      "divider"
+    ],
+    [
+      "Bookart symmetry",
+      "radial:6"
+    ],
+    [
+      "Bookart page",
+      "1748x2480 @ 300 DPI"
+    ],
+    [
+      "Bookart spec-hash",
+      "db190c525420771e"
+    ]
+  ],
+  "generator": "plakat 6.1.0"
+}

@@ -506,14 +506,17 @@ fn section_product() {
 }
 
 fn section_quality() {
-    section_header("naturalize / quality (6.10.0 — reduce the AI-generated fingerprint)");
+    section_header("naturalize / quality (6.10–6.11 — reduce the AI-generated fingerprint)");
     ok("weights-free (run anywhere, no GPU): `naturalize` analog pass + content focuses + ghost-signature removal + AI-tell score");
     note("`plakat naturalize IN --out OUT` — the analog post-pass: film grain + chromatic aberration + vignette + bloom + a DESATURATING film grade (realism, NOT vintage — warm/vignette stay small). Presets subtle/photo/painting; or tune --grain/--aberration/--vignette/--bloom/--desaturate/--warm/--defocus.");
     note("content focus qualifiers (analog, combine): --people (waxy skin) · --sky (banding) · --vegetation (cloud-foliage mush) · --cityscape · --landscape · --sea · --river · --mechanics · --household <N>. Each blends a subject-specific de-AI profile.");
     note("corrective focuses (model-backed img2img/inpaint — grain can't fix structure): --geometry / --anatomy <N> (re-resolve incoherent structure/proportions) · --no-twins <N> (SCRFD-detect + inpaint duplicate faces so lookalikes diverge).");
     note("ghost-signature removal: `--designature br|bl|tr|tl` dissolves a foreign training-data signature smudge (weight-free) — never touches plakat's own etch. AI-tell score (oversaturation + over-smoothness) reported per run + via `api::Naturalize::ai_tell_score`.");
-    note("`--quality low|medium|high` on `generate` bundles the anti-AI levers (CFG-rescale + FreeU + PAG + dynamic-threshold + [high] ADetailer), filling only knobs left at default. `generate --naturalize [spec]` + scenario `naturalize:` apply the pass to outputs, preserving the --etch L0 chunk.");
-    note("integration: `generate --naturalize`/`--quality` · scenario `naturalize:` · Bund `plakat.naturalize` · library `plakat::api::Naturalize`. Etch bar: L0 carried forward (full L1 re-etch = follow-up). See Documentation/QUALITY.md.");
+    note("`--quality low|medium|high` on `generate` bundles the anti-AI levers (CFG-rescale + FreeU + PAG + dynamic-threshold + [high] ADetailer + [high] --hires 1.5), filling only knobs left at default. `generate --naturalize [spec]` + scenario `naturalize:` apply the pass to outputs.");
+    note("6.11 hi-res fix: `generate --hires <factor>` runs a tile-ControlNet upscale-diffuse (SUPIR-lite) after gen / before etch — injects real coherent detail (fixes cloud-foliage / dissolving backgrounds / geometry that grain can't). Order: gen → hires → naturalize → etch.");
+    note("6.11 AI-tell ranking (weight-free): `rank --ai-tells` (least-AI-looking first, --write records `ai_tell`) · `generate --keep-best K --ai-tells` (rank on aesthetic − λ·ai_tell → most human-looking of the batch).");
+    note("6.11 full re-etch: `naturalize` on a plakat-etched image re-embeds a fresh L1 into the new pixels + chains the source as `parent` (doctor --if-plakat → valid `generated` etch, not a stale mark). `--no-reetch` writes a clean output; never-etched input stays un-etched.");
+    note("integration: `generate --naturalize`/`--quality`/`--hires` · `rank --ai-tells` · scenario `naturalize:` · Bund `plakat.naturalize` · library `plakat::api::Naturalize`. See Documentation/QUALITY.md.");
 }
 
 /// v0.30 phase 4: ffmpeg presence + version. Required by `plakat

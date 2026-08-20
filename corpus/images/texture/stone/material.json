@@ -1,0 +1,28 @@
+{
+  "schema": "texture/1",
+  "material": "weathered granite cobblestones with moss in the cracks",
+  "seamless": "circular:both",
+  "size": 1024,
+  "naming": "plakat",
+  "normal_y": "opengl",
+  "maps": [
+    "albedo.png",
+    "normal.png",
+    "roughness.png",
+    "metallic.png",
+    "height.png",
+    "ao.png"
+  ],
+  "orm": "orm.png",
+  "gltf": "material.gltf",
+  "preview": "preview.png",
+  "spec_hash": "25bfb0620bf7ec17",
+  "scorecard": {
+    "tileability_x": 0.08730629,
+    "tileability_y": 0.07420605,
+    "normal_valid": 1.0,
+    "albedo_flatness": 0.0134061,
+    "passes": true
+  },
+  "generator": "plakat 6.3.0"
+}

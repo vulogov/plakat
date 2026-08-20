@@ -1,0 +1,45 @@
+{
+  "prompt": "a firebird among oak branches, featuring firebird and oak-leaf and vine, in the tradition of Russian folk book illustration, Bilibin lubok ornament, clean black ink line art, no shading, black and white, on a plain white background",
+  "negative": "color, colour, photograph, grey wash, gradient shading, soft focus, 3d render, blurry, text, letters, words, watermark, signature, caption, gibberish writing",
+  "model": "sd15",
+  "seed": 0,
+  "steps": 24,
+  "guidance": 0.0,
+  "scheduler": "bookart",
+  "width": 1748,
+  "height": 2480,
+  "loras": [
+    "vulogov98/plakat-bookart#russian-sd15.safetensors"
+  ],
+  "extras": [
+    [
+      "Bookart origin",
+      "russian"
+    ],
+    [
+      "Bookart technique",
+      "line"
+    ],
+    [
+      "Bookart tier",
+      "diffusion"
+    ],
+    [
+      "Bookart ornament",
+      "vignette"
+    ],
+    [
+      "Bookart symmetry",
+      "none"
+    ],
+    [
+      "Bookart page",
+      "1748x2480 @ 300 DPI"
+    ],
+    [
+      "Bookart spec-hash",
+      "6a94b989314601ca"
+    ]
+  ],
+  "generator": "plakat 6.1.0"
+}

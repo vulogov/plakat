@@ -1,0 +1,28 @@
+{
+  "schema": "texture/1",
+  "material": "brushed stainless steel panel, fine horizontal grain, subtle scratches",
+  "seamless": "circular:both",
+  "size": 1024,
+  "naming": "plakat",
+  "normal_y": "opengl",
+  "maps": [
+    "albedo.png",
+    "normal.png",
+    "roughness.png",
+    "metallic.png",
+    "height.png",
+    "ao.png"
+  ],
+  "orm": "orm.png",
+  "gltf": "material.gltf",
+  "preview": "preview.png",
+  "spec_hash": "6a66920000619ec4",
+  "scorecard": {
+    "tileability_x": 0.35073814,
+    "tileability_y": 0.10292197,
+    "normal_valid": 1.0,
+    "albedo_flatness": 0.006716759,
+    "passes": true
+  },
+  "generator": "plakat 6.3.0"
+}

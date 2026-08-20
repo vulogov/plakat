@@ -5,6 +5,8 @@
 [![Downloads](https://img.shields.io/crates/d/plakat?color=brightgreen)](https://crates.io/crates/plakat)
 [![License: Unlicense](https://img.shields.io/badge/license-Unlicense-lightgrey)](https://unlicense.org/)
 
+> **v6.11.0 — quality, in depth (RFC QUALITY-2)**: finishes the three `naturalize` deferrals. **Hi-res fix** — `generate --hires <factor>` (and `--quality high`) runs a tile-ControlNet upscale-diffuse after generation, injecting *real coherent detail* (fixes cloud-foliage, dissolving backgrounds, incoherent geometry that grain can't touch); order is gen → hires → naturalize → etch. **Full re-etch** — `naturalize` on a plakat-etched image now re-embeds a fresh **L1** pixel mark into the naturalized pixels and chains the source as `parent`, so `doctor --if-plakat` resolves it as a **valid `generated` etch** (not a stale mark); `--no-reetch` writes a clean output, and a never-etched input stays un-etched. **AI-tell ranking** (weight-free) — `rank --ai-tells` lists the least-AI-looking first, and `generate --keep-best K --ai-tells` prunes a batch on *aesthetic − λ·ai_tell* to the most human-looking frames. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.11.0) · [Guide →](Documentation/QUALITY.md)
+>
 > **v6.10.0 — `plakat naturalize` (make it read human-sourced)**: reduce the "AI-generated" fingerprint of an image (RFC QUALITY-1). A weight-free **analog post-pass** — film grain · chromatic aberration · vignette · bloom · a *desaturating* film grade — breaks the too-clean, over-saturated digital look (realism, **not** vintage). **Content focus qualifiers** pre-tune it to a subject's tell — `--people` (waxy skin), `--sky` (banding), `--vegetation` (cloud-foliage mush), `--cityscape`, `--landscape`, `--sea`/`--river`, `--mechanics`, `--household` — all combining. **Corrective focuses** (model-backed) fix what grain can't: `--geometry`/`--anatomy` (img2img re-resolve) and `--no-twins` (detect + inpaint duplicate faces). Plus `--designature` (dissolve a foreign ghost-signature smudge), a `--quality low|medium|high` generation preset (bundles CFG-rescale/FreeU/PAG/dynamic-threshold/ADetailer), and `generate --naturalize` / scenario `naturalize:` passes that **preserve the `--etch` provenance**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.10.0) · [Guide →](Documentation/QUALITY.md)
 >
 > **v6.9.0 — `plakat product`**: the flagship (RFC PRODUCT-1). Turn a **subject** — a cutout, a photo, or a text prompt — into a studio **product-shot / packshot**: the subject on a controlled background (white / grey sweep / gradient / a generated scene), **grounded** with a physically-plausible contact shadow and floor reflection derived from its alpha, at a chosen camera angle, optionally relit to a named lighting rig (IC-Light). A packshot is *structured data* — the same rig and grounding reproduce across a whole catalog. **`product sheet`** tiles a subject's angles into a labelled contact sheet; **`product turntable`** sweeps the key light. The grounding / sweep / composite half is **weight-free** — a supplied cutout → a sellable shot with no GPU; only relight + subject-generation need a model. Wired everywhere: scenario `type: product`, `compile`, Bund `plakat.product.*`, `plakat::api::Product`. Fully additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.9.0) · [Guide →](Documentation/PRODUCT.md)
@@ -146,14 +148,22 @@ plakat generate "a forest" --quality high --naturalize photo                   #
 - **Ghost-signature removal** — `--designature br|bl|tr|tl` dissolves a foreign training-data signature,
   scoped so it **never touches plakat's own `--etch` provenance**.
 - **`--quality low|medium|high`** on `generate` bundles the anti-AI levers (CFG-rescale + FreeU + PAG +
-  dynamic-threshold + ADetailer). **`generate --naturalize`** and a scenario **`naturalize:`** field apply
-  the pass to outputs, preserving the etch metadata.
-- **AI-tell score** — a weight-free oversaturation/over-smoothness heuristic for ranking the least-AI
-  candidate.
+  dynamic-threshold + ADetailer + `high`→`--hires 1.5`). **`generate --naturalize`** and a scenario
+  **`naturalize:`** field apply the pass to outputs, preserving the etch metadata.
+- **Hi-res fix (6.11)** — `generate --hires <factor>` runs a tile-ControlNet upscale-diffuse (SUPIR-lite)
+  after generation / before etch, injecting **real coherent detail** where the analog pass only changes the
+  surface look. Order: gen → hires → naturalize → etch.
+- **AI-tell score & ranking (6.11)** — a weight-free oversaturation/over-smoothness heuristic. `rank
+  --ai-tells` lists the least-AI-looking first; `generate --keep-best K --ai-tells` prunes a batch on
+  *aesthetic − λ·ai_tell* to the most human-looking frames.
+- **Full re-etch (6.11)** — `naturalize` on a plakat-etched image re-embeds a fresh **L1** into the new
+  pixels + chains the source as `parent`; `doctor --if-plakat` resolves a valid `generated` etch.
+  `--no-reetch` writes a clean output.
 
 **Honest limits:** naturalize reduces the machine *fingerprint*, not physical-reasoning errors (reflections/
-geometry are model-capability limits; the corrective img2img helps but won't invent correct physics). The
-AI-tell score is a coarse ranking heuristic; a full L1 re-etch after naturalize is a documented follow-up.
+geometry are model-capability limits; the corrective img2img and `--hires` help but won't invent correct
+physics). The AI-tell score is a coarse ranking heuristic; re-etch produces a `parent`-chained derivative,
+not a claim the naturalized image is the original.
 
 See [`Documentation/QUALITY.md`](Documentation/QUALITY.md).
 

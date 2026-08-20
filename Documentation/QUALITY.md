@@ -79,19 +79,47 @@ explicit flags win): **CFG-rescale** (kills oversaturation) + **FreeU** (`low`),
   preserving the PNG metadata (including the `--etch` L0 chunk).
 - A scenario `naturalize: "<spec>"` field naturalizes every image the run produces.
 
-## AI-tell score
+## Hi-res fix (`--hires`)
+
+The **structural** half of "less AI" — grain only changes the surface look, but a tiled
+**ControlNet-Tile upscale-diffuse** (the `upscale --diffusion` / SUPIR-lite path) injects real, coherent
+detail, fixing the low-res tells (cloud-foliage, dissolving backgrounds, incoherent geometry) that the
+analog pass can't.
+
+```
+plakat generate "…" --hires 2          # native gen → 2× tile-CN upscale-diffuse
+plakat generate "…" --quality high     # `high` implies --hires 1.5
+```
+
+Runs after generation and **before** naturalize / `--etch`, per output, preserving the PNG metadata. Order:
+**gen → hires → naturalize → etch**. It improves detail/geometry; it does not invent correct physics (a
+wrong reflection upscales to a sharper wrong reflection).
+
+## AI-tell score & ranking
 
 A weight-free score in `0..1` (higher = reads more AI-generated) from the two loudest tells —
 **oversaturation** and **over-smoothness**. `naturalize` reports it, and it's available via
 `plakat::api::Naturalize::ai_tell_score`. It's a **batch-ranking heuristic** (pick the least-AI-looking of
-N candidates), not a per-image guarantee.
+N candidates), not a per-image guarantee. Two surfaces select on it (no model download — pure CPU):
 
-## Etch preservation
+```
+plakat rank imgs/ --ai-tells                          # least-AI-looking first (--write records `ai_tell`)
+plakat generate "…" --count 8 --keep-best 2 --ai-tells # keep the 2 most human-looking (aesthetic − λ·ai_tell)
+```
 
-`naturalize` carries plakat's own provenance forward: the L0 JSON sidecar is copied and the PNG text
-chunks are spliced onto the output, so `doctor --if-plakat` still resolves it. (A full re-etch — re-embedding
-the L1 pixel mark into the changed pixels with a `parent` chain — is a documented follow-up; `--no-reetch`
-writes a clean, un-etched output.)
+`rank --ai-tells` sorts **ascending** (least-AI first) instead of by the LAION aesthetic score.
+`generate --keep-best --ai-tells` ranks on **aesthetic − λ·ai_tell** (λ=2.0) so a batch is pruned to the
+most human-looking frames, not just the prettiest — recording both `score` and `ai_tell` in the sidecar.
+
+## Etch preservation (full re-etch)
+
+`naturalize` on a **plakat-etched** image re-etches by default: `etch::reetch` reads the input's `EtchId`
+(L0 manifest) as the **parent**, re-embeds a fresh **L1** pixel mark into the *naturalized* pixels, and
+writes the L0 manifest (+ `etch` tEXt chunk + sidecar) with the parent chain. `doctor --if-plakat` then
+resolves the naturalized image as a **valid first-class etch** — reported `generated` (plakat did produce
+it — it naturalized it), with the source recorded as `parent`. `--no-reetch` writes a clean, un-etched
+output; a **never-etched** input stays un-etched (no etch is invented). This closes the QUALITY-1 honest
+limit — the changed pixels now carry a valid L1, not a stale mark.
 
 ## Integration
 
@@ -101,7 +129,7 @@ writes a clean, un-etched output.)
 ## Honest limits
 
 - **Not a physics fix** — reflections/geometry/anatomy are model-capability limits; the corrective img2img
-  helps but won't invent correct physics.
+  and `--hires` help but won't invent correct physics (a wrong reflection upscales to a *sharper* wrong one).
 - **The AI-tell score is a coarse heuristic** for ranking, not a verdict.
-- **Full L1 re-etch after naturalize is a follow-up** — today the L0 provenance is carried, but the changed
-  pixels no longer match the original L1 mark (the verdict degrades honestly rather than being lost).
+- **Re-etch is a `parent`-chained derivative**, not a claim the naturalized image is the original — the
+  honest claim (the manifest records the lineage).

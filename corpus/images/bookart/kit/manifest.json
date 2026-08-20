@@ -1,0 +1,41 @@
+{
+  "coherence": {
+    "mean": 0.7478815317153931,
+    "min": 0.6305715441703796
+  },
+  "motif": [
+    "firebird",
+    "oak-leaf"
+  ],
+  "origin": "russian",
+  "ornaments": [
+    {
+      "file": "00_border.png",
+      "seed": 7191089600892374487,
+      "type": "border"
+    },
+    {
+      "file": "01_divider.png",
+      "seed": 309689372594955804,
+      "type": "divider"
+    },
+    {
+      "file": "02_fleuron.png",
+      "seed": 16616101746815609346,
+      "type": "fleuron"
+    },
+    {
+      "file": "03_corner.png",
+      "seed": 10753165928301472203,
+      "type": "corner"
+    },
+    {
+      "file": "04_vignette.png",
+      "seed": 8346079845500723674,
+      "type": "vignette"
+    }
+  ],
+  "schema": "bookart-kit/1",
+  "seed": 7,
+  "technique": "line"
+}

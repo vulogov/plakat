@@ -1,0 +1,44 @@
+{
+  "prompt": "bookart russian tailpiece (procedural ornament)",
+  "model": "sd15",
+  "seed": 16616101746815609346,
+  "steps": 24,
+  "guidance": 0.0,
+  "scheduler": "bookart",
+  "width": 1748,
+  "height": 2480,
+  "loras": [
+    "vulogov98/plakat-bookart#russian-sd15.safetensors"
+  ],
+  "extras": [
+    [
+      "Bookart origin",
+      "russian"
+    ],
+    [
+      "Bookart technique",
+      "line"
+    ],
+    [
+      "Bookart tier",
+      "procedural"
+    ],
+    [
+      "Bookart ornament",
+      "tailpiece"
+    ],
+    [
+      "Bookart symmetry",
+      "bilateral"
+    ],
+    [
+      "Bookart page",
+      "1748x2480 @ 300 DPI"
+    ],
+    [
+      "Bookart spec-hash",
+      "d08fc647a2944860"
+    ]
+  ],
+  "generator": "plakat 6.1.0"
+}

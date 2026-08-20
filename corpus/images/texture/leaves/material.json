@@ -1,0 +1,28 @@
+{
+  "schema": "texture/1",
+  "material": "scattered fallen autumn leaves on forest floor, maple and oak, red orange yellow and brown, overlapping",
+  "seamless": "circular:both",
+  "size": 1024,
+  "naming": "plakat",
+  "normal_y": "opengl",
+  "maps": [
+    "albedo.png",
+    "normal.png",
+    "roughness.png",
+    "metallic.png",
+    "height.png",
+    "ao.png"
+  ],
+  "orm": "orm.png",
+  "gltf": "material.gltf",
+  "preview": "preview.png",
+  "spec_hash": "b8aaa9c0d611bb35",
+  "scorecard": {
+    "tileability_x": 0.08370124,
+    "tileability_y": 0.07813291,
+    "normal_valid": 1.0,
+    "albedo_flatness": 0.02731826,
+    "passes": true
+  },
+  "generator": "plakat 6.3.0"
+}

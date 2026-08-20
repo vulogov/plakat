@@ -1,0 +1,37 @@
+{
+  "chapters": [
+    {
+      "chapter": 1,
+      "first_letter": "T",
+      "headpiece": "ch01_headpiece.png",
+      "headpiece_seed": 309689372594955804,
+      "tailpiece": "ch01_tailpiece.png",
+      "title": "The Firebird"
+    },
+    {
+      "chapter": 2,
+      "first_letter": "I",
+      "headpiece": "ch02_headpiece.png",
+      "headpiece_seed": 10753165928301472203,
+      "tailpiece": "ch02_tailpiece.png",
+      "title": "Into the Winter Forest"
+    },
+    {
+      "chapter": 3,
+      "first_letter": "T",
+      "headpiece": "ch03_headpiece.png",
+      "headpiece_seed": 4601199455465548305,
+      "tailpiece": "ch03_tailpiece.png",
+      "title": "The Grey Wolf"
+    }
+  ],
+  "frontispiece": "frontispiece.png",
+  "motif": [
+    "firebird",
+    "oak-leaf"
+  ],
+  "origin": "russian",
+  "schema": "bookart-manuscript/1",
+  "seed": 7,
+  "technique": "line"
+}

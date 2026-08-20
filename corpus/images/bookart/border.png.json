@@ -1,0 +1,44 @@
+{
+  "prompt": "bookart russian border (procedural ornament)",
+  "model": "sd15",
+  "seed": 0,
+  "steps": 28,
+  "guidance": 0.0,
+  "scheduler": "bookart",
+  "width": 1748,
+  "height": 2480,
+  "loras": [
+    "vulogov98/plakat-bookart#russian-sd15.safetensors"
+  ],
+  "extras": [
+    [
+      "Bookart origin",
+      "russian"
+    ],
+    [
+      "Bookart technique",
+      "line"
+    ],
+    [
+      "Bookart tier",
+      "procedural"
+    ],
+    [
+      "Bookart ornament",
+      "border"
+    ],
+    [
+      "Bookart symmetry",
+      "bilateral"
+    ],
+    [
+      "Bookart page",
+      "1748x2480 @ 300 DPI"
+    ],
+    [
+      "Bookart spec-hash",
+      "9d1cb3e86b0bac04"
+    ]
+  ],
+  "generator": "plakat 6.1.0"
+}

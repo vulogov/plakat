@@ -1,0 +1,25 @@
+{
+  "asset": { "version": "2.0", "generator": "plakat texture 6.3.0" },
+  "images": [
+    { "uri": "T_BaseColor.png" },
+    { "uri": "T_Normal.png" },
+    { "uri": "T_ORM.png" }
+  ],
+  "samplers": [ { "wrapS": 10497, "wrapT": 10497 } ],
+  "textures": [
+    { "source": 0, "sampler": 0 },
+    { "source": 1, "sampler": 0 },
+    { "source": 2, "sampler": 0 }
+  ],
+  "materials": [
+    {
+      "name": "plakat_material",
+      "pbrMetallicRoughness": {
+        "baseColorTexture": { "index": 0 },
+        "metallicRoughnessTexture": { "index": 2 }
+      },
+      "normalTexture": { "index": 1 },
+      "occlusionTexture": { "index": 2 }
+    }
+  ]
+}

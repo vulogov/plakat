@@ -1,0 +1,28 @@
+{
+  "schema": "texture/1",
+  "material": "",
+  "seamless": "circular:both",
+  "size": 1024,
+  "naming": "unreal",
+  "normal_y": "opengl",
+  "maps": [
+    "T_BaseColor.png",
+    "T_Normal.png",
+    "T_Roughness.png",
+    "T_Metallic.png",
+    "T_Height.png",
+    "T_AO.png"
+  ],
+  "orm": "T_ORM.png",
+  "gltf": "material.gltf",
+  "preview": null,
+  "spec_hash": "568b2a781374c904",
+  "scorecard": {
+    "tileability_x": 0.08730629,
+    "tileability_y": 0.07420605,
+    "normal_valid": 1.0,
+    "albedo_flatness": 0.0134061,
+    "passes": true
+  },
+  "generator": "plakat 6.3.0"
+}

@@ -1,0 +1,23 @@
+{
+  "camera": {
+    "angle": "eye"
+  },
+  "canvas": {
+    "h": 800,
+    "w": 800
+  },
+  "ground": {
+    "ground_y": 656,
+    "reflection": "gloss",
+    "shadow": "soft"
+  },
+  "lighting": {
+    "key": 0.0
+  },
+  "schema": "product/1",
+  "seed": 7,
+  "subject": {
+    "anchor": "bottom",
+    "scale": 0.550000011920929
+  }
+}
