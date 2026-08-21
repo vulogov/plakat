@@ -127,6 +127,15 @@ pub struct NaturalizeArgs {
     pub no_reetch: bool,
 }
 
+/// Whether a `--declutter` target names thin-line clutter (wires/cables/lines) — routed to the weight-free
+/// [`naturalize::wire_mask`] detector instead of OWL-ViT, which can't see thin lines.
+fn is_wire_query(q: &str) -> bool {
+    let q = q.to_ascii_lowercase();
+    ["wire", "cable", "power line", "overhead line", "catenary", "telephone line", "electric line", "tram line", "wiring"]
+        .iter()
+        .any(|k| q.contains(k))
+}
+
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let base = match a.preset.as_deref() {
         Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
@@ -189,13 +198,32 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
             let device = crate::api::device(&a.device).context("resolving device for --declutter")?;
             for (i, q) in targets.iter().enumerate() {
                 let out = tmp.path().join(format!("declutter_{i}.png"));
-                match crate::cli::remove::declutter_one(&current_input, q, &out, "sdxl-inpaint", &device, a.refine_steps).await {
-                    Ok(true) => {
-                        println!("  {} decluttered '{q}'", style("de-slop").green());
-                        current_input = out;
+                // Wire-like queries → weight-free sky-gated wire detector + inpaint (OWL-ViT is blind to
+                // thin lines). Everything else → OWL-ViT open-vocab detection + inpaint.
+                if is_wire_query(q) {
+                    let img = image::open(&current_input).with_context(|| format!("reading {}", current_input.display()))?.to_rgb8();
+                    let mask = naturalize::wire_mask(&img, 0.6);
+                    let coverage = mask.pixels().filter(|p| p.0[0] > 127).count();
+                    if coverage == 0 {
+                        println!("  {} no thin-line structure detected for '{q}' — skipped", style("de-slop").yellow());
+                        continue;
                     }
-                    Ok(false) => println!("  {} '{q}' not found — skipped", style("de-slop").yellow()),
-                    Err(e) => tracing::warn!(target: "plakat", "naturalize --declutter '{q}': {e}"),
+                    match crate::cli::remove::inpaint_masked(&current_input, &mask, &out, "sdxl-inpaint", &device, a.refine_steps).await {
+                        Ok(()) => {
+                            println!("  {} removed thin-line clutter ('{q}', {coverage}px)", style("de-slop").green());
+                            current_input = out;
+                        }
+                        Err(e) => tracing::warn!(target: "plakat", "naturalize --declutter '{q}' (wire): {e}"),
+                    }
+                } else {
+                    match crate::cli::remove::declutter_one(&current_input, q, &out, "sdxl-inpaint", &device, a.refine_steps).await {
+                        Ok(true) => {
+                            println!("  {} decluttered '{q}'", style("de-slop").green());
+                            current_input = out;
+                        }
+                        Ok(false) => println!("  {} '{q}' not found — skipped", style("de-slop").yellow()),
+                        Err(e) => tracing::warn!(target: "plakat", "naturalize --declutter '{q}': {e}"),
+                    }
                 }
             }
         }

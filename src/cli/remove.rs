@@ -258,6 +258,83 @@ pub(crate) async fn declutter_one(
     }
 }
 
+/// Inpaint an arbitrary pre-built mask away (RFC QUALITY-3, used by `naturalize --declutter` for the
+/// weight-free wire mask, which OWL-ViT can't produce). White in `mask_path` = fill, black = preserve.
+/// Grows + feathers the mask, then runs the inpaint flow, writing the single result to `out`.
+pub(crate) async fn inpaint_masked(
+    input: &std::path::Path,
+    mask: &image::GrayImage,
+    out: &std::path::Path,
+    model: &str,
+    device: &Device,
+    steps: usize,
+) -> Result<()> {
+    let tmp = tempfile::Builder::new().prefix("plakat-wireinpaint-").tempdir()?;
+    let mask_path = tmp.path().join("mask.png");
+    crate::pipelines::sam::finish_mask(mask.clone(), false, 3, 4, &mask_path)?;
+    let out_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&out_dir)?;
+    let args = Img2ImgArgs {
+        input: input.to_path_buf(),
+        prompt: String::new(),
+        negative: "wires, cables, power lines, overhead lines, clutter".to_string(),
+        mask: Some(mask_path),
+        mask_feather: 0,
+        mask_invert: false,
+        strength: Some(1.0),
+        model: model.to_string(),
+        size: None,
+        count: 1,
+        steps,
+        guidance: 7.5,
+        decoder_guidance: 1.1,
+        faithful: false,
+        seed: Some(0),
+        scheduler: SchedulerKind::default(),
+        loras: Vec::<LoraSpec>::new(),
+        lora_scale: 1.0,
+        out: out_dir.clone(),
+        import: Default::default(),
+        control: None,
+        control_image: None,
+        control_from: None,
+        control_strength: 1.0,
+        control_start: 0.0,
+        control_end: 1.0,
+        control_specs: Vec::new(),
+        artefacts: Vec::new(),
+        artefact_library: None,
+        artefact_blend: false,
+        artefact_blend_strength: 0.0,
+        smart_zones: false,
+        wildcard_dir: None,
+        tiled: false,
+        tile_size: 1024,
+        tile_stride: 768,
+        grid: false,
+        grid_cols: None,
+        grid_padding: 0,
+        kontext_bucket: false,
+        negative_preset: None,
+        look: None,
+        genre: None,
+        offline: false,
+        aspect: None,
+        base: 1024,
+    };
+    crate::cli::img2img::run(args, device.clone()).await?;
+    let produced = std::fs::read_dir(&out_dir)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("png"));
+    match produced {
+        Some(p) => {
+            std::fs::copy(&p, out).with_context(|| format!("writing inpainted {}", out.display()))?;
+            Ok(())
+        }
+        None => anyhow::bail!("inpaint produced no image"),
+    }
+}
+
 /// OWL-ViT text → object mask, shared by `remove --what` and `replace-bg --keep`. Detects the
 /// best-scoring box for `query`, then (when `refine`) tightens it to the object outline with SAM:
 /// prompt SAM at the box center, intersect with the box rectangle to clip over-selection, and fall

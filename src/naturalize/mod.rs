@@ -13,7 +13,7 @@
 
 pub mod refine;
 
-use image::{Rgb, RgbImage};
+use image::{GrayImage, Luma, Rgb, RgbImage};
 
 /// The analog-imperfection strengths (each roughly `0.0..=1.0`; higher = more).
 #[derive(Debug, Clone, Copy)]
@@ -488,6 +488,151 @@ pub fn polish(src: &RgbImage, strength: f32) -> RgbImage {
     out
 }
 
+/// A square erosion (min) or dilation (max) — the morphology primitive for the wire detector.
+fn box_morph(src: &[f32], w: usize, h: usize, r: i32, dilate: bool) -> Vec<f32> {
+    let mut out = vec![0.0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut v = if dilate { f32::MIN } else { f32::MAX };
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                    if xx >= 0 && yy >= 0 && (xx as usize) < w && (yy as usize) < h {
+                        let s = src[yy as usize * w + xx as usize];
+                        v = if dilate { v.max(s) } else { v.min(s) };
+                    }
+                }
+            }
+            out[y * w + x] = v;
+        }
+    }
+    out
+}
+
+/// Weight-free **thin-line ("wire") mask** — detect floating catenary / power lines that OWL-ViT (an
+/// *object* detector) is blind to. A morphological top-hat finds thin high-contrast ridges (dark OR bright)
+/// **only where the surrounding region is smooth** (sky / plain wall), so it targets the floating-wire tell
+/// without eating the dense tram / building / foliage structure below. `sensitivity` in `0..1` (higher =
+/// catch fainter wires). Returns a white-on-black mask (255 = wire → inpaint away).
+pub fn wire_mask(img: &RgbImage, sensitivity: f32) -> GrayImage {
+    let s = sensitivity.clamp(0.0, 1.0);
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let gray: Vec<f32> = img.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+    // per-pixel "sky-like" flag — bluish OR bright (excludes the warm cobblestones / red tram / lit
+    // shopfronts). Blurred so a dark wire pixel inherits its bright-sky surroundings.
+    let sky_raw: Vec<f32> = img
+        .pixels()
+        .map(|p| {
+            let (r, g, b) = (p.0[0] as f32, p.0[1] as f32, p.0[2] as f32);
+            let bright = lum(r, g, b) > 150.0;
+            let bluish = b > r + 6.0 && b > 70.0;
+            if bright || bluish { 1.0 } else { 0.0 }
+        })
+        .collect();
+    let sky = box_blur_gray(&sky_raw, w, h, 4);
+
+    // closing (dilate→erode) fills thin DARK lines; opening (erode→dilate) removes thin BRIGHT lines.
+    let r = 2;
+    let closing = box_morph(&box_morph(&gray, w, h, r, true), w, h, r, false);
+    let opening = box_morph(&box_morph(&gray, w, h, r, false), w, h, r, true);
+
+    // Smoothness gate from the CLOSING (dark wire already filled) — local std over a wider window; low std
+    // = uniform background (sky), which is where floating wires live.
+    let bg = &closing;
+    let mut mask = GrayImage::from_pixel(w as u32, h as u32, Luma([0]));
+    let gate_r = 4i32;
+    let thresh = 8.0 + (1.0 - s) * 26.0; // higher sensitivity → lower ridge threshold
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let bt = (closing[i] - gray[i]).max(0.0); // dark-line response
+            let wt = (gray[i] - opening[i]).max(0.0); // bright-line response
+            let resp = bt.max(wt);
+            if resp < thresh {
+                continue;
+            }
+            // local std of the background over gate_r → smoothness.
+            let (mut m, mut m2, mut n) = (0.0f32, 0.0f32, 0.0f32);
+            for dy in -gate_r..=gate_r {
+                for dx in -gate_r..=gate_r {
+                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                    if xx >= 0 && yy >= 0 && (xx as usize) < w && (yy as usize) < h {
+                        let v = bg[yy as usize * w + xx as usize];
+                        m += v;
+                        m2 += v * v;
+                        n += 1.0;
+                    }
+                }
+            }
+            let std = (m2 / n - (m / n) * (m / n)).max(0.0).sqrt();
+            // accept only thin lines set against SMOOTH, SKY-LIKE surroundings — this is what separates a
+            // floating wire from cobblestone grout / tram frames / lit shopfront edges.
+            if std < 16.0 && sky[i] > 0.55 {
+                mask.put_pixel(x as u32, y as u32, Luma([255]));
+            }
+        }
+    }
+    // ELONGATION filter — the key discriminator between a wire and pervasive ink speckle: keep only
+    // connected components that are LONG (bbox diagonal) and THIN (sparse fill of their bbox). This drops
+    // the short splatter/foliage/cobblestone marks that a tophat also fires on.
+    let mut bin: Vec<bool> = mask.pixels().map(|p| p.0[0] > 127).collect();
+    let diag = ((w * w + h * h) as f32).sqrt();
+    let min_len = 0.18 * diag; // a wire spans a good fraction of the frame
+    let mut visited = vec![false; w * h];
+    let mut keep = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    for start in 0..w * h {
+        if !bin[start] || visited[start] {
+            continue;
+        }
+        // flood-fill this component (8-connectivity), tracking bbox + size.
+        stack.clear();
+        stack.push(start);
+        visited[start] = true;
+        let mut comp: Vec<usize> = Vec::new();
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0usize, 0usize);
+        while let Some(p) = stack.pop() {
+            comp.push(p);
+            let (px, py) = (p % w, p / w);
+            x0 = x0.min(px);
+            y0 = y0.min(py);
+            x1 = x1.max(px);
+            y1 = y1.max(py);
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let (nx, ny) = (px as i32 + dx, py as i32 + dy);
+                    if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                        let np = ny as usize * w + nx as usize;
+                        if bin[np] && !visited[np] {
+                            visited[np] = true;
+                            stack.push(np);
+                        }
+                    }
+                }
+            }
+        }
+        let bw = (x1 - x0 + 1) as f32;
+        let bh = (y1 - y0 + 1) as f32;
+        let bbox_diag = (bw * bw + bh * bh).sqrt();
+        let fill = comp.len() as f32 / (bw * bh).max(1.0);
+        // long AND thin (low bbox fill → a line, not a blob).
+        if bbox_diag >= min_len && fill < 0.25 {
+            for &p in &comp {
+                keep[p] = true;
+            }
+        }
+    }
+    bin = keep;
+
+    // dilate the surviving lines by 1px so the inpaint fully covers the wire + its anti-aliased edge.
+    let m: Vec<f32> = bin.iter().map(|&b| if b { 255.0 } else { 0.0 }).collect();
+    let grown = box_morph(&m, w, h, 1, true);
+    for (idx, px) in mask.pixels_mut().enumerate() {
+        px.0[0] = if grown[idx] > 127.0 { 255 } else { 0 };
+    }
+    mask
+}
+
 /// Weight-free **micro-texture** — the fix for plastic AI skin (and any unnaturally smooth surface):
 /// real skin has pores and micro-wrinkles, never a perfect gradient. Adds fine high-frequency detail
 /// **only where the image is too smooth** (gated by local variance, so already-textured regions like hair
@@ -709,6 +854,31 @@ mod tests {
         let before = ai_tell_score(&src);
         let after = ai_tell_score(&apply(&src, &Preset::Photo.params()));
         assert!(after < before, "naturalize lowers the AI-tell score ({before:.3} → {after:.3})");
+    }
+
+    #[test]
+    fn wire_mask_catches_thin_line_on_smooth_bg_not_texture() {
+        // smooth bright "sky" with a 1px dark diagonal "wire" + a textured lower band.
+        let (w, h) = (80u32, 80u32);
+        let mut img = RgbImage::from_pixel(w, h, Rgb([200, 205, 215]));
+        for i in 0..80u32 {
+            let x = i.min(w - 1);
+            let y = (i / 2).min(h - 1);
+            img.put_pixel(x, y, Rgb([40, 40, 45])); // thin dark wire across the smooth sky
+        }
+        // textured lower band (should NOT be flagged despite high local contrast).
+        for y in 60..80 {
+            for x in 0..80 {
+                let v = (((x * 7 + y * 13) % 100) as u8).saturating_add(80);
+                img.put_pixel(x, y, Rgb([v, v, v]));
+            }
+        }
+        let mask = wire_mask(&img, 0.6);
+        let on_wire = (0..40u32).filter(|&i| mask.get_pixel(i, i / 2).0[0] > 127).count();
+        assert!(on_wire > 10, "wire pixels flagged (got {on_wire})");
+        // the textured band is not a thin line in smooth surroundings → few/no hits.
+        let in_texture = (60..80u32).flat_map(|y| (0..80u32).map(move |x| (x, y))).filter(|&(x, y)| mask.get_pixel(x, y).0[0] > 127).count();
+        assert!(in_texture < 40, "textured region mostly ignored (got {in_texture})");
     }
 
     #[test]
