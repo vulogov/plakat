@@ -188,10 +188,23 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
 
     let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
 
-    // De-clutter (model-backed) runs FIRST of all: remove named compositional slop (floating wires,
-    // phantom rails) — the only thing that kills a hallucination img2img can't fix in place. Chains one
-    // removal per named object; a miss is skipped. The decluttered image feeds the geometry fix.
-    let mut current_input = a.input.clone();
+    // 1. Corrective refine (model-backed) runs FIRST: fix structure (geometry / anatomy) via img2img.
+    let corrective = naturalize::refine::Corrective {
+        geometry: a.geometry.unwrap_or(0.0),
+        anatomy: a.anatomy.unwrap_or(0.0),
+        no_twins: a.no_twins.unwrap_or(0.0),
+    };
+    let mut current_input = if corrective.any() {
+        let refined = tmp.path().join("refined.png");
+        naturalize::refine::refine(&a.input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
+        refined
+    } else {
+        a.input.clone()
+    };
+
+    // 2. De-clutter runs AFTER the geometry fix — the geometry img2img REGENERATES the scene (and would
+    //    re-hallucinate removed wires), so clutter removal must be the LAST model step. Remove named
+    //    compositional slop (floating wires, phantom rails) that img2img can't fix in place.
     if let Some(spec) = a.declutter.as_deref() {
         let targets: Vec<&str> = spec.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
         if !targets.is_empty() {
@@ -229,19 +242,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         }
     }
 
-    // Corrective refine (model-backed) runs next, so the analog pass grains the fixed structure.
-    let corrective = naturalize::refine::Corrective {
-        geometry: a.geometry.unwrap_or(0.0),
-        anatomy: a.anatomy.unwrap_or(0.0),
-        no_twins: a.no_twins.unwrap_or(0.0),
-    };
-    let src_for_analog = if corrective.any() {
-        let refined = tmp.path().join("refined.png");
-        naturalize::refine::refine(&current_input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
-        refined
-    } else {
-        current_input.clone()
-    };
+    let src_for_analog = current_input;
 
     let mut img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();
     let ai_before = naturalize::ai_tell_score(&img);

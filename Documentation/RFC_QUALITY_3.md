@@ -43,14 +43,16 @@ corrective focuses run BEFORE the weight-free pass, so the order is **fix struct
   fragmented, glassy shards, kaleidoscope) at a gentle strength (**0.26 default — owner chose "keep the art
   style"** over max-realism 0.45) so structure is corrected without repainting the scene,
 - `--declutter "<objects>"` — **remove** named compositional hallucinations (floating catenary wires,
-  phantom rails) via the existing OWL-ViT + inpaint path (`remove --what`), chained BEFORE the geometry
-  fix. This is the ONLY thing that kills a wire/rail tell — img2img re-resolves form *in place*, it can't
-  add support poles or a correct pantograph. Best-effort: an undetected target is skipped.
+  phantom rails), chained **AFTER** the geometry fix (the geometry img2img regenerates the scene, so
+  removal must be the last model step or the wires come back). Wire-like targets use a weight-free
+  sky-gated thin-line detector (OWL-ViT is blind to thin lines); other objects use OWL-ViT + inpaint.
+  This is the ONLY thing that kills a wire/rail tell — img2img re-resolves form *in place*, it can't add
+  support poles or a correct pantograph. Best-effort: an undetected target is skipped.
 - the hi-res fix (`generate --hires`, QUALITY-2) injects coherent detail.
 
 **Honest ceiling (owner-facing):** open diffusion models don't *understand* tram electrics or rail gauges
 either, so the realistic goal is "**no longer obviously broken**", not engineering-correct. Order of the
-full de-slop chain: **declutter (remove slop) → geometry (fix form) → polish/micro/grade (surface)**.
+full de-slop chain: **geometry (fix form) → declutter (remove slop) → polish/micro/grade (surface)**.
 
 ### 4. Presets rebalanced + analog demoted
 Chromatic aberration cut to ~0 (it's fringing = sloppy); grain lightened; `polish`/`micro` dialled up. All
