@@ -207,6 +207,57 @@ pub async fn run(args: RemoveArgs, device: Device) -> Result<()> {
     crate::cli::img2img::run(img2img_args, device).await
 }
 
+/// De-clutter one named slop object (RFC QUALITY-3, used by `naturalize --declutter`): detect `query`
+/// (OWL-ViT) → SAM-refined mask → inpaint it away, writing the result to `out`. Best-effort — if nothing
+/// is detected or the inpaint fails, it's a no-op that returns `false` (the caller keeps the prior image).
+/// This is the ONLY thing that removes a compositional hallucination (e.g. floating catenary wires) that
+/// img2img re-resolve can't fix in place.
+pub(crate) async fn declutter_one(
+    input: &std::path::Path,
+    query: &str,
+    out: &std::path::Path,
+    model: &str,
+    device: &Device,
+    steps: usize,
+) -> Result<bool> {
+    let tmp = tempfile::Builder::new().prefix("plakat-declutter-").tempdir()?;
+    let args = RemoveArgs {
+        input: input.to_path_buf(),
+        points: Vec::new(),
+        bbox: None,
+        depth_band: None,
+        what: Some(query.to_string()),
+        box_only: false,
+        prompt: String::new(),
+        negative: format!("{query}, wires, cables, clutter, debris"),
+        grow: 8,
+        feather: 8,
+        model: model.to_string(),
+        steps,
+        guidance: 7.5,
+        seed: Some(0),
+        scheduler: SchedulerKind::default(),
+        count: 1,
+        out: tmp.path().to_path_buf(),
+        import: Default::default(),
+    };
+    // run() bails if OWL-ViT finds nothing → treat as a skip, not a hard error.
+    if let Err(e) = run(args, device.clone()).await {
+        tracing::warn!(target: "plakat", "naturalize --declutter '{query}': {e} — skipping");
+        return Ok(false);
+    }
+    let produced = std::fs::read_dir(tmp.path())?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().and_then(|x| x.to_str()) == Some("png"));
+    match produced {
+        Some(p) => {
+            std::fs::copy(&p, out).with_context(|| format!("writing decluttered {}", out.display()))?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// OWL-ViT text → object mask, shared by `remove --what` and `replace-bg --keep`. Detects the
 /// best-scoring box for `query`, then (when `refine`) tightens it to the object outline with SAM:
 /// prompt SAM at the box center, intersect with the box rectangle to clip over-selection, and fall

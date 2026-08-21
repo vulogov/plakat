@@ -97,6 +97,13 @@ pub struct NaturalizeArgs {
     /// Make **lookalike faces distinct** (detect + inpaint each duplicate) — weight N.
     #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
     pub no_twins: Option<f32>,
+    /// **De-clutter** — remove named nonsensical slop objects (OWL-ViT + inpaint) BEFORE the geometry
+    /// fix. Comma-separated, e.g. `--declutter "overhead wires,cables"`. The only thing that kills a
+    /// *compositional* hallucination (floating catenary wires, phantom rails) that img2img can't fix in
+    /// place. Best-effort: an undetected target is skipped. Needs a model.
+    #[arg(long, value_name = "OBJECTS", help_heading = "Corrective (needs a model)")]
+    pub declutter: Option<String>,
+
     /// Model for the corrective img2img / inpaint passes.
     #[arg(long, default_value = "sdxl", help_heading = "Corrective (needs a model)")]
     pub model: String,
@@ -170,19 +177,42 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         p.micro = v;
     }
 
-    // Corrective refine (model-backed) runs FIRST, so the analog pass grains the fixed structure.
+    let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
+
+    // De-clutter (model-backed) runs FIRST of all: remove named compositional slop (floating wires,
+    // phantom rails) — the only thing that kills a hallucination img2img can't fix in place. Chains one
+    // removal per named object; a miss is skipped. The decluttered image feeds the geometry fix.
+    let mut current_input = a.input.clone();
+    if let Some(spec) = a.declutter.as_deref() {
+        let targets: Vec<&str> = spec.split(',').map(str::trim).filter(|t| !t.is_empty()).collect();
+        if !targets.is_empty() {
+            let device = crate::api::device(&a.device).context("resolving device for --declutter")?;
+            for (i, q) in targets.iter().enumerate() {
+                let out = tmp.path().join(format!("declutter_{i}.png"));
+                match crate::cli::remove::declutter_one(&current_input, q, &out, "sdxl-inpaint", &device, a.refine_steps).await {
+                    Ok(true) => {
+                        println!("  {} decluttered '{q}'", style("de-slop").green());
+                        current_input = out;
+                    }
+                    Ok(false) => println!("  {} '{q}' not found — skipped", style("de-slop").yellow()),
+                    Err(e) => tracing::warn!(target: "plakat", "naturalize --declutter '{q}': {e}"),
+                }
+            }
+        }
+    }
+
+    // Corrective refine (model-backed) runs next, so the analog pass grains the fixed structure.
     let corrective = naturalize::refine::Corrective {
         geometry: a.geometry.unwrap_or(0.0),
         anatomy: a.anatomy.unwrap_or(0.0),
         no_twins: a.no_twins.unwrap_or(0.0),
     };
-    let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
     let src_for_analog = if corrective.any() {
         let refined = tmp.path().join("refined.png");
-        naturalize::refine::refine(&a.input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
+        naturalize::refine::refine(&current_input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
         refined
     } else {
-        a.input.clone()
+        current_input.clone()
     };
 
     let mut img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();

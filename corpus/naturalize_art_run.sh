@@ -61,13 +61,22 @@ run "$PLAKAT" naturalize "$SRC" --out "$OUT/designature_br.png" --designature br
 # ---- 6. AI-tell ranking (weight-free): least-AI-looking first over everything produced above. ----
 run "$PLAKAT" rank "$OUT" --ai-tells
 
-# ---- 7. Model-backed geometry fix (RENDER=1) — the sloppy tram-wire / architecture structure. ----
+# ---- 7. Model-backed STRUCTURAL de-slop (RENDER=1) — the part weight-free filters can't do. ----
 if [ "$RENDER" = "1" ]; then
+  # 7a. Geometry fix (moderate 0.26 → keeps the watercolour character): re-resolves melting
+  #     architecture / the tram / perspective without repainting the whole scene.
   run "$PLAKAT" naturalize "$SRC" --out "$OUT/corrective_geometry.png" \
     --geometry 1 --cityscape 1 --polish 0.7 --device "$DEVICE"
+  # 7b. FULL de-slop chain: declutter (remove the nonsensical floating catenary wires — a compositional
+  #     hallucination img2img can't fix in place) → geometry fix → polish. This is the honest ceiling.
+  run "$PLAKAT" naturalize "$SRC" --out "$OUT/deslop_full.png" \
+    --declutter "overhead wires,tram cables" --geometry 1 --cityscape 1 --polish 0.7 --device "$DEVICE"
 else
-  echo "· RENDER=0 — skipping the model-backed geometry fix (--geometry, fixes the incoherent tram-wire structure)."
-  echo "  run 'RENDER=1 corpus/naturalize_art_run.sh' with a release build to include it."
+  echo "· RENDER=0 — skipping model-backed STRUCTURAL de-slop:"
+  echo "    - --geometry (fix melting architecture / tram, keep the art style),"
+  echo "    - --declutter \"overhead wires\" (REMOVE the floating catenary-wire hallucination — the only"
+  echo "      thing that kills that tell; img2img can't add support poles)."
+  echo "  run 'RENDER=1 corpus/naturalize_art_run.sh' with a release build to include them."
 fi
 
 echo "==================== done → $OUT/ ===================="
