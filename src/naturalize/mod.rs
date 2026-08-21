@@ -1,10 +1,15 @@
-//! `plakat naturalize` — the analog post-pass (RFC QUALITY-1, proven in G0.1). Stamps physical-media
-//! imperfections onto a finished image — film grain, chromatic aberration, vignette, bloom, a desaturating
-//! film grade, optional defocus — to break the digital-clean, over-saturated fingerprint that reads as
-//! "AI-generated". Deterministic, weight-free, no GPU.
+//! `plakat naturalize` — make AI / computer output **less sloppy: a genuinely better picture** (RFC
+//! QUALITY-1/2). The goal is NOT to disguise a render as human-made — it's to *fix* the things that make
+//! AI output look cheap. Two halves, both weight-free, deterministic, no GPU:
+//!   1. **Quality improvement** (the core — see [`polish`] + [`micro_texture`]): gray-world white balance,
+//!      robust auto-levels, vibrance (tame the oversaturation, lift dull colour), unsharp, and variance-
+//!      gated **micro-texture** (pores / micro-wrinkles that break plastic AI skin). This makes the colour,
+//!      contrast and detail objectively better.
+//!   2. **Analog finish** (optional, secondary — see [`apply`]): a light film grain / grade / vignette so
+//!      the frame isn't uniformly razor-clean. Chromatic aberration stays minimal (it's a *degradation*).
 //!
-//! It reduces the machine *fingerprint*; it does **not** fix physical-reasoning errors (bad reflections,
-//! impossible geometry) — that's a model-capability limit, addressed by the hi-res fix in P2.
+//! Structural errors (bad reflections, incoherent geometry, plastic hands) are a model-capability limit —
+//! the corrective focuses (`--geometry`/`--anatomy`, model-backed) and the hi-res fix address those.
 
 pub mod refine;
 
@@ -27,6 +32,15 @@ pub struct Params {
     pub warm: f32,
     /// Radial defocus — a faint edge softness so the frame isn't uniformly razor-sharp.
     pub defocus: f32,
+    /// **Quality improvement** ("de-slop") strength — a genuine correction pass (gray-world white
+    /// balance + robust auto-levels + vibrance + unsharp) that runs FIRST, making the colours and detail
+    /// objectively better before any analog look. `0` = off. This is the part that makes a *better*
+    /// picture, not a disguised one; see [`polish`].
+    pub polish: f32,
+    /// **Micro-texture** strength — fine pore / micro-wrinkle detail added ONLY where the image is
+    /// unnaturally smooth (variance-gated), modulated to mid-tones. Breaks the plastic "perfect skin" AI
+    /// tell that colour/grade alone can't touch. High on the `People` focus. See [`micro_texture`].
+    pub micro: f32,
 }
 
 impl Default for Params {
@@ -61,9 +75,11 @@ impl Preset {
     }
     pub fn params(self) -> Params {
         match self {
-            Preset::Subtle => Params { grain: 0.16, aberration: 0.12, vignette: 0.05, bloom: 0.05, desaturate: 0.08, warm: 0.0, defocus: 0.0 },
-            Preset::Photo => Params { grain: 0.30, aberration: 0.35, vignette: 0.12, bloom: 0.10, desaturate: 0.12, warm: 0.05, defocus: 0.0 },
-            Preset::Painting => Params { grain: 0.36, aberration: 0.10, vignette: 0.10, bloom: 0.08, desaturate: 0.20, warm: 0.05, defocus: 0.10 },
+            // Polish-forward (make a BETTER picture), analog kept light — chromatic aberration in
+            // particular is a *degradation* (colour fringing), so it stays minimal.
+            Preset::Subtle => Params { grain: 0.10, aberration: 0.02, vignette: 0.03, bloom: 0.03, desaturate: 0.05, warm: 0.0, defocus: 0.0, polish: 0.55, micro: 0.15 },
+            Preset::Photo => Params { grain: 0.18, aberration: 0.05, vignette: 0.07, bloom: 0.06, desaturate: 0.08, warm: 0.03, defocus: 0.0, polish: 0.70, micro: 0.25 },
+            Preset::Painting => Params { grain: 0.22, aberration: 0.03, vignette: 0.06, bloom: 0.05, desaturate: 0.10, warm: 0.03, defocus: 0.04, polish: 0.60, micro: 0.15 },
         }
     }
 }
@@ -118,24 +134,26 @@ impl Focus {
 
     fn profile(self) -> Params {
         match self {
-            Focus::People => Params { grain: 0.30, aberration: 0.05, vignette: 0.04, bloom: 0.06, desaturate: 0.18, warm: 0.03, defocus: 0.0 },
-            Focus::Sky => Params { grain: 0.28, aberration: 0.05, vignette: 0.06, bloom: 0.10, desaturate: 0.10, warm: 0.02, defocus: 0.0 },
-            Focus::Vegetation => Params { grain: 0.42, aberration: 0.10, vignette: 0.08, bloom: 0.06, desaturate: 0.14, warm: 0.03, defocus: 0.08 },
-            Focus::Cityscape => Params { grain: 0.30, aberration: 0.30, vignette: 0.10, bloom: 0.10, desaturate: 0.10, warm: 0.03, defocus: 0.05 },
-            Focus::Landscape => Params { grain: 0.30, aberration: 0.14, vignette: 0.16, bloom: 0.10, desaturate: 0.16, warm: 0.04, defocus: 0.02 },
-            Focus::Sea => Params { grain: 0.30, aberration: 0.10, vignette: 0.10, bloom: 0.15, desaturate: 0.16, warm: 0.0, defocus: 0.02 },
-            Focus::River => Params { grain: 0.32, aberration: 0.10, vignette: 0.10, bloom: 0.11, desaturate: 0.14, warm: 0.03, defocus: 0.05 },
-            Focus::Mechanics => Params { grain: 0.28, aberration: 0.24, vignette: 0.10, bloom: 0.15, desaturate: 0.10, warm: 0.03, defocus: 0.03 },
-            Focus::Household => Params { grain: 0.28, aberration: 0.10, vignette: 0.10, bloom: 0.10, desaturate: 0.12, warm: 0.05, defocus: 0.02 },
+            // polish is the "make it better" knob; cityscape/mechanics push it higher (crisper structure).
+            // People: HEAVY micro-texture — pores/micro-wrinkles are the fix for plastic AI skin.
+            Focus::People => Params { grain: 0.16, aberration: 0.02, vignette: 0.03, bloom: 0.05, desaturate: 0.12, warm: 0.03, defocus: 0.0, polish: 0.55, micro: 0.85 },
+            Focus::Sky => Params { grain: 0.14, aberration: 0.02, vignette: 0.04, bloom: 0.08, desaturate: 0.06, warm: 0.02, defocus: 0.0, polish: 0.55, micro: 0.20 },
+            Focus::Vegetation => Params { grain: 0.22, aberration: 0.04, vignette: 0.05, bloom: 0.05, desaturate: 0.10, warm: 0.03, defocus: 0.04, polish: 0.62, micro: 0.30 },
+            Focus::Cityscape => Params { grain: 0.16, aberration: 0.06, vignette: 0.06, bloom: 0.08, desaturate: 0.07, warm: 0.03, defocus: 0.0, polish: 0.75, micro: 0.25 },
+            Focus::Landscape => Params { grain: 0.16, aberration: 0.04, vignette: 0.10, bloom: 0.08, desaturate: 0.10, warm: 0.04, defocus: 0.0, polish: 0.62, micro: 0.25 },
+            Focus::Sea => Params { grain: 0.16, aberration: 0.03, vignette: 0.06, bloom: 0.12, desaturate: 0.10, warm: 0.0, defocus: 0.0, polish: 0.60, micro: 0.20 },
+            Focus::River => Params { grain: 0.18, aberration: 0.03, vignette: 0.06, bloom: 0.09, desaturate: 0.09, warm: 0.03, defocus: 0.02, polish: 0.62, micro: 0.20 },
+            Focus::Mechanics => Params { grain: 0.16, aberration: 0.05, vignette: 0.06, bloom: 0.12, desaturate: 0.07, warm: 0.03, defocus: 0.0, polish: 0.75, micro: 0.30 },
+            Focus::Household => Params { grain: 0.16, aberration: 0.04, vignette: 0.06, bloom: 0.08, desaturate: 0.09, warm: 0.05, defocus: 0.0, polish: 0.60, micro: 0.25 },
         }
     }
 }
 
-fn to_arr(p: &Params) -> [f32; 7] {
-    [p.grain, p.aberration, p.vignette, p.bloom, p.desaturate, p.warm, p.defocus]
+fn to_arr(p: &Params) -> [f32; 9] {
+    [p.grain, p.aberration, p.vignette, p.bloom, p.desaturate, p.warm, p.defocus, p.polish, p.micro]
 }
-fn from_arr(a: [f32; 7]) -> Params {
-    Params { grain: a[0], aberration: a[1], vignette: a[2], bloom: a[3], desaturate: a[4], warm: a[5], defocus: a[6] }
+fn from_arr(a: [f32; 9]) -> Params {
+    Params { grain: a[0], aberration: a[1], vignette: a[2], bloom: a[3], desaturate: a[4], warm: a[5], defocus: a[6], polish: a[7], micro: a[8] }
 }
 
 /// Blend the base params toward each active [`Focus`] by its weight — a weighted average where the base
@@ -150,7 +168,7 @@ pub fn blend_focus(base: Params, focuses: &[(Focus, f32)]) -> Params {
             continue;
         }
         let pf = to_arr(&f.profile());
-        for i in 0..7 {
+        for i in 0..9 {
             acc[i] += pf[i] * w;
         }
         wsum += w;
@@ -192,6 +210,8 @@ pub fn from_spec(spec: &str) -> Params {
             "desaturate" => p.desaturate = v,
             "warm" => p.warm = v,
             "defocus" => p.defocus = v,
+            "polish" => p.polish = v,
+            "micro" => p.micro = v,
             _ => {}
         }
     }
@@ -361,7 +381,168 @@ pub fn designature(src: &RgbImage, corner: Corner, strength: f32) -> RgbImage {
 }
 
 /// Apply the naturalize pass. Returns a new image the same size as `src`.
+/// Weight-free **quality improvement** ("de-slop") — the part that makes a genuinely *better* picture, not
+/// a disguised one. Four honest corrections, each scaled by `strength` (0..1), applied in order:
+///   1. **gray-world white balance** — neutralise the AI colour cast (average of the frame → grey),
+///   2. **robust auto-levels** — stretch a muddy / washed histogram to true black & white using the 0.5 /
+///      99.5 luminance percentiles (ignoring outliers), so contrast reads clean,
+///   3. **vibrance** — tame blown-out oversaturation *and* lift dull colours toward a natural mid, for
+///      better colour without the plastic AI look,
+///   4. **unsharp mask** — crisp the soft AI mush so edges / structure read sharply.
+/// Deterministic, no GPU. Returns the improved image; `strength <= 0` is a passthrough.
+pub fn polish(src: &RgbImage, strength: f32) -> RgbImage {
+    let s = strength.clamp(0.0, 1.0);
+    if s <= 0.0 {
+        return src.clone();
+    }
+    let (w, h) = (src.width() as usize, src.height() as usize);
+    let n = (w * h) as f32;
+    let mut r: Vec<f32> = src.pixels().map(|p| p.0[0] as f32).collect();
+    let mut g: Vec<f32> = src.pixels().map(|p| p.0[1] as f32).collect();
+    let mut b: Vec<f32> = src.pixels().map(|p| p.0[2] as f32).collect();
+
+    // 1. gray-world white balance — pull each channel mean toward the overall grey, blended by s and
+    //    clamped so a genuinely-tinted scene (sunset) isn't flattened to grey.
+    let (mr, mg, mb) = (r.iter().sum::<f32>() / n, g.iter().sum::<f32>() / n, b.iter().sum::<f32>() / n);
+    let grey = (mr + mg + mb) / 3.0;
+    let gain = |m: f32| {
+        let raw = if m > 1.0 { grey / m } else { 1.0 };
+        let clamped = raw.clamp(0.85, 1.15); // never more than ±15% cast correction
+        1.0 + s * (clamped - 1.0)
+    };
+    let (gr, gg, gb) = (gain(mr), gain(mg), gain(mb));
+    for i in 0..r.len() {
+        r[i] = (r[i] * gr).clamp(0.0, 255.0);
+        g[i] = (g[i] * gg).clamp(0.0, 255.0);
+        b[i] = (b[i] * gb).clamp(0.0, 255.0);
+    }
+
+    // 2. robust auto-levels — map the 0.5 / 99.5 luminance percentiles to 0 / 255 (blended by s), so a
+    //    washed-out histogram gains real black and white points without crushing.
+    let mut hist = [0u32; 256];
+    for i in 0..r.len() {
+        let l = lum(r[i], g[i], b[i]).clamp(0.0, 255.0) as usize;
+        hist[l] += 1;
+    }
+    let total = r.len() as f32;
+    let pct = |target: f32| -> f32 {
+        let mut acc = 0.0f32;
+        for (v, &c) in hist.iter().enumerate() {
+            acc += c as f32;
+            if acc / total >= target {
+                return v as f32;
+            }
+        }
+        255.0
+    };
+    let (lo, hi) = (pct(0.005), pct(0.995));
+    if hi - lo > 8.0 {
+        let scale = 255.0 / (hi - lo);
+        // Ratio-preserving: stretch LUMINANCE and apply the same per-pixel gain to all three channels, so
+        // contrast lifts without shifting colour balance or saturation (a per-channel stretch would
+        // multiply the R/G/B gaps and amplify any cast).
+        for i in 0..r.len() {
+            let l = lum(r[i], g[i], b[i]);
+            if l <= 1.0 {
+                continue;
+            }
+            let stretched = ((l - lo) * scale).clamp(0.0, 255.0);
+            let gain = 1.0 + s * (stretched / l - 1.0);
+            for ch in [&mut r, &mut g, &mut b] {
+                ch[i] = (ch[i] * gain).clamp(0.0, 255.0);
+            }
+        }
+    }
+
+    // 3. vibrance — adjust saturation toward a natural target: compress high saturation (the oversaturation
+    //    tell), gently lift low saturation. Operate around per-pixel luminance so hue is preserved.
+    for i in 0..r.len() {
+        let l = lum(r[i], g[i], b[i]);
+        let mx = r[i].max(g[i]).max(b[i]);
+        let mn = r[i].min(g[i]).min(b[i]);
+        let sat = if mx > 1.0 { (mx - mn) / mx } else { 0.0 };
+        // factor > 1 boosts, < 1 tames. Natural mid ~0.45; pull toward it.
+        let target_pull = 0.45 - sat; // + if dull, − if oversaturated
+        let factor = 1.0 + s * 0.5 * target_pull;
+        for ch in [&mut r, &mut g, &mut b] {
+            ch[i] = (l + (ch[i] - l) * factor).clamp(0.0, 255.0);
+        }
+    }
+
+    // 4. unsharp mask — sharpen against a blurred luminance so soft AI mush gains edge definition.
+    let luma: Vec<f32> = (0..r.len()).map(|i| lum(r[i], g[i], b[i])).collect();
+    let blur = box_blur_gray(&luma, w, h, 2);
+    let amount = s * 0.8;
+    for i in 0..r.len() {
+        let hp = luma[i] - blur[i]; // high-frequency detail
+        let add = hp * amount;
+        for ch in [&mut r, &mut g, &mut b] {
+            ch[i] = (ch[i] + add).clamp(0.0, 255.0);
+        }
+    }
+
+    let mut out = RgbImage::new(w as u32, h as u32);
+    for (i, px) in out.pixels_mut().enumerate() {
+        *px = Rgb([r[i] as u8, g[i] as u8, b[i] as u8]);
+    }
+    out
+}
+
+/// Weight-free **micro-texture** — the fix for plastic AI skin (and any unnaturally smooth surface):
+/// real skin has pores and micro-wrinkles, never a perfect gradient. Adds fine high-frequency detail
+/// **only where the image is too smooth** (gated by local variance, so already-textured regions like hair
+/// or fabric are left alone) and **only in mid-tones** (where skin lives; blown highlights / deep shadows
+/// stay clean). `amount` in `0..1`. Deterministic (hash noise). Returns the textured image.
+pub fn micro_texture(src: &RgbImage, amount: f32) -> RgbImage {
+    let a = amount.clamp(0.0, 2.0);
+    if a <= 0.0 {
+        return src.clone();
+    }
+    let (w, h) = (src.width() as usize, src.height() as usize);
+    let luma: Vec<f32> = src.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+    // local 3×3 std-dev → smoothness gate (low variance = plastic → full texture).
+    let blur = box_blur_gray(&luma, w, h, 1);
+    let mut out = src.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            // local variance estimate from the |detail| against the 3×3 mean.
+            let mut var = 0.0f32;
+            let mut n = 0.0f32;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                    if xx >= 0 && yy >= 0 && (xx as usize) < w && (yy as usize) < h {
+                        let d = luma[yy as usize * w + xx as usize] - blur[i];
+                        var += d * d;
+                        n += 1.0;
+                    }
+                }
+            }
+            let std = (var / n.max(1.0)).sqrt();
+            // smoothness: 1 where flat (std≈0), →0 by std≈12 (already-detailed regions).
+            let smooth = (1.0 - (std / 12.0)).clamp(0.0, 1.0);
+            // mid-tone weight: a bump peaking around L≈150 (skin), fading at shadows/highlights.
+            let l = luma[i];
+            let mid = (1.0 - ((l - 150.0) / 110.0).powi(2)).clamp(0.0, 1.0);
+            // fine two-octave pore noise (per-pixel + a half-offset octave).
+            let fine = 0.7 * noise(x as u32, y as u32) + 0.3 * noise(x as u32 ^ 0x5bd1, y as u32 ^ 0x9f37);
+            let delta = a * smooth * mid * fine * 9.0; // ±~9 luma at full weight
+            let px = out.get_pixel_mut(x as u32, y as u32);
+            for c in 0..3 {
+                px.0[c] = (px.0[c] as f32 + delta).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
 pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
+    // 0. QUALITY IMPROVEMENT first — make a better picture (colour + detail), THEN any analog look.
+    let src = if p.polish > 0.0 { polish(src, p.polish) } else { src.clone() };
+    // 0b. micro-texture — break plastic smoothness (skin pores / micro-wrinkles) before the film look.
+    let src = if p.micro > 0.0 { micro_texture(&src, p.micro) } else { src };
+    let src = &src;
     let (w, h) = (src.width(), src.height());
     let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
     let maxr = (cx * cx + cy * cy).sqrt().max(1.0);
@@ -528,6 +709,41 @@ mod tests {
         let before = ai_tell_score(&src);
         let after = ai_tell_score(&apply(&src, &Preset::Photo.params()));
         assert!(after < before, "naturalize lowers the AI-tell score ({before:.3} → {after:.3})");
+    }
+
+    #[test]
+    fn polish_neutralises_a_cast_and_stretches_contrast() {
+        // a washed, blue-cast, low-contrast image (all luminance in a narrow mid band).
+        let (w, h) = (64u32, 64u32);
+        let mut img = RgbImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let t = x as f32 / w as f32;
+                // narrow 110..150 luminance band + a strong blue cast (B ≫ R).
+                let base = 110.0 + t * 40.0;
+                img.put_pixel(x, y, Rgb([(base * 0.75) as u8, base as u8, (base * 1.25).min(255.0) as u8]));
+            }
+        }
+        let before_contrast = {
+            let l: Vec<f32> = img.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+            let m = l.iter().sum::<f32>() / l.len() as f32;
+            (l.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / l.len() as f32).sqrt()
+        };
+        let out = polish(&img, 1.0);
+        // white balance pulls the channel means together (cast neutralised).
+        let ch_mean = |im: &RgbImage, c: usize| im.pixels().map(|p| p.0[c] as f32).sum::<f32>() / (im.width() * im.height()) as f32;
+        let spread = |im: &RgbImage| (ch_mean(im, 0) - ch_mean(im, 2)).abs();
+        assert!(spread(&out) < spread(&img), "white balance narrows the R/B cast ({:.1} → {:.1})", spread(&img), spread(&out));
+        // auto-levels widens the luminance contrast.
+        let after_contrast = {
+            let l: Vec<f32> = out.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+            let m = l.iter().sum::<f32>() / l.len() as f32;
+            (l.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / l.len() as f32).sqrt()
+        };
+        assert!(after_contrast > before_contrast * 1.3, "auto-levels lifts contrast ({before_contrast:.1} → {after_contrast:.1})");
+        // deterministic + passthrough at 0.
+        assert_eq!(polish(&img, 0.0).into_raw(), img.clone().into_raw(), "strength 0 is a passthrough");
+        assert_eq!(polish(&img, 1.0).into_raw(), out.into_raw(), "polish is deterministic");
     }
 
     #[test]

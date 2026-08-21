@@ -170,6 +170,31 @@ mod tests {
     }
 
     #[test]
+    fn fresh_etch_marks_a_parentless_output_content_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, h) = (48u32, 48u32);
+        let buf: Vec<u8> = (0..(w * h * 3)).map(|i| (i % 233) as u8).collect();
+
+        // fresh-etch a naturalized buffer that has NO plakat parent → valid L0+L1, no parent chain.
+        let out = dir.path().join("fresh.png");
+        let id = fresh_etch(&buf, w, h, &out, None).unwrap();
+        let m = detect::read_l0(&out).expect("output carries an L0 manifest");
+        assert_eq!(m.etch_id(), Some(id), "output id is the fresh id");
+        assert_eq!(m.parent_id(), None, "fresh etch has no parent");
+        let report = detect::verify(&out, PUBLIC_KEY, false);
+        assert_eq!(report.verdict, detect::Verdict::Generated, "fresh-etched output is a valid etch");
+        assert_eq!(report.id, Some(id), "L1 verifies the fresh id");
+
+        // content-bound: the SAME pixels derive the SAME id; different pixels differ.
+        let out2 = dir.path().join("fresh2.png");
+        assert_eq!(fresh_etch(&buf, w, h, &out2, None).unwrap(), id, "same pixels → same id");
+        let mut other = buf.clone();
+        other[0] ^= 0xff;
+        let out3 = dir.path().join("fresh3.png");
+        assert_ne!(fresh_etch(&other, w, h, &out3, None).unwrap(), id, "different pixels → different id");
+    }
+
+    #[test]
     fn etch_id_hex_roundtrips() {
         let id = EtchId(0x9f2c4a17b3e08d5c);
         assert_eq!(id.hex(), "9f2c4a17b3e08d5c");
@@ -342,24 +367,41 @@ pub fn reetch(input: &std::path::Path, rgb: &[u8], w: u32, h: u32, out: &std::pa
     let Some(parent_id) = detect::read_l0(input).and_then(|m| m.etch_id()) else {
         return Ok(None); // input not plakat-etched → nothing to carry
     };
-    let key = PUBLIC_KEY;
     // a deterministic derivative id (differs from the parent), chained to it as `parent`.
-    let new_id = payload::derive_id(key, &format!("parent={:016x} op=naturalize", parent_id.0));
-    // L1: embed the new id into the (already naturalized) pixels.
-    let marked = pixel::embed(rgb, w as usize, h as usize, new_id, key, 0.35, None);
-    // L0: manifest with the parent chain. L0+L1 only — L2 (latent) / L3 (semantic re-fingerprint) don't
-    // apply to a pixel post-pass without re-running the model.
-    let l0 = manifest::EtchManifest::new(new_id, &[Layer::L0, Layer::L1], Some(parent_id)).to_json();
-    // preserve the input's recipe metadata if present, else a minimal record.
-    let meta = reetch_metadata(input).unwrap_or_else(|| crate::imaging::metadata::GenerationMetadata::new("naturalized derivative", "", 0, 0, 0.0, "", w, h));
-    // write the marked PNG + the `parameters`/`etch` tEXt chunks.
+    let new_id = payload::derive_id(PUBLIC_KEY, &format!("parent={:016x} op=naturalize", parent_id.0));
+    write_pixel_etch(new_id, Some(parent_id), rgb, w, h, out, reetch_metadata(input))?;
+    Ok(Some(new_id))
+}
+
+/// Freshly etch a pixel post-pass output that has **no** plakat parent (the user explicitly asked for
+/// `--etch` while naturalizing an image plakat didn't originate). Mints a fresh, content-bound `EtchId`
+/// (no `parent`) and writes L0+L1 — the same claim `generate --etch` makes: plakat produced *this* image.
+/// Content-bound so the same pixels always derive the same id.
+pub fn fresh_etch(rgb: &[u8], w: u32, h: u32, out: &std::path::Path, src_meta: Option<crate::imaging::metadata::GenerationMetadata>) -> anyhow::Result<EtchId> {
+    // FNV-1a over the naturalized pixels → a stable content seed.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in rgb {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let new_id = payload::derive_id(PUBLIC_KEY, &format!("op=naturalize fresh content={hash:016x}"));
+    write_pixel_etch(new_id, None, rgb, w, h, out, src_meta)?;
+    Ok(new_id)
+}
+
+/// Shared writer for a pixel post-pass etch (L0+L1 only — L2 latent / L3 semantic re-fingerprint don't
+/// apply to a pixel edit without re-running the model): embed `id` into `rgb`, write the marked PNG + the
+/// `parameters`/`etch` tEXt chunks, and mirror the etch into the JSON sidecar (the `read_l0` fallback).
+fn write_pixel_etch(id: EtchId, parent: Option<EtchId>, rgb: &[u8], w: u32, h: u32, out: &std::path::Path, src_meta: Option<crate::imaging::metadata::GenerationMetadata>) -> anyhow::Result<()> {
+    let marked = pixel::embed(rgb, w as usize, h as usize, id, PUBLIC_KEY, 0.35, None);
+    let l0 = manifest::EtchManifest::new(id, &[Layer::L0, Layer::L1], parent).to_json();
+    let meta = src_meta.unwrap_or_else(|| crate::imaging::metadata::GenerationMetadata::new("naturalized derivative", "", 0, 0, 0.0, "", w, h));
     crate::imaging::io::save_rgb_u8_inner(&marked, w, h, out, Some(&meta), Some(&l0))?;
-    // write the JSON sidecar with the etch object too (the read_l0 sidecar fallback).
     if let Ok(json) = meta.to_json_pretty() {
         let side = crate::imaging::io::sidecar_path(out);
         let _ = std::fs::write(side, crate::imaging::io::inject_etch_into_sidecar(&json, &l0));
     }
-    Ok(Some(new_id))
+    Ok(())
 }
 
 fn reetch_metadata(path: &std::path::Path) -> Option<crate::imaging::metadata::GenerationMetadata> {

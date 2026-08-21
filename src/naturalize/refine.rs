@@ -32,16 +32,20 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
     // 1. geometry / anatomy → whole-image img2img with a corrective prompt.
     if c.geometry > 0.0 || c.anatomy > 0.0 {
         let mut parts: Vec<&str> = Vec::new();
+        // Lead with realism/coherence, keep it grounded so organic textures (foliage, sky) re-resolve as
+        // themselves rather than faceting into shards.
+        parts.push("photorealistic, natural coherent detail, believable depth and perspective, sharp well-formed structure");
         if c.geometry > 0.0 {
-            parts.push("coherent geometry, correct structure, consistent perspective, clean continuous lines, well-formed objects");
+            parts.push("coherent geometry, correct structure, straight true edges, clean continuous lines, well-formed buildings and objects");
         }
         if c.anatomy > 0.0 {
             parts.push("correct anatomy, natural body proportions, realistic hands and fingers");
         }
-        let strength = (0.30 * c.geometry.max(c.anatomy)).clamp(0.12, 0.5);
+        // A touch gentler than before (0.26) so structure is fixed without repainting the whole scene.
+        let strength = (0.26 * c.geometry.max(c.anatomy)).clamp(0.12, 0.45);
         let mut g = crate::api::Img2img::new(model, &current)
             .prompt(parts.join(", "))
-            .negative("deformed, distorted, incoherent, warped, extra limbs, extra fingers, bad hands, disconnected, malformed")
+            .negative("deformed, distorted, incoherent, warped, faceted, fragmented, shattered, glassy shards, kaleidoscope, crystalline artifacts, extra limbs, extra fingers, bad hands, disconnected, malformed")
             .strength(strength)
             .steps(steps)
             .seed(0)

@@ -46,6 +46,16 @@ pub struct NaturalizeArgs {
     /// Override radial defocus (0..1).
     #[arg(long)]
     pub defocus: Option<f32>,
+    /// Override the **quality-improvement** ("de-slop") strength (0..1) — gray-world white balance +
+    /// robust auto-levels + vibrance + unsharp, run FIRST to make the colours & detail genuinely better
+    /// before any analog look. `0` disables it. Defaults come from the preset (subtle 0.55 … photo 0.70).
+    #[arg(long)]
+    pub polish: Option<f32>,
+    /// Override the **micro-texture** strength (0..1+) — fine pore / micro-wrinkle detail added only to the
+    /// unnaturally-smooth regions (variance-gated, mid-tones), the fix for plastic AI skin. High on
+    /// `--people`; set explicitly for other smooth surfaces.
+    #[arg(long)]
+    pub micro: Option<f32>,
 
     // ---- content focus qualifiers (RFC QUALITY-1): pre-tune the pass to a subject's AI tell. `N` is the
     // blend weight (0 = off, 1 = midpoint of the preset and that subject's de-AI profile, >1 = stronger).
@@ -153,6 +163,12 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     if let Some(v) = a.defocus {
         p.defocus = v;
     }
+    if let Some(v) = a.polish {
+        p.polish = v;
+    }
+    if let Some(v) = a.micro {
+        p.micro = v;
+    }
 
     // Corrective refine (model-backed) runs FIRST, so the analog pass grains the fixed structure.
     let corrective = naturalize::refine::Corrective {
@@ -183,14 +199,23 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // new pixels + chain the original as `parent` — so `doctor --if-plakat` resolves it as a derivative.
     // Otherwise plain-save and (for non-etched images) carry any metadata sidecar/chunks forward.
     let mut reetched: Option<crate::etch::EtchId> = None;
+    let mut fresh: Option<crate::etch::EtchId> = None;
     let mut carried = false;
     if !a.no_reetch {
         reetched = crate::etch::reetch(&a.input, out.as_raw(), out.width(), out.height(), &a.out).unwrap_or(None);
     }
     if reetched.is_none() {
-        out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
-        if !a.no_reetch {
-            carried = carry_provenance(&a.input, &a.out).unwrap_or(false);
+        // No plakat parent to chain. If the user explicitly asked for `--etch`, freshly etch this output
+        // (plakat produced *this* naturalized image) — same claim `generate --etch` makes. Otherwise
+        // plain-save and carry any existing provenance forward.
+        if !a.no_reetch && crate::etch::active().is_some() {
+            fresh = crate::etch::fresh_etch(out.as_raw(), out.width(), out.height(), &a.out, None).ok();
+        }
+        if fresh.is_none() {
+            out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+            if !a.no_reetch {
+                carried = carry_provenance(&a.input, &a.out).unwrap_or(false);
+            }
         }
     }
 
@@ -206,6 +231,8 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     println!("  {} AI-tell {:.3} (0=human … 1=AI; a batch-ranking heuristic)", style("score").cyan(), ai_after);
     if let Some(id) = reetched {
         println!("  {} re-etched (fresh L1 in the new pixels, id {:016x}, source chained as parent) — `doctor --if-plakat` verifies it, provenance preserved.", style("etch").green(), id.0);
+    } else if let Some(id) = fresh {
+        println!("  {} etched (fresh L0+L1, id {:016x}, no parent — plakat produced this naturalized image) — `doctor --if-plakat` verifies it.", style("etch").green(), id.0);
     } else if carried {
         println!("  {} metadata carried forward (input not plakat-etched).", style("etch").cyan());
     }
