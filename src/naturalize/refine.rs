@@ -73,14 +73,39 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
     Ok(())
 }
 
-/// **Face-protected local repair** (RFC QUALITY-3, Option 1) — the honest way to touch anatomy on cohesive
-/// art. Whole-image img2img makes faces uncanny and strips the artistic character; this instead detects
-/// faces (SCRFD) and **protects them** (masked out → never regenerated, so the soft artistic faces survive
-/// exactly), then runs a gentle **style-matched** img2img over the rest to attempt the broken hands / feet
-/// / limbs. `strength` scales the denoise (kept modest to preserve composition); `style` names the medium
-/// to hold (e.g. "vintage watercolor storybook illustration") so it re-resolves IN-STYLE, never toward
-/// photoreal. Returns `false` (skip) when there's no face detector or no faces (not this tool's job).
-pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Option<&str>, model: &str, device: Option<&str>, steps: usize, tmp: &Path) -> Result<bool> {
+/// How much of the frame a face-protected repair may touch (RFC QUALITY-4 P1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepairScope {
+    /// Repair only the **figures** (body boxes projected from the faces), faces AND background preserved.
+    /// The default — fixes the "background changed / colours drifted" regression.
+    #[default]
+    Figures,
+    /// Repair everything **except faces** (the 6.12 behaviour) — the background regenerates too.
+    NonFace,
+    /// Repair the **whole image** including faces (no protection) — effectively `--geometry`.
+    Full,
+}
+
+impl RepairScope {
+    pub fn parse(s: &str) -> Option<RepairScope> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "figures" | "figure" => Some(RepairScope::Figures),
+            "non-face" | "nonface" | "non_face" => Some(RepairScope::NonFace),
+            "full" | "all" => Some(RepairScope::Full),
+            _ => None,
+        }
+    }
+}
+
+/// **Face-protected local repair** (RFC QUALITY-3/4) — the honest way to touch anatomy on cohesive art.
+/// Whole-image img2img makes faces uncanny and strips the artistic character; this detects faces (SCRFD)
+/// and **protects them** (masked out → the soft artistic faces survive exactly), then runs a gentle
+/// **style-matched** img2img to attempt broken hands/feet/limbs. `scope` bounds where it may paint:
+/// `Figures` (default) touches only the figures' bodies (projected from the faces) so the **background is
+/// preserved** too; `NonFace` regenerates all non-face pixels; `Full` protects nothing. `strength` scales
+/// the denoise; `style` names the medium to hold so it re-resolves IN-STYLE, never toward photoreal.
+/// Returns `false` (skip) when there's no face detector or no faces.
+pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Option<&str>, scope: RepairScope, model: &str, device: Option<&str>, steps: usize, tmp: &Path) -> Result<bool> {
     let Some(scrfd) = crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten() else {
         tracing::warn!(target: "plakat", "naturalize --repair needs a face detector (SCRFD) — skipping");
         return Ok(false);
@@ -99,22 +124,40 @@ pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Op
         return Ok(false);
     }
     let (iw, ih) = image::image_dimensions(input)?;
-    // Inpaint mask — white = regenerate, black = PRESERVE. Start all-white, punch black over each (grown)
-    // face box so the whole face + hairline/jaw/neck margin is held (a border cutting the chin reads as
-    // uncanny).
-    let mut mask = GrayImage::from_pixel(iw, ih, Luma([255]));
-    let mut max_face = 0.0f32;
-    for f in &faces {
-        let bw = f.bbox[2] - f.bbox[0];
-        let bh = f.bbox[3] - f.bbox[1];
-        max_face = max_face.max(bw);
-        let (gx, gy) = (bw * 0.35, bh * 0.45);
-        let (x0, y0) = ((f.bbox[0] - gx).max(0.0) as u32, (f.bbox[1] - gy).max(0.0) as u32);
-        let (x1, y1) = (((f.bbox[2] + gx) as u32).min(iw), ((f.bbox[3] + gy) as u32).min(ih));
+    // Inpaint mask — white = regenerate, black = PRESERVE.
+    let paint = |m: &mut GrayImage, x0: f32, y0: f32, x1: f32, y1: f32, v: u8| {
+        let (x0, y0) = (x0.max(0.0) as u32, y0.max(0.0) as u32);
+        let (x1, y1) = ((x1 as u32).min(iw), (y1 as u32).min(ih));
         for y in y0..y1 {
             for x in x0..x1 {
-                mask.put_pixel(x, y, Luma([0]));
+                m.put_pixel(x, y, Luma([v]));
             }
+        }
+    };
+    let mut max_face = 0.0f32;
+    let mut mask = match scope {
+        // Start all-BLACK (preserve everything), then paint each projected figure body WHITE.
+        RepairScope::Figures => {
+            let mut m = GrayImage::from_pixel(iw, ih, Luma([0]));
+            for f in &faces {
+                let (fw, fh) = (f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]);
+                max_face = max_face.max(fw);
+                let cx = (f.bbox[0] + f.bbox[2]) * 0.5;
+                // a running child ≈ 5–6 head-heights tall, ≈ 2.2 head-widths wide (arms out).
+                paint(&mut m, cx - 1.1 * fw, f.bbox[1] - 0.2 * fh, cx + 1.1 * fw, f.bbox[3] + 5.0 * fh, 255);
+            }
+            m
+        }
+        // Everything regenerates (the 6.12 behaviour) — start all-WHITE.
+        RepairScope::NonFace | RepairScope::Full => GrayImage::from_pixel(iw, ih, Luma([255])),
+    };
+    // Protect the faces (black) unless scope is Full. Grown to cover hairline/jaw/neck (a border cutting
+    // the chin reads as uncanny).
+    if scope != RepairScope::Full {
+        for f in &faces {
+            let (fw, fh) = (f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]);
+            max_face = max_face.max(fw);
+            paint(&mut mask, f.bbox[0] - fw * 0.35, f.bbox[1] - fh * 0.45, f.bbox[2] + fw * 0.35, f.bbox[3] + fh * 0.45, 0);
         }
     }
     let mask_png = tmp.join("repair_protect_mask.png");

@@ -103,6 +103,10 @@ pub struct NaturalizeArgs {
     /// would wreck it. Pair with `--style`/`--medium` to hold the medium. Needs a model + faces.
     #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
     pub repair: Option<f32>,
+    /// What `--repair` may touch: `figures` (default — only the figures' bodies, faces AND background
+    /// preserved) · `non-face` (all non-face pixels, background regenerates) · `full` (whole image).
+    #[arg(long = "repair-scope", value_name = "SCOPE", default_value = "figures", help_heading = "Corrective (needs a model)")]
+    pub repair_scope: String,
     /// Art **style/medium** to preserve during model corrections (`--repair`/`--geometry`/`--anatomy`),
     /// e.g. `--style "vintage watercolor storybook illustration"`. Anchors the re-paint to the source
     /// medium instead of drifting to photoreal (the cause of art regressions).
@@ -233,10 +237,12 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut current_input = a.input.clone();
     if let Some(n) = a.repair.filter(|v| *v > 0.0) {
         let strength = (0.3 * n).clamp(0.12, 0.6);
+        let scope = naturalize::refine::RepairScope::parse(&a.repair_scope)
+            .with_context(|| format!("unknown --repair-scope `{}` (figures|non-face|full)", a.repair_scope))?;
         let repaired = tmp.path().join("repaired.png");
-        match naturalize::refine::repair_protected(&a.input, &repaired, strength, art_style.as_deref(), &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
+        match naturalize::refine::repair_protected(&a.input, &repaired, strength, art_style.as_deref(), scope, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
             Ok(true) => {
-                println!("  {} face-protected repair (strength {strength:.2}{})", style("de-slop").green(), art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
+                println!("  {} face-protected repair (scope {:?}, strength {strength:.2}{})", style("de-slop").green(), scope, art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
                 current_input = repaired;
             }
             Ok(false) => println!("  {} repair skipped (no faces / no detector) — try --geometry", style("de-slop").yellow()),
