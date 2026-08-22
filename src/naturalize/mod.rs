@@ -112,6 +112,16 @@ pub enum Focus {
     Mechanics,
     /// **Household / indoor** scene → soft indoor grain + gentle vignette, low aberration.
     Household,
+    /// **Animal** (fur / feather) — AI fur is a too-smooth gradient → heavy micro-texture + grain.
+    Animal,
+    /// **Food** — AI food is over-saturated and plastic-glossy → desaturate + tame bloom + micro.
+    Food,
+    /// **Interior / architectural render** — flat, even CGI light → auto-levels contrast + vignette depth.
+    Interior,
+    /// **Textile / fabric** — AI cloth is a smooth sheen → weave micro-texture + grain.
+    Textile,
+    /// **Foliage macro / close-up botanical** — fine leaf/petal detail → micro + broadband grain.
+    FoliageMacro,
 }
 
 impl Focus {
@@ -128,6 +138,11 @@ impl Focus {
             "river" | "riverscape" => Some(Focus::River),
             "mechanics" | "mechanical" | "transport" => Some(Focus::Mechanics),
             "household" | "indoor" => Some(Focus::Household),
+            "animal" | "fur" | "feather" => Some(Focus::Animal),
+            "food" => Some(Focus::Food),
+            "interior" | "render" => Some(Focus::Interior),
+            "textile" | "fabric" | "cloth" => Some(Focus::Textile),
+            "foliage-macro" | "foliagemacro" | "botanical" | "macro" => Some(Focus::FoliageMacro),
             _ => None,
         }
     }
@@ -145,6 +160,12 @@ impl Focus {
             Focus::River => Params { grain: 0.18, aberration: 0.03, vignette: 0.06, bloom: 0.09, desaturate: 0.09, warm: 0.03, defocus: 0.02, polish: 0.62, micro: 0.20 },
             Focus::Mechanics => Params { grain: 0.16, aberration: 0.05, vignette: 0.06, bloom: 0.12, desaturate: 0.07, warm: 0.03, defocus: 0.0, polish: 0.75, micro: 0.30 },
             Focus::Household => Params { grain: 0.16, aberration: 0.04, vignette: 0.06, bloom: 0.08, desaturate: 0.09, warm: 0.05, defocus: 0.0, polish: 0.60, micro: 0.25 },
+            // 6.13 (RFC QUALITY-4 P3):
+            Focus::Animal => Params { grain: 0.22, aberration: 0.02, vignette: 0.04, bloom: 0.05, desaturate: 0.10, warm: 0.03, defocus: 0.0, polish: 0.58, micro: 0.70 },
+            Focus::Food => Params { grain: 0.18, aberration: 0.02, vignette: 0.05, bloom: 0.04, desaturate: 0.16, warm: 0.04, defocus: 0.0, polish: 0.65, micro: 0.35 },
+            Focus::Interior => Params { grain: 0.16, aberration: 0.03, vignette: 0.10, bloom: 0.06, desaturate: 0.08, warm: 0.05, defocus: 0.0, polish: 0.72, micro: 0.25 },
+            Focus::Textile => Params { grain: 0.20, aberration: 0.02, vignette: 0.05, bloom: 0.04, desaturate: 0.08, warm: 0.03, defocus: 0.0, polish: 0.58, micro: 0.55 },
+            Focus::FoliageMacro => Params { grain: 0.24, aberration: 0.03, vignette: 0.05, bloom: 0.05, desaturate: 0.10, warm: 0.03, defocus: 0.02, polish: 0.62, micro: 0.45 },
         }
     }
 }
@@ -676,6 +697,65 @@ pub fn micro_texture(src: &RgbImage, amount: f32) -> RgbImage {
             let px = out.get_pixel_mut(x as u32, y as u32);
             for c in 0..3 {
                 px.0[c] = (px.0[c] as f32 + delta).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Weight-free **watercolor-paper / pigment authenticity** (RFC QUALITY-4) — the fix for the "simulated
+/// media" tell (procedural bleeds/splatters that don't behave like real wet-on-wet pigment). Models three
+/// physical effects, each scaled by `amount` (0..1), applied only where there IS pigment (washes, not the
+/// bare paper), so a photo left alone stays a photo:
+///   1. **paper tooth** — a cold-press height field; pigment settles into the valleys (darker) and skips
+///      the peaks (lighter), so a flat wash gains real granular tooth,
+///   2. **granulation** — fine pigment speckle correlated with pigment density,
+///   3. **edge pooling** — pigment migrates to the rim of a wash as it dries → darker edges (the signature
+///      wet-on-wet cauliflower/backrun look).
+/// Deterministic (hash noise). Apply to genuine watercolor/ink-wash art; opt-in.
+pub fn paper_texture(src: &RgbImage, amount: f32) -> RgbImage {
+    let a = amount.clamp(0.0, 1.5);
+    if a <= 0.0 {
+        return src.clone();
+    }
+    let (w, h) = (src.width() as usize, src.height() as usize);
+    // white noise → two blurred octaves = a smooth cold-press paper height field in ~[-1,1].
+    let raw: Vec<f32> = (0..w * h).map(|i| noise((i % w) as u32, (i / w) as u32)).collect();
+    let fine = box_blur_gray(&raw, w, h, 1); // ~3px tooth
+    let coarse = box_blur_gray(&raw, w, h, 5); // broad unevenness / cockling
+    // renormalise the combined field to ~unit amplitude (blur shrinks it).
+    let paper: Vec<f32> = (0..w * h).map(|i| 0.6 * fine[i] + 0.4 * coarse[i]).collect();
+    let pstd = (paper.iter().map(|v| v * v).sum::<f32>() / paper.len() as f32).sqrt().max(1e-3);
+
+    let luma: Vec<f32> = src.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+    // edge magnitude of luminance → where pigment pools (wash boundaries).
+    let blur_l = box_blur_gray(&luma, w, h, 2);
+
+    let mut out = src.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            // "pigment density" — 0 on bare white paper, →1 in dark/saturated washes.
+            let px = src.get_pixel(x as u32, y as u32).0;
+            let mx = px[0].max(px[1]).max(px[2]) as f32;
+            let mn = px[0].min(px[1]).min(px[2]) as f32;
+            let sat = if mx > 1.0 { (mx - mn) / mx } else { 0.0 };
+            let darkness = (1.0 - luma[i] / 255.0).clamp(0.0, 1.0);
+            let pigment = (0.6 * darkness + 0.6 * sat).clamp(0.0, 1.0);
+            if pigment < 0.05 {
+                continue; // leave bare paper (and any photo) alone
+            }
+            // 1. paper tooth: valleys hold pigment (darker), peaks resist (lighter).
+            let tooth = (paper[i] / pstd) * a * 10.0 * pigment;
+            // 2. granulation: fine speckle in the pigment, scaled by density.
+            let gran = noise(x as u32 ^ 0x2f1b, y as u32 ^ 0x8c3d) * a * 5.0 * pigment;
+            // 3. edge pooling: darken where this pixel is darker than its neighbourhood edge (wash rim).
+            let edge = (blur_l[i] - luma[i]).max(0.0); // inside-edge (this pixel darker than blur)
+            let pool = -(edge / 255.0) * a * 30.0 * pigment;
+            let delta = -tooth + gran + pool; // tooth valleys darken → subtract the signed field
+            let opx = out.get_pixel_mut(x as u32, y as u32);
+            for c in 0..3 {
+                opx.0[c] = (opx.0[c] as f32 + delta).clamp(0.0, 255.0) as u8;
             }
         }
     }

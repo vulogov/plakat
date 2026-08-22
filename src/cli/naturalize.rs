@@ -46,6 +46,11 @@ pub struct NaturalizeArgs {
     /// Override radial defocus (0..1).
     #[arg(long)]
     pub defocus: Option<f32>,
+    /// **Watercolor paper / pigment authenticity** (0..1) — model real wet-on-wet media: paper tooth
+    /// (pigment settles in the valleys) + granulation speckle + edge pooling. Applied only where there is
+    /// pigment (washes), so bare paper / photos are untouched. Opt-in; for genuine watercolour/ink-wash art.
+    #[arg(long)]
+    pub paper: Option<f32>,
     /// Override the **quality-improvement** ("de-slop") strength (0..1) — gray-world white balance +
     /// robust auto-levels + vibrance + unsharp, run FIRST to make the colours & detail genuinely better
     /// before any analog look. `0` disables it. Defaults come from the preset (subtle 0.55 … photo 0.70).
@@ -86,6 +91,21 @@ pub struct NaturalizeArgs {
     /// Focus for **household / indoor** scenes — weight N.
     #[arg(long, value_name = "N", help_heading = "Content focus")]
     pub household: Option<f32>,
+    /// Focus for **animals** (fur/feather over-smoothness) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub animal: Option<f32>,
+    /// Focus for **food** (plastic sheen / oversaturation) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub food: Option<f32>,
+    /// Focus for **interior / architectural render** (flat CGI light) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub interior: Option<f32>,
+    /// Focus for **textile / fabric** (smooth sheen) — weight N.
+    #[arg(long, value_name = "N", help_heading = "Content focus")]
+    pub textile: Option<f32>,
+    /// Focus for **foliage macro / close-up botanical** — weight N.
+    #[arg(long = "foliage-macro", value_name = "N", help_heading = "Content focus")]
+    pub foliage_macro: Option<f32>,
 
     // ---- corrective focuses (model-backed: img2img / inpaint, NOT the analog pass) ----
     /// Fix **geometry** (incoherent structure / joinery) via img2img — weight N.
@@ -195,6 +215,11 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         (naturalize::Focus::River, a.river),
         (naturalize::Focus::Mechanics, a.mechanics),
         (naturalize::Focus::Household, a.household),
+        (naturalize::Focus::Animal, a.animal),
+        (naturalize::Focus::Food, a.food),
+        (naturalize::Focus::Interior, a.interior),
+        (naturalize::Focus::Textile, a.textile),
+        (naturalize::Focus::FoliageMacro, a.foliage_macro),
     ]
     .into_iter()
     .filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v)))
@@ -324,7 +349,13 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let corner = naturalize::Corner::parse(cs).with_context(|| format!("unknown corner `{cs}` (br|bl|tr|tl)"))?;
         img = naturalize::designature(&img, corner, a.designature_strength);
     }
-    let out = naturalize::apply(&img, &p);
+    let mut out = naturalize::apply(&img, &p);
+    // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
+    // art (fixes the "simulated media" tell). Runs last so tooth/granulation ride the finished pixels.
+    if let Some(pv) = a.paper.filter(|v| *v > 0.0) {
+        out = naturalize::paper_texture(&out, pv);
+        println!("  {} watercolor paper/pigment (amount {pv:.2})", style("de-slop").green());
+    }
     let ai_after = naturalize::ai_tell_score(&out);
 
     // Etch bar (QUALITY-2 P2): if the input was plakat-etched, re-etch the output — re-embed L1 into the
