@@ -76,6 +76,22 @@ etched image). It's therefore **off** in the quality demos.
   won't invent correct physics.
 - The AI-tell score stays a coarse ranking heuristic.
 
+## Final scope (owner decision)
+
+After testing the model-backed structural repair on real art (a cityscape and a children's watercolor),
+the owner accepted the **weight-free scope** as the 6.12.0 headline: whole-image and even face-protected
+regeneration proved unable to fix anatomy without introducing new artifacts / colour-shift on cohesive art
+(a diffusion model re-paints, it doesn't reason). So:
+
+- **Ship weight-free as the reliable headline** — `polish` + `micro` + rebalanced presets + grade. It
+  improves colour/contrast/detail/skin and **preserves the original**.
+- **Keep the model tools as clearly-labelled best-effort, opt-in** — `--repair` (face-protected),
+  `--geometry`/`--anatomy`, `--declutter`, `--style`/`--medium`. Documented honestly: may add artifacts;
+  structural correctness is a generation-time property, so broken structure → regenerate the source.
+- **Tutorial** ([`NATURALIZE_TUTORIAL.md`](NATURALIZE_TUTORIAL.md)) teaches the weight-free-first workflow
+  and the honest limits.
+
 ## Sequencing
-**P1** polish · **P2** micro-texture · **P3** corrective realism tuning + presets · **P4** fresh-etch +
-drivers · **P5** parity + docs + cut 6.12.0.
+**P1** polish · **P2** micro-texture · **P3** presets/analog rebalance · **P4** style-aware +
+face-protected repair + declutter (best-effort) · **P5** accept weight-free scope + tutorial + docs + cut
+6.12.0.

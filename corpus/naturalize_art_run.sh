@@ -61,7 +61,9 @@ run "$PLAKAT" naturalize "$SRC" --out "$OUT/designature_br.png" --designature br
 # ---- 6. AI-tell ranking (weight-free): least-AI-looking first over everything produced above. ----
 run "$PLAKAT" rank "$OUT" --ai-tells
 
-# ---- 7. Model-backed STRUCTURAL de-slop (RENDER=1) — the part weight-free filters can't do. ----
+# ---- 7. BEST-EFFORT model-backed tools (RENDER=1) — they REGENERATE pixels and may add artifacts; they
+#         are NOT the reliable path (see Documentation/NATURALIZE_TUTORIAL.md §7). On cohesive art, prefer
+#         the weight-free steps above; use these only when you accept the picture may change. ----
 if [ "$RENDER" = "1" ]; then
   # 7a. Geometry fix (moderate 0.26 → keeps the watercolour character): re-resolves melting
   #     architecture / the tram / perspective without repainting the whole scene.

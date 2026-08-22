@@ -1,19 +1,30 @@
-# `plakat naturalize` / `--quality` — make generations read human-sourced
+# `plakat naturalize` / `--quality` — de-slop AI images (a better picture)
 
-Diffusion output has a fingerprint: too clean, over-saturated, grain-free, with a "repeating painterly"
-texture, and sometimes a ghost-signature smudge from signed-painting training data. `plakat naturalize`
-(the 6.10 feature, RFC [`RFC_QUALITY_1.md`](RFC_QUALITY_1.md)) reduces that fingerprint so an image reads
-as **contemporary, human-made — not aged/vintage, and not obviously AI**. It is **fully additive**.
+`plakat naturalize` makes AI/computer output **less sloppy — a genuinely better picture** (RFC
+[QUALITY-1](RFC_QUALITY_1.md) / [-2](RFC_QUALITY_2.md) / [-3](RFC_QUALITY_3.md)). The goal is **de-slop, not
+disguise**: improve the things that make AI output look cheap, without pretending it's hand-made and without
+hallucinating a new image. Fully additive.
 
-**The analog half is weight-free.** Grain, aberration, vignette, bloom, and the film grade run on CPU; a
-supplied image → a more human look with no GPU. Only the *corrective* focuses (fixing structure/anatomy/
-lookalikes) and `--quality` (generation-time levers) use a model.
+**→ New here? Read the [tutorial](NATURALIZE_TUTORIAL.md) first** — it explains the one thing that makes or
+breaks results.
 
-> **What it is and isn't.** Naturalize reduces the machine *fingerprint*; it does **not** fix physical
-> reasoning (muddled reflections, impossible joinery) — those are model-capability failures. It's a look,
-> not a forensic disguise, and it stays **realism-focused**: the grade only *desaturates* (the loudest
-> tell); the warm lift and vignette stay small, because a strong warm + heavy vignette read as an applied
-> *filter* — its own artifact.
+## The mental model (weight-free vs model-backed)
+
+Naturalize has two halves, and they are **not** equal:
+
+- **Weight-free (the headline, reliable, default):** `polish` (gray-world white balance + ratio-preserving
+  auto-levels + vibrance + unsharp) + `micro` (skin de-plasticiser) + a light film grade. Improves
+  **colour, contrast, detail, skin** on CPU, and **preserves the original** (composition, style, faces).
+- **Model-backed (best-effort, opt-in):** `--repair` / `--geometry` / `--anatomy` / `--declutter`. These
+  *regenerate* pixels to attempt structure/anatomy/clutter. They can help on the right image and **hurt** on
+  the wrong one (new artifacts, colour/style drift). Not the default.
+
+> **The load-bearing truth.** A diffusion model **re-paints, it does not reason** — it cannot remove an
+> extra limb or fix a bad hand, only regenerate the region and hope. So **structural** tells (extra limbs,
+> fused fingers, floating wires, melting architecture) are baked into the generation and no post-pass fixes
+> them without turning the picture into a *different* one. Naturalize reliably fixes **surface** tells
+> (oversaturation, muddy contrast, colour cast, plastic skin); for broken structure, regenerate the source
+> instead (see the tutorial §8). The pass stays **realism-focused** (no vintage look).
 
 ## The analog post-pass
 

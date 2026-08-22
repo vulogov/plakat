@@ -1997,13 +1997,15 @@ impl Product {
 }
 
 /// The analog **naturalize** post-pass (RFC QUALITY-1) — reduce the "AI-generated" fingerprint of an
-/// image (film grain / aberration / vignette / desaturating grade), driven by a compact spec string.
-/// Weight-free.
+/// image — **de-slop, not disguise** (RFC QUALITY-1/2/3). The weight-free pass genuinely improves colour,
+/// contrast, detail and skin while **preserving the original** (composition, style, faces): `polish`
+/// (white balance + auto-levels + vibrance + unsharp) + `micro` (skin de-plasticiser) + a light grade.
+/// Driven by a compact spec string, so all the knobs are reachable (`polish=`, `micro=`, focuses, grade).
 ///
 /// ```no_run
 /// # fn f() -> anyhow::Result<()> {
 /// use plakat::api::Naturalize;
-/// Naturalize::new("photo vegetation=1 sky=0.5").run("in.png", "out.png")?;
+/// Naturalize::new("photo polish=0.9 micro=0.2 vegetation=1").run("in.png", "out.png")?;
 /// # Ok(()) }
 /// ```
 pub struct Naturalize {
