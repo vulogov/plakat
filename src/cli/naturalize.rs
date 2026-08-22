@@ -229,7 +229,17 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
 
     let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
-    let art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
+    let mut art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
+
+    // Auto medium-detection (RFC QUALITY-4 P2): if a model correction is requested but no style/medium was
+    // given, CLIP zero-shot the source medium so the re-paint holds it instead of drifting to photoreal.
+    let wants_model = a.repair.unwrap_or(0.0) > 0.0 || a.geometry.unwrap_or(0.0) > 0.0 || a.anatomy.unwrap_or(0.0) > 0.0;
+    if art_style.is_none() && wants_model {
+        if let Some(m) = naturalize::refine::detect_medium(&a.input, Some(&a.device)).await {
+            println!("  {} auto-detected medium → {m}", style("de-slop").cyan());
+            art_style = Some(m);
+        }
+    }
 
     // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
     //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative

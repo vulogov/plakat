@@ -73,6 +73,40 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
     Ok(())
 }
 
+/// **Auto medium-detection** (RFC QUALITY-4 P2) — CLIP zero-shot: embed the image and a bank of medium
+/// probes into the shared CLIP space and pick the closest, returning the matching **style anchor** string
+/// for the model corrections (so `--repair`/`--geometry` hold the source medium without a manual
+/// `--style`). Best-effort — `None` if CLIP can't load. Reuses the openai CLIP the aesthetic scorer caches.
+pub async fn detect_medium(input: &Path, device: Option<&str>) -> Option<String> {
+    let dev = crate::api::device(device.unwrap_or("auto")).ok()?;
+    let clip = crate::pipelines::clip_embed::ClipEmbedder::load(&dev).await.ok()?;
+    let img = clip.embed_image(input).ok()?;
+    // (CLIP probe prompt, the style-anchor string handed to the corrective img2img).
+    let bank: &[(&str, &str)] = &[
+        ("a watercolor painting", "soft wet-on-wet watercolor illustration, natural pigment granulation, paper texture"),
+        ("an oil painting", "oil painting, visible brush strokes, impasto texture, canvas"),
+        ("an ink drawing", "ink drawing, pen and ink linework, cross-hatching"),
+        ("a gouache painting", "gouache painting, matte opaque pigment, flat washes"),
+        ("a graphite pencil sketch", "graphite pencil sketch, soft shading, paper tooth"),
+        ("a soft pastel drawing", "soft pastel drawing, chalky pigment, blended tones"),
+        ("an acrylic painting", "acrylic painting, bold brushwork"),
+        ("a comic book illustration", "comic book illustration, clean ink lines, cel shading"),
+        ("a digital painting", "digital painting, painterly rendering, coherent detail"),
+        ("a 3d render", "detailed 3d render, coherent detail"),
+        ("a photograph", "photograph, natural realistic detail, believable depth"),
+    ];
+    let mut best: (f32, &str) = (f32::MIN, "");
+    for (probe, anchor) in bank {
+        if let Ok(t) = clip.embed_text(probe) {
+            let s = crate::pipelines::clip_embed::cosine(&img, &t);
+            if s > best.0 {
+                best = (s, anchor);
+            }
+        }
+    }
+    (!best.1.is_empty()).then(|| best.1.to_string())
+}
+
 /// How much of the frame a face-protected repair may touch (RFC QUALITY-4 P1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RepairScope {
