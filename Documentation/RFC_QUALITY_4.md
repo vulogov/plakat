@@ -32,10 +32,15 @@ painting", "ink drawing", "graphite pencil sketch", "gouache", "3d render", "pho
 best. `--repair`/`--geometry` without `--style`/`--medium` then auto-anchor to the detected medium (printed,
 overridable). Weight-free-ish (one CLIP forward).
 
-### P3 — more content focuses
+### P3 — more content focuses + watercolor paper authenticity
 Extend the weight-free focus set beyond the current nine with the subjects that recur in AI slop:
 **animal** (fur/feather over-smoothness), **food** (plastic sheen), **interior** (flat CGI light),
 **textile/fabric**, **foliage-macro**. Each is a `Params` profile blended like the others; all combine.
+
+Also (owner ask during P3): **`--paper N`** — weight-free **watercolor paper / pigment authenticity** that
+fixes the "simulated media" tell. Models three physical effects, **pigment-gated** (photos untouched):
+paper **tooth** (pigment settles in the cold-press valleys), **granulation** (speckle ∝ wash density), and
+**edge pooling** (darker wash rims — the wet-on-wet signature). Owner sweet spot 0.5–0.75; recommend ~0.6.
 
 ### P4 — parity + docs + cut 6.13.0
 Update the tutorial + QUALITY.md + doctor + README; corpus demo. Cut 6.13.0 (bump Cargo+lock, gate,

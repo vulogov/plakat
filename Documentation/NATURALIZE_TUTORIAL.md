@@ -68,8 +68,20 @@ plakat naturalize any.png --out out.png --polish 0.85 --grain 0 --vignette 0 --m
 ```
 
 Content focuses combine freely: `--people --sky --vegetation --cityscape --landscape --sea --river
---mechanics --household <N>` (each blends a subject-tuned profile). Every analog knob is overridable:
-`--polish --micro --grain --desaturate --warm --vignette --bloom --defocus --aberration`.
+--mechanics --household --animal --food --interior --textile --foliage-macro <N>` (each blends a
+subject-tuned profile). Every analog knob is overridable: `--polish --micro --grain --desaturate --warm
+--vignette --bloom --defocus --aberration`.
+
+### Watercolor paper / pigment authenticity — `--paper` (art only)
+For genuine **watercolour / ink-wash** art, `--paper <N>` models the physical medium so it stops reading as
+"simulated media": **paper tooth** (pigment settles into the cold-press valleys), **granulation** (pigment
+speckle scaled by wash density), and **edge pooling** (darker wash rims — the wet-on-wet signature). It's
+**pigment-gated** — bare paper and photos are left alone. Recommended **~0.6** (subtle 0.5 · overtly
+hand-painted 1.0+). Do not use on photos.
+
+```bash
+plakat naturalize watercolor.png --out out.png --paper 0.6 --polish 0.7
+```
 
 ## 5. Picking the least-AI frame of a batch
 
@@ -91,12 +103,15 @@ polish=0.9 micro=0.2").run("in.png","out.png")`.
 ## 7. The best-effort model tools (opt-in — may introduce artifacts)
 
 These **regenerate** pixels. They can help on the right image and hurt on the wrong one — always compare
-against the input. Use `--style "<medium>"` / `--medium watercolor|oil|ink|…` so a re-paint stays *in
-style* instead of drifting to photoreal.
+against the input. The medium is **auto-detected** (CLIP zero-shot) when you don't pass `--style`/`--medium`,
+so a re-paint stays *in style* instead of drifting to photoreal; override with `--style "<desc>"` /
+`--medium watercolor|oil|ink|gouache|pencil|acrylic|pastel|comic`.
 
 ```bash
-# Face-protected repair — protects faces (no uncanny), gently repaints the rest in-style
-plakat naturalize kids.png --out out.png --repair 1 --medium watercolor
+# Figure-scoped repair (default) — protects faces AND background; repaints ONLY the figures, in the
+# auto-detected medium. This is the character-preserving structural tool.
+plakat naturalize kids.png --out out.png --repair 1            # medium auto-detected
+plakat naturalize kids.png --out out.png --repair 1 --repair-scope non-face   # also regen the background
 
 # Whole-image structure fix (photoreal / non-figure only — regresses cohesive art)
 plakat naturalize photo.png --out out.png --geometry 1 --style "photograph"

@@ -51,6 +51,10 @@ run "$PLAKAT" naturalize "$SRC" --out "$OUT/preset_painting.png" --preset painti
 run "$PLAKAT" naturalize "$SRC" --out "$OUT/focus_scene.png" \
   --cityscape 1.2 --vegetation 0.7 --mechanics 0.7 --people 0.5 --sky 0.5
 
+# ---- 3b. Watercolor paper / pigment authenticity (weight-free, 6.13) — fixes the "simulated media" tell.
+#          Pigment-gated (bare paper untouched). Recommended ~0.6. ----
+run "$PLAKAT" naturalize "$SRC" --out "$OUT/paper.png" --paper 0.6 --polish 0.6 --desaturate 0.1
+
 # ---- 4. Strong, clearly-visible de-slop (reads the delta): tame oversaturation + crisp + gentle grade. ----
 run "$PLAKAT" naturalize "$SRC" --out "$OUT/deslop_strong.png" \
   --polish 1 --desaturate 0.3 --grain 0.15 --micro 0.4 --cityscape 1
