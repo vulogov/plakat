@@ -714,7 +714,7 @@ pub fn micro_texture(src: &RgbImage, amount: f32) -> RgbImage {
 ///      wet-on-wet cauliflower/backrun look).
 /// Deterministic (hash noise). Apply to genuine watercolor/ink-wash art; opt-in.
 pub fn paper_texture(src: &RgbImage, amount: f32) -> RgbImage {
-    let a = amount.clamp(0.0, 1.5);
+    let a = amount.clamp(0.0, 2.5);
     if a <= 0.0 {
         return src.clone();
     }
@@ -741,17 +741,19 @@ pub fn paper_texture(src: &RgbImage, amount: f32) -> RgbImage {
             let mn = px[0].min(px[1]).min(px[2]) as f32;
             let sat = if mx > 1.0 { (mx - mn) / mx } else { 0.0 };
             let darkness = (1.0 - luma[i] / 255.0).clamp(0.0, 1.0);
-            let pigment = (0.6 * darkness + 0.6 * sat).clamp(0.0, 1.0);
-            if pigment < 0.05 {
-                continue; // leave bare paper (and any photo) alone
+            // any non-white wash carries pigment (a light-blue sky wash still granulates), so give it a
+            // floor and weight saturation strongly.
+            let pigment = (0.45 * darkness + 0.8 * sat + 0.12).clamp(0.0, 1.0);
+            if darkness < 0.04 && sat < 0.05 {
+                continue; // leave bare white paper (and flat photos) alone
             }
             // 1. paper tooth: valleys hold pigment (darker), peaks resist (lighter).
-            let tooth = (paper[i] / pstd) * a * 10.0 * pigment;
+            let tooth = (paper[i] / pstd) * a * 22.0 * pigment;
             // 2. granulation: fine speckle in the pigment, scaled by density.
-            let gran = noise(x as u32 ^ 0x2f1b, y as u32 ^ 0x8c3d) * a * 5.0 * pigment;
+            let gran = noise(x as u32 ^ 0x2f1b, y as u32 ^ 0x8c3d) * a * 12.0 * pigment;
             // 3. edge pooling: darken where this pixel is darker than its neighbourhood edge (wash rim).
             let edge = (blur_l[i] - luma[i]).max(0.0); // inside-edge (this pixel darker than blur)
-            let pool = -(edge / 255.0) * a * 30.0 * pigment;
+            let pool = -(edge / 255.0) * a * 50.0 * pigment;
             let delta = -tooth + gran + pool; // tooth valleys darken → subtract the signed field
             let opx = out.get_pixel_mut(x as u32, y as u32);
             for c in 0..3 {
