@@ -73,6 +73,77 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
     Ok(())
 }
 
+/// **Face-protected local repair** (RFC QUALITY-3, Option 1) — the honest way to touch anatomy on cohesive
+/// art. Whole-image img2img makes faces uncanny and strips the artistic character; this instead detects
+/// faces (SCRFD) and **protects them** (masked out → never regenerated, so the soft artistic faces survive
+/// exactly), then runs a gentle **style-matched** img2img over the rest to attempt the broken hands / feet
+/// / limbs. `strength` scales the denoise (kept modest to preserve composition); `style` names the medium
+/// to hold (e.g. "vintage watercolor storybook illustration") so it re-resolves IN-STYLE, never toward
+/// photoreal. Returns `false` (skip) when there's no face detector or no faces (not this tool's job).
+pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Option<&str>, model: &str, device: Option<&str>, steps: usize, tmp: &Path) -> Result<bool> {
+    let Some(scrfd) = crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten() else {
+        tracing::warn!(target: "plakat", "naturalize --repair needs a face detector (SCRFD) — skipping");
+        return Ok(false);
+    };
+    let dev = match crate::api::device(device.unwrap_or("auto")) {
+        Ok(d) => d,
+        Err(_) => return Ok(false),
+    };
+    let Ok(det) = crate::pipelines::scrfd::SCRFDDetector::load(&scrfd, crate::pipelines::scrfd::SCRFDConfig::default(), &dev, candle_core::DType::F32) else {
+        return Ok(false);
+    };
+    let Ok(mut faces) = det.detect(input) else { return Ok(false) };
+    faces.retain(|f| f.score >= 0.35);
+    if faces.is_empty() {
+        tracing::warn!(target: "plakat", "naturalize --repair: no faces detected to protect — skipping (use --geometry/--anatomy for non-figure art)");
+        return Ok(false);
+    }
+    let (iw, ih) = image::image_dimensions(input)?;
+    // Inpaint mask — white = regenerate, black = PRESERVE. Start all-white, punch black over each (grown)
+    // face box so the whole face + hairline/jaw/neck margin is held (a border cutting the chin reads as
+    // uncanny).
+    let mut mask = GrayImage::from_pixel(iw, ih, Luma([255]));
+    let mut max_face = 0.0f32;
+    for f in &faces {
+        let bw = f.bbox[2] - f.bbox[0];
+        let bh = f.bbox[3] - f.bbox[1];
+        max_face = max_face.max(bw);
+        let (gx, gy) = (bw * 0.35, bh * 0.45);
+        let (x0, y0) = ((f.bbox[0] - gx).max(0.0) as u32, (f.bbox[1] - gy).max(0.0) as u32);
+        let (x1, y1) = (((f.bbox[2] + gx) as u32).min(iw), ((f.bbox[3] + gy) as u32).min(ih));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                mask.put_pixel(x, y, Luma([0]));
+            }
+        }
+    }
+    let mask_png = tmp.join("repair_protect_mask.png");
+    mask.save(&mask_png)?;
+
+    let anatomy = "correct anatomy, natural body proportions, well-formed hands, correct feet and ankles, natural running pose, coherent structure";
+    let prompt = match style {
+        Some(s) if !s.trim().is_empty() => format!("{s}, {anatomy}"),
+        _ => anatomy.to_string(),
+    };
+    let negative = "deformed, extra limbs, extra legs, extra arms, duplicated limbs, fused fingers, extra fingers, malformed hands, malformed feet, missing ankles, floating limbs, photorealistic, 3d render, plastic, uncanny, creepy face";
+    let feather = ((max_face * 0.25) as u32).max(8);
+    let mut g = crate::api::Img2img::new(model, input)
+        .prompt(prompt)
+        .negative(negative)
+        .strength(strength.clamp(0.12, 0.6))
+        .steps(steps)
+        .seed(0)
+        .count(1)
+        .mask(&mask_png)
+        .mask_feather(feather);
+    if let Some(d) = device {
+        g = g.device(d);
+    }
+    let imgs = g.run().await.context("face-protected repair img2img")?;
+    imgs.first().context("repair produced no image")?.save(out)?;
+    Ok(true)
+}
+
 /// Detect faces; for each face after the first, inpaint its box (feathered) with a distinct seed +
 /// "distinct face" prompt so duplicate/lookalike faces diverge. Returns the varied image path, or `None`
 /// when there are <2 faces / no detector.

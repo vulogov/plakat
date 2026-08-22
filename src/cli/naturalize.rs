@@ -97,6 +97,21 @@ pub struct NaturalizeArgs {
     /// Make **lookalike faces distinct** (detect + inpaint each duplicate) — weight N.
     #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
     pub no_twins: Option<f32>,
+    /// **Face-protected repair** (0..1) — the art-safe structural fix. Detects faces and PROTECTS them
+    /// (never regenerated → soft artistic faces survive, no uncanny valley), then gently repaints the rest
+    /// IN-STYLE to attempt broken hands/feet/limbs. Preserves character where whole-image `--geometry`
+    /// would wreck it. Pair with `--style`/`--medium` to hold the medium. Needs a model + faces.
+    #[arg(long, value_name = "N", help_heading = "Corrective (needs a model)")]
+    pub repair: Option<f32>,
+    /// Art **style/medium** to preserve during model corrections (`--repair`/`--geometry`/`--anatomy`),
+    /// e.g. `--style "vintage watercolor storybook illustration"`. Anchors the re-paint to the source
+    /// medium instead of drifting to photoreal (the cause of art regressions).
+    #[arg(long, value_name = "TEXT", help_heading = "Corrective (needs a model)")]
+    pub style: Option<String>,
+    /// Shorthand for common art media (expands to a `--style` string): `watercolor` | `oil` | `ink` |
+    /// `gouache` | `pencil` | `acrylic` | `pastel` | `comic`. `--style` overrides this.
+    #[arg(long, value_name = "MEDIUM", help_heading = "Corrective (needs a model)")]
+    pub medium: Option<String>,
     /// **De-clutter** — remove named nonsensical slop objects (OWL-ViT + inpaint) BEFORE the geometry
     /// fix. Comma-separated, e.g. `--declutter "overhead wires,cables"`. The only thing that kills a
     /// *compositional* hallucination (floating catenary wires, phantom rails) that img2img can't fix in
@@ -134,6 +149,29 @@ fn is_wire_query(q: &str) -> bool {
     ["wire", "cable", "power line", "overhead line", "catenary", "telephone line", "electric line", "tram line", "wiring"]
         .iter()
         .any(|k| q.contains(k))
+}
+
+/// Resolve the art style to preserve during model corrections: explicit `--style` wins; else expand a
+/// `--medium` preset to a descriptive style string; else `None`.
+fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
+    if let Some(s) = style {
+        if !s.trim().is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    let m = medium?.trim().to_ascii_lowercase();
+    let s = match m.as_str() {
+        "watercolor" | "watercolour" => "soft wet-on-wet watercolor illustration, natural pigment granulation, paper texture",
+        "oil" => "oil painting, visible brush strokes, impasto texture, canvas",
+        "ink" => "ink drawing, pen and ink linework, cross-hatching",
+        "gouache" => "gouache painting, matte opaque pigment, flat washes",
+        "pencil" => "graphite pencil sketch, soft shading, paper tooth",
+        "acrylic" => "acrylic painting, bold brushwork",
+        "pastel" => "soft pastel drawing, chalky pigment, blended tones",
+        "comic" => "comic book illustration, clean ink lines, cel shading",
+        other => return Some(other.to_string()), // pass unknown media through verbatim
+    };
+    Some(s.to_string())
 }
 
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
@@ -187,19 +225,38 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
 
     let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
+    let art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
 
-    // 1. Corrective refine (model-backed) runs FIRST: fix structure (geometry / anatomy) via img2img.
+    // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
+    //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative
+    //    to whole-image --geometry on figure art.
+    let mut current_input = a.input.clone();
+    if let Some(n) = a.repair.filter(|v| *v > 0.0) {
+        let strength = (0.3 * n).clamp(0.12, 0.6);
+        let repaired = tmp.path().join("repaired.png");
+        match naturalize::refine::repair_protected(&a.input, &repaired, strength, art_style.as_deref(), &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
+            Ok(true) => {
+                println!("  {} face-protected repair (strength {strength:.2}{})", style("de-slop").green(), art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
+                current_input = repaired;
+            }
+            Ok(false) => println!("  {} repair skipped (no faces / no detector) — try --geometry", style("de-slop").yellow()),
+            Err(e) => tracing::warn!(target: "plakat", "naturalize --repair: {e}"),
+        }
+    }
+
+    // 1. Corrective refine (model-backed): fix structure (geometry / anatomy) via whole-image img2img.
+    //    (Character-destructive on cohesive art — prefer --repair there; fine for photoreal / non-figure.)
     let corrective = naturalize::refine::Corrective {
         geometry: a.geometry.unwrap_or(0.0),
         anatomy: a.anatomy.unwrap_or(0.0),
         no_twins: a.no_twins.unwrap_or(0.0),
     };
-    let mut current_input = if corrective.any() {
+    current_input = if corrective.any() {
         let refined = tmp.path().join("refined.png");
-        naturalize::refine::refine(&a.input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
+        naturalize::refine::refine(&current_input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
         refined
     } else {
-        a.input.clone()
+        current_input
     };
 
     // 2. De-clutter runs AFTER the geometry fix — the geometry img2img REGENERATES the scene (and would
