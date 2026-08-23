@@ -83,6 +83,19 @@ hand-painted 1.0+). Do not use on photos.
 plakat naturalize watercolor.png --out out.png --paper 0.6 --polish 0.7
 ```
 
+**Auto-paper (6.14):** when the medium is **wet** — named via `--medium watercolor`/`--style`, or CLIP
+**auto-detected** — `--paper` is applied at 0.6 automatically (no need to name it); `--paper 0` disables. On
+a pure weight-free run, add `--auto-medium` to let the detector decide. It's also reachable from a spec:
+`generate --naturalize "photo paper=0.6"`, a scenario `naturalize:` field, and `api::Naturalize`.
+
+### Batch — a whole folder (6.14)
+Point `naturalize` at a **directory** and it de-slops every image into the `--out` directory (same
+filenames). Model-backed passes reload per image (a convenience, not a resident server).
+
+```bash
+plakat naturalize ./shots/ --out ./deslop/ --preset photo
+```
+
 ## 5. Picking the least-AI frame of a batch
 
 The AI-tell score is weight-free, so you can rank/select on it:

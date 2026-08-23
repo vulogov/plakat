@@ -1,6 +1,6 @@
 # RFC QUALITY-5 — naturalize follow-ups round 2 (6.14.0)
 
-**Status:** draft (6.14.0) · **Depth cycle** on [`RFC_QUALITY_4.md`](RFC_QUALITY_4.md). No new studio;
+**Status:** SHIPPED (6.14.0) · **Depth cycle** on [`RFC_QUALITY_4.md`](RFC_QUALITY_4.md). No new studio;
 finishes the ergonomic + coverage gaps in the 6.13 tools.
 
 ## What ships
