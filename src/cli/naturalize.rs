@@ -48,9 +48,15 @@ pub struct NaturalizeArgs {
     pub defocus: Option<f32>,
     /// **Watercolor paper / pigment authenticity** (0..1) — model real wet-on-wet media: paper tooth
     /// (pigment settles in the valleys) + granulation speckle + edge pooling. Applied only where there is
-    /// pigment (washes), so bare paper / photos are untouched. Opt-in; for genuine watercolour/ink-wash art.
+    /// pigment (washes), so bare paper / photos are untouched. For genuine watercolour/ink-wash art;
+    /// auto-applied at 0.6 when the medium is wet (`--medium watercolor` or auto-detected). `--paper 0`
+    /// disables.
     #[arg(long)]
     pub paper: Option<f32>,
+    /// Run CLIP medium-detection on a **weight-free** run (it otherwise only runs for model corrections),
+    /// so auto-paper can fire for detected watercolour/ink-wash art without naming `--medium`.
+    #[arg(long = "auto-medium", default_value_t = false)]
+    pub auto_medium: bool,
     /// Override the **quality-improvement** ("de-slop") strength (0..1) — gray-world white balance +
     /// robust auto-levels + vibrance + unsharp, run FIRST to make the colours & detail genuinely better
     /// before any analog look. `0` disables it. Defaults come from the preset (subtle 0.55 … photo 0.70).
@@ -177,6 +183,15 @@ fn is_wire_query(q: &str) -> bool {
 
 /// Resolve the art style to preserve during model corrections: explicit `--style` wins; else expand a
 /// `--medium` preset to a descriptive style string; else `None`.
+/// Whether a resolved style/medium string names a **wet media** (watercolour / gouache / ink-wash) —
+/// triggers auto-paper (RFC QUALITY-5 P1).
+fn is_wet_media(style: &str) -> bool {
+    let s = style.to_ascii_lowercase();
+    ["watercolor", "watercolour", "gouache", "ink-wash", "ink wash", "wet-on-wet", "wet on wet"]
+        .iter()
+        .any(|k| s.contains(k))
+}
+
 fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
     if let Some(s) = style {
         if !s.trim().is_empty() {
@@ -256,15 +271,23 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let tmp = tempfile::tempdir().context("temp dir for naturalize refine")?;
     let mut art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
 
-    // Auto medium-detection (RFC QUALITY-4 P2): if a model correction is requested but no style/medium was
-    // given, CLIP zero-shot the source medium so the re-paint holds it instead of drifting to photoreal.
+    // Auto medium-detection (RFC QUALITY-4 P2 / QUALITY-5 P1): CLIP zero-shot the source medium so a
+    // re-paint holds it (no photoreal drift) AND so auto-paper (below) can fire. Runs when a model
+    // correction is requested, or when `--auto-medium` opts a weight-free run in — never when the style is
+    // already named.
     let wants_model = a.repair.unwrap_or(0.0) > 0.0 || a.geometry.unwrap_or(0.0) > 0.0 || a.anatomy.unwrap_or(0.0) > 0.0;
-    if art_style.is_none() && wants_model {
+    if art_style.is_none() && (wants_model || a.auto_medium) {
         if let Some(m) = naturalize::refine::detect_medium(&a.input, Some(&a.device)).await {
             println!("  {} auto-detected medium → {m}", style("de-slop").cyan());
             art_style = Some(m);
         }
     }
+
+    // Auto-paper (QUALITY-5 P1): watercolor/gouache/ink-wash art → apply --paper at the recommended 0.6 by
+    // default (unless the user set --paper explicitly, incl. `--paper 0` to disable).
+    let paper_amt = a.paper.or_else(|| {
+        art_style.as_deref().filter(|s| is_wet_media(s)).map(|_| 0.6)
+    });
 
     // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
     //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative
@@ -352,9 +375,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut out = naturalize::apply(&img, &p);
     // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
     // art (fixes the "simulated media" tell). Runs last so tooth/granulation ride the finished pixels.
-    if let Some(pv) = a.paper.filter(|v| *v > 0.0) {
+    if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
         out = naturalize::paper_texture(&out, pv);
-        println!("  {} watercolor paper/pigment (amount {pv:.2})", style("de-slop").green());
+        let how = if a.paper.is_some() { "" } else { " (auto: wet media)" };
+        println!("  {} watercolor paper/pigment (amount {pv:.2}{how})", style("de-slop").green());
     }
     let ai_after = naturalize::ai_tell_score(&out);
 
