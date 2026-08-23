@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::naturalize::{self, Params, Preset};
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct NaturalizeArgs {
     /// Input image.
     pub input: PathBuf,
@@ -214,6 +214,32 @@ fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
 }
 
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
+    // QUALITY-5 P3: batch — a directory input de-slops every image into the `--out` directory (same
+    // filenames). Model-backed passes reload per image (best-effort convenience, not a resident server).
+    if a.input.is_dir() {
+        let exts = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&a.input)
+            .with_context(|| format!("reading dir {}", a.input.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).map(|e| exts.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false))
+            .collect();
+        files.sort();
+        anyhow::ensure!(!files.is_empty(), "no images in {}", a.input.display());
+        std::fs::create_dir_all(&a.out).with_context(|| format!("creating out dir {}", a.out.display()))?;
+        println!("naturalize batch: {} image(s) → {}", files.len(), a.out.display());
+        for f in &files {
+            let name = f.file_name().context("image has no filename")?;
+            let mut sub = a.clone();
+            sub.input = f.clone();
+            sub.out = a.out.join(name);
+            println!("· {}", f.display());
+            if let Err(e) = Box::pin(run(sub)).await {
+                tracing::warn!(target: "plakat", "naturalize {}: {e} — continuing", f.display());
+            }
+        }
+        return Ok(());
+    }
+
     let base = match a.preset.as_deref() {
         Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
         None => Preset::Subtle,
@@ -517,7 +543,11 @@ pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let chunks = extract_text_chunks(&bytes);
     let img = image::load_from_memory(&bytes).with_context(|| format!("decoding {}", path.display()))?.to_rgb8();
-    let out = crate::naturalize::apply(&img, &params);
+    let mut out = crate::naturalize::apply(&img, &params);
+    // QUALITY-5 P3: spec parity for --paper (`generate --naturalize "... paper=0.6"`, scenario field).
+    if let Some(pv) = crate::naturalize::paper_from_spec(spec).filter(|v| *v > 0.0) {
+        out = crate::naturalize::paper_texture(&out, pv);
+    }
     out.save(path).with_context(|| format!("writing {}", path.display()))?;
     inject_text_chunks(path, &chunks)?;
     Ok(())

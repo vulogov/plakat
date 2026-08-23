@@ -2022,7 +2022,11 @@ impl Naturalize {
     pub fn run(&self, input: impl AsRef<std::path::Path>, out: impl AsRef<std::path::Path>) -> Result<()> {
         let params = crate::naturalize::from_spec(&self.spec);
         let img = image::open(input.as_ref())?.to_rgb8();
-        crate::naturalize::apply(&img, &params).save(out.as_ref())?;
+        let mut result = crate::naturalize::apply(&img, &params);
+        if let Some(pv) = crate::naturalize::paper_from_spec(&self.spec).filter(|v| *v > 0.0) {
+            result = crate::naturalize::paper_texture(&result, pv);
+        }
+        result.save(out.as_ref())?;
         Ok(())
     }
 

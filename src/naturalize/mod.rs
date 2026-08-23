@@ -204,6 +204,15 @@ pub fn blend_focus(base: Params, focuses: &[(Focus, f32)]) -> Params {
 /// field) into analog [`Params`]: a preset name and/or `key=value` tokens (space/comma separated), where
 /// `key` is an analog focus (`vegetation=1`) or a param (`grain=0.3`). Empty / "on" / "true" → the default
 /// `subtle` preset. Example: `"photo vegetation=1 sky=0.5 grain=0.35"`.
+/// Extract an explicit `paper=N` amount from a naturalize **spec** (RFC QUALITY-5 P3). The paper pass isn't
+/// part of the analog [`Params`], so the spec-consuming paths (`generate --naturalize`, scenario, api) read
+/// it separately and apply [`paper_texture`]. `None` if absent / unparseable.
+pub fn paper_from_spec(spec: &str) -> Option<f32> {
+    spec.split([' ', ',', ';'])
+        .map(str::trim)
+        .find_map(|t| t.strip_prefix("paper=").and_then(|v| v.parse::<f32>().ok()))
+}
+
 pub fn from_spec(spec: &str) -> Params {
     let mut base = Preset::Subtle;
     let mut focuses: Vec<(Focus, f32)> = Vec::new();
