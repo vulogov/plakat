@@ -234,6 +234,52 @@ impl OwlViT {
         Ok(Some(Detection { x0, y0, x1, y1, score: best_score }))
     }
 
+    /// Detect **all** instances of `query` above `threshold` (NMS-deduped, up to `max_dets`) — used by
+    /// figure-scoped naturalize repair to find every person, not just the top-1. Boxes are mapped to
+    /// original-image pixels exactly as [`detect`](Self::detect).
+    pub fn detect_all(&self, image_path: &std::path::Path, query: &str, threshold: f32, max_dets: usize) -> Result<Vec<Detection>> {
+        let (orig_w, orig_h) = image::image_dimensions(image_path)?;
+        let pixel_values = self.preprocess_image(image_path)?;
+        let input_ids = self.tokenize(query)?;
+        let (boxes, logits) = self.forward(&pixel_values, &input_ids)?;
+        let scores = candle_nn::ops::sigmoid(&logits.i((0, .., 0))?)?.to_vec1::<f32>()?;
+        let side = orig_w.max(orig_h) as f32;
+        let mut dets: Vec<Detection> = Vec::new();
+        for (i, &sc) in scores.iter().enumerate() {
+            if sc < threshold {
+                continue;
+            }
+            let b = boxes.i((0, i, ..))?.to_vec1::<f32>()?;
+            let (cx, cy, bw, bh) = (b[0] * side, b[1] * side, b[2] * side, b[3] * side);
+            dets.push(Detection {
+                x0: (cx - bw / 2.0).clamp(0.0, orig_w as f32),
+                y0: (cy - bh / 2.0).clamp(0.0, orig_h as f32),
+                x1: (cx + bw / 2.0).clamp(0.0, orig_w as f32),
+                y1: (cy + bh / 2.0).clamp(0.0, orig_h as f32),
+                score: sc,
+            });
+        }
+        // greedy NMS by score, IoU > 0.5 suppressed.
+        dets.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        let iou = |a: &Detection, b: &Detection| -> f32 {
+            let (ix0, iy0) = (a.x0.max(b.x0), a.y0.max(b.y0));
+            let (ix1, iy1) = (a.x1.min(b.x1), a.y1.min(b.y1));
+            let inter = (ix1 - ix0).max(0.0) * (iy1 - iy0).max(0.0);
+            let ua = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - inter;
+            if ua <= 0.0 { 0.0 } else { inter / ua }
+        };
+        let mut keep: Vec<Detection> = Vec::new();
+        for d in dets {
+            if keep.iter().all(|k| iou(k, &d) < 0.5) {
+                keep.push(d);
+            }
+            if keep.len() >= max_dets {
+                break;
+            }
+        }
+        Ok(keep)
+    }
+
     /// Preprocess an image the OWL-ViT way: pad to a square (longest side), resize to 768, CLIP
     /// mean/std normalize → `(1, 3, 768, 768)` F32.
     fn preprocess_image(&self, path: &std::path::Path) -> Result<Tensor> {

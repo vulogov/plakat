@@ -153,8 +153,20 @@ pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Op
     };
     let Ok(mut faces) = det.detect(input) else { return Ok(false) };
     faces.retain(|f| f.score >= 0.35);
-    if faces.is_empty() {
-        tracing::warn!(target: "plakat", "naturalize --repair: no faces detected to protect — skipping (use --geometry/--anatomy for non-figure art)");
+
+    // QUALITY-5 P2: in Figures scope, also OWL-ViT-detect PEOPLE so figures whose face isn't found (back
+    // turned / distant / occluded) are still covered. Best-effort — a missing detector just falls back to
+    // the face-projected boxes.
+    let persons: Vec<crate::pipelines::owlvit::Detection> = if scope == RepairScope::Figures {
+        match crate::pipelines::owlvit::OwlViT::load_pretrained(&dev).await {
+            Ok(owl) => owl.detect_all(input, "a person", 0.20, 12).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    if faces.is_empty() && persons.is_empty() {
+        tracing::warn!(target: "plakat", "naturalize --repair: no faces or people detected — skipping (use --geometry/--anatomy for non-figure art)");
         return Ok(false);
     }
     let (iw, ih) = image::image_dimensions(input)?;
@@ -179,6 +191,11 @@ pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Op
                 let cx = (f.bbox[0] + f.bbox[2]) * 0.5;
                 // a running child ≈ 5–6 head-heights tall, ≈ 2.2 head-widths wide (arms out).
                 paint(&mut m, cx - 1.1 * fw, f.bbox[1] - 0.2 * fh, cx + 1.1 * fw, f.bbox[3] + 5.0 * fh, 255);
+            }
+            // union the OWL-ViT person boxes (covers figures with no detected face), slightly grown.
+            for pd in &persons {
+                let (pw, ph) = (pd.x1 - pd.x0, pd.y1 - pd.y0);
+                paint(&mut m, pd.x0 - 0.08 * pw, pd.y0 - 0.06 * ph, pd.x1 + 0.08 * pw, pd.y1 + 0.06 * ph, 255);
             }
             m
         }
