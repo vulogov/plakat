@@ -299,11 +299,31 @@ fn box_blur_gray(src: &[f32], w: usize, h: usize, r: i32) -> Vec<f32> {
 /// (`rank --ai-tells`) so a batch can be pruned to the most human-looking frames, and lets `naturalize`
 /// report the before/after delta.
 pub fn ai_tell_score(img: &RgbImage) -> f32 {
+    analyze(img).ai_tell
+}
+
+/// The decomposed de-slop **analysis** of an image (RFC QUALITY-6 P1) — the drivers behind
+/// [`ai_tell_score`], for the `naturalize --report` scorecard.
+#[derive(Debug, Clone, Copy)]
+pub struct Analysis {
+    /// Combined AI-tell score, `0..1` (higher = reads more AI-generated).
+    pub ai_tell: f32,
+    /// Mean HSV saturation, `0..1` (the oversaturation tell).
+    pub saturation: f32,
+    /// Texture over-smoothness tell, `0..1` (1 = dead-smooth / too clean).
+    pub smoothness_tell: f32,
+    /// Global luminance contrast (std/255) — low = washed/muddy.
+    pub contrast: f32,
+}
+
+/// Decompose the weight-free AI-tell drivers of an image: **oversaturation** (mean HSV saturation) and
+/// **texture over-smoothness** (low high-frequency-to-contrast ratio → too clean). Feeds `ai_tell_score`
+/// and the `--report` scorecard.
+pub fn analyze(img: &RgbImage) -> Analysis {
     let (w, h) = (img.width() as usize, img.height() as usize);
     if w < 3 || h < 3 {
-        return 0.0;
+        return Analysis { ai_tell: 0.0, saturation: 0.0, smoothness_tell: 0.0, contrast: 0.0 };
     }
-    // oversaturation
     let sat: f32 = img
         .pixels()
         .map(|p| {
@@ -313,7 +333,6 @@ pub fn ai_tell_score(img: &RgbImage) -> f32 {
         })
         .sum::<f32>()
         / (w * h) as f32;
-    // over-smoothness: high-frequency energy vs global contrast. Low hf/contrast → too clean → high tell.
     let l: Vec<f32> = img.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
     let (mut hf, mut n) = (0.0f32, 0.0f32);
     for y in 1..h - 1 {
@@ -330,10 +349,40 @@ pub fn ai_tell_score(img: &RgbImage) -> f32 {
     }
     let hf = hf / n.max(1.0);
     let mean = l.iter().sum::<f32>() / l.len() as f32;
-    let contrast = (l.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / l.len() as f32).sqrt().max(1.0);
-    let ratio = (hf / contrast).min(0.5) / 0.5; // 0 (dead smooth) .. 1 (grainy/detailed)
+    let std = (l.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / l.len() as f32).sqrt();
+    let ratio = (hf / std.max(1.0)).min(0.5) / 0.5; // 0 (dead smooth) .. 1 (grainy/detailed)
     let smoothness_tell = 1.0 - ratio;
-    (0.6 * sat + 0.4 * smoothness_tell).clamp(0.0, 1.0)
+    let ai_tell = (0.6 * sat + 0.4 * smoothness_tell).clamp(0.0, 1.0);
+    Analysis { ai_tell, saturation: sat, smoothness_tell, contrast: std / 255.0 }
+}
+
+/// Whether a style/medium string names a **wet media** (watercolour / gouache / ink-wash) — triggers
+/// auto-paper (QUALITY-5) and the `--paper` recommendation.
+pub fn is_wet_media(style: &str) -> bool {
+    let s = style.to_ascii_lowercase();
+    ["watercolor", "watercolour", "gouache", "ink-wash", "ink wash", "wet-on-wet", "wet on wet"]
+        .iter()
+        .any(|k| s.contains(k))
+}
+
+/// A recommended de-slop **recipe** (the `naturalize` flags to run) from an [`Analysis`] + optional detected
+/// medium — the actionable half of the `--report` scorecard.
+pub fn recommend(a: &Analysis, medium: Option<&str>) -> Vec<String> {
+    let mut r = vec!["--polish 0.7".to_string()]; // polish always helps (WB + levels + vibrance + unsharp)
+    if a.saturation > 0.5 {
+        r.push("--desaturate 0.2".to_string());
+    }
+    if a.smoothness_tell > 0.45 {
+        r.push("--micro 0.5".to_string());
+    }
+    if a.contrast < 0.14 {
+        r.push("--polish 0.9".to_string()); // washed → lean harder on auto-levels (replaces the 0.7)
+        r.remove(0);
+    }
+    if medium.map(is_wet_media).unwrap_or(false) {
+        r.push("--paper 0.6".to_string());
+    }
+    r
 }
 
 /// Which corner a ghost signature sits in.

@@ -16,11 +16,11 @@ use crate::naturalize::{self, Params, Preset};
 
 #[derive(Args, Debug, Clone)]
 pub struct NaturalizeArgs {
-    /// Input image.
+    /// Input image (or a directory for batch).
     pub input: PathBuf,
-    /// Output image.
-    #[arg(long)]
-    pub out: PathBuf,
+    /// Output image (or directory for batch). Not required with `--report`.
+    #[arg(long, required_unless_present = "report")]
+    pub out: Option<PathBuf>,
     /// Strength bundle: `subtle` (default) | `photo` | `painting`. All aim at contemporary realism (no
     /// retro/vintage look).
     #[arg(long)]
@@ -57,6 +57,13 @@ pub struct NaturalizeArgs {
     /// so auto-paper can fire for detected watercolour/ink-wash art without naming `--medium`.
     #[arg(long = "auto-medium", default_value_t = false)]
     pub auto_medium: bool,
+    /// **Analyze** the image and print a de-slop scorecard (AI-tell drivers + detected medium + a
+    /// recommended recipe) instead of processing it. Add `--json` for a structured report.
+    #[arg(long, default_value_t = false)]
+    pub report: bool,
+    /// With `--report`, emit JSON instead of the table.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
     /// Override the **quality-improvement** ("de-slop") strength (0..1) — gray-world white balance +
     /// robust auto-levels + vibrance + unsharp, run FIRST to make the colours & detail genuinely better
     /// before any analog look. `0` disables it. Defaults come from the preset (subtle 0.55 … photo 0.70).
@@ -183,14 +190,7 @@ fn is_wire_query(q: &str) -> bool {
 
 /// Resolve the art style to preserve during model corrections: explicit `--style` wins; else expand a
 /// `--medium` preset to a descriptive style string; else `None`.
-/// Whether a resolved style/medium string names a **wet media** (watercolour / gouache / ink-wash) —
-/// triggers auto-paper (RFC QUALITY-5 P1).
-fn is_wet_media(style: &str) -> bool {
-    let s = style.to_ascii_lowercase();
-    ["watercolor", "watercolour", "gouache", "ink-wash", "ink wash", "wet-on-wet", "wet on wet"]
-        .iter()
-        .any(|k| s.contains(k))
-}
+use naturalize::is_wet_media;
 
 fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
     if let Some(s) = style {
@@ -225,13 +225,16 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
             .collect();
         files.sort();
         anyhow::ensure!(!files.is_empty(), "no images in {}", a.input.display());
-        std::fs::create_dir_all(&a.out).with_context(|| format!("creating out dir {}", a.out.display()))?;
-        println!("naturalize batch: {} image(s) → {}", files.len(), a.out.display());
+        let out_dir = a.out.clone(); // None is only valid alongside --report (per-file report, no output)
+        if let Some(d) = &out_dir {
+            std::fs::create_dir_all(d).with_context(|| format!("creating out dir {}", d.display()))?;
+            println!("naturalize batch: {} image(s) → {}", files.len(), d.display());
+        }
         for f in &files {
             let name = f.file_name().context("image has no filename")?;
             let mut sub = a.clone();
             sub.input = f.clone();
-            sub.out = a.out.join(name);
+            sub.out = out_dir.as_ref().map(|d| d.join(name));
             println!("· {}", f.display());
             if let Err(e) = Box::pin(run(sub)).await {
                 tracing::warn!(target: "plakat", "naturalize {}: {e} — continuing", f.display());
@@ -240,6 +243,37 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         return Ok(());
     }
 
+    // QUALITY-6 P1: --report — analyze + print a de-slop scorecard, don't process.
+    if a.report {
+        let img = image::open(&a.input).with_context(|| format!("reading {}", a.input.display()))?.to_rgb8();
+        let an = naturalize::analyze(&img);
+        let medium = naturalize::refine::detect_medium_label(&a.input, Some(&a.device)).await;
+        let recipe = naturalize::recommend(&an, medium.as_ref().map(|(m, _)| m.as_str()));
+        let cmd = format!("plakat naturalize {} --out OUT.png {}", a.input.display(), recipe.join(" "));
+        if a.json {
+            let med = medium.as_ref().map(|(m, s)| format!("{{\"name\": {m:?}, \"score\": {s:.4}}}")).unwrap_or_else(|| "null".into());
+            let flags: Vec<String> = recipe.iter().map(|f| format!("{f:?}")).collect();
+            println!(
+                "{{\n  \"input\": {:?},\n  \"ai_tell\": {:.4},\n  \"saturation\": {:.4},\n  \"smoothness_tell\": {:.4},\n  \"contrast\": {:.4},\n  \"medium\": {},\n  \"recommend\": [{}]\n}}",
+                a.input.display().to_string(), an.ai_tell, an.saturation, an.smoothness_tell, an.contrast, med, flags.join(", ")
+            );
+        } else {
+            let bar = |v: f32| { let n = (v * 20.0).round() as usize; format!("{}{}", "█".repeat(n.min(20)), "░".repeat(20 - n.min(20))) };
+            println!("\n  {} — {}×{}", style("naturalize scorecard").bold(), img.width(), img.height());
+            println!("  {}  AI-tell        {} {:.2}", if an.ai_tell > 0.5 { style("●").red() } else { style("●").green() }, bar(an.ai_tell), an.ai_tell);
+            println!("     oversaturation {} {:.2}", bar(an.saturation), an.saturation);
+            println!("     over-smoothness{} {:.2}", bar(an.smoothness_tell), an.smoothness_tell);
+            println!("     contrast       {} {:.2}{}", bar(an.contrast), an.contrast, if an.contrast < 0.14 { "  (washed/muddy)" } else { "" });
+            if let Some((m, s)) = &medium {
+                println!("     medium         {} ({:.2})", style(m).cyan(), s);
+            }
+            println!("\n  {} {}", style("recommended:").green(), style(&cmd).dim());
+            println!();
+        }
+        return Ok(());
+    }
+
+    let out_path = a.out.clone().context("--out is required")?;
     let base = match a.preset.as_deref() {
         Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
         None => Preset::Subtle,
@@ -415,19 +449,19 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut fresh: Option<crate::etch::EtchId> = None;
     let mut carried = false;
     if !a.no_reetch {
-        reetched = crate::etch::reetch(&a.input, out.as_raw(), out.width(), out.height(), &a.out).unwrap_or(None);
+        reetched = crate::etch::reetch(&a.input, out.as_raw(), out.width(), out.height(), &out_path).unwrap_or(None);
     }
     if reetched.is_none() {
         // No plakat parent to chain. If the user explicitly asked for `--etch`, freshly etch this output
         // (plakat produced *this* naturalized image) — same claim `generate --etch` makes. Otherwise
         // plain-save and carry any existing provenance forward.
         if !a.no_reetch && crate::etch::active().is_some() {
-            fresh = crate::etch::fresh_etch(out.as_raw(), out.width(), out.height(), &a.out, None).ok();
+            fresh = crate::etch::fresh_etch(out.as_raw(), out.width(), out.height(), &out_path, None).ok();
         }
         if fresh.is_none() {
-            out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+            out.save(&out_path).with_context(|| format!("writing {}", out_path.display()))?;
             if !a.no_reetch {
-                carried = carry_provenance(&a.input, &a.out).unwrap_or(false);
+                carried = carry_provenance(&a.input, &out_path).unwrap_or(false);
             }
         }
     }
@@ -439,7 +473,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let names: Vec<String> = focuses.iter().map(|(f, n)| format!("{}:{n}", format!("{f:?}").to_ascii_lowercase())).collect();
         format!(" · focus {}", names.join(","))
     };
-    println!("{} {}  (naturalize · {preset_label}{focus_note})", style("wrote").green(), a.out.display());
+    println!("{} {}  (naturalize · {preset_label}{focus_note})", style("wrote").green(), out_path.display());
     let _ = ai_before;
     println!("  {} AI-tell {:.3} (0=human … 1=AI; a batch-ranking heuristic)", style("score").cyan(), ai_after);
     if let Some(id) = reetched {

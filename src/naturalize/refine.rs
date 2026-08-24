@@ -107,6 +107,25 @@ pub async fn detect_medium(input: &Path, device: Option<&str>) -> Option<String>
     (!best.1.is_empty()).then(|| best.1.to_string())
 }
 
+/// Like [`detect_medium`] but returns the human **medium name** + cosine score (for the `--report`
+/// scorecard), e.g. `("watercolor", 0.27)`. Best-effort.
+pub async fn detect_medium_label(input: &Path, device: Option<&str>) -> Option<(String, f32)> {
+    let dev = crate::api::device(device.unwrap_or("auto")).ok()?;
+    let clip = crate::pipelines::clip_embed::ClipEmbedder::load(&dev).await.ok()?;
+    let img = clip.embed_image(input).ok()?;
+    let media = ["watercolor", "oil painting", "ink drawing", "gouache", "graphite pencil sketch", "pastel drawing", "acrylic painting", "comic illustration", "digital painting", "3d render", "photograph"];
+    let mut best: (f32, &str) = (f32::MIN, "");
+    for m in media {
+        if let Ok(t) = clip.embed_text(&format!("a {m}")) {
+            let s = crate::pipelines::clip_embed::cosine(&img, &t);
+            if s > best.0 {
+                best = (s, m);
+            }
+        }
+    }
+    (!best.1.is_empty()).then(|| (best.1.to_string(), best.0))
+}
+
 /// How much of the frame a face-protected repair may touch (RFC QUALITY-4 P1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RepairScope {
