@@ -19,8 +19,9 @@ pub struct NaturalizeArgs {
     /// Input image (or a directory for batch). Not required with `--list-presets` / `--export-lut`.
     #[arg(required_unless_present_any = ["list_presets", "export_lut"])]
     pub input: Option<PathBuf>,
-    /// Output image (or directory for batch). Not required with `--report`.
-    #[arg(long, required_unless_present = "report")]
+    /// Output image (or directory for batch). Not required with `--report` / `--list-presets` /
+    /// `--export-lut`.
+    #[arg(long, required_unless_present_any = ["report", "list_presets", "export_lut"])]
     pub out: Option<PathBuf>,
     /// Strength bundle: `subtle` (default) | `photo` | `painting`. All aim at contemporary realism (no
     /// retro/vintage look).
