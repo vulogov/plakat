@@ -341,11 +341,58 @@ async fn detect_people_mask(input: &Path, img: &image::RgbImage, device: &str) -
     Some(out)
 }
 
+/// QUALITY-7 P1: scan a folder and print a ranked scorecard (worst-AI first) + an aggregate summary.
+/// Weight-free (no CLIP medium probe — kept fast for large folders).
+fn folder_report(a: &NaturalizeArgs) -> Result<()> {
+    let exts = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&a.input)
+        .with_context(|| format!("reading dir {}", a.input.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).map(|e| exts.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false))
+        .collect();
+    files.sort();
+    anyhow::ensure!(!files.is_empty(), "no images in {}", a.input.display());
+    let mut rows: Vec<(std::path::PathBuf, naturalize::Analysis)> = Vec::new();
+    for f in &files {
+        match image::open(f) {
+            Ok(im) => rows.push((f.clone(), naturalize::analyze(&im.to_rgb8()))),
+            Err(e) => tracing::warn!(target: "plakat", "skipping {}: {e}", f.display()),
+        }
+    }
+    anyhow::ensure!(!rows.is_empty(), "no readable images in {}", a.input.display());
+    rows.sort_by(|x, y| y.1.ai_tell.partial_cmp(&x.1.ai_tell).unwrap_or(std::cmp::Ordering::Equal));
+    let mean = rows.iter().map(|r| r.1.ai_tell).sum::<f32>() / rows.len() as f32;
+    let over = rows.iter().filter(|r| r.1.ai_tell > 0.5).count();
+    let (msat, msmooth) = (rows.iter().map(|r| r.1.saturation).sum::<f32>() / rows.len() as f32, rows.iter().map(|r| r.1.smoothness_tell).sum::<f32>() / rows.len() as f32);
+    let dominant = if msat >= msmooth { "oversaturation" } else { "over-smoothness" };
+
+    if a.json {
+        let items: Vec<String> = rows.iter().map(|(p, an)| format!("  {{\"path\": {:?}, \"ai_tell\": {:.4}, \"saturation\": {:.4}, \"smoothness_tell\": {:.4}}}", p.display().to_string(), an.ai_tell, an.saturation, an.smoothness_tell)).collect();
+        println!("{{\n  \"count\": {}, \"mean_ai_tell\": {:.4}, \"over_0.5\": {}, \"dominant_tell\": {:?},\n  \"images\": [\n{}\n  ]\n}}", rows.len(), mean, over, dominant, items.join(",\n"));
+    } else {
+        let bar = |v: f32| { let n = (v * 16.0).round() as usize; format!("{}{}", "█".repeat(n.min(16)), "░".repeat(16 - n.min(16))) };
+        println!("\n  {} — {} image(s) in {}", style("folder scorecard").bold(), rows.len(), a.input.display());
+        println!("  {:<20} {:<18} {:>5} {:>5} {:>6}", "", "AI-tell", "sat", "smth", "file");
+        for (p, an) in &rows {
+            let mark = if an.ai_tell > 0.5 { style("●").red() } else { style("●").green() };
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            println!("  {mark} {} {:.2}  {:.2}  {:.2}  {}", bar(an.ai_tell), an.ai_tell, an.saturation, an.smoothness_tell, style(name).dim());
+        }
+        println!("\n  summary: mean AI-tell {:.2} · {} of {} over 0.5 · dominant tell: {}\n", mean, over, rows.len(), style(dominant).cyan());
+    }
+    Ok(())
+}
+
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // QUALITY-6 P2: a video/animation input → de-slop every frame + re-encode (weight-free surface pass).
     if is_video(&a.input) {
         anyhow::ensure!(!a.report, "--report analyses a still image — extract a frame first");
         return naturalize_video(&a).await;
+    }
+
+    // QUALITY-7 P1: a directory + --report → a ranked folder scorecard (worst-AI first) + summary.
+    if a.input.is_dir() && a.report {
+        return folder_report(&a);
     }
 
     // QUALITY-5 P3: batch — a directory input de-slops every image into the `--out` directory (same
