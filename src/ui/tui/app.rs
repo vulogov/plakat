@@ -479,6 +479,14 @@ impl App {
         if self.should_reset && res.is_ok() {
             return Self::reexec();
         }
+        // Clean user quit: force an immediate exit. `plakat ui` runs inside the shared
+        // multi-thread tokio runtime and holds a background ModelService thread / blocking
+        // inference tasks; letting `main` unwind lets the runtime teardown BLOCK on those
+        // (no timeout) — leaving a defunct `(plakat)` stuck in exit. The terminal is already
+        // restored, so exiting now is safe and guaranteed. (Errors still propagate below.)
+        if res.is_ok() {
+            std::process::exit(0);
+        }
         res
     }
 
