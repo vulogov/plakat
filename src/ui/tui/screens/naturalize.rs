@@ -1,8 +1,9 @@
 //! The **Naturalize** tab (RFC QUALITY-8 P3) — interactive weight-free de-slop tuning inside `plakat ui`.
 //!
-//! Dial the weight-free knobs (polish / micro / grain / desaturate / paper) on the latest generated image
-//! with a **live scorecard** (AI-tell + drivers) and image preview updating on each change, then save. The
-//! naturalize *core* stays feature-agnostic; this is just the presentation layer (behind `ui`).
+//! Dial the weight-free knobs (polish / micro / grain / desaturate / paper) on an image with a **live
+//! scorecard** (AI-tell + drivers) and image preview updating on each change; **Space** toggles the
+//! original ↔ de-slopped preview so the effect is visible; **s** saves. The naturalize *core* is
+//! feature-agnostic; this is just the presentation layer (behind `ui`).
 
 use std::path::PathBuf;
 
@@ -16,17 +17,16 @@ use ratatui::Frame;
 
 use crate::naturalize::{self, Analysis, Params};
 
-/// What a key did, for the `App` to act on (rebuild preview / save).
+/// What a key did, for the `App` to act on (save / reload — both need the App's workspace / Picker).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NaturalizeAction {
     None,
-    /// Params changed — re-apply + rebuild the preview.
-    Reapply,
     /// Save the current processed image.
     Save,
+    /// Drop the current source so the App reloads the newest image (latest Chat frame / workspace output).
+    Reload,
 }
 
-/// One tunable knob: label, current value, range, step.
 struct Knob {
     label: &'static str,
     max: f32,
@@ -44,16 +44,19 @@ pub struct NaturalizeState {
     pub source_path: Option<PathBuf>,
     /// The loaded original.
     pub source: Option<RgbImage>,
-    /// Current knob values.
     pub params: Params,
     pub paper: f32,
-    /// Selected knob (0..KNOBS.len()).
     pub selected: usize,
-    /// The processed image (App builds `preview` from it via the Picker).
+    /// The processed image; `None` = needs (re)compute (the App's sync runs `apply`).
     pub processed: Option<RgbImage>,
-    /// Scorecard of the processed image.
+    /// Scorecard of the original and of the processed image (for a before/after readout).
     pub analysis: Option<Analysis>,
-    /// Terminal image protocol for the preview (built by the App).
+    pub orig_analysis: Option<Analysis>,
+    /// Show the ORIGINAL in the preview (Space toggles) so the de-slop delta is visible.
+    pub show_original: bool,
+    /// The App should (re)build `preview` from the right image this frame.
+    pub needs_preview: bool,
+    /// Terminal image protocol for the preview (built by the App from `source`/`processed`).
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub status: String,
 }
@@ -74,24 +77,33 @@ impl NaturalizeState {
             selected: 0,
             processed: None,
             analysis: None,
+            orig_analysis: None,
+            show_original: false,
+            needs_preview: false,
             preview: None,
             status: String::new(),
         }
     }
 
-    /// Load an image as the source (the App calls this with the latest generated frame). Resets the preview
-    /// so the App re-applies + rebuilds it next tick.
+    /// Load an image as the source (App calls this with the latest frame / newest workspace image).
     pub fn load(&mut self, path: PathBuf) {
         match image::open(&path) {
             Ok(img) => {
-                self.source = Some(img.to_rgb8());
+                let rgb = img.to_rgb8();
+                self.orig_analysis = Some(naturalize::analyze(&rgb));
+                self.source = Some(rgb);
                 self.source_path = Some(path);
-                self.processed = None;
-                self.preview = None;
+                self.processed = None; // → App re-applies + rebuilds preview
+                self.needs_preview = true;
                 self.status.clear();
             }
             Err(e) => self.status = format!("load failed: {e}"),
         }
+    }
+
+    /// The image the preview should currently show (original when toggled, else processed).
+    pub fn preview_image(&self) -> Option<&RgbImage> {
+        if self.show_original { self.source.as_ref() } else { self.processed.as_ref() }
     }
 
     fn get(&self, i: usize) -> f32 {
@@ -114,7 +126,15 @@ impl NaturalizeState {
         }
     }
 
-    /// Re-run the weight-free pass on the source → `processed` + `analysis`. The App rebuilds `preview`.
+    fn adjust(&mut self, delta: f32) {
+        let v = self.get(self.selected) + delta;
+        self.set(self.selected, v);
+        self.show_original = false; // adjusting shows the (new) processed result
+        self.processed = None; // → recompute + rebuild preview
+        self.needs_preview = true;
+    }
+
+    /// Re-run the weight-free pass on the source → `processed` + `analysis`. Called by the App's sync.
     pub fn apply(&mut self) {
         if let Some(src) = &self.source {
             let mut out = naturalize::apply(src, &self.params);
@@ -123,6 +143,7 @@ impl NaturalizeState {
             }
             self.analysis = Some(naturalize::analyze(&out));
             self.processed = Some(out);
+            self.needs_preview = true;
         }
     }
 
@@ -137,16 +158,21 @@ impl NaturalizeState {
                 NaturalizeAction::None
             }
             KeyCode::Left | KeyCode::Char('h' | '-') => {
-                let v = self.get(self.selected) - 0.05;
-                self.set(self.selected, v);
-                NaturalizeAction::Reapply
+                self.adjust(-0.05);
+                NaturalizeAction::None
             }
             KeyCode::Right | KeyCode::Char('l' | '+' | '=') => {
-                let v = self.get(self.selected) + 0.05;
-                self.set(self.selected, v);
-                NaturalizeAction::Reapply
+                self.adjust(0.05);
+                NaturalizeAction::None
+            }
+            KeyCode::Char(' ') => {
+                // Toggle original ↔ de-slopped preview (only meaningful once processed).
+                self.show_original = !self.show_original;
+                self.needs_preview = true;
+                NaturalizeAction::None
             }
             KeyCode::Char('s' | 'S') => NaturalizeAction::Save,
+            KeyCode::Char('r' | 'R') => NaturalizeAction::Reload,
             _ => NaturalizeAction::None,
         }
     }
@@ -158,13 +184,20 @@ impl NaturalizeState {
             .split(area);
 
         // ── left: image preview ──
-        let block = Block::default().borders(Borders::ALL).title(" Preview ");
+        let ptitle = if self.source.is_none() {
+            " Preview ".to_string()
+        } else if self.show_original {
+            " Preview — ORIGINAL (Space: de-slopped) ".to_string()
+        } else {
+            " Preview — de-slopped (Space: original) ".to_string()
+        };
+        let block = Block::default().borders(Borders::ALL).title(ptitle);
         let inner = block.inner(cols[0]);
         f.render_widget(block, cols[0]);
         match &mut self.preview {
             Some(p) => f.render_stateful_widget(ratatui_image::StatefulImage::new(), inner, p),
             None => f.render_widget(
-                Paragraph::new("\n  No image. Generate one in Chat (Ctrl-1), then return here — the latest frame loads automatically.")
+                Paragraph::new("\n  No image loaded.\n  Press r to load the newest image (a Chat generation or any file in the workspace out-dir),\n  or generate one in Chat (Ctrl-1).")
                     .style(Style::new().fg(Color::DarkGray))
                     .wrap(Wrap { trim: true }),
                 inner,
@@ -177,7 +210,7 @@ impl NaturalizeState {
         f.render_widget(rblock, cols[1]);
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(KNOBS.len() as u16 + 2), Constraint::Min(6), Constraint::Length(2)])
+            .constraints([Constraint::Length(KNOBS.len() as u16 + 2), Constraint::Min(7), Constraint::Length(2)])
             .split(rinner);
 
         // knob sliders
@@ -195,23 +228,25 @@ impl NaturalizeState {
         }
         f.render_widget(Paragraph::new(lines), rows[0]);
 
-        // scorecard
-        let mut sc: Vec<Line> = vec![Line::from(Span::styled("scorecard", Style::new().add_modifier(Modifier::BOLD)))];
-        if let Some(an) = &self.analysis {
-            let bar = |x: f32| { let n = ((x * 14.0).round() as usize).min(14); format!("{}{}", "█".repeat(n), "░".repeat(14 - n)) };
-            let dot = if an.ai_tell > 0.5 { Span::styled("● ", Style::new().fg(Color::Red)) } else { Span::styled("● ", Style::new().fg(Color::Green)) };
-            sc.push(Line::from(vec![dot, Span::raw(format!("AI-tell   {} {:.2}", bar(an.ai_tell), an.ai_tell))]));
-            sc.push(Line::from(format!("  oversat  {} {:.2}", bar(an.saturation), an.saturation)));
-            sc.push(Line::from(format!("  smooth   {} {:.2}", bar(an.smoothness_tell), an.smoothness_tell)));
-            sc.push(Line::from(format!("  contrast {} {:.2}", bar(an.contrast), an.contrast)));
-        } else {
-            sc.push(Line::from(Span::styled("  (load an image)", Style::new().fg(Color::DarkGray))));
+        // scorecard — before → after
+        let bar = |x: f32| { let n = ((x * 12.0).round() as usize).min(12); format!("{}{}", "█".repeat(n), "░".repeat(12 - n)) };
+        let mut sc: Vec<Line> = vec![Line::from(Span::styled("scorecard  (before → after)", Style::new().add_modifier(Modifier::BOLD)))];
+        match (&self.orig_analysis, &self.analysis) {
+            (Some(o), Some(a)) => {
+                let dot = if a.ai_tell > 0.5 { Span::styled("● ", Style::new().fg(Color::Red)) } else { Span::styled("● ", Style::new().fg(Color::Green)) };
+                let arrow = if a.ai_tell < o.ai_tell { Span::styled("↓", Style::new().fg(Color::Green)) } else { Span::styled("↑", Style::new().fg(Color::Red)) };
+                sc.push(Line::from(vec![dot, Span::raw(format!("AI-tell   {} {:.2} → {:.2} ", bar(a.ai_tell), o.ai_tell, a.ai_tell)), arrow]));
+                sc.push(Line::from(format!("  oversat  {} {:.2} → {:.2}", bar(a.saturation), o.saturation, a.saturation)));
+                sc.push(Line::from(format!("  smooth   {} {:.2} → {:.2}", bar(a.smoothness_tell), o.smoothness_tell, a.smoothness_tell)));
+                sc.push(Line::from(format!("  contrast {} {:.2} → {:.2}", bar(a.contrast), o.contrast, a.contrast)));
+            }
+            _ => sc.push(Line::from(Span::styled("  (load an image — press r)", Style::new().fg(Color::DarkGray)))),
         }
         f.render_widget(Paragraph::new(sc), rows[1]);
 
         // footer / status
         let foot = if self.status.is_empty() {
-            "↑↓ select · ←→ / +- adjust · s save".to_string()
+            "↑↓ select · ←→ / +- adjust · Space before/after · r reload · s save".to_string()
         } else {
             self.status.clone()
         };

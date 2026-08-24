@@ -516,20 +516,41 @@ impl App {
         if self.screen != ActiveScreen::Naturalize {
             return;
         }
+        // Seed the source: the latest Chat frame, else the newest image in the workspace out-dir (so
+        // existing images are picked up, not only fresh generations).
         if self.naturalize.source.is_none() {
-            if let Some(p) = self.chat.latest_frame_path() {
+            if let Some(p) = self.chat.latest_frame_path().or_else(|| Self::newest_image_in(&self.workspace.out_dir())) {
                 self.naturalize.load(p);
             }
         }
-        // (Re)apply + build the preview when the processed image is missing (a knob change clears it).
+        // Re-apply the weight-free pass when the processed image is missing (load / knob change clears it).
         if self.naturalize.source.is_some() && self.naturalize.processed.is_none() {
             self.naturalize.apply();
-            self.naturalize.preview = self
-                .naturalize
-                .processed
-                .as_ref()
-                .map(|img| self.picker.new_resize_protocol(image::DynamicImage::ImageRgb8(img.clone())));
         }
+        // (Re)build the terminal preview when flagged (needs the App's Picker) — from the original or the
+        // de-slopped image per the Space toggle.
+        if self.naturalize.needs_preview {
+            let img = self.naturalize.preview_image().cloned();
+            self.naturalize.preview = img.map(|i| self.picker.new_resize_protocol(image::DynamicImage::ImageRgb8(i)));
+            self.naturalize.needs_preview = false;
+        }
+    }
+
+    /// The newest image file in `dir` (by mtime), skipping our own `*_naturalized.png` outputs. For the
+    /// Naturalize tab's workspace fallback / reload.
+    fn newest_image_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let exts = ["png", "jpg", "jpeg", "webp"];
+        std::fs::read_dir(dir)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let p = e.path();
+                p.is_file()
+                    && p.extension().and_then(|x| x.to_str()).map(|x| exts.contains(&x.to_ascii_lowercase().as_str())).unwrap_or(false)
+                    && !p.file_stem().and_then(|s| s.to_str()).map(|s| s.ends_with("_naturalized")).unwrap_or(false)
+            })
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+            .map(|e| e.path())
     }
 
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
@@ -1077,10 +1098,13 @@ impl App {
                 self.handle_prompts_action(action);
             }
             ActiveScreen::Naturalize => match self.naturalize.handle_key(key) {
-                // A knob changed → clear the processed image so `sync_naturalize` re-applies + rebuilds
-                // the preview (which needs the App's Picker) on the next frame.
-                NaturalizeAction::Reapply => self.naturalize.processed = None,
+                // Knob changes / the Space toggle mutate the screen state directly (clearing `processed` /
+                // setting `needs_preview`); `sync_naturalize` re-applies + rebuilds the preview next frame.
                 NaturalizeAction::Save => self.save_naturalized(),
+                NaturalizeAction::Reload => {
+                    self.naturalize.source = None;
+                    self.naturalize.source_path = None;
+                }
                 NaturalizeAction::None => {}
             },
             _ => {}
@@ -3174,6 +3198,8 @@ impl App {
             ActiveScreen::Naturalize => ("Naturalize", &[
                 ("↑ ↓", "select knob"),
                 ("← → / + -", "adjust (polish/micro/grain/desaturate/paper)"),
+                ("Space", "toggle original ↔ de-slopped"),
+                ("r", "reload newest image"),
                 ("s", "save de-slopped image"),
             ]),
         }
