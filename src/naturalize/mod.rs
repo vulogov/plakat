@@ -224,13 +224,13 @@ pub fn model_preset(model: &str) -> Option<&'static str> {
     } else if m.contains("sd35") || m.contains("sd3.5") || m.contains("sd3") || m.contains("stable-diffusion-3") {
         Some("photo polish=0.72 desaturate=0.1 micro=0.35")
     } else if m.contains("sdxl") || m.contains("xl") || m.contains("lightning") || m.contains("hyper") {
-        Some("photo desaturate=0.15 polish=0.78 micro=0.3 aberration=0.03") // SDXL over-saturates
+        Some("photo desaturate=0.16 polish=0.78 micro=0.3 aberration=0") // SDXL over-saturates (no aberration — it's a degradation)
     } else if m.contains("sd15") || m.contains("sd1.5") || m.contains("v1-5") || m.contains("stable-diffusion-v1") || m.contains("dreamshaper") {
-        Some("photo polish=0.7 micro=0.4 grain=0.14 aberration=0") // SD 1.5 is soft → micro + grain, no aberration
+        Some("photo polish=0.75 micro=0.4 grain=0.14 aberration=0") // SD 1.5 is soft → lean on unsharp + micro + grain
     } else if m.contains("pixart") {
         Some("photo polish=0.72 desaturate=0.1 micro=0.3")
     } else if m.contains("cascade") {
-        Some("photo polish=0.7 desaturate=0.12 micro=0.3 bloom=0.1")
+        Some("photo polish=0.7 desaturate=0.1 micro=0.3 bloom=0.1")
     } else if m.contains("sana") {
         Some("photo polish=0.72 micro=0.35 desaturate=0.08")
     } else {

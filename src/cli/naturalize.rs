@@ -262,8 +262,21 @@ fn resolve_base_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<Param
     if a.preset.as_deref() == Some("auto") {
         let model = input.and_then(read_source_model);
         if let Some(spec) = model.as_deref().and_then(naturalize::model_preset) {
-            println!("  {} auto preset · model '{}' → {spec}", style("de-slop").cyan(), model.as_deref().unwrap_or("?"));
-            return Ok(naturalize::from_spec(spec));
+            let mut p = naturalize::from_spec(spec);
+            // Adaptive: a very-smooth (plastic) image — portraits especially — wants more micro-texture
+            // than the model default, regardless of which model made it.
+            let mut note = String::new();
+            if let Some(inp) = input {
+                if let Ok(img) = image::open(inp) {
+                    let s = naturalize::analyze(&img.to_rgb8()).smoothness_tell;
+                    if s > 0.85 {
+                        p.micro = (p.micro + 0.2).min(1.0);
+                        note = format!(" (+micro→{:.2}, very smooth)", p.micro);
+                    }
+                }
+            }
+            println!("  {} auto preset · model '{}' → {spec}{note}", style("de-slop").cyan(), model.as_deref().unwrap_or("?"));
+            return Ok(p);
         }
         // No recognised model — pick photo vs painting-ish from the image's own tells (analysis).
         if let Some(inp) = input {
