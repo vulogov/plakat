@@ -7,6 +7,7 @@ pub mod chat;
 pub mod history;
 pub mod lorahub;
 pub mod models;
+pub mod naturalize;
 pub mod palette;
 pub mod people;
 pub mod prompts;

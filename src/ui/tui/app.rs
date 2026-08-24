@@ -30,6 +30,7 @@ use super::screens::chat::{ChatAction, ChatState, ChatStatus};
 use super::screens::history::{HistoryAction, HistoryState};
 use super::screens::lorahub::{self, LoraHubState};
 use super::screens::models::ModelsState;
+use super::screens::naturalize::{NaturalizeAction, NaturalizeState};
 use super::screens::palette::{self, Cmd, PaletteResult};
 use super::screens::people::{self, PeopleState};
 use super::screens::prompts::{self, PromptsState};
@@ -66,10 +67,11 @@ pub enum ActiveScreen {
     People,
     PromptWorkspace,
     Canvas,
+    Naturalize,
 }
 
 impl ActiveScreen {
-    const ALL: [ActiveScreen; 8] = [
+    const ALL: [ActiveScreen; 9] = [
         Self::Chat,
         Self::Models,
         Self::Scenarios,
@@ -78,6 +80,7 @@ impl ActiveScreen {
         Self::People,
         Self::PromptWorkspace,
         Self::Canvas,
+        Self::Naturalize,
     ];
 
     fn title(self) -> &'static str {
@@ -90,6 +93,7 @@ impl ActiveScreen {
             Self::People => "People",
             Self::PromptWorkspace => "Prompts",
             Self::Canvas => "Canvas",
+            Self::Naturalize => "Naturalize",
         }
     }
 
@@ -161,6 +165,8 @@ pub struct App {
     pub lorahub: LoraHubState,
     pub prompts: PromptsState,
     pub canvas: CanvasState,
+    /// Naturalize tab — interactive weight-free de-slop (RFC QUALITY-8 P3).
+    pub naturalize: NaturalizeState,
     // Command palette overlay (Ctrl-K), fuzzy action launcher (RFC §5).
     pub palette: palette::PaletteState,
     // A load awaiting confirmation because its estimated footprint over-commits RAM.
@@ -354,6 +360,7 @@ impl App {
             lorahub,
             prompts,
             canvas,
+            naturalize: NaturalizeState::new(),
             palette: palette::PaletteState::new(),
             pending_load: None,
             last_activity: Instant::now(),
@@ -494,8 +501,32 @@ impl App {
         std::process::exit(status.code().unwrap_or(0));
     }
 
+    /// Keep the Naturalize tab in sync (RFC QUALITY-8 P3): when it's active and has no source yet, seed it
+    /// from the latest generated frame; when the processed image needs a preview, build it via the Picker
+    /// (the App owns it). Called once per frame — cheap when idle.
+    fn sync_naturalize(&mut self) {
+        if self.screen != ActiveScreen::Naturalize {
+            return;
+        }
+        if self.naturalize.source.is_none() {
+            if let Some(p) = self.chat.latest_frame_path() {
+                self.naturalize.load(p);
+            }
+        }
+        // (Re)apply + build the preview when the processed image is missing (a knob change clears it).
+        if self.naturalize.source.is_some() && self.naturalize.processed.is_none() {
+            self.naturalize.apply();
+            self.naturalize.preview = self
+                .naturalize
+                .processed
+                .as_ref()
+                .map(|img| self.picker.new_resize_protocol(image::DynamicImage::ImageRgb8(img.clone())));
+        }
+    }
+
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         while !self.should_quit && !self.should_reset {
+            self.sync_naturalize();
             terminal.draw(|f| self.render(f))?;
             // 100 ms tick: poll input, then (later) drain the gen/llm/download
             // channels so a running generation keeps the UI live.
@@ -895,7 +926,7 @@ impl App {
                 return;
             }
             // Ctrl-1..8 — disambiguated screen jump (Kitty/Ghostty/WezTerm/foot).
-            KeyCode::Char(c @ '1'..='8') if ctrl => {
+            KeyCode::Char(c @ '1'..='9') if ctrl => {
                 if let Some(s) = ActiveScreen::from_index((c as u8 - b'1') as usize) {
                     self.screen = s;
                 }
@@ -988,7 +1019,7 @@ impl App {
         // ── Non-input screens: plain digits switch, q quits, else delegate. ──
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char(c @ '1'..='8') => {
+            KeyCode::Char(c @ '1'..='9') => {
                 if let Some(s) = ActiveScreen::from_index((c as u8 - b'1') as usize) {
                     self.screen = s;
                 }
@@ -1037,7 +1068,30 @@ impl App {
                 let action = self.prompts.handle_key(key);
                 self.handle_prompts_action(action);
             }
+            ActiveScreen::Naturalize => match self.naturalize.handle_key(key) {
+                // A knob changed → clear the processed image so `sync_naturalize` re-applies + rebuilds
+                // the preview (which needs the App's Picker) on the next frame.
+                NaturalizeAction::Reapply => self.naturalize.processed = None,
+                NaturalizeAction::Save => self.save_naturalized(),
+                NaturalizeAction::None => {}
+            },
             _ => {}
+        }
+    }
+
+    /// Save the Naturalize tab's current processed image next to the source (`*_naturalized.png`).
+    fn save_naturalized(&mut self) {
+        let (Some(img), Some(src)) = (self.naturalize.processed.clone(), self.naturalize.source_path.clone()) else {
+            self.naturalize.status = "nothing to save".into();
+            return;
+        };
+        let out = src.with_file_name(format!(
+            "{}_naturalized.png",
+            src.file_stem().and_then(|s| s.to_str()).unwrap_or("image")
+        ));
+        match img.save(&out) {
+            Ok(()) => self.naturalize.status = format!("saved → {}", out.display()),
+            Err(e) => self.naturalize.status = format!("save failed: {e}"),
         }
     }
 
@@ -1120,6 +1174,9 @@ impl App {
                 cmds.push(("Outpaint mode".into(), k('m')));
                 cmds.push(("Rasterize mask → Chat".into(), enter.clone()));
                 cmds.push(("Clear mask".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT))));
+            }
+            ActiveScreen::Naturalize => {
+                cmds.push(("Naturalize: save de-slopped image".into(), k('s')));
             }
         }
         // The selected model's cache health (Models screen only — needs a selection).
@@ -3106,6 +3163,11 @@ impl App {
                 ("Enter", "rasterize mask → Chat"),
                 ("Shift-C", "clear mask"),
             ]),
+            ActiveScreen::Naturalize => ("Naturalize", &[
+                ("↑ ↓", "select knob"),
+                ("← → / + -", "adjust (polish/micro/grain/desaturate/paper)"),
+                ("s", "save de-slopped image"),
+            ]),
         }
     }
 
@@ -3196,6 +3258,7 @@ impl App {
             ActiveScreen::LoraHub => self.lorahub.render(f, area),
             ActiveScreen::PromptWorkspace => self.prompts.render(f, area),
             ActiveScreen::Canvas => self.canvas.render(f, area),
+            ActiveScreen::Naturalize => self.naturalize.render(f, area),
         }
     }
 
