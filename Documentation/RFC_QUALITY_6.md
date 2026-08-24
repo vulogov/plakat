@@ -1,6 +1,6 @@
 # RFC QUALITY-6 — naturalize round 3: scorecard · video · region masks (6.15.0)
 
-**Status:** draft (6.15.0) · **Depth cycle** on [`RFC_QUALITY_5.md`](RFC_QUALITY_5.md). Extends the arc to
+**Status:** SHIPPED (6.15.0) · **Depth cycle** on [`RFC_QUALITY_5.md`](RFC_QUALITY_5.md). Extends the arc to
 diagnosis, motion, and spatial control.
 
 ## What ships

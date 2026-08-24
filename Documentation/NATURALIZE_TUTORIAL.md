@@ -105,6 +105,40 @@ plakat rank shots/ --ai-tells                          # least-AI-looking first
 plakat generate "..." --count 8 --keep-best 2 --ai-tells   # keep the 2 most human-looking (aesthetic − λ·ai_tell)
 ```
 
+## 5b. Diagnose first — the scorecard (6.15)
+
+Not sure what an image needs? Ask for a **scorecard** — plakat's own AI-tell verdict plus the exact recipe
+to run:
+
+```bash
+plakat naturalize suspect.png --report            # bar-graph scorecard + recommended command
+plakat naturalize suspect.png --report --json     # structured
+```
+It decomposes the AI-tell into **oversaturation** and **over-smoothness**, reports the **CLIP-detected
+medium**, and prints the `naturalize` flags to run (e.g. `--polish 0.7 --micro 0.5 --paper 0.6`).
+
+## 5c. Region focuses — different subjects, different de-slop (6.15)
+
+A frame with several subjects gets each its own profile, composited with feathered seams:
+
+```bash
+plakat naturalize street.png --out out.png --auto-regions          # faces→people, sky band→sky, rest→base
+plakat naturalize street.png --out out.png --region "0,0,1,0.4:sky=1.5" --region "0,0.4,1,1:vegetation=1"
+```
+`--region "x0,y0,x1,y1:<spec>"` (normalized 0..1, repeatable) applies a spec to a feathered rectangle;
+`--auto-regions` detects the sky band (weight-free) and people (SCRFD).
+
+## 5d. Video / animation de-slop (6.15)
+
+Point `naturalize` at a **video/animation** (mp4/mov/webm/mkv/avi/gif) and it de-slops every frame and
+re-encodes (container follows the `--out` extension). The pass is **weight-free** and its grain is
+**frame-invariant** — the texture sits still while the image moves, so there's no flicker. Needs `ffmpeg`.
+
+```bash
+plakat naturalize clip.mp4 --out clean.mp4 --preset photo
+plakat naturalize anim.gif --out clean.gif --polish 0.8 --micro 0.3
+```
+
 ## 6. As a step in generation
 
 ```bash
