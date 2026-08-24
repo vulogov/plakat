@@ -12,12 +12,13 @@ use clap::Args;
 use console::style;
 use std::path::{Path, PathBuf};
 
-use crate::naturalize::{self, Params, Preset};
+use crate::naturalize::{self, Params};
 
 #[derive(Args, Debug, Clone)]
 pub struct NaturalizeArgs {
-    /// Input image (or a directory for batch).
-    pub input: PathBuf,
+    /// Input image (or a directory for batch). Not required with `--list-presets` / `--export-lut`.
+    #[arg(required_unless_present_any = ["list_presets", "export_lut"])]
+    pub input: Option<PathBuf>,
     /// Output image (or directory for batch). Not required with `--report`.
     #[arg(long, required_unless_present = "report")]
     pub out: Option<PathBuf>,
@@ -64,6 +65,17 @@ pub struct NaturalizeArgs {
     /// With `--report`, emit JSON instead of the table.
     #[arg(long, default_value_t = false)]
     pub json: bool,
+    /// Export the fixed film **grade** (desaturate + warm, from the preset / `--desaturate` / `--warm`) as a
+    /// standard **`.cube`** 3-D LUT to this path, for DaVinci Resolve / Premiere / OBS. (WB/auto-levels are
+    /// per-image and not captured.) The positional image is used only for a context read-out.
+    #[arg(long = "export-lut", value_name = "PATH.cube")]
+    pub export_lut: Option<PathBuf>,
+    /// `.cube` LUT cube size (per-axis; default 33).
+    #[arg(long = "lut-size", value_name = "N")]
+    pub lut_size: Option<usize>,
+    /// List the named preset library (`--preset <name>`) and exit.
+    #[arg(long = "list-presets", default_value_t = false)]
+    pub list_presets: bool,
     /// **Auto-region focuses** — detect subjects and de-slop each in its own profile: faces→`people`/micro,
     /// a sky band→`sky`, the rest→the base. Composited with feathered seams. Face detection needs a model.
     #[arg(long = "auto-regions", default_value_t = false)]
@@ -232,10 +244,8 @@ fn is_video(p: &Path) -> bool {
 /// Build the **weight-free** naturalize params (preset + focuses + overrides) and the paper amount from the
 /// args — the part safe to run per-video-frame (no model). Shared by the still and video paths.
 fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
-    let base = match a.preset.as_deref() {
-        Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
-        None => Preset::Subtle,
-    };
+    let base = naturalize::base_params(a.preset.as_deref())
+        .with_context(|| format!("unknown preset `{}` (subtle|photo|painting, or a library preset — see `--list-presets`)", a.preset.as_deref().unwrap_or("")))?;
     let focuses: Vec<(naturalize::Focus, f32)> = [
         (naturalize::Focus::People, a.people), (naturalize::Focus::Sky, a.sky), (naturalize::Focus::Vegetation, a.vegetation),
         (naturalize::Focus::Cityscape, a.cityscape), (naturalize::Focus::Landscape, a.landscape), (naturalize::Focus::Sea, a.sea),
@@ -243,7 +253,7 @@ fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
         (naturalize::Focus::Animal, a.animal), (naturalize::Focus::Food, a.food), (naturalize::Focus::Interior, a.interior),
         (naturalize::Focus::Textile, a.textile), (naturalize::Focus::FoliageMacro, a.foliage_macro),
     ].into_iter().filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v))).collect();
-    let mut p = naturalize::blend_focus(base.params(), &focuses);
+    let mut p = naturalize::blend_focus(base, &focuses);
     if let Some(v) = a.grain { p.grain = v; }
     if let Some(v) = a.aberration { p.aberration = v; }
     if let Some(v) = a.vignette { p.vignette = v; }
@@ -261,14 +271,14 @@ fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
 /// QUALITY-6 P2: de-slop every frame of a video/animation and re-encode. Weight-free only — the analog
 /// pass's noise is seeded per-pixel (frame-invariant), so the grain/paper texture **sits still** while the
 /// image moves (no flicker). Output container follows the `--out` extension (mp4 / webm / gif).
-async fn naturalize_video(a: &NaturalizeArgs) -> Result<()> {
+async fn naturalize_video(a: &NaturalizeArgs, input: &Path) -> Result<()> {
     let out = a.out.clone().context("--out is required")?;
     crate::imaging::video::ffmpeg_version().context("video de-slop needs ffmpeg on PATH")?;
     let (p, paper_amt) = weightfree_params(a)?;
     let tmp = tempfile::tempdir().context("temp dir for video frames")?;
-    let frames = crate::imaging::video::extract_frames(&a.input, tmp.path())?;
-    anyhow::ensure!(!frames.is_empty(), "no frames extracted from {}", a.input.display());
-    let fps = crate::imaging::video::probe_fps(&a.input);
+    let frames = crate::imaging::video::extract_frames(input, tmp.path())?;
+    anyhow::ensure!(!frames.is_empty(), "no frames extracted from {}", input.display());
+    let fps = crate::imaging::video::probe_fps(input);
     println!("naturalize video: {} frames @ {fps}fps → {} (weight-free, frame-invariant grain)", frames.len(), out.display());
     for f in &frames {
         let img = image::open(f).with_context(|| format!("reading frame {}", f.display()))?.to_rgb8();
@@ -291,7 +301,7 @@ async fn naturalize_video(a: &NaturalizeArgs) -> Result<()> {
 
 /// Build the per-region focus list (QUALITY-6 P3): manual `--region` rectangles + `--auto-regions`
 /// (sky band + SCRFD people). Empty when neither is requested.
-async fn build_regions(a: &NaturalizeArgs, img: &image::RgbImage, base: &Params) -> Result<Vec<(image::GrayImage, Params)>> {
+async fn build_regions(a: &NaturalizeArgs, input: &Path, img: &image::RgbImage, base: &Params) -> Result<Vec<(image::GrayImage, Params)>> {
     let (w, h) = (img.width(), img.height());
     let feather = (w.min(h) as f32) * 0.04;
     let mut regions: Vec<(image::GrayImage, Params)> = Vec::new();
@@ -306,7 +316,7 @@ async fn build_regions(a: &NaturalizeArgs, img: &image::RgbImage, base: &Params)
         if sky.pixels().any(|p| p.0[0] > 20) {
             regions.push((sky, naturalize::blend_focus(*base, &[(naturalize::Focus::Sky, 1.0)])));
         }
-        if let Some(people) = detect_people_mask(&a.input, img, &a.device).await {
+        if let Some(people) = detect_people_mask(input, img, &a.device).await {
             regions.push((people, naturalize::blend_focus(*base, &[(naturalize::Focus::People, 1.0)])));
         }
     }
@@ -343,15 +353,15 @@ async fn detect_people_mask(input: &Path, img: &image::RgbImage, device: &str) -
 
 /// QUALITY-7 P1: scan a folder and print a ranked scorecard (worst-AI first) + an aggregate summary.
 /// Weight-free (no CLIP medium probe — kept fast for large folders).
-fn folder_report(a: &NaturalizeArgs) -> Result<()> {
+fn folder_report(a: &NaturalizeArgs, input: &Path) -> Result<()> {
     let exts = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&a.input)
-        .with_context(|| format!("reading dir {}", a.input.display()))?
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(input)
+        .with_context(|| format!("reading dir {}", input.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).map(|e| exts.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false))
         .collect();
     files.sort();
-    anyhow::ensure!(!files.is_empty(), "no images in {}", a.input.display());
+    anyhow::ensure!(!files.is_empty(), "no images in {}", input.display());
     let mut rows: Vec<(std::path::PathBuf, naturalize::Analysis)> = Vec::new();
     for f in &files {
         match image::open(f) {
@@ -359,7 +369,7 @@ fn folder_report(a: &NaturalizeArgs) -> Result<()> {
             Err(e) => tracing::warn!(target: "plakat", "skipping {}: {e}", f.display()),
         }
     }
-    anyhow::ensure!(!rows.is_empty(), "no readable images in {}", a.input.display());
+    anyhow::ensure!(!rows.is_empty(), "no readable images in {}", input.display());
     rows.sort_by(|x, y| y.1.ai_tell.partial_cmp(&x.1.ai_tell).unwrap_or(std::cmp::Ordering::Equal));
     let mean = rows.iter().map(|r| r.1.ai_tell).sum::<f32>() / rows.len() as f32;
     let over = rows.iter().filter(|r| r.1.ai_tell > 0.5).count();
@@ -371,7 +381,7 @@ fn folder_report(a: &NaturalizeArgs) -> Result<()> {
         println!("{{\n  \"count\": {}, \"mean_ai_tell\": {:.4}, \"over_0.5\": {}, \"dominant_tell\": {:?},\n  \"images\": [\n{}\n  ]\n}}", rows.len(), mean, over, dominant, items.join(",\n"));
     } else {
         let bar = |v: f32| { let n = (v * 16.0).round() as usize; format!("{}{}", "█".repeat(n.min(16)), "░".repeat(16 - n.min(16))) };
-        println!("\n  {} — {} image(s) in {}", style("folder scorecard").bold(), rows.len(), a.input.display());
+        println!("\n  {} — {} image(s) in {}", style("folder scorecard").bold(), rows.len(), input.display());
         println!("  {:<20} {:<18} {:>5} {:>5} {:>6}", "", "AI-tell", "sat", "smth", "file");
         for (p, an) in &rows {
             let mark = if an.ai_tell > 0.5 { style("●").red() } else { style("●").green() };
@@ -384,28 +394,49 @@ fn folder_report(a: &NaturalizeArgs) -> Result<()> {
 }
 
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
+    // QUALITY-7 P3: list the named preset library and exit.
+    if a.list_presets {
+        println!("\n  {} — `naturalize --preset <name>`", style("preset library").bold());
+        for (name, spec, desc) in naturalize::preset_library() {
+            println!("  {:<10} {}\n             {}", style(name).green(), style(spec).dim(), desc);
+        }
+        println!("  {:<10} {}\n", style("(base)").dim(), "subtle · photo · painting");
+        return Ok(());
+    }
+
+    // QUALITY-7 P2: export the fixed grade as a .cube LUT (no processing).
+    if let Some(lut) = a.export_lut.clone() {
+        let (p, _) = weightfree_params(&a)?;
+        let size = a.lut_size.unwrap_or(33);
+        std::fs::write(&lut, naturalize::export_cube(p.desaturate, p.warm, size)).with_context(|| format!("writing {}", lut.display()))?;
+        println!("{} {} ({size}³ .cube — grade: desaturate {:.2}, warm {:.2})", style("wrote").green(), lut.display(), p.desaturate, p.warm);
+        return Ok(());
+    }
+
+    let input = a.input.clone().context("an input image is required")?;
+
     // QUALITY-6 P2: a video/animation input → de-slop every frame + re-encode (weight-free surface pass).
-    if is_video(&a.input) {
+    if is_video(&input) {
         anyhow::ensure!(!a.report, "--report analyses a still image — extract a frame first");
-        return naturalize_video(&a).await;
+        return naturalize_video(&a, &input).await;
     }
 
     // QUALITY-7 P1: a directory + --report → a ranked folder scorecard (worst-AI first) + summary.
-    if a.input.is_dir() && a.report {
-        return folder_report(&a);
+    if input.is_dir() && a.report {
+        return folder_report(&a, &input);
     }
 
     // QUALITY-5 P3: batch — a directory input de-slops every image into the `--out` directory (same
     // filenames). Model-backed passes reload per image (best-effort convenience, not a resident server).
-    if a.input.is_dir() {
+    if input.is_dir() {
         let exts = ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&a.input)
-            .with_context(|| format!("reading dir {}", a.input.display()))?
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&input)
+            .with_context(|| format!("reading dir {}", input.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.is_file() && p.extension().and_then(|x| x.to_str()).map(|e| exts.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false))
             .collect();
         files.sort();
-        anyhow::ensure!(!files.is_empty(), "no images in {}", a.input.display());
+        anyhow::ensure!(!files.is_empty(), "no images in {}", input.display());
         let out_dir = a.out.clone(); // None is only valid alongside --report (per-file report, no output)
         if let Some(d) = &out_dir {
             std::fs::create_dir_all(d).with_context(|| format!("creating out dir {}", d.display()))?;
@@ -414,7 +445,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         for f in &files {
             let name = f.file_name().context("image has no filename")?;
             let mut sub = a.clone();
-            sub.input = f.clone();
+            sub.input = Some(f.clone());
             sub.out = out_dir.as_ref().map(|d| d.join(name));
             println!("· {}", f.display());
             if let Err(e) = Box::pin(run(sub)).await {
@@ -426,17 +457,17 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
 
     // QUALITY-6 P1: --report — analyze + print a de-slop scorecard, don't process.
     if a.report {
-        let img = image::open(&a.input).with_context(|| format!("reading {}", a.input.display()))?.to_rgb8();
+        let img = image::open(&input).with_context(|| format!("reading {}", input.display()))?.to_rgb8();
         let an = naturalize::analyze(&img);
-        let medium = naturalize::refine::detect_medium_label(&a.input, Some(&a.device)).await;
+        let medium = naturalize::refine::detect_medium_label(&input, Some(&a.device)).await;
         let recipe = naturalize::recommend(&an, medium.as_ref().map(|(m, _)| m.as_str()));
-        let cmd = format!("plakat naturalize {} --out OUT.png {}", a.input.display(), recipe.join(" "));
+        let cmd = format!("plakat naturalize {} --out OUT.png {}", input.display(), recipe.join(" "));
         if a.json {
             let med = medium.as_ref().map(|(m, s)| format!("{{\"name\": {m:?}, \"score\": {s:.4}}}")).unwrap_or_else(|| "null".into());
             let flags: Vec<String> = recipe.iter().map(|f| format!("{f:?}")).collect();
             println!(
                 "{{\n  \"input\": {:?},\n  \"ai_tell\": {:.4},\n  \"saturation\": {:.4},\n  \"smoothness_tell\": {:.4},\n  \"contrast\": {:.4},\n  \"medium\": {},\n  \"recommend\": [{}]\n}}",
-                a.input.display().to_string(), an.ai_tell, an.saturation, an.smoothness_tell, an.contrast, med, flags.join(", ")
+                input.display().to_string(), an.ai_tell, an.saturation, an.smoothness_tell, an.contrast, med, flags.join(", ")
             );
         } else {
             let bar = |v: f32| { let n = (v * 20.0).round() as usize; format!("{}{}", "█".repeat(n.min(20)), "░".repeat(20 - n.min(20))) };
@@ -455,10 +486,8 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
 
     let out_path = a.out.clone().context("--out is required")?;
-    let base = match a.preset.as_deref() {
-        Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
-        None => Preset::Subtle,
-    };
+    let base = naturalize::base_params(a.preset.as_deref())
+        .with_context(|| format!("unknown preset `{}` (subtle|photo|painting, or a library preset — see `--list-presets`)", a.preset.as_deref().unwrap_or("")))?;
     // content focus: blend the preset toward each active subject's de-AI profile, THEN apply explicit
     // per-param overrides (which always win).
     let focuses: Vec<(naturalize::Focus, f32)> = [
@@ -480,7 +509,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     .into_iter()
     .filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v)))
     .collect();
-    let mut p: Params = naturalize::blend_focus(base.params(), &focuses);
+    let mut p: Params = naturalize::blend_focus(base, &focuses);
     if let Some(v) = a.grain {
         p.grain = v;
     }
@@ -518,7 +547,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // already named.
     let wants_model = a.repair.unwrap_or(0.0) > 0.0 || a.geometry.unwrap_or(0.0) > 0.0 || a.anatomy.unwrap_or(0.0) > 0.0;
     if art_style.is_none() && (wants_model || a.auto_medium) {
-        if let Some(m) = naturalize::refine::detect_medium(&a.input, Some(&a.device)).await {
+        if let Some(m) = naturalize::refine::detect_medium(&input, Some(&a.device)).await {
             println!("  {} auto-detected medium → {m}", style("de-slop").cyan());
             art_style = Some(m);
         }
@@ -533,13 +562,13 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
     //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative
     //    to whole-image --geometry on figure art.
-    let mut current_input = a.input.clone();
+    let mut current_input = input.clone();
     if let Some(n) = a.repair.filter(|v| *v > 0.0) {
         let strength = (0.3 * n).clamp(0.12, 0.6);
         let scope = naturalize::refine::RepairScope::parse(&a.repair_scope)
             .with_context(|| format!("unknown --repair-scope `{}` (figures|non-face|full)", a.repair_scope))?;
         let repaired = tmp.path().join("repaired.png");
-        match naturalize::refine::repair_protected(&a.input, &repaired, strength, art_style.as_deref(), scope, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
+        match naturalize::refine::repair_protected(&input, &repaired, strength, art_style.as_deref(), scope, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
             Ok(true) => {
                 println!("  {} face-protected repair (scope {:?}, strength {strength:.2}{})", style("de-slop").green(), scope, art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
                 current_input = repaired;
@@ -615,7 +644,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
     // QUALITY-6 P3: per-region focuses (manual --region + --auto-regions) → composite each region's own
     // de-slop with feathered seams. Falls through to the plain whole-frame apply when there are none.
-    let regions = build_regions(&a, &img, &p).await?;
+    let regions = build_regions(&a, &input, &img, &p).await?;
     let mut out = if regions.is_empty() {
         naturalize::apply(&img, &p)
     } else {
@@ -638,7 +667,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut fresh: Option<crate::etch::EtchId> = None;
     let mut carried = false;
     if !a.no_reetch {
-        reetched = crate::etch::reetch(&a.input, out.as_raw(), out.width(), out.height(), &out_path).unwrap_or(None);
+        reetched = crate::etch::reetch(&input, out.as_raw(), out.width(), out.height(), &out_path).unwrap_or(None);
     }
     if reetched.is_none() {
         // No plakat parent to chain. If the user explicitly asked for `--etch`, freshly etch this output
@@ -650,7 +679,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         if fresh.is_none() {
             out.save(&out_path).with_context(|| format!("writing {}", out_path.display()))?;
             if !a.no_reetch {
-                carried = carry_provenance(&a.input, &out_path).unwrap_or(false);
+                carried = carry_provenance(&input, &out_path).unwrap_or(false);
             }
         }
     }

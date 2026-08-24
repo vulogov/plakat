@@ -200,6 +200,34 @@ pub fn blend_focus(base: Params, focuses: &[(Focus, f32)]) -> Params {
     from_arr(acc)
 }
 
+/// The named **preset library** (RFC QUALITY-7 P3) — curated de-slop recipes beyond the three base presets,
+/// each a full naturalize spec. `(name, spec, one-line description)`.
+pub fn preset_library() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        ("portrait", "photo people=1.2 micro=1", "photoreal faces — heavy skin micro-texture, tame oversaturation"),
+        ("landscape", "photo sky=1 vegetation=0.8 landscape=1", "scenery — de-band sky, break cloud-foliage mush, atmosphere"),
+        ("product", "photo polish=0.8 desaturate=0.05 micro=0.2", "clean product shot — strong colour correction, minimal grade"),
+        ("anime", "subtle polish=0.7 micro=0.2 grain=0.08 aberration=0", "cel/anime — polish + faint grain, no aberration"),
+        ("film", "photo grain=0.3 desaturate=0.12 warm=0.06 vignette=0.12", "filmic look — visible grain, warm grade, vignette"),
+        ("restore", "polish=0.9 desaturate=0.1 micro=0.3 grain=0.06", "de-slop pass — strong polish + micro, light finish"),
+    ]
+}
+
+/// Resolve `name` as a library preset spec, if it is one.
+pub fn library_preset(name: &str) -> Option<&'static str> {
+    let n = name.trim().to_ascii_lowercase();
+    preset_library().iter().find(|(k, _, _)| *k == n).map(|(_, spec, _)| *spec)
+}
+
+/// The **base params** for a `--preset` value: a library preset (full spec) or one of the three base
+/// presets (`subtle`/`photo`/`painting`). `preset=None` → `subtle`; unknown name → `None`.
+pub fn base_params(preset: Option<&str>) -> Option<Params> {
+    match preset {
+        None => Some(Preset::Subtle.params()),
+        Some(name) => library_preset(name).map(from_spec).or_else(|| Preset::parse(name).map(|p| p.params())),
+    }
+}
+
 /// Parse a compact naturalize **spec** string (for `generate --naturalize` / a scenario `naturalize:`
 /// field) into analog [`Params`]: a preset name and/or `key=value` tokens (space/comma separated), where
 /// `key` is an analog focus (`vegetation=1`) or a param (`grain=0.3`). Empty / "on" / "true" → the default
@@ -895,6 +923,43 @@ pub fn sky_mask(img: &RgbImage) -> GrayImage {
         px.0[0] = (soft[i].clamp(0.0, 1.0) * 255.0) as u8;
     }
     m
+}
+
+/// The **fixed film grade** (desaturate-toward-luma + warm shadow lift) as a pure per-pixel colour function
+/// — mirrors [`apply`]'s grade step, minus the spatial vignette/grain. This is the LUT-able part of
+/// naturalize. RGB in `0..255`. (RFC QUALITY-7 P2.)
+pub fn grade_pixel(c: [f32; 3], desaturate: f32, warm: f32) -> [f32; 3] {
+    let l = lum(c[0], c[1], c[2]);
+    let mut o = c;
+    for v in o.iter_mut() {
+        *v = *v * (1.0 - desaturate) + l * desaturate;
+    }
+    let shadow = (1.0 - l / 255.0).clamp(0.0, 1.0);
+    o[0] += warm * 14.0 * shadow;
+    o[2] -= warm * 10.0 * shadow;
+    [o[0].clamp(0.0, 255.0), o[1].clamp(0.0, 255.0), o[2].clamp(0.0, 255.0)]
+}
+
+/// Export the fixed grade as a standard Adobe/Resolve **`.cube`** 3-D LUT (values `0..1`), so the colour
+/// grade can be applied in a video editor. Honest scope: only the *fixed* transform — the polish
+/// white-balance/auto-levels are per-image adaptive and NOT captured here. `size` clamped to `2..=64`.
+pub fn export_cube(desaturate: f32, warm: f32, size: usize) -> String {
+    let size = size.clamp(2, 64);
+    let mut s = format!(
+        "# plakat naturalize grade LUT (desaturate={desaturate:.3}, warm={warm:.3})\n# WB/auto-levels are per-image and NOT in this static LUT.\nLUT_3D_SIZE {size}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n"
+    );
+    let d = (size - 1) as f32;
+    // .cube ordering: red index varies fastest, then green, then blue.
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let inp = [r as f32 / d * 255.0, g as f32 / d * 255.0, b as f32 / d * 255.0];
+                let o = grade_pixel(inp, desaturate, warm);
+                s.push_str(&format!("{:.6} {:.6} {:.6}\n", o[0] / 255.0, o[1] / 255.0, o[2] / 255.0));
+            }
+        }
+    }
+    s
 }
 
 pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
