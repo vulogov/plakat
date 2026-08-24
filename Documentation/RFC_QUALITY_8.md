@@ -18,10 +18,14 @@ preset tuned to that model's fingerprint. No metadata → fall back to the analy
 - **Lighter touch on real photos**: if EXIF says it's a genuine camera capture (Make/Model/exposure present),
   default to a gentler recipe — de-slop shouldn't fight a real photograph.
 
-### P3 — naturalize TUI (interactive tuning)
-`naturalize <img> --tui`: an interactive terminal panel (reuse the `plakat ui` / ratatui stack) to dial the
-weight-free knobs (polish / micro / grain / desaturate / paper …) with the **live scorecard** updating and a
-written preview on each apply, so you tune by eye instead of guessing flags. Weight-free only (instant).
+### P3 — naturalize tab in `plakat ui` (interactive tuning)
+**Owner decision (2026-08-24): a new tab in the main `plakat ui`, NOT a standalone TUI** — reuse the
+existing ratatui event loop / image display / navigation instead of duplicating them. Add a 9th
+`ActiveScreen::Naturalize` with a `screens/naturalize.rs` `NaturalizeState` (open an image, dial the
+weight-free knobs — polish / micro / grain / desaturate / paper — with a **live scorecard** and image
+preview updating on each apply, then save). Weight-free only (instant, no model). The naturalize *core*
+stays always-compiled + gate-tested; the tab is a thin presentation layer behind the existing `ui` feature,
+so the `--no-default-features` gate is unaffected.
 
 ### P4 — parity + docs + cut 6.17.0
 Tutorial + QUALITY + doctor + README; corpus. Cut 6.17.0 (bump Cargo+lock, gate, turbofish on new
