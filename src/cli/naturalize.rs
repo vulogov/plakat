@@ -255,11 +255,31 @@ fn read_source_model(input: &Path) -> Option<String> {
     None
 }
 
+/// Whether the input looks like a **genuine camera photograph** (EXIF camera Make/Model/ISO present) —
+/// RFC QUALITY-8 P2. De-slop shouldn't fight a real photo, so `--preset auto` gives these a gentle touch.
+/// EXIF reading needs the `photos` feature; without it there's no signal → always `false` (normal de-slop).
+#[cfg(feature = "photos")]
+fn is_real_photo(input: &Path) -> bool {
+    match crate::photos::exif::read_exif(input) {
+        Ok(r) => r.camera_make.is_some() || r.camera_model.is_some() || r.iso.is_some(),
+        Err(_) => false,
+    }
+}
+#[cfg(not(feature = "photos"))]
+fn is_real_photo(_input: &Path) -> bool {
+    false
+}
+
 /// Resolve the base [`Params`] for `--preset`, including **`auto`** (RFC QUALITY-8 P1): read the source
 /// model from metadata → its tuned preset; no model → an analysis-driven fallback; else the named/base
 /// preset via [`naturalize::base_params`].
 fn resolve_base_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<Params> {
     if a.preset.as_deref() == Some("auto") {
+        // A genuine camera photo (EXIF) → gentle touch: de-slop must not fight a real photograph.
+        if input.map(is_real_photo).unwrap_or(false) {
+            println!("  {} auto preset · real photo (EXIF camera) → gentle touch", style("de-slop").cyan());
+            return Ok(naturalize::from_spec("subtle polish=0.5 desaturate=0 grain=0.04 micro=0.05 aberration=0"));
+        }
         let model = input.and_then(read_source_model);
         if let Some(spec) = model.as_deref().and_then(naturalize::model_preset) {
             let mut p = naturalize::from_spec(spec);
