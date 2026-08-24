@@ -117,6 +117,33 @@ plakat naturalize suspect.png --report --json     # structured
 It decomposes the AI-tell into **oversaturation** and **over-smoothness**, reports the **CLIP-detected
 medium**, and prints the `naturalize` flags to run (e.g. `--polish 0.7 --micro 0.5 --paper 0.6`).
 
+Point it at a **folder** for a ranked batch scorecard (worst-AI first) + an aggregate summary (6.16):
+
+```bash
+plakat naturalize ./renders/ --report            # ranked table + mean/over-threshold/dominant-tell summary
+```
+
+### Named presets (6.16)
+
+Beyond `subtle`/`photo`/`painting`, a **library** of recipes for common cases:
+
+```bash
+plakat naturalize --list-presets                              # portrait · landscape · product · anime · film · restore
+plakat naturalize portrait.png --out out.png --preset portrait
+```
+A named preset is just a saved spec, so `--preset portrait` == the recipe the scorecard would recommend.
+
+### Export the grade as a LUT (6.16)
+
+Bake the fixed film **grade** (desaturate + warm) into a standard **`.cube`** 3-D LUT for
+Resolve/Premiere/OBS:
+
+```bash
+plakat naturalize --export-lut film.cube --preset film --lut-size 33
+```
+Honest scope: only the *fixed* colour transform is captured — the polish **white-balance and auto-levels are
+per-image adaptive** and are not in a static LUT.
+
 ## 5c. Region focuses — different subjects, different de-slop (6.15)
 
 A frame with several subjects gets each its own profile, composited with feathered seams:

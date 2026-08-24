@@ -1,6 +1,6 @@
 # RFC QUALITY-7 — naturalize round 4: folder scorecard · LUT export · preset library (6.16.0)
 
-**Status:** draft (6.16.0) · **Depth cycle** on [`RFC_QUALITY_6.md`](RFC_QUALITY_6.md). Reporting at scale,
+**Status:** SHIPPED (6.16.0) · **Depth cycle** on [`RFC_QUALITY_6.md`](RFC_QUALITY_6.md). Reporting at scale,
 interop, and reusable recipes.
 
 ## What ships
