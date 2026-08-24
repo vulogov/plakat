@@ -23,8 +23,8 @@ pub struct NaturalizeArgs {
     /// `--export-lut`.
     #[arg(long, required_unless_present_any = ["report", "list_presets", "export_lut"])]
     pub out: Option<PathBuf>,
-    /// Strength bundle: `subtle` (default) | `photo` | `painting`. All aim at contemporary realism (no
-    /// retro/vintage look).
+    /// Strength bundle: `subtle` (default) | `photo` | `painting` | **`auto`** (tune to the source model
+    /// read from metadata) | a library preset (see `--list-presets`). All aim at contemporary realism.
     #[arg(long)]
     pub preset: Option<String>,
     /// Override film-grain amount (0..1).
@@ -234,6 +234,52 @@ fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
     Some(s.to_string())
 }
 
+/// Read the source model name from an image's generation metadata (plakat JSON sidecar, else the A1111
+/// `parameters` tEXt chunk) for `--preset auto` (RFC QUALITY-8 P1). `None` if no metadata / no model.
+fn read_source_model(input: &Path) -> Option<String> {
+    let sidecar = input.with_extension("json");
+    if let Ok(s) = std::fs::read_to_string(&sidecar) {
+        if let Ok(m) = serde_json::from_str::<crate::imaging::metadata::GenerationMetadata>(&s) {
+            if !m.model.trim().is_empty() {
+                return Some(m.model);
+            }
+        }
+    }
+    if let Ok(Some(text)) = crate::imaging::io::read_parameters_chunk(input) {
+        if let Some(m) = crate::cli::clone::parse_a1111(&text) {
+            if !m.model.trim().is_empty() {
+                return Some(m.model);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the base [`Params`] for `--preset`, including **`auto`** (RFC QUALITY-8 P1): read the source
+/// model from metadata → its tuned preset; no model → an analysis-driven fallback; else the named/base
+/// preset via [`naturalize::base_params`].
+fn resolve_base_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<Params> {
+    if a.preset.as_deref() == Some("auto") {
+        let model = input.and_then(read_source_model);
+        if let Some(spec) = model.as_deref().and_then(naturalize::model_preset) {
+            println!("  {} auto preset · model '{}' → {spec}", style("de-slop").cyan(), model.as_deref().unwrap_or("?"));
+            return Ok(naturalize::from_spec(spec));
+        }
+        // No recognised model — pick photo vs painting-ish from the image's own tells (analysis).
+        if let Some(inp) = input {
+            if let Ok(img) = image::open(inp) {
+                let an = naturalize::analyze(&img.to_rgb8());
+                let preset = if an.smoothness_tell > 0.6 { "photo" } else { "subtle" };
+                println!("  {} auto preset · no model metadata → analysis ({preset}; ai-tell {:.2})", style("de-slop").cyan(), an.ai_tell);
+                return Ok(naturalize::base_params(Some(preset)).unwrap_or_else(|| naturalize::base_params(Some("photo")).unwrap()));
+            }
+        }
+        return Ok(naturalize::base_params(Some("photo")).unwrap());
+    }
+    naturalize::base_params(a.preset.as_deref())
+        .with_context(|| format!("unknown preset `{}` (subtle|photo|painting|auto, or a library preset — see `--list-presets`)", a.preset.as_deref().unwrap_or("")))
+}
+
 /// Whether the input is a video/animation container (QUALITY-6 P2).
 fn is_video(p: &Path) -> bool {
     matches!(
@@ -244,9 +290,8 @@ fn is_video(p: &Path) -> bool {
 
 /// Build the **weight-free** naturalize params (preset + focuses + overrides) and the paper amount from the
 /// args — the part safe to run per-video-frame (no model). Shared by the still and video paths.
-fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
-    let base = naturalize::base_params(a.preset.as_deref())
-        .with_context(|| format!("unknown preset `{}` (subtle|photo|painting, or a library preset — see `--list-presets`)", a.preset.as_deref().unwrap_or("")))?;
+fn weightfree_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<(Params, Option<f32>)> {
+    let base = resolve_base_params(a, input)?;
     let focuses: Vec<(naturalize::Focus, f32)> = [
         (naturalize::Focus::People, a.people), (naturalize::Focus::Sky, a.sky), (naturalize::Focus::Vegetation, a.vegetation),
         (naturalize::Focus::Cityscape, a.cityscape), (naturalize::Focus::Landscape, a.landscape), (naturalize::Focus::Sea, a.sea),
@@ -275,7 +320,7 @@ fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
 async fn naturalize_video(a: &NaturalizeArgs, input: &Path) -> Result<()> {
     let out = a.out.clone().context("--out is required")?;
     crate::imaging::video::ffmpeg_version().context("video de-slop needs ffmpeg on PATH")?;
-    let (p, paper_amt) = weightfree_params(a)?;
+    let (p, paper_amt) = weightfree_params(a, Some(input))?;
     let tmp = tempfile::tempdir().context("temp dir for video frames")?;
     let frames = crate::imaging::video::extract_frames(input, tmp.path())?;
     anyhow::ensure!(!frames.is_empty(), "no frames extracted from {}", input.display());
@@ -407,7 +452,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
 
     // QUALITY-7 P2: export the fixed grade as a .cube LUT (no processing).
     if let Some(lut) = a.export_lut.clone() {
-        let (p, _) = weightfree_params(&a)?;
+        let (p, _) = weightfree_params(&a, a.input.as_deref())?;
         let size = a.lut_size.unwrap_or(33);
         std::fs::write(&lut, naturalize::export_cube(p.desaturate, p.warm, size)).with_context(|| format!("writing {}", lut.display()))?;
         println!("{} {} ({size}³ .cube — grade: desaturate {:.2}, warm {:.2})", style("wrote").green(), lut.display(), p.desaturate, p.warm);
@@ -487,8 +532,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
 
     let out_path = a.out.clone().context("--out is required")?;
-    let base = naturalize::base_params(a.preset.as_deref())
-        .with_context(|| format!("unknown preset `{}` (subtle|photo|painting, or a library preset — see `--list-presets`)", a.preset.as_deref().unwrap_or("")))?;
+    let base = resolve_base_params(&a, Some(&input))?;
     // content focus: blend the preset toward each active subject's de-AI profile, THEN apply explicit
     // per-param overrides (which always win).
     let focuses: Vec<(naturalize::Focus, f32)> = [
