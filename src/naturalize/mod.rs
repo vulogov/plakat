@@ -822,6 +822,81 @@ pub fn paper_texture(src: &RgbImage, amount: f32) -> RgbImage {
     out
 }
 
+/// Composite per-region de-slop (RFC QUALITY-6 P3): apply `base` params over the whole frame, then blend
+/// each region's own [`apply`] result in weighted by its (feathered) mask — so a frame with several subjects
+/// (sky + people + foliage) gets each subject its own profile. Later regions win where masks overlap.
+pub fn apply_with_regions(src: &RgbImage, base: &Params, regions: &[(GrayImage, Params)]) -> RgbImage {
+    let mut out = apply(src, base);
+    let (w, h) = (out.width(), out.height());
+    for (mask, params) in regions {
+        if mask.width() != w || mask.height() != h {
+            continue;
+        }
+        let region = apply(src, params);
+        for y in 0..h {
+            for x in 0..w {
+                let a = mask.get_pixel(x, y).0[0] as f32 / 255.0;
+                if a <= 0.0 {
+                    continue;
+                }
+                let (o, r) = (out.get_pixel_mut(x, y), region.get_pixel(x, y));
+                for c in 0..3 {
+                    o.0[c] = (o.0[c] as f32 * (1.0 - a) + r.0[c] as f32 * a).round() as u8;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A feathered white rectangle mask (normalized `0..1` coords) for [`apply_with_regions`] — soft edges so
+/// the region seam is invisible.
+pub fn feathered_rect(w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f32, feather_px: f32) -> GrayImage {
+    let (px0, py0) = (x0.clamp(0.0, 1.0) * w as f32, y0.clamp(0.0, 1.0) * h as f32);
+    let (px1, py1) = (x1.clamp(0.0, 1.0) * w as f32, y1.clamp(0.0, 1.0) * h as f32);
+    let f = feather_px.max(1.0);
+    let mut m = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            // signed distance inside the rectangle (positive inside), clamped through the feather band.
+            let dx = (x as f32 - px0).min(px1 - x as f32);
+            let dy = (y as f32 - py0).min(py1 - y as f32);
+            let d = dx.min(dy);
+            let a = ((d / f) + 0.0).clamp(0.0, 1.0);
+            m.put_pixel(x, y, Luma([(a * 255.0) as u8]));
+        }
+    }
+    m
+}
+
+/// A weight-free **sky mask** (RFC QUALITY-6 P3): the smooth, bluish/bright region in the upper frame —
+/// where AI-sky banding lives. Feathered.
+pub fn sky_mask(img: &RgbImage) -> GrayImage {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let luma: Vec<f32> = img.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+    let blur = box_blur_gray(&luma, w, h, 3);
+    let mut raw = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let p = img.get_pixel(x as u32, y as u32).0;
+            let (r, _g, b) = (p[0] as f32, p[1] as f32, p[2] as f32);
+            let bright = luma[i] > 150.0;
+            let bluish = b > r + 6.0 && b > 70.0;
+            let smooth = (luma[i] - blur[i]).abs() < 12.0;
+            // fade the vertical prior: full weight at the top, ~0 by 65% down.
+            let vfade = (1.0 - (y as f32 / h as f32) / 0.65).clamp(0.0, 1.0);
+            raw[i] = if (bright || bluish) && smooth { vfade } else { 0.0 };
+        }
+    }
+    let soft = box_blur_gray(&raw, w, h, 4); // feather
+    let mut m = GrayImage::new(w as u32, h as u32);
+    for (i, px) in m.pixels_mut().enumerate() {
+        px.0[0] = (soft[i].clamp(0.0, 1.0) * 255.0) as u8;
+    }
+    m
+}
+
 pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
     // 0. QUALITY IMPROVEMENT first — make a better picture (colour + detail), THEN any analog look.
     let src = if p.polish > 0.0 { polish(src, p.polish) } else { src.clone() };

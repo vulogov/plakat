@@ -64,6 +64,14 @@ pub struct NaturalizeArgs {
     /// With `--report`, emit JSON instead of the table.
     #[arg(long, default_value_t = false)]
     pub json: bool,
+    /// **Auto-region focuses** — detect subjects and de-slop each in its own profile: faces→`people`/micro,
+    /// a sky band→`sky`, the rest→the base. Composited with feathered seams. Face detection needs a model.
+    #[arg(long = "auto-regions", default_value_t = false)]
+    pub auto_regions: bool,
+    /// Manual **region focus** (repeatable): `x0,y0,x1,y1:<spec>` in normalized 0..1 coords, e.g.
+    /// `--region "0,0,1,0.4:sky=1"`. The spec is a naturalize spec applied to that (feathered) rectangle.
+    #[arg(long = "region", value_name = "X0,Y0,X1,Y1:SPEC", help_heading = "Content focus")]
+    pub regions: Vec<String>,
     /// Override the **quality-improvement** ("de-slop") strength (0..1) — gray-world white balance +
     /// robust auto-levels + vibrance + unsharp, run FIRST to make the colours & detail genuinely better
     /// before any analog look. `0` disables it. Defaults come from the preset (subtle 0.55 … photo 0.70).
@@ -279,6 +287,58 @@ async fn naturalize_video(a: &NaturalizeArgs) -> Result<()> {
     }
     println!("{} {}", style("wrote").green(), out.display());
     Ok(())
+}
+
+/// Build the per-region focus list (QUALITY-6 P3): manual `--region` rectangles + `--auto-regions`
+/// (sky band + SCRFD people). Empty when neither is requested.
+async fn build_regions(a: &NaturalizeArgs, img: &image::RgbImage, base: &Params) -> Result<Vec<(image::GrayImage, Params)>> {
+    let (w, h) = (img.width(), img.height());
+    let feather = (w.min(h) as f32) * 0.04;
+    let mut regions: Vec<(image::GrayImage, Params)> = Vec::new();
+    for spec in &a.regions {
+        let (rect, focus) = spec.split_once(':').with_context(|| format!("--region needs `x0,y0,x1,y1:spec`, got {spec:?}"))?;
+        let c: Vec<f32> = rect.split(',').map(|v| v.trim().parse::<f32>()).collect::<std::result::Result<_, _>>().with_context(|| format!("bad region rect {rect:?}"))?;
+        anyhow::ensure!(c.len() == 4, "region rect needs 4 coords (x0,y0,x1,y1): {rect:?}");
+        regions.push((naturalize::feathered_rect(w, h, c[0], c[1], c[2], c[3], feather), naturalize::from_spec(focus)));
+    }
+    if a.auto_regions {
+        let sky = naturalize::sky_mask(img);
+        if sky.pixels().any(|p| p.0[0] > 20) {
+            regions.push((sky, naturalize::blend_focus(*base, &[(naturalize::Focus::Sky, 1.0)])));
+        }
+        if let Some(people) = detect_people_mask(&a.input, img, &a.device).await {
+            regions.push((people, naturalize::blend_focus(*base, &[(naturalize::Focus::People, 1.0)])));
+        }
+    }
+    Ok(regions)
+}
+
+/// A feathered mask over the people in the frame (SCRFD faces → projected body boxes) for `--auto-regions`.
+/// Best-effort — `None` if no detector / no faces.
+async fn detect_people_mask(input: &Path, img: &image::RgbImage, device: &str) -> Option<image::GrayImage> {
+    let scrfd = crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten()?;
+    let dev = crate::api::device(device).ok()?;
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(&scrfd, crate::pipelines::scrfd::SCRFDConfig::default(), &dev, candle_core::DType::F32).ok()?;
+    let mut faces = det.detect(input).ok()?;
+    faces.retain(|f| f.score >= 0.35);
+    if faces.is_empty() {
+        return None;
+    }
+    let (w, h) = (img.width(), img.height());
+    let mut raw = vec![0f32; (w * h) as usize];
+    for f in &faces {
+        let (fw, fh) = (f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]);
+        let cx = (f.bbox[0] + f.bbox[2]) * 0.5;
+        let m = naturalize::feathered_rect(w, h, (cx - 1.1 * fw) / w as f32, (f.bbox[1] - 0.2 * fh) / h as f32, (cx + 1.1 * fw) / w as f32, (f.bbox[3] + 5.0 * fh) / h as f32, (w.min(h) as f32) * 0.03);
+        for (i, px) in m.pixels().enumerate() {
+            raw[i] = raw[i].max(px.0[0] as f32 / 255.0);
+        }
+    }
+    let mut out = image::GrayImage::new(w, h);
+    for (i, px) in out.pixels_mut().enumerate() {
+        px.0[0] = (raw[i] * 255.0) as u8;
+    }
+    Some(out)
 }
 
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
@@ -506,7 +566,15 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let corner = naturalize::Corner::parse(cs).with_context(|| format!("unknown corner `{cs}` (br|bl|tr|tl)"))?;
         img = naturalize::designature(&img, corner, a.designature_strength);
     }
-    let mut out = naturalize::apply(&img, &p);
+    // QUALITY-6 P3: per-region focuses (manual --region + --auto-regions) → composite each region's own
+    // de-slop with feathered seams. Falls through to the plain whole-frame apply when there are none.
+    let regions = build_regions(&a, &img, &p).await?;
+    let mut out = if regions.is_empty() {
+        naturalize::apply(&img, &p)
+    } else {
+        println!("  {} {} region focus(es)", style("de-slop").cyan(), regions.len());
+        naturalize::apply_with_regions(&img, &p, &regions)
+    };
     // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
     // art (fixes the "simulated media" tell). Runs last so tooth/granulation ride the finished pixels.
     if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
