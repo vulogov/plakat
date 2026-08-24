@@ -213,7 +213,81 @@ fn resolve_style(style: Option<&str>, medium: Option<&str>) -> Option<String> {
     Some(s.to_string())
 }
 
+/// Whether the input is a video/animation container (QUALITY-6 P2).
+fn is_video(p: &Path) -> bool {
+    matches!(
+        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+        Some("mp4" | "mov" | "webm" | "mkv" | "avi" | "gif" | "m4v")
+    )
+}
+
+/// Build the **weight-free** naturalize params (preset + focuses + overrides) and the paper amount from the
+/// args — the part safe to run per-video-frame (no model). Shared by the still and video paths.
+fn weightfree_params(a: &NaturalizeArgs) -> Result<(Params, Option<f32>)> {
+    let base = match a.preset.as_deref() {
+        Some(s) => Preset::parse(s).with_context(|| format!("unknown preset `{s}` (subtle|photo|painting)"))?,
+        None => Preset::Subtle,
+    };
+    let focuses: Vec<(naturalize::Focus, f32)> = [
+        (naturalize::Focus::People, a.people), (naturalize::Focus::Sky, a.sky), (naturalize::Focus::Vegetation, a.vegetation),
+        (naturalize::Focus::Cityscape, a.cityscape), (naturalize::Focus::Landscape, a.landscape), (naturalize::Focus::Sea, a.sea),
+        (naturalize::Focus::River, a.river), (naturalize::Focus::Mechanics, a.mechanics), (naturalize::Focus::Household, a.household),
+        (naturalize::Focus::Animal, a.animal), (naturalize::Focus::Food, a.food), (naturalize::Focus::Interior, a.interior),
+        (naturalize::Focus::Textile, a.textile), (naturalize::Focus::FoliageMacro, a.foliage_macro),
+    ].into_iter().filter_map(|(f, n)| n.filter(|v| *v > 0.0).map(|v| (f, v))).collect();
+    let mut p = naturalize::blend_focus(base.params(), &focuses);
+    if let Some(v) = a.grain { p.grain = v; }
+    if let Some(v) = a.aberration { p.aberration = v; }
+    if let Some(v) = a.vignette { p.vignette = v; }
+    if let Some(v) = a.bloom { p.bloom = v; }
+    if let Some(v) = a.desaturate { p.desaturate = v; }
+    if let Some(v) = a.warm { p.warm = v; }
+    if let Some(v) = a.defocus { p.defocus = v; }
+    if let Some(v) = a.polish { p.polish = v; }
+    if let Some(v) = a.micro { p.micro = v; }
+    let art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
+    let paper_amt = a.paper.or_else(|| art_style.as_deref().filter(|s| is_wet_media(s)).map(|_| 0.6));
+    Ok((p, paper_amt))
+}
+
+/// QUALITY-6 P2: de-slop every frame of a video/animation and re-encode. Weight-free only — the analog
+/// pass's noise is seeded per-pixel (frame-invariant), so the grain/paper texture **sits still** while the
+/// image moves (no flicker). Output container follows the `--out` extension (mp4 / webm / gif).
+async fn naturalize_video(a: &NaturalizeArgs) -> Result<()> {
+    let out = a.out.clone().context("--out is required")?;
+    crate::imaging::video::ffmpeg_version().context("video de-slop needs ffmpeg on PATH")?;
+    let (p, paper_amt) = weightfree_params(a)?;
+    let tmp = tempfile::tempdir().context("temp dir for video frames")?;
+    let frames = crate::imaging::video::extract_frames(&a.input, tmp.path())?;
+    anyhow::ensure!(!frames.is_empty(), "no frames extracted from {}", a.input.display());
+    let fps = crate::imaging::video::probe_fps(&a.input);
+    println!("naturalize video: {} frames @ {fps}fps → {} (weight-free, frame-invariant grain)", frames.len(), out.display());
+    for f in &frames {
+        let img = image::open(f).with_context(|| format!("reading frame {}", f.display()))?.to_rgb8();
+        let mut o = naturalize::apply(&img, &p);
+        if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
+            o = naturalize::paper_texture(&o, pv);
+        }
+        o.save(f).with_context(|| format!("writing frame {}", f.display()))?;
+    }
+    let pattern = tmp.path().join("frame_%06d.png");
+    let pattern = pattern.to_str().context("non-UTF8 frame pattern")?;
+    match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("gif") => crate::cli::animate::write_gif(&frames, &out, (1000 / fps.max(1)) as u16)?,
+        Some("webm") => crate::imaging::video::frames_to_webm(pattern, &out, fps)?,
+        _ => crate::imaging::video::frames_to_mp4(pattern, &out, fps)?,
+    }
+    println!("{} {}", style("wrote").green(), out.display());
+    Ok(())
+}
+
 pub async fn run(a: NaturalizeArgs) -> Result<()> {
+    // QUALITY-6 P2: a video/animation input → de-slop every frame + re-encode (weight-free surface pass).
+    if is_video(&a.input) {
+        anyhow::ensure!(!a.report, "--report analyses a still image — extract a frame first");
+        return naturalize_video(&a).await;
+    }
+
     // QUALITY-5 P3: batch — a directory input de-slops every image into the `--out` directory (same
     // filenames). Model-backed passes reload per image (best-effort convenience, not a resident server).
     if a.input.is_dir() {

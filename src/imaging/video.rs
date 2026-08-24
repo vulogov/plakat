@@ -99,6 +99,31 @@ impl Format {
 /// Check whether ffmpeg is on `$PATH`. Returns the version
 /// string on success; `Err` with a friendly install hint when
 /// it's missing.
+/// Probe a video's frame rate via `ffprobe` (`r_frame_rate` = "num/den"). Falls back to `24` when ffprobe
+/// is missing or the value can't be parsed. Rounded to the nearest whole fps (the encoders take `u32`).
+pub fn probe_fps(input: &Path) -> u32 {
+    let default = 24u32;
+    let Ok(out) = Command::new("ffprobe")
+        .args(["-v", "0", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0"])
+        .arg(input)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return default;
+    };
+    let s = String::from_utf8_lossy(&out.stdout);
+    let s = s.trim();
+    let fps = match s.split_once('/') {
+        Some((n, d)) => {
+            let (n, d) = (n.trim().parse::<f64>().unwrap_or(0.0), d.trim().parse::<f64>().unwrap_or(0.0));
+            if d > 0.0 { n / d } else { 0.0 }
+        }
+        None => s.parse::<f64>().unwrap_or(0.0),
+    };
+    if fps >= 1.0 { fps.round() as u32 } else { default }
+}
+
 pub fn ffmpeg_version() -> Result<String> {
     let out = Command::new("ffmpeg")
         .arg("-version")
