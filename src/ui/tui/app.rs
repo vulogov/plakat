@@ -1024,6 +1024,12 @@ impl App {
             return;
         }
 
+        // ── The Naturalize tab's open-path line owns the keyboard while typing. ──
+        if self.screen == ActiveScreen::Naturalize && self.naturalize.captures_input() {
+            let _ = self.naturalize.handle_key(key);
+            return;
+        }
+
         // ── People's delete-confirm modal owns the keyboard (type the name). ──
         if self.screen == ActiveScreen::People && self.people.captures_input() {
             match self.people.handle_key(key) {
@@ -3199,6 +3205,7 @@ impl App {
                 ("↑ ↓", "select knob"),
                 ("← → / + -", "adjust (polish/micro/grain/desaturate/paper)"),
                 ("Space", "toggle original ↔ de-slopped"),
+                ("o", "open an external image (type a path)"),
                 ("r", "reload newest image"),
                 ("s", "save de-slopped image"),
             ]),

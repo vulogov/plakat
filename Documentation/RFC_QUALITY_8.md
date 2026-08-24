@@ -27,9 +27,20 @@ preview updating on each apply, then save). Weight-free only (instant, no model)
 stays always-compiled + gate-tested; the tab is a thin presentation layer behind the existing `ui` feature,
 so the `--no-default-features` gate is unaffected.
 
-### P4 — parity + docs + cut 6.17.0
-Tutorial + QUALITY + doctor + README; corpus. Cut 6.17.0 (bump Cargo+lock, gate, turbofish on new
-`.parse()`, FF main, tag → CI, publish, notes, **verify Windows**, NO Claude coauthor).
+### P4 — open external images in the Naturalize tab
+Owner: work with external photos, not just generations. Add an **"open path"** input to the Naturalize tab
+(`o` → type a file path → Enter loads it); the tab already falls back to the workspace out-dir. Small — a
+capture-input mode on the screen.
+
+### P5 — naturalize in `plakat photos`
+Owner: integrate de-slop into the photo manager (the home for **external** photos — it imports HEIC/AVIF/raw
+into albums with EXIF). Add a **naturalize action** to `plakat photos` (de-slop the selected photo / a
+batch, with the scorecard), so photos becomes a full **import → de-slop → export** pipeline. Reuses the
+naturalize core.
+
+### P6 — parity + docs + cut 6.17.0
+Tutorial + QUALITY + doctor + README; corpus. Cut 6.17.0 (bump Cargo+lock, gate `--test-threads=1`,
+turbofish on new `.parse()`, FF main, tag → CI, publish, notes, **verify Windows**, NO Claude coauthor).
 
 ## Honest limits
 Model detection is metadata-driven (best-effort — stripped metadata → fall back to analysis). The per-model

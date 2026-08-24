@@ -59,6 +59,9 @@ pub struct NaturalizeState {
     /// Terminal image protocol for the preview (built by the App from `source`/`processed`).
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub status: String,
+    /// `o` opens a path-input line to load an EXTERNAL image (RFC QUALITY-8 P4).
+    pub input_mode: bool,
+    pub input_buf: String,
 }
 
 impl Default for NaturalizeState {
@@ -82,7 +85,14 @@ impl NaturalizeState {
             needs_preview: false,
             preview: None,
             status: String::new(),
+            input_mode: false,
+            input_buf: String::new(),
         }
+    }
+
+    /// Whether the screen owns the keyboard (path-input line active) — the App routes keys here then.
+    pub fn captures_input(&self) -> bool {
+        self.input_mode
     }
 
     /// Load an image as the source (App calls this with the latest frame / newest workspace image).
@@ -148,7 +158,41 @@ impl NaturalizeState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> NaturalizeAction {
+        // Path-input line (open an external image).
+        if self.input_mode {
+            match key.code {
+                KeyCode::Char(c) => self.input_buf.push(c),
+                KeyCode::Backspace => {
+                    self.input_buf.pop();
+                }
+                KeyCode::Enter => {
+                    let path = self.input_buf.trim().to_string();
+                    self.input_mode = false;
+                    self.input_buf.clear();
+                    if !path.is_empty() {
+                        // expand a leading ~ to the home dir.
+                        let expanded = if let Some(rest) = path.strip_prefix("~/") {
+                            std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(path)
+                        } else {
+                            path
+                        };
+                        self.load(PathBuf::from(expanded));
+                    }
+                }
+                KeyCode::Esc => {
+                    self.input_mode = false;
+                    self.input_buf.clear();
+                }
+                _ => {}
+            }
+            return NaturalizeAction::None;
+        }
         match key.code {
+            KeyCode::Char('o' | 'O') => {
+                self.input_mode = true;
+                self.input_buf.clear();
+                NaturalizeAction::None
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected = (self.selected + KNOBS.len() - 1) % KNOBS.len();
                 NaturalizeAction::None
@@ -244,12 +288,18 @@ impl NaturalizeState {
         }
         f.render_widget(Paragraph::new(sc), rows[1]);
 
-        // footer / status
-        let foot = if self.status.is_empty() {
-            "↑↓ select · ←→ / +- adjust · Space before/after · r reload · s save".to_string()
+        // footer / status (or the open-path input line)
+        let foot_line = if self.input_mode {
+            Line::from(vec![
+                Span::styled("open image: ", Style::new().fg(Color::Yellow)),
+                Span::raw(format!("{}▏", self.input_buf)),
+                Span::styled("  (Enter load · Esc cancel)", Style::new().fg(Color::DarkGray)),
+            ])
+        } else if self.status.is_empty() {
+            Line::from(Span::styled("↑↓ select · ←→/+- adjust · Space before/after · o open file · r reload · s save", Style::new().fg(Color::DarkGray)))
         } else {
-            self.status.clone()
+            Line::from(Span::styled(self.status.clone(), Style::new().fg(Color::DarkGray)))
         };
-        f.render_widget(Paragraph::new(Line::from(Span::styled(foot, Style::new().fg(Color::DarkGray)))), rows[2]);
+        f.render_widget(Paragraph::new(foot_line), rows[2]);
     }
 }
