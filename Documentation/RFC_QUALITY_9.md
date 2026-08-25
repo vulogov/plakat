@@ -1,8 +1,12 @@
 # RFC QUALITY-9 — naturalize round 6: batch · presets · per-image LUT (6.18.0)
 
-**Status:** draft (6.18.0) · **Depth cycle** on [`RFC_QUALITY_8.md`](RFC_QUALITY_8.md). Round 6 makes the
+**Status:** SHIPPED (6.18.0) · **Depth cycle** on [`RFC_QUALITY_8.md`](RFC_QUALITY_8.md). Round 6 makes the
 weight-free de-slop **faster at scale**, **reusable**, and **more honestly captured**. Weight-free only
 (instant, no model) — the reliable headline stays the headline.
+
+**All phases shipped:** P1 per-image adaptive LUT (`--export-lut` from an image) · P2 save/load user
+presets (`--save-preset`, ui tab `w`/`p`, user store shadows built-ins) · P3 batch de-slop in `plakat
+photos` (edit palette `aN`).
 
 ## What ships
 

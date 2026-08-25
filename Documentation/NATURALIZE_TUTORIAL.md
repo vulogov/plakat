@@ -123,26 +123,35 @@ Point it at a **folder** for a ranked batch scorecard (worst-AI first) + an aggr
 plakat naturalize ./renders/ --report            # ranked table + mean/over-threshold/dominant-tell summary
 ```
 
-### Named presets (6.16)
+### Named presets (6.16) + save your own (6.18)
 
-Beyond `subtle`/`photo`/`painting`, a **library** of recipes for common cases:
+Beyond `subtle`/`photo`/`painting`, a **library** of recipes for common cases — and you can **save your
+own** tuned look and reuse it (`--preset <name>` resolves your saved presets first, then the library):
 
 ```bash
-plakat naturalize --list-presets                              # portrait · landscape · product · anime · film · restore
+plakat naturalize --list-presets                              # built-ins + your saved presets
 plakat naturalize portrait.png --out out.png --preset portrait
+# dial a look, then save it (captures the resolved knobs incl. --polish/--micro/… and paper):
+plakat naturalize --preset photo --polish 0.9 --micro 0.5 --save-preset myfav
+plakat naturalize shot.png --out out.png --preset myfav        # reuse it anywhere
 ```
 A named preset is just a saved spec, so `--preset portrait` == the recipe the scorecard would recommend.
+Saved presets live in `~/.config/plakat/naturalize.presets` (an `name = spec` file you can hand-edit). The
+**`plakat ui` Naturalize tab** saves/loads them too — `w` save, `p` load.
 
-### Export the grade as a LUT (6.16)
+### Export the grade as a LUT (6.16) — per-image adaptive (6.18)
 
-Bake the fixed film **grade** (desaturate + warm) into a standard **`.cube`** 3-D LUT for
-Resolve/Premiere/OBS:
+Bake the colour **grade** into a standard **`.cube`** 3-D LUT for Resolve/Premiere/OBS:
 
 ```bash
-plakat naturalize --export-lut film.cube --preset film --lut-size 33
+plakat naturalize --export-lut film.cube --preset film --lut-size 33   # fixed grade (no input)
+plakat naturalize photo.png --export-lut look.cube                     # PER-IMAGE grade for photo.png
 ```
-Honest scope: only the *fixed* colour transform is captured — the polish **white-balance and auto-levels are
-per-image adaptive** and are not in a static LUT.
+With **no input** the LUT is the *fixed* film grade (desaturate + warm). **With an input image** (6.18) it
+bakes that image's **per-image** colour grade — the gray-world white-balance + auto-levels + vibrance fitted
+on *that* photo — closing the old limitation. Honest carve-out either way: the polish **unsharp** and
+**micro-texture** are *spatial* (not colour LUTs) and are excluded — the LUT is the colour grade, not the
+sharpening.
 
 ## 5c. Region focuses — different subjects, different de-slop (6.15)
 
@@ -173,7 +182,8 @@ Prefer to *dial it by eye*? `plakat ui` has a **Naturalize tab** (`Ctrl-9`). It 
 to **any external image**. Dial the weight-free knobs (**polish / micro / grain / desaturate / paper**) with
 a **live scorecard** (AI-tell + oversat/smooth/contrast, *before → after*); **Space** toggles the original ↔
 de-slopped preview so the effect is visible; **`r`** reloads the newest image; **`s`** saves `*_naturalized.png`.
-Weight-free only (instant, no model).
+Dialed in a look? **`w`** saves it as a named preset and **`p`** loads one back (6.18) — the same presets
+`--preset` uses. Weight-free only (instant, no model).
 
 ## 5f. In `plakat photos` — de-slop, etch, verify (6.17)
 
@@ -182,6 +192,8 @@ albums with EXIF. Its **Edit palette** (`Ctrl-B`) now closes the **import → de
 
 - **`an`** — *naturalize (weight-free de-slop)* opens the live strength slider (0–100). It's a first-class
   edit op, so it inherits **undo/redo** (`u`/`U`), **revert**, and per-image **versions**.
+- **`aN`** — *naturalize ALL selected* (6.18) de-slops every selected image in one action (batch); each is
+  recorded/undoable per image, so a multi-select becomes a one-keystroke folder de-slop.
 - **`me`** — *etch plakat provenance (into file)* writes a fresh L0 manifest + L1 pixel mark into the
   selected file(s) in place (batch over the selection).
 - **`mv`** — *verify provenance (is it plakat?)* runs the offline `doctor --if-plakat` engine on the cursor
