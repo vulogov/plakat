@@ -16,12 +16,13 @@ use crate::naturalize::{self, Params};
 
 #[derive(Args, Debug, Clone)]
 pub struct NaturalizeArgs {
-    /// Input image (or a directory for batch). Not required with `--list-presets` / `--export-lut`.
-    #[arg(required_unless_present_any = ["list_presets", "export_lut"])]
+    /// Input image (or a directory for batch). Not required with `--list-presets` / `--export-lut` /
+    /// `--save-preset`.
+    #[arg(required_unless_present_any = ["list_presets", "export_lut", "save_preset"])]
     pub input: Option<PathBuf>,
     /// Output image (or directory for batch). Not required with `--report` / `--list-presets` /
-    /// `--export-lut`.
-    #[arg(long, required_unless_present_any = ["report", "list_presets", "export_lut"])]
+    /// `--export-lut` / `--save-preset`.
+    #[arg(long, required_unless_present_any = ["report", "list_presets", "export_lut", "save_preset"])]
     pub out: Option<PathBuf>,
     /// Strength bundle: `subtle` (default) | `photo` | `painting` | **`auto`** (tune to the source model
     /// read from metadata) | a library preset (see `--list-presets`). All aim at contemporary realism.
@@ -67,16 +68,21 @@ pub struct NaturalizeArgs {
     #[arg(long, default_value_t = false)]
     pub json: bool,
     /// Export the fixed film **grade** (desaturate + warm, from the preset / `--desaturate` / `--warm`) as a
-    /// standard **`.cube`** 3-D LUT to this path, for DaVinci Resolve / Premiere / OBS. (WB/auto-levels are
-    /// per-image and not captured.) The positional image is used only for a context read-out.
+    /// standard **`.cube`** 3-D LUT to this path, for DaVinci Resolve / Premiere / OBS. **With an input
+    /// image** the LUT bakes that image's PER-IMAGE colour grade (WB + auto-levels + vibrance + grade);
+    /// with no input it's the fixed film grade. Spatial unsharp/micro are colour-LUT-excluded either way.
     #[arg(long = "export-lut", value_name = "PATH.cube")]
     pub export_lut: Option<PathBuf>,
     /// `.cube` LUT cube size (per-axis; default 33).
     #[arg(long = "lut-size", value_name = "N")]
     pub lut_size: Option<usize>,
-    /// List the named preset library (`--preset <name>`) and exit.
+    /// List the named preset library (built-in + your saved presets) and exit.
     #[arg(long = "list-presets", default_value_t = false)]
     pub list_presets: bool,
+    /// **Save** the resolved knob spec as a named user preset (`~/.config/plakat/naturalize.presets`),
+    /// reusable via `--preset <name>` (user presets shadow the built-ins), then exit.
+    #[arg(long = "save-preset", value_name = "NAME")]
+    pub save_preset: Option<String>,
     /// **Auto-region focuses** — detect subjects and de-slop each in its own profile: faces→`people`/micro,
     /// a sky band→`sky`, the rest→the base. Composited with feathered seams. Face detection needs a model.
     #[arg(long = "auto-regions", default_value_t = false)]
@@ -479,7 +485,23 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         for (name, spec, desc) in naturalize::preset_library() {
             println!("  {:<10} {}\n             {}", style(name).green(), style(spec).dim(), desc);
         }
-        println!("  {:<10} {}\n", style("(base)").dim(), "subtle · photo · painting");
+        let user = naturalize::load_user_presets();
+        if !user.is_empty() {
+            println!("\n  {} (shadow the built-ins)", style("your saved presets").bold());
+            for (name, spec) in &user {
+                println!("  {:<10} {}", style(name).cyan(), style(spec).dim());
+            }
+        }
+        println!("\n  {:<10} {}\n", style("(base)").dim(), "subtle · photo · painting");
+        return Ok(());
+    }
+
+    // QUALITY-9 P2: save the resolved knob spec as a named user preset, then exit.
+    if let Some(name) = a.save_preset.clone() {
+        let (p, paper) = weightfree_params(&a, a.input.as_deref())?;
+        let spec = naturalize::to_spec(&p, paper.unwrap_or(0.0));
+        let path = naturalize::save_user_preset(&name, &spec).context("saving the preset")?;
+        println!("{} preset {} = {}\n  → {} (use it with --preset {name})", style("saved").green(), style(&name).cyan(), style(&spec).dim(), path.display());
         return Ok(());
     }
 

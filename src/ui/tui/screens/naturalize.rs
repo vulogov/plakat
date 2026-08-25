@@ -27,6 +27,18 @@ pub enum NaturalizeAction {
     Reload,
 }
 
+/// Which text-input line (if any) currently owns the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    None,
+    /// `o` — load an external image by path (RFC QUALITY-8 P4).
+    OpenPath,
+    /// `w` — save the current knobs as a named user preset (RFC QUALITY-9 P2).
+    SavePreset,
+    /// `p` — load a named preset (user store or built-in library) into the knobs (RFC QUALITY-9 P2).
+    LoadPreset,
+}
+
 struct Knob {
     label: &'static str,
     max: f32,
@@ -59,9 +71,9 @@ pub struct NaturalizeState {
     /// Terminal image protocol for the preview (built by the App from `source`/`processed`).
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub status: String,
-    /// `o` opens a path-input line to load an EXTERNAL image (RFC QUALITY-8 P4).
-    pub input_mode: bool,
-    pub input_buf: String,
+    /// The active text-input line (open path / save preset / load preset), or `None`.
+    input_mode: InputMode,
+    input_buf: String,
 }
 
 impl Default for NaturalizeState {
@@ -85,14 +97,14 @@ impl NaturalizeState {
             needs_preview: false,
             preview: None,
             status: String::new(),
-            input_mode: false,
+            input_mode: InputMode::None,
             input_buf: String::new(),
         }
     }
 
-    /// Whether the screen owns the keyboard (path-input line active) — the App routes keys here then.
+    /// Whether the screen owns the keyboard (a text-input line active) — the App routes keys here then.
     pub fn captures_input(&self) -> bool {
-        self.input_mode
+        self.input_mode != InputMode::None
     }
 
     /// Load an image as the source (App calls this with the latest frame / newest workspace image).
@@ -157,30 +169,62 @@ impl NaturalizeState {
         }
     }
 
+    /// Save the current knobs (+ paper) as a named user preset (RFC QUALITY-9 P2).
+    fn save_preset(&mut self, name: &str) {
+        let spec = naturalize::to_spec(&self.params, self.paper);
+        match naturalize::save_user_preset(name, &spec) {
+            Ok(_) => self.status = format!("saved preset '{name}' — reuse with p or --preset {name}"),
+            Err(e) => self.status = format!("save preset failed: {e}"),
+        }
+    }
+
+    /// Load a named preset (user store shadows the built-in library) into the knobs (RFC QUALITY-9 P2).
+    fn load_preset(&mut self, name: &str) {
+        match naturalize::resolve_preset_spec(name) {
+            Some(spec) => {
+                self.params = naturalize::from_spec(&spec);
+                self.paper = naturalize::paper_from_spec(&spec).unwrap_or(0.0);
+                self.show_original = false;
+                self.processed = None; // → recompute + rebuild preview
+                self.needs_preview = true;
+                self.status = format!("loaded preset '{name}'");
+            }
+            None => self.status = format!("no preset '{name}' (see naturalize --list-presets)"),
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> NaturalizeAction {
-        // Path-input line (open an external image).
-        if self.input_mode {
+        // A text-input line (open path / save preset / load preset) owns the keyboard.
+        if self.input_mode != InputMode::None {
             match key.code {
                 KeyCode::Char(c) => self.input_buf.push(c),
                 KeyCode::Backspace => {
                     self.input_buf.pop();
                 }
                 KeyCode::Enter => {
-                    let path = self.input_buf.trim().to_string();
-                    self.input_mode = false;
+                    let text = self.input_buf.trim().to_string();
+                    let mode = self.input_mode;
+                    self.input_mode = InputMode::None;
                     self.input_buf.clear();
-                    if !path.is_empty() {
-                        // expand a leading ~ to the home dir.
-                        let expanded = if let Some(rest) = path.strip_prefix("~/") {
-                            std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(path)
-                        } else {
-                            path
-                        };
-                        self.load(PathBuf::from(expanded));
+                    if !text.is_empty() {
+                        match mode {
+                            InputMode::OpenPath => {
+                                // expand a leading ~ to the home dir.
+                                let expanded = if let Some(rest) = text.strip_prefix("~/") {
+                                    std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or(text)
+                                } else {
+                                    text
+                                };
+                                self.load(PathBuf::from(expanded));
+                            }
+                            InputMode::SavePreset => self.save_preset(&text),
+                            InputMode::LoadPreset => self.load_preset(&text),
+                            InputMode::None => {}
+                        }
                     }
                 }
                 KeyCode::Esc => {
-                    self.input_mode = false;
+                    self.input_mode = InputMode::None;
                     self.input_buf.clear();
                 }
                 _ => {}
@@ -189,7 +233,17 @@ impl NaturalizeState {
         }
         match key.code {
             KeyCode::Char('o' | 'O') => {
-                self.input_mode = true;
+                self.input_mode = InputMode::OpenPath;
+                self.input_buf.clear();
+                NaturalizeAction::None
+            }
+            KeyCode::Char('w' | 'W') => {
+                self.input_mode = InputMode::SavePreset;
+                self.input_buf.clear();
+                NaturalizeAction::None
+            }
+            KeyCode::Char('p' | 'P') => {
+                self.input_mode = InputMode::LoadPreset;
                 self.input_buf.clear();
                 NaturalizeAction::None
             }
@@ -288,15 +342,21 @@ impl NaturalizeState {
         }
         f.render_widget(Paragraph::new(sc), rows[1]);
 
-        // footer / status (or the open-path input line)
-        let foot_line = if self.input_mode {
+        // footer / status (or an active text-input line)
+        let foot_line = if self.input_mode != InputMode::None {
+            let label = match self.input_mode {
+                InputMode::OpenPath => "open image: ",
+                InputMode::SavePreset => "save preset as: ",
+                InputMode::LoadPreset => "load preset: ",
+                InputMode::None => "",
+            };
             Line::from(vec![
-                Span::styled("open image: ", Style::new().fg(Color::Yellow)),
+                Span::styled(label, Style::new().fg(Color::Yellow)),
                 Span::raw(format!("{}▏", self.input_buf)),
-                Span::styled("  (Enter load · Esc cancel)", Style::new().fg(Color::DarkGray)),
+                Span::styled("  (Enter · Esc cancel)", Style::new().fg(Color::DarkGray)),
             ])
         } else if self.status.is_empty() {
-            Line::from(Span::styled("↑↓ select · ←→/+- adjust · Space before/after · o open file · r reload · s save", Style::new().fg(Color::DarkGray)))
+            Line::from(Span::styled("↑↓ select · ←→/+- adjust · Space before/after · o open · p/w preset load/save · r reload · s save", Style::new().fg(Color::DarkGray)))
         } else {
             Line::from(Span::styled(self.status.clone(), Style::new().fg(Color::DarkGray)))
         };

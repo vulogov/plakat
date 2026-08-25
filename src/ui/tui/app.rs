@@ -3206,6 +3206,7 @@ impl App {
                 ("← → / + -", "adjust (polish/micro/grain/desaturate/paper)"),
                 ("Space", "toggle original ↔ de-slopped"),
                 ("o", "open an external image (type a path)"),
+                ("p / w", "load / save a named preset"),
                 ("r", "reload newest image"),
                 ("s", "save de-slopped image"),
             ]),

@@ -244,12 +244,108 @@ pub fn library_preset(name: &str) -> Option<&'static str> {
     preset_library().iter().find(|(k, _, _)| *k == n).map(|(_, spec, _)| *spec)
 }
 
+// ── user-authored presets (RFC QUALITY-9 P2) ─────────────────────────────────────────────────────
+// A tuned look → a named, reusable spec. The store is an INI-simple `name = spec` file; the pure
+// parse/serialise/upsert helpers below are gate-tested, and the thin fs wrappers layer on top.
+
+/// Serialise [`Params`] (+ an optional `paper` amount) back into a compact **spec** string that
+/// [`from_spec`] reproduces exactly. All nine params are emitted explicitly, so the result is
+/// independent of any base preset (round-trip-stable). Inverse of [`from_spec`].
+pub fn to_spec(p: &Params, paper: f32) -> String {
+    let mut s = format!(
+        "polish={:.3} micro={:.3} grain={:.3} desaturate={:.3} warm={:.3} aberration={:.3} vignette={:.3} bloom={:.3} defocus={:.3}",
+        p.polish, p.micro, p.grain, p.desaturate, p.warm, p.aberration, p.vignette, p.bloom, p.defocus
+    );
+    if paper > 0.0 {
+        s.push_str(&format!(" paper={paper:.3}"));
+    }
+    s
+}
+
+/// Parse an INI-simple preset store (`name = spec` per line; `#` comments + blanks skipped) into
+/// `(name, spec)` pairs. Pure — the fs read is [`load_user_presets`].
+pub fn parse_preset_file(content: &str) -> Vec<(String, String)> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('=').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .collect()
+}
+
+/// Insert or replace a `name = spec` entry in a preset-store string (case-insensitive on `name`),
+/// preserving other lines and comments. Pure — the fs read/write is [`save_user_preset`].
+pub fn upsert_preset(content: &str, name: &str, spec: &str) -> String {
+    let name = name.trim();
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if !t.is_empty() && !t.starts_with('#') {
+            if let Some((k, _)) = t.split_once('=') {
+                if k.trim().eq_ignore_ascii_case(name) {
+                    out.push_str(&format!("{name} = {spec}\n"));
+                    replaced = true;
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !replaced {
+        out.push_str(&format!("{name} = {spec}\n"));
+    }
+    out
+}
+
+/// Path to the user preset store: `$XDG_CONFIG_HOME/plakat/naturalize.presets` (falls back to
+/// `$HOME/.config/…`). `None` if neither env var is set. Env-only (no fs) → gate-safe.
+pub fn user_presets_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
+    Some(base.join("plakat").join("naturalize.presets"))
+}
+
+/// Load the user preset store from disk (empty if the file is absent/unreadable).
+pub fn load_user_presets() -> Vec<(String, String)> {
+    user_presets_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|c| parse_preset_file(&c))
+        .unwrap_or_default()
+}
+
+/// Resolve a user preset spec by name (case-insensitive). `None` if the store has no such name.
+pub fn user_preset(name: &str) -> Option<String> {
+    let n = name.trim();
+    load_user_presets().into_iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v)
+}
+
+/// Save/overwrite a named user preset, creating the store (and its parent dir) if needed.
+/// Returns the store path on success.
+pub fn save_user_preset(name: &str, spec: &str) -> std::io::Result<std::path::PathBuf> {
+    let path = user_presets_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config dir (set HOME or XDG_CONFIG_HOME)"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::write(&path, upsert_preset(&existing, name, spec))?;
+    Ok(path)
+}
+
+/// Resolve a preset name to a spec — **user store first** (shadows built-ins), then the library.
+pub fn resolve_preset_spec(name: &str) -> Option<String> {
+    user_preset(name).or_else(|| library_preset(name).map(str::to_string))
+}
+
 /// The **base params** for a `--preset` value: a library preset (full spec) or one of the three base
 /// presets (`subtle`/`photo`/`painting`). `preset=None` → `subtle`; unknown name → `None`.
 pub fn base_params(preset: Option<&str>) -> Option<Params> {
     match preset {
         None => Some(Preset::Subtle.params()),
-        Some(name) => library_preset(name).map(from_spec).or_else(|| Preset::parse(name).map(|p| p.params())),
+        Some(name) => resolve_preset_spec(name).map(|s| from_spec(&s)).or_else(|| Preset::parse(name).map(|p| p.params())),
     }
 }
 
@@ -1318,6 +1414,33 @@ mod tests {
         let a = apply(&src, &Preset::Subtle.params());
         let b = apply(&src, &Preset::Subtle.params());
         assert!(a.pixels().zip(b.pixels()).all(|(x, y)| x == y), "deterministic (no RNG)");
+    }
+
+    #[test]
+    fn to_spec_round_trips_through_from_spec() {
+        let p = from_spec("photo polish=0.72 micro=0.5 grain=0.14 desaturate=0.08 warm=0.03 vignette=0.1 bloom=0.05");
+        let spec = to_spec(&p, 0.6);
+        let q = from_spec(&spec);
+        // Every field survives the round-trip (3-decimal spec precision).
+        for (a, b) in [(p.polish, q.polish), (p.micro, q.micro), (p.grain, q.grain), (p.desaturate, q.desaturate), (p.warm, q.warm), (p.aberration, q.aberration), (p.vignette, q.vignette), (p.bloom, q.bloom), (p.defocus, q.defocus)] {
+            assert!((a - b).abs() < 1e-3, "{a} != {b}");
+        }
+        assert_eq!(paper_from_spec(&spec), Some(0.6), "paper carried in the spec");
+    }
+
+    #[test]
+    fn upsert_preset_inserts_then_replaces_and_parses() {
+        let c0 = "# my presets\nfoo = photo polish=0.5\n";
+        let c1 = upsert_preset(c0, "bar", "subtle grain=0.1");
+        let m1 = parse_preset_file(&c1);
+        assert_eq!(m1.len(), 2, "inserted a new preset, kept foo");
+        assert_eq!(m1.iter().find(|(k, _)| k == "bar").map(|(_, v)| v.as_str()), Some("subtle grain=0.1"));
+        // Replace (case-insensitive) doesn't duplicate.
+        let c2 = upsert_preset(&c1, "BAR", "photo micro=0.9");
+        let m2 = parse_preset_file(&c2);
+        assert_eq!(m2.len(), 2, "replaced bar, no duplicate");
+        assert_eq!(m2.iter().find(|(k, _)| k.eq_ignore_ascii_case("bar")).map(|(_, v)| v.as_str()), Some("photo micro=0.9"));
+        assert!(c2.contains("# my presets"), "comment preserved");
     }
 
     #[test]
