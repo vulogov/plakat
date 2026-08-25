@@ -189,8 +189,7 @@ pub fn render_mandelbrot(spec: &FractalSpec, prog: ProgressFn) -> Result<Vec<Esc
             })
             .collect();
 
-        let mut next: Vec<usize> = Vec::new();
-        let mut best_glitch: Option<(u32, usize)> = None; // (glitch iter, pixel) → next reference
+        let mut glitched: Vec<(usize, u32)> = Vec::new(); // (pixel, iters survived before glitch)
         let mut n_esc = 0u64;
         for (idx, res) in results {
             match res {
@@ -200,31 +199,44 @@ pub fn render_mandelbrot(spec: &FractalSpec, prog: ProgressFn) -> Result<Vec<Esc
                     }
                     field[idx] = e;
                 }
-                Err(giter) => {
-                    next.push(idx);
-                    if best_glitch.map(|(g, _)| giter > g).unwrap_or(true) {
-                        best_glitch = Some((giter, idx));
-                    }
-                }
+                Err(giter) => glitched.push((idx, giter)),
             }
         }
         if std::env::var("PLAKAT_DZ_DEBUG").is_ok() {
             eprintln!(
                 "  dz round {round}: ref.escaped_at={} p={p}bits  escaped={n_esc} glitched={} pending_in={}",
-                reference.escaped_at, next.len(), pending.len()
+                reference.escaped_at, glitched.len(), pending.len()
             );
         }
         prog((round + 1) as u64, MAX_ROUNDS as u64);
-        if next.is_empty() {
+        if glitched.is_empty() {
             break;
         }
-        // Re-reference at the pixel that survived longest before glitching.
-        let pick = best_glitch.map(|(_, i)| i).unwrap_or(next[next.len() / 2]);
+        // SEAMS-1 P8: re-reference at a pixel that is BOTH well-behaved (survived longest before
+        // glitching → a representative orbit) AND central to the glitched region. A central reference
+        // minimises the per-pixel delta magnitude across the cluster, so it cleans more of it per round —
+        // fewer secondary rounds and fewer residual glitch blobs at extreme depth than picking the single
+        // longest-surviving pixel (which can sit at a cluster edge).
+        let maxg = glitched.iter().map(|&(_, g)| g).max().unwrap_or(0);
+        let thresh = maxg.saturating_sub(maxg / 10); // the top ~10% of survival = the deepest orbits
+        let (mut sx, mut sy) = (0f64, 0f64);
+        for &(i, _) in &glitched {
+            sx += (i % w) as f64;
+            sy += (i / w) as f64;
+        }
+        let (cen_x, cen_y) = (sx / glitched.len() as f64, sy / glitched.len() as f64);
+        let dist2 = |i: usize| ((i % w) as f64 - cen_x).powi(2) + ((i / w) as f64 - cen_y).powi(2);
+        let pick = glitched
+            .iter()
+            .filter(|&&(_, g)| g >= thresh)
+            .min_by(|&&(a, _), &&(b, _)| dist2(a).partial_cmp(&dist2(b)).unwrap())
+            .map(|&(i, _)| i)
+            .unwrap_or(glitched[glitched.len() / 2].0);
         let off = pixel_offset(pick % w, pick / w, w, h, scale);
         ref_cx = cx.add(&BigFloat::from_f64(off.re, p), p, RM);
         ref_cy = cy.add(&BigFloat::from_f64(off.im, p), p, RM);
         ref_off = off;
-        pending = next;
+        pending = glitched.into_iter().map(|(i, _)| i).collect();
     }
     prog(MAX_ROUNDS as u64, MAX_ROUNDS as u64);
     Ok(field)
@@ -298,5 +310,10 @@ mod tests {
         // The frame has both interior and exterior (real structure, not a flat blob).
         assert!(field.iter().any(|e| e.inside), "no interior pixels");
         assert!(field.iter().any(|e| !e.inside), "no exterior pixels");
+        // P8 guard: unrendered glitch pixels default to `inside=true`, so a glitch WIPEOUT would leave
+        // the frame almost entirely "interior". A substantial exterior fraction proves the secondary
+        // references actually cleaned the glitched region.
+        let exterior = field.iter().filter(|e| !e.inside).count();
+        assert!(exterior > field.len() / 10, "exterior only {exterior}/{} — glitches not cleaned", field.len());
     }
 }
