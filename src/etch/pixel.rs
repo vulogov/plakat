@@ -270,13 +270,26 @@ fn embed_canonical(yc: &mut [f32], id: EtchId, key: &str, alpha: Option<&[f32]>)
                 continue;
             }
             let blocks = slot_blocks(key, tile);
+            // SEAMS-1 P6 (quieter mark): the QIM ripple is most visible in FLAT blocks. Skip the mark in a
+            // flat block only when its bit still keeps a decode majority — each bit is carried by REPEAT
+            // (3) blocks per tile, so skipping ≤1 leaves ≥2 → fully recoverable, while the flattest
+            // (most-visible) blocks are left clean.
+            let flat_ac = 0.75 * STEP; // AC-RMS below this ⇒ block is flatter than the mark → skip if we can
+            let mut skipped = [false; PAYLOAD_BITS];
             for slot in 0..PAYLOAD_BITS * REPEAT {
-                let bit = bits[slot % PAYLOAD_BITS];
+                let bi = slot % PAYLOAD_BITS;
+                let bit = bits[bi];
                 let blk = blocks[slot];
                 let (bx, by) = (blk % (TILE / BLOCK), blk / (TILE / BLOCK));
                 let (ox, oy) = (tx * TILE + bx * BLOCK, ty * TILE + by * BLOCK);
                 let mut b = read_block(yc, g, ox, oy);
                 let mut d = dct8x8(&b);
+                // AC-RMS = the block's texture energy (exclude DC): a flat block can't mask the mark.
+                let ac_rms = (d[1..].iter().map(|v| v * v).sum::<f32>() / 63.0).sqrt();
+                if ac_rms < flat_ac && !skipped[bi] {
+                    skipped[bi] = true; // leave this flat block clean; the bit keeps 2/3 repeats
+                    continue;
+                }
                 let ci = COEF.1 * 8 + COEF.0;
                 d[ci] = qim_embed(d[ci], step, bit);
                 b = idct8x8(&d);
@@ -425,6 +438,31 @@ mod tests {
         let p = psnr(&orig, &marked);
         // RFC targets ≥42 dB; the fixed-lattice QIM lands comfortably above 40 on this content.
         assert!(p >= 40.0, "L1 PSNR {p:.1} dB should be ≥40 (near-invisible)");
+    }
+
+    #[test]
+    fn flat_image_still_decodes_and_stays_invisible() {
+        // A smooth gradient is the WORST case for the QIM ripple (no texture to mask it) — the P6
+        // variance-gate leaves the flattest blocks clean while keeping a decode majority per bit.
+        let (w, h) = (512, 512);
+        let mut orig = vec![0u8; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let g = (40 + (x * 160) / w) as u8; // gentle horizontal gradient
+                let i = (y * w + x) * 3;
+                orig[i] = g;
+                orig[i + 1] = g;
+                orig[i + 2] = g;
+            }
+        }
+        let id = EtchId(0x0011223344556677);
+        let marked = embed(&orig, w, h, id, "k", 0.35, None);
+        // Still fully recoverable — the gate guarantees ≥2 of 3 repeats per bit survive.
+        let r = extract(&marked, w, h, "k", None).expect("decode on a flat image");
+        assert_eq!(r.id, id);
+        // And near-invisible even on this worst-case smooth content.
+        let p = psnr(&orig, &marked);
+        assert!(p >= 40.0, "flat-image PSNR {p:.1} dB should be ≥40");
     }
 
     #[test]

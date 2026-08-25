@@ -147,8 +147,12 @@ impl Pipeline {
             ((sh as f32 * opts.scale).round() as u32).max(opts.tile),
         );
         let big = image::imageops::resize(&src, tw, th, image::imageops::FilterType::Lanczos3);
+        // SEAMS-1 P7: a light pre-sharpen so the Lanczos base isn't mushy going into the refine —
+        // ControlNet-Tile then has crisper structure to lock onto (esp. on flat/soft inputs), which reads
+        // as more real detail after diffusion. Gentle (sigma 1.2, threshold 3) so it doesn't ring.
+        let big = image::imageops::unsharpen(&big, 1.2, 3);
         crate::ui::progress::println(&format!(
-            "diffusion-upscale: {sw}×{sh} → {tw}×{th} (tile {}, overlap {}, strength {:.2})",
+            "diffusion-upscale: {sw}×{sh} → {tw}×{th} (tile {}, overlap {}, strength {:.2}, pre-sharpen)",
             opts.tile, opts.overlap, opts.tile_strength
         ));
 

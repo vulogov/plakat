@@ -5,7 +5,7 @@
 use crate::texture::compile::ALL_MAPS;
 use crate::texture::spec::TextureSpec;
 
-pub const SEAMLESS_MODES: &[&str] = &["circular", "offset", "mirror", "none"];
+pub const SEAMLESS_MODES: &[&str] = &["circular", "offset", "auto", "mirror", "none"];
 pub const SEAMLESS_AXES: &[&str] = &["both", "x", "y"];
 pub const UPSCALES: &[&str] = &["none", "2k", "4k"];
 pub const NORMAL_Y: &[&str] = &["opengl", "directx"];

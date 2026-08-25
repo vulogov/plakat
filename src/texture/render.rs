@@ -153,14 +153,24 @@ async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
             // real seam demands it. (The dormant per-step latent-roll / vendored circular ResNet remain
             // the escalation for a hypothetical material a feather truly can't tile — G0.B / 6.3 G0.1.)
             let raw = raw_seam(&albedo, axes);
-            let band = if raw < 1.3 {
-                (plan.size / 96).max(3) // already near-tileable → a thin hairline erase, minimal smear
-            } else if raw < 2.5 {
-                (plan.size / 48).max(4)
+            if plan.seamless_mode == "auto" && raw > 4.0 {
+                // SEAMS-1 P5: a genuine hard seam a feather can't fix without a heavy smear band —
+                // fall back to a guaranteed-seamless mirror tile (measure-first decides).
+                println!("  {} auto → mirror (raw seam {raw:.2} > 4.0, feather would smear)", style("↳").cyan());
+                seamless::mirror_tile(&albedo, axes)
             } else {
-                (plan.size / 24).max(4) // a genuine seam → the full feather
-            };
-            seamless::feather_seam(&albedo, band, axes)
+                let band = if raw < 1.3 {
+                    (plan.size / 96).max(3) // already near-tileable → a thin hairline erase, minimal smear
+                } else if raw < 2.5 {
+                    (plan.size / 48).max(4)
+                } else {
+                    (plan.size / 24).max(4) // a genuine seam → the full feather
+                };
+                if plan.seamless_mode == "auto" {
+                    println!("  {} auto → feather band {band} (raw seam {raw:.2})", style("↳").cyan());
+                }
+                seamless::feather_seam(&albedo, band, axes)
+            }
         };
     }
     Ok(albedo)
