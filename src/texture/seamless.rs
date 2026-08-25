@@ -108,46 +108,121 @@ impl Module for SeamlessConv2d {
     }
 }
 
-/// A weight-free hairline blend across the wrap boundary (columns/rows near the seam) — cleans a small
-/// residual VAE-decode seam (G0.2 fallback). `band` px each side; `axes` selects which boundary.
+/// Smoothstep (C¹) ease `3t²−2t³` on a clamped `t∈[0,1]` — a softer ramp than linear, so a feathered
+/// band has no hard edges where it starts/stops. (RFC SEAMS-1 P1.)
+#[inline]
+pub fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// **Seam score** (measure-first, G0.2/SEAMS-1): mean per-channel intensity jump *across* the wrap
+/// boundary, normalised by the interior step baseline. `≈1` ⇒ the boundary is as smooth as the interior
+/// (seamless); larger ⇒ a visible seam. Pure — drives auto-band selection and the P1 tests.
+pub fn seam_score(img: &RgbImage, axes: Axes) -> f32 {
+    let (w, h) = img.dimensions();
+    let (mut cross, mut base, mut nc, mut nb) = (0.0f64, 0.0f64, 0u64, 0u64);
+    let diff = |a: &image::Rgb<u8>, b: &image::Rgb<u8>| (0..3).map(|c| (a.0[c] as f64 - b.0[c] as f64).abs()).sum::<f64>();
+    if matches!(axes, Axes::Both | Axes::X) && w >= 3 {
+        for y in 0..h {
+            cross += diff(img.get_pixel(0, y), img.get_pixel(w - 1, y)); // across the wrap
+            base += diff(img.get_pixel(0, y), img.get_pixel(1, y)); // interior baseline
+            nc += 1;
+            nb += 1;
+        }
+    }
+    if matches!(axes, Axes::Both | Axes::Y) && h >= 3 {
+        for x in 0..w {
+            cross += diff(img.get_pixel(x, 0), img.get_pixel(x, h - 1));
+            base += diff(img.get_pixel(x, 0), img.get_pixel(x, 1));
+            nc += 1;
+            nb += 1;
+        }
+    }
+    if nc == 0 {
+        return 0.0;
+    }
+    let cross = cross / nc as f64;
+    let base = (base / nb.max(1) as f64).max(1.0); // guard a flat image
+    (cross / base) as f32
+}
+
+/// **Frequency-aware** hairline seam repair across the wrap boundary (RFC SEAMS-1 P1). Instead of
+/// cross-fading raw pixels (which blurs detail and can leave a tonal ramp), estimate the *low-frequency*
+/// tone on each edge (a short `k`-px inward mean) and add a **smooth, half-magnitude offset** that decays
+/// (smoothstep) inward over `band` px so the two edges' tone **meets** at the seam — while every high
+/// frequency (the actual texture detail) is preserved untouched. `band` px each side; `axes` picks the
+/// boundary.
 pub fn feather_seam(img: &RgbImage, band: u32, axes: Axes) -> RgbImage {
     let (w, h) = img.dimensions();
     let mut out = img.clone();
-    let blend = |a: u8, b: u8, t: f32| ((a as f32) * (1.0 - t) + (b as f32) * t).round() as u8;
+    if band == 0 {
+        return out;
+    }
+    let k = (band / 2).clamp(1, 8); // low-freq tone window: match tone, not detail
     if matches!(axes, Axes::Both | Axes::X) && w > 2 * band {
-        // cross-fade the first/last `band` columns toward their wrapped partner so col 0 ≈ col w-1.
-        for x in 0..band {
-            let t = 0.5 * (1.0 - (x as f32 + 0.5) / band as f32); // 0.5 at the seam → 0 inward
-            for y in 0..h {
-                let (l, r) = (*img.get_pixel(x, y), *img.get_pixel(w - 1 - x, y));
+        for y in 0..h {
+            let (mut el, mut er) = ([0f32; 3], [0f32; 3]);
+            for i in 0..k {
+                let (l, r) = (img.get_pixel(i, y), img.get_pixel(w - 1 - i, y));
+                for c in 0..3 {
+                    el[c] += l.0[c] as f32;
+                    er[c] += r.0[c] as f32;
+                }
+            }
+            let d = [0, 1, 2].map(|c| (el[c] - er[c]) / k as f32 * 0.5); // half each side → they meet
+            for x in 0..band {
+                let ramp = smoothstep(1.0 - (x as f32 + 0.5) / band as f32); // 1 at seam → 0 inward
                 let pl = out.get_pixel_mut(x, y);
                 for c in 0..3 {
-                    pl.0[c] = blend(l.0[c], r.0[c], t);
+                    pl.0[c] = (pl.0[c] as f32 - d[c] * ramp).clamp(0.0, 255.0) as u8;
                 }
                 let pr = out.get_pixel_mut(w - 1 - x, y);
                 for c in 0..3 {
-                    pr.0[c] = blend(r.0[c], l.0[c], t);
+                    pr.0[c] = (pr.0[c] as f32 + d[c] * ramp).clamp(0.0, 255.0) as u8;
                 }
             }
         }
     }
     if matches!(axes, Axes::Both | Axes::Y) && h > 2 * band {
-        for y in 0..band {
-            let t = 0.5 * (1.0 - (y as f32 + 0.5) / band as f32);
-            for x in 0..w {
-                let (tp, bt) = (*out.get_pixel(x, y), *out.get_pixel(x, h - 1 - y));
+        for x in 0..w {
+            let (mut et, mut eb) = ([0f32; 3], [0f32; 3]);
+            for i in 0..k {
+                let (tp, bt) = (out.get_pixel(x, i), out.get_pixel(x, h - 1 - i));
+                for c in 0..3 {
+                    et[c] += tp.0[c] as f32;
+                    eb[c] += bt.0[c] as f32;
+                }
+            }
+            let d = [0, 1, 2].map(|c| (et[c] - eb[c]) / k as f32 * 0.5);
+            for y in 0..band {
+                let ramp = smoothstep(1.0 - (y as f32 + 0.5) / band as f32);
                 let ptp = out.get_pixel_mut(x, y);
                 for c in 0..3 {
-                    ptp.0[c] = blend(tp.0[c], bt.0[c], t);
+                    ptp.0[c] = (ptp.0[c] as f32 - d[c] * ramp).clamp(0.0, 255.0) as u8;
                 }
                 let pbt = out.get_pixel_mut(x, h - 1 - y);
                 for c in 0..3 {
-                    pbt.0[c] = blend(bt.0[c], tp.0[c], t);
+                    pbt.0[c] = (pbt.0[c] as f32 + d[c] * ramp).clamp(0.0, 255.0) as u8;
                 }
             }
         }
     }
     out
+}
+
+/// **Mirror-tile** (RFC SEAMS-1 P1, `mode: "mirror"`): reflect the image so opposite edges are identical
+/// by construction — the boundary is guaranteed seamless (`seam_score ≈ 1`) with zero blending. Reads
+/// better than a wrap for many organic/fabric textures (at the cost of a mirror-symmetric pattern). Halves
+/// then reflects along each selected axis, so the result is the same size and tiles exactly.
+pub fn mirror_tile(img: &RgbImage, axes: Axes) -> RgbImage {
+    let (w, h) = img.dimensions();
+    RgbImage::from_fn(w, h, |x, y| {
+        // fold the second half back onto a mirror of the first — edges meet their own reflection.
+        let sx = if matches!(axes, Axes::Both | Axes::X) && x >= w - x - 1 { w - 1 - x } else { x };
+        let sy = if matches!(axes, Axes::Both | Axes::Y) && y >= h - y - 1 { h - 1 - y } else { y };
+        *img.get_pixel(sx.min(w - 1), sy.min(h - 1))
+    })
 }
 
 /// Make a **non-tileable photo** tileable (image-to-material, B6): the classic *offset-and-heal*. Roll
@@ -157,32 +232,63 @@ pub fn feather_seam(img: &RgbImage, band: u32, axes: Axes) -> RgbImage {
 pub fn make_tileable(img: &RgbImage, band: u32, axes: Axes) -> RgbImage {
     let (w, h) = img.dimensions();
     let (cx, cy) = (w / 2, h / 2);
-    // roll by half.
+    // roll by half → the discontinuous outer edges move to the interior central cross.
     let mut out = RgbImage::from_fn(w, h, |x, y| *img.get_pixel((x + cx) % w, (y + cy) % h));
     let src = out.clone();
-    let blend = |a: image::Rgb<u8>, b: image::Rgb<u8>, t: f32| {
-        image::Rgb([0, 1, 2].map(|c| ((a.0[c] as f32) * (1.0 - t) + (b.0[c] as f32) * t).round() as u8))
-    };
-    if matches!(axes, Axes::Both | Axes::X) {
-        for dx in 1..=band.min(cx) {
-            let t = 0.5 * (1.0 - (dx as f32 - 0.5) / band as f32); // 0.5 at the seam → 0 outward
-            for y in 0..h {
-                let (l, r) = (*src.get_pixel(cx - dx, y), *src.get_pixel((cx + dx).min(w - 1), y));
-                out.put_pixel(cx - dx, y, blend(l, r, t));
+    let k = (band / 2).clamp(1, 8) as i64; // low-freq tone window either side of the central seam
+    // Frequency-aware heal (RFC SEAMS-1 P1): match the low-frequency tone across the moved seam with a
+    // smoothstep offset decaying outward, preserving the photo's high-frequency texture.
+    if matches!(axes, Axes::Both | Axes::X) && band > 0 {
+        for y in 0..h {
+            let (mut el, mut er) = ([0f32; 3], [0f32; 3]);
+            for i in 0..k {
+                let l = src.get_pixel((cx as i64 - 1 - i).rem_euclid(w as i64) as u32, y);
+                let r = src.get_pixel((cx as i64 + i).rem_euclid(w as i64) as u32, y);
+                for c in 0..3 {
+                    el[c] += l.0[c] as f32;
+                    er[c] += r.0[c] as f32;
+                }
+            }
+            let d = [0, 1, 2].map(|c| (el[c] - er[c]) / k as f32 * 0.5);
+            for dx in 1..=band.min(cx) {
+                let ramp = smoothstep(1.0 - (dx as f32 - 0.5) / band as f32); // 1 at seam → 0 outward
+                let pl = out.get_pixel_mut(cx - dx, y);
+                for c in 0..3 {
+                    pl.0[c] = (src.get_pixel(cx - dx, y).0[c] as f32 + d[c] * ramp).clamp(0.0, 255.0) as u8;
+                }
                 if cx + dx < w {
-                    out.put_pixel(cx + dx, y, blend(r, l, t));
+                    let pr = out.get_pixel_mut(cx + dx, y);
+                    for c in 0..3 {
+                        pr.0[c] = (src.get_pixel(cx + dx, y).0[c] as f32 - d[c] * ramp).clamp(0.0, 255.0) as u8;
+                    }
                 }
             }
         }
     }
-    if matches!(axes, Axes::Both | Axes::Y) {
-        for dy in 1..=band.min(cy) {
-            let t = 0.5 * (1.0 - (dy as f32 - 0.5) / band as f32);
-            for x in 0..w {
-                let (tp, bt) = (*src.get_pixel(x, cy - dy), *src.get_pixel(x, (cy + dy).min(h - 1)));
-                out.put_pixel(x, cy - dy, blend(tp, bt, t));
+    let after_x = out.clone();
+    if matches!(axes, Axes::Both | Axes::Y) && band > 0 {
+        for x in 0..w {
+            let (mut et, mut eb) = ([0f32; 3], [0f32; 3]);
+            for i in 0..k {
+                let tp = after_x.get_pixel(x, (cy as i64 - 1 - i).rem_euclid(h as i64) as u32);
+                let bt = after_x.get_pixel(x, (cy as i64 + i).rem_euclid(h as i64) as u32);
+                for c in 0..3 {
+                    et[c] += tp.0[c] as f32;
+                    eb[c] += bt.0[c] as f32;
+                }
+            }
+            let d = [0, 1, 2].map(|c| (et[c] - eb[c]) / k as f32 * 0.5);
+            for dy in 1..=band.min(cy) {
+                let ramp = smoothstep(1.0 - (dy as f32 - 0.5) / band as f32);
+                let ptp = out.get_pixel_mut(x, cy - dy);
+                for c in 0..3 {
+                    ptp.0[c] = (after_x.get_pixel(x, cy - dy).0[c] as f32 + d[c] * ramp).clamp(0.0, 255.0) as u8;
+                }
                 if cy + dy < h {
-                    out.put_pixel(x, cy + dy, blend(bt, tp, t));
+                    let pbt = out.get_pixel_mut(x, cy + dy);
+                    for c in 0..3 {
+                        pbt.0[c] = (after_x.get_pixel(x, cy + dy).0[c] as f32 - d[c] * ramp).clamp(0.0, 255.0) as u8;
+                    }
                 }
             }
         }
@@ -253,5 +359,56 @@ mod tests {
         let before = seam(&img);
         let after = seam(&feather_seam(&img, 4, Axes::X));
         assert!(after < before, "feather should reduce the wrap seam ({before} → {after})");
+    }
+
+    #[test]
+    fn smoothstep_is_eased_and_monotonic() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(1.0), 1.0);
+        assert!((smoothstep(0.5) - 0.5).abs() < 1e-6, "symmetric midpoint");
+        let mut prev = -1.0;
+        for i in 0..=20 {
+            let v = smoothstep(i as f32 / 20.0);
+            assert!(v >= prev, "monotonic non-decreasing");
+            prev = v;
+        }
+        assert_eq!(smoothstep(-3.0), 0.0, "clamps below");
+        assert_eq!(smoothstep(3.0), 1.0, "clamps above");
+    }
+
+    #[test]
+    fn seam_score_measures_and_feather_lowers_it() {
+        // Left-dark / right-bright → a big wrap seam; the frequency-aware feather must lower seam_score.
+        let img = RgbImage::from_fn(48, 12, |x, _| if x < 24 { image::Rgb([20, 40, 60]) } else { image::Rgb([210, 190, 170]) });
+        let raw = seam_score(&img, Axes::X);
+        let fixed = seam_score(&feather_seam(&img, 8, Axes::X), Axes::X);
+        assert!(raw > 3.0, "raw image has a visible seam (score {raw:.2})");
+        assert!(fixed < raw, "feather lowers the seam score ({raw:.2} → {fixed:.2})");
+    }
+
+    #[test]
+    fn mirror_tile_is_exactly_seamless() {
+        // An asymmetric gradient: mirror-tiling makes opposite edges identical by construction.
+        let img = RgbImage::from_fn(40, 16, |x, y| image::Rgb([(x * 5) as u8, (y * 9) as u8, 90]));
+        let m = mirror_tile(&img, Axes::Both);
+        let (w, h) = m.dimensions();
+        for y in 0..h {
+            assert_eq!(m.get_pixel(0, y), m.get_pixel(w - 1, y), "left edge == right edge");
+        }
+        for x in 0..w {
+            assert_eq!(m.get_pixel(x, 0), m.get_pixel(x, h - 1), "top edge == bottom edge");
+        }
+        assert!(seam_score(&m, Axes::Both) < 1.5, "mirror boundary is as smooth as the interior");
+    }
+
+    #[test]
+    fn feather_preserves_interior_high_frequency() {
+        // A high-frequency checker away from the seam must be untouched (freq-aware = tone-only offset).
+        let img = RgbImage::from_fn(64, 8, |x, y| { let v = if (x + y) % 2 == 0 { 200 } else { 40 }; image::Rgb([v, v, v]) });
+        let out = feather_seam(&img, 6, Axes::X);
+        // column at the centre (far from either wrap edge) is unchanged.
+        for y in 0..8 {
+            assert_eq!(out.get_pixel(32, y), img.get_pixel(32, y), "interior detail preserved");
+        }
     }
 }

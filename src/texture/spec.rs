@@ -33,7 +33,7 @@ pub struct TextureSpec {
 /// Seamless-tiling control (RFC §7).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Seamless {
-    /// `circular` (default) | `offset` | `none`.
+    /// `circular` (default) | `offset` | `mirror` | `none`.
     pub mode: Option<String>,
     /// `both` (default) | `x` | `y` — a trim sheet tiles one axis.
     pub axes: Option<String>,

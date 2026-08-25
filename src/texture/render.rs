@@ -134,7 +134,12 @@ async fn albedo_for(plan: &RenderPlan, seed: u64) -> Result<image::RgbImage> {
     };
     // Seamless. A generated albedo is already near-tileable (flat/tileable prompt) → a boundary feather.
     // A photo isn't → the offset-and-heal `make_tileable` (roll + central-cross feather).
-    if plan.seamless_mode != "none" {
+    if plan.seamless_mode == "mirror" {
+        // Mirror-tile (SEAMS-1 P1): opposite edges identical by construction → guaranteed seamless, no
+        // blend smear. Trades a mirror-symmetric pattern for a perfect boundary (good for organic/fabric).
+        let axes = Axes::parse(&plan.seamless_axes);
+        albedo = seamless::mirror_tile(&albedo, axes);
+    } else if plan.seamless_mode != "none" {
         let axes = Axes::parse(&plan.seamless_axes);
         albedo = if is_photo {
             // Offset-and-heal the interior seams, then a light boundary feather for any residual.
