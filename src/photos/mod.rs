@@ -221,6 +221,7 @@ enum EditCmd {
     WriteExif,  // write the record's title/author/©/date/geotag into the file's binary EXIF (confirm)
     Etch,       // etch plakat provenance into the target file(s) in place (confirm) — RFC QUALITY-8 P5
     EtchVerify, // verify provenance on the cursor image (offline L0+L1) → status verdict
+    NaturalizeAll, // batch weight-free de-slop across every selected target — RFC QUALITY-9 P3
     Convert,    // prompts for format / size
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
@@ -319,6 +320,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("grayscale / desaturate", "gg", EditCmd::Op(Grayscale)),
         ("auto-enhance (auto levels + colour)", "ga", EditCmd::Op(AutoEnhance)),
         ("naturalize (weight-free de-slop)…", "an", EditCmd::Adjust(Naturalize(60))),
+        ("naturalize ALL selected (batch de-slop)", "aN", EditCmd::NaturalizeAll),
         ("straighten (rotate by degrees)", "gs", EditCmd::Straighten),
         ("keystone vertical (fix verticals)…", "gk", EditCmd::Adjust(Keystone { axis: 0, amount: 0 })),
         ("keystone horizontal…", "gK", EditCmd::Adjust(Keystone { axis: 1, amount: 0 })),
@@ -2083,6 +2085,10 @@ impl App {
             EditCmd::EtchVerify => {
                 self.edit_menu = false;
                 self.verify_provenance();
+            }
+            EditCmd::NaturalizeAll => {
+                self.edit_menu = false;
+                self.naturalize_targets();
             }
             EditCmd::Convert => {
                 self.edit_menu = false;
@@ -4640,6 +4646,14 @@ impl App {
         if !self.status.starts_with("no ") {
             self.status = format!("applied {label}");
         }
+    }
+
+    /// Batch weight-free **de-slop** (RFC QUALITY-9 P3): append `Naturalize(60)` to every selected
+    /// target's edit log and rebuild each. Recorded → per-image undoable/versioned like any edit op;
+    /// turns a multi-select into a one-action folder de-slop.
+    fn naturalize_targets(&mut self) {
+        let entries = vec![edit::EditOp::Naturalize(60).to_entry()];
+        self.apply_edit_ops_to_targets(&entries, "naturalized");
     }
 
     /// Copy the cursor image's edit stack to the in-session clipboard.
