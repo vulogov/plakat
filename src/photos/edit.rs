@@ -84,6 +84,10 @@ pub enum EditOp {
     GrayPointWB { x: i32, y: i32 },
     /// Film grain: add deterministic monochrome noise (positive only).
     Grain(i32),
+    /// Weight-free **de-slop** (RFC QUALITY-8 P5): the naturalize *Photo* recipe scaled by
+    /// strength (0–100). Softens the AI/computer "slop" tells — oversaturation, plastic
+    /// smoothness, flat contrast — while preserving the original. Deterministic → replay-safe.
+    Naturalize(i32),
     /// Median despeckle: blend toward a 3×3 per-channel median (positive only).
     Despeckle(i32),
     /// Graduated ND: darken (positive) / lighten (negative) a linear gradient from an edge
@@ -256,6 +260,7 @@ impl EditOp {
             EditOp::SelectiveLum { hue, lum } => adjust::selective_lum(&img, hue, lum),
             EditOp::GrayPointWB { x, y } => adjust::gray_point_wb(&img, x, y),
             EditOp::Grain(v) => adjust::grain(&img, v),
+            EditOp::Naturalize(v) => naturalize_op(&img, v),
             EditOp::Despeckle(v) => adjust::despeckle(&img, v),
             EditOp::GradND { dir, strength } => adjust::grad_nd(&img, dir, strength),
             EditOp::Radial(v) => adjust::radial(&img, v),
@@ -376,6 +381,7 @@ impl EditOp {
             | EditOp::Saturation(v) | EditOp::Vibrance(v) | EditOp::Warmth(v) | EditOp::Tint(v)
             | EditOp::Definition(v) | EditOp::Sharpen(v) | EditOp::NoiseReduction(v) | EditOp::Dehaze(v)
             | EditOp::HueRotate(v) | EditOp::SplitTone(v) | EditOp::Vignette(v) | EditOp::Grain(v)
+            | EditOp::Naturalize(v)
             | EditOp::Despeckle(v) | EditOp::Radial(v) | EditOp::Clahe(v) | EditOp::Posterize(v)
             | EditOp::Solarize(v) | EditOp::Pixelate(v) | EditOp::PencilSketch(v) | EditOp::Cartoon(v)
             | EditOp::Emboss(v) | EditOp::Blur(v) | EditOp::Bloom(v) | EditOp::Charcoal(v)
@@ -421,6 +427,7 @@ impl EditOp {
             EditOp::SplitTone(_) => EditOp::SplitTone(v),
             EditOp::Vignette(_) => EditOp::Vignette(v),
             EditOp::Grain(_) => EditOp::Grain(v),
+            EditOp::Naturalize(_) => EditOp::Naturalize(v),
             EditOp::Despeckle(_) => EditOp::Despeckle(v),
             EditOp::Radial(_) => EditOp::Radial(v),
             EditOp::Clahe(_) => EditOp::Clahe(v),
@@ -465,7 +472,7 @@ impl EditOp {
     pub fn scalar_range(&self) -> (i32, i32, i32) {
         match self {
             EditOp::HueRotate(_) => (-180, 180, 5),
-            EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
+            EditOp::NoiseReduction(_) | EditOp::Grain(_) | EditOp::Naturalize(_) | EditOp::Despeckle(_) | EditOp::Dehaze(_)
             | EditOp::Clahe(_) | EditOp::Posterize(_) | EditOp::Solarize(_) | EditOp::Pixelate(_)
             | EditOp::PencilSketch(_) | EditOp::Cartoon(_) | EditOp::Emboss(_) | EditOp::Blur(_)
             | EditOp::Bloom(_) | EditOp::Charcoal(_) | EditOp::Halftone(_) | EditOp::OilPaint { .. }
@@ -521,6 +528,7 @@ impl EditOp {
             EditOp::SelectiveLum { hue, lum } => format!("selective lum {hue}°·{lum:+}"),
             EditOp::GrayPointWB { .. } => "gray-point WB".into(),
             EditOp::Grain(_) => "film grain".into(),
+            EditOp::Naturalize(_) => "naturalize (de-slop)".into(),
             EditOp::Despeckle(_) => "despeckle".into(),
             EditOp::GradND { dir, .. } => {
                 format!("grad ND {}", ["top", "bottom", "left", "right"].get(*dir as usize).unwrap_or(&"top"))
@@ -660,6 +668,7 @@ impl EditOp {
                 "gray_point_wb"
             }
             EditOp::Grain(v) => val_op(&mut params, v, "grain"),
+            EditOp::Naturalize(v) => val_op(&mut params, v, "naturalize"),
             EditOp::Despeckle(v) => val_op(&mut params, v, "despeckle"),
             EditOp::GradND { dir, strength } => {
                 params.insert("dir".into(), serde_json::json!(dir));
@@ -857,6 +866,7 @@ impl EditOp {
             "split_tone" | "split_tone_warm" => EditOp::SplitTone(35),
             "split_tone_cool" => EditOp::SplitTone(-35),
             "grain" | "film_grain" | "add_grain" => EditOp::Grain(30),
+            "naturalize" | "deslop" | "de_slop" => EditOp::Naturalize(60),
             "despeckle" | "median" | "remove_speckle" => EditOp::Despeckle(55),
             "burn" => EditOp::Radial(30),
             "dodge" => EditOp::Radial(-30),
@@ -989,6 +999,7 @@ impl EditOp {
             "selective_lum" => EditOp::SelectiveLum { hue: iv("hue", 0), lum: iv("lum", 0) },
             "gray_point_wb" => EditOp::GrayPointWB { x: iv("x", 500), y: iv("y", 500) },
             "grain" => EditOp::Grain(val()),
+            "naturalize" => EditOp::Naturalize(val()),
             "despeckle" => EditOp::Despeckle(val()),
             "grad_nd" => EditOp::GradND { dir: iv("dir", 0), strength: iv("strength", 0) },
             "radial" => EditOp::Radial(val()),
@@ -2941,6 +2952,29 @@ fn chromatic_aberration(img: &DynamicImage, strength: i32) -> DynamicImage {
     DynamicImage::ImageRgb8(out)
 }
 
+/// Weight-free **de-slop** (RFC QUALITY-8 P5): run the naturalize *Photo* recipe scaled by
+/// `strength` (0–100 → 0.0–1.0) over the whole image. Delegates to the shared [`crate::naturalize`]
+/// core (gray-world WB + auto-levels + vibrance + unsharp + variance-gated micro-texture + a gentle
+/// desaturating grade) so the photo manager and the CLI/`plakat ui` tab stay in lock-step.
+/// Deterministic → replay-safe through the edit pipeline.
+fn naturalize_op(img: &DynamicImage, strength: i32) -> DynamicImage {
+    let s = (strength.clamp(0, 100) as f32) / 100.0;
+    if s == 0.0 {
+        return img.clone();
+    }
+    let mut p = crate::naturalize::Preset::Photo.params();
+    p.grain *= s;
+    p.aberration *= s;
+    p.vignette *= s;
+    p.bloom *= s;
+    p.desaturate *= s;
+    p.warm *= s;
+    p.defocus *= s;
+    p.polish *= s;
+    p.micro *= s;
+    DynamicImage::ImageRgb8(crate::naturalize::apply(&img.to_rgb8(), &p))
+}
+
 /// Keystone / perspective correction: a trapezoidal warp (bilinear, edge-clamped so there are no
 /// black wedges). `axis` 0 scales width per row (vertical keystone — converging verticals), 1 scales
 /// height per column (horizontal keystone); `amount` −100..100.
@@ -3332,6 +3366,24 @@ mod tests {
         let g2 = EditOp::Grain(40).apply(src.clone()).to_rgb8();
         assert_eq!(g1, g2, "grain must be replay-stable");
         assert_ne!(g1, src.to_rgb8(), "grain changes pixels");
+    }
+
+    #[test]
+    fn naturalize_op_is_replay_stable_and_a_noop_at_zero() {
+        // A textured image so the weight-free pass has something to work on.
+        let src = DynamicImage::ImageRgb8(ImageBuffer::from_fn(24, 24, |x, y| {
+            Rgb([((x * 11) % 256) as u8, ((y * 7) % 256) as u8, (((x + y) * 5) % 256) as u8])
+        }));
+        // Deterministic → replaying is byte-identical (safe through the edit pipeline).
+        let a = EditOp::Naturalize(60).apply(src.clone()).to_rgb8();
+        let b = EditOp::Naturalize(60).apply(src.clone()).to_rgb8();
+        assert_eq!(a, b, "naturalize must be replay-stable");
+        assert_ne!(a, src.to_rgb8(), "naturalize at 60 changes pixels");
+        // Strength 0 is an exact no-op (the identity guard).
+        assert_eq!(EditOp::Naturalize(0).apply(src.clone()).to_rgb8(), src.to_rgb8(), "0 = identity");
+        // Round-trips through the serialised EditEntry form.
+        let e = EditOp::Naturalize(60).to_entry();
+        assert_eq!(EditOp::from_entry(&e), Some(EditOp::Naturalize(60)), "entry round-trip");
     }
 
     #[test]

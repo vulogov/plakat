@@ -80,6 +80,8 @@ pub enum AlbumMode {
 
 /// A tree/curation action awaiting text or confirmation in the command pane (RFC §11).
 enum PendingCmd {
+    /// Etch plakat provenance into the target file(s) in place (RFC QUALITY-8 P5) — confirm.
+    Etch,
     NewFolder { parent: PathBuf },
     NewAlbum { parent: PathBuf },
     Rename { path: PathBuf },
@@ -217,6 +219,8 @@ enum EditCmd {
     StripExif,  // strip file metadata (confirm)
     RedactGps,  // remove only GPS, keep the rest of the EXIF (confirm)
     WriteExif,  // write the record's title/author/©/date/geotag into the file's binary EXIF (confirm)
+    Etch,       // etch plakat provenance into the target file(s) in place (confirm) — RFC QUALITY-8 P5
+    EtchVerify, // verify provenance on the cursor image (offline L0+L1) → status verdict
     Convert,    // prompts for format / size
     Watermark,  // prompts for text (+ optional font)
     Lut,        // prompts for a .cube path
@@ -314,6 +318,7 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("flip vertical", "gv", EditCmd::Op(FlipV)),
         ("grayscale / desaturate", "gg", EditCmd::Op(Grayscale)),
         ("auto-enhance (auto levels + colour)", "ga", EditCmd::Op(AutoEnhance)),
+        ("naturalize (weight-free de-slop)…", "an", EditCmd::Adjust(Naturalize(60))),
         ("straighten (rotate by degrees)", "gs", EditCmd::Straighten),
         ("keystone vertical (fix verticals)…", "gk", EditCmd::Adjust(Keystone { axis: 0, amount: 0 })),
         ("keystone horizontal…", "gK", EditCmd::Adjust(Keystone { axis: 1, amount: 0 })),
@@ -433,6 +438,8 @@ fn edit_commands() -> Vec<(&'static str, &'static str, EditCmd)> {
         ("redo", "eo", EditCmd::Redo),
         ("revert to original", "e0", EditCmd::Revert),
         // Manage (m)
+        ("etch plakat provenance (into file)…", "me", EditCmd::Etch),
+        ("verify provenance (is it plakat?)", "mv", EditCmd::EtchVerify),
         ("strip metadata (EXIF / GPS)", "mm", EditCmd::StripExif),
         ("redact GPS only (keep other EXIF)", "mg", EditCmd::RedactGps),
         ("convert format / resize (jpg·png·webp)", "mc", EditCmd::Convert),
@@ -2064,6 +2071,19 @@ impl App {
                     PendingCmd::WriteExif,
                 );
             }
+            EditCmd::Etch => {
+                self.edit_menu = false;
+                let n = self.targets().len();
+                self.prompt(
+                    format!("etch plakat provenance into {n} file(s) (re-encodes as PNG, in place)? [y/N]: "),
+                    "",
+                    PendingCmd::Etch,
+                );
+            }
+            EditCmd::EtchVerify => {
+                self.edit_menu = false;
+                self.verify_provenance();
+            }
             EditCmd::Convert => {
                 self.edit_menu = false;
                 self.prompt("convert to (fmt [Npx | NkB]): ", "", PendingCmd::Convert);
@@ -3694,6 +3714,59 @@ impl App {
         };
     }
 
+    /// Etch **provenance** (RFC QUALITY-8 P5) into the target file(s) in place: a fresh, parentless
+    /// [`crate::etch::fresh_etch`] (L0 manifest tEXt chunk + L1 pixel DCT-QIM + JSON sidecar) bound to
+    /// the current pixels. Re-encodes each file as PNG with the etch embedded. Verify later with the
+    /// "verify provenance" action or `plakat doctor --if-plakat`.
+    fn etch_targets(&mut self) {
+        let files = self.target_sources();
+        if files.is_empty() {
+            self.status = "nothing to etch".into();
+            return;
+        }
+        let (mut ok, mut err) = (0u32, 0u32);
+        for (_dir, path) in &files {
+            let done = image::open(path).ok().and_then(|img| {
+                let rgb = img.to_rgb8();
+                crate::etch::fresh_etch(rgb.as_raw(), rgb.width(), rgb.height(), path, None).ok()
+            });
+            match done {
+                Some(_) => {
+                    ok += 1;
+                    self.thumbs.remove(path);
+                }
+                None => err += 1,
+            }
+        }
+        if self.mode == AlbumMode::Image {
+            self.load_view();
+        }
+        self.status = if err > 0 {
+            format!("etched provenance into {ok} file(s) · {err} failed")
+        } else {
+            format!("etched provenance into {ok} file(s) — verify with the ‘verify provenance’ action")
+        };
+    }
+
+    /// Verify **provenance** (RFC QUALITY-8 P5) on the cursor image: fuse the offline L0 (manifest) +
+    /// L1 (pixel etch) layers via [`crate::etch::detect::verify`] and summarise the verdict in the
+    /// status line (the same engine behind `plakat doctor --if-plakat`).
+    fn verify_provenance(&mut self) {
+        let Some(path) = self.cur_idx().and_then(|i| self.album_paths.get(i).cloned()) else {
+            self.status = "open an image first".into();
+            return;
+        };
+        let r = crate::etch::detect::verify(&path, crate::etch::PUBLIC_KEY, false);
+        let mark = match r.verdict {
+            crate::etch::detect::Verdict::Generated | crate::etch::detect::Verdict::Derived => "✔",
+            crate::etch::detect::Verdict::ProbableDerivative => "≈",
+            crate::etch::detect::Verdict::Inconclusive => "~",
+            crate::etch::detect::Verdict::NoEvidence => "✗",
+        };
+        let id = r.id.map(|i| format!(" · id {}", i.hex())).unwrap_or_default();
+        self.status = format!("{mark} {}{id} · L0 {} · L1 {}", r.verdict.slug(), r.l0.state, r.l1.state);
+    }
+
     /// Collect the writable EXIF fields from an image's album record (title/author/copyright/date +
     /// geotag from the cached EXIF sub-record). Empty strings are treated as unset.
     fn exif_fields_for(&self, dir: &Path, path: &Path) -> exifwrite::MetaFields {
@@ -5165,6 +5238,10 @@ impl App {
                 }
                 Some(PendingCmd::WriteExif) if arg.eq_ignore_ascii_case("y") => {
                     self.write_exif_targets();
+                    fs_changed = true;
+                }
+                Some(PendingCmd::Etch) if arg.eq_ignore_ascii_case("y") => {
+                    self.etch_targets();
                     fs_changed = true;
                 }
                 Some(PendingCmd::Panorama) if !arg.is_empty() => {
