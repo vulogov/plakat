@@ -61,15 +61,18 @@ fn tile_origins(total: u32, tile: u32, stride: u32) -> Vec<u32> {
     v
 }
 
-/// Separable feather weights (tile×tile): a linear ramp over `overlap` px at each border, 1.0 in
-/// the interior. Blending decoded tiles by this weight hides seams in the overlap regions.
+/// Separable feather weights (tile×tile): a **smoothstep** ramp over `overlap` px at each border, 1.0 in
+/// the interior. Blending decoded tiles by this weight hides seams in the overlap regions; the C¹
+/// smoothstep (vs a linear ramp) removes the faint weight-slope discontinuity at the overlap edge.
+/// (RFC SEAMS-1 P2.)
 fn feather_map(tile: u32, overlap: u32) -> Vec<f32> {
     let ramp = |i: u32| -> f32 {
         if overlap == 0 {
             return 1.0;
         }
         let d = i.min(tile - 1 - i); // distance to nearest edge
-        ((d as f32 + 0.5) / overlap as f32).clamp(0.05, 1.0)
+        let r = ((d as f32 + 0.5) / overlap as f32).clamp(0.0, 1.0);
+        (r * r * (3.0 - 2.0 * r)).clamp(0.05, 1.0) // smoothstep, floored for the final divide guard
     };
     let mut w = vec![0f32; (tile * tile) as usize];
     for y in 0..tile {
@@ -79,6 +82,30 @@ fn feather_map(tile: u32, overlap: u32) -> Vec<f32> {
         }
     }
     w
+}
+
+/// Per-channel mean colour offset to ADD to a decoded tile so it matches the already-placed canvas over
+/// their overlap (RFC SEAMS-1 P2 — cross-tile colour match). Averaged over the tile pixels whose canvas
+/// cell already has weight (`wsum>0`), then clamped so a genuinely different tile is reduced, not warped.
+/// `[0;3]` when there's no overlap yet (the first tile placed at any row/col).
+fn tile_color_offset(canvas: &[f32], wsum: &[f32], cw: usize, ox: u32, oy: u32, rgb: &[u8], tile: u32) -> [f32; 3] {
+    let (mut off, mut n) = ([0f64; 3], 0u64);
+    for ty in 0..tile {
+        for tx in 0..tile {
+            let cidx = (oy + ty) as usize * cw + (ox + tx) as usize;
+            if wsum[cidx] > 1e-6 {
+                let sidx = ((ty * tile + tx) * 3) as usize;
+                for c in 0..3 {
+                    off[c] += canvas[cidx * 3 + c] as f64 / wsum[cidx] as f64 - rgb[sidx + c] as f64;
+                }
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return [0.0; 3];
+    }
+    [0, 1, 2].map(|c| ((off[c] / n as f64) as f32).clamp(-24.0, 24.0))
 }
 
 /// Pack an RGB image crop into a `(1,3,H,W)` tensor. `signed` → `[-1,1]` (VAE input); else `[0,1]`
@@ -194,16 +221,24 @@ impl Pipeline {
                 let (rgb, rw, rh) = self.decode_to_rgb8(&latents)?;
                 debug_assert_eq!((rw, rh), (opts.tile, opts.tile));
 
-                // Feathered accumulate into the canvas.
+                // P2 cross-tile colour/tone match (RFC SEAMS-1): each tile denoises independently, so its
+                // mean exposure can drift from its neighbours — the feather then blends two exposures into
+                // a visible seam. Measure the per-channel mean offset against the ALREADY-placed canvas over
+                // this tile's overlap region and shift the tile to match (clamped, so a genuinely different
+                // tile is reduced, not warped). The first tile has no overlap → no shift; later tiles chain
+                // to it.
+                let off = tile_color_offset(&canvas, &wsum, cw, ox, oy, &rgb, opts.tile);
+
+                // Feathered accumulate into the canvas (with the colour-match offset applied).
                 for ty in 0..rh {
                     for tx in 0..rw {
                         let w = feather[(ty * opts.tile + tx) as usize];
                         let (gx, gy) = ((ox + tx) as usize, (oy + ty) as usize);
                         let cidx = gy * cw + gx;
                         let sidx = ((ty * rw + tx) * 3) as usize;
-                        canvas[cidx * 3] += rgb[sidx] as f32 * w;
-                        canvas[cidx * 3 + 1] += rgb[sidx + 1] as f32 * w;
-                        canvas[cidx * 3 + 2] += rgb[sidx + 2] as f32 * w;
+                        for c in 0..3 {
+                            canvas[cidx * 3 + c] += (rgb[sidx + c] as f32 + off[c]).clamp(0.0, 255.0) * w;
+                        }
                         wsum[cidx] += w;
                     }
                 }
@@ -226,5 +261,50 @@ impl Pipeline {
         crate::imaging::io::save_rgb_u8(&out, tw, th, &opts.out_path)?;
         crate::ui::progress::println(&format!("→ {}", opts.out_path.display()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feather_map_is_smoothstep_and_monotonic_to_interior() {
+        let (tile, overlap) = (16u32, 4u32);
+        let w = feather_map(tile, overlap);
+        // Interior weight is 1.0.
+        assert!((w[(8 * tile + 8) as usize] - 1.0).abs() < 1e-6, "interior = 1.0");
+        // Along the interior row (y=8, wy=1.0) the separable weight IS the 1-D ramp — monotone inward.
+        let row = |x: u32| w[(8 * tile + x) as usize];
+        assert!(row(0) <= row(1) && row(1) <= row(2) && row(2) <= row(3), "ramp rises inward");
+        assert!((row(0) - 0.05).abs() < 1e-6, "edge floored at 0.05");
+        // Every weight is a product of two floored ramps → strictly positive, at most 1.0.
+        assert!(w.iter().all(|&v| v > 0.0 && v <= 1.0 + 1e-6), "weights in (0, 1]");
+        // overlap 0 → all ones (no feather).
+        assert!(feather_map(8, 0).iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn tile_color_offset_matches_a_drifted_tile_and_is_clamped() {
+        // 4×4 canvas, one 2×2 tile already placed (value 200) at (0,0), full weight.
+        let (cw, ch, tile) = (4usize, 4usize, 2u32);
+        let mut canvas = vec![0f32; cw * ch * 3];
+        let mut wsum = vec![0f32; cw * ch];
+        for gy in 0..2 {
+            for gx in 0..2 {
+                let c = gy * cw + gx;
+                for k in 0..3 {
+                    canvas[c * 3 + k] = 200.0;
+                }
+                wsum[c] = 1.0;
+            }
+        }
+        // A new tile placed at (0,0) whose pixels are darker (120) → offset should be +80, clamped to +24.
+        let rgb_dark = vec![120u8; (tile * tile * 3) as usize];
+        let off = tile_color_offset(&canvas, &wsum, cw, 0, 0, &rgb_dark, tile);
+        assert_eq!(off, [24.0, 24.0, 24.0], "raw +80 clamped to +24 (lift toward the neighbour)");
+        // A tile placed with NO overlap (all wsum there is 0) → no shift.
+        let off_none = tile_color_offset(&vec![0f32; cw * ch * 3], &vec![0f32; cw * ch], cw, 2, 2, &rgb_dark, tile);
+        assert_eq!(off_none, [0.0, 0.0, 0.0], "no overlap → no colour shift");
     }
 }
