@@ -236,6 +236,13 @@ pub async fn render_material(spec: &TextureSpec, out: &std::path::Path, opts: &R
         } else {
             None
         };
+        // SEAMS-1 P3: for a PHOTO with no explicit height, estimate height with pigment suppression
+        // (chroma-gated) so albedo colour detail doesn't become fake geometry — better than raw luma.
+        let height = match height {
+            Some(h) => Some(h),
+            None if plan.from_image.is_some() => Some(crate::texture::derive::height_from_photo(&albedo)),
+            None => None,
+        };
         let mut m = Material::derive(
             albedo,
             height,

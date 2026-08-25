@@ -103,6 +103,39 @@ pub fn height_from_albedo(albedo: &RgbImage) -> GrayImage {
     autocontrast(&g)
 }
 
+/// Height from a **photo** albedo (RFC SEAMS-1 P3): like [`height_from_albedo`] but **chroma-gated**, so
+/// coloured pigment detail doesn't become fake geometry (a red speck on a flat wall should not read as a
+/// pit). Split luminance into structure (low-freq, circular-blurred) + detail (high-freq); keep the detail
+/// where the pixel is **neutral** (genuine micro-relief) and attenuate it where **chroma is high** (that
+/// variation is pigment colour, not shape). Circular ops → still tiles. `height_from_albedo` stays the
+/// path for generated albedos (already flat-lit); this is for the image-to-material path.
+pub fn height_from_photo(albedo: &RgbImage) -> GrayImage {
+    let (w, h) = albedo.dimensions();
+    let mut luma = GrayImage::new(w, h);
+    let mut chroma = vec![0f32; (w * h) as usize];
+    for (x, y, p) in albedo.enumerate_pixels() {
+        luma.put_pixel(x, y, Luma([(luma01(p) * 255.0).round() as u8]));
+        let (r, g, b) = (p.0[0] as f32, p.0[1] as f32, p.0[2] as f32);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        chroma[(y * w + x) as usize] = if mx > 1.0 { (mx - mn) / 255.0 } else { 0.0 };
+    }
+    let low = circular_box_blur(&luma, 2); // low-freq structure
+    let gate = 0.75f32; // how hard coloured detail is suppressed
+    let mut g = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let l = luma.get_pixel(x, y).0[0] as f32;
+            let lo = low.get_pixel(x, y).0[0] as f32;
+            let detail = l - lo; // high-freq component
+            let keep = (1.0 - gate * chroma[(y * w + x) as usize]).clamp(0.0, 1.0);
+            let hv = (lo + detail * keep).clamp(0.0, 255.0);
+            g.put_pixel(x, y, Luma([hv.round() as u8]));
+        }
+    }
+    autocontrast(&g)
+}
+
 /// Circular tangent-space normal from a height map (RFC §8, G0.4). `strength` scales the slope; `opengl`
 /// = +Y (else DirectX -Y). Encoded to `[0,1]` RGB.
 pub fn normal_from_height(height: &GrayImage, strength: f32, opengl: bool) -> RgbImage {
@@ -370,6 +403,29 @@ fn autocontrast(g: &GrayImage) -> GrayImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn height_from_photo_suppresses_coloured_pigment_vs_neutral_relief() {
+        // A flat gray field with two equal-luma patches: a NEUTRAL bump (grey) and a saturated COLOUR
+        // speck. height_from_albedo raises both equally (luma only); height_from_photo must raise the
+        // neutral bump MORE than the coloured speck (pigment ≠ geometry).
+        let (w, h) = (24u32, 24u32);
+        let mut img = RgbImage::from_pixel(w, h, Rgb([128, 128, 128]));
+        let (bx, by, sx, sy) = (6u32, 6u32, 18u32, 18u32); // speck centres
+        // Small (3×3) specks = genuine high-frequency detail (the "speck → pit" case).
+        for dy in 0..3u32 {
+            for dx in 0..3u32 {
+                img.put_pixel(bx - 1 + dx, by - 1 + dy, Rgb([200, 200, 200])); // neutral bump, luma 200
+                img.put_pixel(sx - 1 + dx, sy - 1 + dy, Rgb([255, 200, 60])); // saturated colour, luma ≈ 200
+            }
+        }
+        let ha = height_from_albedo(&img);
+        let hp = height_from_photo(&img);
+        let d_albedo = ha.get_pixel(bx, by).0[0] as i32 - ha.get_pixel(sx, sy).0[0] as i32;
+        let d_photo = hp.get_pixel(bx, by).0[0] as i32 - hp.get_pixel(sx, sy).0[0] as i32;
+        assert!(d_albedo.abs() <= 20, "luma-only height treats the two patches ~equally ({d_albedo})");
+        assert!(d_photo > d_albedo + 20, "photo height lifts neutral relief above coloured pigment ({d_albedo} → {d_photo})");
+    }
 
     #[test]
     fn flat_height_gives_a_flat_normal() {
