@@ -1,6 +1,11 @@
 # RFC SEAMS-1 — seam quality: texture tiling + upscale tiles (6.19.0)
 
-**Status:** draft (6.19.0). An **improvement** cycle — depth on existing features, no new flagship. Both
+**Status:** SHIPPED (6.19.0). An **improvement** cycle — depth on existing features, no new flagship.
+
+**All phases shipped:** P1 frequency-aware texture feather + `seam_score` + `mode: "mirror"` · P2 upscale
+smoothstep overlap feather + cross-tile colour match · P3 pigment-aware (chroma-gated) normal-from-photo.
+
+Both
 `plakat texture` (seamless tiling) and `plakat upscale --diffusion` (tiled refine) rely on **feather
 blends** because the native circular-conv path was G0-killed on this hardware. Feathering works but can
 leave a visible soft band (texture) or tile-to-tile drift (upscale). This cycle makes those seams better,

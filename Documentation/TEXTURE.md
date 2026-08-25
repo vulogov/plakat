@@ -389,9 +389,12 @@ schema tag is `"texture/1"`. A full spec:
   # from_image: "scan.jpg"
 
   seamless: {
-    mode: "circular"     # circular (default) | offset | none
+    mode: "circular"     # circular (default) | offset | mirror | none
     axes: "both"         # both (default) | x | y   — x/y = a trim sheet tiling one axis
   }
+  # circular/offset — frequency-aware feather (6.19): matches the low-frequency tone across the seam with
+  #   a smoothstep ramp while preserving all high-frequency detail (no blur band). mirror — reflect so
+  #   opposite edges are identical by construction (perfectly seamless, mirror-symmetric pattern).
 
   channels: {
     height:   "auto"          # auto (depth+high-pass) | from-albedo (luminance) | "<prompt>"
@@ -458,6 +461,18 @@ The RFC's headline was native **circular convolution**; the shipped approach is 
 The boundary feather is now **adaptive**: its band is sized to the material's **measured raw seam** — a
 thin band when the field is already near-tileable (so it smears less detail), the full band only for a
 genuine seam.
+
+**Frequency-aware feather (6.19).** The feather no longer cross-fades raw pixels (which blurred detail
+and could leave a tonal ramp). It now estimates the *low-frequency tone* on each edge and adds a
+**smoothstep-decaying, half-magnitude offset** so the two edges' tone **meets** at the seam, while every
+high frequency — the actual texture detail — is left untouched. A `seam_score` (cross-boundary jump ÷
+interior baseline) makes the residual measurable. New **`mode: "mirror"`** reflects the tile so opposite
+edges are identical by construction — a perfectly seamless boundary (at the cost of a mirror-symmetric
+pattern), good for organic/fabric.
+
+**Pigment-aware normal-from-photo (6.19).** For the image-to-material path, height is now estimated with a
+**chroma gate**: coloured pigment detail (a red speck) is suppressed so it doesn't become fake geometry,
+while neutral micro-relief is kept — better normals from photos.
 
 A per-step **latent-roll** plus a **vendored circular ResNet** remain the documented **escalation
 path** if a material's residual ever fails the scorecard — the measure-first path clears it in practice.
