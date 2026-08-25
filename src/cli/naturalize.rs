@@ -483,12 +483,23 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         return Ok(());
     }
 
-    // QUALITY-7 P2: export the fixed grade as a .cube LUT (no processing).
+    // QUALITY-7 P2 + QUALITY-9 P1: export a .cube LUT. With an input image, bake the PER-IMAGE colour
+    // grade (WB + auto-levels + vibrance fitted on that image, closing the 6.16 fixed-grade limit); with
+    // no input, fall back to the fixed film grade. Spatial unsharp/micro are colour-LUT-excluded either way.
     if let Some(lut) = a.export_lut.clone() {
         let (p, _) = weightfree_params(&a, a.input.as_deref())?;
         let size = a.lut_size.unwrap_or(33);
-        std::fs::write(&lut, naturalize::export_cube(p.desaturate, p.warm, size)).with_context(|| format!("writing {}", lut.display()))?;
-        println!("{} {} ({size}³ .cube — grade: desaturate {:.2}, warm {:.2})", style("wrote").green(), lut.display(), p.desaturate, p.warm);
+        let (cube, kind) = if let Some(inp) = a.input.as_deref() {
+            let src = image::open(inp).with_context(|| format!("reading {}", inp.display()))?.to_rgb8();
+            (naturalize::export_cube_image(&src, p.polish, p.desaturate, p.warm, size), "per-image colour")
+        } else {
+            (naturalize::export_cube(p.desaturate, p.warm, size), "fixed grade")
+        };
+        std::fs::write(&lut, cube).with_context(|| format!("writing {}", lut.display()))?;
+        println!(
+            "{} {} ({size}³ .cube — {kind}: polish {:.2}, desaturate {:.2}, warm {:.2})",
+            style("wrote").green(), lut.display(), p.polish, p.desaturate, p.warm
+        );
         return Ok(());
     }
 

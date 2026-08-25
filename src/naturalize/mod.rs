@@ -522,86 +522,114 @@ pub fn designature(src: &RgbImage, corner: Corner, strength: f32) -> RgbImage {
 ///      better colour without the plastic AI look,
 ///   4. **unsharp mask** — crisp the soft AI mush so edges / structure read sharply.
 /// Deterministic, no GPU. Returns the improved image; `strength <= 0` is a passthrough.
+/// The per-image **colour** parameters fitted by the polish pass (stages 1–3: white-balance gains +
+/// auto-level black/white points/scale). Every stage here is *pointwise* in (r,g,b) — so once fitted on
+/// an image, the whole colour grade is representable as a 3-D LUT (see [`export_cube_image`]). The
+/// spatial unsharp (stage 4) is deliberately NOT part of this — it can't be a colour LUT.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PolishColor {
+    s: f32,
+    gr: f32,
+    gg: f32,
+    gb: f32,
+    lo: f32,
+    hi: f32,
+    level_on: bool,
+}
+
+impl PolishColor {
+    /// Fit the colour stages on `src` at strength `s`: gray-world WB gains from the channel means, then
+    /// the 0.5 / 99.5 luminance percentiles (measured *after* WB, as the pass applies them) for auto-levels.
+    pub(crate) fn fit(src: &RgbImage, s: f32) -> Self {
+        let n = (src.width() as usize * src.height() as usize).max(1) as f32;
+        let (mut sr, mut sg, mut sb) = (0.0f32, 0.0f32, 0.0f32);
+        for p in src.pixels() {
+            sr += p.0[0] as f32;
+            sg += p.0[1] as f32;
+            sb += p.0[2] as f32;
+        }
+        let (mr, mg, mb) = (sr / n, sg / n, sb / n);
+        let grey = (mr + mg + mb) / 3.0;
+        let gain = |m: f32| {
+            let raw = if m > 1.0 { grey / m } else { 1.0 };
+            let clamped = raw.clamp(0.85, 1.15); // never more than ±15% cast correction
+            1.0 + s * (clamped - 1.0)
+        };
+        let (gr, gg, gb) = (gain(mr), gain(mg), gain(mb));
+        // Histogram of WB-adjusted luminance → percentiles (matches the sequential pass exactly).
+        let mut hist = [0u32; 256];
+        for p in src.pixels() {
+            let r = (p.0[0] as f32 * gr).clamp(0.0, 255.0);
+            let g = (p.0[1] as f32 * gg).clamp(0.0, 255.0);
+            let b = (p.0[2] as f32 * gb).clamp(0.0, 255.0);
+            hist[lum(r, g, b).clamp(0.0, 255.0) as usize] += 1;
+        }
+        let total = n;
+        let pct = |target: f32| -> f32 {
+            let mut acc = 0.0f32;
+            for (v, &c) in hist.iter().enumerate() {
+                acc += c as f32;
+                if acc / total >= target {
+                    return v as f32;
+                }
+            }
+            255.0
+        };
+        let (lo, hi) = (pct(0.005), pct(0.995));
+        Self { s, gr, gg, gb, lo, hi, level_on: hi - lo > 8.0 }
+    }
+
+    /// Apply the pointwise colour stages 1–3 (WB → auto-levels → vibrance) to one pixel (0..255 in/out).
+    pub(crate) fn map_pixel(&self, mut r: f32, mut g: f32, mut b: f32) -> [f32; 3] {
+        // 1. white balance
+        r = (r * self.gr).clamp(0.0, 255.0);
+        g = (g * self.gg).clamp(0.0, 255.0);
+        b = (b * self.gb).clamp(0.0, 255.0);
+        // 2. ratio-preserving auto-levels (same luminance gain to all three channels)
+        if self.level_on {
+            let scale = 255.0 / (self.hi - self.lo);
+            let l = lum(r, g, b);
+            if l > 1.0 {
+                let stretched = ((l - self.lo) * scale).clamp(0.0, 255.0);
+                let gain = 1.0 + self.s * (stretched / l - 1.0);
+                r = (r * gain).clamp(0.0, 255.0);
+                g = (g * gain).clamp(0.0, 255.0);
+                b = (b * gain).clamp(0.0, 255.0);
+            }
+        }
+        // 3. vibrance — pull saturation toward a natural mid, around per-pixel luminance (hue-preserving)
+        let l = lum(r, g, b);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        let sat = if mx > 1.0 { (mx - mn) / mx } else { 0.0 };
+        let factor = 1.0 + self.s * 0.5 * (0.45 - sat);
+        r = (l + (r - l) * factor).clamp(0.0, 255.0);
+        g = (l + (g - l) * factor).clamp(0.0, 255.0);
+        b = (l + (b - l) * factor).clamp(0.0, 255.0);
+        [r, g, b]
+    }
+}
+
 pub fn polish(src: &RgbImage, strength: f32) -> RgbImage {
     let s = strength.clamp(0.0, 1.0);
     if s <= 0.0 {
         return src.clone();
     }
     let (w, h) = (src.width() as usize, src.height() as usize);
-    let n = (w * h) as f32;
-    let mut r: Vec<f32> = src.pixels().map(|p| p.0[0] as f32).collect();
-    let mut g: Vec<f32> = src.pixels().map(|p| p.0[1] as f32).collect();
-    let mut b: Vec<f32> = src.pixels().map(|p| p.0[2] as f32).collect();
-
-    // 1. gray-world white balance — pull each channel mean toward the overall grey, blended by s and
-    //    clamped so a genuinely-tinted scene (sunset) isn't flattened to grey.
-    let (mr, mg, mb) = (r.iter().sum::<f32>() / n, g.iter().sum::<f32>() / n, b.iter().sum::<f32>() / n);
-    let grey = (mr + mg + mb) / 3.0;
-    let gain = |m: f32| {
-        let raw = if m > 1.0 { grey / m } else { 1.0 };
-        let clamped = raw.clamp(0.85, 1.15); // never more than ±15% cast correction
-        1.0 + s * (clamped - 1.0)
-    };
-    let (gr, gg, gb) = (gain(mr), gain(mg), gain(mb));
-    for i in 0..r.len() {
-        r[i] = (r[i] * gr).clamp(0.0, 255.0);
-        g[i] = (g[i] * gg).clamp(0.0, 255.0);
-        b[i] = (b[i] * gb).clamp(0.0, 255.0);
+    // Stages 1–3 are the fitted, pointwise colour grade (shared with the per-image LUT export).
+    let pc = PolishColor::fit(src, s);
+    let mut r = vec![0.0f32; w * h];
+    let mut g = vec![0.0f32; w * h];
+    let mut b = vec![0.0f32; w * h];
+    for (i, px) in src.pixels().enumerate() {
+        let [nr, ng, nb] = pc.map_pixel(px.0[0] as f32, px.0[1] as f32, px.0[2] as f32);
+        r[i] = nr;
+        g[i] = ng;
+        b[i] = nb;
     }
 
-    // 2. robust auto-levels — map the 0.5 / 99.5 luminance percentiles to 0 / 255 (blended by s), so a
-    //    washed-out histogram gains real black and white points without crushing.
-    let mut hist = [0u32; 256];
-    for i in 0..r.len() {
-        let l = lum(r[i], g[i], b[i]).clamp(0.0, 255.0) as usize;
-        hist[l] += 1;
-    }
-    let total = r.len() as f32;
-    let pct = |target: f32| -> f32 {
-        let mut acc = 0.0f32;
-        for (v, &c) in hist.iter().enumerate() {
-            acc += c as f32;
-            if acc / total >= target {
-                return v as f32;
-            }
-        }
-        255.0
-    };
-    let (lo, hi) = (pct(0.005), pct(0.995));
-    if hi - lo > 8.0 {
-        let scale = 255.0 / (hi - lo);
-        // Ratio-preserving: stretch LUMINANCE and apply the same per-pixel gain to all three channels, so
-        // contrast lifts without shifting colour balance or saturation (a per-channel stretch would
-        // multiply the R/G/B gaps and amplify any cast).
-        for i in 0..r.len() {
-            let l = lum(r[i], g[i], b[i]);
-            if l <= 1.0 {
-                continue;
-            }
-            let stretched = ((l - lo) * scale).clamp(0.0, 255.0);
-            let gain = 1.0 + s * (stretched / l - 1.0);
-            for ch in [&mut r, &mut g, &mut b] {
-                ch[i] = (ch[i] * gain).clamp(0.0, 255.0);
-            }
-        }
-    }
-
-    // 3. vibrance — adjust saturation toward a natural target: compress high saturation (the oversaturation
-    //    tell), gently lift low saturation. Operate around per-pixel luminance so hue is preserved.
-    for i in 0..r.len() {
-        let l = lum(r[i], g[i], b[i]);
-        let mx = r[i].max(g[i]).max(b[i]);
-        let mn = r[i].min(g[i]).min(b[i]);
-        let sat = if mx > 1.0 { (mx - mn) / mx } else { 0.0 };
-        // factor > 1 boosts, < 1 tames. Natural mid ~0.45; pull toward it.
-        let target_pull = 0.45 - sat; // + if dull, − if oversaturated
-        let factor = 1.0 + s * 0.5 * target_pull;
-        for ch in [&mut r, &mut g, &mut b] {
-            ch[i] = (l + (ch[i] - l) * factor).clamp(0.0, 255.0);
-        }
-    }
-
-    // 4. unsharp mask — sharpen against a blurred luminance so soft AI mush gains edge definition.
+    // 4. unsharp mask — sharpen against a blurred luminance so soft AI mush gains edge definition. This
+    //    is SPATIAL (depends on neighbours) → not part of the colour LUT.
     let luma: Vec<f32> = (0..r.len()).map(|i| lum(r[i], g[i], b[i])).collect();
     let blur = box_blur_gray(&luma, w, h, 2);
     let amount = s * 0.8;
@@ -987,6 +1015,34 @@ pub fn export_cube(desaturate: f32, warm: f32, size: usize) -> String {
     s
 }
 
+/// Export the **per-image adaptive** colour grade as a `.cube` 3-D LUT (RFC QUALITY-9 P1): fit the polish
+/// colour stages (white-balance + auto-levels + vibrance) on `src`, then bake *those fitted, pointwise*
+/// scalars — plus the fixed film grade (`desaturate` + `warm`) — onto the identity lattice. Unlike
+/// [`export_cube`], this captures the WB/auto-levels the fixed grade could not (closing the 6.16 limit).
+/// Honest carve-out: the polish **unsharp** (and micro-texture) are *spatial* — they are not colour LUTs
+/// and are excluded; this is the full **colour** grade for `src`, not the sharpening. `size` → `2..=64`.
+pub fn export_cube_image(src: &RgbImage, polish: f32, desaturate: f32, warm: f32, size: usize) -> String {
+    let size = size.clamp(2, 64);
+    let ps = polish.clamp(0.0, 1.0);
+    let pc = PolishColor::fit(src, ps);
+    let mut s = format!(
+        "# plakat naturalize per-image colour LUT (polish={ps:.3}, desaturate={desaturate:.3}, warm={warm:.3})\n# per-image WB+auto-levels+vibrance are baked; spatial unsharp/micro are NOT (colour only).\nLUT_3D_SIZE {size}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n"
+    );
+    let d = (size - 1) as f32;
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let (ir, ig, ib) = (r as f32 / d * 255.0, g as f32 / d * 255.0, b as f32 / d * 255.0);
+                // polish colour stages (only when strength > 0), then the fixed grade.
+                let c = if ps > 0.0 { pc.map_pixel(ir, ig, ib) } else { [ir, ig, ib] };
+                let o = grade_pixel(c, desaturate, warm);
+                s.push_str(&format!("{:.6} {:.6} {:.6}\n", o[0] / 255.0, o[1] / 255.0, o[2] / 255.0));
+            }
+        }
+    }
+    s
+}
+
 pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
     // 0. QUALITY IMPROVEMENT first — make a better picture (colour + detail), THEN any analog look.
     let src = if p.polish > 0.0 { polish(src, p.polish) } else { src.clone() };
@@ -1262,5 +1318,34 @@ mod tests {
         let a = apply(&src, &Preset::Subtle.params());
         let b = apply(&src, &Preset::Subtle.params());
         assert!(a.pixels().zip(b.pixels()).all(|(x, y)| x == y), "deterministic (no RNG)");
+    }
+
+    #[test]
+    fn per_image_lut_captures_wb_the_fixed_lut_cannot() {
+        // A blue-cast image → the per-image polish must fit a WB correction the fixed grade lacks.
+        let mut cast = RgbImage::new(64, 64);
+        for (x, _y, px) in cast.enumerate_pixels_mut() {
+            *px = Rgb([60, 90, (150 + x % 40) as u8]);
+        }
+        let fixed = export_cube(0.1, 0.05, 9);
+        let per_img = export_cube_image(&cast, 0.8, 0.1, 0.05, 9);
+        assert_ne!(fixed, per_img, "per-image LUT must differ from the fixed grade (WB is captured)");
+        // Well-formed: size³ colour rows + header, values parse in 0..=1.
+        let rows: Vec<&str> = per_img.lines().filter(|l| !l.starts_with('#') && !l.contains("LUT_3D_SIZE") && !l.starts_with("DOMAIN")).filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(rows.len(), 9 * 9 * 9, "one entry per lattice point");
+        for row in &rows {
+            for tok in row.split_whitespace() {
+                let v: f32 = tok.parse::<f32>().expect("cube value parses");
+                assert!((0.0..=1.0).contains(&v), "cube values in 0..=1");
+            }
+        }
+        // The LUT's colour stages must match polish's stages 1–3 at the identity nodes (no interpolation
+        // error at a node): map_pixel then grade == the exported row.
+        let pc = PolishColor::fit(&cast, 0.8);
+        let expect = grade_pixel(pc.map_pixel(0.0, 0.0, 0.0), 0.1, 0.05); // node (0,0,0)
+        let first = rows[0].split_whitespace().map(|t| t.parse::<f32>().unwrap() * 255.0).collect::<Vec<_>>();
+        for k in 0..3 {
+            assert!((first[k] - expect[k]).abs() < 0.5, "node value matches map_pixel∘grade");
+        }
     }
 }
