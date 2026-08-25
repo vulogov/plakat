@@ -166,6 +166,27 @@ plakat naturalize clip.mp4 --out clean.mp4 --preset photo
 plakat naturalize anim.gif --out clean.gif --polish 0.8 --micro 0.3
 ```
 
+## 5e. Interactive — the Naturalize tab in `plakat ui` (6.17)
+
+Prefer to *dial it by eye*? `plakat ui` has a **Naturalize tab** (`Ctrl-9`). It loads the newest image
+(your latest Chat generation, or the newest file in the workspace out-dir) — or press **`o`** to type a path
+to **any external image**. Dial the weight-free knobs (**polish / micro / grain / desaturate / paper**) with
+a **live scorecard** (AI-tell + oversat/smooth/contrast, *before → after*); **Space** toggles the original ↔
+de-slopped preview so the effect is visible; **`r`** reloads the newest image; **`s`** saves `*_naturalized.png`.
+Weight-free only (instant, no model).
+
+## 5f. In `plakat photos` — de-slop, etch, verify (6.17)
+
+The photo manager (`plakat photos`) is the home for **external** photos — it imports HEIC/AVIF/raw into
+albums with EXIF. Its **Edit palette** (`Ctrl-B`) now closes the **import → de-slop → etch → verify** loop:
+
+- **`an`** — *naturalize (weight-free de-slop)* opens the live strength slider (0–100). It's a first-class
+  edit op, so it inherits **undo/redo** (`u`/`U`), **revert**, and per-image **versions**.
+- **`me`** — *etch plakat provenance (into file)* writes a fresh L0 manifest + L1 pixel mark into the
+  selected file(s) in place (batch over the selection).
+- **`mv`** — *verify provenance (is it plakat?)* runs the offline `doctor --if-plakat` engine on the cursor
+  image and prints the verdict (generated / derived / no-evidence + the etch id) in the status line.
+
 ## 6. As a step in generation
 
 ```bash
