@@ -184,7 +184,11 @@ impl FaceSwapper {
         let (target128, forward) = face_models::norm_crop(scene, target_landmarks, 128);
         let t = img_to_tensor(&target128, 0.0, 255.0, &self.device)?; // inswapper: /255, no mean
         let swapped = self.inswapper.forward(&t, latent)?; // (1,3,128,128) in [0,1]
-        let swapped_img = tensor_to_img(&swapped)?;
+        let mut swapped_img = tensor_to_img(&swapped)?;
+        // P1 (FACESWAP-2): colour-match the swapped crop's tone to the TARGET face it replaces, so the
+        // swap carries the scene's lighting/white-balance instead of the source photo's (a "pasted head"
+        // tell). Clamped → identity/detail preserved, only the mean tone aligns. Benefits every caller.
+        colour_match(&mut swapped_img, &target128, 20.0);
         let result = paste_back(scene, &swapped_img, forward);
         Ok((result, target128, swapped_img))
     }
@@ -228,6 +232,36 @@ fn tensor_to_img(t: &Tensor) -> Result<RgbImage> {
 /// Composite the 128² swapped crop back into the scene. `forward` maps scene
 /// pixels → crop coords; a feathered mask (distance to the crop border) hides the
 /// seam. Matches InsightFace's eroded+blurred paste-back, simplified.
+/// P1 (FACESWAP-2) — skin-tone match. Shift `swapped`'s per-channel mean toward `target`'s (the face it
+/// replaces), estimated over the **central** region of the 128² crop (mostly skin, avoiding the aligned
+/// crop's hair/background border). CLAMPED to ±`max_shift` so the swapped identity/detail is preserved and
+/// only the overall tone (lighting / white-balance) aligns to the scene. Mutates `swapped` in place.
+fn colour_match(swapped: &mut RgbImage, target: &RgbImage, max_shift: f32) {
+    let (w, h) = swapped.dimensions();
+    // inner central box (~50%) — skin-dominant on an aligned face crop.
+    let (x0, x1, y0, y1) = (w / 4, w * 3 / 4, h / 4, h * 3 / 4);
+    let (mut ts, mut ss, mut n) = ([0f64; 3], [0f64; 3], 0f64);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (tp, sp) = (target.get_pixel(x, y), swapped.get_pixel(x, y));
+            for c in 0..3 {
+                ts[c] += tp.0[c] as f64;
+                ss[c] += sp.0[c] as f64;
+            }
+            n += 1.0;
+        }
+    }
+    if n <= 0.0 {
+        return;
+    }
+    let off = [0, 1, 2].map(|c| (((ts[c] - ss[c]) / n).clamp(-max_shift as f64, max_shift as f64)) as f32);
+    for px in swapped.pixels_mut() {
+        for c in 0..3 {
+            px.0[c] = (px.0[c] as f32 + off[c]).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 fn paste_back(scene: &RgbImage, swapped: &RgbImage, forward: [f32; 6]) -> RgbImage {
     let (w, h) = (scene.width(), scene.height());
     let (cw, ch) = (swapped.width() as f32, swapped.height() as f32);
@@ -290,4 +324,24 @@ fn pad_white(img: &RgbImage, frac: f32) -> RgbImage {
 fn l2_normalize(t: &Tensor) -> Result<Tensor> {
     let norm = t.sqr()?.sum_keepdim(1)?.sqrt()?;
     Ok(t.broadcast_div(&(norm + 1e-12)?)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colour_match_aligns_tone_to_target_clamped() {
+        // A swapped crop that's +60 brighter than the target it replaces → tone pulled back toward the
+        // target, clamped to +... actually target is DARKER, so offset is negative, clamped to -20.
+        let target = RgbImage::from_pixel(128, 128, image::Rgb([100u8, 110, 120]));
+        let mut swapped = RgbImage::from_pixel(128, 128, image::Rgb([160u8, 170, 180]));
+        colour_match(&mut swapped, &target, 20.0);
+        // Each channel shifted by clamp(target-swapped=-60, -20, 20) = -20.
+        assert_eq!(swapped.get_pixel(64, 64).0, [140, 150, 160], "clamped mean-match toward target");
+        // A crop already matching the target is untouched.
+        let mut same = RgbImage::from_pixel(128, 128, image::Rgb([100u8, 110, 120]));
+        colour_match(&mut same, &target, 20.0);
+        assert_eq!(same.get_pixel(64, 64).0, [100, 110, 120], "matched crop untouched");
+    }
 }

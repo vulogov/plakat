@@ -33,6 +33,7 @@ pub mod texture;
 pub mod comic;
 pub mod product;
 pub mod naturalize;
+pub mod faceswap;
 pub mod remove;
 pub mod replace_bg;
 pub mod portrait;
@@ -192,6 +193,11 @@ pub enum Command {
     /// Restore degraded faces in existing images (SCRFD-detect → diffusion-refine → composite).
     /// The standalone form of `generate --adetailer`; pairs with `upscale --diffusion`.
     RestoreFaces(restore_faces::RestoreFacesArgs),
+
+    /// Swap the face(s) in an existing image with a source face (SCRFD align → ArcFace identity →
+    /// inswapper_128 → colour-matched paste-back). Edits an image you have — no scene generation.
+    /// inswapper weights are non-commercial (InsightFace).
+    Faceswap(faceswap::FaceswapArgs),
     /// Batch-generate images from an HJSON scenario file.
     Scenario(scenario::ScenarioArgs),
     /// Compose a layered scene from an HJSON file: stack image layers
@@ -327,6 +333,7 @@ impl Command {
                 | Command::Upscale(_)
                 | Command::Rank(_)
                 | Command::RestoreFaces(_)
+                | Command::Faceswap(_)
                 | Command::Scenario(_)
                 | Command::Compose(_)
                 | Command::Animate(_)
@@ -414,6 +421,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::RestoreFaces(args) => {
             let device = crate::device::select(&cli.device)?;
             restore_faces::run(args, device).await
+        }
+        Command::Faceswap(args) => {
+            let device = crate::device::select(&cli.device)?;
+            faceswap::run(args, device).await
         }
         Command::Scenario(args) => scenario::run(args).await,
         Command::Compile(args) => compile::run(args).await,
