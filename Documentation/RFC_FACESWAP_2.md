@@ -1,6 +1,7 @@
 # RFC FACESWAP-2 — finish face-swap: colour-match + standalone verb (6.20.0)
 
-**Status:** draft (6.20.0). Completes the paused face-swap track. **Reality check** (the
+**Status:** SHIPPED (6.20.0). Additive to the (already-complete) face-swap engine — a colour-match quality
+fix + a standalone verb. **Reality check** (the
 `ROADMAP_FACESWAP.md` `[ ]` boxes were stale): Phases 1–3 (SCRFD reference · inswapper_128 generator ·
 ArcFace recognition) are done and numerically verified; **Phase 4 align + paste-back is also done**
 (`FaceSwapper::swap_into` = `norm_crop` 5-pt similarity align → `inswapper.forward` → `paste_back`

@@ -1,10 +1,17 @@
-# plakat face-swap — build plan — COMPLETE ✓
+# plakat face-swap — build plan — COMPLETE ✓ (+ 6.20.0 additions)
 
 All 5 phases shipped on the 1.12.0 branch. `multiperson --swap` generates a
 coherent scene and face-swaps each persona in by placement region. Identity engine
 verified component-by-component vs InsightFace (SCRFD, ArcFace cosine 1.0,
 inswapper 1e-5, emap 0.0). Weights hosted: SCRFD + inswapper + ArcFace on HF.
-NO standalone `faceswap` command — it's the engine multiperson calls.
+
+**6.20.0 (RFC FACESWAP-2) additions:**
+- **Colour-match paste-back** — `faceswap::colour_match` aligns the swapped crop's mean
+  tone to the target face's (clamped ±20) inside `swap_into`, so the swap carries the
+  scene's lighting/white-balance not the source photo's. Benefits every caller.
+- **Standalone `plakat faceswap` command** — reverses the original "engine-only" call:
+  `plakat faceswap <scene> --source <face> [--face N|--all] [--restore]` swaps faces in
+  an image you already have (no scene generation). The engine, exposed as a verb.
 
 
 Goal: place a *specific person* into a generated scene with **strong, reliable
