@@ -5,6 +5,13 @@
 **All phases shipped:** P1 frequency-aware texture feather + `seam_score` + `mode: "mirror"` · P2 upscale
 smoothstep overlap feather + cross-tile colour match · P3 pigment-aware (chroma-gated) normal-from-photo.
 
+**Additional improvements (same cut):** P5 texture `mode: "auto"` (measure raw seam → pick feather band,
+mirror fallback on a hard seam; scorecard already reports per-channel tileability) · P6 quieter etch L1
+mark (variance-gate: skip the QIM in flat blocks while keeping a per-bit decode majority — invisible on
+smooth content, still recoverable) · P7 upscale pre-sharpen (light unsharp on the Lanczos base so
+ControlNet-Tile locks onto crisper structure) · P8 fractals deep-zoom central re-reference (pick a
+well-behaved *and* central glitched pixel → fewer residual glitch blobs at extreme depth).
+
 Both
 `plakat texture` (seamless tiling) and `plakat upscale --diffusion` (tiled refine) rely on **feather
 blends** because the native circular-conv path was G0-killed on this hardware. Feathering works but can

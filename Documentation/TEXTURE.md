@@ -389,12 +389,13 @@ schema tag is `"texture/1"`. A full spec:
   # from_image: "scan.jpg"
 
   seamless: {
-    mode: "circular"     # circular (default) | offset | mirror | none
+    mode: "circular"     # circular (default) | offset | auto | mirror | none
     axes: "both"         # both (default) | x | y   — x/y = a trim sheet tiling one axis
   }
   # circular/offset — frequency-aware feather (6.19): matches the low-frequency tone across the seam with
-  #   a smoothstep ramp while preserving all high-frequency detail (no blur band). mirror — reflect so
-  #   opposite edges are identical by construction (perfectly seamless, mirror-symmetric pattern).
+  #   a smoothstep ramp while preserving all high-frequency detail (no blur band). auto (6.19) — measure
+  #   the raw seam and pick the feather band, falling back to mirror when a hard seam would only smear.
+  #   mirror — reflect so opposite edges are identical by construction (perfectly seamless, mirror pattern).
 
   channels: {
     height:   "auto"          # auto (depth+high-pass) | from-albedo (luminance) | "<prompt>"
