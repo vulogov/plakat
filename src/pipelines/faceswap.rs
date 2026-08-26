@@ -63,6 +63,10 @@ pub struct FaceSwapper {
     inswapper: Inswapper,
     device: Device,
     dtype: DType,
+    /// Paste-back edge feather in 128²-crop px (RFC FACESWAP-3 S2 `--feather`). Default [`FEATHER`].
+    pub feather: f32,
+    /// Colour-match the swapped crop to the target face (6.20 Q; S2 `--no-color-match` disables). Default on.
+    pub color_match: bool,
 }
 
 impl FaceSwapper {
@@ -94,7 +98,7 @@ impl FaceSwapper {
             .to_dtype(DType::F32)?;
         let inswapper = Inswapper::load(inswapper, device, DType::F32)
             .context("loading inswapper for face-swap")?;
-        Ok(Self { detector, arcface, emap, inswapper, device: device.clone(), dtype })
+        Ok(Self { detector, arcface, emap, inswapper, device: device.clone(), dtype, feather: FEATHER, color_match: true })
     }
 
     /// Load with weights auto-resolved: SCRFD (its own default), ArcFace, and
@@ -214,8 +218,10 @@ impl FaceSwapper {
         // P1 (FACESWAP-2): colour-match the swapped crop's tone to the TARGET face it replaces, so the
         // swap carries the scene's lighting/white-balance instead of the source photo's (a "pasted head"
         // tell). Clamped → identity/detail preserved, only the mean tone aligns. Benefits every caller.
-        colour_match(&mut swapped_img, &target128, 20.0);
-        let result = paste_back(scene, &swapped_img, forward);
+        if self.color_match {
+            colour_match(&mut swapped_img, &target128, 20.0);
+        }
+        let result = paste_back(scene, &swapped_img, forward, self.feather);
         Ok((result, target128, swapped_img))
     }
 }
@@ -288,7 +294,7 @@ fn colour_match(swapped: &mut RgbImage, target: &RgbImage, max_shift: f32) {
     }
 }
 
-fn paste_back(scene: &RgbImage, swapped: &RgbImage, forward: [f32; 6]) -> RgbImage {
+fn paste_back(scene: &RgbImage, swapped: &RgbImage, forward: [f32; 6], feather: f32) -> RgbImage {
     let (w, h) = (scene.width(), scene.height());
     let (cw, ch) = (swapped.width() as f32, swapped.height() as f32);
     let mut out = scene.clone();
@@ -300,7 +306,7 @@ fn paste_back(scene: &RgbImage, swapped: &RgbImage, forward: [f32; 6]) -> RgbIma
                 continue;
             }
             let border = cx.min(cy).min(cw - 1.0 - cx).min(ch - 1.0 - cy);
-            let alpha = (border / FEATHER).clamp(0.0, 1.0);
+            let alpha = (border / feather.max(1.0)).clamp(0.0, 1.0);
             if alpha <= 0.0 {
                 continue;
             }

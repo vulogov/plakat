@@ -5,6 +5,13 @@
 **All phases shipped:** P1 `--dry-run`/`--preview` (live-proven) · P2 directory batch · P3 repeatable
 `--source` · P4 video (every frame). `plan_swaps` mapping unit-tested.
 
+**Controls / parity / provenance (same cut):** S2 swap controls — `--feather PX`, `--no-color-match`,
+`--match rank|identity`, `--report` (print source→face + cosine); FaceSwapper gained `feather`/`color_match`
+fields · S3 Bund **`plakat.faceswap`** word (`scene source out -- handle`, via `script_entry::faceswap_one`)
+— scenario `type: faceswap` + `api::FaceSwap` builder DEFERRED (kept the cut focused) · S4 `--etch`
+provenance on the output (`fresh_etch` when `--etch` active); `--restore` documented as already face-scoped
+(ADetailer only touches detected face boxes).
+
 **Additional improvements (same cut):** R1 **recognition-matched** sources — each `--source` matched to its
 closest face by ArcFace cosine (`match_sources_to_faces`, greedy; identity-follows-face, robust to size
 reorder across frames), replacing the size-rank heuristic for multi-source · R3 `--source-face N` (pick the

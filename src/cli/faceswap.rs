@@ -41,8 +41,21 @@ pub struct FaceswapArgs {
     #[arg(long, value_name = "PATH")]
     pub out: Option<PathBuf>,
     /// Run a light ADetailer detail pass on the result (crisper, but can slightly drift identity).
+    /// The pass only touches detected face boxes (feathered), so the rest of the image is preserved.
     #[arg(long, default_value_t = false)]
     pub restore: bool,
+    /// Paste-back edge feather in px (default 16). Larger = softer seam, smaller = crisper edge (S2).
+    #[arg(long, value_name = "PX")]
+    pub feather: Option<f32>,
+    /// Disable the skin-tone colour match (paste the raw swap; S2).
+    #[arg(long = "no-color-match", default_value_t = false)]
+    pub no_color_match: bool,
+    /// Multi-source face→source mapping: `identity` (ArcFace recognition, default) or `rank` (by size).
+    #[arg(long = "match", value_name = "MODE", default_value = "identity")]
+    pub match_by: String,
+    /// Print which source matched which face (+ cosine) for a multi-source swap (S2).
+    #[arg(long, default_value_t = false)]
+    pub report: bool,
     /// Detect faces and print them (index · bbox · score), largest-first — no swap, no source needed.
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
@@ -126,14 +139,21 @@ fn match_sources_to_faces(sim: &[Vec<f32>]) -> Vec<(usize, usize)> {
 /// Swap a loaded scene against precomputed `sources`. With >1 source, faces are matched to sources by
 /// **recognition** (R1: ArcFace cosine, identity-follows-face); with one source, by `--face`/`--all`.
 /// Returns the edited image + the number of faces swapped.
-fn swap_scene(swapper: &FaceSwapper, scene: &RgbImage, faces: &[Face], sources: &[Source], face: usize, all: bool) -> Result<(RgbImage, usize)> {
-    let plan = if sources.len() > 1 {
+fn swap_scene(swapper: &FaceSwapper, scene: &RgbImage, faces: &[Face], sources: &[Source], face: usize, all: bool, match_by: &str, report: bool) -> Result<(RgbImage, usize)> {
+    let plan = if sources.len() > 1 && match_by != "rank" {
         let face_embs: Vec<Vec<f32>> = faces
             .iter()
             .map(|f| Ok(swapper.face_embedding(scene, f.landmarks)?.flatten_all()?.to_vec1::<f32>()?))
             .collect::<Result<_>>()?;
         let src_embs: Vec<Vec<f32>> = sources.iter().map(|s| s.emb.clone()).collect();
-        match_sources_to_faces(&cosine_matrix(&src_embs, &face_embs))
+        let sim = cosine_matrix(&src_embs, &face_embs);
+        let pairs = match_sources_to_faces(&sim);
+        if report {
+            for &(f, s) in &pairs {
+                println!("  {} source {s} → face {f}  (cos {:.3})", style("match").cyan(), sim[s][f]);
+            }
+        }
+        pairs
     } else {
         plan_swaps(faces.len(), sources.len(), face, all)?
     };
@@ -202,9 +222,16 @@ pub async fn run(args: FaceswapArgs, device: Device) -> Result<()> {
     }
 
     anyhow::ensure!(!args.source.is_empty(), "faceswap needs --source <face> (or use --dry-run to inspect)");
-    let swapper = FaceSwapper::load_resolved(&device, DType::F32)
+    anyhow::ensure!(matches!(args.match_by.as_str(), "identity" | "rank"), "--match must be `identity` or `rank`");
+    let mut swapper = FaceSwapper::load_resolved(&device, DType::F32)
         .await
         .context("loading face-swap models (SCRFD + ArcFace + inswapper)")?;
+    if let Some(f) = args.feather {
+        swapper.feather = f; // S2 --feather
+    }
+    if args.no_color_match {
+        swapper.color_match = false; // S2 --no-color-match
+    }
     let sources: Vec<Source> = args
         .source
         .iter()
@@ -227,7 +254,7 @@ pub async fn run(args: FaceswapArgs, device: Device) -> Result<()> {
     let faces = swapper.detect(&args.scene).context("detecting faces in the scene")?;
     anyhow::ensure!(!faces.is_empty(), "no face detected in {} (try a clearer / larger face)", args.scene.display());
     let scene = image::open(&args.scene).with_context(|| format!("opening {}", args.scene.display()))?.to_rgb8();
-    let (out_img, n) = swap_scene(&swapper, &scene, &faces, &sources, args.face, args.all)?;
+    let (out_img, n) = swap_scene(&swapper, &scene, &faces, &sources, args.face, args.all, &args.match_by, args.report)?;
 
     let out = args.out.clone().unwrap_or_else(|| default_out(&args.scene));
     write_image(&out_img, &out)?;
@@ -257,7 +284,7 @@ async fn faceswap_batch(swapper: &FaceSwapper, sources: &[Source], args: &Facesw
             Err(_) => { err += 1; continue; }
         };
         let scene = match image::open(path) { Ok(i) => i.to_rgb8(), Err(_) => { err += 1; continue; } };
-        match swap_scene(swapper, &scene, &faces, sources, args.face, args.all) {
+        match swap_scene(swapper, &scene, &faces, sources, args.face, args.all, &args.match_by, false) {
             Ok((img, _)) => {
                 let out = out_dir.join(default_out(path).file_name().unwrap());
                 if write_image(&img, &out).is_ok() {
@@ -290,7 +317,7 @@ async fn faceswap_video(swapper: &FaceSwapper, sources: &[Source], args: &Facesw
             continue; // leave the frame as-is (no face this frame)
         }
         let scene = image::open(f)?.to_rgb8();
-        if let Ok((img, _)) = swap_scene(swapper, &scene, &faces, sources, args.face, args.all) {
+        if let Ok((img, _)) = swap_scene(swapper, &scene, &faces, sources, args.face, args.all, &args.match_by, false) {
             img.save(f)?; // overwrite the extracted frame in place
             swapped_frames += 1;
         }
@@ -333,7 +360,13 @@ fn write_image(img: &RgbImage, out: &Path) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
     }
-    img.save(out).with_context(|| format!("writing {}", out.display()))
+    img.save(out).with_context(|| format!("writing {}", out.display()))?;
+    // S4 (FACESWAP-3): honor the global `--etch` — this is an image plakat produced. A fresh, parentless
+    // etch (L0 manifest + L1 pixel mark) is minted over the swapped pixels.
+    if crate::etch::active().is_some() {
+        let _ = crate::etch::fresh_etch(img.as_raw(), img.width(), img.height(), out, None);
+    }
+    Ok(())
 }
 
 fn license_note() {

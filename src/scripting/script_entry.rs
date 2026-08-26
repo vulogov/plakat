@@ -1722,6 +1722,24 @@ pub fn portrait_one(
     read_rendered_png(tmp.path())
 }
 
+/// Bund `plakat.faceswap` (RFC FACESWAP-3 S3): swap the largest face in `scene` with the identity from
+/// `source` (colour-matched paste-back). Loads the face-swap engine via the current tokio runtime.
+pub fn faceswap_one(ctx: &ScriptCtx, scene: &str, source: &str) -> Result<DynamicImage> {
+    let device = ctx.device.clone();
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|e| anyhow::anyhow!("plakat.faceswap needs a tokio runtime: {e}"))?;
+    let swapper = tokio::task::block_in_place(|| {
+        handle.block_on(crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32))
+    })?;
+    let scene_path = std::path::Path::new(scene);
+    let faces = swapper.detect(scene_path)?;
+    anyhow::ensure!(!faces.is_empty(), "plakat.faceswap: no face detected in {scene}");
+    let latent = swapper.source_latent(std::path::Path::new(source))?;
+    let img = image::open(scene_path).with_context(|| format!("plakat.faceswap: reading {scene}"))?.to_rgb8();
+    let out = swapper.swap_into(&img, faces[0].landmarks, &latent)?;
+    Ok(DynamicImage::ImageRgb8(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,6 +16,7 @@ pub mod bookart;
 pub mod texture;
 pub mod comic;
 pub mod product;
+pub mod faceswap;
 pub mod naturalize;
 pub mod cascade;
 pub mod config;
@@ -120,6 +121,9 @@ pub fn register_plakat_words(vm: &mut VM) -> Result<()> {
     // 6.10.0: plakat.naturalize — the analog post-pass, push the naturalized image.
     vm.register_inline("plakat.naturalize".to_string(), naturalize::plakat_naturalize)
         .map_err(|e| anyhow!("registering plakat.naturalize: {e}"))?;
+    // 6.21.0 (FACESWAP-3 S3): plakat.faceswap — swap a source face into a scene, push the result.
+    vm.register_inline("plakat.faceswap".to_string(), faceswap::plakat_faceswap)
+        .map_err(|e| anyhow!("registering plakat.faceswap: {e}"))?;
     vm.register_inline("plakat.multiperson".to_string(), multiperson::plakat_multiperson)
         .map_err(|e| anyhow!("registering plakat.multiperson: {e}"))?;
     vm.register_inline("plakat.img2img".to_string(), img2img::plakat_img2img)
