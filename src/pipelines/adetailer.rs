@@ -259,7 +259,7 @@ async fn refine_one(
             .with_context(|| format!("opening refined crop {}", refined_path.display()))?
             .to_rgb8();
         // Resize back to the expanded-bbox dims.
-        let refined_resized = image::imageops::resize(
+        let mut refined_resized = image::imageops::resize(
             &refined_img,
             bbox.w,
             bbox.h,
@@ -268,7 +268,9 @@ async fn refine_one(
         // Clean up so the next face's `find_output` is unambiguous.
         let _ = std::fs::remove_file(&refined_path);
 
-        // 5. Feather-composite onto the running canvas.
+        // 5. Q2: skin-tone match the refined crop to the surrounding face, then feather-composite onto
+        //    the running canvas — so the restored face blends instead of sitting as a tone patch.
+        tone_match(&mut refined_resized, &composite, &bbox, 18.0);
         composite_feathered(&mut composite, &refined_resized, &bbox, cfg.feather);
     }
 
@@ -380,6 +382,37 @@ fn find_output(dir: &Path, prefix: &str) -> Result<PathBuf> {
 ///
 /// Then `alpha = clamp(d / feather, 0, 1)` (so `d ≥ feather` gives
 /// full opacity; `d == 0` gives zero opacity; linear in between).
+/// **Q2 (SEAMS-1) — skin-tone match.** Shift `refined`'s per-channel mean to the underlying `canvas`
+/// region over `bbox`, so a restored face doesn't sit as a visible tone patch. CLAMPED to ±`max_shift`,
+/// so the refine's detail/contrast is preserved and only the overall tone (skin colour / white-balance)
+/// is aligned to the surroundings. Mutates `refined` in place. Pure (no model).
+pub fn tone_match(refined: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, canvas: &ImageBuffer<Rgb<u8>, Vec<u8>>, bbox: &ExpandedBBox, max_shift: f32) {
+    let (mut cs, mut rs, mut n) = ([0f64; 3], [0f64; 3], 0f64);
+    for ry in 0..bbox.h {
+        for rx in 0..bbox.w {
+            let (cx, cy) = (bbox.x + rx, bbox.y + ry);
+            if cx >= canvas.width() || cy >= canvas.height() {
+                continue;
+            }
+            let (cp, rp) = (canvas.get_pixel(cx, cy), refined.get_pixel(rx, ry));
+            for c in 0..3 {
+                cs[c] += cp.0[c] as f64;
+                rs[c] += rp.0[c] as f64;
+            }
+            n += 1.0;
+        }
+    }
+    if n <= 0.0 {
+        return;
+    }
+    let off = [0, 1, 2].map(|c| (((cs[c] - rs[c]) / n).clamp(-max_shift as f64, max_shift as f64)) as f32);
+    for px in refined.pixels_mut() {
+        for c in 0..3 {
+            px.0[c] = (px.0[c] as f32 + off[c]).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 pub fn composite_feathered(
     canvas: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
     refined: &ImageBuffer<Rgb<u8>, Vec<u8>>,
@@ -424,6 +457,21 @@ pub fn composite_feathered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tone_match_pulls_the_crop_toward_the_surrounding_skin() {
+        // A refined crop tone-shifted +60 from the surrounding skin: tone_match pulls it back toward the
+        // canvas mean, CLAMPED to ±18, so only the tone shifts (detail preserved) and it stops being a patch.
+        let canvas = ImageBuffer::from_pixel(20, 20, Rgb([100u8, 100, 100]));
+        let bbox = ExpandedBBox { x: 5, y: 5, w: 10, h: 10 };
+        let mut refined = ImageBuffer::from_pixel(10, 10, Rgb([160u8, 160, 160]));
+        tone_match(&mut refined, &canvas, &bbox, 18.0);
+        assert_eq!(refined.get_pixel(5, 5).0[0], 142, "clamped mean-match: 160 − 18");
+        // A crop that already matches is left alone (offset 0).
+        let mut same = ImageBuffer::from_pixel(10, 10, Rgb([100u8, 100, 100]));
+        tone_match(&mut same, &canvas, &bbox, 18.0);
+        assert_eq!(same.get_pixel(5, 5).0, [100, 100, 100], "matched crop untouched");
+    }
 
     #[test]
     fn expand_bbox_grows_by_padding_fraction() {

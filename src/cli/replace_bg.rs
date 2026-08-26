@@ -82,6 +82,11 @@ pub async fn run(args: ReplaceBgArgs, device: Device) -> Result<()> {
             .with_context(|| format!("matting subject from {}", args.input.display()))?,
     };
     let (w, h) = (fg.width(), fg.height());
+    // Q4: refine the matte edge (crisp the uncertain trimap band toward 0/1) before compositing.
+    alpha = crate::pipelines::matting::refine_matte(&alpha);
+    // Q1: decontaminate the foreground colour at the edge (unmix the OLD-background spill) using the
+    // SHARP alpha, so the composite over the new bg has no colour halo. Do this before feathering.
+    let fg = crate::pipelines::matting::decontaminate(&fg, &alpha, args.edge_feather.max(2));
     if args.edge_feather > 0 {
         alpha = feather(&alpha, args.edge_feather);
     }

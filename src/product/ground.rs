@@ -158,9 +158,30 @@ pub fn reflection(subject: &RgbaImage, ground_y: usize, kind: ReflectionKind, sq
         if sy >= h {
             continue;
         }
-        let fade = (1.0 - below / (falloff.max(0.05) * subj_h)).clamp(0.0, 1.0);
+        // Q3 (SEAMS-1): PERSPECTIVE falloff — a real floor reflection dims faster with distance than a
+        // linear ramp (which reads as a full mirror). Raise the linear fade to a >1 power so the
+        // reflection concentrates near the contact line and fades off realistically.
+        let t = (below / (falloff.max(0.05) * subj_h)).clamp(0.0, 1.0);
+        let fade = (1.0 - t).powf(1.7);
+        // A subtle depth-increasing horizontal blur (gloss): sample a small run and average, widening
+        // with depth so the far reflection is softer than the sharp contact line.
+        let blur_r = (t * 3.0).round() as i32;
         for x in 0..w {
-            let p = subject.get_pixel(x, sy);
+            let p = if blur_r > 0 {
+                let (mut sr, mut sg, mut sb, mut sa, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
+                for dx in -blur_r..=blur_r {
+                    let xx = (x as i32 + dx).clamp(0, w as i32 - 1) as u32;
+                    let q = subject.get_pixel(xx, sy);
+                    sr += q.0[0] as u32;
+                    sg += q.0[1] as u32;
+                    sb += q.0[2] as u32;
+                    sa += q.0[3] as u32;
+                    n += 1;
+                }
+                Rgba([(sr / n) as u8, (sg / n) as u8, (sb / n) as u8, (sa / n) as u8])
+            } else {
+                *subject.get_pixel(x, sy)
+            };
             if p.0[3] > 0 {
                 let a = (p.0[3] as f32 / 255.0 * fade * dim * 255.0).round() as u8;
                 if a > 0 {
@@ -218,6 +239,26 @@ mod tests {
             s
         };
         assert!(band(gy, gy + 6) > band(gy + 50, gy + 56), "anchored at the base");
+    }
+
+    #[test]
+    fn reflection_falloff_is_perspective_not_linear() {
+        // The reflection must dim FASTER than linear with depth (perspective) — a mid-depth row's
+        // brightness is below what a straight linear ramp would give, so it doesn't read as a full mirror.
+        let (w, h, gy) = (240, 300, 216);
+        let (_, subj) = box_subject(w, h, gy);
+        let falloff = 0.6f32;
+        let refl = reflection(&subj, gy, ReflectionKind::Mirror, camera_squash(Some("eye")), falloff);
+        // subject height in this fixture = h/3 = 100 → fade span = falloff*subj_h.
+        let subj_h = (h / 3) as f32;
+        let mid_below = 0.5 * falloff * subj_h; // the half-way point of the fade span
+        let y = gy + mid_below.round() as usize;
+        let max_a = (0..w as u32).map(|x| refl.get_pixel(x, y as u32).0[3]).max().unwrap_or(0);
+        // A LINEAR fade at t=0.5 gives 0.5·dim·255; perspective (0.5^1.7 ≈ 0.31·dim·255) is clearly less.
+        let dim = ReflectionKind::Mirror.dim();
+        let linear = (255.0 * 0.5 * dim).round() as i32;
+        assert!(max_a > 0, "reflection present at mid-depth");
+        assert!((max_a as i32) < linear * 3 / 4, "perspective dims faster than linear (got {max_a}, linear {linear})");
     }
 
     #[test]

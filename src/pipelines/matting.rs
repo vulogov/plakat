@@ -386,3 +386,129 @@ pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device
     out.save(out_path)?;
     Ok(())
 }
+
+/// Separable box blur (moving average, radius `r`) on an `w×h` f32 buffer. Edge-clamped.
+fn box_blur_f32(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let mut tmp = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let (mut s, mut c) = (0f32, 0f32);
+            for dx in x.saturating_sub(r)..=(x + r).min(w - 1) {
+                s += src[y * w + dx];
+                c += 1.0;
+            }
+            tmp[y * w + x] = s / c;
+        }
+    }
+    let mut out = vec![0f32; w * h];
+    for x in 0..w {
+        for y in 0..h {
+            let (mut s, mut c) = (0f32, 0f32);
+            for dy in y.saturating_sub(r)..=(y + r).min(h - 1) {
+                s += tmp[dy * w + x];
+                c += 1.0;
+            }
+            out[y * w + x] = s / c;
+        }
+    }
+    out
+}
+
+/// **Foreground colour decontamination** (RFC SEAMS-1 Q1): a matte's semi-transparent EDGE pixels are a
+/// blend of subject + the OLD background, so compositing them onto a NEW background shows the old bg as a
+/// colour fringe/halo. Estimate the clean foreground colour with an **alpha-weighted (premultiplied)
+/// blur** — each pixel becomes the alpha-weighted average of its neighbourhood, so solid-foreground
+/// pixels dominate and the bg-tinted low-alpha pixels contribute little. Only edge pixels (`0<a<~1`) are
+/// replaced; solid interior and full transparency are untouched. Pure. `radius` ≈ the matte edge width.
+pub fn decontaminate(fg: &RgbImage, alpha: &image::GrayImage, radius: u32) -> RgbImage {
+    let (w, h) = fg.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    let r = radius.max(1) as usize;
+    let a: Vec<f32> = alpha.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+    let mut prem = [vec![0f32; wu * hu], vec![0f32; wu * hu], vec![0f32; wu * hu]];
+    for (i, px) in fg.pixels().enumerate() {
+        for c in 0..3 {
+            prem[c][i] = px.0[c] as f32 * a[i]; // premultiplied
+        }
+    }
+    let den = box_blur_f32(&a, wu, hu, r);
+    let num: Vec<Vec<f32>> = (0..3).map(|c| box_blur_f32(&prem[c], wu, hu, r)).collect();
+    let mut out = fg.clone();
+    for (i, px) in out.pixels_mut().enumerate() {
+        if a[i] > 0.0 && a[i] < 0.98 && den[i] > 1e-3 {
+            for c in 0..3 {
+                px.0[c] = (num[c][i] / den[i]).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// **Matte edge refinement** (RFC SEAMS-1 Q4): sharpen a soft/uncertain U2Net matte edge back toward a
+/// confident 0/1 while keeping a thin anti-aliased ramp. In the uncertain **trimap band** (mid-alpha), a
+/// smoothstep contrast around 0.5 pulls hair/fur edges crisp; solid interior (`≥hi`) and clear background
+/// (`≤lo`) are locked. Pure. Improves every downstream cut-out (replace-bg / remove / product).
+pub fn refine_matte(alpha: &image::GrayImage) -> image::GrayImage {
+    let (lo, hi) = (0.15f32, 0.85f32);
+    let mut out = alpha.clone();
+    for p in out.pixels_mut() {
+        let a = p.0[0] as f32 / 255.0;
+        let refined = if a <= lo {
+            0.0
+        } else if a >= hi {
+            1.0
+        } else {
+            let t = (a - lo) / (hi - lo); // remap the band to [0,1]
+            t * t * (3.0 - 2.0 * t) // smoothstep → crisper edge, still anti-aliased
+        };
+        p.0[0] = (refined * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{GrayImage, Luma, Rgb, RgbImage};
+
+    #[test]
+    fn decontaminate_removes_old_bg_spill_at_the_edge() {
+        // A red subject (left) faded over a GREEN old background (right). The mid alpha-ramp column is
+        // contaminated green; decontamination must pull it back toward the subject red.
+        let (w, h) = (16u32, 8u32);
+        let mut fg = RgbImage::new(w, h);
+        let mut al = GrayImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let a = if x < 6 { 255 } else if x < 10 { 128 } else { 0 };
+                // observed = a*red + (1-a)*green  (edge pixels look olive/green-tinted)
+                let af = a as f32 / 255.0;
+                let obs = |fgc: f32, bgc: f32| (fgc * af + bgc * (1.0 - af)).round() as u8;
+                fg.put_pixel(x, y, Rgb([obs(200.0, 0.0), obs(0.0, 200.0), obs(0.0, 0.0)]));
+                al.put_pixel(x, y, Luma([a]));
+            }
+        }
+        let before_g = fg.get_pixel(7, 4).0[1] as i32; // green contamination at the edge
+        let clean = decontaminate(&fg, &al, 3);
+        let after_g = clean.get_pixel(7, 4).0[1] as i32;
+        let after_r = clean.get_pixel(7, 4).0[0] as i32;
+        assert!(after_g < before_g - 20, "green spill reduced at the edge ({before_g} → {after_g})");
+        assert!(after_r > after_g, "edge colour pulled toward the red subject");
+        // Solid interior is untouched.
+        assert_eq!(clean.get_pixel(2, 4).0, fg.get_pixel(2, 4).0, "solid fg unchanged");
+    }
+
+    #[test]
+    fn refine_matte_crisps_the_band_and_locks_extremes() {
+        let mut al = GrayImage::new(5, 1);
+        for (x, v) in [10u8, 60, 128, 200, 245].iter().enumerate() {
+            al.put_pixel(x as u32, 0, Luma([*v]));
+        }
+        let r = refine_matte(&al);
+        assert_eq!(r.get_pixel(0, 0).0[0], 0, "clear bg → 0");
+        assert_eq!(r.get_pixel(4, 0).0[0], 255, "solid fg → 255");
+        assert!((r.get_pixel(2, 0).0[0] as i32 - 128).abs() <= 3, "mid stays ~mid (smoothstep 0.5)");
+        assert!(r.get_pixel(1, 0).0[0] < 60, "low band pushed toward 0");
+        assert!(r.get_pixel(3, 0).0[0] > 200, "high band pushed toward 1");
+    }
+}
