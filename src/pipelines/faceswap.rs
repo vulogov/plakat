@@ -119,40 +119,57 @@ impl FaceSwapper {
         Ok(faces)
     }
 
-    /// Compute the source identity latent (`normalize(arcface_emb @ emap)`) — the
-    /// `source` input to the swapper — from a source face photo (largest face).
-    pub fn source_latent(&self, source_face: &Path) -> Result<Tensor> {
+    /// The `n`-th largest face of a source photo (0 = largest), as `(image, face)`. If the raw photo
+    /// yields no detection (a tight portrait scores below SCRFD threshold), pad it with a white margin and
+    /// retry (only for `n == 0`). (RFC FACESWAP-3 R3.)
+    fn source_face_n(&self, source_face: &Path, n: usize) -> Result<(RgbImage, Face)> {
         let orig = image::open(source_face)
             .with_context(|| format!("opening source face {}", source_face.display()))?
             .to_rgb8();
+        let faces = self.detect(source_face)?;
+        if let Some(f) = faces.into_iter().nth(n) {
+            return Ok((orig, f));
+        }
+        anyhow::ensure!(n == 0, "--source-face {n} out of range in {}", source_face.display());
+        // pad-and-retry for a tightly-cropped portrait.
+        let padded = pad_white(&orig, 0.6);
+        let tmp = tempfile::Builder::new().prefix("plakat-src-pad-").suffix(".png").tempfile()?;
+        padded.save(tmp.path())?;
+        let f = self.detect(tmp.path())?.into_iter().next().with_context(|| {
+            format!(
+                "no face detected in {} (even after padding — try a less tightly-cropped photo with \
+                 headroom around the face)",
+                source_face.display()
+            )
+        })?;
+        Ok((padded, f))
+    }
 
-        // SCRFD is tuned for faces that are a fraction of the frame; a tightly
-        // cropped portrait (face filling >50% of the image) scores below
-        // threshold or is missed. If the raw photo yields no face, pad it with a
-        // white margin so the face becomes a detectable size, then detect there.
-        let (img, face) = match self.detect(source_face)?.into_iter().next() {
-            Some(f) => (orig, f),
-            None => {
-                let padded = pad_white(&orig, 0.6);
-                let tmp = tempfile::Builder::new()
-                    .prefix("plakat-src-pad-")
-                    .suffix(".png")
-                    .tempfile()?;
-                padded.save(tmp.path())?;
-                let f = self
-                    .detect(tmp.path())?
-                    .into_iter()
-                    .next()
-                    .with_context(|| {
-                        format!(
-                            "no face detected in {} (even after padding — try a less \
-                             tightly-cropped photo with headroom around the face)",
-                            source_face.display()
-                        )
-                    })?;
-                (padded, f)
-            }
-        };
+    /// ArcFace **recognition embedding** (unit-norm 512) of the face at `landmarks` in `img` — used to
+    /// MATCH a source to the most-similar detected face by cosine (RFC FACESWAP-3 R1). This is the raw
+    /// arcface output (no `emap`); the swap input is [`source_latent`].
+    pub fn face_embedding(&self, img: &RgbImage, landmarks: [[f32; 2]; 5]) -> Result<Tensor> {
+        let (aligned, _) = face_models::norm_crop(img, landmarks, 112);
+        let t = img_to_tensor(&aligned, 127.5, 127.5, &self.device)?;
+        let emb = self.arcface.forward(&t)?; // (1,512) unit-norm
+        l2_normalize(&emb)
+    }
+
+    /// The recognition embedding of a source photo's `n`-th face (for R1 matching).
+    pub fn source_embedding_n(&self, source_face: &Path, n: usize) -> Result<Tensor> {
+        let (img, face) = self.source_face_n(source_face, n)?;
+        self.face_embedding(&img, face.landmarks)
+    }
+
+    /// Compute the source identity latent (`normalize(arcface_emb @ emap)`) — the
+    /// `source` input to the swapper — from a source face photo (largest face).
+    pub fn source_latent(&self, source_face: &Path) -> Result<Tensor> {
+        self.source_latent_n(source_face, 0)
+    }
+
+    /// Like [`source_latent`] but selects the source photo's `n`-th largest face (RFC FACESWAP-3 R3).
+    pub fn source_latent_n(&self, source_face: &Path, n: usize) -> Result<Tensor> {
+        let (img, face) = self.source_face_n(source_face, n)?;
         let (aligned, _) = face_models::norm_crop(&img, face.landmarks, 112);
         let t = img_to_tensor(&aligned, 127.5, 127.5, &self.device)?;
         let emb = self.arcface.forward(&t)?; // (1,512) unit-norm
@@ -181,7 +198,16 @@ impl FaceSwapper {
         target_landmarks: [[f32; 2]; 5],
         latent: &Tensor,
     ) -> Result<(RgbImage, RgbImage, RgbImage)> {
-        let (target128, forward) = face_models::norm_crop(scene, target_landmarks, 128);
+        let (mut target128, forward) = face_models::norm_crop(scene, target_landmarks, 128);
+        // R4 (FACESWAP-3): a SMALL target face is upsampled by norm_crop → the 128² crop is soft (little
+        // real detail). A light unsharp gives inswapper crisper facial structure to lock onto. Gated by
+        // inter-ocular distance so normal/large faces are untouched. (Marginal — identity still comes from
+        // the source latent; this only helps inswapper preserve structure on distant faces.)
+        let (edx, edy) = (target_landmarks[1][0] - target_landmarks[0][0], target_landmarks[1][1] - target_landmarks[0][1]);
+        let inter_ocular = (edx * edx + edy * edy).sqrt();
+        if inter_ocular < 40.0 {
+            target128 = image::imageops::unsharpen(&target128, 1.0, 2);
+        }
         let t = img_to_tensor(&target128, 0.0, 255.0, &self.device)?; // inswapper: /255, no mean
         let swapped = self.inswapper.forward(&t, latent)?; // (1,3,128,128) in [0,1]
         let mut swapped_img = tensor_to_img(&swapped)?;

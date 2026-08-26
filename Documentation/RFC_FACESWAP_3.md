@@ -3,7 +3,13 @@
 **Status:** SHIPPED (6.21.0). Depth on the 6.20.0 `plakat faceswap` verb.
 
 **All phases shipped:** P1 `--dry-run`/`--preview` (live-proven) · P2 directory batch · P3 repeatable
-`--source` (per-face by size rank) · P4 video (every frame). `plan_swaps` mapping unit-tested. All four reuse the proven engine
+`--source` · P4 video (every frame). `plan_swaps` mapping unit-tested.
+
+**Additional improvements (same cut):** R1 **recognition-matched** sources — each `--source` matched to its
+closest face by ArcFace cosine (`match_sources_to_faces`, greedy; identity-follows-face, robust to size
+reorder across frames), replacing the size-rank heuristic for multi-source · R3 `--source-face N` (pick the
+identity face in a multi-face source photo) · R4 small-face sharpen (unsharp the 128² target crop when
+inter-ocular < 40px so inswapper locks onto structure — marginal, documented). R1 helpers unit-tested. All four reuse the proven engine
 (`FaceSwapper`: detect → `source_latent` → colour-matched `swap_into`); no new model.
 
 ## What ships

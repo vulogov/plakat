@@ -5,8 +5,9 @@
 //! generate a scene — it edits media you already have.
 //!
 //! 6.21.0 (RFC FACESWAP-3) depth: `--dry-run`/`--preview` (inspect detections), a **directory** input
-//! (batch), **repeatable `--source`** (per-face different identities by size rank), and **video** input
-//! (swap every frame). inswapper weights are **non-commercial** (InsightFace) — gated behind opt-in.
+//! (batch), **repeatable `--source`** (per-face identities matched by ArcFace recognition, not size rank),
+//! `--source-face N`, small-face sharpen, and **video** input (swap every frame). inswapper weights are
+//! **non-commercial** (InsightFace) — gated behind opt-in.
 
 use std::path::{Path, PathBuf};
 
@@ -23,8 +24,8 @@ pub struct FaceswapArgs {
     /// Scene to edit: an image, a **directory** of images (batch), or a **video** (swap every frame).
     #[arg(value_name = "SCENE")]
     pub scene: PathBuf,
-    /// Source face photo (its largest face is used). **Repeatable**: with K sources, the i-th source
-    /// swaps the i-th largest face (source[0] → largest). Not needed with `--dry-run`.
+    /// Source face photo. **Repeatable**: with K sources, each is matched to its closest detected face by
+    /// ArcFace **recognition** (identity-follows-face, robust to size order). Not needed with `--dry-run`.
     #[arg(long, value_name = "FACE")]
     pub source: Vec<PathBuf>,
     /// With ONE source: which detected face to swap (0 = largest). Ignored with `--all` / multiple sources.
@@ -33,6 +34,9 @@ pub struct FaceswapArgs {
     /// With ONE source: swap EVERY detected face with it.
     #[arg(long, default_value_t = false)]
     pub all: bool,
+    /// Which face in each SOURCE photo is the identity (0 = largest). For multi-face source photos.
+    #[arg(long, default_value_t = 0)]
+    pub source_face: usize,
     /// Output path (image), or output directory (batch). Default: `<scene>_swapped.<ext>`.
     #[arg(long, value_name = "PATH")]
     pub out: Option<PathBuf>,
@@ -73,13 +77,69 @@ fn plan_swaps(n_faces: usize, n_sources: usize, face: usize, all: bool) -> Resul
     }
 }
 
-/// Swap a single loaded scene against precomputed source `latents`, per `plan_swaps`. Returns the edited
-/// image + the number of faces swapped.
-fn swap_scene(swapper: &FaceSwapper, scene: &RgbImage, faces: &[Face], latents: &[Tensor], face: usize, all: bool) -> Result<(RgbImage, usize)> {
-    let plan = plan_swaps(faces.len(), latents.len(), face, all)?;
+/// A resolved source: its swap `latent` + its recognition `emb`edding (for R1 matching).
+struct Source {
+    latent: Tensor,
+    emb: Vec<f32>,
+}
+
+/// Cosine-similarity matrix `sim[s][f]` between source embeddings and face embeddings (all unit-norm →
+/// cosine = dot). Pure.
+fn cosine_matrix(sources: &[Vec<f32>], faces: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    sources
+        .iter()
+        .map(|s| faces.iter().map(|f| s.iter().zip(f).map(|(a, b)| a * b).sum::<f32>()).collect())
+        .collect()
+}
+
+/// **Greedy recognition assignment** (RFC FACESWAP-3 R1, pure/tested): given `sim[s][f]` cosine, assign
+/// each source to its most-similar still-free face (highest similarity first). Returns `(face, source)`
+/// pairs — so identities follow the FACE, not its size rank. Stops when sources or faces run out.
+fn match_sources_to_faces(sim: &[Vec<f32>]) -> Vec<(usize, usize)> {
+    let n_src = sim.len();
+    let n_face = sim.first().map(|r| r.len()).unwrap_or(0);
+    let (mut used_s, mut used_f) = (vec![false; n_src], vec![false; n_face]);
+    let mut pairs = Vec::new();
+    for _ in 0..n_src.min(n_face) {
+        let mut best: Option<(f32, usize, usize)> = None;
+        for s in 0..n_src {
+            if used_s[s] {
+                continue;
+            }
+            for f in 0..n_face {
+                if used_f[f] {
+                    continue;
+                }
+                if best.map(|(b, _, _)| sim[s][f] > b).unwrap_or(true) {
+                    best = Some((sim[s][f], s, f));
+                }
+            }
+        }
+        let Some((_, s, f)) = best else { break };
+        used_s[s] = true;
+        used_f[f] = true;
+        pairs.push((f, s));
+    }
+    pairs
+}
+
+/// Swap a loaded scene against precomputed `sources`. With >1 source, faces are matched to sources by
+/// **recognition** (R1: ArcFace cosine, identity-follows-face); with one source, by `--face`/`--all`.
+/// Returns the edited image + the number of faces swapped.
+fn swap_scene(swapper: &FaceSwapper, scene: &RgbImage, faces: &[Face], sources: &[Source], face: usize, all: bool) -> Result<(RgbImage, usize)> {
+    let plan = if sources.len() > 1 {
+        let face_embs: Vec<Vec<f32>> = faces
+            .iter()
+            .map(|f| Ok(swapper.face_embedding(scene, f.landmarks)?.flatten_all()?.to_vec1::<f32>()?))
+            .collect::<Result<_>>()?;
+        let src_embs: Vec<Vec<f32>> = sources.iter().map(|s| s.emb.clone()).collect();
+        match_sources_to_faces(&cosine_matrix(&src_embs, &face_embs))
+    } else {
+        plan_swaps(faces.len(), sources.len(), face, all)?
+    };
     let mut out = scene.clone();
     for &(fi, si) in &plan {
-        out = swapper.swap_into(&out, faces[fi].landmarks, &latents[si]).with_context(|| format!("swapping face {fi}"))?;
+        out = swapper.swap_into(&out, faces[fi].landmarks, &sources[si].latent).with_context(|| format!("swapping face {fi}"))?;
     }
     Ok((out, plan.len()))
 }
@@ -145,24 +205,29 @@ pub async fn run(args: FaceswapArgs, device: Device) -> Result<()> {
     let swapper = FaceSwapper::load_resolved(&device, DType::F32)
         .await
         .context("loading face-swap models (SCRFD + ArcFace + inswapper)")?;
-    let latents: Vec<Tensor> = args
+    let sources: Vec<Source> = args
         .source
         .iter()
-        .map(|s| swapper.source_latent(s).with_context(|| format!("embedding source {}", s.display())))
+        .map(|s| {
+            Ok(Source {
+                latent: swapper.source_latent_n(s, args.source_face).with_context(|| format!("embedding source {}", s.display()))?,
+                emb: swapper.source_embedding_n(s, args.source_face)?.flatten_all()?.to_vec1::<f32>()?,
+            })
+        })
         .collect::<Result<_>>()?;
 
     if is_video(&args.scene) {
-        return faceswap_video(&swapper, &latents, &args, device).await;
+        return faceswap_video(&swapper, &sources, &args, device).await;
     }
     if args.scene.is_dir() {
-        return faceswap_batch(&swapper, &latents, &args, device).await;
+        return faceswap_batch(&swapper, &sources, &args, device).await;
     }
 
     // ── single image ──
     let faces = swapper.detect(&args.scene).context("detecting faces in the scene")?;
     anyhow::ensure!(!faces.is_empty(), "no face detected in {} (try a clearer / larger face)", args.scene.display());
     let scene = image::open(&args.scene).with_context(|| format!("opening {}", args.scene.display()))?.to_rgb8();
-    let (out_img, n) = swap_scene(&swapper, &scene, &faces, &latents, args.face, args.all)?;
+    let (out_img, n) = swap_scene(&swapper, &scene, &faces, &sources, args.face, args.all)?;
 
     let out = args.out.clone().unwrap_or_else(|| default_out(&args.scene));
     write_image(&out_img, &out)?;
@@ -175,7 +240,7 @@ pub async fn run(args: FaceswapArgs, device: Device) -> Result<()> {
 }
 
 /// Batch: `<scene>` is a directory → swap every image into the `--out` directory.
-async fn faceswap_batch(swapper: &FaceSwapper, latents: &[Tensor], args: &FaceswapArgs, device: Device) -> Result<()> {
+async fn faceswap_batch(swapper: &FaceSwapper, sources: &[Source], args: &FaceswapArgs, device: Device) -> Result<()> {
     let out_dir = args.out.clone().unwrap_or_else(|| args.scene.join("swapped"));
     std::fs::create_dir_all(&out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&args.scene)?
@@ -192,7 +257,7 @@ async fn faceswap_batch(swapper: &FaceSwapper, latents: &[Tensor], args: &Facesw
             Err(_) => { err += 1; continue; }
         };
         let scene = match image::open(path) { Ok(i) => i.to_rgb8(), Err(_) => { err += 1; continue; } };
-        match swap_scene(swapper, &scene, &faces, latents, args.face, args.all) {
+        match swap_scene(swapper, &scene, &faces, sources, args.face, args.all) {
             Ok((img, _)) => {
                 let out = out_dir.join(default_out(path).file_name().unwrap());
                 if write_image(&img, &out).is_ok() {
@@ -209,7 +274,7 @@ async fn faceswap_batch(swapper: &FaceSwapper, latents: &[Tensor], args: &Facesw
 }
 
 /// Video: swap every frame (detect per frame — faces move) and re-encode. Reuses `imaging::video`.
-async fn faceswap_video(swapper: &FaceSwapper, latents: &[Tensor], args: &FaceswapArgs, device: Device) -> Result<()> {
+async fn faceswap_video(swapper: &FaceSwapper, sources: &[Source], args: &FaceswapArgs, device: Device) -> Result<()> {
     crate::imaging::video::ffmpeg_version().context("video face-swap needs ffmpeg on PATH")?;
     let out = args.out.clone().unwrap_or_else(|| default_out(&args.scene));
     let tmp = tempfile::tempdir().context("temp dir for video frames")?;
@@ -225,7 +290,7 @@ async fn faceswap_video(swapper: &FaceSwapper, latents: &[Tensor], args: &Facesw
             continue; // leave the frame as-is (no face this frame)
         }
         let scene = image::open(f)?.to_rgb8();
-        if let Ok((img, _)) = swap_scene(swapper, &scene, &faces, latents, args.face, args.all) {
+        if let Ok((img, _)) = swap_scene(swapper, &scene, &faces, sources, args.face, args.all) {
             img.save(f)?; // overwrite the extracted frame in place
             swapped_frames += 1;
         }
@@ -301,6 +366,36 @@ mod tests {
     fn plan_swaps_guards_empty() {
         assert!(plan_swaps(0, 1, 0, false).is_err(), "no faces");
         assert!(plan_swaps(2, 0, 0, false).is_err(), "no sources");
+    }
+
+    #[test]
+    fn recognition_match_follows_identity_not_size() {
+        // sources s0,s1; faces f0,f1. s0 looks like f1, s1 looks like f0 (identity crossed vs size order).
+        let sim = vec![vec![0.1, 0.9], vec![0.85, 0.2]]; // sim[s][f]
+        let pairs = match_sources_to_faces(&sim); // (face, source)
+        assert!(pairs.contains(&(1, 0)), "s0 → f1 (its match)");
+        assert!(pairs.contains(&(0, 1)), "s1 → f0 (its match)");
+        assert_eq!(pairs.len(), 2);
+    }
+
+    #[test]
+    fn recognition_match_is_greedy_highest_first() {
+        // global best is (s0,f0)=0.95; s1 is then forced onto the only free face f1.
+        let sim = vec![vec![0.95, 0.9], vec![0.8, 0.1]];
+        let pairs = match_sources_to_faces(&sim);
+        assert_eq!(pairs, vec![(0, 0), (1, 1)]);
+        // fewer faces than sources → stop when faces run out.
+        assert_eq!(match_sources_to_faces(&[vec![0.5], vec![0.9]]), vec![(0, 1)]);
+    }
+
+    #[test]
+    fn cosine_matrix_is_dot_of_unit_vectors() {
+        let s = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+        let f = vec![vec![1.0, 0.0], vec![0.7071, 0.7071]];
+        let m = cosine_matrix(&s, &f);
+        assert!((m[0][0] - 1.0).abs() < 1e-4, "identical → 1");
+        assert!((m[0][1] - 0.7071).abs() < 1e-3, "45° → ~0.707");
+        assert!((m[1][0] - 0.0).abs() < 1e-4, "orthogonal → 0");
     }
 
     #[test]
