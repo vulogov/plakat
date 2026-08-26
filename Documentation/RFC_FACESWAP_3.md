@@ -1,6 +1,9 @@
 # RFC FACESWAP-3 — face-swap depth: dry-run · batch · per-face sources · video (6.21.0)
 
-**Status:** draft (6.21.0). Depth on the 6.20.0 `plakat faceswap` verb. All four reuse the proven engine
+**Status:** SHIPPED (6.21.0). Depth on the 6.20.0 `plakat faceswap` verb.
+
+**All phases shipped:** P1 `--dry-run`/`--preview` (live-proven) · P2 directory batch · P3 repeatable
+`--source` (per-face by size rank) · P4 video (every frame). `plan_swaps` mapping unit-tested. All four reuse the proven engine
 (`FaceSwapper`: detect → `source_latent` → colour-matched `swap_into`); no new model.
 
 ## What ships
