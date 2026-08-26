@@ -12,6 +12,11 @@ smooth content, still recoverable) · P7 upscale pre-sharpen (light unsharp on t
 ControlNet-Tile locks onto crisper structure) · P8 fractals deep-zoom central re-reference (pick a
 well-behaved *and* central glitched pixel → fewer residual glitch blobs at extreme depth).
 
+**Edge/composite improvements (same cut):** Q1 foreground colour decontamination (`matting::decontaminate`
+→ `replace-bg` loses the old-bg halo) · Q2 restore-faces skin-tone match (`adetailer::tone_match` → a
+restored face blends, no tone patch) · Q3 product reflection realism (perspective falloff + depth gloss
+blur) · Q4 matte edge refine (`matting::refine_matte` → crisper hair/fur, helps every cutout).
+
 Both
 `plakat texture` (seamless tiling) and `plakat upscale --diffusion` (tiled refine) rely on **feather
 blends** because the native circular-conv path was G0-killed on this hardware. Feathering works but can
