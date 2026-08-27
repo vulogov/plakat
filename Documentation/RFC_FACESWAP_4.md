@@ -35,3 +35,14 @@ multi-source / recognition / video surface.
 
 ## Sequencing
 **P1** api builder → **P2** scenario task → **P3** cut. Independent.
+
+## P4 (folded in) — `plakat compile` improvements
+- **C1 faceswap task in compile** — `declares_faceswap_task` (parser) + Scene fields (resolver) + emit
+  block (emitter): a `type: faceswap` prose block (with `faceswap-scene`/`faceswap-source`/`faceswap-face`)
+  compiles to a scenario faceswap task. Completes faceswap parity into compile.
+- **C2 validate compiled output** — `scenario::validate_hjson` (deserialise + known task types) runs on the
+  emitted scenario before writing → guaranteed loadable, not just well-formed.
+- **C3 decompile spec-tasks** — `--decompile` preserves the task `type:` for spec-tasks and fully
+  round-trips a faceswap block (`type` + `faceswap-*`), no bogus prompt placeholder.
+- **C4 `@include`** — `parser::expand_includes` inlines `@include <path>` lines (relative, recursive,
+  depth-guarded) before parse, so prose sets split across files. Round-trip live-proven.

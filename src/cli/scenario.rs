@@ -1069,6 +1069,19 @@ impl TaskKind {
     }
 }
 
+/// Validate an emitted scenario HJSON string (RFC FACESWAP-4 C2 — used by `plakat compile` to guarantee
+/// its output is loadable): the text must deserialize into a [`ScenarioFile`], and every task's `type`
+/// must be a recognised [`TaskKind`]. Lightweight (no model load); catches the compile-output errors that
+/// would otherwise only surface at `scenario` run.
+pub fn validate_hjson(hjson: &str) -> Result<()> {
+    let s: ScenarioFile = deser_hjson::from_str(hjson).context("compiled scenario does not parse as HJSON")?;
+    for t in &s.tasks {
+        TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref())
+            .with_context(|| format!("task {:?}: unrecognised type", t.name))?;
+    }
+    Ok(())
+}
+
 /// v0.31 phase 3: which cached pipeline (if any) the scenario loop
 /// should drop before running the next task. Used by the kind-
 /// switching evictor to close the v0.29 mixed-kind carry: scenarios

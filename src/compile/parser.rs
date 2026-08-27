@@ -2,7 +2,7 @@
 //! free-text lines + `key: value` command lines. The first block is the global
 //! block iff it has no free text. `#`-prefixed lines are comments anywhere.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 /// One parsed block: ordered commands (key, value — duplicates preserved) and
 /// free-text lines (joined later with a space).
@@ -58,6 +58,35 @@ pub fn parse_command_line(line: &str) -> Option<(String, String)> {
     }
     let value = line[colon + 1..].trim().to_string();
     Some((key.to_string(), value))
+}
+
+/// **`@include` pre-pass** (RFC FACESWAP-4 C4): inline any line of the form `@include <path>` with the
+/// contents of that file (relative to `base`), recursively (depth-guarded against cycles), so large prose
+/// sets can be split across files. Runs before the block parse. `@include "quoted path"` is accepted.
+pub fn expand_includes(input: &str, base: &std::path::Path, depth: usize) -> Result<String> {
+    if depth > 16 {
+        bail!("compile: @include nested too deeply (>16 — a cycle?)");
+    }
+    let mut out = String::new();
+    for line in input.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("@include ").or_else(|| t.strip_prefix("@include\t")) {
+            let path = rest.trim().trim_matches('"');
+            let full = base.join(path);
+            let content = std::fs::read_to_string(&full)
+                .with_context(|| format!("compile: @include {}", full.display()))?;
+            let child_base = full.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.to_path_buf());
+            let expanded = expand_includes(&content, &child_base, depth + 1)?;
+            out.push_str(&expanded);
+            if !expanded.ends_with('\n') {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
 /// Parse a whole `prompts.txt` string.
@@ -118,9 +147,9 @@ pub fn parse(input: &str) -> Result<Document> {
     // global slot is almost always a misplaced global / a missing blank line.
     // Exception (MAP-4): a `type: map` task renders from its spec, not a prompt, so
     // a map block (or any block when the global declares `type: map`) needs none.
-    let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g));
+    let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g) || declares_faceswap_task(g));
     for (i, s) in doc.scenes.iter().enumerate() {
-        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) {
+        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -170,6 +199,14 @@ fn declares_product_task(b: &Block) -> bool {
     })
 }
 
+/// Does this block declare a `faceswap` task (6.22.0 FACESWAP-4)? It renders from `scene` + `source`,
+/// not a text prompt — so, like the other spec-tasks, a faceswap block needs no free text.
+fn declares_faceswap_task(b: &Block) -> bool {
+    b.commands.iter().any(|(k, v)| {
+        (k == "type" && (v.eq_ignore_ascii_case("faceswap") || v.eq_ignore_ascii_case("face-swap"))) || k.starts_with("faceswap-")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +234,31 @@ mod tests {
         assert_eq!(doc.scenes[0].free_text, vec!["A frozen tundra."]);
         assert_eq!(doc.scenes[0].values("header").collect::<Vec<_>>(), vec!["wide shot,"]);
         assert_eq!(doc.scenes[1].values("seed").collect::<Vec<_>>(), vec!["42"]);
+    }
+
+    #[test]
+    fn faceswap_block_needs_no_free_text() {
+        // C1 (FACESWAP-4): a `type: faceswap` block renders from scene+source, not a prompt — it must
+        // parse without a description (previously rejected as "commands but no description").
+        // A global block first, then the faceswap scene block (commands only, no description).
+        let doc = parse("model: sdxl\n\nname: swap\ntype: faceswap\nfaceswap-scene: a.png\nfaceswap-source: b.png\n").unwrap();
+        assert_eq!(doc.scenes.len(), 1);
+        assert!(doc.scenes[0].free_text.is_empty());
+        assert_eq!(doc.scenes[0].values("type").collect::<Vec<_>>(), vec!["faceswap"]);
+    }
+
+    #[test]
+    fn expand_includes_inlines_and_leaves_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("body.txt"), "A frozen tundra.\nseed: 7\n").unwrap();
+        let input = "model: sdxl\n\n@include body.txt\n";
+        let out = expand_includes(input, dir.path(), 0).unwrap();
+        assert!(out.contains("A frozen tundra."), "included body inlined");
+        assert!(out.contains("seed: 7"));
+        assert!(out.contains("model: sdxl"), "surrounding lines kept");
+        assert!(!out.contains("@include"), "the directive is consumed");
+        // A missing include is a clear error.
+        assert!(expand_includes("@include nope.txt\n", dir.path(), 0).is_err());
     }
 
     #[test]

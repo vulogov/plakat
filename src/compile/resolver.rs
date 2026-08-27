@@ -82,6 +82,11 @@ pub struct ResolvedScene {
     // 6.9.0 P4: a `type: product` block compiles to a scenario `product` task. `product-spec-file` points
     // at a ProductSpec; otherwise the prose (if any) becomes the subject prompt.
     pub product_spec_file: Option<String>,
+    // 6.22.0 FACESWAP-4: a `type: faceswap` block compiles to a scenario `faceswap` task. It renders from
+    // `faceswap-scene` + `faceswap-source` (+ optional `faceswap-face`), not a prompt.
+    pub faceswap_scene: Option<String>,
+    pub faceswap_source: Option<String>,
+    pub faceswap_face: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -235,6 +240,9 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             texture_height: last_wins(&vals(g, "texture-height"), &vals(Some(s), "texture-height")).map(str::to_string),
             comic_spec_file: last_wins(&vals(g, "comic-spec-file"), &vals(Some(s), "comic-spec-file")).map(str::to_string),
             product_spec_file: last_wins(&vals(g, "product-spec-file"), &vals(Some(s), "product-spec-file")).map(str::to_string),
+            faceswap_scene: last_wins(&vals(g, "faceswap-scene"), &vals(Some(s), "faceswap-scene")).map(str::to_string),
+            faceswap_source: last_wins(&vals(g, "faceswap-source"), &vals(Some(s), "faceswap-source")).map(str::to_string),
+            faceswap_face: last_wins(&vals(g, "faceswap-face"), &vals(Some(s), "faceswap-face")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

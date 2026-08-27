@@ -93,7 +93,7 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         }
         // A bookart / texture / comic / product task folds the prompt into its spec block below and
         // ignores the top-level prompt/negative — don't emit them (they'd be dead, and confusing).
-        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product")) {
+        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product") | Some("faceswap")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -222,6 +222,21 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
                 o.push_str(&format!("          subject: {{ prompt: {} }}\n", q(&cs.prompt)));
                 o.push_str("          canvas: { bg: \"grey-sweep\" }\n        }\n      }\n");
             }
+        }
+        // 6.22.0 FACESWAP-4: emit the faceswap task block from `faceswap-scene` / `faceswap-source`
+        // (+ optional `faceswap-face`). Renders from images, not a prompt.
+        if s.task_type.as_deref() == Some("faceswap") {
+            o.push_str("      faceswap: {\n");
+            if let Some(v) = &s.faceswap_scene {
+                o.push_str(&format!("        scene: {}\n", q(v)));
+            }
+            if let Some(v) = &s.faceswap_source {
+                o.push_str(&format!("        source: {}\n", q(v)));
+            }
+            if let Some(v) = &s.faceswap_face {
+                o.push_str(&format!("        face: {v}\n")); // usize — unquoted
+            }
+            o.push_str("      }\n");
         }
         o.push_str("    }\n");
     }

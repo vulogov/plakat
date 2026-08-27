@@ -126,7 +126,19 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
-    let input = read_input(&args.input)?;
+    let mut input = read_input(&args.input)?;
+    // C4 (FACESWAP-4): inline `@include <path>` lines before anything else, relative to the input's dir
+    // (CWD for stdin), so prose sets can be split across files.
+    {
+        let base = if args.input.as_os_str() == "-" {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            args.input.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+        };
+        if input.contains("@include") {
+            input = compile::parser::expand_includes(&input, &base, 0)?;
+        }
+    }
 
     // --decompile: the INPUT is a scenario HJSON → emit a prompts.txt.
     if args.decompile {
@@ -250,6 +262,10 @@ pub async fn run(args: CompileArgs) -> Result<()> {
         },
     )
     .await?;
+
+    // C2 (FACESWAP-4): validate the emitted scenario is loadable (deserialises + known task types) before
+    // writing — so a compiled scenario is guaranteed runnable, not just well-formed text.
+    crate::cli::scenario::validate_hjson(&hjson).context("compiled scenario failed validation")?;
 
     // --diff: compare against an existing scenario instead of writing.
     if let Some(existing) = &args.diff {

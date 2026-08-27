@@ -23,6 +23,22 @@ struct ScnTask {
     size: Option<String>,
     #[serde(default)]
     steps: Option<usize>,
+    // C3 (FACESWAP-4): preserve spec-task kind on decompile so the round-trip keeps the task type.
+    #[serde(rename = "type", default)]
+    task_type: Option<String>,
+    #[serde(default)]
+    faceswap: Option<FaceswapBlock>,
+}
+
+/// The `faceswap: { … }` sub-block of a task (for a lossless faceswap round-trip).
+#[derive(Deserialize, Default)]
+struct FaceswapBlock {
+    #[serde(default)]
+    scene: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    face: Option<usize>,
 }
 
 #[derive(Deserialize, Default)]
@@ -99,8 +115,23 @@ pub fn decompile(hjson: &str) -> Result<String> {
         if let Some(p) = &t.prompt {
             o.push_str(p.trim());
             o.push('\n');
-        } else {
+        } else if t.task_type.is_none() {
             o.push_str(&format!("scene {}\n", i + 1));
+        }
+        // C3: preserve the task type + faceswap spec so a spec-task round-trips (no bogus prompt).
+        if let Some(tt) = &t.task_type {
+            o.push_str(&format!("type: {tt}\n"));
+            if let Some(fb) = &t.faceswap {
+                if let Some(v) = &fb.scene {
+                    o.push_str(&format!("faceswap-scene: {v}\n"));
+                }
+                if let Some(v) = &fb.source {
+                    o.push_str(&format!("faceswap-source: {v}\n"));
+                }
+                if let Some(v) = fb.face {
+                    o.push_str(&format!("faceswap-face: {v}\n"));
+                }
+            }
         }
         if let Some(v) = &t.negative {
             o.push_str(&format!("negative: {v}\n"));
