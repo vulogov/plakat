@@ -1,6 +1,8 @@
 # RFC FACESWAP-4 — ecosystem parity: `api::FaceSwap` + scenario `type: faceswap` (6.22.0)
 
-**Status:** draft (6.22.0). The deferred tail of FACESWAP-3 S3. Face-swap already has the CLI verb
+**Status:** SHIPPED (6.22.0). The deferred tail of FACESWAP-3 S3. **All shipped:** P1 `api::FaceSwap`
+builder · P2 scenario `type: faceswap` (dry-run-verified). Face-swap is now reachable from CLI + Bund
+word + api + scenario — full ecosystem parity. Face-swap already has the CLI verb
 (`plakat faceswap`) and the Bund word (`plakat.faceswap`); this finishes parity so it is reachable from
 the **library** and from **scenario pipelines**, like every other verb.
 
