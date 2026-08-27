@@ -233,8 +233,16 @@ If you're new to plakat, work through these in order:
     scenario HJSON: one task per blank-line block, global→scene inheritance,
     model-family-aware prompt rewriting + auto-negatives. `--no-enhance` for a
     deterministic core, `--lint` / `--dry-run` / `--diff` / `--decompile`, an
-    optional Tera template pre-pass, and a `type: map` block (worldbuilding +
-    maps in one document). The prose front-end to `SCENARIOS_TUTORIAL.md`.
+    optional Tera template pre-pass, `@include`, `--watch`, and non-t2i blocks
+    (`type: faceswap` / `fractal` / `texture` / `map` / …). The prose front-end
+    to `SCENARIOS_TUTORIAL.md`.
+
+15b. [`FACESWAP_TUTORIAL.md`](FACESWAP_TUTORIAL.md) — **`plakat faceswap`.**
+    Swap the face(s) in an image, folder, or video with a source face
+    (SCRFD → ArcFace → inswapper, colour-matched paste-back). `--dry-run` /
+    `--preview` to pick a face, repeatable `--source` (recognition-matched),
+    `--all`, `--face N`, batch + video, and the blend controls. Also from the
+    library / Bund / scenario / compile.
 
 16. [`OUTPAINT_TUTORIAL.md`](OUTPAINT_TUTORIAL.md) — `plakat
     outpaint INPUT.png` grows the canvas of an existing image.

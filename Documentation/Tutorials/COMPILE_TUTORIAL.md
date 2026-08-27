@@ -77,6 +77,38 @@ compiles to `basic.hjson` and renders the tundra rider and the cartographer
 - **Cache** — `--compile-cache` skips re-enhancing unchanged prompts; clear with
   `--compile-cache-clear`.
 - **Iterate** — `--diff existing.hjson` shows which tasks changed since last time;
-  `--decompile scene.hjson` turns a scenario back into an editable `prompts.txt`.
+  `--decompile scene.hjson` turns a scenario back into an editable `prompts.txt`
+  (it now round-trips spec-tasks — `faceswap` / `texture` / `product` / `comic` /
+  `fractal` — not just plain generate scenes).
+- **Watch** *(6.22)* — `plakat compile prompts.txt --watch --no-enhance` re-compiles
+  the moment you save the file — an instant authoring loop.
+- **Lint before you spend** — `--lint` catches unknown commands, **duplicate task
+  names**, and **repeated commands** with no LLM cost; the compiled scenario is also
+  validated before writing, so it's guaranteed to load.
+
+## Non-t2i tasks in prose
+
+A block can compile to a **non-generate task** — it renders from directives, not a
+prompt. For example, swap a face into a photo *(6.22)*:
+
+```
+model: sdxl
+
+name: swap-alice
+type: faceswap
+faceswap-scene: family.jpg
+faceswap-source: alice.png
+```
+
+Or a fractal, a seamless material, a map, a book ornament — see the full list in
+[`../COMPILE.md`](../COMPILE.md#task-type-blocks-type-). Combine with `@include`
+to keep a big prose set tidy:
+
+```
+model: sdxl
+
+@include scenes/portraits.txt
+@include scenes/materials.txt
+```
 
 Full reference: [`../COMPILE.md`](../COMPILE.md).

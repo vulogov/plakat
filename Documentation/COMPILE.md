@@ -35,6 +35,19 @@ seed: 42
 count: 2
 ```
 
+### `@include` *(6.22)*
+
+Split a large prose set across files: a line `@include <path>` is inlined with that file's contents
+(relative to the including file, recursive, cycle-guarded) **before** parsing — so shared globals or a
+library of scenes stay DRY without the heavier Tera template pre-pass.
+
+```
+model: sdxl
+
+@include scenes/winter.txt
+@include scenes/harbour.txt
+```
+
 ## Commands
 
 **Prompt commands** (shape or feed the LLM; never appear verbatim unless noted):
@@ -70,14 +83,23 @@ or empty negative.
 
 A block can declare a **non-t2i task type** — it compiles to that task in the emitted scenario instead of
 a text-to-image render. A `type:`-typed block (or one carrying that type's directives) may **omit the
-prose description** — a procedural task needs no prompt. Two types are supported:
+prose description** — a spec-driven task needs no prompt. Supported types:
 
 - **`type: map`** — a `plakat map` task (`map-spec:` / `map-style:` / `map-paint:` / `map-scale:` /
   `map-tiles:` / `map-sd-model:` / `map-sd-lora:` / `map-provider:`).
-- **`type: bookart`** — a `plakat bookart` ornament task. Directives: `bookart-origin:` /
-  `bookart-technique:` / `bookart-type:` (headpiece / border / vignette / …) / `bookart-page:` /
-  `bookart-svg:`. The block's free text becomes the **ornament prompt** (a procedural ornament needs
-  none). It emits a `type: "bookart"` task whose `bookart: { spec: { … } }` the scenario runner renders.
+- **`type: bookart`** — a `plakat bookart` ornament task (`bookart-origin:` / `bookart-technique:` /
+  `bookart-type:` / `bookart-page:` / `bookart-svg:`); free text = the ornament prompt (optional).
+- **`type: texture`** — a `plakat texture` material task; free text = the material prompt, or
+  `texture-from:` (image-to-material) / `texture-seamless:` / `texture-height:` / `texture-size:` /
+  `texture-upscale:`.
+- **`type: comic`** — `comic-spec-file:` (a full `ComicSpec`), else the prose is a single-panel page.
+- **`type: product`** — `product-spec-file:` (a full `ProductSpec`), else the prose is the subject prompt.
+- **`type: faceswap`** *(6.22)* — swap a source face into a scene image: `faceswap-scene:` /
+  `faceswap-source:` (+ optional `faceswap-face:`). No prompt (renders from the images).
+- **`type: fractal`** *(6.22)* — `fractal-spec:` (the spec string) / `fractal-kind:` / `fractal-palette:`.
+  No prompt.
+- **`type: animatediff`** (aka `animate`) — an AnimateDiff clip; uses the normal generate fields + the
+  block's free text as the prompt.
 
 ```
 # global: every scene is a bookart ornament in the russian tradition
@@ -109,10 +131,14 @@ See [`BOOKART.md`](BOOKART.md#integration-surfaces).
 | `--compile-cache` | off | two-namespace SHA-256 disk cache |
 | `--compile-cache-clear [all\|positive\|negative]` | — | clear the cache and exit |
 | `--compile-parallel <N>` | `1` | max concurrent scenes; `0` = auto (deepseek 3, gemini 5, local/auto 1). Output order is preserved regardless. |
-| `--lint` | off | validate (unknown commands, misplaced `skip:`); no LLM |
+| `--lint` | off | validate (unknown commands, misplaced `skip:`, **duplicate task names**, **repeated commands**); no LLM |
+| `--watch` | off | *(6.22)* re-compile whenever the input file changes (dev loop; pair with `--no-enhance`; file input only) |
 | `--dry-run` | off | per-block summary + LLM-call count; no LLM |
 | `--diff <PATH>` | — | per-task add/change/remove vs an existing scenario |
-| `--decompile` | off | inverse: read a scenario HJSON → emit a `prompts.txt` |
+| `--decompile` | off | inverse: read a scenario HJSON → emit a `prompts.txt` (round-trips spec-tasks) |
+
+The emitted scenario is **validated before writing** *(6.22)* — it must deserialise and every task `type`
+must be known — so a compiled scenario is guaranteed loadable, not just well-formed text.
 
 `--no-enhance --no-negative` is **fully deterministic** (no LLM) — the path the
 proof corpus exercises (`corpus/compile.sh`).
