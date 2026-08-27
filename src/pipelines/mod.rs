@@ -72,6 +72,7 @@ pub mod seeds;
 pub mod scrfd;
 pub mod inswapper;
 pub mod faceswap;
+pub mod faceswap_scenario;
 pub mod mmdit_inner;
 pub mod dc_ae;
 pub mod vendored_gemma2;

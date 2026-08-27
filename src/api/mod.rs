@@ -2036,6 +2036,61 @@ impl Naturalize {
     }
 }
 
+/// Face-swap into an existing image (RFC FACESWAP-2/3/4). Swap the largest face in a scene with the
+/// identity from a source face photo (colour-matched paste-back). Returns the result in memory.
+///
+/// ```no_run
+/// # async fn f() -> anyhow::Result<()> {
+/// use plakat::api::FaceSwap;
+/// let img = FaceSwap::new("scene.png", "alice.png").face(0).run().await?;
+/// img.save("out.png")?;
+/// # Ok(()) }
+/// ```
+pub struct FaceSwap {
+    scene: PathBuf,
+    source: PathBuf,
+    face: usize,
+    device: Option<Device>,
+}
+
+impl FaceSwap {
+    /// Swap `source`'s identity into `scene` (the scene's largest face by default).
+    pub fn new(scene: impl Into<PathBuf>, source: impl Into<PathBuf>) -> Self {
+        Self { scene: scene.into(), source: source.into(), face: 0, device: None }
+    }
+    /// Which detected face to swap (0 = largest).
+    pub fn face(mut self, n: usize) -> Self {
+        self.face = n;
+        self
+    }
+    /// Force a device (`"auto"` default).
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run the swap, returning the result in memory.
+    pub async fn run(self) -> Result<Image> {
+        let dev = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+        let swapper = crate::pipelines::faceswap::FaceSwapper::load_resolved(&dev, candle_core::DType::F32).await?;
+        let faces = swapper.detect(&self.scene)?;
+        anyhow::ensure!(!faces.is_empty(), "no face detected in {}", self.scene.display());
+        anyhow::ensure!(self.face < faces.len(), "face {} out of range — {} detected", self.face, faces.len());
+        let latent = swapper.source_latent(&self.source)?;
+        let img = image::open(&self.scene)?.to_rgb8();
+        let out = swapper.swap_into(&img, faces[self.face].landmarks, &latent)?;
+        let tmp = scratch_dir()?;
+        let p = tmp.join("swapped.png");
+        out.save(&p)?;
+        let image = Image::open(&p);
+        let _ = std::fs::remove_dir_all(&tmp);
+        image
+    }
+}
+
 /// Seamless PBR material synthesis (RFC TEXTURE-1). Turn a prompt or a photo into a tileable material
 /// set (albedo/normal/roughness/metallic/height/AO), written to a directory. Mirrors [`BookArt`].
 ///
