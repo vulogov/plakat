@@ -46,3 +46,15 @@ multi-source / recognition / video surface.
   round-trips a faceswap block (`type` + `faceswap-*`), no bogus prompt placeholder.
 - **C4 `@include`** — `parser::expand_includes` inlines `@include <path>` lines (relative, recursive,
   depth-guarded) before parse, so prose sets split across files. Round-trip live-proven.
+
+## P5 (folded in) — more `plakat compile` improvements (D1–D4)
+- **D1 remaining spec-tasks** — `fractal` now compiles (`fractal-spec`/`fractal-kind`/`fractal-palette` →
+  `fractal: {…}`); `animate`/`animatediff` already worked via the generic `type:` emit (confirmed).
+  **multiperson deferred** — its nested `people` list doesn't map to flat `key: value` prose (needs a
+  spec-file mechanism `MultipersonTaskSpec` lacks).
+- **D2 richer `--lint`** — flags duplicate task names (they collide as ids) and repeated non-repeatable
+  commands (`seed:` twice), on top of the existing unknown-command check.
+- **D3 `compile --watch`** — re-compile on the input file's mtime change (poll-based, no deps; Ctrl-C to
+  stop; file input only).
+- **D4 lossless decompile** — `--decompile` now round-trips the compiler-authored spec directives for
+  `texture` (from/seamless), `product`/`comic` (spec-file), and `fractal` (spec/kind/palette).

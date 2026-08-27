@@ -87,6 +87,11 @@ pub struct ResolvedScene {
     pub faceswap_scene: Option<String>,
     pub faceswap_source: Option<String>,
     pub faceswap_face: Option<String>,
+    // 6.22.0 D1: a `type: fractal` block compiles to a scenario `fractal` task. `fractal-spec` is the
+    // spec string (encodes most config); `fractal-kind` / `fractal-palette` are common overrides.
+    pub fractal_spec: Option<String>,
+    pub fractal_kind: Option<String>,
+    pub fractal_palette: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -243,6 +248,9 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             faceswap_scene: last_wins(&vals(g, "faceswap-scene"), &vals(Some(s), "faceswap-scene")).map(str::to_string),
             faceswap_source: last_wins(&vals(g, "faceswap-source"), &vals(Some(s), "faceswap-source")).map(str::to_string),
             faceswap_face: last_wins(&vals(g, "faceswap-face"), &vals(Some(s), "faceswap-face")).map(str::to_string),
+            fractal_spec: last_wins(&vals(g, "fractal-spec"), &vals(Some(s), "fractal-spec")).map(str::to_string),
+            fractal_kind: last_wins(&vals(g, "fractal-kind"), &vals(Some(s), "fractal-kind")).map(str::to_string),
+            fractal_palette: last_wins(&vals(g, "fractal-palette"), &vals(Some(s), "fractal-palette")).map(str::to_string),
         });
     }
     Ok(Resolved { globals, scenes })

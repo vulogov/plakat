@@ -13,8 +13,11 @@ use std::path::PathBuf;
 
 use crate::compile::{self, CompileOpts};
 
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs, Debug, Clone)]
 pub struct CompileArgs {
+    /// Re-compile whenever the input file changes (dev loop; pair with `--no-enhance` for instant). D3.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub watch: bool,
     /// Input `prompts.txt` (`-` reads stdin).
     #[arg(help_heading = "Compile", value_name = "INPUT")]
     pub input: PathBuf,
@@ -113,6 +116,37 @@ fn read_input(path: &std::path::Path) -> Result<String> {
 }
 
 pub async fn run(args: CompileArgs) -> Result<()> {
+    if args.watch {
+        return watch(args).await;
+    }
+    run_inner(args).await
+}
+
+/// D3 (6.22.0) — `--watch`: compile once, then re-compile whenever the input file's mtime changes
+/// (poll-based, no extra deps). Ctrl-C to stop. Needs a file input (not stdin).
+async fn watch(mut args: CompileArgs) -> Result<()> {
+    args.watch = false;
+    anyhow::ensure!(args.input.as_os_str() != "-", "--watch needs a file input (not stdin)");
+    let path = args.input.clone();
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    println!("{}  watching {} — Ctrl-C to stop", style("👀").cyan(), path.display());
+    let mut last = mtime(&path);
+    loop {
+        if let Err(e) = run_inner(args.clone()).await {
+            eprintln!("{}  {e:#}", style("compile error:").red());
+        }
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            let now = mtime(&path);
+            if now != last && now.is_some() {
+                last = now;
+                break;
+            }
+        }
+    }
+}
+
+async fn run_inner(args: CompileArgs) -> Result<()> {
     // --compile-cache-clear: wipe the cache and exit (before reading input).
     if let Some(which) = &args.cache_clear {
         let ns = match which.as_str() {

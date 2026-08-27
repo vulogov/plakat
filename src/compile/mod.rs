@@ -323,6 +323,8 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
             }
         }
     }
+    // D2 (6.22.0): duplicate task names collide (scenario uses names as ids).
+    let mut seen_names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, s) in doc.scenes.iter().enumerate() {
         for (k, _) in &s.commands {
             if command_spec(k).is_none() {
@@ -331,6 +333,22 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
                     i + 1,
                     s.line_start
                 ));
+            }
+        }
+        // D2: duplicate command keys that don't allow repeats (e.g. two `seed:` lines).
+        let mut keys_here: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (k, _) in &s.commands {
+            let repeatable = matches!(k.as_str(), "style" | "persona" | "lora") || k.contains('-');
+            let n = keys_here.entry(k.as_str()).or_insert(0);
+            *n += 1;
+            if *n == 2 && !repeatable {
+                issues.push(format!("scene #{} (line {}): command `{k}:` repeated (last wins — likely a mistake)", i + 1, s.line_start));
+            }
+        }
+        // D2: duplicate task name across scenes.
+        if let Some(name) = s.values("name").next() {
+            if let Some(prev) = seen_names.insert(name.to_string(), i + 1) {
+                issues.push(format!("scene #{}: duplicate task name {name:?} (already used by scene #{prev})", i + 1));
             }
         }
     }
@@ -356,6 +374,16 @@ pub fn classify_model(name: &str) -> ModelFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lint_flags_duplicate_task_names_and_repeats() {
+        // Two tasks named "dup" + a repeated non-repeatable command.
+        let issues = lint("model: sdxl\n\nname: dup\nseed: 1\nseed: 2\nA tundra.\n\nname: dup\nA harbor.\n").unwrap();
+        assert!(issues.iter().any(|i| i.contains("duplicate task name")), "dup name flagged: {issues:?}");
+        assert!(issues.iter().any(|i| i.contains("`seed:` repeated")), "repeat flagged: {issues:?}");
+        // A clean doc lints without issues.
+        assert!(lint("model: sdxl\n\nname: a\nA tundra.\n\nname: b\nA harbor.\n").unwrap().is_empty());
+    }
 
     #[test]
     fn classifies_model_families() {

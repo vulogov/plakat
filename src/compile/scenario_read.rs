@@ -28,6 +28,15 @@ struct ScnTask {
     task_type: Option<String>,
     #[serde(default)]
     faceswap: Option<FaceswapBlock>,
+    // D4 (6.22.0): capture the spec-task blocks the compiler authors, for a lossless round-trip.
+    #[serde(default)]
+    texture: Option<TextureBlock>,
+    #[serde(default)]
+    product: Option<SpecFileBlock>,
+    #[serde(default)]
+    comic: Option<SpecFileBlock>,
+    #[serde(default)]
+    fractal: Option<FractalBlock>,
 }
 
 /// The `faceswap: { … }` sub-block of a task (for a lossless faceswap round-trip).
@@ -39,6 +48,43 @@ struct FaceswapBlock {
     source: Option<String>,
     #[serde(default)]
     face: Option<usize>,
+}
+
+/// A `{ spec_file: "…" }` block (product / comic when authored via a spec file).
+#[derive(Deserialize, Default)]
+struct SpecFileBlock {
+    #[serde(default)]
+    spec_file: Option<String>,
+}
+
+/// The compiler-authored `texture: { spec: { material, from_image, seamless } }` fields.
+#[derive(Deserialize, Default)]
+struct TextureBlock {
+    #[serde(default)]
+    spec: Option<TextureSpecInner>,
+}
+#[derive(Deserialize, Default)]
+struct TextureSpecInner {
+    #[serde(default)]
+    from_image: Option<String>,
+    #[serde(default)]
+    seamless: Option<SeamlessInner>,
+}
+#[derive(Deserialize, Default)]
+struct SeamlessInner {
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// The compiler-authored `fractal: { spec, kind, palette }` fields.
+#[derive(Deserialize, Default)]
+struct FractalBlock {
+    #[serde(default)]
+    spec: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    palette: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -118,7 +164,7 @@ pub fn decompile(hjson: &str) -> Result<String> {
         } else if t.task_type.is_none() {
             o.push_str(&format!("scene {}\n", i + 1));
         }
-        // C3: preserve the task type + faceswap spec so a spec-task round-trips (no bogus prompt).
+        // C3/D4: preserve the task type + spec directives so a spec-task round-trips (no bogus prompt).
         if let Some(tt) = &t.task_type {
             o.push_str(&format!("type: {tt}\n"));
             if let Some(fb) = &t.faceswap {
@@ -130,6 +176,31 @@ pub fn decompile(hjson: &str) -> Result<String> {
                 }
                 if let Some(v) = fb.face {
                     o.push_str(&format!("faceswap-face: {v}\n"));
+                }
+            }
+            if let Some(tx) = t.texture.as_ref().and_then(|b| b.spec.as_ref()) {
+                if let Some(v) = &tx.from_image {
+                    o.push_str(&format!("texture-from: {v}\n"));
+                }
+                if let Some(v) = tx.seamless.as_ref().and_then(|s| s.mode.as_ref()) {
+                    o.push_str(&format!("texture-seamless: {v}\n"));
+                }
+            }
+            if let Some(v) = t.product.as_ref().and_then(|b| b.spec_file.as_ref()) {
+                o.push_str(&format!("product-spec-file: {v}\n"));
+            }
+            if let Some(v) = t.comic.as_ref().and_then(|b| b.spec_file.as_ref()) {
+                o.push_str(&format!("comic-spec-file: {v}\n"));
+            }
+            if let Some(fr) = &t.fractal {
+                if let Some(v) = &fr.spec {
+                    o.push_str(&format!("fractal-spec: {v}\n"));
+                }
+                if let Some(v) = &fr.kind {
+                    o.push_str(&format!("fractal-kind: {v}\n"));
+                }
+                if let Some(v) = &fr.palette {
+                    o.push_str(&format!("fractal-palette: {v}\n"));
                 }
             }
         }

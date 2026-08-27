@@ -147,9 +147,9 @@ pub fn parse(input: &str) -> Result<Document> {
     // global slot is almost always a misplaced global / a missing blank line.
     // Exception (MAP-4): a `type: map` task renders from its spec, not a prompt, so
     // a map block (or any block when the global declares `type: map`) needs none.
-    let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g) || declares_faceswap_task(g));
+    let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g) || declares_faceswap_task(g) || declares_fractal_task(g));
     for (i, s) in doc.scenes.iter().enumerate() {
-        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) {
+        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -204,6 +204,13 @@ fn declares_product_task(b: &Block) -> bool {
 fn declares_faceswap_task(b: &Block) -> bool {
     b.commands.iter().any(|(k, v)| {
         (k == "type" && (v.eq_ignore_ascii_case("faceswap") || v.eq_ignore_ascii_case("face-swap"))) || k.starts_with("faceswap-")
+    })
+}
+
+/// Does this block declare a `fractal` task (6.22.0 D1)? A fractal renders from its spec, not a prompt.
+fn declares_fractal_task(b: &Block) -> bool {
+    b.commands.iter().any(|(k, v)| {
+        (k == "type" && (v.eq_ignore_ascii_case("fractal") || v.eq_ignore_ascii_case("fractals"))) || k.starts_with("fractal-")
     })
 }
 

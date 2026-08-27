@@ -93,7 +93,7 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         }
         // A bookart / texture / comic / product task folds the prompt into its spec block below and
         // ignores the top-level prompt/negative — don't emit them (they'd be dead, and confusing).
-        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product") | Some("faceswap")) {
+        if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product") | Some("faceswap") | Some("fractal")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -235,6 +235,20 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
             }
             if let Some(v) = &s.faceswap_face {
                 o.push_str(&format!("        face: {v}\n")); // usize — unquoted
+            }
+            o.push_str("      }\n");
+        }
+        // 6.22.0 D1: emit the fractal task block from `fractal-spec` / `fractal-kind` / `fractal-palette`.
+        if s.task_type.as_deref() == Some("fractal") {
+            o.push_str("      fractal: {\n");
+            if let Some(v) = &s.fractal_spec {
+                o.push_str(&format!("        spec: {}\n", q(v)));
+            }
+            if let Some(v) = &s.fractal_kind {
+                o.push_str(&format!("        kind: {}\n", q(v)));
+            }
+            if let Some(v) = &s.fractal_palette {
+                o.push_str(&format!("        palette: {}\n", q(v)));
             }
             o.push_str("      }\n");
         }
