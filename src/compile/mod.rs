@@ -352,6 +352,25 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
             }
         }
     }
+    // E4 (6.22): model / scheduler typo checks — soft (a custom `org/repo` model is allowed).
+    let known_models = crate::hf::all_known_aliases();
+    let mut check = |where_: &str, block: Option<&parser::Block>| {
+        let Some(b) = block else { return };
+        for m in b.values("model") {
+            if !m.is_empty() && !m.contains('/') && !known_models.iter().any(|a| *a == m) {
+                issues.push(format!("{where_}: unknown model alias `{m}` (not a known alias or an `org/repo`)"));
+            }
+        }
+        for sc in b.values("scheduler") {
+            if !sc.is_empty() && sc.parse::<crate::pipelines::scheduler::SchedulerKind>().is_err() {
+                issues.push(format!("{where_}: unknown scheduler `{sc}`"));
+            }
+        }
+    };
+    check("global block", doc.global.as_ref());
+    for (i, s) in doc.scenes.iter().enumerate() {
+        check(&format!("scene #{}", i + 1), Some(s));
+    }
     Ok(issues)
 }
 
@@ -383,6 +402,15 @@ mod tests {
         assert!(issues.iter().any(|i| i.contains("`seed:` repeated")), "repeat flagged: {issues:?}");
         // A clean doc lints without issues.
         assert!(lint("model: sdxl\n\nname: a\nA tundra.\n\nname: b\nA harbor.\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn lint_flags_unknown_model_and_scheduler() {
+        let issues = lint("model: sdxl\n\nname: a\nmodel: modle-typo\nscheduler: dmp++\nA tundra.\n").unwrap();
+        assert!(issues.iter().any(|i| i.contains("unknown model alias")), "model typo: {issues:?}");
+        assert!(issues.iter().any(|i| i.contains("unknown scheduler")), "scheduler typo: {issues:?}");
+        // A real `org/repo` model + a known scheduler are allowed.
+        assert!(lint("model: sdxl\n\nname: a\nmodel: my-org/custom-sd\nscheduler: euler-a\nA tundra.\n").unwrap().is_empty());
     }
 
     #[test]

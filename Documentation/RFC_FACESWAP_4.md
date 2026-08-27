@@ -58,3 +58,13 @@ multi-source / recognition / video surface.
   stop; file input only).
 - **D4 lossless decompile** — `--decompile` now round-trips the compiler-authored spec directives for
   `texture` (from/seamless), `product`/`comic` (spec-file), and `fractal` (spec/kind/palette).
+
+## P6 (folded in) — even more `plakat compile` (E1–E4)
+- **E1 `compile --check <scenario.hjson>`** — standalone validation of any scenario (loads + known task
+  types), reusing `scenario::validate_hjson`. A fast, no-model CI check.
+- **E2 `@include` globs + params** — `@include scenes/*.txt` (sorted, minimal built-in glob) and
+  `@include body.txt who=alice` (`${who}` substitution in the included text).
+- **E3 `compile --explain`** — print the resolved model family + the exact LLM system prompt per scene;
+  no LLM. Debug the enhancement.
+- **E4 model/scheduler typo check in `--lint`** — warn on an unknown `model:` alias (an `org/repo` is
+  allowed) or an unknown `scheduler:`, before any LLM cost.

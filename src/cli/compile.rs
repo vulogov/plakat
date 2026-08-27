@@ -52,6 +52,16 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub lint: bool,
 
+    /// *(6.22 E1)* Validate that the INPUT is a loadable scenario HJSON (deserialises + known task types)
+    /// and exit. A fast, no-model CI check for hand-written or compiled scenarios.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub check: bool,
+
+    /// *(6.22 E3)* Print the resolved model family + the exact LLM system prompt per scene and exit; no
+    /// LLM call. Debug why a prompt gets enhanced a certain way.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub explain: bool,
+
     /// Print a per-block summary (family, LLM call count) without calling the LLM.
     #[arg(help_heading = "Compile", long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
@@ -175,6 +185,13 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
     }
 
     // --decompile: the INPUT is a scenario HJSON → emit a prompts.txt.
+    // E1 (6.22): validate the INPUT is a loadable scenario HJSON, then exit (a no-model CI check).
+    if args.check {
+        crate::cli::scenario::validate_hjson(&input).context("scenario check failed")?;
+        println!("{}  scenario is valid (loads · known task types)", style("✓").green());
+        return Ok(());
+    }
+
     if args.decompile {
         let txt = compile::scenario_read::decompile(&input)?;
         match &args.out {
@@ -242,6 +259,21 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             eprintln!("{}  {i}", style("✗").red());
         }
         bail!("compile --lint: {} issue(s)", issues.len());
+    }
+
+    // --explain (E1/E3): resolve each scene and print the family + the exact system prompt; no LLM.
+    if args.explain {
+        let doc = compile::parser::parse(&input)?;
+        let resolved = compile::resolver::resolve(&doc, &args.model)?;
+        let sys_override = match &args.system {
+            Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
+            None => None,
+        };
+        for s in resolved.scenes.iter().filter(|s| !s.skip) {
+            println!("{} scene {:?} · family {:?}", style("──").cyan(), s.name, s.family);
+            println!("{}\n", compile::assembler::positive_system(s, sys_override.as_deref(), &[]));
+        }
+        return Ok(());
     }
 
     // --dry-run: parse + resolve + summarize, no LLM.

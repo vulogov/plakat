@@ -60,9 +60,11 @@ pub fn parse_command_line(line: &str) -> Option<(String, String)> {
     Some((key.to_string(), value))
 }
 
-/// **`@include` pre-pass** (RFC FACESWAP-4 C4): inline any line of the form `@include <path>` with the
-/// contents of that file (relative to `base`), recursively (depth-guarded against cycles), so large prose
-/// sets can be split across files. Runs before the block parse. `@include "quoted path"` is accepted.
+/// **`@include` pre-pass** (RFC FACESWAP-4 C4; globs + params 6.22 E2): inline any line of the form
+/// `@include <path> [key=value …]` with the contents of that file (relative to `base`), recursively
+/// (depth-guarded). The path may **glob** with a single `*` in the final component (`scenes/*.txt`,
+/// sorted); trailing `key=value` params substitute `${key}` in the included text. Runs before the block
+/// parse. `@include "quoted path"` is accepted.
 pub fn expand_includes(input: &str, base: &std::path::Path, depth: usize) -> Result<String> {
     if depth > 16 {
         bail!("compile: @include nested too deeply (>16 — a cycle?)");
@@ -71,15 +73,22 @@ pub fn expand_includes(input: &str, base: &std::path::Path, depth: usize) -> Res
     for line in input.lines() {
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("@include ").or_else(|| t.strip_prefix("@include\t")) {
-            let path = rest.trim().trim_matches('"');
-            let full = base.join(path);
-            let content = std::fs::read_to_string(&full)
-                .with_context(|| format!("compile: @include {}", full.display()))?;
-            let child_base = full.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.to_path_buf());
-            let expanded = expand_includes(&content, &child_base, depth + 1)?;
-            out.push_str(&expanded);
-            if !expanded.ends_with('\n') {
-                out.push('\n');
+            let (path, params) = parse_include_args(rest);
+            let joined = base.join(&path);
+            let files = if path.contains('*') { glob_final_star(&joined)? } else { vec![joined] };
+            if files.is_empty() {
+                bail!("compile: @include {path} matched no files");
+            }
+            for full in files {
+                let content = std::fs::read_to_string(&full)
+                    .with_context(|| format!("compile: @include {}", full.display()))?;
+                let content = apply_include_params(&content, &params);
+                let child_base = full.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base.to_path_buf());
+                let expanded = expand_includes(&content, &child_base, depth + 1)?;
+                out.push_str(&expanded);
+                if !expanded.ends_with('\n') {
+                    out.push('\n');
+                }
             }
         } else {
             out.push_str(line);
@@ -87,6 +96,54 @@ pub fn expand_includes(input: &str, base: &std::path::Path, depth: usize) -> Res
         }
     }
     Ok(out)
+}
+
+/// Split an `@include` argument tail into `(path, [key=value…])`. The path may be `"quoted"` (allowing
+/// spaces); everything after it is `key=value` params.
+fn parse_include_args(rest: &str) -> (String, Vec<(String, String)>) {
+    let rest = rest.trim();
+    let (path, remainder) = if let Some(r) = rest.strip_prefix('"') {
+        match r.find('"') {
+            Some(end) => (r[..end].to_string(), &r[end + 1..]),
+            None => (r.to_string(), ""),
+        }
+    } else {
+        let mut it = rest.splitn(2, char::is_whitespace);
+        (it.next().unwrap_or("").to_string(), it.next().unwrap_or(""))
+    };
+    let params = remainder
+        .split_whitespace()
+        .filter_map(|tok| tok.split_once('=').map(|(k, v)| (k.to_string(), v.trim_matches('"').to_string())))
+        .collect();
+    (path, params)
+}
+
+/// Substitute `${key}` occurrences with the param values.
+fn apply_include_params(content: &str, params: &[(String, String)]) -> String {
+    let mut s = content.to_string();
+    for (k, v) in params {
+        s = s.replace(&format!("${{{k}}}"), v);
+    }
+    s
+}
+
+/// Minimal glob: a single `*` in the FINAL path component (`dir/*.txt`, `dir/scene-*`, `dir/*`). Returns
+/// the matching files, sorted. No external dep.
+fn glob_final_star(pat: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    let dir = pat.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let fname = pat.file_name().and_then(|f| f.to_str()).unwrap_or("*");
+    let (prefix, suffix) = fname.split_once('*').unwrap_or((fname, ""));
+    let mut matches: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("compile: @include glob dir {}", dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            let n = p.file_name().and_then(|f| f.to_str()).unwrap_or("");
+            n.len() >= prefix.len() + suffix.len() && n.starts_with(prefix) && n.ends_with(suffix)
+        })
+        .collect();
+    matches.sort();
+    Ok(matches)
 }
 
 /// Parse a whole `prompts.txt` string.
@@ -266,6 +323,22 @@ mod tests {
         assert!(!out.contains("@include"), "the directive is consumed");
         // A missing include is a clear error.
         assert!(expand_includes("@include nope.txt\n", dir.path(), 0).is_err());
+    }
+
+    #[test]
+    fn expand_includes_globs_and_substitutes_params() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "scene ${who} A\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "scene ${who} B\n").unwrap();
+        std::fs::write(dir.path().join("skip.md"), "not matched\n").unwrap();
+        // Glob `*.txt` (sorted) + a `who=` param substituted into `${who}`.
+        let out = expand_includes("@include *.txt who=alice\n", dir.path(), 0).unwrap();
+        assert!(out.contains("scene alice A"), "a.txt inlined + param: {out}");
+        assert!(out.contains("scene alice B"), "b.txt inlined too (glob)");
+        assert!(!out.contains("not matched"), "*.txt didn't match the .md");
+        assert!(!out.contains("${who}"), "param fully substituted");
+        // Position: a.txt (sorted) before b.txt.
+        assert!(out.find("A").unwrap() < out.find("B").unwrap(), "sorted");
     }
 
     #[test]
