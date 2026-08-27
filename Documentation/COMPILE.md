@@ -46,6 +46,8 @@ model: sdxl
 
 @include scenes/winter.txt
 @include scenes/harbour.txt
+@include scenes/*.txt              # glob (sorted) — a single `*` in the last path component
+@include body.txt who=alice        # params: substitutes ${who} in the included text
 ```
 
 ## Commands
@@ -131,7 +133,9 @@ See [`BOOKART.md`](BOOKART.md#integration-surfaces).
 | `--compile-cache` | off | two-namespace SHA-256 disk cache |
 | `--compile-cache-clear [all\|positive\|negative]` | — | clear the cache and exit |
 | `--compile-parallel <N>` | `1` | max concurrent scenes; `0` = auto (deepseek 3, gemini 5, local/auto 1). Output order is preserved regardless. |
-| `--lint` | off | validate (unknown commands, misplaced `skip:`, **duplicate task names**, **repeated commands**); no LLM |
+| `--lint` | off | validate (unknown commands, misplaced `skip:`, **duplicate task names**, **repeated commands**, **unknown model/scheduler**); no LLM |
+| `--check` | off | *(6.22)* validate that the INPUT is a loadable **scenario** HJSON (deserialises + known task types) and exit — a no-model CI check for any scenario |
+| `--explain` | off | *(6.22)* print the resolved model family + the exact LLM **system prompt** per scene and exit; no LLM |
 | `--watch` | off | *(6.22)* re-compile whenever the input file changes (dev loop; pair with `--no-enhance`; file input only) |
 | `--dry-run` | off | per-block summary + LLM-call count; no LLM |
 | `--diff <PATH>` | — | per-task add/change/remove vs an existing scenario |
