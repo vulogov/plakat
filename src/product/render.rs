@@ -130,7 +130,7 @@ async fn resolve_subject(spec: &ProductSpec, opts: &RenderOpts, tmp: &Path) -> R
         let prompt = lighting_prompt(spec);
         let pipeline = crate::pipelines::ic_light::Pipeline::load(dev.clone()).await.context("loading IC-Light for relight")?;
         let (buf, w, h) = pipeline
-            .relight(&src_png, &prompt, "harsh shadows, blown highlights, color cast, lowres", 512, 512, spec.steps.unwrap_or(20), 2.0, spec.seed.unwrap_or(0))
+            .relight(&src_png, &prompt, "harsh shadows, blown highlights, color cast, lowres", 512, 512, spec.steps.unwrap_or(20), 2.0, spec.seed.unwrap_or(0), crate::pipelines::ic_light::Backdrop::Flat)
             .context("relighting subject")?;
         let relit_rgb = RgbImage::from_raw(w, h, buf).context("relit buffer → image")?;
         let relit_png = tmp.join("subject_relit.png");

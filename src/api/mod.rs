@@ -484,6 +484,7 @@ pub struct Relight {
     steps: usize,
     guidance: f64,
     seed: u64,
+    backdrop: crate::pipelines::ic_light::Backdrop,
     device: Option<Device>,
 }
 
@@ -499,8 +500,21 @@ impl Relight {
             steps: 20,
             guidance: 2.0,
             seed: 0,
+            backdrop: crate::pipelines::ic_light::Backdrop::Flat,
             device: None,
         }
+    }
+    /// Use a named lighting preset (RELIGHT-1) — its prompt/negative/backdrop, with any explicit
+    /// `.prompt()` appended. Unknown name → left as-is (freeform prompt).
+    pub fn light(mut self, name: &str) -> Self {
+        if let Some(p) = crate::pipelines::ic_light::light_preset(name) {
+            self.prompt = if self.prompt.trim().is_empty() { p.prompt.to_string() } else { format!("{}, {}", p.prompt, self.prompt.trim()) };
+            if self.negative.trim().is_empty() {
+                self.negative = p.negative.to_string();
+            }
+            self.backdrop = p.backdrop;
+        }
+        self
     }
     /// The lighting/scene prompt (e.g. "warm sunset light from the left").
     pub fn prompt(mut self, prompt: impl Into<String>) -> Self {
@@ -557,6 +571,7 @@ impl Relight {
             self.steps,
             self.guidance,
             self.seed,
+            self.backdrop,
         )?;
         Ok(Image { pixels, width, height })
     }

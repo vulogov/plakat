@@ -275,6 +275,7 @@ impl Pipeline {
     /// The subject is matted (U2Net), composited onto a neutral grey
     /// (0.5) field at `width × height`, VAE-encoded, and fed as the
     /// extra 4 input channels at every denoise step.
+    #[allow(clippy::too_many_arguments)]
     pub fn relight(
         &self,
         subject_png: &Path,
@@ -285,12 +286,13 @@ impl Pipeline {
         steps: usize,
         guidance: f64,
         seed: u64,
+        backdrop: Backdrop,
     ) -> Result<(Vec<u8>, u32, u32)> {
         let (w, h) = (width as usize, height as usize);
         let do_cfg = guidance > 1.0;
 
-        // ---- 1. matte → composite over neutral grey ----
-        let subject_rgb = self.subject_on_grey(subject_png, width, height)?;
+        // ---- 1. matte → composite over the (possibly directional) backdrop ----
+        let subject_rgb = self.subject_on_grey(subject_png, width, height, backdrop)?;
 
         // ---- 2. preprocess to [-1,1] (1,3,H,W) ----
         let cond_px =
@@ -398,7 +400,7 @@ impl Pipeline {
     /// Matte the subject off its background and composite it over a
     /// neutral grey (0.5) field, returning a temp PNG path at
     /// `width × height`. This is the FC conditioning image.
-    fn subject_on_grey(&self, subject_png: &Path, width: u32, height: u32) -> Result<std::path::PathBuf> {
+    fn subject_on_grey(&self, subject_png: &Path, width: u32, height: u32, backdrop: Backdrop) -> Result<std::path::PathBuf> {
         // U2Net cut-out → RGBA temp.
         let cut = tempfile::Builder::new()
             .prefix("plakat-iclight-cut-")
@@ -432,10 +434,13 @@ impl Pipeline {
             .context("reading IC-Light matte")?
             .to_rgba8();
         let mut composited = image::RgbImage::new(rgba.width(), rgba.height());
+        let (rw, rh) = (rgba.width().max(2), rgba.height().max(2));
         for (x, y, p) in rgba.enumerate_pixels() {
             let a = p.0[3] as f32 / 255.0;
+            // RELIGHT-1 P2: composite over the directional backdrop (a spatial light cue) instead of flat grey.
+            let bg_v = backdrop_value(backdrop, x as f32 / (rw - 1) as f32, y as f32 / (rh - 1) as f32);
             let mix = |fg: u8| -> u8 {
-                ((fg as f32 * a) + 128.0 * (1.0 - a)).round().clamp(0.0, 255.0) as u8
+                ((fg as f32 * a) + bg_v * (1.0 - a)).round().clamp(0.0, 255.0) as u8
             };
             composited.put_pixel(x, y, image::Rgb([mix(p.0[0]), mix(p.0[1]), mix(p.0[2])]));
         }
@@ -484,4 +489,97 @@ fn tokenize_padded(
         .to_vec();
     ids.resize(cfg.max_position_embeddings, pad_id);
     Ok(Tensor::new(ids.as_slice(), device)?.unsqueeze(0)?)
+}
+
+// ── Named lighting presets + directional backdrop (RFC RELIGHT-1) ────────────────────────────────────
+
+/// The conditioning **backdrop** the subject is composited on — IC-Light reads it as a spatial light cue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Backdrop {
+    /// Flat neutral grey (the original behaviour).
+    Flat,
+    /// Dark centre, bright edges — a rim/backlight cue.
+    Rim,
+    /// A linear gradient with the light coming from `angle` degrees (0 = left, 90 = top, 180 = right,
+    /// 270 = bottom, CCW).
+    Directional(f32),
+}
+
+/// A named lighting preset: a curated prompt + negative + the backdrop direction.
+#[derive(Debug, Clone, Copy)]
+pub struct LightPreset {
+    pub name: &'static str,
+    pub prompt: &'static str,
+    pub negative: &'static str,
+    pub backdrop: Backdrop,
+}
+
+/// The curated lighting-preset table (RFC RELIGHT-1 P1).
+pub fn light_presets() -> &'static [LightPreset] {
+    &[
+        LightPreset { name: "key-left", prompt: "dramatic key light from the left, soft falloff to the right, cinematic portrait lighting", negative: "flat lighting, evenly lit, overexposed", backdrop: Backdrop::Directional(0.0) },
+        LightPreset { name: "key-right", prompt: "dramatic key light from the right, soft falloff to the left, cinematic portrait lighting", negative: "flat lighting, evenly lit, overexposed", backdrop: Backdrop::Directional(180.0) },
+        LightPreset { name: "top", prompt: "soft light from above, gentle overhead illumination, natural shadows", negative: "harsh uplighting, flat", backdrop: Backdrop::Directional(90.0) },
+        LightPreset { name: "rim", prompt: "rim light, backlit subject with a glowing edge, dark background, moody", negative: "flat frontal light, washed out", backdrop: Backdrop::Rim },
+        LightPreset { name: "softbox", prompt: "soft even studio softbox lighting, clean product shot, gentle shadows", negative: "harsh shadows, hard light, colored light", backdrop: Backdrop::Flat },
+        LightPreset { name: "golden-hour", prompt: "warm golden hour sunlight from a low angle, long soft shadows, amber glow", negative: "cool light, blue tint, midday sun", backdrop: Backdrop::Directional(20.0) },
+        LightPreset { name: "sunset", prompt: "warm orange sunset light from the side, dramatic warm glow, dusk atmosphere", negative: "cool light, flat, midday", backdrop: Backdrop::Directional(160.0) },
+        LightPreset { name: "moonlight", prompt: "cool blue moonlight, soft night illumination, low key, calm", negative: "warm light, bright daylight, orange", backdrop: Backdrop::Directional(75.0) },
+        LightPreset { name: "candlelight", prompt: "warm flickering candlelight, low key, intimate orange glow from below", negative: "cool light, bright, daylight, overhead", backdrop: Backdrop::Directional(280.0) },
+        LightPreset { name: "neon", prompt: "colorful neon lighting, cyberpunk city glow, magenta and cyan rim light", negative: "natural daylight, warm sunlight, flat", backdrop: Backdrop::Rim },
+        LightPreset { name: "overcast", prompt: "soft diffuse overcast daylight, even and shadowless, gentle cool tone", negative: "hard shadows, direct sun, colored light", backdrop: Backdrop::Flat },
+    ]
+}
+
+/// Look up a preset by name (case-insensitive).
+pub fn light_preset(name: &str) -> Option<&'static LightPreset> {
+    let n = name.trim().to_ascii_lowercase();
+    light_presets().iter().find(|p| p.name == n)
+}
+
+/// The backdrop grey level (0..255) at normalised pixel `(fx, fy)` in `0..1`. `Flat` → 128; `Directional`
+/// brightens toward the light; `Rim` darkens the centre and brightens the edges. Pure.
+pub fn backdrop_value(bg: Backdrop, fx: f32, fy: f32) -> f32 {
+    const BASE: f32 = 128.0;
+    const AMP: f32 = 74.0;
+    let v = match bg {
+        Backdrop::Flat => BASE,
+        Backdrop::Rim => {
+            let d = ((fx - 0.5).powi(2) + (fy - 0.5).powi(2)).sqrt() / std::f32::consts::FRAC_1_SQRT_2; // 0 centre → 1 corner
+            BASE - AMP * 0.5 + AMP * d
+        }
+        Backdrop::Directional(deg) => {
+            let r = deg.to_radians();
+            // light unit vector = (-cos, -sin): angle 0 lights from the left, 90 from the top.
+            BASE + AMP * (-(fx - 0.5) * r.cos() - (fy - 0.5) * r.sin())
+        }
+    };
+    v.clamp(36.0, 224.0)
+}
+
+#[cfg(test)]
+mod relight_preset_tests {
+    use super::*;
+
+    #[test]
+    fn presets_resolve_and_carry_a_backdrop() {
+        assert!(light_preset("key-left").is_some());
+        assert!(light_preset("KEY-LEFT").is_some(), "case-insensitive");
+        assert!(light_preset("nope").is_none());
+        assert_eq!(light_preset("softbox").unwrap().backdrop, Backdrop::Flat);
+        assert!(matches!(light_preset("key-left").unwrap().backdrop, Backdrop::Directional(_)));
+    }
+
+    #[test]
+    fn backdrop_directional_brightens_toward_the_light() {
+        // Light from the left (0°): the left edge is brighter than the right.
+        let left = backdrop_value(Backdrop::Directional(0.0), 0.0, 0.5);
+        let right = backdrop_value(Backdrop::Directional(0.0), 1.0, 0.5);
+        assert!(left > right + 40.0, "left {left} brighter than right {right}");
+        // Light from the top (90°): top brighter than bottom.
+        assert!(backdrop_value(Backdrop::Directional(90.0), 0.5, 0.0) > backdrop_value(Backdrop::Directional(90.0), 0.5, 1.0));
+        // Flat is uniform 128; rim darkens the centre vs a corner.
+        assert_eq!(backdrop_value(Backdrop::Flat, 0.3, 0.7), 128.0);
+        assert!(backdrop_value(Backdrop::Rim, 0.5, 0.5) < backdrop_value(Backdrop::Rim, 0.0, 0.0));
+    }
 }

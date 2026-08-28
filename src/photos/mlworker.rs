@@ -218,7 +218,7 @@ fn run_job(res: &mut Resident, rt: &Handle, device: &Device, job: &Job) -> Resul
                 steps_per_sec: 0.0,
             });
             let seed = rand::random::<u64>();
-            let (pixels, w, h) = ic.relight(&job.input, prompt, "", 512, 512, 20, 2.0, seed).context("relight")?;
+            let (pixels, w, h) = ic.relight(&job.input, prompt, "", 512, 512, 20, 2.0, seed, crate::pipelines::ic_light::Backdrop::Flat).context("relight")?;
             let img = image::RgbImage::from_raw(w, h, pixels)
                 .ok_or_else(|| anyhow::anyhow!("relight buffer size mismatch"))?;
             img.save(&out).with_context(|| format!("saving {}", out.display()))?;

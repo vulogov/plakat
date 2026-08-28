@@ -403,7 +403,7 @@ async fn run_composite(
             let _relit: Option<tempfile::NamedTempFile>;
             let matte_src: std::path::PathBuf = if let Some(ic) = &relighter {
                 let (buf, w, h) = ic
-                    .relight(photo, &base_prompt, &req.negative, 512, 640, req.steps, 2.0, seed)
+                    .relight(photo, &base_prompt, &req.negative, 512, 640, req.steps, 2.0, seed, crate::pipelines::ic_light::Backdrop::Flat)
                     .with_context(|| format!("relighting persona '{}'", p.label))?;
                 let rt = tempfile::Builder::new().prefix("plakat-mp-relit-").suffix(".png").tempfile()?;
                 crate::imaging::io::save_rgb_u8(&buf, w, h, rt.path())?;

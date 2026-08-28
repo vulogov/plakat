@@ -18,18 +18,32 @@ use crate::pipelines::ic_light;
 #[derive(ClapArgs, Debug)]
 pub struct RelightArgs {
     /// Subject image to relight. Its background is matted away
-    /// automatically (U2Net) before conditioning.
-    #[arg(help_heading = "Relight", value_name = "SUBJECT")]
-    pub subject: PathBuf,
+    /// automatically (U2Net) before conditioning. Not required with `--list-lights`.
+    #[arg(help_heading = "Relight", value_name = "SUBJECT", required_unless_present = "list_lights")]
+    pub subject: Option<PathBuf>,
 
-    /// Prompt describing the desired lighting / scene
-    /// (e.g. "warm sunset light from the left, golden hour").
-    #[arg(help_heading = "Prompt & text", long)]
-    pub prompt: String,
+    /// Prompt describing the desired lighting / scene (e.g. "warm sunset light from the left, golden
+    /// hour"). Optional when `--light <preset>` is given (the user prompt is appended to the preset).
+    #[arg(help_heading = "Prompt & text", long, required_unless_present_any = ["light", "list_lights"])]
+    pub prompt: Option<String>,
 
-    /// Negative prompt.
+    /// Negative prompt (added to any preset negative).
     #[arg(help_heading = "Prompt & text", long, default_value = "")]
     pub negative: String,
+
+    /// A named lighting preset — `key-left` / `key-right` / `top` / `rim` / `softbox` / `golden-hour` /
+    /// `sunset` / `moonlight` / `candlelight` / `neon` / `overcast` (see `--list-lights`). RELIGHT-1.
+    #[arg(help_heading = "Relight", long)]
+    pub light: Option<String>,
+
+    /// List the lighting presets and exit.
+    #[arg(help_heading = "Relight", long = "list-lights", default_value_t = false)]
+    pub list_lights: bool,
+
+    /// Override the light direction with a custom gradient angle (degrees; 0 = left, 90 = top, 180 =
+    /// right, 270 = bottom). Overrides the preset's backdrop.
+    #[arg(help_heading = "Relight", long = "light-angle", value_name = "DEG")]
+    pub light_angle: Option<f32>,
 
     /// Output size: `N` (square) or `WxH` (e.g. 512x768).
     #[arg(help_heading = "Size & output", long, default_value = "512")]
@@ -57,19 +71,55 @@ pub struct RelightArgs {
 }
 
 pub async fn run(args: RelightArgs, device: Device) -> Result<()> {
+    // --list-lights: print the preset table and exit (no model load).
+    if args.list_lights {
+        println!("\n  {} — `relight --light <name>`", console::style("lighting presets").bold());
+        for p in ic_light::light_presets() {
+            println!("  {:<12} {}", console::style(p.name).green(), console::style(p.prompt).dim());
+        }
+        println!();
+        return Ok(());
+    }
+
+    let subject = args.subject.as_ref().context("a SUBJECT image is required")?;
     let (width, height) = parse_size(&args.size)?;
     let seed = args.seed.unwrap_or_else(rand::random);
 
+    // Resolve the lighting: a `--light` preset (prompt + negative + backdrop), with the user `--prompt`
+    // appended, and `--light-angle` overriding the direction. RELIGHT-1 P1/P2.
+    let preset = match &args.light {
+        Some(name) => Some(*ic_light::light_preset(name).with_context(|| {
+            format!("unknown --light preset `{name}` — see `relight --list-lights`")
+        })?),
+        None => None,
+    };
+    let user_prompt = args.prompt.clone().unwrap_or_default();
+    let prompt = match &preset {
+        Some(p) if user_prompt.trim().is_empty() => p.prompt.to_string(),
+        Some(p) => format!("{}, {}", p.prompt, user_prompt.trim()),
+        None => user_prompt,
+    };
+    let negative = match &preset {
+        Some(p) if args.negative.trim().is_empty() => p.negative.to_string(),
+        Some(p) => format!("{}, {}", p.negative, args.negative.trim()),
+        None => args.negative.clone(),
+    };
+    let backdrop = match args.light_angle {
+        Some(deg) => ic_light::Backdrop::Directional(deg),
+        None => preset.map(|p| p.backdrop).unwrap_or(ic_light::Backdrop::Flat),
+    };
+
     let pipeline = ic_light::Pipeline::load(device).await?;
     let (buf, w, h) = pipeline.relight(
-        &args.subject,
-        &args.prompt,
-        &args.negative,
+        subject,
+        &prompt,
+        &negative,
         width,
         height,
         args.steps,
         args.guidance,
         seed,
+        backdrop,
     )?;
 
     // Resolve the output path: a directory gets a generated filename;
@@ -97,7 +147,7 @@ pub async fn run(args: RelightArgs, device: Device) -> Result<()> {
     println!(
         "{}  relit {} ({}×{}, seed {})",
         style("✓").green(),
-        args.subject.display(),
+        subject.display(),
         w,
         h,
         seed,

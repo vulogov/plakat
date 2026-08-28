@@ -53,7 +53,7 @@ fn do_plakat_relight(vm: &mut VM) -> anyhow::Result<&mut VM> {
             let pipe = crate::pipelines::ic_light::Pipeline::load(device)
                 .await
                 .map_err(|e| anyhow::anyhow!("{TAG}: loading IC-Light: {e}"))?;
-            pipe.relight(&subject_path, &prompt, &negative, width, height, steps, guidance, seed)
+            pipe.relight(&subject_path, &prompt, &negative, width, height, steps, guidance, seed, crate::pipelines::ic_light::Backdrop::Flat)
         })
     })?;
 
