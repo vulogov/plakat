@@ -1018,9 +1018,8 @@ impl App {
 
         // ── History's filter / tag input owns the keyboard while typing. ──
         if self.screen == ActiveScreen::History && self.history.captures_input() {
-            if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
-                self.continue_from_image(path, prompt, seed);
-            }
+            let action = self.history.handle_key(key);
+            self.handle_history_action(action);
             return;
         }
 
@@ -1085,9 +1084,8 @@ impl App {
                 self.handle_scenarios_action(action);
             }
             ActiveScreen::History => {
-                if let HistoryAction::Continue { path, prompt, seed } = self.history.handle_key(key) {
-                    self.continue_from_image(path, prompt, seed);
-                }
+                let action = self.history.handle_key(key);
+                self.handle_history_action(action);
             }
             ActiveScreen::People => match self.people.handle_key(key) {
                 people::PeopleAction::Generate(spec) => self.quick_generate(spec),
@@ -2571,6 +2569,47 @@ impl App {
         self.handle_chat_submit(format!("/new {prompt}"));
     }
 
+    /// Dispatch a History-screen action (RFC UI-GALLERY-1): continue / vary / naturalize / delete.
+    fn handle_history_action(&mut self, action: HistoryAction) {
+        match action {
+            HistoryAction::None => {}
+            HistoryAction::Continue { path, prompt, seed } => self.continue_from_image(path, prompt, seed),
+            HistoryAction::Vary { path } => self.vary_frame(path),
+            HistoryAction::Naturalize { path } => self.naturalize_frame(path),
+            HistoryAction::Delete { path } => self.delete_frame(path),
+        }
+    }
+
+    /// P1 — weight-free de-slop of a History frame in place → `<stem>_naturalized.png`, then rescan.
+    fn naturalize_frame(&mut self, path: std::path::PathBuf) {
+        let done = image::open(&path).ok().and_then(|img| {
+            let out = crate::naturalize::apply(&img.to_rgb8(), &crate::naturalize::Preset::Photo.params());
+            let dst = path.with_file_name(format!("{}_naturalized.png", path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame")));
+            out.save(&dst).ok().map(|_| dst)
+        });
+        self.history.status = match done {
+            Some(dst) => {
+                self.history.rescan();
+                format!("naturalized → {}", dst.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+            }
+            None => "naturalize failed".into(),
+        };
+    }
+
+    /// P3 — move a History frame to `<out>/.trash/` (recoverable), then rescan.
+    fn delete_frame(&mut self, path: std::path::PathBuf) {
+        let trash = self.workspace.out_dir().join(".trash");
+        let _ = std::fs::create_dir_all(&trash);
+        let name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
+        self.history.status = match std::fs::rename(&path, trash.join(&name)) {
+            Ok(()) => {
+                self.history.rescan();
+                format!("trashed {} (→ .trash/)", name.to_str().unwrap_or(""))
+            }
+            Err(e) => format!("delete failed: {e}"),
+        };
+    }
+
     /// Run a scenario file on a background thread. Its task-by-task progress (model
     /// load, denoise bars, per-task status) flows to the Output pane automatically —
     /// the scenario runner uses the rerouted `ui::progress`. The runner loads its own
@@ -3180,6 +3219,8 @@ impl App {
                 ("/ , ?", "substring filter , semantic search"),
                 ("t / x / d", "tag / export / compare baseline"),
                 ("c", "continue selected in Chat"),
+                ("n / y", "naturalize (de-slop) / vary selected"),
+                ("Del", "move selected to .trash (confirm)"),
             ]),
             ActiveScreen::LoraHub => ("LoRA Hub", &[
                 ("a", "apply selected LoRA"),

@@ -61,6 +61,12 @@ pub enum HistoryAction {
     /// recipe when present — with both, Chat continues in prompt-evolve mode (so
     /// additive edits work); without, it falls back to image-anchored img2img.
     Continue { path: PathBuf, prompt: String, seed: Option<u64> },
+    /// Weight-free naturalize (de-slop) the selected frame in place (RFC UI-GALLERY-1 P1).
+    Naturalize { path: PathBuf },
+    /// Queue variations of the selected frame (P2 — reuses the App's `vary_frame`).
+    Vary { path: PathBuf },
+    /// Move the selected frame to `.trash/` (P3 — confirmed).
+    Delete { path: PathBuf },
 }
 
 pub struct HistoryState {
@@ -90,7 +96,9 @@ pub struct HistoryState {
     // Preview built by the App (it owns the image Picker), like Chat.
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
     pub preview_for: Option<PathBuf>,
-    status: String,
+    pub status: String,
+    /// Set when `Delete` was pressed once — the second press confirms the trash (RFC UI-GALLERY-1 P3).
+    pending_delete: Option<PathBuf>,
     /// `true` → thumbnail GRID view; `false` → list + single preview (default).
     grid: bool,
     /// Thumbnail protocols by path (built by the App), with an LRU eviction order.
@@ -124,6 +132,7 @@ impl HistoryState {
             preview: None,
             preview_for: None,
             status: String::new(),
+            pending_delete: None,
             grid: false,
             thumbs: std::collections::HashMap::new(),
             thumb_lru: Vec::new(),
@@ -308,6 +317,8 @@ impl HistoryState {
             }
             return HistoryAction::None;
         }
+        // A pending delete-confirm is cleared by ANY keypress; the Delete arm re-arms it on a first press.
+        let pending_delete = self.pending_delete.take();
         match key.code {
             // `v` — toggle between the list+preview view and the thumbnail grid.
             KeyCode::Char('v' | 'V') => self.grid = !self.grid,
@@ -350,6 +361,29 @@ impl HistoryState {
                     let prompt = self.recipe.as_deref().map(positive_prompt).unwrap_or_default();
                     let seed = self.recipe.as_deref().and_then(seed_from_params);
                     return HistoryAction::Continue { path, prompt, seed };
+                }
+            }
+            // `n` — weight-free naturalize (de-slop) the selected frame in place (P1).
+            KeyCode::Char('n' | 'N') => {
+                if let Some(path) = self.selected_path() {
+                    return HistoryAction::Naturalize { path };
+                }
+            }
+            // `y` — queue variations of the selected frame (P2).
+            KeyCode::Char('y' | 'Y') => {
+                if let Some(path) = self.selected_path() {
+                    return HistoryAction::Vary { path };
+                }
+            }
+            // `Delete` — move the selected frame to `.trash/`, confirmed on a second press (P3).
+            KeyCode::Delete => {
+                if let Some(path) = self.selected_path() {
+                    if pending_delete.as_ref() == Some(&path) {
+                        return HistoryAction::Delete { path };
+                    }
+                    self.status = format!("delete {} → press Delete again to trash · any key cancels", path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
+                    self.pending_delete = Some(path);
+                    return HistoryAction::None;
                 }
             }
             _ => {}
@@ -914,6 +948,27 @@ mod tests {
         // `v` returns to the list.
         s.handle_key(ch('v'));
         assert!(!s.is_grid());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn quick_actions_return_the_right_action() {
+        let d = tmp("quickactions");
+        for i in 0..3 {
+            crate::imaging::io::save_rgb_u8(&[9, 9, 9], 1, 1, &d.join(format!("f{i}.png"))).unwrap();
+        }
+        let mut s = HistoryState::new(d.clone());
+        // `n` → Naturalize the selected frame.
+        assert!(matches!(s.handle_key(ch('n')), HistoryAction::Naturalize { .. }));
+        // `y` → Vary.
+        assert!(matches!(s.handle_key(ch('y')), HistoryAction::Vary { .. }));
+        // Delete confirms on the SECOND press; a key in between cancels.
+        assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::None));
+        assert!(s.pending_delete.is_some(), "armed after first Delete");
+        s.handle_key(ch('j')); // any key cancels
+        assert!(s.pending_delete.is_none(), "cancelled by another key");
+        assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::None));
+        assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::Delete { .. }), "second press confirms");
         let _ = std::fs::remove_dir_all(&d);
     }
 
