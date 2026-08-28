@@ -67,6 +67,8 @@ pub enum HistoryAction {
     Vary { path: PathBuf },
     /// Move the selected frame to `.trash/` (P3 — confirmed).
     Delete { path: PathBuf },
+    /// Etch plakat provenance into the selected frame in place (V1 — sync, no model).
+    Etch { path: PathBuf },
 }
 
 pub struct HistoryState {
@@ -373,6 +375,12 @@ impl HistoryState {
             KeyCode::Char('y' | 'Y') => {
                 if let Some(path) = self.selected_path() {
                     return HistoryAction::Vary { path };
+                }
+            }
+            // `e` — etch plakat provenance into the selected frame in place (V1).
+            KeyCode::Char('e' | 'E') => {
+                if let Some(path) = self.selected_path() {
+                    return HistoryAction::Etch { path };
                 }
             }
             // `Delete` — move the selected frame to `.trash/`, confirmed on a second press (P3).

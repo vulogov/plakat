@@ -1184,6 +1184,9 @@ impl App {
                 cmds.push(("Export filtered set".into(), k('x')));
                 cmds.push(("Compare baseline".into(), k('d')));
                 cmds.push(("Continue selected in Chat".into(), k('c')));
+                cmds.push(("Naturalize selected (de-slop)".into(), k('n')));
+                cmds.push(("Vary selected".into(), k('y')));
+                cmds.push(("Etch provenance into selected".into(), k('e')));
                 cmds.push(("Rescan".into(), k('r')));
             }
             ActiveScreen::People => {
@@ -2577,7 +2580,23 @@ impl App {
             HistoryAction::Vary { path } => self.vary_frame(path),
             HistoryAction::Naturalize { path } => self.naturalize_frame(path),
             HistoryAction::Delete { path } => self.delete_frame(path),
+            HistoryAction::Etch { path } => self.etch_frame(path),
         }
+    }
+
+    /// V1 — etch plakat provenance into a History frame in place (sync, no model), then rescan.
+    fn etch_frame(&mut self, path: std::path::PathBuf) {
+        let done = image::open(&path).ok().and_then(|img| {
+            let rgb = img.to_rgb8();
+            crate::etch::fresh_etch(rgb.as_raw(), rgb.width(), rgb.height(), &path, None).ok()
+        });
+        self.history.status = match done {
+            Some(id) => {
+                self.history.rescan();
+                format!("etched provenance (id {})", id.hex())
+            }
+            None => "etch failed".into(),
+        };
     }
 
     /// P1 — weight-free de-slop of a History frame in place → `<stem>_naturalized.png`, then rescan.
@@ -2608,6 +2627,105 @@ impl App {
             }
             Err(e) => format!("delete failed: {e}"),
         };
+    }
+
+    /// Chat `/relight <preset>` — relight the latest frame with a lighting preset (RFC UI-GALLERY-1 V1).
+    /// Reuses the `active_gen` channel so the result posts to Chat like any generation; evicts the
+    /// resident t2i model first (single Metal device). Heavy op — needs the IC-Light weights.
+    fn chat_relight(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            let names: Vec<&str> = crate::pipelines::ic_light::light_presets().iter().map(|p| p.name).collect();
+            self.chat.push_system(format!("usage: /relight <preset> — {}", names.join(" / ")));
+            return;
+        }
+        if self.active_gen.is_some() {
+            self.chat.push_system("busy — wait for the current op to finish".into());
+            return;
+        }
+        let Some(preset) = crate::pipelines::ic_light::light_preset(arg).copied() else {
+            self.chat.push_system(format!("unknown light preset `{arg}` — try /relight for the list"));
+            return;
+        };
+        let Some(src) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image in the thread to relight — generate one first".into());
+            return;
+        };
+        self.model_svc.unload(); // free the Metal device for IC-Light
+        let (device, rt) = (self.device.clone(), self.rt.clone());
+        let out_dir = self.workspace.out_dir().join("chat");
+        let seed = rand::random::<u32>() as u64;
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        let cancel = CancelFlag::new();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<std::path::PathBuf> {
+                let pipe = rt.block_on(crate::pipelines::ic_light::Pipeline::load(device))?;
+                let (buf, w, h) = pipe.relight(&src, preset.prompt, preset.negative, 512, 512, 25, 2.0, seed, preset.backdrop)?;
+                std::fs::create_dir_all(&out_dir)?;
+                let out = out_dir.join(format!("relight-{seed}.png"));
+                crate::imaging::io::save_rgb_u8(&buf, w, h, &out)?;
+                Ok(out)
+            })();
+            let _ = match result {
+                Ok(output) => tx.send(GenMessage::Done { output, cancelled: false }),
+                Err(e) => tx.send(GenMessage::Error { message: format!("{e:#}") }),
+            };
+        });
+        self.active_gen = Some((rx, cancel));
+        self.chat.status = ChatStatus::Generating { step: 0, total: 1, refine: false };
+        self.chat.push_system(format!("relight → {arg} (loading IC-Light…)"));
+    }
+
+    /// Chat `/faceswap <source.png> [N]` — swap a source face into the latest frame (V1). Same
+    /// `active_gen` reuse + device eviction as `/relight`. Heavy op — needs the inswapper weights.
+    fn chat_faceswap(&mut self, arg: &str) {
+        let mut it = arg.split_whitespace();
+        let Some(source) = it.next().map(std::path::PathBuf::from) else {
+            self.chat.push_system("usage: /faceswap <source-face.png> [face-index]".into());
+            return;
+        };
+        let face: usize = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if self.active_gen.is_some() {
+            self.chat.push_system("busy — wait for the current op to finish".into());
+            return;
+        }
+        if !source.exists() {
+            self.chat.push_system(format!("source face not found: {}", source.display()));
+            return;
+        }
+        let Some(scene) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image in the thread to swap into — generate one first".into());
+            return;
+        };
+        let source_label = source.display().to_string();
+        self.model_svc.unload();
+        let (device, rt) = (self.device.clone(), self.rt.clone());
+        let out_dir = self.workspace.out_dir().join("chat");
+        let seed = rand::random::<u32>() as u64;
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        let cancel = CancelFlag::new();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<std::path::PathBuf> {
+                let swapper = rt.block_on(crate::pipelines::faceswap::FaceSwapper::load_resolved(&device, candle_core::DType::F32))?;
+                let faces = swapper.detect(&scene)?;
+                anyhow::ensure!(!faces.is_empty(), "no face detected in the scene");
+                anyhow::ensure!(face < faces.len(), "face {face} out of range — {} detected", faces.len());
+                let latent = swapper.source_latent(&source)?;
+                let img = image::open(&scene)?.to_rgb8();
+                let out_img = swapper.swap_into(&img, faces[face].landmarks, &latent)?;
+                std::fs::create_dir_all(&out_dir)?;
+                let out = out_dir.join(format!("faceswap-{seed}.png"));
+                out_img.save(&out)?;
+                Ok(out)
+            })();
+            let _ = match result {
+                Ok(output) => tx.send(GenMessage::Done { output, cancelled: false }),
+                Err(e) => tx.send(GenMessage::Error { message: format!("{e:#}") }),
+            };
+        });
+        self.active_gen = Some((rx, cancel));
+        self.chat.status = ChatStatus::Generating { step: 0, total: 1, refine: false };
+        self.chat.push_system(format!("faceswap ← {source_label} (loading engine…)"));
     }
 
     /// Run a scenario file on a background thread. Its task-by-task progress (model
@@ -2850,6 +2968,16 @@ impl App {
         if let Some(rest) = text.strip_prefix("/vary") {
             let n = rest.trim().parse::<usize>().unwrap_or(4);
             self.start_variations(n);
+            return;
+        }
+        // `/relight <preset>` and `/faceswap <source> [N]` — edit the latest frame with a model op
+        // (RFC UI-GALLERY-1 V1), reusing the generation channel so the result posts to Chat.
+        if let Some(rest) = text.strip_prefix("/relight") {
+            self.chat_relight(rest);
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/faceswap") {
+            self.chat_faceswap(rest.trim());
             return;
         }
         // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
@@ -3201,6 +3329,7 @@ impl App {
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
                 ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
+                ("/relight <preset> · /faceswap <src>", "edit the latest frame (IC-Light · face-swap)"),
                 ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
                 ("/pag X · /rescale φ · /freeu · /dynthresh P", "quality: PAG · CFG-rescale · FreeU · dyn-threshold"),
                 ("/new /seed /strength /negative /auto", "session commands"),
@@ -3909,9 +4038,9 @@ mod tests {
         // Shift-Tab as legacy BackTab → backward.
         a.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         assert!(matches!(a.screen, ActiveScreen::Chat));
-        // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps).
+        // Shift-Tab as Tab+SHIFT (kbd-protocol encoding) → also backward (wraps to the last screen).
         a.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
-        assert!(matches!(a.screen, ActiveScreen::Canvas));
+        assert!(matches!(a.screen, ActiveScreen::Naturalize));
     }
 
     #[test]
@@ -4401,14 +4530,15 @@ mod tests {
 
     #[test]
     fn all_screens_present_and_cycle() {
-        // The full RFC TUI-1 surface — eight screens, each reachable by Tab cycling.
-        assert_eq!(ActiveScreen::ALL.len(), 8);
+        // The full surface — nine screens (RFC TUI-1's eight + the 6.17 Naturalize tab), each reachable
+        // by Tab cycling.
+        assert_eq!(ActiveScreen::ALL.len(), 9);
         for s in ActiveScreen::ALL {
             assert_eq!(s.cycle(1).cycle(-1), s, "cycling is reversible for {s:?}");
         }
-        // Cycling forward through all eight returns to the start.
+        // Cycling forward through all nine returns to the start.
         let mut s = ActiveScreen::Chat;
-        for _ in 0..8 {
+        for _ in 0..ActiveScreen::ALL.len() {
             s = s.cycle(1);
         }
         assert_eq!(s, ActiveScreen::Chat);
