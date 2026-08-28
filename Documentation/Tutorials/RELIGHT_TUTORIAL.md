@@ -25,7 +25,26 @@ It's IC-Light ("Imposing Consistent Light", lllyasviel). Under the hood:
 The result: the captain's face and beard stay put; the light, mood, and backdrop
 become whatever you asked for.
 
-## Examples
+## Lighting presets *(6.23)*
+
+The quickest way to relight is a **named preset** — a curated prompt **plus a
+directional cue** (the subject is composited over a gradient that's brighter on the
+light side, so the direction actually lands, not just the words):
+
+```bash
+plakat relight portrait.png --light key-left  --out out.png   # dramatic side key
+plakat relight portrait.png --light rim        --out out.png   # backlit glowing edge
+plakat relight portrait.png --light golden-hour --out out.png
+plakat relight --list-lights                                   # key-left/right · top · rim · softbox ·
+                                                               # golden-hour · sunset · moonlight ·
+                                                               # candlelight · neon · overcast
+```
+
+Add your own `--prompt "…"` to *extend* a preset, or `--light-angle 45` to steer the
+direction (0 = left, 90 = top, 180 = right, 270 = bottom). From the library:
+`plakat::api::Relight::new("portrait.png").light("key-left").run().await?`.
+
+## Examples (freeform prompt)
 
 ```bash
 # Sunset rim light

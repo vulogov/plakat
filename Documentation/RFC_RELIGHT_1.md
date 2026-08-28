@@ -1,6 +1,8 @@
 # RFC RELIGHT-1 — named lighting presets + directional control for `plakat relight` (6.23.0)
 
-**Status:** draft (6.23.0). An **improvement** cycle on the existing IC-Light relighting. Today
+**Status:** SHIPPED (6.23.0). An **improvement** cycle on the existing IC-Light relighting. **All shipped:**
+P1 11 named presets (`--light` / `--list-lights` / `api::Relight::light`) · P2 directional backdrop
+(`Backdrop::{Flat,Rim,Directional}` composited behind the subject; `--light-angle`). Today
 `plakat relight <subject> --prompt "<free-text lighting>"` is a blunt instrument — the user must hand-write
 a good lighting prompt, and IC-Light only gets *words* (the subject is composited on flat neutral grey). Make
 relight a **menu with real directional control**.
