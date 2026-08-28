@@ -232,6 +232,19 @@ image-anchored base seeded with its recovered prompt, and you're
 dropped into Chat to keep editing it. Because Chat writes the recipe
 into every PNG it makes, this round-trips your own chat images too.
 
+### Quick-actions on the selected frame *(6.24)*
+
+History is a workbench, not just a browser — act on the highlighted image
+without leaving the tab:
+
+- **`n`** — **naturalize** (de-slop) it in place: an instant, weight-free
+  polish pass writes `<name>_naturalized.png` next to it and it appears in
+  the list. No model, no wait.
+- **`y`** — **vary** it: queues fresh-seed variations from its embedded
+  recipe (the History equivalent of Chat's vary).
+- **`Delete`** — **trash** it: moves the frame to `out/.trash/` (recoverable,
+  not a hard delete). Press `Delete` **twice** to confirm; any other key cancels.
+
 ### Find, tag, compare, and export
 
 - **`/`** **filters** the list live — type any text and it matches

@@ -1,6 +1,8 @@
 # RFC UI-GALLERY-1 — History quick-actions in `plakat ui` (6.24.0)
 
-**Status:** draft (6.24.0). An **improvement** cycle on the `plakat ui` History tab. **Reality check:** the
+**Status:** SHIPPED (6.24.0). An **improvement** cycle on the `plakat ui` History tab. **All shipped:**
+P1 naturalize (`n`) · P2 vary (`y`) · P3 delete-to-trash (`Delete`, confirm). (Grid/filter/semantic search
+already existed.) **Reality check:** the
 thumbnail **grid** (`v` toggles), **filter** (`/`), and **semantic search** (Tab, TF-IDF) already exist —
 so the gap the "gallery" ask really points at is **quick-actions**: today the only thing you can do to a
 selected frame is `Continue` it in Chat. Add direct actions so History is a real workbench, not just a
