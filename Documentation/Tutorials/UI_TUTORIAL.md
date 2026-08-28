@@ -242,8 +242,25 @@ without leaving the tab:
   the list. No model, no wait.
 - **`y`** — **vary** it: queues fresh-seed variations from its embedded
   recipe (the History equivalent of Chat's vary).
+- **`e`** — **etch** plakat provenance into it in place (sync; verify later with
+  `plakat doctor --if-plakat`).
 - **`Delete`** — **trash** it: moves the frame to `out/.trash/` (recoverable,
   not a hard delete). Press `Delete` **twice** to confirm; any other key cancels.
+
+### Relight / face-swap from Chat *(6.24)*
+
+Heavy model edits live in **Chat** (it already owns the model pipeline), operating
+on the **latest frame** in the thread:
+
+```
+/relight key-left        # relight the current image with a lighting preset (6.23's 11)
+/relight                 # (bare) lists the presets
+/faceswap alice.png      # swap alice's face into the current image
+/faceswap alice.png 1    # ...into the 2nd-largest face
+```
+
+The result posts back into Chat like any generation. (These load a model, so the
+resident text-to-image model is evicted first — the next `Enter` reloads it.)
 
 ### Find, tag, compare, and export
 

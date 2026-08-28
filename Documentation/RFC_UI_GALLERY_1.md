@@ -2,7 +2,14 @@
 
 **Status:** SHIPPED (6.24.0). An **improvement** cycle on the `plakat ui` History tab. **All shipped:**
 P1 naturalize (`n`) · P2 vary (`y`) · P3 delete-to-trash (`Delete`, confirm). (Grid/filter/semantic search
-already existed.) **Reality check:** the
+already existed.)
+
+**Follow-ups (same cut) — owner steer "no new tabs; put relight/faceswap in existing tabs":** V1 History
+`e` etch (sync provenance) · V1 Chat **`/relight <preset>`** + **`/faceswap <src> [N]`** editing the latest
+frame (reuse the `active_gen` channel; evict the t2i model first for Metal single-device exclusivity — the
+heavy-op path needs live model validation) · V3 palette + F1-help discoverability. Also FIXED 2 stale ui
+nav tests (asserted 8 screens; broken since the 6.17 Naturalize tab made 9 — the gate excludes `ui` so it
+went unnoticed). **Reality check:** the
 thumbnail **grid** (`v` toggles), **filter** (`/`), and **semantic search** (Tab, TF-IDF) already exist —
 so the gap the "gallery" ask really points at is **quick-actions**: today the only thing you can do to a
 selected frame is `Continue` it in Chat. Add direct actions so History is a real workbench, not just a
