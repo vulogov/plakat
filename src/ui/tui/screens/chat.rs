@@ -78,6 +78,9 @@ pub struct ChatState {
     /// The latest preview / final image to show in the right pane (built by the
     /// App from `GenMessage` frames via the image Picker).
     pub preview: Option<ratatui_image::protocol::StatefulProtocol>,
+    /// W4 — maximize the preview: Ctrl-F gives the whole middle row to the image (hides the
+    /// transcript column) for a bigger look; Ctrl-F again restores the split.
+    pub preview_full: bool,
     /// True once a previous image exists, so the next prompt refines it (img2img).
     /// Surfaced in the input hint; the App owns the actual refine decision.
     pub refine_armed: bool,
@@ -109,6 +112,7 @@ impl ChatState {
             history: Vec::new(),
             status: ChatStatus::Idle,
             preview: None,
+            preview_full: false,
             refine_armed: false,
             recall: None,
             mention_people: Vec::new(),
@@ -321,6 +325,11 @@ impl ChatState {
             KeyCode::Char('z') if ctrl && shift => return self.redo(),
             KeyCode::Char('z') if ctrl => return self.undo(),
             KeyCode::Char('t') if ctrl => return ChatAction::ToggleAnchor,
+            // Ctrl-F — maximize the preview (hide the transcript column), Ctrl-F again restores.
+            KeyCode::Char('f') if ctrl => {
+                self.preview_full = !self.preview_full;
+                return ChatAction::None;
+            }
             KeyCode::Char('p') if ctrl => {
                 self.recall_prev();
                 return ChatAction::None;
@@ -442,23 +451,29 @@ impl ChatState {
             .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(4)])
             .split(area);
         crate::ui::tui::memory::render_memory_bar(f, rows[0]);
-        // Middle: chat history on the left, the generated image on the right.
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(rows[1]);
-        self.render_history(f, cols[0]);
+        // Middle: chat history on the left, the generated image on the right. W4: Ctrl-F
+        // maximizes the image to the whole middle row (the transcript column is hidden).
+        let img_area = if self.preview_full {
+            rows[1]
+        } else {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(rows[1]);
+            self.render_history(f, cols[0]);
+            cols[1]
+        };
         // The image pane gives up its bottom rows to the session filmstrip when there
         // is more than one frame to scrub through.
         if self.frames().len() > 1 {
             let img_rows = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(2)])
-                .split(cols[1]);
+                .split(img_area);
             self.render_image(f, img_rows[0]);
             self.render_filmstrip(f, img_rows[1]);
         } else {
-            self.render_image(f, cols[1]);
+            self.render_image(f, img_area);
         }
         self.render_input(f, rows[2]);
         // The @mention popup floats just above the input, over the history column.
@@ -707,6 +722,16 @@ mod tests {
         assert_eq!(s.editor.text(), "cat");
         s.handle_key(k(KeyCode::Backspace));
         assert_eq!(s.editor.text(), "ca");
+    }
+
+    #[test]
+    fn ctrl_f_toggles_preview_maximize() {
+        let mut s = ChatState::new();
+        assert!(!s.preview_full);
+        assert!(matches!(s.handle_key(ctrl('f')), ChatAction::None));
+        assert!(s.preview_full, "Ctrl-F maximizes the preview");
+        s.handle_key(ctrl('f'));
+        assert!(!s.preview_full, "Ctrl-F again restores the split");
     }
 
     #[test]

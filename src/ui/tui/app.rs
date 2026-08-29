@@ -242,6 +242,9 @@ pub struct App {
     // `/auto` — LLM-classify each follow-up as an edit (refine) vs a new scene (fresh)
     // instead of the always-refine heuristic. Off by default (adds a quick LLM call).
     auto_route: bool,
+    // W3 (`/settings etch on|off`): when on, every finished Chat frame is etched with plakat
+    // provenance in place (weight-free). Off by default — mirrors the CLI `--etch` opt-in.
+    etch_on: bool,
     // In-flight classification: (is_new, edit_text).
     route_rx: Option<Receiver<(bool, String)>>,
     // The in-flight scenario run (its terminal-result channel).
@@ -414,6 +417,7 @@ impl App {
             history_decode: None,
             thumb_decode: None,
             active_loras: Vec::new(),
+            etch_on: false,
             chat_mask: None,
             inpaint_base: None,
             inpaint_nudged: false,
@@ -1155,6 +1159,12 @@ impl App {
                 cmds.push(("List Chat sessions".into(), Cmd::Submit("/sessions".into())));
                 cmds.push(("Fan out 4 variations (fresh seeds)".into(), Cmd::Submit("/vary 4".into())));
                 cmds.push(("Grab this image's recipe → Scenario (exact)".into(), Cmd::Submit("/scenario".into())));
+                cmds.push(("Maximize preview (hide transcript)".into(), kc('f')));
+                cmds.push(("Etch provenance into the latest frame".into(), Cmd::Submit("/etch".into())));
+                cmds.push(("Upscale latest ×2 (Lanczos)".into(), Cmd::Submit("/upscale 2".into())));
+                cmds.push(("Remove background (transparent cutout)".into(), Cmd::Submit("/remove-bg".into())));
+                cmds.push(("Show settings (device · model · etch)".into(), Cmd::Submit("/settings".into())));
+                cmds.push(("Toggle etch-on-generate".into(), Cmd::Submit("/settings etch".into())));
                 cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
@@ -2581,7 +2591,57 @@ impl App {
             HistoryAction::Naturalize { path } => self.naturalize_frame(path),
             HistoryAction::Delete { path } => self.delete_frame(path),
             HistoryAction::Etch { path } => self.etch_frame(path),
+            HistoryAction::Batch { op, paths } => self.batch_frames(op, paths),
         }
+    }
+
+    /// W2 — apply a weight-free op to a History multi-select, reporting an aggregate count.
+    fn batch_frames(&mut self, op: super::screens::history::BatchOp, paths: Vec<std::path::PathBuf>) {
+        use super::screens::history::BatchOp;
+        let total = paths.len();
+        let mut ok = 0usize;
+        for path in paths {
+            let done = match op {
+                BatchOp::Naturalize => self.naturalize_one(&path),
+                BatchOp::Etch => self.etch_one(&path),
+                BatchOp::Delete => self.trash_one(&path),
+            };
+            if done {
+                ok += 1;
+            }
+        }
+        self.history.rescan();
+        let verb = match op {
+            BatchOp::Naturalize => "naturalized",
+            BatchOp::Etch => "etched",
+            BatchOp::Delete => "trashed",
+        };
+        self.history.status = format!("batch: {verb} {ok}/{total} frame(s)");
+    }
+
+    /// Naturalize one frame in place → `<stem>_naturalized.png`. Returns success (no rescan).
+    fn naturalize_one(&self, path: &std::path::Path) -> bool {
+        image::open(path).ok().and_then(|img| {
+            let out = crate::naturalize::apply(&img.to_rgb8(), &crate::naturalize::Preset::Photo.params());
+            let dst = path.with_file_name(format!("{}_naturalized.png", path.file_stem().and_then(|s| s.to_str()).unwrap_or("frame")));
+            out.save(&dst).ok()
+        }).is_some()
+    }
+
+    /// Etch one frame in place. Returns success (no rescan).
+    fn etch_one(&self, path: &std::path::Path) -> bool {
+        image::open(path).ok().and_then(|img| {
+            let rgb = img.to_rgb8();
+            crate::etch::fresh_etch(rgb.as_raw(), rgb.width(), rgb.height(), path, None).ok()
+        }).is_some()
+    }
+
+    /// Move one frame to `<out>/.trash/`. Returns success (no rescan).
+    fn trash_one(&self, path: &std::path::Path) -> bool {
+        let trash = self.workspace.out_dir().join(".trash");
+        let _ = std::fs::create_dir_all(&trash);
+        let name = path.file_name().map(std::ffi::OsString::from).unwrap_or_default();
+        std::fs::rename(path, trash.join(&name)).is_ok()
     }
 
     /// V1 — etch plakat provenance into a History frame in place (sync, no model), then rescan.
@@ -2726,6 +2786,159 @@ impl App {
         self.active_gen = Some((rx, cancel));
         self.chat.status = ChatStatus::Generating { step: 0, total: 1, refine: false };
         self.chat.push_system(format!("faceswap ← {source_label} (loading engine…)"));
+    }
+
+    /// Chat `/etch` — write plakat provenance into the latest frame in place (W1, weight-free,
+    /// instant). No new frame: the file gains an embedded EtchId, verifiable via `doctor --if-plakat`.
+    fn chat_etch(&mut self) {
+        let Some(path) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image in the thread to etch — generate one first".into());
+            return;
+        };
+        let done = image::open(&path).ok().and_then(|img| {
+            let rgb = img.to_rgb8();
+            crate::etch::fresh_etch(rgb.as_raw(), rgb.width(), rgb.height(), &path, None).ok()
+        });
+        self.chat.push_system(match done {
+            Some(id) => format!("✓ etched provenance (id {}) into the latest frame", id.hex()),
+            None => "✗ etch failed".into(),
+        });
+    }
+
+    /// Chat `/upscale [2|4]` — weight-free Lanczos upscale of the latest frame → a new frame
+    /// (W1). Instant and device-free; routed through the generation channel so the result posts
+    /// to Chat like any op. For ML super-resolution use the `upscale` CLI.
+    fn chat_upscale(&mut self, arg: &str) {
+        if self.active_gen.is_some() {
+            self.chat.push_system("busy — wait for the current op to finish".into());
+            return;
+        }
+        let scale: f32 = match arg.trim() {
+            "" => 2.0,
+            s => match s.parse::<f32>() {
+                Ok(v) if (1.0..=4.0).contains(&v) => v,
+                _ => {
+                    self.chat.push_system("usage: /upscale [2|3|4] — Lanczos, weight-free".into());
+                    return;
+                }
+            },
+        };
+        let Some(src) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image in the thread to upscale — generate one first".into());
+            return;
+        };
+        let out_dir = self.workspace.out_dir().join("chat");
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("frame").to_string();
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        let cancel = CancelFlag::new();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<std::path::PathBuf> {
+                std::fs::create_dir_all(&out_dir)?;
+                let out = out_dir.join(format!("{stem}_x{}.png", scale));
+                crate::imaging::upscale::upscale(&src, &out, scale, crate::imaging::upscale::Method::Lanczos3)?;
+                Ok(out)
+            })();
+            let _ = match result {
+                Ok(output) => tx.send(GenMessage::Done { output, cancelled: false }),
+                Err(e) => tx.send(GenMessage::Error { message: format!("{e:#}") }),
+            };
+        });
+        self.active_gen = Some((rx, cancel));
+        self.chat.status = ChatStatus::Generating { step: 0, total: 1, refine: false };
+        self.chat.push_system(format!("upscale ×{scale} (Lanczos)…"));
+    }
+
+    /// Chat `/remove-bg` — matte the subject off its background (U2Net) → a transparent-PNG cutout
+    /// as a new frame (W1). One small model; evicts the t2i model first (single Metal device).
+    fn chat_removebg(&mut self) {
+        if self.active_gen.is_some() {
+            self.chat.push_system("busy — wait for the current op to finish".into());
+            return;
+        }
+        let Some(src) = self.chat.latest_frame_path() else {
+            self.chat.push_system("no image in the thread — generate one first".into());
+            return;
+        };
+        self.model_svc.unload(); // free the Metal device for U2Net
+        let (device, rt) = (self.device.clone(), self.rt.clone());
+        let out_dir = self.workspace.out_dir().join("chat");
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("frame").to_string();
+        let (tx, rx) = std::sync::mpsc::channel::<GenMessage>();
+        let cancel = CancelFlag::new();
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<std::path::PathBuf> {
+                std::fs::create_dir_all(&out_dir)?;
+                let out = out_dir.join(format!("{stem}_cutout.png"));
+                rt.block_on(crate::pipelines::matting::cutout(&src, &out, false, &device))?;
+                Ok(out)
+            })();
+            let _ = match result {
+                Ok(output) => tx.send(GenMessage::Done { output, cancelled: false }),
+                Err(e) => tx.send(GenMessage::Error { message: format!("{e:#}") }),
+            };
+        });
+        self.active_gen = Some((rx, cancel));
+        self.chat.status = ChatStatus::Generating { step: 0, total: 1, refine: false };
+        self.chat.push_system("remove-bg → transparent cutout (loading U2Net…)".into());
+    }
+
+    /// W3 — `/settings` reports the session config; `/settings etch on|off` toggles provenance
+    /// on every finished frame. Read-only otherwise (no new tab — surfaced in Chat).
+    fn chat_settings(&mut self, arg: &str) {
+        let mut it = arg.split_whitespace();
+        if let Some("etch") = it.next() {
+            match it.next() {
+                Some(v) if v.eq_ignore_ascii_case("on") => self.etch_on = true,
+                Some(v) if v.eq_ignore_ascii_case("off") => self.etch_on = false,
+                _ => self.etch_on = !self.etch_on, // bare `/settings etch` flips it
+            }
+            self.chat.push_system(format!(
+                "etch-on-generate {} — finished frames {} carry a plakat EtchId",
+                if self.etch_on { "ON" } else { "OFF" },
+                if self.etch_on { "will" } else { "won't" },
+            ));
+            return;
+        }
+        for line in self.settings_report() {
+            self.chat.push_system(line);
+        }
+    }
+
+    /// W3 — etch a just-finished frame in place when `/settings etch on` is set. Skips images with
+    /// an alpha channel (e.g. `/remove-bg` cutouts) — etching flattens to RGB and would drop
+    /// transparency. Returns a one-line note for Chat, or `None` if there was nothing to say.
+    fn etch_generated(&self, output: &std::path::Path) -> Option<String> {
+        let img = image::open(output).ok()?;
+        if img.color().has_alpha() {
+            return Some("↳ etch skipped (transparent image — would lose alpha)".into());
+        }
+        let rgb = img.to_rgb8();
+        match crate::etch::fresh_etch(rgb.as_raw(), rgb.width(), rgb.height(), output, None) {
+            Ok(id) => Some(format!("↳ etched provenance (id {})", id.hex())),
+            Err(_) => None,
+        }
+    }
+
+    /// Build the `/settings` report lines (pure — unit-testable).
+    fn settings_report(&self) -> Vec<String> {
+        let device = if self.device.is_metal() {
+            "metal"
+        } else if self.device.is_cuda() {
+            "cuda"
+        } else {
+            "cpu"
+        };
+        let loaded = self.models.loaded_alias().map(str::to_string).unwrap_or_else(|| "—".into());
+        vec![
+            "settings:".into(),
+            format!("  device        {device}"),
+            format!("  default model {}", self.workspace.config.default_model),
+            format!("  loaded model  {loaded}"),
+            format!("  output dir    {}", self.workspace.out_dir().display()),
+            format!("  active LoRAs  {}", self.active_loras.len()),
+            format!("  auto-route    {}", if self.auto_route { "on" } else { "off" }),
+            format!("  etch-on-gen   {}  (/settings etch on|off)", if self.etch_on { "on" } else { "off" }),
+        ]
     }
 
     /// Run a scenario file on a background thread. Its task-by-task progress (model
@@ -2978,6 +3191,26 @@ impl App {
         }
         if let Some(rest) = text.strip_prefix("/faceswap") {
             self.chat_faceswap(rest.trim());
+            return;
+        }
+        // `/etch` (in-place provenance) and `/upscale [2|4]` (weight-free Lanczos → new frame)
+        // — both edit/derive from the latest frame (RFC UI-GALLERY-1 W1).
+        if text.trim() == "/etch" {
+            self.chat_etch();
+            return;
+        }
+        if let Some(rest) = text.strip_prefix("/upscale") {
+            self.chat_upscale(rest);
+            return;
+        }
+        if text.trim() == "/remove-bg" || text.trim() == "/removebg" {
+            self.chat_removebg();
+            return;
+        }
+        // `/settings` reports the session's device/model/output/etch; `/settings etch on|off`
+        // toggles provenance-on-generate (W3, no new tab — surfaced in Chat).
+        if let Some(rest) = text.strip_prefix("/settings") {
+            self.chat_settings(rest.trim());
             return;
         }
         // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
@@ -3255,6 +3488,11 @@ impl App {
                     let path = output.display().to_string();
                     self.chat.finish_last(Ok(path.clone()));
                     self.chat.status = ChatStatus::Done(path);
+                    if self.etch_on {
+                        if let Some(note) = self.etch_generated(&output) {
+                            self.chat.push_system(note);
+                        }
+                    }
                     finished = true;
                 }
                 GenMessage::Error { message } => {
@@ -3328,8 +3566,11 @@ impl App {
                 ("Ctrl-← / Ctrl-→", "scrub the filmstrip"),
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
                 ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
+                ("Ctrl-F", "maximize the preview (hide transcript)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
                 ("/relight <preset> · /faceswap <src>", "edit the latest frame (IC-Light · face-swap)"),
+                ("/etch · /upscale [2|4] · /remove-bg", "provenance · Lanczos upscale · cutout"),
+                ("/settings [etch on|off]", "session config · provenance-on-generate"),
                 ("/size WxH · /steps N · /cfg X", "per-model size · steps · guidance"),
                 ("/pag X · /rescale φ · /freeu · /dynthresh P", "quality: PAG · CFG-rescale · FreeU · dyn-threshold"),
                 ("/new /seed /strength /negative /auto", "session commands"),
@@ -3348,7 +3589,8 @@ impl App {
                 ("/ , ?", "substring filter , semantic search"),
                 ("t / x / d", "tag / export / compare baseline"),
                 ("c", "continue selected in Chat"),
-                ("n / y", "naturalize (de-slop) / vary selected"),
+                ("Space", "multi-select (✓) — n/e/Del act on the batch"),
+                ("n / y / e", "naturalize (de-slop) / vary / etch selected"),
                 ("Del", "move selected to .trash (confirm)"),
             ]),
             ActiveScreen::LoraHub => ("LoRA Hub", &[
@@ -4265,6 +4507,29 @@ mod tests {
         // A second press while one is in flight is ignored (no double-spawn).
         a.grab_chat_into_scenario();
         assert!(a.chat_to_scenario.is_some());
+    }
+
+    #[test]
+    fn settings_reports_and_toggles_etch() {
+        let root = std::env::temp_dir().join("plakat-ui-settings-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+
+        // The report names the device and the etch line (pure builder).
+        let report = a.settings_report();
+        assert!(report.iter().any(|l| l.contains("device") && l.contains("cpu")));
+        assert!(report.iter().any(|l| l.contains("etch-on-gen") && l.contains("off")));
+
+        // `/settings etch on` flips the flag; `off` clears it.
+        assert!(!a.etch_on);
+        a.handle_chat_submit("/settings etch on".into());
+        assert!(a.etch_on, "etch toggled on");
+        a.handle_chat_submit("/settings etch off".into());
+        assert!(!a.etch_on, "etch toggled off");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

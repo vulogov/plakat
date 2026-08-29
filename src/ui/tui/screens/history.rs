@@ -55,6 +55,7 @@ impl HistoryEntry {
 }
 
 /// What the App should do after a key.
+#[derive(Debug)]
 pub enum HistoryAction {
     None,
     /// Continue from this image in Chat. `prompt`/`seed` come from the embedded
@@ -69,6 +70,16 @@ pub enum HistoryAction {
     Delete { path: PathBuf },
     /// Etch plakat provenance into the selected frame in place (V1 — sync, no model).
     Etch { path: PathBuf },
+    /// Apply a weight-free op to a multi-select (W2): naturalize / etch / delete a batch.
+    Batch { op: BatchOp, paths: Vec<PathBuf> },
+}
+
+/// The weight-free op for a History multi-select batch (W2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchOp {
+    Naturalize,
+    Etch,
+    Delete,
 }
 
 pub struct HistoryState {
@@ -101,6 +112,8 @@ pub struct HistoryState {
     pub status: String,
     /// Set when `Delete` was pressed once — the second press confirms the trash (RFC UI-GALLERY-1 P3).
     pending_delete: Option<PathBuf>,
+    /// Multi-select (W2): frames toggled with `Space`; `n`/`e`/`Delete` then act on the whole set.
+    selection: std::collections::HashSet<PathBuf>,
     /// `true` → thumbnail GRID view; `false` → list + single preview (default).
     grid: bool,
     /// Thumbnail protocols by path (built by the App), with an LRU eviction order.
@@ -135,6 +148,7 @@ impl HistoryState {
             preview_for: None,
             status: String::new(),
             pending_delete: None,
+            selection: std::collections::HashSet::new(),
             grid: false,
             thumbs: std::collections::HashMap::new(),
             thumb_lru: Vec::new(),
@@ -209,6 +223,27 @@ impl HistoryState {
 
     pub fn selected_path(&self) -> Option<PathBuf> {
         self.cur().map(|e| e.path.clone())
+    }
+
+    /// The multi-select targets (W2), in view order, or `None` if nothing is selected.
+    /// Batch ops act on these; a single `Space`-free press falls back to `selected_path`.
+    fn batch_targets(&self) -> Option<Vec<PathBuf>> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let paths: Vec<PathBuf> = self
+            .view
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .filter(|e| self.selection.contains(&e.path))
+            .map(|e| e.path.clone())
+            .collect();
+        (!paths.is_empty()).then_some(paths)
+    }
+
+    /// Whether `path` is in the multi-select (W2) — used by the renderer to mark cells.
+    pub fn is_selected(&self, path: &std::path::Path) -> bool {
+        self.selection.contains(path)
     }
 
     fn next(&mut self) {
@@ -324,6 +359,15 @@ impl HistoryState {
         match key.code {
             // `v` — toggle between the list+preview view and the thumbnail grid.
             KeyCode::Char('v' | 'V') => self.grid = !self.grid,
+            // `Space` — toggle the selected frame in/out of the multi-select (W2).
+            KeyCode::Char(' ') => {
+                if let Some(p) = self.selected_path() {
+                    if !self.selection.remove(&p) {
+                        self.selection.insert(p);
+                    }
+                    self.status = format!("{} selected · n/e naturalize/etch batch · Del trash batch", self.selection.len());
+                }
+            }
             // In the grid, ←/→ move within a row and ↑/↓ move by a full row.
             KeyCode::Left | KeyCode::Char('h') if self.grid => self.prev(),
             KeyCode::Right | KeyCode::Char('l') if self.grid => self.next(),
@@ -365,8 +409,12 @@ impl HistoryState {
                     return HistoryAction::Continue { path, prompt, seed };
                 }
             }
-            // `n` — weight-free naturalize (de-slop) the selected frame in place (P1).
+            // `n` — naturalize the selection (W2) or the selected frame (P1), weight-free.
             KeyCode::Char('n' | 'N') => {
+                if let Some(paths) = self.batch_targets() {
+                    self.selection.clear();
+                    return HistoryAction::Batch { op: BatchOp::Naturalize, paths };
+                }
                 if let Some(path) = self.selected_path() {
                     return HistoryAction::Naturalize { path };
                 }
@@ -377,20 +425,36 @@ impl HistoryState {
                     return HistoryAction::Vary { path };
                 }
             }
-            // `e` — etch plakat provenance into the selected frame in place (V1).
+            // `e` — etch the selection (W2) or the selected frame (V1), in place.
             KeyCode::Char('e' | 'E') => {
+                if let Some(paths) = self.batch_targets() {
+                    self.selection.clear();
+                    return HistoryAction::Batch { op: BatchOp::Etch, paths };
+                }
                 if let Some(path) = self.selected_path() {
                     return HistoryAction::Etch { path };
                 }
             }
-            // `Delete` — move the selected frame to `.trash/`, confirmed on a second press (P3).
+            // `Delete` — trash the selection (W2) or the selected frame (P3), confirmed on a 2nd press.
             KeyCode::Delete => {
-                if let Some(path) = self.selected_path() {
-                    if pending_delete.as_ref() == Some(&path) {
+                // A batch delete is keyed on a sentinel path so the confirm arms once for the set.
+                let target = self.selected_path();
+                let batch = self.batch_targets();
+                let confirm_key = if batch.is_some() { Some(PathBuf::from("<selection>")) } else { target.clone() };
+                if confirm_key.is_none() {
+                    // nothing to delete
+                } else if pending_delete == confirm_key {
+                    if let Some(paths) = batch {
+                        self.selection.clear();
+                        return HistoryAction::Batch { op: BatchOp::Delete, paths };
+                    }
+                    if let Some(path) = target {
                         return HistoryAction::Delete { path };
                     }
-                    self.status = format!("delete {} → press Delete again to trash · any key cancels", path.file_name().and_then(|n| n.to_str()).unwrap_or(""));
-                    self.pending_delete = Some(path);
+                } else {
+                    let n = self.batch_targets().map(|p| p.len()).unwrap_or(1);
+                    self.status = format!("delete {n} frame(s) → press Delete again to trash · any key cancels");
+                    self.pending_delete = confirm_key;
                     return HistoryAction::None;
                 }
             }
@@ -632,7 +696,9 @@ impl HistoryState {
             } else {
                 Style::new().fg(Color::White)
             };
-            let base_mark = if self.compare_base.as_ref() == Some(&e.path) {
+            let base_mark = if self.selection.contains(&e.path) {
+                Span::styled("✓ ", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else if self.compare_base.as_ref() == Some(&e.path) {
                 Span::styled("◆ ", Style::new().fg(Color::Magenta))
             } else {
                 Span::raw("  ")
@@ -977,6 +1043,36 @@ mod tests {
         assert!(s.pending_delete.is_none(), "cancelled by another key");
         assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::None));
         assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::Delete { .. }), "second press confirms");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn multi_select_batches_the_weight_free_ops() {
+        let d = tmp("batchsel");
+        for i in 0..4 {
+            crate::imaging::io::save_rgb_u8(&[7, 7, 7], 1, 1, &d.join(format!("b{i}.png"))).unwrap();
+        }
+        let mut s = HistoryState::new(d.clone());
+        // No selection → Space-free `n` acts on the single selected frame.
+        assert!(matches!(s.handle_key(ch('n')), HistoryAction::Naturalize { .. }));
+        // Select two frames with Space (toggle on, move, toggle on).
+        s.handle_key(ch(' '));
+        s.handle_key(ch('j'));
+        s.handle_key(ch(' '));
+        assert!(s.batch_targets().map(|p| p.len()) == Some(2), "two frames selected");
+        // `n` now returns a Naturalize batch over the selection and clears it.
+        match s.handle_key(ch('n')) {
+            HistoryAction::Batch { op: BatchOp::Naturalize, paths } => assert_eq!(paths.len(), 2),
+            other => panic!("expected a Naturalize batch, got {other:?}"),
+        }
+        assert!(s.batch_targets().is_none(), "selection cleared after the batch");
+        // Re-select and batch-delete: confirm on the second Delete.
+        s.handle_key(ch(' '));
+        assert!(matches!(s.handle_key(special(KeyCode::Delete)), HistoryAction::None), "arms the confirm");
+        match s.handle_key(special(KeyCode::Delete)) {
+            HistoryAction::Batch { op: BatchOp::Delete, paths } => assert_eq!(paths.len(), 1),
+            other => panic!("expected a Delete batch, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

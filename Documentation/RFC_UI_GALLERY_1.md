@@ -15,7 +15,23 @@ so the gap the "gallery" ask really points at is **quick-actions**: today the on
 selected frame is `Continue` it in Chat. Add direct actions so History is a real workbench, not just a
 browser.
 
-## What ships
+**Round 2 (same 6.24.0 cut) — "improve `plakat ui`, no new tabs" (W1–W4):**
+- **W1 — more Chat edit commands** on the latest frame, reusing the `active_gen` channel:
+  **`/etch`** (in-place provenance, weight-free), **`/upscale [2|3|4]`** (weight-free Lanczos → new
+  frame), **`/remove-bg`** (U2Net matte → transparent cutout, evicts the t2i model). `/restore-faces`
+  DEFERRED (needs a full SD base + SCRFD ADetailer config — a bigger wire; own follow-up).
+- **W2 — History multi-select + batch:** `Space` toggles a frame into the selection (✓ marker); then
+  `n`/`e`/`Delete` act on the **whole set** (naturalize / etch / trash a batch). Weight-free and sync →
+  fully unit-tested (`multi_select_batches_the_weight_free_ops`).
+- **W3 — settings surfaced in Chat:** `/settings` reports device / default+loaded model / output dir /
+  LoRAs / auto-route / etch-on-gen; **`/settings etch on|off`** toggles provenance-on-generate (finished
+  Chat frames gain an EtchId in the `Done` handler — alpha images like cutouts are skipped so
+  transparency survives). No new tab. Tested (`settings_reports_and_toggles_etch`).
+- **W4 — preview maximize:** **Ctrl-F** gives the whole middle row to the image (hides the transcript
+  column) for a bigger look; Ctrl-F again restores the 55/45 split. Tested
+  (`ctrl_f_toggles_preview_maximize`).
+
+## What ships (round 1)
 
 ### P1 — Naturalize the selected frame (`n`)
 Weight-free de-slop of the selected image **in place** (writes `<stem>_naturalized.png` next to it, then

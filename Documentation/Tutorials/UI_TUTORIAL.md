@@ -162,6 +162,10 @@ lose an earlier version.
 | `/freeu [on\|off]` | Toggle FreeU up-block reweighting (richer detail/texture) |
 | `/dynthresh <pctl>` | Imagen dynamic thresholding (~`99.5`) — another high-CFG saturation lever |
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
+| `/etch` \| `/upscale [2–4]` \| `/remove-bg` | Edit the latest frame: provenance · Lanczos upscale · transparent cutout |
+| `/relight <preset>` \| `/faceswap <src> [n]` | Model edits of the latest frame (IC-Light · face-swap) |
+| `/settings [etch on\|off]` | Report session config · toggle provenance-on-generate |
+| `Ctrl-F` | Maximize the preview (hide the transcript column); Ctrl-F again restores |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
 | `/preset save <name>` | Save the current model + LoRA stack + negative + size/steps/guidance as a named preset |
 | `/preset <name>` \| `/preset list` | Apply a saved preset / list them |
@@ -246,21 +250,39 @@ without leaving the tab:
   `plakat doctor --if-plakat`).
 - **`Delete`** — **trash** it: moves the frame to `out/.trash/` (recoverable,
   not a hard delete). Press `Delete` **twice** to confirm; any other key cancels.
+- **`Space`** — **multi-select** *(6.24)*: toggle the highlighted frame into a
+  selection (a green **✓** marks it). With a selection active, **`n`** / **`e`** /
+  **`Delete`** act on the **whole batch** — naturalize, etch, or trash many frames
+  at once. All weight-free; the status line shows the count.
 
-### Relight / face-swap from Chat *(6.24)*
+### Relight / face-swap / edit from Chat *(6.24)*
 
-Heavy model edits live in **Chat** (it already owns the model pipeline), operating
-on the **latest frame** in the thread:
+Model + weight-free edits live in **Chat** (it already owns the model pipeline),
+operating on the **latest frame** in the thread:
 
 ```
 /relight key-left        # relight the current image with a lighting preset (6.23's 11)
 /relight                 # (bare) lists the presets
 /faceswap alice.png      # swap alice's face into the current image
 /faceswap alice.png 1    # ...into the 2nd-largest face
+/etch                    # write plakat provenance into the latest frame (in place, instant)
+/upscale 2               # weight-free Lanczos upscale ×2 (or 3/4) → a new frame
+/remove-bg               # matte the subject → transparent cutout as a new frame
 ```
 
-The result posts back into Chat like any generation. (These load a model, so the
-resident text-to-image model is evicted first — the next `Enter` reloads it.)
+The result posts back into Chat like any generation. (Model edits — `/relight`,
+`/faceswap`, `/remove-bg` — evict the resident text-to-image model first; the next
+`Enter` reloads it. `/etch` and `/upscale` are weight-free and instant.)
+
+### Preview + settings *(6.24)*
+
+- **`Ctrl-F`** in Chat **maximizes the preview** — the image takes the whole middle
+  row (the transcript hides); Ctrl-F again restores the split.
+- **`/settings`** reports the session (device, default + loaded model, output dir,
+  active LoRAs, auto-route, etch-on-generate). **`/settings etch on`** turns on
+  **provenance-on-generate**: every finished Chat frame gains a plakat EtchId in
+  place (transparent images are skipped so alpha survives). `/settings etch off`
+  turns it back off.
 
 ### Find, tag, compare, and export
 
