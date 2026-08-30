@@ -115,6 +115,10 @@ pub async fn scan(
     let mut faces: Vec<DetFace> = Vec::new();
     let mut images_with_faces = 0usize;
     let mut total_faces = 0usize;
+    // 6.26.0 P4: per-image FACE-region sharpness (variance of the Laplacian inside the detected
+    // face boxes), reusing the boxes the scan already found — no extra model pass. Later flagged
+    // relative to the library median so blurry-face frames get a `soft-face` tag.
+    let mut face_sharp: Vec<Option<f32>> = vec![None; total];
 
     for (i, path) in items.iter().enumerate() {
         progress(i + 1, total);
@@ -128,6 +132,18 @@ pub async fn scan(
         images_with_faces += 1;
         per_image_count[i] = dets.len();
         total_faces += dets.len();
+        // Normalize the pixel bboxes by the original dimensions, then measure sharpness inside
+        // them on a 256px thumbnail (best-effort — a failed load just leaves this image unscored).
+        if let Ok((ow, oh)) = image::image_dimensions(path) {
+            let (ow, oh) = (ow.max(1) as f32, oh.max(1) as f32);
+            let norm: Vec<[f32; 4]> = dets
+                .iter()
+                .map(|f| [f.bbox[0] / ow, f.bbox[1] / oh, f.bbox[2] / ow, f.bbox[3] / oh])
+                .collect();
+            if let Ok(img) = crate::photos::loader::thumbnail(path, 256) {
+                face_sharp[i] = crate::photos::quality::region_sharpness(&img, &norm);
+            }
+        }
         for f in &dets {
             let emb = arcface.as_ref().and_then(|net| {
                 let align = FaceAlignment::from_options(Some(f.bbox), Some(f.landmarks));
@@ -164,7 +180,18 @@ pub async fn scan(
         }
     }
 
-    // Build per-image tags: has-face + a count band + each person present.
+    // 6.26.0 P4: flag blurry-face frames relative to the library. A face-region sharpness below
+    // 40% of the median (over scored face-images) earns a `soft-face` tag — adaptive to the
+    // library's overall scale, so it works whether the shots are crisp studio or soft phone snaps.
+    let mut scored: Vec<f32> = face_sharp.iter().filter_map(|s| *s).collect();
+    let soft_floor: Option<f32> = if scored.len() >= 4 {
+        scored.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(scored[scored.len() / 2] * 0.4)
+    } else {
+        None
+    };
+
+    // Build per-image tags: has-face + a count band + each person present (+ soft-face).
     let mut tags: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for (i, path) in items.iter().enumerate() {
         let count = per_image_count[i];
@@ -172,6 +199,11 @@ pub async fn scan(
             continue;
         }
         let mut t = vec!["has-face".to_string(), format!("faces-{}", count.min(9))];
+        if let (Some(floor), Some(s)) = (soft_floor, face_sharp[i]) {
+            if s < floor {
+                t.push("soft-face".to_string());
+            }
+        }
         if grouped {
             let mut persons: Vec<usize> = faces
                 .iter()
@@ -197,9 +229,42 @@ pub async fn scan(
     })
 }
 
+/// Rename a person tag inside one record's tag list (6.26.0 people management): replace `from`
+/// with `to` (case-insensitive match on `from`), de-duplicating if `to` is already present.
+/// Returns `true` if the list changed. Merging two clusters is just renaming one onto the other.
+pub fn rename_tag(tags: &mut Vec<String>, from: &str, to: &str) -> bool {
+    let had_from = tags.iter().any(|t| t.eq_ignore_ascii_case(from));
+    if !had_from {
+        return false;
+    }
+    let before = tags.len();
+    // Drop the `from` tag (and any pre-existing `to`, to avoid a duplicate), then add `to` once.
+    tags.retain(|t| !t.eq_ignore_ascii_case(from) && !t.eq_ignore_ascii_case(to));
+    tags.push(to.to_string());
+    // Changed unless the list was exactly `[to]`-equivalent already (same length, from==to case).
+    !(before == tags.len() && from.eq_ignore_ascii_case(to))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_tag_renames_merges_and_dedups() {
+        // Simple rename.
+        let mut t = vec!["has-face".to_string(), "person-3".to_string()];
+        assert!(rename_tag(&mut t, "person-3", "alice"));
+        assert_eq!(t, vec!["has-face".to_string(), "alice".to_string()]);
+        // Merge person-4 → alice when alice is already present → no duplicate.
+        let mut t = vec!["person-4".to_string(), "alice".to_string(), "beach".to_string()];
+        assert!(rename_tag(&mut t, "person-4", "alice"));
+        assert_eq!(t.iter().filter(|x| *x == "alice").count(), 1);
+        assert!(t.contains(&"beach".to_string()));
+        // A record without the `from` tag is untouched.
+        let mut t = vec!["person-2".to_string()];
+        assert!(!rename_tag(&mut t, "person-9", "bob"));
+        assert_eq!(t, vec!["person-2".to_string()]);
+    }
 
     #[test]
     fn cosine_of_unit_vectors() {

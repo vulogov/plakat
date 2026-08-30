@@ -63,6 +63,39 @@ pub fn find_duplicates(hashes: &[(PathBuf, u64)], threshold: u32) -> Vec<Vec<Pat
     groups
 }
 
+/// A near-duplicate group member's quality signals, for keeper selection (6.26.0).
+/// Ordered so a tuple comparison ranks by **rating**, then **sharpness** (crispest wins a
+/// rating tie — the fix vs the pre-6.26 rating→aesthetic heuristic), then **aesthetic** score.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeeperKey {
+    pub rating: u8,
+    pub sharpness: f32,
+    pub aesthetic: f64,
+}
+
+/// The index of the frame to KEEP within a near-dup group: highest rating, then sharpest, then
+/// best aesthetic. Ties resolve to the lowest index (order-stable). `None` for an empty slice.
+pub fn pick_keeper(keys: &[KeeperKey]) -> Option<usize> {
+    if keys.is_empty() {
+        return None;
+    }
+    let mut best = 0usize;
+    for i in 1..keys.len() {
+        if keeper_cmp(&keys[i], &keys[best]) == std::cmp::Ordering::Greater {
+            best = i;
+        }
+    }
+    Some(best)
+}
+
+/// Order two keeper keys: rating, then sharpness, then aesthetic (all higher = better).
+fn keeper_cmp(a: &KeeperKey, b: &KeeperKey) -> std::cmp::Ordering {
+    a.rating
+        .cmp(&b.rating)
+        .then(a.sharpness.partial_cmp(&b.sharpness).unwrap_or(std::cmp::Ordering::Equal))
+        .then(a.aesthetic.partial_cmp(&b.aesthetic).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +119,20 @@ mod tests {
         // A horizontal gradient vs a flat image differ a lot.
         let flat = DynamicImage::ImageRgb8(ImageBuffer::from_pixel(64, 64, Rgb([128, 128, 128])));
         assert!(hamming(dhash(&gradient(0)), dhash(&flat)) > 8);
+    }
+
+    #[test]
+    fn keeper_prefers_rating_then_sharpness_then_aesthetic() {
+        let k = |rating, sharpness, aesthetic| KeeperKey { rating, sharpness, aesthetic };
+        // Highest rating wins outright.
+        assert_eq!(pick_keeper(&[k(3, 1.0, 9.0), k(5, 0.1, 0.0), k(4, 9.9, 9.9)]), Some(1));
+        // On a rating tie, the SHARPEST wins (the 6.26 fix — index 1 is crisper).
+        assert_eq!(pick_keeper(&[k(5, 10.0, 9.0), k(5, 90.0, 1.0), k(5, 50.0, 5.0)]), Some(1));
+        // Rating + sharpness tie → best aesthetic.
+        assert_eq!(pick_keeper(&[k(5, 20.0, 3.0), k(5, 20.0, 8.0)]), Some(1));
+        // Empty → None; order-stable on a full tie (lowest index).
+        assert_eq!(pick_keeper(&[]), None);
+        assert_eq!(pick_keeper(&[k(5, 1.0, 1.0), k(5, 1.0, 1.0)]), Some(0));
     }
 
     #[test]

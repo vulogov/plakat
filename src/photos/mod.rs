@@ -1733,9 +1733,21 @@ impl App {
             self.status = "couldn't read the image".into();
             return;
         };
+        // 6.26.0 P2 — HYBRID search: when a filter is active (tag/date/rating/person/camera…),
+        // rank lookalikes only among the matching subset, so "find similar" combines perceptual
+        // similarity with the current facets ("similar to THIS, but only 2024 beach photos").
+        let facet = self.filter.trim().to_string();
         let mut ranked: Vec<(PathBuf, PathBuf, Option<hjson::ImageRecord>, u32)> = self
             .collect_library()
             .into_iter()
+            .filter(|(p, _, rec)| {
+                if facet.is_empty() {
+                    return true;
+                }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // Keep the query image itself in the set even if it doesn't match the facet.
+                *p == query_path || matches_filter(name, rec.as_ref(), &facet)
+            })
             .filter_map(|(p, dir, rec)| {
                 loader::thumbnail(&p, 64)
                     .ok()
@@ -1746,9 +1758,10 @@ impl App {
         let ordered: Vec<_> = ranked.into_iter().take(120).map(|(p, d, r, _)| (p, d, r)).collect();
         let count = ordered.len();
         let name = query_path.file_name().and_then(|n| n.to_str()).unwrap_or("image").to_string();
-        self.enter_smart_view(format!("similar: {name}"), String::new(), true, ordered, true);
+        let facet_note = if facet.is_empty() { String::new() } else { format!(" within [{facet}]") };
+        self.enter_smart_view(format!("similar: {name}{facet_note}"), String::new(), true, ordered, true);
         self.lookalike_of = Some(query_path); // so a rescan re-ranks rather than filtering
-        self.status = format!("🔍 {count} most-similar to {name} (perceptual hash)");
+        self.status = format!("🔍 {count} most-similar to {name}{facet_note} (perceptual hash)");
     }
 
     /// The `album_paths` index at the cursor (through the filtered view).
@@ -3553,6 +3566,83 @@ impl App {
     /// Scan the current view for near-duplicates (perceptual dHash), tag every duplicate-of-a-kept
     /// image `dup`, and narrow the view to `tag:dup` so they can be reviewed / culled. The best image
     /// per group (highest rating, then score, then first) is kept untagged.
+    /// 6.26.0 people management: `people list` shows each person cluster + count; `people rename
+    /// <from> <name>` renames a cluster tag across the whole library; `people merge <a> <b>`
+    /// folds cluster `a` into `b`. Clusters are the `person-N` tags from the face scan (`F`), or
+    /// any name they've been renamed to — so `tag:alice` then browses that person.
+    fn people_command(&mut self, arg: &str) {
+        let mut it = arg.split_whitespace();
+        match it.next().map(|s| s.to_lowercase()).as_deref() {
+            None | Some("list") => {
+                // Count images per person-ish tag (person-* or any tag on a has-face image).
+                let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+                for (_, _, rec) in self.collect_library() {
+                    if let Some(r) = &rec {
+                        let has_face = r.tags.iter().any(|t| t.eq_ignore_ascii_case("has-face"));
+                        for t in &r.tags {
+                            if t.starts_with("person-") || (has_face && !t.contains('-') && t != "has-face") {
+                                *counts.entry(t.clone()).or_default() += 1;
+                            }
+                        }
+                    }
+                }
+                if counts.is_empty() {
+                    self.status = "no people yet — run the face scan (F) first".into();
+                } else {
+                    let list: Vec<String> = counts.iter().map(|(k, n)| format!("{k}({n})")).collect();
+                    self.status = format!("people: {}  ·  `people rename <from> <name>` · `merge <a> <b>`", list.join(" "));
+                }
+            }
+            Some("rename") => {
+                let (from, to) = (it.next(), it.next());
+                match (from, to) {
+                    (Some(f), Some(t)) => self.rename_person(f, t),
+                    _ => self.status = "usage: people rename <from> <name>".into(),
+                }
+            }
+            Some("merge") => {
+                let (a, b) = (it.next(), it.next());
+                match (a, b) {
+                    // Merge a → b: retag every image tagged `a` as `b`.
+                    (Some(a), Some(b)) => self.rename_person(a, b),
+                    _ => self.status = "usage: people merge <from> <into>".into(),
+                }
+            }
+            Some(other) => self.status = format!("unknown people command '{other}' (list | rename | merge)"),
+        }
+    }
+
+    /// Retag a person cluster (`from` → `to`) across the whole library and persist each record.
+    /// Used by both `people rename` and `people merge` (merge is a rename onto an existing name).
+    fn rename_person(&mut self, from: &str, to: &str) {
+        let from = from.trim().to_string();
+        let to = to.trim().to_lowercase();
+        if from.is_empty() || to.is_empty() {
+            self.status = "usage: people rename <from> <name>".into();
+            return;
+        }
+        let targets: Vec<PathBuf> = self
+            .collect_library()
+            .into_iter()
+            .filter(|(_, _, rec)| {
+                rec.as_ref().map(|r| r.tags.iter().any(|t| t.eq_ignore_ascii_case(&from))).unwrap_or(false)
+            })
+            .map(|(p, _, _)| p)
+            .collect();
+        let n = targets.len();
+        if n == 0 {
+            self.status = format!("no images tagged '{from}' (people list)");
+            return;
+        }
+        for p in &targets {
+            self.edit_record_at(p, |rec| {
+                faces::rename_tag(&mut rec.tags, &from, &to);
+            });
+        }
+        self.rebuild_view();
+        self.status = format!("people: '{from}' → '{to}' on {n} image(s) · filter tag:{to} to browse");
+    }
+
     fn dedup_scan(&mut self) {
         let paths: Vec<PathBuf> =
             self.view.iter().filter_map(|&i| self.album_paths.get(i).cloned()).collect();
@@ -3561,25 +3651,36 @@ impl App {
             return;
         }
         self.status = format!("hashing {} images…", paths.len());
-        let hashes: Vec<(PathBuf, u64)> = paths
+        // 6.26.0: load one 256px thumbnail per image and compute BOTH the perceptual hash and
+        // the Laplacian sharpness, so the keeper can prefer the crispest near-dup (not just the
+        // highest-rated / most-aesthetic).
+        let scanned: Vec<(PathBuf, u64, f32)> = paths
             .iter()
-            .filter_map(|p| loader::thumbnail(p, 64).ok().map(|img| (p.clone(), dedup::dhash(&img))))
+            .filter_map(|p| {
+                loader::thumbnail(p, 256)
+                    .ok()
+                    .map(|img| (p.clone(), dedup::dhash(&img), quality::sharpness(&img)))
+            })
             .collect();
+        let hashes: Vec<(PathBuf, u64)> = scanned.iter().map(|(p, h, _)| (p.clone(), *h)).collect();
+        let sharp: std::collections::HashMap<PathBuf, f32> =
+            scanned.iter().map(|(p, _, s)| (p.clone(), *s)).collect();
         let groups = dedup::find_duplicates(&hashes, 5);
         let mut dups = 0;
         for group in &groups {
-            // Keep the best; tag the rest `dup`.
-            let best = group
+            // Keep the best (rating → sharpness → aesthetic); tag the rest `dup`.
+            let keys: Vec<dedup::KeeperKey> = group
                 .iter()
-                .max_by(|a, b| {
-                    let ra = self.record(a);
-                    let rb = self.record(b);
-                    let key = |r: Option<&hjson::ImageRecord>| {
-                        (r.map_or(0, |x| x.rating), r.and_then(|x| x.score).unwrap_or(f64::MIN))
-                    };
-                    key(ra).partial_cmp(&key(rb)).unwrap_or(std::cmp::Ordering::Equal)
+                .map(|p| {
+                    let rec = self.record(p);
+                    dedup::KeeperKey {
+                        rating: rec.map_or(0, |r| r.rating),
+                        sharpness: sharp.get(p).copied().unwrap_or(0.0),
+                        aesthetic: rec.and_then(|r| r.score).unwrap_or(f64::MIN),
+                    }
                 })
-                .cloned();
+                .collect();
+            let best = dedup::pick_keeper(&keys).map(|i| group[i].clone());
             for p in group {
                 if Some(p) != best.as_ref() {
                     self.edit_record_at(p, |rec| {
@@ -5339,12 +5440,19 @@ impl App {
                     self.export_web_gallery(&dir, full_px, title.as_deref());
                 }
                 Some(PendingCmd::NlCommand) if !arg.is_empty() => {
-                    // Deterministic fast-path first; otherwise hand off to the LLM planner.
-                    match nl::parse_deterministic(&arg) {
-                        Some(plan) => self.confirm_plan(plan),
-                        None => {
-                            self.pending_nl = Some(arg.clone());
-                            self.status = "planning with the LLM…".into();
+                    // 6.26.0 people management: `people list|rename|merge …` handled directly
+                    // (it retags the whole library, not a per-image pipeline the planner models).
+                    if arg.trim_start().to_lowercase().starts_with("people") {
+                        let rest = arg.trim_start()[6..].trim().to_string();
+                        self.people_command(&rest);
+                    } else {
+                        // Deterministic fast-path first; otherwise hand off to the LLM planner.
+                        match nl::parse_deterministic(&arg) {
+                            Some(plan) => self.confirm_plan(plan),
+                            None => {
+                                self.pending_nl = Some(arg.clone());
+                                self.status = "planning with the LLM…".into();
+                            }
                         }
                     }
                 }
@@ -9315,7 +9423,8 @@ fn ai_palette() -> Vec<(String, String)> {
         prow("g", "recipe-tag AI images (offline)"),
         prow("r", "aesthetic auto-cull — rank + keep top N"),
         prow("n", "analyze & generate — describe → img2img"),
-        prow("f", "face-scan — detect + group faces"),
+        prow("f", "face-scan — detect + group faces (+ soft-face on blurry)"),
+        prow(":people", "list · rename <from> <name> · merge <a> <b>"),
         prow("Esc", "close"),
     ]
 }

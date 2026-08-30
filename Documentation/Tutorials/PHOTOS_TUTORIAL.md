@@ -684,7 +684,7 @@ image:
 | `g` | **recipe-tag** AI images (offline — tags from the generation recipe) |
 | `r` | **aesthetic auto-cull** — rank the album by the LAION quality model, then flag the top *N* (you type N) and reject the rest (metadata only, `u` undoes) |
 | `n` | **analyze & generate** — describe the cursor image, then img2img from that description into a fresh "reimagined" variant |
-| `f` | **face-scan** — detect faces across the library and tag them (`has-face`, `faces-N`; groups into `person-N` when ArcFace weights are set) |
+| `f` | **face-scan** — detect faces across the library and tag them (`has-face`, `faces-N`; groups into `person-N` when ArcFace weights are set; flags blurry-face frames `soft-face`) |
 
 The last three load real models (CLIP + LAION predictor for cull; SCRFD for
 face-scan; your img2img model for analyze-and-generate). Auto-cull and face-scan
@@ -693,6 +693,23 @@ briefly suspend the UI to show progress; both refuse cleanly if memory is low
 reviews the discards; after a face-scan, filter by the `person-N` / `has-face`
 tags. Face grouping needs `PLAKAT_ARCFACE_WEIGHTS` (a converted ArcFace
 safetensors); without it you still get per-image face **counts**.
+
+**Naming & merging people (6.26).** The face scan's clusters start as opaque
+`person-N` tags. Type a command (the NL command box) to make them meaningful:
+
+```
+people list                     # every cluster + image count
+people rename person-3 Alice    # retag that cluster across the whole library
+people merge person-4 person-3  # same human split into two clusters → fold them
+```
+
+After `people rename … Alice`, just `filter tag:alice` to browse that person.
+Names are stored as lowercased tags, so they compose with every other facet.
+
+**Blurry-face flagging (6.26).** During the scan, plakat measures sharpness
+*inside the detected face boxes* (not the whole frame — a crisp background with a
+soft face shouldn't pass) and tags the relatively-blurriest as **`soft-face`**.
+`filter tag:soft-face` finds them; `-tag:soft-face` keeps the sharp keepers.
 
 This makes an otherwise unlabeled library *searchable*: run autotag on a shoot,
 then `/ tag:...` or `?` metadata-search finds images by what's actually in them.
@@ -775,6 +792,12 @@ burst, near-duplicates, the same scene — plakat has two rankings:
 
 Both open a relevance-ranked view (best first) you can curate and narrow with `/`.
 
+**Hybrid search (6.26).** Perceptual lookalike now **honours the active filter**. Set a
+filter first — `tag:beach date>=2024`, `tag:alice`, `rating>=4` — then run `Ctrl-B l`, and
+plakat ranks only the matching subset by similarity. So "find frames like this one, but only
+among Alice's 2024 beach photos" is one filter + one keypress; visual similarity composes
+with every metadata facet. (No filter → the whole library, as before.)
+
 ## 11. Browse — compare, duplicates, rename & export
 
 **Compare side-by-side (`=`).** Select 2–4 images (`Space`) and press `=` to see
@@ -797,8 +820,9 @@ its edit backup move with it. Album-local (open a real album, not a smart view).
 **Find near-duplicates (`#`).** Shot the same thing five times? Press `#` in the
 grid to hash every image in the current view (a perceptual dHash — robust to
 scaling, mild exposure/colour shifts, and re-compression) and group the ones that
-match. The best image in each group (highest rating, then aesthetic score) is
-kept; every other member is tagged `dup`, and the view narrows to `tag:dup` so you
+match. The best image in each group is kept — **highest rating, then sharpest,
+then best aesthetic** (6.26: the keeper is now the *crispest* of the group, not
+just the highest-rated) — every other member is tagged `dup`, and the view narrows to `tag:dup` so you
 can review them — press `C` to cull, `x` to reject, or clear the tag (`t`) on
 keepers. Nothing is deleted; duplicates are only *marked*.
 
