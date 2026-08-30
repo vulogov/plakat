@@ -58,6 +58,9 @@ pub enum ChatAction {
     Rollback(PathBuf),
     /// Generate a fresh variation of this frame (its prompt at a new random seed).
     Vary(PathBuf),
+    /// 6.25.0 — "soft vary" (Ctrl-Shift-Y): subtle subseed-blended variations of the current
+    /// frame (same composition, nudged) instead of fresh seeds. The App owns the subseed.
+    SoftVary,
     /// Toggle the refine mode between prompt-evolve and image-anchored (Ctrl-T). The
     /// App owns `refine_strength`, so it performs the flip.
     ToggleAnchor,
@@ -319,6 +322,8 @@ impl ChatState {
             KeyCode::Left if ctrl => return self.strip_left(),
             KeyCode::Right if ctrl => return self.strip_right(),
             KeyCode::Char('b') if ctrl => return self.rollback(),
+            // Ctrl-Shift-Y before Ctrl-Y so the shift combo isn't swallowed by the vary arm.
+            KeyCode::Char('y') if ctrl && shift => return ChatAction::SoftVary,
             KeyCode::Char('y') if ctrl => return self.vary(),
             // Linear undo/redo over the frame history. Shift-first so Ctrl-Shift-Z (redo)
             // isn't swallowed by the Ctrl-Z (undo) arm.
@@ -621,12 +626,19 @@ impl ChatState {
     fn render_input(&mut self, f: &mut Frame, area: Rect) {
         // Once an image exists, the next prompt refines it; advertise that + the
         // /new escape hatch. (The editor wraps + scrolls within the 2-row box.)
-        let title = if self.refine_armed {
+        let base = if self.refine_armed {
             " prompt · Enter refine · Ctrl-T evolve/anchor · /new fresh · Ctrl-P/N recall "
         } else {
             " prompt · Enter generate · Ctrl-P/N recall "
         };
-        self.editor.render(f, area, title);
+        // 6.25.0: advertise prompt scheduling the moment the prompt uses `[a:b:f]` / `[a|b]`.
+        let text = self.editor.text().to_string();
+        let title: std::borrow::Cow<str> = if crate::prompt::scheduling::has_schedule(&text) {
+            std::borrow::Cow::Owned(format!("{base}· ◆ scheduled "))
+        } else {
+            std::borrow::Cow::Borrowed(base)
+        };
+        self.editor.render(f, area, &title);
     }
 }
 

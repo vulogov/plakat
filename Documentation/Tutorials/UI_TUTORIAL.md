@@ -164,7 +164,10 @@ lose an earlier version.
 | `/vary [n]` | Fan out `n` variations (default 4) of the current image at fresh seeds → filmstrip |
 | `/etch` \| `/upscale [2–4]` \| `/remove-bg` | Edit the latest frame: provenance · Lanczos upscale · transparent cutout |
 | `/relight <preset>` \| `/faceswap <src> [n]` | Model edits of the latest frame (IC-Light · face-swap) |
-| `/settings [etch on\|off]` | Report session config · toggle provenance-on-generate |
+| `/settings [etch on\|off]` | Report session config (incl. seed/subseed/steps/cfg) · toggle provenance-on-generate |
+| `/subseed <N> [strength]` \| `Ctrl-Shift-Y` | Variation-seed for controlled variation · soft-vary (subtle, not fresh seeds) |
+| `[a:b:0.4]` \| `[a\|b]` in the prompt | Prompt scheduling: swap at 40% of steps · alternate per step (a ◆ chip shows when active) |
+| `/region X0,Y0,X1,Y1[,w=][,feather=]:prompt` | Queue a regional-prompt box — the next generate blends regions over the base (`/region list`/`clear`) |
 | `Ctrl-F` | Maximize the preview (hide the transcript column); Ctrl-F again restores |
 | `/scenario` | Grab **this image's** exact recipe (prompt + negative + seed) into a Scenarios task |
 | `/preset save <name>` | Save the current model + LoRA stack + negative + size/steps/guidance as a named preset |
@@ -388,6 +391,15 @@ regenerate).
   control — switching density clears the current mask.
 - **`Enter`** rasterizes the grid to a full-resolution mask and hands
   it to Chat. Your next prompt **inpaints only the painted region**.
+
+### Painted box → regional prompt (`Ctrl-R`) *(6.25)*
+
+Paint a box and press **`Ctrl-R`**: Canvas takes the painted extent's bounding box,
+jumps to Chat, and prefills **`/region x0,y0,x1,y1:`** — just type that region's
+prompt and press Enter to queue it. Add more regions the same way (or by typing
+`/region …` directly); the **next generate** blends every queued region over the
+base prompt (this is the 6.25.0 regional-prompting path — see the Advanced Prompting
+tutorial for `w=`/`feather=`). `/region list` shows the queue, `/region clear` empties it.
 
 ### Outpaint — extend the canvas (`M`)
 

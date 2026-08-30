@@ -245,6 +245,13 @@ pub struct App {
     // W3 (`/settings etch on|off`): when on, every finished Chat frame is etched with plakat
     // provenance in place (weight-free). Off by default — mirrors the CLI `--etch` opt-in.
     etch_on: bool,
+    // 6.25.0 P1 in the ui (`/subseed`): sticky variation-seed for the next generations.
+    // `None` = off (pure `--seed`). Threaded into every GenJob.
+    subseed: Option<u64>,
+    subseed_strength: f32,
+    // 6.25.0 P3 in the ui (`/region`): accumulated regional-prompt boxes consumed by the next
+    // fresh txt2img generate (regional path), then cleared. Empty = plain generation.
+    pending_regions: Vec<crate::pipelines::tiled::RegionSpec>,
     // In-flight classification: (is_new, edit_text).
     route_rx: Option<Receiver<(bool, String)>>,
     // The in-flight scenario run (its terminal-result channel).
@@ -418,6 +425,9 @@ impl App {
             thumb_decode: None,
             active_loras: Vec::new(),
             etch_on: false,
+            subseed: None,
+            subseed_strength: 0.0,
+            pending_regions: Vec::new(),
             chat_mask: None,
             inpaint_base: None,
             inpaint_nudged: false,
@@ -992,6 +1002,7 @@ impl App {
                 ChatAction::SelectFrame(path) => self.show_chat_frame(path),
                 ChatAction::Rollback(path) => self.rollback_to_frame(path),
                 ChatAction::Vary(path) => self.vary_frame(path),
+                ChatAction::SoftVary => self.soft_vary(),
                 ChatAction::ToggleAnchor => self.toggle_anchor(),
                 ChatAction::None => {}
             }
@@ -1049,6 +1060,7 @@ impl App {
             match self.canvas.handle_key(key) {
                 canvas::CanvasAction::MaskReady(path) => self.apply_canvas_mask(path),
                 canvas::CanvasAction::OutpaintReady { base, mask } => self.apply_outpaint(base, mask),
+                canvas::CanvasAction::RegionToChat { bbox } => self.region_from_canvas(bbox),
                 canvas::CanvasAction::None => {}
             }
             return;
@@ -1163,8 +1175,16 @@ impl App {
                 cmds.push(("Etch provenance into the latest frame".into(), Cmd::Submit("/etch".into())));
                 cmds.push(("Upscale latest ×2 (Lanczos)".into(), Cmd::Submit("/upscale 2".into())));
                 cmds.push(("Remove background (transparent cutout)".into(), Cmd::Submit("/remove-bg".into())));
-                cmds.push(("Show settings (device · model · etch)".into(), Cmd::Submit("/settings".into())));
+                cmds.push(("Show settings (device · model · gen params)".into(), Cmd::Submit("/settings".into())));
                 cmds.push(("Toggle etch-on-generate".into(), Cmd::Submit("/settings etch".into())));
+                cmds.push(("Set variation-seed (/subseed)".into(), Cmd::Submit("/subseed".into())));
+                if !self.chat.frames().is_empty() {
+                    cmds.push(("Soft-vary current frame (subtle)".into(), Cmd::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL | KeyModifiers::SHIFT))));
+                }
+                if !self.pending_regions.is_empty() {
+                    cmds.push((format!("Regional: {} region(s) queued — list", self.pending_regions.len()), Cmd::Submit("/region list".into())));
+                    cmds.push(("Regional: clear queued regions".into(), Cmd::Submit("/region clear".into())));
+                }
                 cmds.push(("Toggle refine mode: evolve ↔ anchored".into(), kc('t')));
                 cmds.push(("Toggle auto edit/new routing".into(), Cmd::Submit("/auto".into())));
                 cmds.push(("Clear negative prompt".into(), Cmd::Submit("/negative".into())));
@@ -2919,6 +2939,102 @@ impl App {
         }
     }
 
+    /// `/subseed N [strength]` — set the variation-seed for the next generations (6.25.0 P1).
+    /// `/subseed off` clears it; bare `/subseed` reports the current value. Default strength 0.15
+    /// (a subtle nudge) when only a seed is given.
+    fn chat_subseed(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.chat.push_system(match self.subseed {
+                Some(s) => format!("subseed {s} @ {:.2} — /subseed off to clear", self.subseed_strength),
+                None => "subseed off — /subseed <N> [strength 0..1] to vary (e.g. /subseed 99 0.15)".into(),
+            });
+            return;
+        }
+        if arg.eq_ignore_ascii_case("off") || arg.eq_ignore_ascii_case("none") {
+            self.subseed = None;
+            self.subseed_strength = 0.0;
+            self.chat.push_system("subseed off — back to pure seed".into());
+            return;
+        }
+        let mut it = arg.split_whitespace();
+        let Some(seed) = it.next().and_then(|s| s.parse::<u64>().ok()) else {
+            self.chat.push_system("usage: /subseed <N> [strength 0..1] · /subseed off".into());
+            return;
+        };
+        let strength = it
+            .next()
+            .and_then(|s| s.parse::<f32>().ok())
+            .map(|f| f.clamp(0.0, 1.0))
+            .unwrap_or(0.15);
+        self.subseed = Some(seed);
+        self.subseed_strength = strength;
+        self.chat.push_system(format!(
+            "subseed {seed} @ {strength:.2} — next generations nudge toward it (a coherent family)"
+        ));
+    }
+
+    /// Ctrl-Shift-Y "soft vary" — fan subtle variations of the current frame using the subseed
+    /// blend (same base seed, small random subseed) rather than fresh seeds. Reuses `/vary`'s
+    /// fan-out after arming a low-strength subseed; a no-op if there's no frame yet.
+    fn soft_vary(&mut self) {
+        if self.chat.latest_frame_path().is_none() {
+            self.chat.push_system("no image yet — generate one first, then soft-vary".into());
+            return;
+        }
+        // A fresh random subseed at a gentle strength → subtle, on-composition variation.
+        self.subseed = Some(rand::random::<u32>() as u64);
+        if self.subseed_strength <= 0.0 {
+            self.subseed_strength = 0.15;
+        }
+        self.chat.push_system(format!("soft-vary → subtle variations (subseed @ {:.2})", self.subseed_strength));
+        self.start_variations(4);
+    }
+
+    /// Canvas Ctrl-R bridge (6.25.0 P3): jump to Chat and prefill `/region x0,y0,x1,y1:` from
+    /// the painted box, so the user only types the region's prompt and presses Enter to queue it.
+    fn region_from_canvas(&mut self, bbox: [f32; 4]) {
+        let [x0, y0, x1, y1] = bbox;
+        self.screen = ActiveScreen::Chat;
+        self.chat.editor.set_text(&format!("/region {x0:.3},{y0:.3},{x1:.3},{y1:.3}:"));
+        self.chat.push_system("region box from Canvas — finish the /region line with a prompt, then Enter".into());
+    }
+
+    /// `/region ...` — manage the regional-prompt queue for the next fresh generate (6.25.0 P3).
+    /// `/region X0,Y0,X1,Y1[,w=W][,feather=F]:prompt` adds a box; `/region clear` empties the
+    /// queue; bare `/region` or `/region list` shows it. Coords are `[0,1]` canvas fractions.
+    fn chat_region(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() || arg.eq_ignore_ascii_case("list") {
+            if self.pending_regions.is_empty() {
+                self.chat.push_system("no regions queued — /region X0,Y0,X1,Y1:prompt (next generate is regional)".into());
+            } else {
+                self.chat.push_system(format!("{} region(s) queued for the next generate:", self.pending_regions.len()));
+                for r in &self.pending_regions {
+                    let [x0, y0, x1, y1] = r.bbox;
+                    self.chat.push_system(format!("  [{x0:.2},{y0:.2},{x1:.2},{y1:.2}] w={:.2} f={:.2} — {}", r.weight, r.feather, r.prompt));
+                }
+            }
+            return;
+        }
+        if arg.eq_ignore_ascii_case("clear") || arg.eq_ignore_ascii_case("off") {
+            let n = self.pending_regions.len();
+            self.pending_regions.clear();
+            self.chat.push_system(format!("cleared {n} queued region(s)"));
+            return;
+        }
+        match crate::pipelines::tiled::RegionSpec::parse(arg) {
+            Ok(r) => {
+                self.pending_regions.push(r);
+                self.chat.push_system(format!(
+                    "region queued ({} total) — the next generate blends them over the base prompt · /region clear to reset",
+                    self.pending_regions.len()
+                ));
+            }
+            Err(e) => self.chat.push_system(format!("bad region: {e:#}")),
+        }
+    }
+
     /// Build the `/settings` report lines (pure — unit-testable).
     fn settings_report(&self) -> Vec<String> {
         let device = if self.device.is_metal() {
@@ -2929,6 +3045,17 @@ impl App {
             "cpu"
         };
         let loaded = self.models.loaded_alias().map(str::to_string).unwrap_or_else(|| "—".into());
+        // The effective generate params for the next Enter (overrides fall back to config).
+        let steps = self.steps_override.unwrap_or(self.workspace.config.default_steps);
+        let cfg = self.guidance_override.unwrap_or(self.workspace.config.default_guidance);
+        let seed = match self.fixed_seed {
+            Some(s) => format!("pinned {s}"),
+            None => "random".into(),
+        };
+        let subseed = match self.subseed {
+            Some(s) => format!("{s} @ {:.2}", self.subseed_strength),
+            None => "off".into(),
+        };
         vec![
             "settings:".into(),
             format!("  device        {device}"),
@@ -2938,6 +3065,10 @@ impl App {
             format!("  active LoRAs  {}", self.active_loras.len()),
             format!("  auto-route    {}", if self.auto_route { "on" } else { "off" }),
             format!("  etch-on-gen   {}  (/settings etch on|off)", if self.etch_on { "on" } else { "off" }),
+            "  — generate —".into(),
+            format!("  seed          {seed}  (/seed)"),
+            format!("  subseed       {subseed}  (/subseed)"),
+            format!("  steps · cfg   {steps} · {cfg:.1}  (/steps · /cfg)"),
         ]
     }
 
@@ -3213,6 +3344,18 @@ impl App {
             self.chat_settings(rest.trim());
             return;
         }
+        // `/subseed N [strength]` sets the variation-seed for the next generations (6.25.0 P1
+        // in the ui); `/subseed off` clears it. Blends a 2nd seed's init noise into `--seed`'s.
+        if let Some(rest) = text.strip_prefix("/subseed") {
+            self.chat_subseed(rest.trim());
+            return;
+        }
+        // `/region X0,Y0,X1,Y1[,w=][,feather=]:prompt` queues a regional-prompt box for the next
+        // fresh generate (6.25.0 P3 in the ui); `/region clear` empties · `/region list` shows.
+        if let Some(rest) = text.strip_prefix("/region") {
+            self.chat_region(rest.trim());
+            return;
+        }
         // `/preset save <name>` snapshots (model + LoRA stack + negative); `/preset` or
         // `/preset list` lists them; `/preset <name>` applies one. Palette entries apply too.
         if let Some(rest) = text.strip_prefix("/preset") {
@@ -3412,6 +3555,13 @@ impl App {
             Some((iw, ih)) => ((iw / 8 * 8).max(8), (ih / 8 * 8).max(8)),
             None => (nw, nh),
         };
+        // 6.25.0 P3: regional prompting only applies to a fresh txt2img (not refine / inpaint /
+        // img2img). Consume the pending regions here; a refine leaves them queued.
+        let regions = if !refine && init_image.is_none() && mask.is_none() {
+            std::mem::take(&mut self.pending_regions)
+        } else {
+            Vec::new()
+        };
         let (rx, cancel) = self.model_svc.generate(
             full_prompt,
             self.negative.clone(),
@@ -3420,12 +3570,15 @@ impl App {
             steps,
             guidance,
             seed,
+            self.subseed,
+            self.subseed_strength,
             out_dir,
             preview_every,
             init_image,
             strength,
             mask,
             enhancer,
+            regions,
         );
         self.active_gen = Some((rx, cancel));
         self.chat.status = ChatStatus::Generating { step: 0, total: steps as u32, refine };
@@ -3567,6 +3720,9 @@ impl App {
                 ("Ctrl-B / Ctrl-Y", "roll back / vary selected frame"),
                 ("Ctrl-Z / Ctrl-Shift-Z", "undo / redo (step through images)"),
                 ("Ctrl-F", "maximize the preview (hide transcript)"),
+                ("[a:b:0.4] · [a|b]", "prompt scheduling: swap at 40% · alternate per step"),
+                ("/subseed <N> [str] · Ctrl-Shift-Y", "variation-seed · soft-vary (subtle, not fresh)"),
+                ("/region X0,Y0,X1,Y1:prompt", "queue a regional box (next generate blends them)"),
                 ("/vary /scenario /preset", "fan out · grab recipe · presets"),
                 ("/relight <preset> · /faceswap <src>", "edit the latest frame (IC-Light · face-swap)"),
                 ("/etch · /upscale [2|4] · /remove-bg", "provenance · Lanczos upscale · cutout"),
@@ -3611,6 +3767,7 @@ impl App {
             ActiveScreen::Canvas => ("Canvas", &[
                 ("m", "outpaint mode"),
                 ("Enter", "rasterize mask → Chat"),
+                ("Ctrl-R", "painted box → Chat /region (regional prompt)"),
                 ("Shift-C", "clear mask"),
             ]),
             ActiveScreen::Naturalize => ("Naturalize", &[
@@ -4529,6 +4686,41 @@ mod tests {
         assert!(a.etch_on, "etch toggled on");
         a.handle_chat_submit("/settings etch off".into());
         assert!(!a.etch_on, "etch toggled off");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn subseed_and_region_commands_update_state() {
+        let root = std::env::temp_dir().join("plakat-ui-genlevers-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let ws = Workspace { root: root.clone(), config: WorkspaceConfig::default() };
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut a = App::new(ws, Picker::from_fontsize((8, 16)), Device::Cpu, test_handle(), rx);
+
+        // /subseed sets seed + strength; a lone seed defaults strength to 0.15; off clears.
+        a.handle_chat_submit("/subseed 99 0.2".into());
+        assert_eq!(a.subseed, Some(99));
+        assert!((a.subseed_strength - 0.2).abs() < 1e-6);
+        a.handle_chat_submit("/subseed 7".into());
+        assert_eq!(a.subseed, Some(7));
+        assert!((a.subseed_strength - 0.15).abs() < 1e-6);
+        a.handle_chat_submit("/subseed off".into());
+        assert_eq!(a.subseed, None);
+
+        // /region queues a parsed box; /region clear empties it; a bad spec doesn't queue.
+        a.handle_chat_submit("/region 0,0,0.5,1,w=1.3:a wolf".into());
+        assert_eq!(a.pending_regions.len(), 1);
+        assert!((a.pending_regions[0].weight - 1.3).abs() < 1e-6);
+        a.handle_chat_submit("/region nonsense".into());
+        assert_eq!(a.pending_regions.len(), 1, "a bad region isn't queued");
+        a.handle_chat_submit("/region clear".into());
+        assert!(a.pending_regions.is_empty());
+
+        // Canvas Ctrl-R bridge prefills the editor and jumps to Chat.
+        a.region_from_canvas([0.1, 0.2, 0.6, 0.9]);
+        assert_eq!(a.screen, ActiveScreen::Chat);
+        assert!(a.chat.editor.text().starts_with("/region 0.100,0.200,0.600,0.900:"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

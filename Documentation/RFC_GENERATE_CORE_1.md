@@ -47,6 +47,24 @@ before the first `:` so they never collide with colons the prompt itself carries
   the sd3 regional path picks up per-region feather for free). Tested:
   `region_parses_weight_and_feather_modifiers`, `bigger_feather_widens_the_soft_band`.
 
+## P4 — surfaced in `plakat ui` (same cut, no new tabs)
+All three levers reach the interactive TUI — Chat's gen path is `generate_hooked`, exactly where
+P1/P2 are wired, so scheduling already flows from the Chat prompt:
+- **Prompt scheduling** works from the Chat prompt as-is; discoverability added — F1 help + a live
+  **◆ scheduled** chip in the input title the moment `[a:b:f]`/`[a|b]` is typed.
+- **`/subseed <N> [strength]`** sets a sticky variation-seed for the next generations (`/subseed off`
+  clears); **Ctrl-Shift-Y soft-vary** fans subtle subseed variations of the current frame (same
+  composition, nudged) instead of fresh seeds. Threaded through `GenJob` → `GenRequest`.
+- **`/region X0,Y0,X1,Y1[,w=][,feather=]:prompt`** queues regional boxes (`/region list`/`clear`);
+  the next fresh generate runs the regional path (`GenJob.regions` → `generate_regional`, no
+  per-step preview). **Canvas Ctrl-R** turns the painted extent into a `/region …:` prefill in
+  Chat — paint a box, press Ctrl-R, type the region's prompt.
+- `/settings` now also reports the live seed / subseed / steps / cfg for the next generate.
+
+Tested: `subseed_and_region_commands_update_state`, `painted_bbox_hugs_the_painted_extent`,
+`ctrl_f_toggles_preview_maximize`, plus the parser suites. The heavy regional-in-ui path is
+implemented against the proven `generate_regional` and flagged for live validation.
+
 ## Honest limits
 - Subseed/scheduling are the txt2img-path levers; the flow-matching families (Flux/SD3/Sana) keep
   a single conditioning (scheduling there is a larger change). Subseed's slerp is family-agnostic

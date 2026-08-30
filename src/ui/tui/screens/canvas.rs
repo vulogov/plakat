@@ -57,6 +57,9 @@ pub enum CanvasAction {
     /// `M`-mode `Enter` — an outpaint job: a grey-padded base + a band mask. Chat
     /// continues over the enlarged `base`, inpainting the new (white) `mask` region.
     OutpaintReady { base: PathBuf, mask: PathBuf },
+    /// `R` (6.25.0) — the painted cells' bounding box, normalized `[x0,y0,x1,y1]`, to seed a
+    /// regional prompt in Chat (the App prefills `/region x0,y0,x1,y1:` for a prompt).
+    RegionToChat { bbox: [f32; 4] },
 }
 
 pub struct CanvasState {
@@ -149,6 +152,34 @@ impl CanvasState {
         r * self.cols + c
     }
 
+    /// The normalized `[x0,y0,x1,y1]` bounding box of the painted cells (6.25.0 — for the
+    /// regional-prompt bridge to Chat). `None` if nothing is painted. Cell `c` spans
+    /// `[c/cols, (c+1)/cols)`, so the box hugs the outer edges of the painted extent.
+    fn painted_bbox(&self) -> Option<[f32; 4]> {
+        let (mut min_c, mut min_r, mut max_c, mut max_r) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        let mut any = false;
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                if self.painted[self.at(r, c)] {
+                    any = true;
+                    min_c = min_c.min(c);
+                    min_r = min_r.min(r);
+                    max_c = max_c.max(c);
+                    max_r = max_r.max(r);
+                }
+            }
+        }
+        if !any {
+            return None;
+        }
+        Some([
+            min_c as f32 / self.cols as f32,
+            min_r as f32 / self.rows as f32,
+            (max_c + 1) as f32 / self.cols as f32,
+            (max_r + 1) as f32 / self.rows as f32,
+        ])
+    }
+
     /// Cycle to the next grid density (`g`): rebuild the (cleared) mask + clamp cursor.
     fn cycle_density(&mut self) {
         let cur = GRID_DENSITIES.iter().position(|&(c, r)| c == self.cols && r == self.rows).unwrap_or(0);
@@ -227,6 +258,20 @@ impl CanvasState {
             return CanvasAction::None;
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // Ctrl-R (6.25.0) — send the painted extent to Chat as a regional prompt box.
+        if ctrl && matches!(key.code, KeyCode::Char('r')) {
+            return match self.painted_bbox() {
+                Some(bbox) => {
+                    self.status = "region → Chat: type a prompt after /region … and Enter".into();
+                    CanvasAction::RegionToChat { bbox }
+                }
+                None => {
+                    self.status = "paint a region first, then Ctrl-R to send it to Chat".into();
+                    CanvasAction::None
+                }
+            };
+        }
         match key.code {
             // M — enter outpaint mode (extend the canvas instead of masking inside it).
             KeyCode::Char('m' | 'M') => {
@@ -524,6 +569,22 @@ mod tests {
         s.handle_key(shift(KeyCode::Right));
         assert_eq!((s.cr, s.cc), (0, 1));
         assert!(s.painted[s.at(0, 1)]);
+    }
+
+    #[test]
+    fn painted_bbox_hugs_the_painted_extent() {
+        let mut s = CanvasState::new(tmp("bbox"));
+        assert!(s.painted_bbox().is_none(), "nothing painted → None");
+        // Paint the top-left cell (cursor starts at 0,0).
+        s.handle_key(key(KeyCode::Char(' ')));
+        let b = s.painted_bbox().unwrap();
+        // A single cell (col 0, row 0) → box [0, 0, 1/cols, 1/rows].
+        assert!((b[0]).abs() < 1e-6 && (b[1]).abs() < 1e-6);
+        assert!((b[2] - 1.0 / s.cols as f32).abs() < 1e-6);
+        assert!((b[3] - 1.0 / s.rows as f32).abs() < 1e-6);
+        // Ctrl-R emits the region to Chat.
+        let a = s.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(matches!(a, CanvasAction::RegionToChat { .. }));
     }
 
     #[test]

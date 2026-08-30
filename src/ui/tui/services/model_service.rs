@@ -30,6 +30,9 @@ pub struct GenJob {
     pub steps: usize,
     pub guidance: f64,
     pub seed: u64,
+    /// 6.25.0 P1 — subseed / variation-seed (`/subseed` in Chat). `None` = off.
+    pub subseed: Option<u64>,
+    pub subseed_strength: f32,
     pub out_dir: PathBuf,
     pub preview_every: usize,
     /// `Some(path)` → conversational refinement: img2img over this image at
@@ -40,6 +43,10 @@ pub struct GenJob {
     pub mask: Option<PathBuf>,
     /// `Some(provider)` → AI-enhance the prompt (`/enhance`) before generating.
     pub enhance: Option<String>,
+    /// 6.25.0 P3 in the ui (`/region`): when non-empty, run regional prompting
+    /// (`generate_regional`) instead of the plain txt2img denoise. Each region's prompt
+    /// applies in its box, blended over the base prompt. No per-step preview in this path.
+    pub regions: Vec<crate::pipelines::tiled::RegionSpec>,
     pub tx: Sender<GenMessage>,
     pub cancel: CancelFlag,
 }
@@ -167,18 +174,22 @@ impl ModelService {
         steps: usize,
         guidance: f64,
         seed: u64,
+        subseed: Option<u64>,
+        subseed_strength: f32,
         out_dir: PathBuf,
         preview_every: usize,
         init_image: Option<PathBuf>,
         strength: f32,
         mask: Option<PathBuf>,
         enhance: Option<String>,
+        regions: Vec<crate::pipelines::tiled::RegionSpec>,
     ) -> (std::sync::mpsc::Receiver<GenMessage>, CancelFlag) {
         let (tx, rx) = std::sync::mpsc::channel();
         let cancel = CancelFlag::new();
         let job = GenJob {
-            prompt, negative, width, height, steps, guidance, seed, out_dir, preview_every,
-            init_image, strength, mask, enhance,
+            prompt, negative, width, height, steps, guidance, seed, subseed, subseed_strength,
+            out_dir, preview_every,
+            init_image, strength, mask, enhance, regions,
             tx, cancel: cancel.clone(),
         };
         let _ = self.cmd_tx.send(ModelCommand::Generate(job));
@@ -539,8 +550,8 @@ fn model_loop(
                     steps: job.steps,
                     guidance: job.guidance,
                     seed: Some(job.seed),
-                    subseed: None,
-                    subseed_strength: 0.0,
+                    subseed: job.subseed,
+                    subseed_strength: job.subseed_strength,
                     out_dir: job.out_dir.clone(),
                     scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
                     refine: None,
@@ -552,8 +563,15 @@ fn model_loop(
                     preview_size: None,
                     output_format: crate::imaging::io::OutputFormat::Png,
                 };
-                let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
-                let result = pipeline.generate_hooked(&req, &[], Some(&mut hook));
+                // 6.25.0 P3: regional prompting takes a distinct denoise path (base + per-region
+                // MultiDiffusion) with no per-step hook — the Chat status stays "Generating"
+                // until Done. Plain txt2img keeps the live preview hook.
+                let result = if job.regions.is_empty() {
+                    let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                    pipeline.generate_hooked(&req, &[], Some(&mut hook))
+                } else {
+                    pipeline.generate_regional(&req, &job.regions)
+                };
                 match result {
                     Ok(()) => {
                         let produced = job.out_dir.join(format!("plakat-{}.png", job.seed));
