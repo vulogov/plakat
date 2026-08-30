@@ -1,4 +1,4 @@
-# Advanced prompting — attention, BREAK, inline LoRAs
+# Advanced prompting — attention, BREAK, inline LoRAs, scheduling, regional, subseed
 
 The base `--prompt` flag covers the simple case: pass a sentence,
 get an image. Three additional features let you write the kind of
@@ -293,6 +293,64 @@ What happens, in order:
 8. **UNet denoise** — runs against the (now elaborated) cross-
    attention context.
 
+## 4a. Prompt scheduling + alternation *(6.25.0)*
+
+Change the prompt **during** the denoise — square-bracket syntax resolved *before* the
+attention parser, so it never collides with de-emphasis `[x]`:
+
+```bash
+# Start as a cat, become a tiger after 40% of the steps (composition set early, detail late)
+plakat generate "a [cat:tiger:0.4] in deep snow" --model sdxl --steps 30
+
+# when is an integer step OR a (0,1] fraction:
+#   [from:to:when]   swap from → to at `when`
+#   [to:when]        insert `to` after `when`     (empty from)
+#   [from::when]     remove `from` after `when`   (empty to)
+#   [a|b|c]          alternate every step: 0→a, 1→b, 2→c, 3→a …
+plakat generate "a [red|blue] sports car" --model sdxl
+```
+
+A **bare** `[blurry]` still means de-emphasis (the `1/1.1` bracket weight) — scheduling only
+fires on brackets with a top-level `:` (and a numeric `when`) or `|`. Each distinct per-step
+prompt is CLIP-encoded **once**; the loop just selects the right conditioning per step, so a
+schedule costs one extra encode per alternative, not one per step. Standard txt2img path
+(SD 1.5 / SDXL); not composed with `--tiled` / `--region` yet.
+
+## 4b. Regional prompting v2 — strength + feather *(6.25.0)*
+
+Paint different prompts into different boxes of one image. `--region` is repeatable; coords are
+`[0,1]` canvas fractions. 6.25.0 adds two optional per-region modifiers in the **coord section**
+(before the `:`, so they never clash with a prompt's own colons):
+
+```bash
+plakat generate "a fantasy landscape, dramatic light" --model sdxl --size 1024x1024 \
+  --region "0,0,0.5,1,w=1.3,feather=0.1:a towering snow wolf, thick fur (fur:1.2)" \
+  --region "0.5,0,1,1:a glowing crystal city"
+#   w= / weight=   region strength — higher dominates where regions overlap (default 1.0)
+#   f= / feather=  soft-edge width as a canvas fraction (default 0.05, max 0.5)
+```
+
+The base prompt fills everywhere the regions don't and supplies global coherence. `w=` biases
+the per-pixel blend toward a region; a larger `feather=` widens the soft blend into neighbours
+(smaller = crisper region joins). SD 1.5 / SDXL, native resolution; not composed with `--tiled`
+/ `--control*`.
+
+## 4c. Subseed — controlled variation *(6.25.0)*
+
+"The same image, nudged" — blend a **second** seed's init noise into `--seed`'s (spherical
+interpolation), instead of rolling a fully fresh seed:
+
+```bash
+# Lock the composition with --seed, then explore small variations with --subseed
+plakat generate "a lighthouse at dusk" --model sdxl --seed 42 --subseed 99 --subseed-strength 0.15
+#   --subseed-strength 0   → pure --seed (no variation, the default)
+#   ~0.05–0.2              → subtle nudge (pose/detail shift, same overall scene)
+#   1.0                    → the subseed's image
+```
+
+`--subseed` follows `--count` in lockstep with `--seed`, so `--count 4` gives a coherent family
+rather than four unrelated frames. Wired at the SD 1.5 / SDXL init.
+
 ## 5. Composition rules summary
 
 | Feature | SD 1.5/2.1 | SDXL | Flux | SD3 |
@@ -301,6 +359,9 @@ What happens, in order:
 | BREAK | ✓ | ✓ | strip+warn | strip+warn |
 | Inline `<lora:>` | ✓ | ✓ | ✓ (BF16+GGUF) | partial (no LoRA on candle's SD3 path yet) |
 | Wildcards `{a|b}` | ✓ | ✓ | ✓ | ✓ |
+| Scheduling `[a:b:0.4]` / `[a\|b]` *(6.25)* | ✓ | ✓ | — | — |
+| Regional `--region` + `w=`/`feather=` *(6.25)* | ✓ | ✓ | — | feather only |
+| Subseed `--subseed` *(6.25)* | ✓ | ✓ | — | — |
 
 ## 6. Where to next
 

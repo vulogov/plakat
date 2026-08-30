@@ -539,6 +539,8 @@ fn model_loop(
                     steps: job.steps,
                     guidance: job.guidance,
                     seed: Some(job.seed),
+                    subseed: None,
+                    subseed_strength: 0.0,
                     out_dir: job.out_dir.clone(),
                     scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
                     refine: None,

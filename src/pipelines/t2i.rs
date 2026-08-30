@@ -43,6 +43,10 @@ pub struct Request {
     pub steps: usize,
     pub guidance: f64,
     pub seed: Option<u64>,
+    /// 6.25.0 P1 — subseed / variation-seed (blended into `seed`'s init noise).
+    pub subseed: Option<u64>,
+    /// 6.25.0 P1 — blend fraction `[0,1]` toward `subseed`; `0` = off.
+    pub subseed_strength: f32,
     pub out_dir: PathBuf,
     pub device: Device,
     pub loras: Vec<LoraSpec>,
@@ -233,6 +237,8 @@ impl Request {
             steps,
             guidance: 7.5,
             seed,
+            subseed: None,
+            subseed_strength: 0.0,
             out_dir,
             device,
             loras: Vec::new(),
@@ -303,6 +309,16 @@ pub struct GenRequest {
     pub steps: usize,
     pub guidance: f64,
     pub seed: Option<u64>,
+    /// 6.25.0 P1 — **subseed / variation-seed**. When `Some`, the init noise is
+    /// slerp-blended toward this second seed's noise by [`Self::subseed_strength`],
+    /// giving controlled variation ("same image, nudged") instead of a fully fresh
+    /// seed. `None` (default) = classic single-seed init, byte-identical to before.
+    /// Follows `--count` like `seed` (both advance by the image index in lockstep).
+    pub subseed: Option<u64>,
+    /// 6.25.0 P1 — blend fraction `[0,1]` toward [`Self::subseed`]. `0` = pure base
+    /// seed (no-op); small values (~0.05–0.2) nudge composition; `1` = the subseed's
+    /// noise. Ignored when `subseed` is `None`.
+    pub subseed_strength: f32,
     pub out_dir: PathBuf,
     pub scheduler: SchedulerKind,
     pub refine: Option<usize>,
@@ -1420,6 +1436,31 @@ impl Pipeline {
         let (text_embeddings, pooled_text_sdxl) =
             self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
 
+        // 6.25.0 P2: prompt scheduling / alternation. When `req.prompt` carries `[a:b:when]`
+        // or `[a|b]` syntax, encode each DISTINCT per-step prompt once here and select the
+        // conditioning per step inside the denoise loop. `None` (the common case) → the single
+        // `text_embeddings` above is used unchanged, byte-identical to before. Applies to the
+        // standard txt2img path (base UNet); the negative is shared across all steps.
+        #[allow(clippy::type_complexity)]
+        let scheduled: Option<(Vec<(Tensor, Option<Tensor>)>, Vec<usize>)> =
+            if crate::prompt::scheduling::has_schedule(&req.prompt) {
+                let (prompts, idx_per_step) =
+                    crate::prompt::scheduling::schedule(&req.prompt, req.steps.max(1));
+                let mut encs = Vec::with_capacity(prompts.len());
+                for p in &prompts {
+                    encs.push(self.encode_prompt(p, &req.negative, do_cfg, req.clip_skip)?);
+                }
+                tracing::info!(
+                    target: "plakat",
+                    "prompt scheduling: {} distinct prompt(s) over {} steps",
+                    encs.len(),
+                    idx_per_step.len()
+                );
+                Some((encs, idx_per_step))
+            } else {
+                None
+            };
+
         // If the refiner is loaded AND the caller asked for it, prepare the
         // CLIP-G-only embeddings the refiner needs (different cross_attn_dim
         // means we can't reuse `text_embeddings`).
@@ -1525,6 +1566,18 @@ impl Pipeline {
                 Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
                     .to_dtype(self.core.dtype)?
             };
+            // 6.25.0 P1: subseed / variation-seed. Blend the base-seed noise toward a
+            // second seed's noise (slerp) for controlled variation. The subseed advances
+            // with the image index in lockstep with `seed`, so a `--count N` batch stays a
+            // coherent family. No-op when `subseed` is None or strength is 0.
+            if let (Some(sub), true) = (req.subseed, req.subseed_strength > 0.0) {
+                let sub_seed = sub + idx as u64;
+                let prepared_sub = crate::pipelines::seeds::prepare_seed(sub_seed, &self.core.device);
+                let _ = self.core.device.set_seed(prepared_sub);
+                let sub_noise = Tensor::randn(0f32, 1f32, (bsz, 4, latent_h, latent_w), &self.core.device)?
+                    .to_dtype(self.core.dtype)?;
+                latents = crate::pipelines::seeds::slerp_latents(req.subseed_strength, &latents, &sub_noise)?;
+            }
             // ETCH-1 L2 (6.7.0): write the Fourier-ring mark into z_T before the sigma scale (the codec
             // expects ~N(0,1) noise). No-op clone when `--etch`/L2 is off → byte-identical.
             latents = crate::etch::l2_embed_latent(&latents)?;
@@ -1551,8 +1604,18 @@ impl Pipeline {
             let total_steps = timesteps.len();
             for (step_i, &timestep) in timesteps.iter().enumerate() {
                 let in_base = step_i < switch;
+                // 6.25.0 P2: in the base pass, if prompt scheduling is active select this
+                // step's conditioning; else the single `text_embeddings`. Refiner steps keep
+                // the refiner's own embeddings (scheduling covers the base UNet).
+                let sched_slot = scheduled
+                    .as_ref()
+                    .map(|(encs, idx)| &encs[idx[step_i.min(idx.len().saturating_sub(1))]]);
                 let (unet_ref, embeds, tag) = if in_base {
-                    (&self.core.unet, &text_embeddings, "base")
+                    let e = match sched_slot {
+                        Some((emb, _)) => emb,
+                        None => &text_embeddings,
+                    };
+                    (&self.core.unet, e, "base")
                 } else {
                     (
                         self.refiner_unet.as_ref().unwrap(),
@@ -1566,7 +1629,11 @@ impl Pipeline {
                 // floats with aesthetic_score. Both passes hit the
                 // SdxlUNet::Sdxl path so both require pooled + time_ids.
                 let (sdxl_pooled, sdxl_time_ids) = if in_base {
-                    (pooled_text_sdxl.as_ref(), add_time_ids_base.as_ref())
+                    let pooled = match sched_slot {
+                        Some((_, pooled)) => pooled.as_ref(),
+                        None => pooled_text_sdxl.as_ref(),
+                    };
+                    (pooled, add_time_ids_base.as_ref())
                 } else {
                     (pooled_text_sdxl.as_ref(), add_time_ids_refiner.as_ref())
                 };
@@ -2127,14 +2194,18 @@ impl Pipeline {
         // Encode the base prompt + each region prompt; build region masks.
         let (base_emb, base_pooled) =
             self.encode_prompt(&req.prompt, &req.negative, do_cfg, req.clip_skip)?;
-        let mut prompts: Vec<(Tensor, Option<Tensor>, Tensor)> = Vec::new();
+        // Each entry: (positive emb, pooled, geometric mask, per-region weight).
+        let mut prompts: Vec<(Tensor, Option<Tensor>, Tensor, f32)> = Vec::new();
         let mut covered = Tensor::zeros((1usize, 1, lh, lw), dtype, &device)?;
         for r in regions {
             let (emb, pooled) =
                 self.encode_prompt(&r.prompt, &req.negative, do_cfg, req.clip_skip)?;
-            let mask = region_mask(r.bbox, lh, lw, &device, dtype)?;
+            // 6.25.0 P3: per-region feather (soft-edge width). `covered` uses the raw
+            // geometric mask so the base still fills exactly the uncovered area regardless
+            // of a region's blend weight.
+            let mask = region_mask(r.bbox, lh, lw, &device, dtype, r.feather)?;
             covered = (covered + &mask)?;
-            prompts.push((emb, pooled, mask));
+            prompts.push((emb, pooled, mask, r.weight.max(0.0)));
         }
         // Base covers everywhere the regions don't (and gives global coherence).
         let ones = Tensor::ones((1usize, 1, lh, lw), dtype, &device)?;
@@ -2227,10 +2298,17 @@ impl Pipeline {
                 let base_pred = predict(&base_emb, &base_pooled)?;
                 let mut acc = base_pred.broadcast_mul(&base_mask)?;
                 let mut weights = base_mask.clone();
-                for (emb, pooled, mask) in &prompts {
+                for (emb, pooled, mask, weight) in &prompts {
                     let rp = predict(emb, pooled)?;
-                    acc = (acc + rp.broadcast_mul(mask)?)?;
-                    weights = (weights + mask)?;
+                    // 6.25.0 P3: scale this region's blend mask by its weight so a stronger
+                    // region dominates where masks overlap (weight 1.0 = pre-6.25 behaviour).
+                    let wmask = if (*weight - 1.0).abs() > f32::EPSILON {
+                        (mask * *weight as f64)?
+                    } else {
+                        mask.clone()
+                    };
+                    acc = (acc + rp.broadcast_mul(&wmask)?)?;
+                    weights = (weights + &wmask)?;
                     // Bound peak memory: finish each region's pass before the next.
                     acc.device().synchronize()?;
                 }
@@ -3337,6 +3415,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         steps: req.steps,
         guidance: req.guidance,
         seed: req.seed,
+        subseed: req.subseed,
+        subseed_strength: req.subseed_strength,
         out_dir: req.out_dir,
         scheduler: req.scheduler,
         refine: req.refine,

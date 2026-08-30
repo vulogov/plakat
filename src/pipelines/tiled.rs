@@ -312,23 +312,60 @@ mod tests {
 pub struct RegionSpec {
     pub bbox: [f32; 4],
     pub prompt: String,
+    /// 6.25.0 P3 — per-region **strength**: scales this region's contribution in the
+    /// per-pixel blend, so a higher-weight region dominates where masks overlap. `1.0` =
+    /// neutral (the pre-6.25 behaviour). Parsed from a `w=`/`weight=` modifier.
+    pub weight: f32,
+    /// 6.25.0 P3 — per-region **feather**: soft-edge ramp width as a canvas fraction. Larger
+    /// = softer blend into neighbours. Defaults to [`DEFAULT_REGION_FEATHER`]. `f=`/`feather=`.
+    pub feather: f32,
 }
 
+/// Default soft-edge ramp for a region mask (canvas fraction) — the pre-6.25 constant.
+pub const DEFAULT_REGION_FEATHER: f32 = 0.05;
+
 impl RegionSpec {
-    /// Parse `"x0,y0,x1,y1:prompt"` (coords are `[0,1]` canvas fractions).
+    /// Parse `"x0,y0,x1,y1[,w=W][,feather=F]:prompt"` (coords are `[0,1]` canvas fractions).
+    /// The section before the first `:` is comma-separated: the first four numbers are the
+    /// bbox, any trailing `key=value` tokens are per-region modifiers (`w`/`weight`,
+    /// `f`/`feather`). Putting modifiers in the coord section keeps them clear of colons the
+    /// prompt itself may contain (e.g. `(word:1.2)` weights).
     pub fn parse(s: &str) -> Result<Self> {
         let (coords, prompt) = s
             .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("region {s:?}: expected \"x0,y0,x1,y1:prompt\""))?;
-        let v: Vec<f32> = coords
-            .split(',')
-            .map(|p| p.trim().parse::<f32>())
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|_| anyhow::anyhow!("region {s:?}: coords must be 4 numbers in [0,1]"))?;
-        if v.len() != 4 {
-            anyhow::bail!("region {s:?}: expected 4 coords x0,y0,x1,y1, got {}", v.len());
+        let mut nums: Vec<f32> = Vec::new();
+        let mut weight = 1.0f32;
+        let mut feather = DEFAULT_REGION_FEATHER;
+        for tok in coords.split(',') {
+            let tok = tok.trim();
+            if tok.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = tok.split_once('=') {
+                let val: f32 = v.trim().parse().map_err(|_| {
+                    anyhow::anyhow!("region {s:?}: modifier {tok:?} needs a number")
+                })?;
+                match k.trim().to_lowercase().as_str() {
+                    "w" | "weight" => weight = val.max(0.0),
+                    "f" | "feather" => feather = val.clamp(0.0, 0.5),
+                    other => anyhow::bail!("region {s:?}: unknown modifier {other:?} (use w= / feather=)"),
+                }
+            } else {
+                nums.push(tok.parse::<f32>().map_err(|_| {
+                    anyhow::anyhow!("region {s:?}: coords must be 4 numbers in [0,1]")
+                })?);
+            }
         }
-        let (x0, y0, x1, y1) = (v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3]));
+        if nums.len() != 4 {
+            anyhow::bail!("region {s:?}: expected 4 coords x0,y0,x1,y1, got {}", nums.len());
+        }
+        let (x0, y0, x1, y1) = (
+            nums[0].min(nums[2]),
+            nums[1].min(nums[3]),
+            nums[0].max(nums[2]),
+            nums[1].max(nums[3]),
+        );
         let prompt = prompt.trim();
         if prompt.is_empty() {
             anyhow::bail!("region {s:?}: empty prompt");
@@ -341,6 +378,8 @@ impl RegionSpec {
                 y1.clamp(0.0, 1.0),
             ],
             prompt: prompt.to_string(),
+            weight,
+            feather,
         })
     }
 }
@@ -353,13 +392,14 @@ pub fn region_mask(
     lw: usize,
     device: &Device,
     dtype: DType,
+    feather: f32,
 ) -> Result<Tensor> {
     let [x0, y0, x1, y1] = bbox;
-    // Soft edge: the mask ramps 0→1 across ~`FEATHER` of the canvas, centered on
+    // Soft edge: the mask ramps 0→1 across ~`feather` of the canvas, centered on
     // the bbox boundary (signed distance to the nearest edge, corner-aware), so
-    // neighbouring regions blend instead of seaming. Hard masks left visible
-    // joins between regions.
-    const FEATHER: f32 = 0.05;
+    // neighbouring regions blend instead of seaming. Hard masks leave visible
+    // joins between regions. 6.25.0 P3 makes `feather` per-region (was a constant).
+    let feather = feather.max(1e-3); // avoid divide-by-zero → hard mask limit
     let mut data = vec![0f32; lh * lw];
     for i in 0..lh {
         let cy = (i as f32 + 0.5) / lh as f32;
@@ -368,7 +408,7 @@ pub fn region_mask(
             let cx = (j as f32 + 0.5) / lw as f32;
             let sx = (cx - x0).min(x1 - cx); // +inside, −outside (x)
             let s = sx.min(sy); // signed distance to the nearest box edge
-            data[i * lw + j] = (s / FEATHER + 0.5).clamp(0.0, 1.0);
+            data[i * lw + j] = (s / feather + 0.5).clamp(0.0, 1.0);
         }
     }
     Ok(Tensor::from_vec(data, (1, 1, lh, lw), device)?.to_dtype(dtype)?)
@@ -410,8 +450,37 @@ mod regional_tests {
     }
 
     #[test]
+    fn region_parses_weight_and_feather_modifiers() {
+        // 6.25.0 P3: w= / feather= in the coord section; defaults otherwise.
+        let plain = RegionSpec::parse("0,0,0.5,1:a wolf").unwrap();
+        assert_eq!(plain.weight, 1.0);
+        assert_eq!(plain.feather, DEFAULT_REGION_FEATHER);
+
+        let r = RegionSpec::parse("0,0,0.5,1,w=1.3,feather=0.1:a wolf (fur:1.2)").unwrap();
+        assert_eq!(r.bbox, [0.0, 0.0, 0.5, 1.0]);
+        assert!((r.weight - 1.3).abs() < 1e-6);
+        assert!((r.feather - 0.1).abs() < 1e-6);
+        // The prompt keeps its own colon-bearing weight syntax intact.
+        assert_eq!(r.prompt, "a wolf (fur:1.2)");
+
+        // Short aliases + feather clamp (≤0.5).
+        let s = RegionSpec::parse("0,0,1,1,f=0.9:x").unwrap();
+        assert_eq!(s.feather, 0.5);
+        // Unknown modifier errors.
+        assert!(RegionSpec::parse("0,0,1,1,zzz=2:x").is_err());
+    }
+
+    #[test]
+    fn bigger_feather_widens_the_soft_band() {
+        let narrow = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32, 0.05).unwrap();
+        let wide = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32, 0.2).unwrap();
+        let soft = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap().iter().filter(|&&x| x > 0.05 && x < 0.95).count();
+        assert!(soft(&wide) > soft(&narrow), "larger feather → more partial-value pixels");
+    }
+
+    #[test]
     fn region_mask_left_half() {
-        let m = region_mask([0.0, 0.0, 0.5, 1.0], 4, 4, &Device::Cpu, DType::F32).unwrap();
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 4, 4, &Device::Cpu, DType::F32, DEFAULT_REGION_FEATHER).unwrap();
         let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
         // 4×4: columns 0,1 (centers 0.125,0.375 < 0.5) inside; cols 2,3 outside.
         for row in 0..4 {
@@ -426,7 +495,7 @@ mod regional_tests {
     fn region_mask_feathers_at_edge() {
         // 40-wide row, box [0,0,0.5,1]: columns straddling x=0.5 are PARTIAL
         // (soft falloff), not a hard 0/1 cut.
-        let m = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32).unwrap();
+        let m = region_mask([0.0, 0.0, 0.5, 1.0], 1, 40, &Device::Cpu, DType::F32, DEFAULT_REGION_FEATHER).unwrap();
         let v: Vec<f32> = m.flatten_all().unwrap().to_vec1().unwrap();
         let soft = v.iter().filter(|&&x| x > 0.05 && x < 0.95).count();
         assert!(soft >= 1, "expected soft (partial) values near the edge, got {soft}");

@@ -4352,6 +4352,8 @@ pub async fn run_with_events(
                 steps: eff_steps,
                 guidance: eff_guidance,
                 seed: Some(task_seed),
+                subseed: None,
+                subseed_strength: 0.0,
                 out_dir: task_out.clone(),
                 scheduler: eff_scheduler,
                 refine: eff_refine,

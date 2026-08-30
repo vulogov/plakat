@@ -534,6 +534,8 @@ fn build_t2i_gen_request(
         steps: ctx.config.steps,
         guidance: ctx.config.guidance,
         seed: ctx.config.seed,
+        subseed: None,
+        subseed_strength: 0.0,
         out_dir,
         scheduler: ctx.config.scheduler,
         refine: ctx.config.refine_steps,

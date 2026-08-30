@@ -228,6 +228,8 @@ async fn run_txt2img_pass(spec: &FractalSpec, base_png: &Path, out: &Path, devic
         steps: ai.steps as usize,
         guidance: ai.guidance,
         seed: Some(spec.seed),
+        subseed: None,
+        subseed_strength: 0.0,
         out_dir: scratch.path().to_path_buf(),
         device,
         loras: inp.loras,

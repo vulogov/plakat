@@ -140,6 +140,8 @@ async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>
                 steps: spec.steps,
                 guidance: spec.guidance,
                 seed: Some(0),
+                subseed: None,
+                subseed_strength: 0.0,
                 out_dir: tmp.clone(),
                 scheduler: crate::pipelines::scheduler::SchedulerKind::Ddim,
                 refine: None,

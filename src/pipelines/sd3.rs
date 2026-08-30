@@ -1024,7 +1024,7 @@ impl Pipeline {
             region_data.push((
                 Tensor::cat(&[&neg_y, &py], 0)?,
                 Tensor::cat(&[&neg_ctx, &pctx], 0)?,
-                crate::pipelines::tiled::region_mask(r.bbox, lat_h, lat_w, &self.device, self.dtype)?,
+                crate::pipelines::tiled::region_mask(r.bbox, lat_h, lat_w, &self.device, self.dtype, r.feather)?,
             ));
         }
         let region_base_mask = if region_data.is_empty() {

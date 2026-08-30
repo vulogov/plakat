@@ -195,6 +195,8 @@ pub async fn run(args: BenchArgs) -> Result<()> {
                     steps: args.steps,
                     guidance: args.guidance,
                     seed: Some(42),
+                    subseed: None,
+                    subseed_strength: 0.0,
                     out_dir: tmp.clone(),
                     scheduler: SchedulerKind::default(),
                     refine: None,

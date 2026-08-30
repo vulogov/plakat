@@ -44,9 +44,80 @@ fn splitmix64_to_u32(seed: u64) -> u32 {
     (z & 0xFFFF_FFFF) as u32
 }
 
+/// Spherically interpolate (**slerp**) between two init-noise latents for the
+/// **subseed / variation-seed** feature (6.25.0 P1). `strength` in `[0,1]`: `0`
+/// returns `base` unchanged, `1` returns `sub`. Slerp (not lerp) keeps the blended
+/// tensor on the ~N(0,1) hypersphere the sampler expects, so a small strength nudges
+/// the composition without washing out contrast — the A1111 `--subseed` behaviour.
+///
+/// The math runs on the flattened f32 vectors (init noise is tiny — e.g. 4·64·64 =
+/// 16 K floats — so a CPU round-trip is free and dodges Metal reduction quirks). Falls
+/// back to a plain lerp when the two vectors are nearly (anti)parallel (`sin(omega)→0`),
+/// which is where slerp is numerically unstable.
+pub fn slerp_latents(
+    strength: f32,
+    base: &candle_core::Tensor,
+    sub: &candle_core::Tensor,
+) -> candle_core::Result<candle_core::Tensor> {
+    let t = strength.clamp(0.0, 1.0);
+    if t <= f32::EPSILON {
+        return Ok(base.clone());
+    }
+    let shape = base.shape().clone();
+    let dtype = base.dtype();
+    let device = base.device().clone();
+    let a = base.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let b = sub.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let out = slerp_vecs(t, &a, &b);
+    candle_core::Tensor::from_vec(out, shape, &device)?.to_dtype(dtype)
+}
+
+/// Element-shared slerp over two equal-length vectors (the numeric core of
+/// [`slerp_latents`], split out so it's unit-testable without a device).
+fn slerp_vecs(t: f32, a: &[f32], b: &[f32]) -> Vec<f32> {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    // Cosine of the angle between the two noise vectors.
+    let cos = if na > 0.0 && nb > 0.0 { (dot / (na * nb)).clamp(-1.0, 1.0) } else { 0.0 };
+    let omega = cos.acos();
+    let sin = omega.sin();
+    // Near-(anti)parallel → slerp is unstable; lerp is the correct limit.
+    if sin.abs() < 1e-4 {
+        return a.iter().zip(b).map(|(x, y)| x * (1.0 - t) + y * t).collect();
+    }
+    let wa = ((1.0 - t) * omega).sin() / sin;
+    let wb = (t * omega).sin() / sin;
+    a.iter().zip(b).map(|(x, y)| x * wa + y * wb).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slerp_endpoints_and_symmetry() {
+        let a = vec![1.0f32, 0.0, 0.5, -0.3, 0.8];
+        let b = vec![0.0f32, 1.0, -0.2, 0.4, 0.1];
+        // strength 0 → base; strength 1 → sub (within fp tolerance).
+        let z = slerp_vecs(0.0, &a, &b);
+        assert!(z.iter().zip(&a).all(|(x, y)| (x - y).abs() < 1e-5));
+        let one = slerp_vecs(1.0, &a, &b);
+        assert!(one.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-4));
+        // midpoint is between the two, not equal to either endpoint.
+        let mid = slerp_vecs(0.5, &a, &b);
+        assert!(mid.iter().zip(&a).any(|(x, y)| (x - y).abs() > 1e-3));
+    }
+
+    #[test]
+    fn slerp_parallel_falls_back_to_lerp() {
+        // b = 2·a → exactly parallel; slerp would divide by sin(0). Lerp fallback.
+        let a = vec![0.2f32, -0.4, 0.6];
+        let b: Vec<f32> = a.iter().map(|x| x * 2.0).collect();
+        let mid = slerp_vecs(0.5, &a, &b);
+        let expect: Vec<f32> = a.iter().zip(&b).map(|(x, y)| (x + y) * 0.5).collect();
+        assert!(mid.iter().zip(&expect).all(|(x, y)| (x - y).abs() < 1e-5));
+    }
 
     #[test]
     fn cpu_passthrough_low_seed() {

@@ -198,6 +198,19 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Model & sampler", long)]
     pub seed: Option<u64>,
 
+    /// **Subseed / variation-seed** (6.25.0). A second seed whose init noise is
+    /// slerp-blended into `--seed`'s, for *controlled* variation — "the same image,
+    /// nudged" — rather than a fully fresh seed. Set the blend with
+    /// `--subseed-strength`. Follows `--count` like `--seed`. SD 1.5 / SDXL.
+    #[arg(help_heading = "Model & sampler", long = "subseed", value_name = "N")]
+    pub subseed: Option<u64>,
+
+    /// Blend fraction `[0,1]` toward `--subseed`. `0` = no variation (pure `--seed`);
+    /// `~0.05–0.2` nudges composition; `1` = the subseed's noise. Ignored without
+    /// `--subseed`. Default `0`.
+    #[arg(help_heading = "Model & sampler", long = "subseed-strength", default_value_t = 0.0, value_name = "F")]
+    pub subseed_strength: f32,
+
     /// Optional prompt enhancer: deepseek | gemini | local |
     /// local:<alias> | auto.
     #[arg(help_heading = "Prompt & text", long)]
@@ -467,10 +480,12 @@ pub struct GenerateArgs {
     #[arg(help_heading = "ControlNet & regional", long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
-    /// Regional prompting: a prompted region `"X0,Y0,X1,Y1:prompt"` (coords are
-    /// `[0,1]` canvas fractions). Repeatable — each region's prompt applies in
-    /// its box, blended over the main prompt for one coherent image. SD 1.5 /
-    /// SDXL, native resolution. Not composed with `--tiled` / `--control*`.
+    /// Regional prompting: a prompted region `"X0,Y0,X1,Y1[,w=W][,feather=F]:prompt"`
+    /// (coords are `[0,1]` canvas fractions). Repeatable — each region's prompt applies
+    /// in its box, blended over the main prompt for one coherent image. Optional per-region
+    /// modifiers in the coord section: `w=` strength (higher dominates overlaps; default 1.0)
+    /// and `feather=` soft-edge width (default 0.05, max 0.5). SD 1.5 / SDXL, native
+    /// resolution. Not composed with `--tiled` / `--control*`.
     #[arg(help_heading = "ControlNet & regional", long = "region", value_name = "X0,Y0,X1,Y1:PROMPT")]
     pub region: Vec<String>,
 
@@ -1464,6 +1479,8 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         steps: args.steps,
         guidance: args.guidance,
         seed,
+        subseed: args.subseed,
+        subseed_strength: args.subseed_strength,
         out_dir: args.out,
         device: device.clone(),
         loras: args.loras,
@@ -2121,6 +2138,8 @@ mod tests {
             negative: String::new(),
             negative_preset: None,
             seed: None,
+            subseed: None,
+            subseed_strength: 0.0,
             enhance: None,
             enhance_system: None,
             enhance_temp: None,

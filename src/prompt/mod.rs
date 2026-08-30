@@ -8,6 +8,7 @@ pub mod gemini;
 pub mod vision;
 pub mod lora_tags;
 pub mod negative_presets;
+pub mod scheduling;
 pub mod weighted_encoding;
 pub mod wildcards;
 

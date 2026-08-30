@@ -302,7 +302,7 @@ pub async fn run(req: MultipersonRequest) -> Result<()> {
         //    so the identity isn't diluted across the crowd.
         for r in &resolved {
             let p = &req.people[r.idx];
-            let mask = crate::pipelines::tiled::region_mask(r.bbox, lh, lw, &req.device, dtype)?;
+            let mask = crate::pipelines::tiled::region_mask(r.bbox, lh, lw, &req.device, dtype, crate::pipelines::tiled::DEFAULT_REGION_FEATHER)?;
             let region_prompt = mp.single_region_prompt(p.prompt.as_deref(), r.facing_phrase);
             let preq = mk_req(
                 region_prompt,
@@ -766,7 +766,7 @@ where
             ));
             continue;
         };
-        let mask = crate::pipelines::tiled::region_mask(face_bbox, lh, lw, &req.device, dtype)?;
+        let mask = crate::pipelines::tiled::region_mask(face_bbox, lh, lw, &req.device, dtype, crate::pipelines::tiled::DEFAULT_REGION_FEATHER)?;
         let prompt = mp.face_region_prompt(r.facing_phrase);
         let preq = mk_req(
             prompt,
