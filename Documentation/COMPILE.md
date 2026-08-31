@@ -58,7 +58,7 @@ model: sdxl
 |---|---|---|
 | `header:` | concatenate | prepended to the prompt (joined with `, `; empty value resets the inherited global) |
 | `footer:` | concatenate | appended to the prompt |
-| `negative:` | concatenate | seed terms guaranteed in the generated negative |
+| `negative:` | concatenate | seed terms **guaranteed** in the generated negative — the auto-negative must contain them verbatim, or it's rejected and your seed terms are used as-is (so a weak model can't replace your explicit negative with a bad one) |
 | `style:` | concatenate | injected into the LLM **system** prompt (shapes *how* it writes) |
 | `translate:` | last-wins | pre-translate the body from this language to English (LLM) |
 | `persona:` | concatenate | inject `~/.config/plakat/personas/<name>` into the system prompt |

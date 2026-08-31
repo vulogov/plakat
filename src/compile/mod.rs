@@ -226,13 +226,33 @@ async fn compile_one_scene(
         scene.negative_seeds.clone()
     } else {
         let nsys = assembler::negative_system(scene);
-        cached_call(&opts.provider, &nsys, &prompt, cache::NEGATIVE, opts.cache, eargs)
+        let llm = cached_call(&opts.provider, &nsys, &prompt, cache::NEGATIVE, opts.cache, eargs)
             .await
-            .map(|n| assembler::clean(&n))
-            .unwrap_or_else(|| scene.negative_seeds.clone())
+            .map(|n| assembler::clean(&n));
+        // Enforce the seed contract: `negative_system` tells the model the user's explicit
+        // `negative:` terms MUST appear verbatim. A weak model sometimes ignores that and returns
+        // a paraphrased *positive* instead (which, as a negative, would actively suppress the very
+        // scene we want). When the output drops the user's seeds, distrust it entirely and fall
+        // back to the seeds — never let a rogue auto-negative override an explicit `negative:`.
+        match llm {
+            Some(neg) if negative_honors_seeds(&neg, &scene.negative_seeds) => neg,
+            _ => scene.negative_seeds.clone(),
+        }
     };
 
     emitter::CompiledScene { scene: scene.clone(), prompt, negative }
+}
+
+/// Whether an LLM-generated negative honours the user's explicit `negative:` seed terms — each
+/// comma-separated term must appear (case-insensitively) in the output. Empty seeds means the user
+/// gave no negative, so there's no contract to enforce and the LLM output is always accepted.
+fn negative_honors_seeds(neg: &str, seeds: &str) -> bool {
+    let neg_l = neg.to_lowercase();
+    seeds
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .all(|t| neg_l.contains(&t.to_lowercase()))
 }
 
 /// One provider call, optionally cached. Returns the trimmed output, or None on
@@ -393,6 +413,22 @@ pub fn classify_model(name: &str) -> ModelFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn negative_seed_contract_rejects_a_rogue_llm_negative() {
+        let seeds = "blurry, low quality, watermark, bad anatomy, extra limbs";
+        // The reported bug: the model returned a paraphrased POSITIVE as the negative —
+        // none of the seed terms present → contract violated → must be rejected (→ fall back).
+        let rogue = "A sunlit medieval street, timber-framed houses with stained glass and blue roofs";
+        assert!(!negative_honors_seeds(rogue, seeds));
+        // A cooperative negative that keeps the seeds (any case) + adds terms → accepted.
+        let good = "Blurry, low quality, watermark, bad anatomy, extra limbs, jpeg artifacts, deformed hands";
+        assert!(negative_honors_seeds(good, seeds));
+        // Dropping even one required term fails the contract.
+        assert!(!negative_honors_seeds("blurry, low quality, watermark, extra limbs", seeds));
+        // No explicit negative → no contract → any LLM output is accepted.
+        assert!(negative_honors_seeds("anything at all", ""));
+    }
 
     #[test]
     fn lint_flags_duplicate_task_names_and_repeats() {
