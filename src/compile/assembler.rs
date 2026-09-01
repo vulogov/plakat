@@ -49,6 +49,10 @@ their stated variety, e.g. men, women, and children of different ages), objects,
 and colours. Never collapse a described group of people into a single word, and never silently \
 drop an element. If the description is richer than the model's token budget, TIGHTEN the wording \
 (drop function words, merge into keyword clusters) so everything fits — do NOT omit content.\n\
+- When the description includes living subjects (people, animals), name them CONCRETELY (e.g. \
+'men, women and children walking', not the vague 'townsfolk') and place them near the FRONT of \
+the prompt, ahead of the scenery — models drop subjects that are vague or buried after a long \
+environment description.\n\
 - Honour the STYLE DIRECTION exactly as given — render in the style the user asked for and do \
 NOT substitute a different style or medium. Carry the user's style words into the prompt and put \
 them up front so they anchor the image. If no style is given, do not invent one.\n\
