@@ -25,10 +25,18 @@ pub fn clean(s: &str) -> String {
     out
 }
 
-/// The positive *user* text from an explicit body (possibly a translation):
-/// header, body, footer — comma-joined and cleaned.
+/// The positive *user* text from an explicit body (possibly a translation): header, the resolved
+/// `composition:` (reusable components), the body prose, then footer — comma-joined and cleaned.
+/// 6.26.x extends the old header+body+footer order by inserting the composition BEFORE the prose
+/// (compose, then prose); everything else (header/footer/persona/style) is unchanged.
 pub fn assemble_with_body(scene: &ResolvedScene, body: &str) -> String {
-    let joined = [scene.header.as_str(), body.trim(), scene.footer.as_str()].join(", ");
+    let joined = [
+        scene.header.as_str(),
+        scene.composition_text.as_str(),
+        body.trim(),
+        scene.footer.as_str(),
+    ]
+    .join(", ");
     clean(&joined)
 }
 

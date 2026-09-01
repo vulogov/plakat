@@ -39,6 +39,9 @@ pub struct ResolvedScene {
     // prompt shaping (LLM inputs)
     pub header: String,
     pub footer: String,
+    /// 6.26.x: the resolved `composition:` — referenced `component.<name>` fragments joined in
+    /// order. Assembled BEFORE the free-text prose (compose, then prose). Empty when no composition.
+    pub composition_text: String,
     pub free_text: String,
     pub styles: Vec<String>,
     pub personas: Vec<String>,
@@ -181,10 +184,56 @@ fn auto_name(free_text: &str, idx: usize) -> String {
     slug_from_text(free_text).unwrap_or_else(|| format!("scene_{}", idx + 1))
 }
 
+/// Resolve a scene's `composition:` into a single prompt fragment: each comma-separated reference
+/// (`component.<name>` or a bare `<name>`) is looked up in the global `components` map and joined in
+/// order. An unknown reference is a hard error with the available names (6.26.x).
+fn resolve_composition(
+    s: &crate::compile::parser::Block,
+    components: &std::collections::HashMap<String, String>,
+) -> Result<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for line in s.values("composition") {
+        for raw in line.split(',') {
+            let r = raw.trim();
+            if r.is_empty() {
+                continue;
+            }
+            let name = r.strip_prefix("component.").unwrap_or(r).trim();
+            match components.get(name) {
+                Some(text) => parts.push(text.trim().to_string()),
+                None => {
+                    let mut avail: Vec<&str> = components.keys().map(String::as_str).collect();
+                    avail.sort_unstable();
+                    let known = if avail.is_empty() {
+                        "no components are defined".to_string()
+                    } else {
+                        format!("defined components: {}", avail.join(", "))
+                    };
+                    anyhow::bail!(
+                        "composition references unknown component `{r}` — define it in the global block \
+                         as `component.{name}: …` ({known})"
+                    );
+                }
+            }
+        }
+    }
+    Ok(parts.join(", "))
+}
+
 /// Resolve the document. `default_model` is the `--model` CLI fallback (used for
 /// family classification when neither scene nor global names a model).
 pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
     let g = doc.global.as_ref();
+
+    // 6.26.x: reusable prompt components defined in the global block as `component.<name>: text`.
+    let components: std::collections::HashMap<String, String> = g
+        .map(|b| {
+            b.commands
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix("component.").map(|name| (name.to_string(), v.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let g_model = last_wins(&[], &vals(g, "model")).map(str::to_string);
     let globals = ResolvedGlobals {
@@ -208,12 +257,16 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         let family = classify_model(model_for_family.as_deref().unwrap_or(default_model));
         let explicit_name = last_wins(&[], &vals(Some(s), "name")).map(str::to_string);
         let name_auto = explicit_name.is_none();
-        let name = explicit_name.unwrap_or_else(|| auto_name(&free_text, i));
+        let composition_text = resolve_composition(s, &components)?;
+        // A composition can name the scene too (when there's no prose and no explicit name).
+        let name_seed = if free_text.trim().is_empty() { composition_text.as_str() } else { free_text.as_str() };
+        let name = explicit_name.unwrap_or_else(|| auto_name(name_seed, i));
         let skip = matches!(last_wins(&[], &vals(Some(s), "skip")), Some("true" | "yes" | "1"));
 
         scenes.push(ResolvedScene {
             name,
             name_auto,
+            composition_text,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),
@@ -309,6 +362,34 @@ mod tests {
     fn auto_names_from_first_words() {
         let r = resolve_str("A vast frozen tundra stretching to the far horizon.\n");
         assert_eq!(r.scenes[0].name, "a_vast_frozen_tundra_stretching_to");
+    }
+
+    #[test]
+    fn components_resolve_and_compose_before_prose() {
+        // Global components + a per-scene composition, then prose (compose, then prose).
+        let r = resolve_str(
+            "component.stall: Market stall with fruit\ncomponent.sky: bright clear sky\n\ncomposition: component.stall, component.sky\nA cat asleep on the awning.\n",
+        );
+        let sc = &r.scenes[0];
+        assert_eq!(sc.composition_text, "Market stall with fruit, bright clear sky");
+        // The assembled prompt is composition, then the prose.
+        let asm = crate::compile::assembler::assemble_input(sc);
+        assert_eq!(asm, "Market stall with fruit, bright clear sky, A cat asleep on the awning.");
+    }
+
+    #[test]
+    fn composition_only_block_is_valid_and_bare_refs_work() {
+        // No prose — the composition IS the prompt; bare names (no `component.` prefix) also resolve.
+        let r = resolve_str("component.stall: Market stall\ncomponent.crowd: a busy crowd\n\ncomposition: stall, crowd\n");
+        assert_eq!(r.scenes[0].composition_text, "Market stall, a busy crowd");
+    }
+
+    #[test]
+    fn unknown_component_reference_errors_with_available_names() {
+        let doc = parse("component.stall: Market stall\n\ncomposition: component.ghost\nA scene.\n").unwrap();
+        let err = resolve(&doc, "sdxl").unwrap_err().to_string();
+        assert!(err.contains("unknown component `component.ghost`"), "got: {err}");
+        assert!(err.contains("stall"), "lists available components: {err}");
     }
 
     #[test]

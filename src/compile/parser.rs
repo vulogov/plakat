@@ -53,7 +53,10 @@ pub fn parse_command_line(line: &str) -> Option<(String, String)> {
     if !(first.is_ascii_alphabetic() || first == '_') {
         return None;
     }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    // `.` is allowed so namespaced keys like `component.stall` parse as commands (6.26.x). A
+    // leading `.` is still rejected (first-char check above), and lines with spaces before the
+    // colon stay free text.
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         return None;
     }
     let value = line[colon + 1..].trim().to_string();
@@ -206,7 +209,9 @@ pub fn parse(input: &str) -> Result<Document> {
     // a map block (or any block when the global declares `type: map`) needs none.
     let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g) || declares_faceswap_task(g) || declares_fractal_task(g));
     for (i, s) in doc.scenes.iter().enumerate() {
-        if !s.has_free_text() && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
+        // A `composition:` also gives the block content (its prompt comes from components), so a
+        // composition-only block is valid — free text is optional (compose, then prose).
+        if !s.has_free_text() && !declares_composition(s) && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -216,6 +221,11 @@ pub fn parse(input: &str) -> Result<Document> {
         }
     }
     Ok(doc)
+}
+
+/// Does this block declare a `composition:` (so its prompt comes from components — no prose needed)?
+fn declares_composition(b: &Block) -> bool {
+    b.values("composition").next().is_some()
 }
 
 /// Does this block declare a `map` task (so it may omit a prose description)?

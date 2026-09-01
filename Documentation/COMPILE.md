@@ -62,6 +62,8 @@ model: sdxl
 | `style:` | concatenate | injected into the LLM **system** prompt (shapes *how* it writes) |
 | `translate:` | last-wins | pre-translate the body from this language to English (LLM) |
 | `persona:` | concatenate | inject `~/.config/plakat/personas/<name>` into the system prompt |
+| `component.<name>:` | — | *(global)* define a reusable prompt piece; referenced by `composition:` |
+| `composition:` | concatenate | *(scene)* comma-list of `component.<name>` refs, assembled into the prompt **before** the prose (compose, then prose). Unknown ref → compile error. Extends header/footer/persona; doesn't replace them |
 
 **Scenario commands** (straight to HJSON, no LLM):
 

@@ -120,6 +120,39 @@ it doesn't over-cook. A LoRA's **trigger words** (if any) go in your prose descr
 `lora:` line. Put `lora:` in the global block — per-scene `lora:` isn't emitted (a scenario's
 LoRA stack is shared across its tasks).
 
+## Reusable components (`composition:`) *(6.26.x)*
+
+Scenes repeat pieces — the same street, sky, or person across many shots. Define each piece once
+as a **component** in the global block, then **compose** scenes from them:
+
+```
+# Global block — define reusable pieces
+model: sdxl
+component.street: cobblestone medieval street, timber-framed houses
+component.sky:    bright clear sky, soft clouds
+component.market: market stall with fruit and vegetables
+
+# Scene 1 — compose from components, THEN add this scene's own prose
+composition: component.street, component.market
+A baker carrying a basket of bread.
+
+# Scene 2 — composition only (no prose needed)
+composition: component.street, component.sky
+```
+
+- **Define:** `component.<name>: <text>` in the global block. The name is yours (`street`, `sky`, …).
+- **Compose:** `composition: component.a, component.b` (bare `a, b` also works) — resolved in list
+  order. A block is valid with a **composition, prose, or both**.
+- **Order:** `header` → **composition** → your prose → `footer` — so components come first, then the
+  scene's unique detail (*compose, then prose*).
+- The composed text is just the prompt, so it still gets **translated, enriched, and token-budget
+  checked** like any other. An unknown `component.<name>` reference is a clear compile error.
+
+This **extends** the existing keys — `header:`/`footer:`/`persona:`/`style:` and free-text all work
+exactly as before; composition just slots in. *(Components nest one level — a component's text is
+literal, not itself a composition. Scenario-side `components:`/`composition:` in hand-authored HJSON
+is the next step.)*
+
 ## Every command key
 
 `key: value` lines are commands. Two kinds:
@@ -134,6 +167,8 @@ LoRA stack is shared across its tasks).
 | `style:` | `style: oil painting, Rembrandt lighting` | steers *how* the LLM writes (goes into its system prompt) | **yes** |
 | `translate:` | `translate: Russian` | translate the description to English **before** enhancing | **yes** |
 | `persona:` | `persona: gandalf` | inject `~/.config/plakat/personas/gandalf` into the system prompt (falls back to the bare name as a cue) | **yes** |
+| `component.<name>:` | `component.sky: bright clear sky` | *(global)* define a reusable prompt piece — see [Reusable components](#reusable-components-composition-6260) | no |
+| `composition:` | `composition: component.sky, component.street` | assemble named components into the prompt (before the prose) | no (assembled) |
 
 > `style:`, `translate:` and `persona:` only take effect **with** enhancement — under `--no-enhance`
 > the description is used verbatim and these are skipped (`header:`/`footer:`/`negative:` still apply).

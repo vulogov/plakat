@@ -93,6 +93,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { key: "style",     kind: CommandKind::Prompt,   merge: Merge::Concatenate },
     CommandSpec { key: "translate", kind: CommandKind::Prompt,   merge: Merge::LastWins },
     CommandSpec { key: "persona",   kind: CommandKind::Prompt,   merge: Merge::Concatenate },
+    // 6.26.x: reusable prompt pieces. `component.<name>:` (global) defines a fragment;
+    // `composition:` (per-scene, comma-list of `component.<name>` refs) assembles them into the
+    // prompt (before the block's own prose). `component.*` keys are matched by prefix (below).
+    CommandSpec { key: "composition", kind: CommandKind::Prompt, merge: Merge::Concatenate },
     // ---- scenario commands (straight to HJSON) ----
     CommandSpec { key: "model",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "lora",      kind: CommandKind::Scenario, merge: Merge::AccumulateList },
@@ -122,6 +126,13 @@ pub const COMMANDS: &[CommandSpec] = &[
 /// Look up a command spec by key.
 pub fn command_spec(key: &str) -> Option<&'static CommandSpec> {
     COMMANDS.iter().find(|c| c.key == key)
+}
+
+/// Whether `key` is a recognised command — a fixed [`COMMANDS`] key, or a `component.<name>`
+/// definition (the name after the dot is user-chosen, so it's matched by prefix). Used by the lint.
+pub fn is_known_command(key: &str) -> bool {
+    command_spec(key).is_some()
+        || key.strip_prefix("component.").is_some_and(|n| !n.is_empty())
 }
 
 /// SD model family — drives the family-specific LLM system-prompt section.
@@ -375,7 +386,7 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
     let mut issues = Vec::new();
     if let Some(g) = &doc.global {
         for (k, _) in &g.commands {
-            if command_spec(k).is_none() {
+            if !is_known_command(k) {
                 issues.push(format!("global block: unknown command `{k}:`"));
             }
             if k == "skip" {
@@ -387,7 +398,7 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
     let mut seen_names: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, s) in doc.scenes.iter().enumerate() {
         for (k, _) in &s.commands {
-            if command_spec(k).is_none() {
+            if !is_known_command(k) {
                 issues.push(format!(
                     "scene #{} (line {}): unknown command `{k}:`",
                     i + 1,
