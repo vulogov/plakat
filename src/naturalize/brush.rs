@@ -127,26 +127,28 @@ pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
 /// Per-medium brush parameters for the stroke-based renderer.
 #[derive(Debug, Clone, Copy)]
 struct StrokeStyle {
-    width: f32,      // brush width (px)
-    length: f32,     // max stroke length (px)
-    spacing: f32,    // seed grid spacing (< width → overlapping strokes)
-    opacity: f32,    // per-stroke coverage over the under-painting
-    bristle: f32,    // along-stroke bristle streak strength (0..1)
-    edge_soft: f32,  // cross-stroke alpha falloff (soft vs crisp edge)
-    color_tol: f32,  // stop growing a stroke when the luma deviates this much (holds boundaries)
-    base_blur: i32,  // under-painting blur radius (shows between strokes)
+    width: f32,        // brush width (px)
+    length: f32,       // max stroke length (px)
+    spacing: f32,      // seed grid spacing (< width → overlapping strokes)
+    opacity: f32,      // per-stroke coverage over the under-painting
+    bristle: f32,      // along-stroke bristle streak strength (0..1)
+    edge_soft: f32,    // cross-stroke alpha falloff (soft vs crisp edge)
+    color_tol: f32,    // stop growing a stroke when the luma deviates this much (holds boundaries)
+    base_blur: i32,    // under-painting blur radius (shows between strokes)
+    relief: f32,       // fake paint relief (lit edge / shadowed edge) — makes strokes VISIBLE
+    color_jitter: f32, // per-stroke brightness variation, so adjacent marks are distinguishable
 }
 
 fn stroke_style(m: Medium) -> StrokeStyle {
     match m {
-        // Long, textured, curved strokes over a soft under-painting — classic oil.
-        Medium::Oil => StrokeStyle { width: 5.0, length: 18.0, spacing: 3.2, opacity: 0.92, bristle: 0.5, edge_soft: 0.45, color_tol: 42.0, base_blur: 3 },
-        // Shorter, flatter, opaque, crisper edges — gouache is matte and covering.
-        Medium::Gouache => StrokeStyle { width: 4.0, length: 10.0, spacing: 3.0, opacity: 1.0, bristle: 0.22, edge_soft: 0.18, color_tol: 32.0, base_blur: 2 },
-        // Short, soft, chalky strokes with the under-painting showing through — pastel.
-        Medium::Pastel => StrokeStyle { width: 3.0, length: 8.0, spacing: 2.4, opacity: 0.7, bristle: 0.75, edge_soft: 0.6, color_tol: 55.0, base_blur: 1 },
-        // Not stroke-filled (watercolor/ink handle themselves) — a neutral fallback.
-        _ => StrokeStyle { width: 4.0, length: 12.0, spacing: 3.0, opacity: 0.85, bristle: 0.4, edge_soft: 0.4, color_tol: 40.0, base_blur: 2 },
+        // Big, distinct, lit strokes over a Kuwahara base — the marks must READ as marks, so they
+        // are wide/sparse (don't average out), reliefed (catch light), and colour-jittered.
+        Medium::Oil => StrokeStyle { width: 7.0, length: 26.0, spacing: 5.5, opacity: 0.95, bristle: 0.5, edge_soft: 0.22, color_tol: 46.0, base_blur: 3, relief: 20.0, color_jitter: 14.0 },
+        // Shorter, flatter, opaque, crisp — gouache: less relief, tighter jitter.
+        Medium::Gouache => StrokeStyle { width: 5.0, length: 13.0, spacing: 4.0, opacity: 1.0, bristle: 0.25, edge_soft: 0.14, color_tol: 34.0, base_blur: 2, relief: 9.0, color_jitter: 8.0 },
+        // Short, soft, chalky — pastel: light relief, coarse jitter, under-painting shows through.
+        Medium::Pastel => StrokeStyle { width: 4.0, length: 10.0, spacing: 3.2, opacity: 0.75, bristle: 0.75, edge_soft: 0.5, color_tol: 58.0, base_blur: 1, relief: 6.0, color_jitter: 16.0 },
+        _ => StrokeStyle { width: 5.0, length: 14.0, spacing: 4.0, opacity: 0.9, bristle: 0.4, edge_soft: 0.3, color_tol: 42.0, base_blur: 2, relief: 12.0, color_jitter: 10.0 },
     }
 }
 
@@ -184,7 +186,14 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
             let jy = (noise((gy as u32) ^ 0x1234, (gx as u32) ^ 0x5678) - 0.5) * step;
             let (sxf, syf) = ((gx + jx).clamp(0.0, w as f32 - 1.0), (gy + jy).clamp(0.0, h as f32 - 1.0));
             let seed = idx(sxf as i32, syf as i32);
-            let color = src_f[seed];
+            // Per-stroke brightness variation so neighbouring marks are distinguishable (not a
+            // smooth average) — the thing that makes discrete strokes read as discrete.
+            let cj = (noise((sxf as u32) ^ 0xa53f, (syf as u32) ^ 0x1b9d) - 0.5) * 2.0 * st.color_jitter;
+            let color = [
+                (src_f[seed][0] + cj).clamp(0.0, 255.0),
+                (src_f[seed][1] + cj).clamp(0.0, 255.0),
+                (src_f[seed][2] + cj).clamp(0.0, 255.0),
+            ];
             let seed_l = luma[seed];
 
             // Grow a poly-line both ways from the seed, following the isophote field.
@@ -244,9 +253,13 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
                         let soft = (1.0 - pd).powf(1.0 + st.edge_soft * 2.0);
                         let bristle = 1.0 - st.bristle * noise((perp * 3.0) as u32 ^ (k as u32), (cx + cy) as u32);
                         let alpha = (st.opacity * soft * bristle * taper).clamp(0.0, 1.0);
+                        // Fake paint RELIEF: one side of the stroke catches light, the other is
+                        // shadowed (as if the bristle mound is lit from the upper-left). This is
+                        // what makes a stroke VISIBLE even when its colour matches the neighbours.
+                        let lit = -(perp.signum()) * (1.0 - pd).powi(2) * st.relief * taper;
                         let px = &mut canvas[idx(fx as i32, fy as i32)];
                         for c in 0..3 {
-                            px[c] = px[c] * (1.0 - alpha) + color[c] * alpha;
+                            px[c] = (px[c] * (1.0 - alpha) + (color[c] + lit) * alpha).clamp(0.0, 255.0);
                         }
                     }
                 }
