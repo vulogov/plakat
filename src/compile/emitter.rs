@@ -41,6 +41,37 @@ fn emit_passthrough(o: &mut String, indent: &str, pairs: &[(String, String)]) {
     }
 }
 
+/// 6.27.0: emit a `scene`/`weather` axis. Empty → the single default entry inline (byte-identical
+/// to the pre-6.27 output, so goldens are stable); non-empty → a multi-line `[{name,prompt},…]`.
+fn emit_axis(o: &mut String, key: &str, axis: &[(String, String)], default_name: &str) {
+    if axis.is_empty() {
+        o.push_str(&format!("  {key}: [ {{ name: {}, prompt: \"\" }} ]\n", q(default_name)));
+        return;
+    }
+    let items: Vec<String> = axis
+        .iter()
+        .map(|(n, p)| format!("    {{ name: {}, prompt: {} }}", q(n), q(p)))
+        .collect();
+    o.push_str(&format!("  {key}:\n  [\n{}\n  ]\n", items.join(",\n")));
+}
+
+/// 6.27.0: parse a compact `control:` spec `kind:image[:strength]` into `(kind, image, strength)`.
+/// The strength is the trailing numeric after the LAST colon (if it parses), so image paths that
+/// themselves contain a colon (e.g. Windows `C:\…`) still work. Default strength `1.0`.
+fn parse_control(spec: &str) -> (String, String, f32) {
+    let s = spec.trim();
+    let (kind, rest) = match s.split_once(':') {
+        Some((k, r)) => (k.trim().to_string(), r.trim()),
+        None => (s.to_string(), ""),
+    };
+    if let Some((img, tail)) = rest.rsplit_once(':') {
+        if let Ok(st) = tail.trim().parse::<f32>() {
+            return (kind, img.trim().to_string(), st);
+        }
+    }
+    (kind, rest.to_string(), 1.0)
+}
+
 /// Render the scenario HJSON. `input_name` and `provider` go into the header
 /// comment; both are inputs, so the output stays deterministic.
 pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &str, provider: &str) -> String {
@@ -95,9 +126,11 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
     // key/no-LLM still validates); the per-task `enhance: false` does the work.
     o.push_str("  enhancer: auto\n\n");
 
-    // ---- minimal scene/weather axes (scenarios cross scene×weather→tasks) ----
-    o.push_str("  scene: [ { name: \"plain\", prompt: \"\" } ]\n");
-    o.push_str("  weather: [ { name: \"any\", prompt: \"\" } ]\n\n");
+    // ---- scene/weather axes (6.27.0: authored from prose via `scene.<n>:`/`weather.<n>:`, else
+    // the single default entry — byte-identical to the old output when no axes are defined). ----
+    emit_axis(&mut o, "scene", &globals.scene_axis, "plain");
+    emit_axis(&mut o, "weather", &globals.weather_axis, "any");
+    o.push('\n');
 
     // ---- tasks (one per compiled scene; skipped scenes are omitted) ----
     o.push_str("  tasks:\n  [\n");
@@ -105,8 +138,16 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         let s = &cs.scene;
         o.push_str("    {\n");
         o.push_str(&format!("      name: {}\n", sanitize_name(&s.name)));
-        o.push_str("      scene: plain\n");
-        o.push_str("      weather: any\n");
+        // 6.27.0: the axis this task selects — its `scene:`/`weather:` ref, else the first defined
+        // axis entry, else the default `plain`/`any` (unchanged when no axes are authored).
+        let scene_ref = s.scene_ref.clone()
+            .or_else(|| globals.scene_axis.first().map(|(n, _)| n.clone()))
+            .unwrap_or_else(|| "plain".to_string());
+        let weather_ref = s.weather_ref.clone()
+            .or_else(|| globals.weather_axis.first().map(|(n, _)| n.clone()))
+            .unwrap_or_else(|| "any".to_string());
+        o.push_str(&format!("      scene: {scene_ref}\n"));
+        o.push_str(&format!("      weather: {weather_ref}\n"));
         o.push_str("      enhance: false\n");
         if let Some(m) = &s.model_for_family {
             if globals.model.as_deref() != Some(m.as_str()) {
@@ -152,6 +193,23 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         if !s.regions.is_empty() {
             let items: Vec<String> = s.regions.iter().map(|r| q(r)).collect();
             o.push_str(&format!("      regions: [{}]\n", items.join(", ")));
+        }
+        // 6.27.0: Flux Redux refs → `redux-images: [...]` (string array).
+        if !s.redux_images.is_empty() {
+            let items: Vec<String> = s.redux_images.iter().map(|r| q(r)).collect();
+            o.push_str(&format!("      redux-images: [{}]\n", items.join(", ")));
+        }
+        // 6.27.0: ControlNet → `controls: [ { kind, image, strength } … ]` (object array).
+        if !s.controls.is_empty() {
+            let items: Vec<String> = s
+                .controls
+                .iter()
+                .map(|spec| {
+                    let (kind, image, strength) = parse_control(spec);
+                    format!("        {{ kind: {}, image: {}, strength: {strength} }}", q(&kind), q(&image))
+                })
+                .collect();
+            o.push_str(&format!("      controls:\n      [\n{}\n      ]\n", items.join(",\n")));
         }
         // MAP-4: emit the map directives so a `type: map` block becomes a map task.
         if let Some(t) = &s.task_type {

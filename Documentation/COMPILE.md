@@ -82,13 +82,15 @@ HJSON (global or per-scene), type-inferred — `aspect`, `base`, `device`, `offl
 `concept-image`, `init-image`, `strength`, `mask`, `mask-feather`, `mask-invert`, `outpaint`,
 `format`, `frames`, `window-size`, `window-overlap`, `motion-lora`, `motion-lora-scale`,
 `gif-delay-ms`, `kontext-bucket`, `quantize-t5`, `flux-quant-level`, `t5-quant-level`,
-`smart-zones`. Plus `region:` *(repeatable → task `regions`)* and the generic **`set.<key>: value`**
-for anything else. So a compiled TXT reaches near-parity with a hand-written scenario.
+`smart-zones`. Plus the array specials: `region:` *(→ `regions`)*, **`redux:`** *(→ `redux-images`,
+6.27)*, **`control: kind:image[:strength]`** *(→ the `controls` object array, 6.27)* — all
+repeatable — and the generic **`set.<key>: value`** for anything else.
 
-Compile emits one default **scene**/**weather** axis (`scene: plain` / `weather: any`); the
-scenario's scene×weather variation matrix isn't authored from prose. `scene:`/`weather:` (and
-`tag:`) are accepted (won't trip `--lint`) but **not emitted** — hand-edit the `.hjson` for the
-matrix, or write one block per variation.
+**Scene/weather axes** *(6.27)*: define `scene.<name>: prompt` / `weather.<name>: prompt` in the
+global block to author the scenario's scene×weather variation matrix; each scene block selects one
+with `scene: <name>` / `weather: <name>`. With none defined, compile emits the single default axis
+(`plain`/`any`). So a compiled TXT now reaches **full** parity with a hand-written scenario. (`tag:`
+is still accepted but not emitted.)
 
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.

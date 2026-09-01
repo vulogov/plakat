@@ -246,9 +246,12 @@ scenario top level; scene block → that task), type-inferred (`fast: true`, `pa
 | Animate (video) | `format`, `frames`, `window-size`, `window-overlap`, `motion-lora`, `motion-lora-scale`, `gif-delay-ms` |
 | Flux / quant | `kontext-bucket`, `quantize-t5`, `flux-quant-level`, `t5-quant-level`, `smart-zones` |
 
-Plus two specials:
+Plus the list/array specials:
 - **`region: X0,Y0,X1,Y1[,w=][,feather=]:prompt`** *(repeatable)* — regional prompting → the task's
   `regions` array (same syntax as `plakat generate --region`).
+- **`redux: path[:weight=W]`** *(repeatable, 6.27)* — Flux Redux reference images → `redux-images`.
+- **`control: kind:image[:strength]`** *(repeatable, 6.27)* — ControlNet → the `controls` object
+  array (`control: depth:./hint.png:0.8` → `{ kind: depth, image: ./hint.png, strength: 0.8 }`).
 - **`set.<key>: value`** — the generic escape hatch: passes *any* scenario key straight through
   (for a field not in the list above, or a new one). E.g. `set.pag-scale: 3` ≡ `pag-scale: 3`.
 
@@ -259,21 +262,44 @@ aspect: 16:9
 naturalize: photo
 pag-scale: 3.0
 
-# Scene — regional prompting + a per-task override
+# Scene — regional prompting + ControlNet + a per-task override
 region: 0,0.55,1,1:men, women and children walking
+control: depth:./hint.png:0.8
 strength: 0.6
 A clean medieval street at dawn.
 ```
 
+### Scene / weather axes from prose *(6.27)*
+
+Define scene and weather **axis entries** in the global block — named prompt fragments the scenario
+crosses into variations — then each scene block **selects** one of each with `scene:`/`weather:`:
+
+```
+# Global — the axes
+model: sdxl
+scene.morning: soft dawn light, long shadows
+scene.night:   moonlit, cool tones
+weather.rain:  heavy rain, wet cobblestones
+weather.clear: clear sky
+
+# Same street, morning + rain
+scene: morning
+weather: rain
+A medieval market street.
+
+# …and night + clear
+scene: night
+weather: clear
+A medieval market street.
+```
+
+These emit real `scene: [ … ]` / `weather: [ … ]` axes and per-task `scene:`/`weather:` references —
+the same matrix a hand-written scenario uses. With no `scene.`/`weather.` defined, compile emits the
+single default axis (`plain`/`any`), unchanged.
+
 **Task-type keys** — `type:` turns a block into a *non-generate* task (`faceswap`, `map`,
 `texture`, `product`, `comic`, `bookart`, `fractal`), each with its own `<type>-…` directives.
 See [the task-type section](#non-t2i-tasks-in-prose) below and [`../COMPILE.md`](../COMPILE.md).
-
-**Not exposed in the text format:** compile emits one default **scene**/**weather** axis
-(`scene: plain`, `weather: any`) — the scenario's scene×weather *variation matrix* isn't authored
-from prose. `scene:`/`weather:` directives are accepted (so they don't trip `--lint`) but **not
-emitted**; to use the matrix, hand-edit the compiled `.hjson`. For variations from prose, write one
-block per variation instead.
 
 Unknown keys are a `--lint` error, so `styl:` / `negaitve:` are caught before you spend an LLM call.
 

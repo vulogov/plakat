@@ -25,6 +25,11 @@ pub struct ResolvedGlobals {
     /// 6.26.x parity: pass-through scenario keys (`set.<key>` / known scalar) → emitted verbatim at
     /// the scenario top level. Ordered `(key, raw value)`; the emitter infers the HJSON type.
     pub passthrough: Vec<(String, String)>,
+    /// 6.27.0: the scenario `scene`/`weather` axes authored from prose as `scene.<name>: prompt` /
+    /// `weather.<name>: prompt` in the global block. Ordered `(name, prompt)`. Empty → the emitter
+    /// falls back to the single default axis (`plain`/`any`).
+    pub scene_axis: Vec<(String, String)>,
+    pub weather_axis: Vec<(String, String)>,
 }
 
 /// One resolved scene → one scenario task (+ the prompt-shaping inputs for the
@@ -65,6 +70,14 @@ pub struct ResolvedScene {
     /// 6.26.x parity: regional prompting — `region:` specs `"X0,Y0,X1,Y1[,w=][,feather=]:prompt"`
     /// → the task's `regions: [...]` array.
     pub regions: Vec<String>,
+    /// 6.27.0: `redux:` refs → task `redux-images: [...]` (Flux Redux); `control:` compact specs
+    /// `kind:image[:strength]` → the task's `controls: [{…}]` object array.
+    pub redux_images: Vec<String>,
+    pub controls: Vec<String>,
+    /// 6.27.0: the scene/weather axis this task selects (`scene: <name>` / `weather: <name>`), or
+    /// `None` → the emitter uses the first defined axis entry (else `plain`/`any`).
+    pub scene_ref: Option<String>,
+    pub weather_ref: Option<String>,
     pub skip: bool,
     // MAP-4: a `type: map` block compiles to a scenario `map` task. These mirror
     // the scenario `map-*` fields; all on the deterministic path (no LLM).
@@ -193,6 +206,25 @@ fn auto_name(free_text: &str, idx: usize) -> String {
     slug_from_text(free_text).unwrap_or_else(|| format!("scene_{}", idx + 1))
 }
 
+/// 6.27.0: collect axis definitions `<prefix>.<name>: prompt` from a block as ordered
+/// `(name, prompt)` pairs — used for `scene.<name>` / `weather.<name>` matrix axes. Last value
+/// per name wins, in first-seen order. Empty for `None`.
+fn collect_axis(b: Option<&crate::compile::parser::Block>, prefix: &str) -> Vec<(String, String)> {
+    let Some(b) = b else { return Vec::new() };
+    let dot = format!("{prefix}.");
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (k, v) in &b.commands {
+        if let Some(name) = k.strip_prefix(&dot) {
+            if !map.contains_key(name) {
+                order.push(name.to_string());
+            }
+            map.insert(name.to_string(), v.trim().to_string());
+        }
+    }
+    order.into_iter().map(|n| { let v = map[&n].clone(); (n, v) }).collect()
+}
+
 /// 6.26.x parity: collect a block's pass-through scenario keys (`set.<key>` or a known scalar) as
 /// `(scenario-key, raw value)`, last-occurrence-wins per key, in first-seen order. Empty for `None`.
 fn collect_passthrough(b: Option<&crate::compile::parser::Block>) -> Vec<(String, String)> {
@@ -274,6 +306,8 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         scheduler: last_wins(&[], &vals(g, "scheduler")).map(str::to_string),
         refine: parse_opt(last_wins(&[], &vals(g, "refine")), "refine")?,
         passthrough: collect_passthrough(g),
+        scene_axis: collect_axis(g, "scene"),
+        weather_axis: collect_axis(g, "weather"),
         negative_seeds: concat(&[], &vals(g, "negative")),
     };
 
@@ -313,6 +347,10 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             tags: list(&[], &vals(Some(s), "tag")),
             passthrough: collect_passthrough(Some(s)),
             regions: list(&[], &vals(Some(s), "region")),
+            redux_images: list(&[], &vals(Some(s), "redux")),
+            controls: list(&[], &vals(Some(s), "control")),
+            scene_ref: last_wins(&[], &vals(Some(s), "scene")).map(str::to_string),
+            weather_ref: last_wins(&[], &vals(Some(s), "weather")).map(str::to_string),
             skip,
             // MAP-4: global→scene inheritance for the map directives.
             task_type: last_wins(&vals(g, "type"), &vals(Some(s), "type")).map(str::to_string),
@@ -391,6 +429,22 @@ mod tests {
     fn auto_names_from_first_words() {
         let r = resolve_str("A vast frozen tundra stretching to the far horizon.\n");
         assert_eq!(r.scenes[0].name, "a_vast_frozen_tundra_stretching_to");
+    }
+
+    #[test]
+    fn scene_weather_axes_redux_control_resolve() {
+        let r = resolve_str(
+            "model: sdxl\nscene.morning: soft dawn\nscene.night: moonlit\nweather.rain: heavy rain\n\nscene: night\nweather: rain\nredux: a.jpg\nredux: b.jpg:weight=0.6\ncontrol: depth:h.png:0.8\nA street.\n",
+        );
+        // Axes collected in order from the global block.
+        assert_eq!(r.globals.scene_axis, vec![("morning".into(), "soft dawn".into()), ("night".into(), "moonlit".into())]);
+        assert_eq!(r.globals.weather_axis, vec![("rain".into(), "heavy rain".into())]);
+        // Per-task refs + accumulated redux/control.
+        let sc = &r.scenes[0];
+        assert_eq!(sc.scene_ref.as_deref(), Some("night"));
+        assert_eq!(sc.weather_ref.as_deref(), Some("rain"));
+        assert_eq!(sc.redux_images, vec!["a.jpg".to_string(), "b.jpg:weight=0.6".to_string()]);
+        assert_eq!(sc.controls, vec!["depth:h.png:0.8".to_string()]);
     }
 
     #[test]

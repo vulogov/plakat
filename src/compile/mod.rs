@@ -114,6 +114,13 @@ pub const COMMANDS: &[CommandSpec] = &[
     // 6.26.x parity: regional prompting — repeatable `region: X0,Y0,X1,Y1[,w=][,feather=]:prompt`
     // → the task's `regions: [...]` array.
     CommandSpec { key: "region",    kind: CommandKind::Scenario, merge: Merge::AccumulateList },
+    // 6.27.0 parity finish: repeatable `redux:` (→ task `redux-images: [...]`, Flux Redux refs) and
+    // `control:` (compact `kind:image:strength` → the `controls: [{…}]` object array). `scene:` is
+    // the per-task axis reference (`weather:` already above); `scene.<n>:`/`weather.<n>:` (global)
+    // define the axes and are matched by prefix in `is_known_command`.
+    CommandSpec { key: "redux",     kind: CommandKind::Scenario, merge: Merge::AccumulateList },
+    CommandSpec { key: "control",   kind: CommandKind::Scenario, merge: Merge::AccumulateList },
+    CommandSpec { key: "scene",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     // ---- MAP-4: a `type: map` block compiles to a scenario `map` task ----
     CommandSpec { key: "type",          kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "map-spec",      kind: CommandKind::Scenario, merge: Merge::LastWins },
@@ -176,6 +183,9 @@ pub fn passthrough_target(key: &str) -> Option<&str> {
 pub fn is_known_command(key: &str) -> bool {
     command_spec(key).is_some()
         || key.strip_prefix("component.").is_some_and(|n| !n.is_empty())
+        // 6.27.0: `scene.<name>:` / `weather.<name>:` define the scenario's scene/weather axes.
+        || key.strip_prefix("scene.").is_some_and(|n| !n.is_empty())
+        || key.strip_prefix("weather.").is_some_and(|n| !n.is_empty())
         || is_passthrough_key(key)
 }
 
@@ -577,6 +587,30 @@ mod tests {
         assert!(a.contains("seed: 7"));
         // Must parse as the same HJSON `scenario` consumes.
         let _: serde_json::Value = deser_hjson::from_str(&a).expect("compiled HJSON parses");
+    }
+
+    #[tokio::test]
+    async fn scene_weather_axes_redux_control_emit_and_load() {
+        // 6.27.0: axes from prose + per-task refs + redux + control object-array all emit AND the
+        // scenario the compiler produces actually LOADS (deser + known task types).
+        let input = "model: sdxl\nscene.morning: soft dawn\nweather.rain: heavy rain\n\nscene: morning\nweather: rain\nredux: a.jpg\ncontrol: depth:h.png:0.8\nA street.\n";
+        let opts = CompileOpts {
+            provider: "auto".into(),
+            default_model: "sdxl".into(),
+            no_enhance: true,
+            no_negative: true,
+            system_override: None,
+            cache: false,
+            parallel: 0,
+            input_name: "t.txt".into(),
+        };
+        let out = compile_to_string(input, &opts).await.unwrap().0;
+        assert!(out.contains("{ name: \"morning\", prompt: \"soft dawn\" }"), "scene axis: {out}");
+        assert!(out.contains("scene: morning") && out.contains("weather: rain"), "task refs: {out}");
+        assert!(out.contains("redux-images: [\"a.jpg\"]"), "redux: {out}");
+        assert!(out.contains("{ kind: \"depth\", image: \"h.png\", strength: 0.8 }"), "control: {out}");
+        // The emitted scenario is loadable (this is what the negative/parity work guarantees).
+        crate::cli::scenario::validate_hjson(&out).expect("compiled scenario with axes/redux/control loads");
     }
 
     #[test]
