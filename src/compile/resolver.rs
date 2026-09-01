@@ -166,10 +166,14 @@ fn auto_name(free_text: &str, idx: usize) -> String {
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join("_");
-    if slug.is_empty() {
-        format!("scene_{}", idx + 1)
-    } else {
+    // Require at least one ASCII letter. Non-Latin prose (e.g. Russian "2-3 этажные…") slugs
+    // down to stray ASCII digits — "23" — or nothing; those aren't usable, CLI-selectable task
+    // names, so fall back to a stable `scene_N`. (Common with `translate:` workflows, where the
+    // readable English name only exists post-translation, which happens after this stage.)
+    if slug.chars().any(|c| c.is_ascii_alphabetic()) {
         slug
+    } else {
+        format!("scene_{}", idx + 1)
     }
 }
 
@@ -300,6 +304,17 @@ mod tests {
     fn auto_names_from_first_words() {
         let r = resolve_str("A vast frozen tundra stretching to the far horizon.\n");
         assert_eq!(r.scenes[0].name, "a_vast_frozen_tundra_stretching_to");
+    }
+
+    #[test]
+    fn auto_name_falls_back_to_scene_n_for_non_latin_prose() {
+        // Cyrillic prose slugs down to stray ASCII digits ("2-3 этажные" → "23"), which isn't a
+        // usable task name — must fall back to scene_N (the reported 6.26.x bug).
+        let r = resolve_str("Средневековые 2-3 этажные фахверковые дома, окна.\n");
+        assert_eq!(r.scenes[0].name, "scene_1");
+        // A slug with any ASCII letter is still kept (mixed scripts don't trigger the fallback).
+        let r2 = resolve_str("Tokyo 東京 at night.\n");
+        assert_eq!(r2.scenes[0].name, "tokyo_at_night");
     }
 
     #[test]
