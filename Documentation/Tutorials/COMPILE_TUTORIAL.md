@@ -85,6 +85,16 @@ compiles to `basic.hjson` and renders the tundra rider and the cartographer
 - **Lint before you spend** — `--lint` catches unknown commands, **duplicate task
   names**, and **repeated commands** with no LLM cost; the compiled scenario is also
   validated before writing, so it's guaranteed to load.
+- **Diligence warnings** *(6.26.2)* — compile prints a warning (never silent) when a
+  prompt overflows the model's token budget, or when the **style you asked for didn't
+  survive** into the enhanced prompt. Reach for a stronger `--compile-provider`, or
+  `--no-enhance` to keep your wording, when you see one.
+- **Your `negative:` is authoritative** *(6.26.2)* — the auto-negative must include
+  your seed terms verbatim; if a weak model drops them, compile uses your seeds as-is
+  instead of a bad guess.
+- **Explain the LLM inputs** — `--explain` prints the resolved model family + the exact
+  **positive and negative** system prompts (and the resolved `negative:` seeds) per
+  scene, no LLM — the way to debug a surprising prompt or negative.
 
 ## Adding a LoRA
 
@@ -190,7 +200,7 @@ error listing the defined names.
 | `style:` | `style: oil painting, Rembrandt lighting` | steers *how* the LLM writes (goes into its system prompt) | **yes** |
 | `translate:` | `translate: Russian` | translate the description to English **before** enhancing | **yes** |
 | `persona:` | `persona: gandalf` | inject `~/.config/plakat/personas/gandalf` into the system prompt (falls back to the bare name as a cue) | **yes** |
-| `component.<name>:` | `component.sky: bright clear sky` | *(global)* define a reusable prompt piece — see [Reusable components](#reusable-components-composition-6260) | no |
+| `component.<name>:` | `component.sky: bright clear sky` | *(global)* define a reusable prompt piece — see [Reusable components](#reusable-components-composition-626x) | no |
 | `composition:` | `composition: component.sky, component.street` | assemble named components into the prompt (before the prose) | no (assembled) |
 
 > `style:`, `translate:` and `persona:` only take effect **with** enhancement — under `--no-enhance`
