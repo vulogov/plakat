@@ -1074,7 +1074,11 @@ impl TaskKind {
 /// must be a recognised [`TaskKind`]. Lightweight (no model load); catches the compile-output errors that
 /// would otherwise only surface at `scenario` run.
 pub fn validate_hjson(hjson: &str) -> Result<()> {
-    let s: ScenarioFile = deser_hjson::from_str(hjson).context("compiled scenario does not parse as HJSON")?;
+    let s: ScenarioFile = deser_hjson::from_str(hjson)
+        .map_err(|e| {
+            crate::error_hints::decorate_scenario_parse(anyhow::Error::msg(e.to_string()), hjson)
+        })
+        .context("compiled scenario does not parse as HJSON")?;
     for t in &s.tasks {
         TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref())
             .with_context(|| format!("task {:?}: unrecognised type", t.name))?;

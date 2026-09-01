@@ -219,6 +219,13 @@ pub fn hint_unknown_alias(model: &str, known_aliases: &[&str]) -> Result<()> {
 /// can't determine the surrounding task, returns the original
 /// error unchanged.
 pub fn decorate_scenario_parse(e: anyhow::Error, source: &str) -> anyhow::Error {
+    // A very common hand-edit mistake: an array value containing ':' (or a filename) left
+    // UNQUOTED — e.g. a LoRA spec `loras: [vladimir-style.safetensors:0.55]`. HJSON can't parse it
+    // and reports a confusing position on a LATER line (usually the next `[`), so point at the
+    // real culprit and the exact fix before the line-number heuristic.
+    if let Some(hint) = unquoted_array_hint(source) {
+        return e.context(hint);
+    }
     let raw = format!("{e:#}");
     // deser_hjson error format includes `at line N` and `column M`.
     // Look for a line number and use it to find the containing
@@ -232,6 +239,42 @@ pub fn decorate_scenario_parse(e: anyhow::Error, source: &str) -> anyhow::Error 
         None => return e,
     };
     e.context(format!("in scenario task `{task_name}` (around line {line_num})"))
+}
+
+/// Detect a single-line `key: [ … ]` array whose element contains a `:` or a filename and is not
+/// quoted — the top cause of a baffling "UnexpectedChar" HJSON error (a LoRA spec pasted without
+/// quotes). Returns the exact corrected line to write.
+fn unquoted_array_hint(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let l = line.trim();
+        let Some((key, rest)) = l.split_once(':') else { continue };
+        let (key, rest) = (key.trim(), rest.trim());
+        if key.is_empty() || !rest.starts_with('[') || !rest.ends_with(']') {
+            continue;
+        }
+        let inner = &rest[1..rest.len() - 1];
+        for elem in inner.split(',') {
+            let e = elem.trim();
+            if e.is_empty() || e.starts_with('"') {
+                continue; // already quoted → fine
+            }
+            // A value with a ':' (scale suffix) or a weights filename can't be an HJSON bareword.
+            if e.contains(':') || e.contains(".safetensors") || e.contains(".pt") || e.contains(".ckpt") {
+                let quoted: Vec<String> = inner
+                    .split(',')
+                    .map(|x| {
+                        let t = x.trim();
+                        if t.starts_with('"') { t.to_string() } else { format!("\"{t}\"") }
+                    })
+                    .collect();
+                return Some(format!(
+                    "HJSON array value `{e}` in `{key}:` is unquoted — values with ':' or a filename must be quoted. Write:  {key}: [{}]",
+                    quoted.join(", ")
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn extract_line_number(err_msg: &str) -> Option<usize> {
@@ -278,6 +321,23 @@ fn find_containing_task_name(source: &str, line_num: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unquoted_lora_array_gets_a_precise_hint() {
+        // The reported failure: an unquoted LoRA spec in `loras: [...]`.
+        let src = "{\n  model: \"sd35\"\n  loras: [vladimir-style.safetensors:0.55]\n  tasks: [ {} ]\n}";
+        let hint = unquoted_array_hint(src).expect("hint fires for unquoted lora");
+        assert!(hint.contains("unquoted"), "{hint}");
+        assert!(hint.contains("loras: [\"vladimir-style.safetensors:0.55\"]"), "shows the fix: {hint}");
+        // A properly-quoted array is fine (no hint).
+        let ok = "{\n  loras: [\"a.safetensors:0.5\", \"b.safetensors:0.7\"]\n}";
+        assert!(unquoted_array_hint(ok).is_none());
+        // A plain bareword array (no ':'/filename) isn't flagged.
+        assert!(unquoted_array_hint("{ tags: [hero, wide] }").is_none());
+        // decorate_scenario_parse surfaces the hint even with no task context.
+        let decorated = decorate_scenario_parse(anyhow::anyhow!("UnexpectedChar at 4:3"), src);
+        assert!(format!("{decorated:#}").contains("must be quoted"));
+    }
 
     // ----- OOM detection -----
 
