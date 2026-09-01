@@ -20,6 +20,27 @@ fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}"))
 }
 
+/// Render a pass-through value as HJSON with light type inference (6.26.x parity): `true`/`false`
+/// and numbers pass through bare; a `[…]` literal is emitted as-is (author's array); everything
+/// else is quoted. Keeps `aspect: 16:9` a string but `fast: true` / `pag-scale: 3.0` scalars.
+fn hjson_scalar(v: &str) -> String {
+    let t = v.trim();
+    if t == "true" || t == "false" || t.parse::<f64>().is_ok() {
+        t.to_string()
+    } else if t.starts_with('[') && t.ends_with(']') {
+        t.to_string()
+    } else {
+        q(t)
+    }
+}
+
+/// Emit `key: value` pass-through lines at `indent`, type-inferred.
+fn emit_passthrough(o: &mut String, indent: &str, pairs: &[(String, String)]) {
+    for (k, v) in pairs {
+        o.push_str(&format!("{indent}{k}: {}\n", hjson_scalar(v)));
+    }
+}
+
 /// Render the scenario HJSON. `input_name` and `provider` go into the header
 /// comment; both are inputs, so the output stays deterministic.
 pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &str, provider: &str) -> String {
@@ -67,6 +88,8 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
     if !globals.negative_seeds.trim().is_empty() {
         o.push_str(&format!("  negative: {}\n", q(&globals.negative_seeds)));
     }
+    // 6.26.x parity: scenario-global pass-through keys (aspect, naturalize, quality knobs, …).
+    emit_passthrough(&mut o, "  ", &globals.passthrough);
     // Prompts are pre-enhanced by compile, so every task opts out of the
     // scenario-time enhancer. `enhancer: auto` satisfies the schema (a missing
     // key/no-LLM still validates); the per-task `enhance: false` does the work.
@@ -122,6 +145,13 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         }
         if let Some(r) = s.refine {
             o.push_str(&format!("      refine: {r}\n"));
+        }
+        // 6.26.x parity: per-task pass-through keys (init-image, strength, mask, style-ref, …).
+        emit_passthrough(&mut o, "      ", &s.passthrough);
+        // 6.26.x parity: regional prompting → the task's `regions` array.
+        if !s.regions.is_empty() {
+            let items: Vec<String> = s.regions.iter().map(|r| q(r)).collect();
+            o.push_str(&format!("      regions: [{}]\n", items.join(", ")));
         }
         // MAP-4: emit the map directives so a `type: map` block becomes a map task.
         if let Some(t) = &s.task_type {

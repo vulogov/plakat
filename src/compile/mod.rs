@@ -111,6 +111,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { key: "tag",       kind: CommandKind::Scenario, merge: Merge::AccumulateList },
     CommandSpec { key: "weather",   kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "skip",      kind: CommandKind::Scenario, merge: Merge::LastWins },
+    // 6.26.x parity: regional prompting — repeatable `region: X0,Y0,X1,Y1[,w=][,feather=]:prompt`
+    // → the task's `regions: [...]` array.
+    CommandSpec { key: "region",    kind: CommandKind::Scenario, merge: Merge::AccumulateList },
     // ---- MAP-4: a `type: map` block compiles to a scenario `map` task ----
     CommandSpec { key: "type",          kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "map-spec",      kind: CommandKind::Scenario, merge: Merge::LastWins },
@@ -128,11 +131,52 @@ pub fn command_spec(key: &str) -> Option<&'static CommandSpec> {
     COMMANDS.iter().find(|c| c.key == key)
 }
 
-/// Whether `key` is a recognised command — a fixed [`COMMANDS`] key, or a `component.<name>`
-/// definition (the name after the dot is user-chosen, so it's matched by prefix). Used by the lint.
+/// 6.26.x parity: common **scalar** scenario fields that compile passes straight through to the
+/// emitted HJSON (global or per-scene). These aren't shaped by the LLM — they're recognised (so
+/// `--lint` accepts them) and written verbatim (type-inferred) by the emitter. The generic
+/// `set.<key>: value` form covers anything not listed here (the long tail / future fields).
+pub const PASSTHROUGH_KEYS: &[&str] = &[
+    // sizing / device
+    "aspect", "base", "device", "offline", "fast", "lcm",
+    // post-process
+    "naturalize", "upscale",
+    // refiner + LoRA scale
+    "refiner", "refine-strength", "refiner-frac", "lora-scale",
+    // quality knobs (the guidance bundle)
+    "pag-scale", "guidance-rescale", "freeu", "freeu-params", "dynamic-threshold",
+    // style presets + per-task style/image refs
+    "look", "genre", "style-ref", "style-strength", "concept-image",
+    // img2img / inpaint (per-scene)
+    "init-image", "strength", "mask", "mask-feather", "mask-invert", "outpaint",
+    // animate (video)
+    "format", "frames", "window-size", "window-overlap", "motion-lora", "motion-lora-scale", "gif-delay-ms",
+    // flux / quant / advanced
+    "kontext-bucket", "quantize-t5", "flux-quant-level", "t5-quant-level", "smart-zones",
+];
+
+/// Whether `key` is a pass-through scenario field: a known [`PASSTHROUGH_KEYS`] entry, or the
+/// generic `set.<key>` form (the tail). The name after `set.` is the literal scenario key.
+pub fn is_passthrough_key(key: &str) -> bool {
+    PASSTHROUGH_KEYS.contains(&key) || key.strip_prefix("set.").is_some_and(|k| !k.is_empty())
+}
+
+/// The scenario key a pass-through directive writes: `set.<key>` → `<key>`; a bare known key → itself.
+pub fn passthrough_target(key: &str) -> Option<&str> {
+    if let Some(k) = key.strip_prefix("set.") {
+        (!k.is_empty()).then_some(k)
+    } else if PASSTHROUGH_KEYS.contains(&key) {
+        Some(key)
+    } else {
+        None
+    }
+}
+
+/// Whether `key` is a recognised command — a fixed [`COMMANDS`] key, a `component.<name>`
+/// definition, or a pass-through scenario field (`set.<key>` or a known scalar). Used by the lint.
 pub fn is_known_command(key: &str) -> bool {
     command_spec(key).is_some()
         || key.strip_prefix("component.").is_some_and(|n| !n.is_empty())
+        || is_passthrough_key(key)
 }
 
 /// SD model family — drives the family-specific LLM system-prompt section.

@@ -220,6 +220,41 @@ meaningful English name instead of `scene_N` *(6.26.2)*. If there's still no usa
 `--no-enhance` on non-Latin prose), it falls back to a sequential `scene_1`, `scene_2`, … Auto
 names are also de-duplicated with a numeric suffix so two similar scenes can't clobber each other.
 
+**Scenario-parity keys** *(6.26.x)* — a compiled TXT can now drive (almost) everything a
+hand-written scenario can. These scalar fields pass straight through to the HJSON (global block →
+scenario top level; scene block → that task), type-inferred (`fast: true`, `pag-scale: 3.0`,
+`aspect: 16:9`):
+
+| Group | Keys |
+|---|---|
+| Sizing / device | `aspect`, `base`, `device`, `offline`, `fast`, `lcm` |
+| Post-process | `naturalize`, `upscale` |
+| Refiner / LoRA | `refiner`, `refine-strength`, `refiner-frac`, `lora-scale` |
+| Quality knobs | `pag-scale`, `guidance-rescale`, `freeu`, `dynamic-threshold` |
+| Style / image refs | `look`, `genre`, `style-ref`, `style-strength`, `concept-image` |
+| img2img / inpaint | `init-image`, `strength`, `mask`, `mask-feather`, `mask-invert`, `outpaint` |
+| Animate (video) | `format`, `frames`, `window-size`, `window-overlap`, `motion-lora`, `motion-lora-scale`, `gif-delay-ms` |
+| Flux / quant | `kontext-bucket`, `quantize-t5`, `flux-quant-level`, `t5-quant-level`, `smart-zones` |
+
+Plus two specials:
+- **`region: X0,Y0,X1,Y1[,w=][,feather=]:prompt`** *(repeatable)* — regional prompting → the task's
+  `regions` array (same syntax as `plakat generate --region`).
+- **`set.<key>: value`** — the generic escape hatch: passes *any* scenario key straight through
+  (for a field not in the list above, or a new one). E.g. `set.pag-scale: 3` ≡ `pag-scale: 3`.
+
+```
+# Global
+model: sdxl
+aspect: 16:9
+naturalize: photo
+pag-scale: 3.0
+
+# Scene — regional prompting + a per-task override
+region: 0,0.55,1,1:men, women and children walking
+strength: 0.6
+A clean medieval street at dawn.
+```
+
 **Task-type keys** — `type:` turns a block into a *non-generate* task (`faceswap`, `map`,
 `texture`, `product`, `comic`, `bookart`, `fractal`), each with its own `<type>-…` directives.
 See [the task-type section](#non-t2i-tasks-in-prose) below and [`../COMPILE.md`](../COMPILE.md).

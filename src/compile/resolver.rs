@@ -22,6 +22,9 @@ pub struct ResolvedGlobals {
     pub scheduler: Option<String>,
     pub refine: Option<usize>,
     pub negative_seeds: String,
+    /// 6.26.x parity: pass-through scenario keys (`set.<key>` / known scalar) → emitted verbatim at
+    /// the scenario top level. Ordered `(key, raw value)`; the emitter infers the HJSON type.
+    pub passthrough: Vec<(String, String)>,
 }
 
 /// One resolved scene → one scenario task (+ the prompt-shaping inputs for the
@@ -56,6 +59,12 @@ pub struct ResolvedScene {
     pub scheduler: Option<String>,
     pub refine: Option<usize>,
     pub tags: Vec<String>,
+    /// 6.26.x parity: per-task pass-through scenario keys (`set.<key>` / known scalar), emitted
+    /// verbatim on the task. Ordered `(key, raw value)`.
+    pub passthrough: Vec<(String, String)>,
+    /// 6.26.x parity: regional prompting — `region:` specs `"X0,Y0,X1,Y1[,w=][,feather=]:prompt"`
+    /// → the task's `regions: [...]` array.
+    pub regions: Vec<String>,
     pub skip: bool,
     // MAP-4: a `type: map` block compiles to a scenario `map` task. These mirror
     // the scenario `map-*` fields; all on the deterministic path (no LLM).
@@ -184,6 +193,23 @@ fn auto_name(free_text: &str, idx: usize) -> String {
     slug_from_text(free_text).unwrap_or_else(|| format!("scene_{}", idx + 1))
 }
 
+/// 6.26.x parity: collect a block's pass-through scenario keys (`set.<key>` or a known scalar) as
+/// `(scenario-key, raw value)`, last-occurrence-wins per key, in first-seen order. Empty for `None`.
+fn collect_passthrough(b: Option<&crate::compile::parser::Block>) -> Vec<(String, String)> {
+    let Some(b) = b else { return Vec::new() };
+    let mut order: Vec<String> = Vec::new();
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (k, v) in &b.commands {
+        if let Some(target) = crate::compile::passthrough_target(k) {
+            if !map.contains_key(target) {
+                order.push(target.to_string());
+            }
+            map.insert(target.to_string(), v.clone());
+        }
+    }
+    order.into_iter().map(|k| { let v = map[&k].clone(); (k, v) }).collect()
+}
+
 /// Resolve a scene's `composition:` into a single prompt fragment: each comma-separated reference
 /// (`component.<name>` or a bare `<name>`) is looked up in the global `components` map and joined in
 /// order. An unknown reference is a hard error with the available names (6.26.x).
@@ -247,6 +273,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         guidance: parse_finite_f64(last_wins(&[], &vals(g, "guidance")), "guidance")?,
         scheduler: last_wins(&[], &vals(g, "scheduler")).map(str::to_string),
         refine: parse_opt(last_wins(&[], &vals(g, "refine")), "refine")?,
+        passthrough: collect_passthrough(g),
         negative_seeds: concat(&[], &vals(g, "negative")),
     };
 
@@ -284,6 +311,8 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             scheduler: last_wins(&[], &vals(Some(s), "scheduler")).map(str::to_string),
             refine: parse_opt(last_wins(&[], &vals(Some(s), "refine")), "refine")?,
             tags: list(&[], &vals(Some(s), "tag")),
+            passthrough: collect_passthrough(Some(s)),
+            regions: list(&[], &vals(Some(s), "region")),
             skip,
             // MAP-4: global→scene inheritance for the map directives.
             task_type: last_wins(&vals(g, "type"), &vals(Some(s), "type")).map(str::to_string),
@@ -362,6 +391,19 @@ mod tests {
     fn auto_names_from_first_words() {
         let r = resolve_str("A vast frozen tundra stretching to the far horizon.\n");
         assert_eq!(r.scenes[0].name, "a_vast_frozen_tundra_stretching_to");
+    }
+
+    #[test]
+    fn passthrough_and_region_parity() {
+        // Known scalar keys + the generic `set.<key>` tail → global passthrough; `region:` accumulates.
+        let r = resolve_str(
+            "model: sdxl\naspect: 16:9\nfast: true\nset.kontext-bucket: true\n\nregion: 0,0,0.5,1:a wolf\nregion: 0.5,0,1,1:a city\nA scene.\n",
+        );
+        let has = |k: &str, v: &str| r.globals.passthrough.iter().any(|(kk, vv)| kk == k && vv == v);
+        assert!(has("aspect", "16:9"), "{:?}", r.globals.passthrough);
+        assert!(has("fast", "true"));
+        assert!(has("kontext-bucket", "true"), "set.<key> strips the prefix");
+        assert_eq!(r.scenes[0].regions, vec!["0,0,0.5,1:a wolf".to_string(), "0.5,0,1,1:a city".to_string()]);
     }
 
     #[test]

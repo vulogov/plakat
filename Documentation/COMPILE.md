@@ -75,6 +75,16 @@ model: sdxl
 | `name:` | last-wins | task name — auto-slugged from the first 6 words; **with enhancement** from the *enhanced English* prompt (so `translate:` blocks get a meaningful name, not `scene_N`); else sequential `scene_N`. Auto names are de-duplicated |
 | `skip:` | last-wins | `true` omits the block |
 
+**Scenario-parity pass-through** *(6.26.x)*: common scalar scenario fields pass straight to the
+HJSON (global or per-scene), type-inferred — `aspect`, `base`, `device`, `offline`, `fast`, `lcm`,
+`naturalize`, `upscale`, `refiner`, `refine-strength`, `refiner-frac`, `lora-scale`, `pag-scale`,
+`guidance-rescale`, `freeu`, `dynamic-threshold`, `look`, `genre`, `style-ref`, `style-strength`,
+`concept-image`, `init-image`, `strength`, `mask`, `mask-feather`, `mask-invert`, `outpaint`,
+`format`, `frames`, `window-size`, `window-overlap`, `motion-lora`, `motion-lora-scale`,
+`gif-delay-ms`, `kontext-bucket`, `quantize-t5`, `flux-quant-level`, `t5-quant-level`,
+`smart-zones`. Plus `region:` *(repeatable → task `regions`)* and the generic **`set.<key>: value`**
+for anything else. So a compiled TXT reaches near-parity with a hand-written scenario.
+
 Compile emits one default **scene**/**weather** axis (`scene: plain` / `weather: any`); the
 scenario's scene×weather variation matrix isn't authored from prose. `scene:`/`weather:` (and
 `tag:`) are accepted (won't trip `--lint`) but **not emitted** — hand-edit the `.hjson` for the
