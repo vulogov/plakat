@@ -86,6 +86,82 @@ compiles to `basic.hjson` and renders the tundra rider and the cartographer
   names**, and **repeated commands** with no LLM cost; the compiled scenario is also
   validated before writing, so it's guaranteed to load.
 
+## Adding a LoRA
+
+Add a `lora:` line to the **global block** — it's repeatable, so LoRAs stack, and it
+becomes the scenario's top-level `loras: [...]` (applied to every task; a scenario runs one
+model + one LoRA stack). Each value is a LoRA **spec**: a source with an optional `:scale`
+(default `1.0`).
+
+```
+# Global block
+model: sdxl
+lora: /Volumes/AI/loras/my-style.safetensors:0.8     # a local file at 0.8 strength
+lora: some-org/some-lora:0.7                          # a Hugging Face repo (org/name)
+lora: some-org/some-lora#pytorch_lora_weights.safetensors:0.6   # …a specific file in that repo
+lora: civitai:123456:0.75                             # a Civitai model id (latest version)
+lora: civitai-version:789012:0.75                     # …or a pinned version id
+
+# Scene 1
+A misty pine forest at dawn, volumetric light through the canopy.
+```
+
+The spec grammar (same as the CLI `--lora` flag):
+
+| Form | Example | Meaning |
+|---|---|---|
+| Local path | `path/to/lora.safetensors:0.8` | a file on disk (`:scale` optional) |
+| HF repo | `org/name:0.7` | Hugging Face repo (one `/`); add `#file.safetensors` to pick a file |
+| Civitai model | `civitai:123456:0.75` | Civitai model id (latest version) |
+| Civitai version | `civitai-version:789012:0.75` | a pinned Civitai version id |
+
+Rules of thumb: single-LoRA scales `0.5–0.9`; keep the **total** across a stack ≤ ~`1.2` so
+it doesn't over-cook. A LoRA's **trigger words** (if any) go in your prose description, not the
+`lora:` line. Put `lora:` in the global block — per-scene `lora:` isn't emitted (a scenario's
+LoRA stack is shared across its tasks).
+
+## Every command key
+
+`key: value` lines are commands. Two kinds:
+
+**Prompt keys** — shape or feed the LLM (they don't appear verbatim in the output). Repeats
+concatenate (except `translate:`, last-wins):
+
+| Key | Example | What it does |
+|---|---|---|
+| `header:` | `header: wide establishing shot,` | prepended to the prompt |
+| `footer:` | `footer: 8k, golden-hour light` | appended to the prompt |
+| `negative:` | `negative: blurry, extra fingers` | seed terms **guaranteed** in the auto-negative (a rogue model can't drop them) |
+| `style:` | `style: oil painting, Rembrandt lighting` | steers *how* the LLM writes (goes into its system prompt) |
+| `translate:` | `translate: Russian` | translate the description to English **before** enhancing |
+| `persona:` | `persona: gandalf` | inject `~/.config/plakat/personas/gandalf` into the system prompt |
+
+**Scenario keys** — pass straight to the HJSON, no LLM. Set them in the **global block** as
+defaults for every task, and/or inside a **scene block** to override that one task:
+
+| Key | Example | Scope | What it does |
+|---|---|---|---|
+| `model:` | `model: sdxl` | global | the model to run + the LLM family profile (one model per scenario) |
+| `lora:` | `lora: style.safetensors:0.8` | global | add a LoRA (repeatable → `loras: [...]`) — see above |
+| `seed:` | `seed: 42` | global / scene | fixed seed for reproducibility |
+| `count:` | `count: 4` | global / scene | images per task |
+| `size:` | `size: 1024x768` | global / scene | render size `WxH` |
+| `steps:` | `steps: 30` | global / scene | denoise steps |
+| `guidance:` | `guidance: 9` | global / scene | CFG (higher = follow the prompt harder) |
+| `scheduler:` | `scheduler: dpm++` | global / scene | sampler (`euler-a`, `dpm++`, `unipc`, …) |
+| `refine:` | `refine: 10` | global / scene | SDXL refiner-pass steps |
+| `name:` | `name: harbor-dawn` | scene | task name (auto-slugged from the first 6 words if absent; non-Latin prose → `scene_N`) |
+| `skip:` | `skip: true` | scene | omit this block from the output |
+
+**Task-type keys** — `type:` turns a block into a *non-generate* task (`faceswap`, `map`,
+`texture`, `product`, `comic`, `bookart`, `fractal`), each with its own `<type>-…` directives.
+See [the task-type section](#non-t2i-tasks-in-prose) below and [`../COMPILE.md`](../COMPILE.md).
+
+> `tag:` and `weather:` are accepted by the parser (so they don't trip `--lint`) but are **not
+> yet emitted** to the scenario — don't rely on them.
+
+Unknown keys are a `--lint` error, so `styl:` / `negaitve:` are caught before you spend an LLM call.
+
 ## Non-t2i tasks in prose
 
 A block can compile to a **non-generate task** — it renders from directives, not a

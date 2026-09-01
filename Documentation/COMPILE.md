@@ -68,10 +68,13 @@ model: sdxl
 | Command | Merge | HJSON |
 |---|---|---|
 | `model:` | last-wins | global `model` + per-scene **family profile** (scenarios share one model) |
-| `lora:` | accumulate | global `loras` |
-| `seed:` `count:` `size:` `steps:` `guidance:` `scheduler:` `refine:` | last-wins | per-task override |
-| `name:` | last-wins | task name (auto from the first 6 words if absent) |
+| `lora:` | accumulate | global `loras` (repeatable) — value is a LoRA **spec** `SOURCE[:scale]` (scale default 1.0): a local `path.safetensors`, an HF repo `org/name` (add `#file`), or `civitai:ID` / `civitai-version:ID`. Put it in the global block — per-scene `lora:` isn't emitted |
+| `seed:` `count:` `size:` `steps:` `guidance:` `scheduler:` `refine:` | last-wins | scenario default (global block) or per-task override (scene block) |
+| `name:` | last-wins | task name (auto-slugged from the first 6 words; non-Latin prose → `scene_N`) |
 | `skip:` | last-wins | `true` omits the block |
+
+`tag:` and `weather:` are accepted (won't trip `--lint`) but are **not yet emitted** to the
+scenario — don't rely on them.
 
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.
