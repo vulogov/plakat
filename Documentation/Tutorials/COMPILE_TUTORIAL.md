@@ -259,7 +259,7 @@ Plus the list/array specials:
 # Global
 model: sdxl
 aspect: 16:9
-naturalize: photo
+naturalize: painting medium=watercolor brush=0.6   # ← de-slop + real brush strokes (6.27)
 pag-scale: 3.0
 
 # Scene — regional prompting + ControlNet + a per-task override
@@ -268,6 +268,10 @@ control: depth:./hint.png:0.8
 strength: 0.6
 A clean medieval street at dawn.
 ```
+
+The `naturalize:` value is a full **naturalize spec** — `preset` + focuses + `paper=`/`medium=`/`brush=`
+— so a compiled scenario can request the weight-free de-slop **and** hand-media brush strokes (6.27):
+`naturalize: photo`, `naturalize: painting paper=0.7 medium=watercolor`, `naturalize: photo medium=oil brush=0.8`.
 
 ### Scene / weather axes from prose *(6.27)*
 

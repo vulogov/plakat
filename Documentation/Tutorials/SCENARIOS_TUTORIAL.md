@@ -252,6 +252,32 @@ encoding). Local LLM weights are cached in-process, so a 100-task
 scenario loads the LLM once. See
 [`PROMPT_ENHANCER_TUTORIAL.md`](PROMPT_ENHANCER_TUTORIAL.md).
 
+## 7b. Naturalize post-pass (`naturalize:`)
+
+A scenario-global **`naturalize:`** field runs the weight-free de-slop pass over **every** image the
+scenario produces — the same engine as `plakat naturalize`. The value is a **spec**: a preset,
+optional content focuses, and (6.27) the art knobs `paper=` / `medium=` / `brush=`.
+
+```hjson
+{
+  model: "sdxl"
+  naturalize: "photo vegetation=1 sky=0.5"          // de-slop toward realism
+  tasks: [ … ]
+}
+```
+
+For painting styles, name the medium to get **real hand-media brush strokes** (not just grain):
+
+```hjson
+naturalize: "painting medium=watercolor paper=0.7"   // watercolor: strokes + edge pooling + paper
+naturalize: "photo medium=oil brush=0.8"             // oil: Kuwahara + directional strokes + impasto
+```
+
+`medium=` fires the brush pass (`brush=` sets its strength, default 0.6; `brush=0` disables it while
+keeping paper/grade). Media: `watercolor` · `oil`/`acrylic` · `gouache` · `ink` · `pastel`. Photos
+(no `medium=`) are unaffected. See [`../NATURALIZE_TUTORIAL.md`](../NATURALIZE_TUTORIAL.md). *(This is
+exactly what `plakat compile` emits from a `naturalize:` directive, so prose → scenario carries it too.)*
+
 ## 8. Partial-run filters (v0.19)
 
 Three flags for working with subsets of a long scenario:

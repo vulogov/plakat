@@ -937,6 +937,14 @@ pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
     let chunks = extract_text_chunks(&bytes);
     let img = image::load_from_memory(&bytes).with_context(|| format!("decoding {}", path.display()))?.to_rgb8();
     let mut out = crate::naturalize::apply(&img, &params);
+    // 6.27: brush strokes for a painting medium named in the spec (`medium=oil brush=0.7`) — before
+    // paper, so tooth/granulation ride the strokes. Syncs the CLI feature to prose/scenario specs.
+    if let Some(m) = crate::naturalize::brush::medium_from_spec(spec) {
+        let bs = crate::naturalize::brush::brush_from_spec(spec).unwrap_or(0.6);
+        if bs > 0.0 {
+            out = crate::naturalize::brush::apply_brush(&out, m, bs);
+        }
+    }
     // QUALITY-5 P3: spec parity for --paper (`generate --naturalize "... paper=0.6"`, scenario field).
     if let Some(pv) = crate::naturalize::paper_from_spec(spec).filter(|v| *v > 0.0) {
         out = crate::naturalize::paper_texture(&out, pv);

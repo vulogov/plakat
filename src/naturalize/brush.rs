@@ -69,6 +69,17 @@ impl Medium {
     }
 }
 
+/// Parse `medium=<kind>` from a naturalize **spec** (`generate --naturalize`, scenario `naturalize:`,
+/// compiled `naturalize:`) → the painting [`Medium`]. `None` when absent or not a painting medium.
+pub fn medium_from_spec(spec: &str) -> Option<Medium> {
+    spec.split_whitespace().find_map(|t| t.strip_prefix("medium=")).and_then(Medium::parse)
+}
+
+/// Parse `brush=<N>` stroke strength from a spec; `None` if absent (caller defaults to 0.6).
+pub fn brush_from_spec(spec: &str) -> Option<f32> {
+    spec.split_whitespace().find_map(|t| t.strip_prefix("brush=").and_then(|v| v.parse::<f32>().ok()))
+}
+
 /// Apply the medium's brush-stroke pass at `strength` (0..1). Returns a new image; `strength <= 0`
 /// (or a 1×1 image) is a clone. Deterministic.
 pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
@@ -345,6 +356,14 @@ mod tests {
             ls.iter().map(|l| (l - mean).powi(2)).sum::<f32>() / ls.len() as f32
         };
         assert!(var(&kuwahara(&noisy, 3)) < var(&noisy), "Kuwahara should flatten the patch");
+    }
+
+    #[test]
+    fn spec_parses_medium_and_brush() {
+        assert_eq!(medium_from_spec("photo paper=0.6 medium=watercolor brush=0.7"), Some(Medium::Watercolor));
+        assert_eq!(brush_from_spec("photo medium=oil brush=0.7"), Some(0.7));
+        assert_eq!(medium_from_spec("photo paper=0.6"), None); // no medium= → off
+        assert_eq!(brush_from_spec("photo medium=oil"), None); // caller defaults to 0.6
     }
 
     #[test]
