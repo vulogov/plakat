@@ -1350,6 +1350,7 @@ impl App {
         std::thread::spawn(move || {
             let result = rt
                 .block_on(crate::compile::compile_to_string(&to_compile, &opts))
+                .map(|(hjson, _warnings)| hjson)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
         });
@@ -1396,6 +1397,7 @@ impl App {
         std::thread::spawn(move || {
             let result = rt
                 .block_on(crate::compile::compile_to_string(&text, &opts))
+                .map(|(hjson, _warnings)| hjson)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(result);
         });

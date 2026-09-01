@@ -10,6 +10,9 @@ pub struct CompiledScene {
     pub scene: ResolvedScene,
     pub prompt: String,
     pub negative: String,
+    /// 6.26.2 diligence warnings for this scene (budget overflow / dropped style) — surfaced to
+    /// the user by the CLI rather than silently accepted. Empty when the scene compiled cleanly.
+    pub warnings: Vec<String>,
 }
 
 fn q(s: &str) -> String {
@@ -300,6 +303,7 @@ mod tests {
             scene,
             prompt: "a frozen tundra, lone rider, aurora".into(),
             negative: "blurry, watermark, daylight".into(),
+            warnings: Vec::new(),
         };
         (globals, vec![cs])
     }

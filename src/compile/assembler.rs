@@ -40,9 +40,19 @@ pub fn assemble_input(scene: &ResolvedScene) -> String {
 
 const POSITIVE_BASE: &str = "\
 You are an expert prompt engineer for text-to-image diffusion models. Rewrite the \
-user's scene description into a single optimized image-generation prompt. Output \
-ONLY the prompt — no preamble, no quotation marks, no markdown, no explanation. \
-Preserve the user's subject and intent; do not invent unrelated elements.";
+user's scene description into a single optimized image-generation prompt for the SPECIFIC \
+target model described below. Output ONLY the prompt — no preamble, no quotation marks, no \
+markdown, no explanation.\n\
+Optimize for the target model while preserving the description:\n\
+- Keep EVERY distinct subject and element the user describes — all people/characters (and \
+their stated variety, e.g. men, women, and children of different ages), objects, materials, \
+and colours. Never collapse a described group of people into a single word, and never silently \
+drop an element. If the description is richer than the model's token budget, TIGHTEN the wording \
+(drop function words, merge into keyword clusters) so everything fits — do NOT omit content.\n\
+- Honour the STYLE DIRECTION exactly as given — render in the style the user asked for and do \
+NOT substitute a different style or medium. Carry the user's style words into the prompt and put \
+them up front so they anchor the image. If no style is given, do not invent one.\n\
+- Do not invent unrelated elements.";
 
 const FAMILY_SD15: &str = "\
 TARGET MODEL: Stable Diffusion 1.5 family (CLIP text encoder, 77-token limit).\n\
@@ -69,6 +79,82 @@ fn family_section(f: ModelFamily) -> &'static str {
         ModelFamily::Sdxl => FAMILY_SDXL,
         ModelFamily::Flux => FAMILY_FLUX,
     }
+}
+
+/// The upper end of a family's *effective* prompt budget in tokens — beyond this, later prompt
+/// content is increasingly ignored at render time (CLIP truncates hard at 77; SDXL's dual CLIP
+/// stretches the useful range; Flux's T5 is far larger). Used to WARN, never to truncate.
+pub fn family_token_budget(f: ModelFamily) -> usize {
+    match f {
+        ModelFamily::Sd15 | ModelFamily::Unknown => 77,
+        ModelFamily::Sdxl => 150,
+        ModelFamily::Flux => 300,
+    }
+}
+
+/// Rough CLIP/T5 token estimate of a prompt (a warning heuristic, not exact): whitespace- and
+/// comma-separated pieces scaled by ~1.3 for sub-word splitting. Deterministic.
+pub fn estimate_tokens(text: &str) -> usize {
+    let words = text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()).count();
+    (words * 4).div_ceil(3)
+}
+
+/// Whether the user's STYLE DIRECTION survived into the generated prompt — style-agnostic: it
+/// checks that at least one *significant* word from any style value appears (case-insensitively)
+/// in the prompt, whatever the style is. Returns `true` when no style was given (nothing to check).
+/// Catches the "enhancer dropped the style the user asked for" failure without assuming any
+/// particular style (photographic, illustration, or otherwise).
+pub fn style_survived(styles: &[String], prompt: &str) -> bool {
+    // Short/function words carry no style signal; ignore them so a match means the real style term.
+    const STOP: [&str; 12] = [
+        "the", "a", "an", "of", "in", "and", "or", "with", "for", "to", "style", "art",
+    ];
+    let pl = prompt.to_lowercase();
+    let mut had_signal = false;
+    for s in styles {
+        for w in s.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+            if w.len() < 3 || STOP.contains(&w) {
+                continue;
+            }
+            had_signal = true;
+            if pl.contains(w) {
+                return true; // at least one style word carried through
+            }
+        }
+    }
+    // If there were style words to check and none appeared, the style was dropped → false.
+    // If there was no style (or only stop-words), there's nothing to enforce → true.
+    !had_signal
+}
+
+/// Post-generation diligence warnings for one compiled scene (6.26.2) — surfaced to the user
+/// instead of silently accepting a prompt that overflows the model's budget or drops the style
+/// they asked for. `styles` are the scene's STYLE DIRECTION values; `prompt` is the final positive.
+pub fn scene_warnings(
+    name: &str,
+    styles: &[String],
+    prompt: &str,
+    family: ModelFamily,
+    enhanced: bool,
+) -> Vec<String> {
+    let mut w = Vec::new();
+    let est = estimate_tokens(prompt);
+    let budget = family_token_budget(family);
+    if est > budget {
+        w.push(format!(
+            "scene '{name}': prompt ~{est} tokens exceeds the ~{budget}-token effective range for {} — later elements may be ignored at render; tighten the description or split the scene",
+            family.label()
+        ));
+    }
+    // The style-drop check only makes sense when the enhancer ran — `--no-enhance` keeps the
+    // user's verbatim text (which never had the STYLE DIRECTION injected in the first place).
+    if enhanced && !styles.is_empty() && !style_survived(styles, prompt) {
+        let asked = styles.join(", ");
+        w.push(format!(
+            "scene '{name}': the STYLE you asked for ('{asked}') did not appear in the prompt — the enhancer may have dropped it (try a stronger --provider, or --no-enhance to keep your wording)"
+        ));
+    }
+    w
 }
 
 /// Build the positive-call system prompt: base + style injections + the
@@ -137,6 +223,35 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn style_survived_is_style_agnostic() {
+        // A carried-through style word → survived (any style, not just photographic).
+        assert!(style_survived(&["cinematic photography".into()], "cinematic street scene, dusk"));
+        assert!(style_survived(&["watercolor illustration".into()], "a watercolor of a harbour"));
+        // Style words wholly absent from the prompt → dropped.
+        assert!(!style_survived(&["cinematic photography".into()], "a detailed illustration of a street"));
+        // No style given → nothing to enforce (true).
+        assert!(style_survived(&[], "anything"));
+        // Only stop-words in the style → nothing enforceable (true).
+        assert!(style_survived(&["in the style of".into()], "unrelated prompt"));
+    }
+
+    #[test]
+    fn scene_warnings_flag_budget_and_dropped_style() {
+        // Over-budget prompt warns (SD15 ~77 tokens).
+        let long = "word ".repeat(80);
+        let w = scene_warnings("s", &[], &long, ModelFamily::Sd15, true);
+        assert!(w.iter().any(|m| m.contains("exceeds")), "budget warned: {w:?}");
+        // Enhanced + style dropped → style warning; verbatim (enhanced=false) → no style warning.
+        let dropped = scene_warnings("s", &["cinematic photography".into()], "a plain illustration", ModelFamily::Sdxl, true);
+        assert!(dropped.iter().any(|m| m.contains("STYLE you asked for")), "style warned: {dropped:?}");
+        let verbatim = scene_warnings("s", &["cinematic photography".into()], "a plain illustration", ModelFamily::Sdxl, false);
+        assert!(verbatim.is_empty(), "no style warning under --no-enhance: {verbatim:?}");
+        // Style carried through → no warning.
+        let ok = scene_warnings("s", &["cinematic photography".into()], "cinematic photography of a street", ModelFamily::Sdxl, true);
+        assert!(ok.is_empty(), "clean: {ok:?}");
     }
 
     #[test]

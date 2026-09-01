@@ -240,7 +240,17 @@ async fn compile_one_scene(
         }
     };
 
-    emitter::CompiledScene { scene: scene.clone(), prompt, negative }
+    // 4) diligence warnings (6.26.2): budget overflow / dropped style. Style is only checked when
+    // the enhancer actually ran (verbatim `--no-enhance` never injects the style directive).
+    let warnings = assembler::scene_warnings(
+        &scene.name,
+        &scene.styles,
+        &prompt,
+        scene.family,
+        !opts.no_enhance && !assembled.is_empty(),
+    );
+
+    emitter::CompiledScene { scene: scene.clone(), prompt, negative, warnings }
 }
 
 /// Whether an LLM-generated negative honours the user's explicit `negative:` seed terms — each
@@ -298,7 +308,9 @@ fn load_persona(name: &str) -> String {
 
 /// Compile a `prompts.txt` string into a scenario HJSML string. With
 /// `no_enhance && no_negative` the whole pass is deterministic (the corpus gate).
-pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<String> {
+/// Compile to the scenario HJSON plus any per-scene diligence warnings (6.26.2) — budget
+/// overflow / dropped style — for the CLI to surface. The warnings never change the output.
+pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>)> {
     let doc = parser::parse(input)?;
     let resolved = resolver::resolve(&doc, &opts.default_model)?;
     let eargs = crate::prompt::EnhanceArgs::default();
@@ -325,7 +337,9 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
             .await
     };
 
-    Ok(emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider))
+    let warnings: Vec<String> = compiled.iter().flat_map(|c| c.warnings.clone()).collect();
+    let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);
+    Ok((hjson, warnings))
 }
 
 /// Lint a `prompts.txt` without calling the LLM (E-C2): unknown commands and
@@ -474,8 +488,8 @@ mod tests {
             parallel: 0,
             input_name: "t.txt".into(),
         };
-        let a = compile_to_string(input, &opts).await.unwrap();
-        let b = compile_to_string(input, &opts).await.unwrap();
+        let a = compile_to_string(input, &opts).await.unwrap().0;
+        let b = compile_to_string(input, &opts).await.unwrap().0;
         assert_eq!(a, b, "deterministic with no LLM");
         assert!(a.contains("prompt: \"wide shot, A frozen tundra., 8k\""));
         assert!(a.contains("negative: \"blurry\""));

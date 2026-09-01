@@ -326,7 +326,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         None => None,
     };
 
-    let hjson = compile::compile_to_string(
+    let (hjson, warnings) = compile::compile_to_string(
         &input,
         &CompileOpts {
             provider: args.provider.clone(),
@@ -340,6 +340,12 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         },
     )
     .await?;
+
+    // 6.26.2: surface per-scene diligence warnings (budget overflow / dropped style) to stderr —
+    // never silently drop. These don't change the emitted scenario; they tell the user to act.
+    for warning in &warnings {
+        eprintln!("{}  {warning}", style("⚠").yellow().bold());
+    }
 
     // C2 (FACESWAP-4): validate the emitted scenario is loadable (deserialises + known task types) before
     // writing — so a compiled scenario is guaranteed runnable, not just well-formed text.
