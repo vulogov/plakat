@@ -174,6 +174,25 @@ pub struct NaturalizeArgs {
     /// preserved) · `non-face` (all non-face pixels, background regenerates) · `full` (whole image).
     #[arg(long = "repair-scope", value_name = "SCOPE", default_value = "figures", help_heading = "Corrective (needs a model)")]
     pub repair_scope: String,
+    /// **Painterly repaint** (model-backed, 6.27) — re-paint the whole image via img2img anchored to
+    /// the medium (`--medium`/`--style`, or CLIP auto-detected), so the DIFFUSION MODEL builds the
+    /// brush strokes **and** the form together (real watercolor washes / oil impasto, not a surface
+    /// filter — and it also rebuilds melted forms). The generation-side complement to the weight-free
+    /// `--medium` pass. Opt-in; needs a model. Works for **any** medium (watercolor included).
+    #[arg(long, default_value_t = false, help_heading = "Corrective (needs a model)")]
+    pub repaint: bool,
+    /// `--repaint` denoise strength (0..1). Low (~0.3–0.4) keeps the composition + adds media
+    /// character; higher repaints more (more strokes, more form change). Default 0.38.
+    #[arg(long = "repaint-strength", value_name = "N", help_heading = "Corrective (needs a model)")]
+    pub repaint_strength: Option<f32>,
+    /// Model alias for `--repaint` (default: `--model`). A painterly checkpoint gives the most
+    /// authentic media.
+    #[arg(long = "repaint-model", value_name = "ALIAS", help_heading = "Corrective (needs a model)")]
+    pub repaint_model: Option<String>,
+    /// A painterly LoRA for `--repaint` (`spec[:scale]`, e.g. `watercolor-style:0.8`) — pushes the
+    /// medium harder than the prompt anchor alone.
+    #[arg(long = "repaint-lora", value_name = "SPEC", help_heading = "Corrective (needs a model)")]
+    pub repaint_lora: Option<String>,
     /// Art **style/medium** to preserve during model corrections (`--repair`/`--geometry`/`--anatomy`),
     /// e.g. `--style "vintage watercolor storybook illustration"`. Anchors the re-paint to the source
     /// medium instead of drifting to photoreal (the cause of art regressions).
@@ -689,11 +708,16 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // Brush strokes (naturalize media pass): synthesize human-like, gradient-aligned strokes for a
     // painting medium — fires when `--medium`/`--style` names one, or `--auto-medium` detected it.
     // Opt-in: no painting medium → no brush. Strength 0.6 by default; `--brush-strength 0` disables.
-    let brush = art_style
-        .as_deref()
-        .and_then(naturalize::brush::Medium::detect)
-        .map(|m| (m, a.brush_strength.unwrap_or(0.6)))
-        .filter(|(_, s)| *s > 0.0);
+    // Skipped under `--repaint` — the model already painted the strokes (they're alternatives).
+    let brush = (!a.repaint)
+        .then(|| {
+            art_style
+                .as_deref()
+                .and_then(naturalize::brush::Medium::detect)
+                .map(|m| (m, a.brush_strength.unwrap_or(0.6)))
+                .filter(|(_, s)| *s > 0.0)
+        })
+        .flatten();
 
     // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
     //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative
@@ -766,6 +790,22 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+
+    // Painterly repaint (6.27): the model paints the image IN the medium — strokes/washes + form
+    // together (real watercolor, oil impasto, …), the generation-side complement to the weight-free
+    // `--medium` pass. Runs last in the model stage (over the cleaned image).
+    if a.repaint {
+        let repainted = tmp.path().join("repainted.png");
+        let rmodel = a.repaint_model.as_deref().unwrap_or(&a.model);
+        let strength = a.repaint_strength.unwrap_or(0.38);
+        match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps).await {
+            Ok(()) => {
+                println!("  {} painterly repaint (strength {strength:.2}{})", style("de-slop").green(), art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
+                current_input = repainted;
+            }
+            Err(e) => tracing::warn!(target: "plakat", "naturalize --repaint: {e}"),
         }
     }
 

@@ -106,6 +106,30 @@ gradient-aligned, bristle-textured marks (not a global filter) — so the sky, s
 differently-oriented strokes. Tune the density/visibility with `--brush-strength` (try `0.8–1.0` for
 overtly painted; drop `--paper` when you want strokes, not granulation).
 
+> **`watercolor` is soft on purpose.** It has *no* placed strokes (watercolor is diffuse) — the pebbled
+> texture you see with watercolor is the `--paper` granulation, not brushwork. For **visible directional
+> strokes** use `--medium oil --paper 0`. For genuine hand-media (watercolor *or* oil), use `--repaint`.
+
+### Painterly repaint — `--repaint` (model-backed, the real thing) *(6.27)*
+The weight-free `--medium` pass is a *surface* effect; it can't build form. **`--repaint`** re-paints the
+whole image with the **diffusion model**, anchored to the medium — so the model paints the **brush
+strokes / washes AND the form together** (and rebuilds the melted shapes a filter can't touch). This is
+the generation-side path, and it's **medium-agnostic** — the medium is just the prompt anchor, so it
+works for **watercolor** (real wet-on-wet washes, granulation) exactly as well as oil (impasto).
+
+```bash
+plakat naturalize art.png --out out.png --repaint --medium watercolor --repaint-strength 0.4
+plakat naturalize art.png --out out.png --repaint --medium oil --repaint-lora oil-painting:0.8
+plakat naturalize art.png --out out.png --repaint --auto-medium        # detect the medium, then repaint
+```
+
+- **`--repaint-strength`** (default `0.38`): low `~0.3–0.4` keeps the composition and adds media character;
+  higher repaints more (more strokes, more form change). Start low, raise until it reads as painted.
+- **`--repaint-model`** (default `--model`): point at a painterly checkpoint for the most authentic media.
+- **`--repaint-lora`** `spec[:scale]`: push the medium harder than the prompt anchor (`watercolor-style:0.8`).
+- The procedural brush pass is **skipped** under `--repaint` (the model already painted the strokes).
+- Needs a model; runs as the last model step, then the light film grade finishes it.
+
 ```bash
 plakat naturalize oil-portrait.png  --out out.png --medium oil                 # strokes at 0.6
 plakat naturalize watercolor.png    --out out.png --medium watercolor --paper 0.7

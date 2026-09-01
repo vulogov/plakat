@@ -73,6 +73,45 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
     Ok(())
 }
 
+/// 6.27: **painterly repaint** — a whole-image img2img anchored to the medium style, so the diffusion
+/// MODEL repaints the image in that medium (brush strokes / washes AND form together — the thing a
+/// weight-free post-filter can't do). `style` is the medium anchor (from `resolve_style`/
+/// `detect_medium`); `strength` is the denoise (low keeps composition, high repaints more).
+/// Medium-agnostic: watercolor, oil, gouache, ink, pastel — the medium is just the prompt anchor.
+pub async fn repaint(
+    input: &Path,
+    out: &Path,
+    style: Option<&str>,
+    strength: f32,
+    model: &str,
+    lora: Option<&str>,
+    device: Option<&str>,
+    steps: usize,
+) -> Result<()> {
+    let anchor = style.unwrap_or("a hand-painted illustration, visible directional brush strokes, painterly");
+    let mut g = crate::api::Img2img::new(model, input)
+        .prompt(anchor)
+        .negative("photograph, 3d render, cgi, smooth digital gradient, low quality, blurry, jpeg artifacts, deformed, extra fingers")
+        .strength(strength.clamp(0.05, 0.95))
+        .steps(steps)
+        .seed(0)
+        .count(1);
+    if let Some(d) = device {
+        g = g.device(d);
+    }
+    if let Some(spec) = lora {
+        // `spec[:scale]` — the trailing numeric is the scale (default 0.8).
+        let (src, scale) = match spec.rsplit_once(':').and_then(|(s, sc)| sc.parse::<f32>().ok().map(|v| (s, v))) {
+            Some((s, v)) => (s, v),
+            None => (spec, 0.8),
+        };
+        g = g.lora(src, scale);
+    }
+    let imgs = g.run().await.context("painterly repaint (img2img)")?;
+    imgs.first().context("repaint produced no image")?.save(out)?;
+    Ok(())
+}
+
 /// **Auto medium-detection** (RFC QUALITY-4 P2) — CLIP zero-shot: embed the image and a bank of medium
 /// probes into the shared CLIP space and pick the closest, returning the matching **style anchor** string
 /// for the model corrections (so `--repair`/`--geometry` hold the source medium without a manual
