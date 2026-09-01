@@ -149,9 +149,32 @@ composition: component.street, component.sky
   checked** like any other. An unknown `component.<name>` reference is a clear compile error.
 
 This **extends** the existing keys — `header:`/`footer:`/`persona:`/`style:` and free-text all work
-exactly as before; composition just slots in. *(Components nest one level — a component's text is
-literal, not itself a composition. Scenario-side `components:`/`composition:` in hand-authored HJSON
-is the next step.)*
+exactly as before; composition just slots in. *(A component's text is literal — one level, not itself
+a composition.)*
+
+**In a hand-authored scenario too.** The same feature works directly in scenario HJSON: a global
+`components` map + a per-task `composition` list. At render the components fold into the task's
+`prompt` (compose, then prose) and the enhancer enriches the whole — so a scenario is as DRY as a
+compiled prose file:
+
+```hjson
+{
+  model: "sdxl"
+  components: { street: "cobblestone medieval street", sky: "bright clear sky" }
+
+  tasks:
+  [
+    {
+      name: market
+      composition: ["street", "sky"]   // bare names or "component.street" both work
+      prompt: "a baker carrying bread"  // ← appended after the components
+    }
+  ]
+}
+```
+
+`plakat scenario` resolves it at load; `--check` validates the refs; an unknown component is a clear
+error listing the defined names.
 
 ## Every command key
 

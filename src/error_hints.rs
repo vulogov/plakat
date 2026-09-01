@@ -253,6 +253,11 @@ fn unquoted_array_hint(source: &str) -> Option<String> {
             continue;
         }
         let inner = &rest[1..rest.len() - 1];
+        // Skip arrays of OBJECTS (`[ { name: "x" } ]`) — the ':' there is inside an object, not an
+        // unquoted scalar. Only bare comma-separated scalars can be "unquoted with a colon".
+        if inner.contains('{') || inner.contains('}') {
+            continue;
+        }
         for elem in inner.split(',') {
             let e = elem.trim();
             if e.is_empty() || e.starts_with('"') {
@@ -334,6 +339,8 @@ mod tests {
         assert!(unquoted_array_hint(ok).is_none());
         // A plain bareword array (no ':'/filename) isn't flagged.
         assert!(unquoted_array_hint("{ tags: [hero, wide] }").is_none());
+        // An array of OBJECTS (the ':' is inside `{ … }`) is not a false positive.
+        assert!(unquoted_array_hint("  scene: [ { name: \"plain\", prompt: \"\" } ]").is_none());
         // decorate_scenario_parse surfaces the hint even with no task context.
         let decorated = decorate_scenario_parse(anyhow::anyhow!("UnexpectedChar at 4:3"), src);
         assert!(format!("{decorated:#}").contains("must be quoted"));

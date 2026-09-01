@@ -147,6 +147,12 @@ struct ScenarioFile {
     seed: Option<u64>,
     out: Option<PathBuf>,
 
+    /// 6.26.x: reusable prompt pieces. `components: { street: "...", sky: "..." }` in the scenario
+    /// global scope; a task's `composition: [...]` references them by name and they assemble into
+    /// its prompt (before the task's own `prompt`, then enriched via the enhancer).
+    #[serde(default)]
+    components: std::collections::HashMap<String, String>,
+
     /// 6.10.0: apply the naturalize analog post-pass (RFC QUALITY-1) to every image this scenario
     /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
     naturalize: Option<String>,
@@ -605,6 +611,12 @@ struct TaskDef {
     weather: String,
     #[serde(default)]
     prompt: String,
+
+    /// 6.26.x: reusable-component references — names from the scenario's `components` map. They
+    /// assemble into this task's prompt (in order) BEFORE `prompt` (compose, then prose), then the
+    /// enhancer enriches the whole. `"component.<name>"` or bare `"<name>"` both accepted.
+    #[serde(default)]
+    composition: Vec<String>,
 
     /// Regional prompting: per-region prompts `"x0,y0,x1,y1:prompt"` (canvas
     /// fractions in `[0,1]`). Each region steers its box, blended over the
@@ -1073,12 +1085,68 @@ impl TaskKind {
 /// its output is loadable): the text must deserialize into a [`ScenarioFile`], and every task's `type`
 /// must be a recognised [`TaskKind`]. Lightweight (no model load); catches the compile-output errors that
 /// would otherwise only surface at `scenario` run.
+/// 6.26.x Phase 2: fold each task's `composition:` (reusable-component refs) into its `prompt` —
+/// the components' text in order, then the task's own prompt (compose, then prose). The enhancer
+/// enriches the result downstream. Returns token-budget warnings; an unknown component ref is a
+/// hard error listing the defined names. No-op (byte-identical) when nothing uses composition.
+fn resolve_scenario_compositions(s: &mut ScenarioFile) -> Result<Vec<String>> {
+    if s.tasks.iter().all(|t| t.composition.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let components = s.components.clone();
+    let family = crate::compile::classify_model(s.model.as_deref().unwrap_or("sdxl"));
+    let budget = crate::compile::assembler::family_token_budget(family);
+    let mut warnings = Vec::new();
+    for t in &mut s.tasks {
+        if t.composition.is_empty() {
+            continue;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        for raw in &t.composition {
+            let name = raw.trim().strip_prefix("component.").unwrap_or_else(|| raw.trim()).trim();
+            match components.get(name) {
+                Some(text) => parts.push(text.trim().to_string()),
+                None => {
+                    let mut avail: Vec<&str> = components.keys().map(String::as_str).collect();
+                    avail.sort_unstable();
+                    let known = if avail.is_empty() {
+                        "no `components` defined".to_string()
+                    } else {
+                        format!("defined components: {}", avail.join(", "))
+                    };
+                    anyhow::bail!(
+                        "task `{}`: composition references unknown component `{raw}` — add it to the \
+                         scenario `components` map ({known})",
+                        t.name
+                    );
+                }
+            }
+        }
+        // Compose, then prose: components first, then the task's own prompt.
+        if !t.prompt.trim().is_empty() {
+            parts.push(t.prompt.trim().to_string());
+        }
+        t.prompt = parts.join(", ");
+        let est = crate::compile::assembler::estimate_tokens(&t.prompt);
+        if est > budget {
+            warnings.push(format!(
+                "task `{}`: composed prompt ~{est} tokens exceeds the ~{budget}-token effective range for {} — later elements may be ignored at render",
+                t.name,
+                family.label()
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
 pub fn validate_hjson(hjson: &str) -> Result<()> {
-    let s: ScenarioFile = deser_hjson::from_str(hjson)
+    let mut s: ScenarioFile = deser_hjson::from_str(hjson)
         .map_err(|e| {
             crate::error_hints::decorate_scenario_parse(anyhow::Error::msg(e.to_string()), hjson)
         })
         .context("compiled scenario does not parse as HJSON")?;
+    // 6.26.x: also validate composition refs resolve (unknown component → error) at --check time.
+    resolve_scenario_compositions(&mut s)?;
     for t in &s.tasks {
         TaskKind::from_strs(t.task_type.as_deref(), s.task_type.as_deref())
             .with_context(|| format!("task {:?}: unrecognised type", t.name))?;
@@ -1551,7 +1619,7 @@ pub async fn run_with_events(
         std::fs::read_to_string(&args.file)
             .with_context(|| format!("reading {}", args.file.display()))?
     };
-    let s: ScenarioFile = deser_hjson::from_str(&text)
+    let mut s: ScenarioFile = deser_hjson::from_str(&text)
         .map_err(|e| {
             // v0.33 phase 1: enrich with the surrounding task name
             // when discoverable. Best-effort — falls through to the
@@ -1567,6 +1635,13 @@ pub async fn run_with_events(
     // -------- validate structure --------
     if s.tasks.is_empty() {
         bail!("scenario has no `tasks` to run");
+    }
+
+    // 6.26.x Phase 2: resolve reusable components. For each task with a `composition:`, look its
+    // refs up in the scenario's `components` map and fold them into the task's `prompt` (compose,
+    // then prose) — so the enhancer downstream enriches the whole. Unknown ref → a clear error.
+    for w in resolve_scenario_compositions(&mut s)? {
+        crate::ui::progress::println(&format!("{}  {w}", style("⚠").yellow().bold()));
     }
 
     // v2.7 feature-sync: promote the free-quality guidance-bundle knobs to the env the pipelines
@@ -6458,6 +6533,48 @@ async fn run_animate_task_inline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scenario_composition_folds_components_then_prose() {
+        let src = r#"{
+  model: "sdxl"
+  components: { street: "cobblestone street", sky: "clear sky" }
+
+  tasks:
+  [
+    {
+      name: t1
+      composition: ["street", "sky"]
+      prompt: "a baker"
+    }
+  ]
+}"#;
+        let mut s: ScenarioFile = deser_hjson::from_str(src).unwrap();
+        let warnings = resolve_scenario_compositions(&mut s).unwrap();
+        // Compose (components in order), then prose.
+        assert_eq!(s.tasks[0].prompt, "cobblestone street, clear sky, a baker");
+        assert!(warnings.is_empty());
+        // An unknown component reference errors.
+        let bad = src.replace("\"sky\"", "\"ghost\"");
+        let mut s2: ScenarioFile = deser_hjson::from_str(&bad).unwrap();
+        let err = resolve_scenario_compositions(&mut s2).unwrap_err().to_string();
+        assert!(err.contains("unknown component `ghost`"), "got: {err}");
+        // A composition-only task (no prose) is just the components; `component.` prefix accepted.
+        let only = r#"{
+  components: { a: "foo", b: "bar" }
+
+  tasks:
+  [
+    {
+      name: t
+      composition: ["component.a", "b"]
+    }
+  ]
+}"#;
+        let mut s3: ScenarioFile = deser_hjson::from_str(only).unwrap();
+        resolve_scenario_compositions(&mut s3).unwrap();
+        assert_eq!(s3.tasks[0].prompt, "foo, bar");
+    }
 
     #[test]
     fn reuse_sd_pipeline_only_for_the_exact_vanilla_base() {
