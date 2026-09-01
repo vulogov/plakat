@@ -29,6 +29,9 @@ pub struct ResolvedGlobals {
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedScene {
     pub name: String,
+    /// True when `name` was auto-derived (no explicit `name:`), so compile may upgrade it to a
+    /// meaningful slug from the LLM-enhanced English prompt (6.26.2). Explicit names are left alone.
+    pub name_auto: bool,
     /// The model this scene's prompt is *written for* (family classification).
     /// The scenario still runs on the global model (shared pipeline).
     pub family: ModelFamily,
@@ -152,9 +155,11 @@ fn parse_finite_f64(v: Option<&str>, what: &str) -> Result<Option<f64>> {
     Ok(parsed)
 }
 
-/// Auto scene name from the first 6 words of the description, slugified.
-fn auto_name(free_text: &str, idx: usize) -> String {
-    let slug: String = free_text
+/// A slug from the first 6 words of `text` (ASCII-alphanumeric, lowercased, `_`-joined), or
+/// `None` when it has no ASCII letter — non-Latin prose (e.g. Russian "2-3 этажные…") slugs down
+/// to stray digits ("23") or nothing, which aren't usable, CLI-selectable task names.
+pub(crate) fn slug_from_text(text: &str) -> Option<String> {
+    let slug: String = text
         .split_whitespace()
         .take(6)
         .map(|w| {
@@ -166,15 +171,14 @@ fn auto_name(free_text: &str, idx: usize) -> String {
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join("_");
-    // Require at least one ASCII letter. Non-Latin prose (e.g. Russian "2-3 этажные…") slugs
-    // down to stray ASCII digits — "23" — or nothing; those aren't usable, CLI-selectable task
-    // names, so fall back to a stable `scene_N`. (Common with `translate:` workflows, where the
-    // readable English name only exists post-translation, which happens after this stage.)
-    if slug.chars().any(|c| c.is_ascii_alphabetic()) {
-        slug
-    } else {
-        format!("scene_{}", idx + 1)
-    }
+    slug.chars().any(|c| c.is_ascii_alphabetic()).then_some(slug)
+}
+
+/// Auto scene name from the description, else a stable `scene_N` (sequential) when the description
+/// has no ASCII letters — common with `translate:` workflows, where the readable English name only
+/// exists *after* translation/enhancement (compile upgrades those names then; see `slug_from_text`).
+fn auto_name(free_text: &str, idx: usize) -> String {
+    slug_from_text(free_text).unwrap_or_else(|| format!("scene_{}", idx + 1))
 }
 
 /// Resolve the document. `default_model` is the `--model` CLI fallback (used for
@@ -202,13 +206,14 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         let free_text = s.free_text.join(" ");
         let model_for_family = last_wins(&vals(g, "model"), &vals(Some(s), "model")).map(str::to_string);
         let family = classify_model(model_for_family.as_deref().unwrap_or(default_model));
-        let name = last_wins(&[], &vals(Some(s), "name"))
-            .map(str::to_string)
-            .unwrap_or_else(|| auto_name(&free_text, i));
+        let explicit_name = last_wins(&[], &vals(Some(s), "name")).map(str::to_string);
+        let name_auto = explicit_name.is_none();
+        let name = explicit_name.unwrap_or_else(|| auto_name(&free_text, i));
         let skip = matches!(last_wins(&[], &vals(Some(s), "skip")), Some("true" | "yes" | "1"));
 
         scenes.push(ResolvedScene {
             name,
+            name_auto,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),
@@ -304,6 +309,18 @@ mod tests {
     fn auto_names_from_first_words() {
         let r = resolve_str("A vast frozen tundra stretching to the far horizon.\n");
         assert_eq!(r.scenes[0].name, "a_vast_frozen_tundra_stretching_to");
+    }
+
+    #[test]
+    fn slug_from_text_makes_a_meaningful_name_or_none() {
+        // The English enhanced prompt slugs to a readable name (what compile upgrades to).
+        assert_eq!(
+            slug_from_text("A clean medieval Western European street, cobblestones."),
+            Some("a_clean_medieval_western_european_street".to_string())
+        );
+        // Non-Latin / no ASCII letter → None (compile keeps the sequential scene_N).
+        assert_eq!(slug_from_text("Средневековые 2-3 этажные дома"), None);
+        assert_eq!(slug_from_text(""), None);
     }
 
     #[test]

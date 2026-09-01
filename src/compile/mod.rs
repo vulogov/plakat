@@ -240,17 +240,28 @@ async fn compile_one_scene(
         }
     };
 
-    // 4) diligence warnings (6.26.2): budget overflow / dropped style. Style is only checked when
+    // 4) name upgrade (6.26.2): when the name was auto-derived AND the LLM enhanced the prompt,
+    // slug a MEANINGFUL name from the English prompt (so a `translate:` scene named `scene_1`
+    // becomes e.g. `a_clean_medieval_western_european_street`). Explicit `name:` is left untouched;
+    // if the prompt still yields no ASCII slug, the sequential `scene_N` stands.
+    let mut out_scene = scene.clone();
+    if scene.name_auto && !opts.no_enhance {
+        if let Some(better) = resolver::slug_from_text(&prompt) {
+            out_scene.name = better;
+        }
+    }
+
+    // 5) diligence warnings (6.26.2): budget overflow / dropped style. Style is only checked when
     // the enhancer actually ran (verbatim `--no-enhance` never injects the style directive).
     let warnings = assembler::scene_warnings(
-        &scene.name,
+        &out_scene.name,
         &scene.styles,
         &prompt,
         scene.family,
         !opts.no_enhance && !assembled.is_empty(),
     );
 
-    emitter::CompiledScene { scene: scene.clone(), prompt, negative, warnings }
+    emitter::CompiledScene { scene: out_scene, prompt, negative, warnings }
 }
 
 /// Whether an LLM-generated negative honours the user's explicit `negative:` seed terms — each
@@ -323,7 +334,7 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
     // Scenes are independent → run up to N concurrently. `buffered` preserves
     // input order, so the emitted task order is deterministic regardless of N.
     let n = effective_parallelism(opts.parallel, &opts.provider);
-    let compiled: Vec<emitter::CompiledScene> = if n <= 1 {
+    let mut compiled: Vec<emitter::CompiledScene> = if n <= 1 {
         let mut v = Vec::with_capacity(active.len());
         for s in active.iter().copied() {
             v.push(compile_one_scene(s, opts, &eargs).await);
@@ -336,6 +347,21 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
             .collect()
             .await
     };
+
+    // De-duplicate AUTO-derived names (two scenes can slug to the same words) — a numeric suffix
+    // keeps each task's output directory distinct. Explicit `name:` values are never touched (a
+    // real collision there is the user's to fix, and `--lint` flags it).
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for c in &mut compiled {
+        if !c.scene.name_auto {
+            continue;
+        }
+        let count = seen.entry(c.scene.name.clone()).or_insert(0);
+        *count += 1;
+        if *count > 1 {
+            c.scene.name = format!("{}_{}", c.scene.name, *count);
+        }
+    }
 
     let warnings: Vec<String> = compiled.iter().flat_map(|c| c.warnings.clone()).collect();
     let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);

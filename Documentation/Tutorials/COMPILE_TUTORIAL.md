@@ -124,17 +124,19 @@ LoRA stack is shared across its tasks).
 
 `key: value` lines are commands. Two kinds:
 
-**Prompt keys** — shape or feed the LLM (they don't appear verbatim in the output). Repeats
-concatenate (except `translate:`, last-wins):
+**Prompt keys** — shape or feed the LLM. Repeats concatenate (except `translate:`, last-wins):
 
-| Key | Example | What it does |
-|---|---|---|
-| `header:` | `header: wide establishing shot,` | prepended to the prompt |
-| `footer:` | `footer: 8k, golden-hour light` | appended to the prompt |
-| `negative:` | `negative: blurry, extra fingers` | seed terms **guaranteed** in the auto-negative (a rogue model can't drop them) |
-| `style:` | `style: oil painting, Rembrandt lighting` | steers *how* the LLM writes (goes into its system prompt) |
-| `translate:` | `translate: Russian` | translate the description to English **before** enhancing |
-| `persona:` | `persona: gandalf` | inject `~/.config/plakat/personas/gandalf` into the system prompt |
+| Key | Example | What it does | Needs LLM? |
+|---|---|---|---|
+| `header:` | `header: wide establishing shot,` | prepended to the prompt | no (assembled verbatim) |
+| `footer:` | `footer: 8k, golden-hour light` | appended to the prompt | no (assembled verbatim) |
+| `negative:` | `negative: blurry, extra fingers` | seed terms **guaranteed** in the auto-negative (a rogue model can't drop them; `--no-negative` uses them verbatim) | no |
+| `style:` | `style: oil painting, Rembrandt lighting` | steers *how* the LLM writes (goes into its system prompt) | **yes** |
+| `translate:` | `translate: Russian` | translate the description to English **before** enhancing | **yes** |
+| `persona:` | `persona: gandalf` | inject `~/.config/plakat/personas/gandalf` into the system prompt (falls back to the bare name as a cue) | **yes** |
+
+> `style:`, `translate:` and `persona:` only take effect **with** enhancement — under `--no-enhance`
+> the description is used verbatim and these are skipped (`header:`/`footer:`/`negative:` still apply).
 
 **Scenario keys** — pass straight to the HJSON, no LLM. Set them in the **global block** as
 defaults for every task, and/or inside a **scene block** to override that one task:
@@ -150,15 +152,25 @@ defaults for every task, and/or inside a **scene block** to override that one ta
 | `guidance:` | `guidance: 9` | global / scene | CFG (higher = follow the prompt harder) |
 | `scheduler:` | `scheduler: dpm++` | global / scene | sampler (`euler-a`, `dpm++`, `unipc`, …) |
 | `refine:` | `refine: 10` | global / scene | SDXL refiner-pass steps |
-| `name:` | `name: harbor-dawn` | scene | task name (auto-slugged from the first 6 words if absent; non-Latin prose → `scene_N`) |
+| `name:` | `name: harbor-dawn` | scene | task name — see auto-naming below |
 | `skip:` | `skip: true` | scene | omit this block from the output |
+
+**Auto-naming.** If a block has no `name:`, compile derives one: the first six words of the
+description, slugified (`a_misty_harbour_at_dawn_fishing`). With **enhancement**, the name is taken
+from the *enhanced English* prompt — so a `translate:`-d block whose source is non-Latin gets a
+meaningful English name instead of `scene_N` *(6.26.2)*. If there's still no usable slug (e.g.
+`--no-enhance` on non-Latin prose), it falls back to a sequential `scene_1`, `scene_2`, … Auto
+names are also de-duplicated with a numeric suffix so two similar scenes can't clobber each other.
 
 **Task-type keys** — `type:` turns a block into a *non-generate* task (`faceswap`, `map`,
 `texture`, `product`, `comic`, `bookart`, `fractal`), each with its own `<type>-…` directives.
 See [the task-type section](#non-t2i-tasks-in-prose) below and [`../COMPILE.md`](../COMPILE.md).
 
-> `tag:` and `weather:` are accepted by the parser (so they don't trip `--lint`) but are **not
-> yet emitted** to the scenario — don't rely on them.
+**Not exposed in the text format:** compile emits one default **scene**/**weather** axis
+(`scene: plain`, `weather: any`) — the scenario's scene×weather *variation matrix* isn't authored
+from prose. `scene:`/`weather:` directives are accepted (so they don't trip `--lint`) but **not
+emitted**; to use the matrix, hand-edit the compiled `.hjson`. For variations from prose, write one
+block per variation instead.
 
 Unknown keys are a `--lint` error, so `styl:` / `negaitve:` are caught before you spend an LLM call.
 

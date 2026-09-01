@@ -70,11 +70,13 @@ model: sdxl
 | `model:` | last-wins | global `model` + per-scene **family profile** (scenarios share one model) |
 | `lora:` | accumulate | global `loras` (repeatable) — value is a LoRA **spec** `SOURCE[:scale]` (scale default 1.0): a local `path.safetensors`, an HF repo `org/name` (add `#file`), or `civitai:ID` / `civitai-version:ID`. Put it in the global block — per-scene `lora:` isn't emitted |
 | `seed:` `count:` `size:` `steps:` `guidance:` `scheduler:` `refine:` | last-wins | scenario default (global block) or per-task override (scene block) |
-| `name:` | last-wins | task name (auto-slugged from the first 6 words; non-Latin prose → `scene_N`) |
+| `name:` | last-wins | task name — auto-slugged from the first 6 words; **with enhancement** from the *enhanced English* prompt (so `translate:` blocks get a meaningful name, not `scene_N`); else sequential `scene_N`. Auto names are de-duplicated |
 | `skip:` | last-wins | `true` omits the block |
 
-`tag:` and `weather:` are accepted (won't trip `--lint`) but are **not yet emitted** to the
-scenario — don't rely on them.
+Compile emits one default **scene**/**weather** axis (`scene: plain` / `weather: any`); the
+scenario's scene×weather variation matrix isn't authored from prose. `scene:`/`weather:` (and
+`tag:`) are accepted (won't trip `--lint`) but **not emitted** — hand-edit the `.hjson` for the
+matrix, or write one block per variation.
 
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.
