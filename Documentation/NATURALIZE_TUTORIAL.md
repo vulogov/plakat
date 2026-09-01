@@ -95,11 +95,16 @@ Weight-free, opt-in, and medium-specific — set a painting `--medium` (or let `
 
 | `--medium` | What it synthesizes |
 |---|---|
-| `watercolor` | edge **pooling** (pigment darkens at boundaries) + a short **wet bleed** along the forms (rides the `--paper` granulation) |
-| `oil` / `acrylic` | **Kuwahara** flatten → painted regions, **directional strokes** dragged along the forms, **impasto** highlights on the ridges |
-| `gouache` | flatter Kuwahara + matte directional strokes |
+| `oil` / `acrylic` | **stroke-based rendering** — discrete brush marks *placed* along the forms (Hertzmann-style), over a Kuwahara-flattened under-painting, with bristle texture + **impasto** highlights. The medium for *visible* strokes. |
+| `gouache` | placed strokes — shorter, flatter, opaque, crisp-edged (matte) |
+| `pastel` / `charcoal` | placed strokes — short, soft, chalky, with the under-painting showing through + a coarse **chalk grain** |
+| `watercolor` | **intentionally soft** (diffuse by nature) — edge **pooling** + a short **wet bleed**, over the `--paper` granulation. *No hard strokes — for bold strokes use `oil`.* |
 | `ink` | directional **hatching** in the shadows + crisp edge darkening |
-| `pastel` / `charcoal` | soft directional strokes + a coarse **chalk grain** |
+
+The stroke media (`oil`/`gouache`/`pastel`) share one **stroke-based renderer** that *places* discrete,
+gradient-aligned, bristle-textured marks (not a global filter) — so the sky, stone, and figures get
+differently-oriented strokes. Tune the density/visibility with `--brush-strength` (try `0.8–1.0` for
+overtly painted; drop `--paper` when you want strokes, not granulation).
 
 ```bash
 plakat naturalize oil-portrait.png  --out out.png --medium oil                 # strokes at 0.6

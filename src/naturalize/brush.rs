@@ -91,22 +91,28 @@ pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
     let luma: Vec<f32> = src.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
     let (mag, angle) = sobel(&luma, w, h);
     match medium {
-        // Wet media: no flattening — pigment pools at edges and bleeds slightly along the forms.
+        // Wet media stay SOFT by design — no placed strokes; pigment pools at edges and bleeds a
+        // little along the forms, over the paper granulation (`--paper`). Watercolor is diffuse.
         Medium::Watercolor => {
             let mut out = stroke_smear(src, &angle, &mag, w, h, 2, 0.5 * s);
             edge_darken(&mut out, &mag, w, h, 0.55 * s);
             out
         }
-        // Thick media: flatten into painted regions, then drag directional strokes + raise impasto.
+        // Thick opaque media: STROKE-BASED RENDERING — place discrete, textured, gradient-aligned
+        // brush marks (the shared engine below), tuned per medium. Oil also gets impasto highlights.
         Medium::Oil => {
-            let flat = kuwahara(src, 3);
-            let mut out = stroke_smear(&flat, &angle, &mag, w, h, 4, 0.9 * s);
-            impasto(&mut out, &luma, &angle, w, h, 0.5 * s);
+            // Kuwahara first → flat painted regions; strokes then sample those cleaner colours.
+            let flat = kuwahara(src, 2);
+            let mut out = render_strokes(&flat, &stroke_style(medium), s);
+            let ol: Vec<f32> = out.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+            impasto(&mut out, &ol, &angle, w, h, 0.5 * s);
             out
         }
-        Medium::Gouache => {
-            let flat = kuwahara(src, 2);
-            stroke_smear(&flat, &angle, &mag, w, h, 3, 0.7 * s)
+        Medium::Gouache => render_strokes(src, &stroke_style(medium), s),
+        Medium::Pastel => {
+            let mut out = render_strokes(src, &stroke_style(medium), s);
+            chalk_grain(&mut out, w, h, 0.5 * s);
+            out
         }
         // Ink: crisp, high-contrast, with directional hatching in the shadows.
         Medium::Ink => {
@@ -115,13 +121,154 @@ pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
             edge_darken(&mut out, &mag, w, h, 0.4 * s);
             out
         }
-        // Pastel: soft directional strokes with a heavier chalky grain.
-        Medium::Pastel => {
-            let mut out = stroke_smear(src, &angle, &mag, w, h, 3, 0.6 * s);
-            chalk_grain(&mut out, w, h, 0.5 * s);
-            out
+    }
+}
+
+/// Per-medium brush parameters for the stroke-based renderer.
+#[derive(Debug, Clone, Copy)]
+struct StrokeStyle {
+    width: f32,      // brush width (px)
+    length: f32,     // max stroke length (px)
+    spacing: f32,    // seed grid spacing (< width → overlapping strokes)
+    opacity: f32,    // per-stroke coverage over the under-painting
+    bristle: f32,    // along-stroke bristle streak strength (0..1)
+    edge_soft: f32,  // cross-stroke alpha falloff (soft vs crisp edge)
+    color_tol: f32,  // stop growing a stroke when the luma deviates this much (holds boundaries)
+    base_blur: i32,  // under-painting blur radius (shows between strokes)
+}
+
+fn stroke_style(m: Medium) -> StrokeStyle {
+    match m {
+        // Long, textured, curved strokes over a soft under-painting — classic oil.
+        Medium::Oil => StrokeStyle { width: 5.0, length: 18.0, spacing: 3.2, opacity: 0.92, bristle: 0.5, edge_soft: 0.45, color_tol: 42.0, base_blur: 3 },
+        // Shorter, flatter, opaque, crisper edges — gouache is matte and covering.
+        Medium::Gouache => StrokeStyle { width: 4.0, length: 10.0, spacing: 3.0, opacity: 1.0, bristle: 0.22, edge_soft: 0.18, color_tol: 32.0, base_blur: 2 },
+        // Short, soft, chalky strokes with the under-painting showing through — pastel.
+        Medium::Pastel => StrokeStyle { width: 3.0, length: 8.0, spacing: 2.4, opacity: 0.7, bristle: 0.75, edge_soft: 0.6, color_tol: 55.0, base_blur: 1 },
+        // Not stroke-filled (watercolor/ink handle themselves) — a neutral fallback.
+        _ => StrokeStyle { width: 4.0, length: 12.0, spacing: 3.0, opacity: 0.85, bristle: 0.4, edge_soft: 0.4, color_tol: 40.0, base_blur: 2 },
+    }
+}
+
+/// **Stroke-based rendering** (Hertzmann-style, weight-free + deterministic): lay discrete brush
+/// marks on the canvas. Each mark is seeded on an overlapping grid (jittered), grown **along the
+/// isophote** (perpendicular to the luma gradient, so it follows the form) until the colour drifts
+/// (a boundary), then stamped as an oriented, bristle-textured, soft-edged capsule in the colour
+/// sampled at its seed. The strokes sit over a blurred under-painting, so gaps read as
+/// brushwork, not a filter — and different regions (sky vs stone vs figures) get differently
+/// oriented strokes. `strength` cross-blends the painted canvas with the original.
+fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
+    let (w, h) = (src.width() as usize, src.height() as usize);
+    let src_f: Vec<[f32; 3]> = src.pixels().map(|p| [p.0[0] as f32, p.0[1] as f32, p.0[2] as f32]).collect();
+    let luma: Vec<f32> = src_f.iter().map(|c| lum(c[0], c[1], c[2])).collect();
+    let (_, angle) = sobel(&luma, w, h);
+
+    // Under-painting: a blurred copy per channel, so bare gaps between strokes look painted.
+    let mut canvas: Vec<[f32; 3]> = {
+        let ch = |k: usize| box_blur_gray(&src_f.iter().map(|c| c[k]).collect::<Vec<_>>(), w, h, st.base_blur);
+        let (r, g, b) = (ch(0), ch(1), ch(2));
+        (0..w * h).map(|i| [r[i], g[i], b[i]]).collect()
+    };
+
+    let idx = |x: i32, y: i32| (y.clamp(0, h as i32 - 1) as usize) * w + x.clamp(0, w as i32 - 1) as usize;
+    let step = st.spacing.max(1.0);
+    let half_len = st.length * 0.5;
+    let half_w = (st.width * 0.5).max(0.6);
+
+    // Seed grid (deterministic order → later strokes layer over earlier, like real painting).
+    let mut gy = step * 0.5;
+    while gy < h as f32 {
+        let mut gx = step * 0.5;
+        while gx < w as f32 {
+            let jx = (noise(gx as u32, gy as u32) - 0.5) * step;
+            let jy = (noise((gy as u32) ^ 0x1234, (gx as u32) ^ 0x5678) - 0.5) * step;
+            let (sxf, syf) = ((gx + jx).clamp(0.0, w as f32 - 1.0), (gy + jy).clamp(0.0, h as f32 - 1.0));
+            let seed = idx(sxf as i32, syf as i32);
+            let color = src_f[seed];
+            let seed_l = luma[seed];
+
+            // Grow a poly-line both ways from the seed, following the isophote field.
+            let mut pts: Vec<(f32, f32)> = vec![(sxf, syf)];
+            for &sign in &[1.0f32, -1.0] {
+                let (mut x, mut y) = (sxf, syf);
+                let (mut pdx, mut pdy) = {
+                    let a = angle[seed] + std::f32::consts::FRAC_PI_2;
+                    (a.cos() * sign, a.sin() * sign)
+                };
+                let mut t = 0.0;
+                while t < half_len {
+                    let i = idx(x as i32, y as i32);
+                    let a = angle[i] + std::f32::consts::FRAC_PI_2;
+                    let (mut dx, mut dy) = (a.cos(), a.sin());
+                    if dx * pdx + dy * pdy < 0.0 { dx = -dx; dy = -dy; } // keep direction consistent
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx < 0.0 || ny < 0.0 || nx >= w as f32 || ny >= h as f32 {
+                        break;
+                    }
+                    if (luma[idx(nx as i32, ny as i32)] - seed_l).abs() > st.color_tol {
+                        break; // hit a boundary — a stroke stays within one region
+                    }
+                    pts.push((nx, ny));
+                    x = nx; y = ny; pdx = dx; pdy = dy; t += 1.0;
+                }
+            }
+
+            // Stamp the stroke: an oriented capsule of `width`, bristle-streaked, tapering at the ends.
+            let n = pts.len() as f32;
+            for (k, &(cx, cy)) in pts.iter().enumerate() {
+                // End taper: full alpha in the middle, fading over the last ~30%.
+                let along = (k as f32 / n.max(1.0) - 0.5).abs() * 2.0; // 0 centre → 1 ends
+                let taper = (1.0 - ((along - 0.7).max(0.0) / 0.3)).clamp(0.0, 1.0);
+                // Cross-stroke normal for bristle streaks.
+                let (dx, dy) = if pts.len() > 1 {
+                    let j = k.min(pts.len() - 2);
+                    (pts[j + 1].0 - pts[j].0, pts[j + 1].1 - pts[j].1)
+                } else {
+                    (1.0, 0.0)
+                };
+                let (ndx, ndy) = (-dy, dx); // across the stroke
+                let r = half_w.ceil() as i32;
+                for oy in -r..=r {
+                    for ox in -r..=r {
+                        let (fx, fy) = (cx + ox as f32, cy + oy as f32);
+                        if fx < 0.0 || fy < 0.0 || fx >= w as f32 || fy >= h as f32 {
+                            continue;
+                        }
+                        // Perpendicular distance from the stroke centre-line.
+                        let perp = (ox as f32 * ndx + oy as f32 * ndy) / (ndx * ndx + ndy * ndy).sqrt().max(1e-3);
+                        let pd = perp.abs() / half_w;
+                        if pd > 1.0 {
+                            continue;
+                        }
+                        // Soft cross-section + bristle streaks (noise along the stroke normal).
+                        let soft = (1.0 - pd).powf(1.0 + st.edge_soft * 2.0);
+                        let bristle = 1.0 - st.bristle * noise((perp * 3.0) as u32 ^ (k as u32), (cx + cy) as u32);
+                        let alpha = (st.opacity * soft * bristle * taper).clamp(0.0, 1.0);
+                        let px = &mut canvas[idx(fx as i32, fy as i32)];
+                        for c in 0..3 {
+                            px[c] = px[c] * (1.0 - alpha) + color[c] * alpha;
+                        }
+                    }
+                }
+            }
+            gx += step;
+        }
+        gy += step;
+    }
+
+    // Cross-blend the painted canvas with the original by strength.
+    let s = strength.clamp(0.0, 1.0);
+    let mut out = src.clone();
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let px = out.get_pixel_mut(x as u32, y as u32);
+            for c in 0..3 {
+                px.0[c] = (src_f[i][c] * (1.0 - s) + canvas[i][c] * s).clamp(0.0, 255.0) as u8;
+            }
         }
     }
+    out
 }
 
 /// Sobel gradient magnitude + angle of the luma field. Angle is the gradient direction (radians);
