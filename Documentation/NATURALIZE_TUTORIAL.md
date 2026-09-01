@@ -88,6 +88,31 @@ plakat naturalize watercolor.png --out out.png --paper 0.6 --polish 0.7
 a pure weight-free run, add `--auto-medium` to let the detector decide. It's also reachable from a spec:
 `generate --naturalize "photo paper=0.6"`, a scenario `naturalize:` field, and `api::Naturalize`.
 
+### Human-like brush strokes — `--medium` + `--brush-strength` (art only) *(6.27)*
+Paper/pigment is the *surface*; this is the thing grain can't fake — **gradient-aligned brush strokes**
+that follow the forms, so a painting reads as *hand-made* instead of the smooth AI "dilution and blending".
+Weight-free, opt-in, and medium-specific — set a painting `--medium` (or let `--auto-medium` detect it):
+
+| `--medium` | What it synthesizes |
+|---|---|
+| `watercolor` | edge **pooling** (pigment darkens at boundaries) + a short **wet bleed** along the forms (rides the `--paper` granulation) |
+| `oil` / `acrylic` | **Kuwahara** flatten → painted regions, **directional strokes** dragged along the forms, **impasto** highlights on the ridges |
+| `gouache` | flatter Kuwahara + matte directional strokes |
+| `ink` | directional **hatching** in the shadows + crisp edge darkening |
+| `pastel` / `charcoal` | soft directional strokes + a coarse **chalk grain** |
+
+```bash
+plakat naturalize oil-portrait.png  --out out.png --medium oil                 # strokes at 0.6
+plakat naturalize watercolor.png    --out out.png --medium watercolor --paper 0.7
+plakat naturalize art.png           --out out.png --auto-medium                # detect + strokes
+plakat naturalize art.png           --out out.png --medium oil --brush-strength 0.9   # heavier
+```
+
+Strength defaults to **0.6** when a medium is present; **`--brush-strength 0`** disables the strokes while
+keeping paper/grade. Strokes run **before** paper (so tooth/granulation sit on top). Opt-in: with no
+painting medium, the strokes never fire — the `painting` preset is unchanged. Photos are unaffected (no
+medium). Do not use on photos.
+
 ### Batch — a whole folder (6.14)
 Point `naturalize` at a **directory** and it de-slops every image into the `--out` directory (same
 filenames). Model-backed passes reload per image (a convenience, not a resident server).

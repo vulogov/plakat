@@ -11,6 +11,7 @@
 //! Structural errors (bad reflections, incoherent geometry, plastic hands) are a model-capability limit —
 //! the corrective focuses (`--geometry`/`--anatomy`, model-backed) and the hi-res fix address those.
 
+pub mod brush;
 pub mod refine;
 
 use image::{GrayImage, Luma, Rgb, RgbImage};
@@ -397,12 +398,12 @@ pub fn from_spec(spec: &str) -> Params {
     p
 }
 
-fn lum(r: f32, g: f32, b: f32) -> f32 {
+pub(crate) fn lum(r: f32, g: f32, b: f32) -> f32 {
     0.299 * r + 0.587 * g + 0.114 * b
 }
 
 /// Deterministic value noise in `[-1,1]` from integer coords (no RNG → same image every run).
-fn noise(x: u32, y: u32) -> f32 {
+pub(crate) fn noise(x: u32, y: u32) -> f32 {
     let mut h = x.wrapping_mul(374761393).wrapping_add(y.wrapping_mul(668265263));
     h = (h ^ (h >> 13)).wrapping_mul(1274126177);
     h ^= h >> 16;
@@ -422,7 +423,7 @@ fn bilinear(img: &RgbImage, ch: usize, x: f32, y: f32) -> f32 {
     top * (1.0 - fy) + bot * fy
 }
 
-fn box_blur_gray(src: &[f32], w: usize, h: usize, r: i32) -> Vec<f32> {
+pub(crate) fn box_blur_gray(src: &[f32], w: usize, h: usize, r: i32) -> Vec<f32> {
     let mut out = vec![0.0f32; w * h];
     for y in 0..h {
         for x in 0..w {

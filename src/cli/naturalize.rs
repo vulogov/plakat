@@ -56,6 +56,13 @@ pub struct NaturalizeArgs {
     /// disables.
     #[arg(long)]
     pub paper: Option<f32>,
+    /// **Brush strokes** (0..1) — synthesize human-like, gradient-aligned strokes for a painting
+    /// medium: watercolor edge-pooling + bleed, oil Kuwahara-flatten + directional strokes +
+    /// impasto, gouache flat strokes, ink hatching, pastel chalk. Opt-in — fires only when a
+    /// painting `--medium` is set (or auto-detected via `--auto-medium`). Default `0.6` when a
+    /// medium is present; `--brush-strength 0` disables. Weight-free, follows the forms.
+    #[arg(long = "brush-strength", value_name = "N")]
+    pub brush_strength: Option<f32>,
     /// Run CLIP medium-detection on a **weight-free** run (it otherwise only runs for model corrections),
     /// so auto-paper can fire for detected watercolour/ink-wash art without naming `--medium`.
     #[arg(long = "auto-medium", default_value_t = false)]
@@ -329,7 +336,8 @@ fn is_video(p: &Path) -> bool {
 
 /// Build the **weight-free** naturalize params (preset + focuses + overrides) and the paper amount from the
 /// args — the part safe to run per-video-frame (no model). Shared by the still and video paths.
-fn weightfree_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<(Params, Option<f32>)> {
+#[allow(clippy::type_complexity)]
+fn weightfree_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<(Params, Option<f32>, Option<(naturalize::brush::Medium, f32)>)> {
     let base = resolve_base_params(a, input)?;
     let focuses: Vec<(naturalize::Focus, f32)> = [
         (naturalize::Focus::People, a.people), (naturalize::Focus::Sky, a.sky), (naturalize::Focus::Vegetation, a.vegetation),
@@ -350,7 +358,12 @@ fn weightfree_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<(Params
     if let Some(v) = a.micro { p.micro = v; }
     let art_style = resolve_style(a.style.as_deref(), a.medium.as_deref());
     let paper_amt = a.paper.or_else(|| art_style.as_deref().filter(|s| is_wet_media(s)).map(|_| 0.6));
-    Ok((p, paper_amt))
+    let brush = art_style
+        .as_deref()
+        .and_then(naturalize::brush::Medium::detect)
+        .map(|m| (m, a.brush_strength.unwrap_or(0.6)))
+        .filter(|(_, s)| *s > 0.0);
+    Ok((p, paper_amt, brush))
 }
 
 /// QUALITY-6 P2: de-slop every frame of a video/animation and re-encode. Weight-free only — the analog
@@ -359,7 +372,7 @@ fn weightfree_params(a: &NaturalizeArgs, input: Option<&Path>) -> Result<(Params
 async fn naturalize_video(a: &NaturalizeArgs, input: &Path) -> Result<()> {
     let out = a.out.clone().context("--out is required")?;
     crate::imaging::video::ffmpeg_version().context("video de-slop needs ffmpeg on PATH")?;
-    let (p, paper_amt) = weightfree_params(a, Some(input))?;
+    let (p, paper_amt, brush) = weightfree_params(a, Some(input))?;
     let tmp = tempfile::tempdir().context("temp dir for video frames")?;
     let frames = crate::imaging::video::extract_frames(input, tmp.path())?;
     anyhow::ensure!(!frames.is_empty(), "no frames extracted from {}", input.display());
@@ -368,6 +381,9 @@ async fn naturalize_video(a: &NaturalizeArgs, input: &Path) -> Result<()> {
     for f in &frames {
         let img = image::open(f).with_context(|| format!("reading frame {}", f.display()))?.to_rgb8();
         let mut o = naturalize::apply(&img, &p);
+        if let Some((m, bs)) = brush {
+            o = naturalize::brush::apply_brush(&o, m, bs);
+        }
         if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
             o = naturalize::paper_texture(&o, pv);
         }
@@ -498,7 +514,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
 
     // QUALITY-9 P2: save the resolved knob spec as a named user preset, then exit.
     if let Some(name) = a.save_preset.clone() {
-        let (p, paper) = weightfree_params(&a, a.input.as_deref())?;
+        let (p, paper, _brush) = weightfree_params(&a, a.input.as_deref())?;
         let spec = naturalize::to_spec(&p, paper.unwrap_or(0.0));
         let path = naturalize::save_user_preset(&name, &spec).context("saving the preset")?;
         println!("{} preset {} = {}\n  → {} (use it with --preset {name})", style("saved").green(), style(&name).cyan(), style(&spec).dim(), path.display());
@@ -509,7 +525,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // grade (WB + auto-levels + vibrance fitted on that image, closing the 6.16 fixed-grade limit); with
     // no input, fall back to the fixed film grade. Spatial unsharp/micro are colour-LUT-excluded either way.
     if let Some(lut) = a.export_lut.clone() {
-        let (p, _) = weightfree_params(&a, a.input.as_deref())?;
+        let (p, _, _) = weightfree_params(&a, a.input.as_deref())?;
         let size = a.lut_size.unwrap_or(33);
         let (cube, kind) = if let Some(inp) = a.input.as_deref() {
             let src = image::open(inp).with_context(|| format!("reading {}", inp.display()))?.to_rgb8();
@@ -670,6 +686,15 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         art_style.as_deref().filter(|s| is_wet_media(s)).map(|_| 0.6)
     });
 
+    // Brush strokes (naturalize media pass): synthesize human-like, gradient-aligned strokes for a
+    // painting medium — fires when `--medium`/`--style` names one, or `--auto-medium` detected it.
+    // Opt-in: no painting medium → no brush. Strength 0.6 by default; `--brush-strength 0` disables.
+    let brush = art_style
+        .as_deref()
+        .and_then(naturalize::brush::Medium::detect)
+        .map(|m| (m, a.brush_strength.unwrap_or(0.6)))
+        .filter(|(_, s)| *s > 0.0);
+
     // 0. Face-protected repair (model-backed, art-safe) runs FIRST when requested: protect the faces,
     //    gently repaint the rest IN-STYLE to attempt broken limbs — the character-preserving alternative
     //    to whole-image --geometry on figure art.
@@ -762,6 +787,11 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         println!("  {} {} region focus(es)", style("de-slop").cyan(), regions.len());
         naturalize::apply_with_regions(&img, &p, &regions)
     };
+    // Brush strokes before paper, so the paper tooth/granulation rides the finished strokes.
+    if let Some((m, bs)) = brush {
+        out = naturalize::brush::apply_brush(&out, m, bs);
+        println!("  {} {} brush strokes (strength {bs:.2})", style("de-slop").green(), m.label());
+    }
     // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
     // art (fixes the "simulated media" tell). Runs last so tooth/granulation ride the finished pixels.
     if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
