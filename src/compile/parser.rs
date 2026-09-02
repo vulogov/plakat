@@ -149,6 +149,33 @@ fn glob_final_star(pat: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(matches)
 }
 
+/// A multiline-value fence, if `s` is exactly one (HJSON-style `'''` or `"""`).
+fn multiline_fence(s: &str) -> Option<&'static str> {
+    match s.trim() {
+        "'''" => Some("'''"),
+        "\"\"\"" => Some("\"\"\""),
+        _ => None,
+    }
+}
+
+/// Collect a fenced multiline value from `lines[start..]` until the closing `fence` line. Interior lines
+/// (including blank ones, which are NOT block boundaries inside a fence) are trimmed and joined with a
+/// single space, so the value stays a clean one-line string for the emitted HJSON. Returns the value and
+/// the index of the line AFTER the closing fence.
+fn collect_multiline(lines: &[&str], start: usize, fence: &str) -> Result<(String, usize)> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut j = start;
+    while j < lines.len() {
+        if lines[j].trim() == fence {
+            let val = parts.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+            return Ok((val, j + 1));
+        }
+        parts.push(lines[j].trim().to_string());
+        j += 1;
+    }
+    bail!("compile: unterminated multiline value — missing closing {fence}");
+}
+
 /// Parse a whole `prompts.txt` string.
 pub fn parse(input: &str) -> Result<Document> {
     // Split into blocks on runs of blank lines; drop comment lines first but
@@ -157,11 +184,15 @@ pub fn parse(input: &str) -> Result<Document> {
     let mut cur = Block::default();
     let mut cur_started = false;
 
-    for (i, raw) in input.lines().enumerate() {
+    let lines: Vec<&str> = input.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
         let lineno = i + 1;
+        let raw = lines[i];
         let trimmed = raw.trim_end();
         // Comments: a line whose first non-space char is '#'.
         if trimmed.trim_start().starts_with('#') {
+            i += 1;
             continue;
         }
         if trimmed.trim().is_empty() {
@@ -171,6 +202,7 @@ pub fn parse(input: &str) -> Result<Document> {
             }
             cur = Block::default();
             cur_started = false;
+            i += 1;
             continue;
         }
         if !cur_started {
@@ -178,9 +210,31 @@ pub fn parse(input: &str) -> Result<Document> {
             cur_started = true;
         }
         match parse_command_line(trimmed) {
-            Some((k, v)) => cur.commands.push((k, v)),
+            Some((k, v)) => {
+                // Multiline value (HJSON-style): `key: '''` opens a fence on the same line, or `key:` with an
+                // empty value opens it on the NEXT line (`'''` alone). Everything up to the closing fence is
+                // the value — command-looking or blank interior lines are literal, not parsed. This is what
+                // lets a `component.<name>:` span several lines.
+                if let Some(fence) = multiline_fence(&v) {
+                    let (val, next) = collect_multiline(&lines, i + 1, fence)?;
+                    cur.commands.push((k, val));
+                    i = next;
+                    continue;
+                } else if v.is_empty() {
+                    if let Some(fence) = lines.get(i + 1).and_then(|l| multiline_fence(l)) {
+                        let (val, next) = collect_multiline(&lines, i + 2, fence)?;
+                        cur.commands.push((k, val));
+                        i = next;
+                        continue;
+                    }
+                    cur.commands.push((k, v));
+                } else {
+                    cur.commands.push((k, v));
+                }
+            }
             None => cur.free_text.push(trimmed.trim().to_string()),
         }
+        i += 1;
     }
     if cur_started && !cur.is_empty() {
         blocks.push(cur);
@@ -294,6 +348,36 @@ mod tests {
         assert!(parse_command_line("He said: hello").is_none(), "space in key");
         assert!(parse_command_line("  model: x").is_none(), "leading space = free text");
         assert!(parse_command_line(":nope").is_none());
+    }
+
+    #[test]
+    fn multiline_value_fence_on_next_line() {
+        // `key:` then a `'''` line — the user's form. Interior command-looking / blank lines are literal;
+        // the block stays global (the fenced lines are the VALUE, not free text).
+        let doc = parse(
+            "model: sd35\ncomponent.street:\n'''\n(cobblestone:1.5) a clean street\nwith flower boxes\n'''\n\nA scene.\n",
+        )
+        .unwrap();
+        let g = doc.global.as_ref().unwrap();
+        assert_eq!(
+            g.values("component.street").collect::<Vec<_>>(),
+            vec!["(cobblestone:1.5) a clean street with flower boxes"]
+        );
+        assert!(g.free_text.is_empty(), "fenced lines are the value, not free text");
+        assert_eq!(doc.scenes.len(), 1);
+    }
+
+    #[test]
+    fn multiline_value_fence_inline_and_unterminated() {
+        // `key: '''` opens the fence on the same line.
+        let doc = parse("component.x: '''\nline one\nline two\n'''\n\nA scene.\n").unwrap();
+        assert_eq!(doc.scenes.len(), 1);
+        // (component.x lives in the first, global-less... actually first block has the component + no free
+        // text → it's global.)
+        let g = doc.global.as_ref().unwrap();
+        assert_eq!(g.values("component.x").collect::<Vec<_>>(), vec!["line one line two"]);
+        // A missing closing fence is a clear error.
+        assert!(parse("component.x:\n'''\nno close here\n").is_err());
     }
 
     #[test]
