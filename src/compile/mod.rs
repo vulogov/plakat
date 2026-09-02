@@ -370,6 +370,20 @@ async fn compile_one_scene(
         fit_note = note;
     }
 
+    // 2d) SD3/Flux prose reinforcement: these T5-driven families honour prose >> numeric weights, so a
+    // heavily-weighted concept still loses to strong priors (a green sky, an orange sun). Restate the
+    // weighted concepts as a short prose intensifier appended to the prompt — the inline `(term:N)` weights
+    // stay for the CLIP encoders. Runs after fit so it isn't condensed away; the SD3/Flux budgets (256/300)
+    // leave ample room for the clause. Only on the enhance path.
+    let mut reinforced = false;
+    if !opts.no_enhance {
+        if let Some(clause) = assembler::prose_reinforcement(&prompt, scene.family) {
+            let sep = if prompt.trim_end().ends_with(['.', ',']) || prompt.trim().is_empty() { " " } else { ". " };
+            prompt = format!("{}{sep}{clause}", prompt.trim_end());
+            reinforced = true;
+        }
+    }
+
     // 3) negative — DETERMINISTIC, not LLM-generated. Asking a model to "write a negative" makes it
     // hallucinate scene-specific content exclusions the user never asked for (weapons, blood, colours…) and
     // can even run away into repetition. Instead: the user's `negative:` seeds (verbatim) plus a curated,
@@ -437,6 +451,9 @@ async fn compile_one_scene(
     ));
     if fit_note.is_some() {
         trace.push("condensed to fit the token budget".to_string());
+    }
+    if reinforced {
+        trace.push("reinforced weighted concepts as prose (SD3/Flux honour prose > weights)".to_string());
     }
     trace.push(if opts.no_negative {
         "negative: your seeds only (--no-negative)".to_string()

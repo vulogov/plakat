@@ -195,6 +195,54 @@ pub fn extract_weight_spans(text: &str) -> Vec<(String, f32)> {
     out
 }
 
+/// Join phrases as a readable English list: `a`, `a and b`, `a, b and c`.
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [a] => a.clone(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
+
+/// **SD3/Flux prose reinforcement** (6.27): the T5-driven families honour descriptive prose far more than
+/// numeric `(term:N)` weights, so a heavily-weighted concept often still loses to strong priors. Restate the
+/// weighted concepts as a short prose intensifier clause (bucketed by weight) that we append to the prompt —
+/// the inline `(term:N)` weights stay for the CLIP encoders, and this makes the emphasis actually land on
+/// T5. Returns the clause to append, or None for non-T5 families / no weighted spans. Dedups by phrase.
+pub fn prose_reinforcement(prompt: &str, family: ModelFamily) -> Option<String> {
+    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux) {
+        return None;
+    }
+    let (mut strong, mut moderate, mut faint) = (Vec::new(), Vec::new(), Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    for (phrase, w) in extract_weight_spans(prompt) {
+        let p = phrase.trim().trim_end_matches(['.', ',']).to_string();
+        if p.is_empty() || !seen.insert(p.to_lowercase()) {
+            continue;
+        }
+        if w >= 1.5 {
+            strong.push(p);
+        } else if w >= 1.15 {
+            moderate.push(p);
+        } else if w < 0.9 {
+            faint.push(p);
+        }
+        // weights in [0.9, 1.15) are ~neutral — no prose nudge.
+    }
+    let mut parts = Vec::new();
+    if !strong.is_empty() {
+        parts.push(format!("Prominent and clearly visible in the scene: {}.", join_and(&strong)));
+    }
+    if !moderate.is_empty() {
+        parts.push(format!("Clearly present: {}.", join_and(&moderate)));
+    }
+    if !faint.is_empty() {
+        parts.push(format!("Only subtle and understated: {}.", join_and(&faint)));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 /// Rewrite every top-level attention-weight span `(phrase:N)` by replacing it with `f(phrase, weight)`.
 /// Bare `(...)` parentheticals (no trailing `:number`) are left untouched. The parens/colon/number are
 /// ASCII, so the slices are always on char boundaries even with non-ASCII phrases.
@@ -375,6 +423,21 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn prose_reinforcement_buckets_by_weight_for_t5_families() {
+        let p = "a street, (orange sun:1.5), (green sky:1.3), (faint smoke:0.8), (cobblestone:1.5)";
+        let r = prose_reinforcement(p, ModelFamily::Sd3).unwrap();
+        // Strong (>=1.5): orange sun + cobblestone, as a natural list.
+        assert!(r.contains("Prominent and clearly visible in the scene: orange sun and cobblestone."), "got: {r}");
+        // Moderate (1.15–1.5): green sky.
+        assert!(r.contains("Clearly present: green sky."), "got: {r}");
+        // De-emphasis (<0.9): faint smoke.
+        assert!(r.contains("Only subtle and understated: faint smoke."), "got: {r}");
+        // Non-T5 families get nothing; no weights → nothing.
+        assert!(prose_reinforcement(p, ModelFamily::Sdxl).is_none());
+        assert!(prose_reinforcement("no weights here", ModelFamily::Flux).is_none());
     }
 
     #[test]
