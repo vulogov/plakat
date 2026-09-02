@@ -35,6 +35,32 @@ seed: 42
 count: 2
 ```
 
+### Multiline command values *(6.27)*
+
+A command value can span several lines using an HJSON-style **`'''`** (or `"""`) fence — useful for a long
+`component.<name>:` or a big `negative:`. The fence opens either **on the same line** (`key: '''`) or on the
+line **right after** `key:`; everything up to the closing `'''` is the value (interior lines that look like
+commands or are blank are taken literally and joined into one clean line). Attention weights inside are
+preserved.
+
+```
+model: sd35
+component.street:
+'''
+(cobblestone:1.5) a clean old western-european town street,
+stone and timber houses, flower boxes under the windows
+'''
+component.sky: (light green sky:1.4)
+
+composition: component.street, component.sky
+People walking down the street.
+```
+
+> **Gotcha:** keep the fenced component in the **global block** — don't put a blank line between the earlier
+> `model:`/`style:` lines and the `component.<name>:`, or the block splits and the component lands in a scene
+> (`composition references unknown component …`). A blank line separates blocks; the fence itself may contain
+> blank lines freely.
+
 ### `@include` *(6.22)*
 
 Split a large prose set across files: a line `@include <path>` is inlined with that file's contents
