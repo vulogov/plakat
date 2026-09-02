@@ -63,6 +63,10 @@ pub struct NaturalizeArgs {
     /// medium is present; `--brush-strength 0` disables. Weight-free, follows the forms.
     #[arg(long = "brush-strength", value_name = "N")]
     pub brush_strength: Option<f32>,
+    /// **Brush-stroke size** (multiplier, default 1.0) — `<1` = finer/denser strokes (less blocky,
+    /// more detail), `>1` = broader daubs / palette-knife. The knob for "too chunky". Try `0.5`.
+    #[arg(long = "brush-scale", value_name = "N")]
+    pub brush_scale: Option<f32>,
     /// Run CLIP medium-detection on a **weight-free** run (it otherwise only runs for model corrections),
     /// so auto-paper can fire for detected watercolour/ink-wash art without naming `--medium`.
     #[arg(long = "auto-medium", default_value_t = false)]
@@ -401,7 +405,7 @@ async fn naturalize_video(a: &NaturalizeArgs, input: &Path) -> Result<()> {
         let img = image::open(f).with_context(|| format!("reading frame {}", f.display()))?.to_rgb8();
         let mut o = naturalize::apply(&img, &p);
         if let Some((m, bs)) = brush {
-            o = naturalize::brush::apply_brush(&o, m, bs);
+            o = naturalize::brush::apply_brush(&o, m, bs, a.brush_scale.unwrap_or(1.0));
         }
         if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
             o = naturalize::paper_texture(&o, pv);
@@ -829,7 +833,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     };
     // Brush strokes before paper, so the paper tooth/granulation rides the finished strokes.
     if let Some((m, bs)) = brush {
-        out = naturalize::brush::apply_brush(&out, m, bs);
+        out = naturalize::brush::apply_brush(&out, m, bs, a.brush_scale.unwrap_or(1.0));
         println!("  {} {} brush strokes (strength {bs:.2})", style("de-slop").green(), m.label());
     }
     // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
@@ -982,7 +986,7 @@ pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
     if let Some(m) = crate::naturalize::brush::medium_from_spec(spec) {
         let bs = crate::naturalize::brush::brush_from_spec(spec).unwrap_or(0.6);
         if bs > 0.0 {
-            out = crate::naturalize::brush::apply_brush(&out, m, bs);
+            out = crate::naturalize::brush::apply_brush(&out, m, bs, crate::naturalize::brush::scale_from_spec(spec).unwrap_or(1.0));
         }
     }
     // QUALITY-5 P3: spec parity for --paper (`generate --naturalize "... paper=0.6"`, scenario field).

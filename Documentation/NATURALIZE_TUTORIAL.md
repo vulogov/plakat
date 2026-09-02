@@ -103,8 +103,12 @@ Weight-free, opt-in, and medium-specific — set a painting `--medium` (or let `
 
 The stroke media (`oil`/`gouache`/`pastel`) share one **stroke-based renderer** that *places* discrete,
 gradient-aligned, bristle-textured marks (not a global filter) — so the sky, stone, and figures get
-differently-oriented strokes. Tune the density/visibility with `--brush-strength` (try `0.8–1.0` for
-overtly painted; drop `--paper` when you want strokes, not granulation).
+differently-oriented strokes. Two knobs:
+- **`--brush-strength`** (0..1) — the *intensity* dial: blends the painted result against the original.
+  `0.1` = barely-there, `0.8–1.0` = fully painted. Drop `--paper` when you want strokes, not granulation.
+- **`--brush-scale`** (default 1.0) — the *stroke size*: `<1` = finer/denser (less blocky, keeps detail —
+  try `0.45`), `>1` = broad daubs / palette-knife. This is the knob for "too chunky". Both compose with
+  `--medium`; the renderer also **adapts stroke size to detail** (broad in flat sky, fine on faces/text).
 
 > **`watercolor` is soft on purpose.** It has *no* placed strokes (watercolor is diffuse) — the pebbled
 > texture you see with watercolor is the `--paper` granulation, not brushwork. For **visible directional

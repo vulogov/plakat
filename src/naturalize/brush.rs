@@ -80,9 +80,25 @@ pub fn brush_from_spec(spec: &str) -> Option<f32> {
     spec.split_whitespace().find_map(|t| t.strip_prefix("brush=").and_then(|v| v.parse::<f32>().ok()))
 }
 
-/// Apply the medium's brush-stroke pass at `strength` (0..1). Returns a new image; `strength <= 0`
-/// (or a 1×1 image) is a clone. Deterministic.
-pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
+/// Parse `scale=<N>` stroke-size multiplier from a spec; `None` if absent (caller defaults to 1.0).
+pub fn scale_from_spec(spec: &str) -> Option<f32> {
+    spec.split_whitespace().find_map(|t| t.strip_prefix("scale=").and_then(|v| v.parse::<f32>().ok()))
+}
+
+/// Multiply a medium's stroke dimensions by `scale` (`--brush-scale`) — <1 = finer/denser strokes,
+/// >1 = broader. Spacing scales too so density tracks size; floors keep it sane.
+fn scaled_style(m: Medium, scale: f32) -> StrokeStyle {
+    let sc = scale.clamp(0.2, 3.0);
+    let mut s = stroke_style(m);
+    s.width = (s.width * sc).max(1.5);
+    s.length = (s.length * sc).max(3.0);
+    s.spacing = (s.spacing * sc).max(1.4);
+    s
+}
+
+/// Apply the medium's brush-stroke pass at `strength` (0..1); `scale` (`--brush-scale`, ~1.0) sizes
+/// the strokes. Returns a new image; `strength <= 0` (or a 1×1 image) is a clone. Deterministic.
+pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32, scale: f32) -> RgbImage {
     let s = strength.clamp(0.0, 1.0);
     let (w, h) = (src.width() as usize, src.height() as usize);
     if s <= 0.0 || w < 3 || h < 3 {
@@ -104,14 +120,14 @@ pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
         // 0.1` really is 10% painted / 90% original (not 90% of the blocky Kuwahara base).
         Medium::Oil => {
             let flat = kuwahara(src, 2); // flat painted regions; strokes sample the cleaner colours
-            let mut painted = render_strokes(&flat, &stroke_style(medium), 1.0);
+            let mut painted = render_strokes(&flat, &scaled_style(medium, scale), 1.0);
             let pl: Vec<f32> = painted.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
             impasto(&mut painted, &pl, &angle, w, h, 0.5);
             blend(src, &painted, s)
         }
-        Medium::Gouache => blend(src, &render_strokes(src, &stroke_style(medium), 1.0), s),
+        Medium::Gouache => blend(src, &render_strokes(src, &scaled_style(medium, scale), 1.0), s),
         Medium::Pastel => {
-            let mut painted = render_strokes(src, &stroke_style(medium), 1.0);
+            let mut painted = render_strokes(src, &scaled_style(medium, scale), 1.0);
             chalk_grain(&mut painted, w, h, 0.5);
             blend(src, &painted, s)
         }
@@ -516,10 +532,10 @@ mod tests {
     fn brush_is_a_noop_at_zero_and_changes_pixels_when_on() {
         let img = ramp();
         // strength 0 → identical.
-        assert_eq!(apply_brush(&img, Medium::Oil, 0.0), img);
+        assert_eq!(apply_brush(&img, Medium::Oil, 0.0, 1.0), img);
         // strength > 0 → the image actually changes (strokes/flatten/edge work).
         for m in [Medium::Watercolor, Medium::Oil, Medium::Gouache, Medium::Ink, Medium::Pastel] {
-            let out = apply_brush(&img, m, 0.8);
+            let out = apply_brush(&img, m, 0.8, 1.0);
             let changed = out.pixels().zip(img.pixels()).filter(|(a, b)| a != b).count();
             assert!(changed > 50, "{:?} changed only {changed} px", m);
             assert_eq!(out.dimensions(), img.dimensions());
@@ -553,6 +569,6 @@ mod tests {
     #[test]
     fn deterministic() {
         let img = ramp();
-        assert_eq!(apply_brush(&img, Medium::Watercolor, 0.7), apply_brush(&img, Medium::Watercolor, 0.7));
+        assert_eq!(apply_brush(&img, Medium::Watercolor, 0.7, 1.0), apply_brush(&img, Medium::Watercolor, 0.7, 1.0));
     }
 }
