@@ -98,13 +98,58 @@ with `scene: <name>` / `weather: <name>`. With none defined, compile emits the s
 (`plain`/`any`). So a compiled TXT now reaches **full** parity with a hand-written scenario. (`tag:`
 is still accepted but not emitted.)
 
+### Naturalize post-pass — brush strokes & painterly `repaint` from prose *(6.27)*
+
+`naturalize:` is a **global or per-scene** field whose value is a naturalize spec string, carried through to
+the scenario verbatim and applied to every image the run produces. Two media tokens make the painterly
+passes reachable straight from prose — no CLI flags:
+
+| Spec | What runs | Model? |
+|---|---|---|
+| `naturalize: medium=oil brush=0.7 scale=0.6` | weight-free **brush strokes** (`--medium … --brush-strength …`) | no |
+| `naturalize: repaint=0.4 medium=watercolor` | model-backed **painterly repaint** (`--repaint`) | yes |
+| `naturalize: repaint=0.4 medium=oil repaint-lora=org/oil-lora:0.8` | repaint + a painterly LoRA | yes |
+| `naturalize: repaint=0.4 medium=watercolor paper=0.3` | repaint **plus** an explicit weight-free knob (stacks) | yes |
+
+A successful `repaint=` is **terminal** — the analog/paper pass is skipped unless the spec also names a
+weight-free knob (`paper=`, `grain=`, a focus). Companion tokens mirror the CLI: `repaint-strength=` is the
+`repaint=` value itself, plus `medium=`, `repaint-lora=`, `repaint-model=`.
+
+Worked example — prose in, scenario out:
+
+```text
+# prompts.txt
+model: sd35
+naturalize: repaint=0.4 medium=watercolor
+
+A quiet harbour at dawn, fishing boats, wet cobblestones.
+```
+
+```hjson
+// pics.hjson (compiled)
+{
+  model: "sd35"
+  naturalize: "repaint=0.4 medium=watercolor"
+  tasks: [
+    {
+      name: a_quiet_harbour_at_dawn
+      prompt: "A quiet harbour at dawn … (enhanced) …"
+    }
+  ]
+}
+```
+
+Running that scenario renders the harbour, then repaints it as a watercolor. (Hand-written scenarios use the
+identical `naturalize:` field — see NATURALIZE_TUTORIAL's "In scenarios / compiled prose" section.)
+
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.
 
-**Model family** (`SD15` / `SDXL` / `Flux`) is detected from the scene model, else
-the global model, else `--model`. It selects the prompt-writing profile: SD15 →
-comma-keyword & <75 tokens; SDXL → mixed prose/keywords 60–150; Flux → prose, short
-or empty negative.
+**Model family** (`SD15` / `SDXL` / `SD3` / `Flux`) is detected from the scene model, else
+the global model, else `--model`. It selects the prompt-writing profile and token budget: SD15 →
+comma-keyword & <77 tokens; SDXL → mixed prose/keywords ~150; **SD3/3.5 → prose, ~256 tokens (T5-XXL, no
+77-token CLIP cap)**; Flux → prose ~300, short or empty negative. Over-budget prompts are **condensed to
+fit** the family (weights preserved) with a note, not just flagged.
 
 ## Task-type blocks (`type: …`)
 
