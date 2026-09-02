@@ -325,7 +325,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         None => None,
     };
 
-    let (hjson, warnings) = compile::compile_to_string(
+    let (hjson, warnings, trace) = compile::compile_to_string(
         &input,
         &CompileOpts {
             provider: args.provider.clone(),
@@ -339,6 +339,16 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         },
     )
     .await?;
+
+    // 6.27: show WHAT the pipeline did per scene (translate, compose, weights, enhance, negative, fit) —
+    // to stderr so piping the HJSON is unaffected. Header lines (no indent) are cyan, steps dim.
+    for line in &trace {
+        if line.starts_with("  ") {
+            eprintln!("{}", style(line).dim());
+        } else {
+            eprintln!("{} {line}", style("◆").cyan());
+        }
+    }
 
     // 6.26.2: surface per-scene diligence warnings (budget overflow / dropped style) to stderr —
     // never silently drop. These don't change the emitted scenario; they tell the user to act.

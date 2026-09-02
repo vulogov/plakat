@@ -13,6 +13,9 @@ pub struct CompiledScene {
     /// 6.26.2 diligence warnings for this scene (budget overflow / dropped style) — surfaced to
     /// the user by the CLI rather than silently accepted. Empty when the scene compiled cleanly.
     pub warnings: Vec<String>,
+    /// 6.27 informational trace — the pipeline steps taken for this scene (translate, compose,
+    /// weights, enhance, negative, fit). Shown by the CLI so compilation isn't a black box.
+    pub trace: Vec<String>,
 }
 
 fn q(s: &str) -> String {
@@ -392,6 +395,7 @@ mod tests {
             prompt: "a frozen tundra, lone rider, aurora".into(),
             negative: "blurry, watermark, daylight".into(),
             warnings: Vec::new(),
+            trace: Vec::new(),
         };
         (globals, vec![cs])
     }

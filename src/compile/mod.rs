@@ -333,6 +333,7 @@ async fn compile_one_scene(
     // 5) safety net: re-add — in English, as a short tail — any weighted span the enhancer dropped, so no
     //    emphasis is ever silently lost. The ones it KEPT stay inline (matched by substring), so there's no
     //    duplication. Ordered by `spans` for deterministic output.
+    let mut weights_tailed = 0usize;
     if !opts.no_enhance && !en_map.is_empty() {
         let have: Vec<String> =
             assembler::extract_weight_spans(&prompt).into_iter().map(|(p, _)| p.to_lowercase()).collect();
@@ -345,6 +346,7 @@ async fn compile_one_scene(
             })
             .map(|(en, w)| format!("({}:{})", en.trim().trim_end_matches(['.', ',']), w))
             .collect();
+        weights_tailed = missing.len();
         if !missing.is_empty() {
             let sep = if prompt.trim_end().ends_with(',') || prompt.trim().is_empty() { " " } else { ", " };
             prompt = format!("{}{sep}{}", prompt.trim_end(), missing.join(", "));
@@ -399,6 +401,52 @@ async fn compile_one_scene(
         !opts.no_enhance && !assembled.is_empty(),
     );
 
+    // Informational TRACE (6.27): the steps taken for this scene, so compilation isn't a black box.
+    let mut trace: Vec<String> = Vec::new();
+    let enhanced = !opts.no_enhance && !assembled.is_empty();
+    if !scene.composition_text.trim().is_empty() {
+        trace.push("composed prompt from components".to_string());
+    }
+    if enhanced {
+        if let Some(lang) = scene.translate.as_deref().filter(|l| !l.trim().is_empty()) {
+            trace.push(format!("translated from {lang} → English"));
+        }
+    }
+    if !spans.is_empty() {
+        if enhanced {
+            let inline = spans.len().saturating_sub(weights_tailed);
+            trace.push(format!(
+                "{} attention weight(s): {inline} translated inline{}",
+                spans.len(),
+                if weights_tailed > 0 { format!(", {weights_tailed} re-added at end (enhancer dropped)") } else { String::new() }
+            ));
+        } else {
+            trace.push(format!("{} attention weight(s) kept verbatim (--no-enhance)", spans.len()));
+        }
+    }
+    if enhanced {
+        trace.push(format!("positive enhanced via {}", crate::prompt::resolve_provider_label(&opts.provider)));
+    } else {
+        trace.push("positive kept verbatim (--no-enhance)".to_string());
+    }
+    trace.push(format!(
+        "~{} tokens (budget ~{}, {})",
+        assembler::estimate_tokens(&prompt),
+        assembler::family_token_budget(scene.family),
+        scene.family.label()
+    ));
+    if fit_note.is_some() {
+        trace.push("condensed to fit the token budget".to_string());
+    }
+    trace.push(if opts.no_negative {
+        "negative: your seeds only (--no-negative)".to_string()
+    } else {
+        format!("negative: {} terms (seeds + curated quality)", negative.split(',').filter(|t| !t.trim().is_empty()).count())
+    });
+    if out_scene.name != scene.name {
+        trace.push(format!("named from prompt → {}", out_scene.name));
+    }
+
     // Attention-weight note (from step 2b): success = weights were re-applied deterministically; failure =
     // re-translation failed and the (corrected) advice stands. Either way it's surfaced, not silent.
     if let Some(note) = weight_note {
@@ -409,7 +457,7 @@ async fn compile_one_scene(
         warnings.push(note);
     }
 
-    emitter::CompiledScene { scene: out_scene, prompt, negative, warnings }
+    emitter::CompiledScene { scene: out_scene, prompt, negative, warnings, trace }
 }
 
 /// Deduplicate weight spans by (phrase, weight), preserving first-seen order — so a phrase repeated across
@@ -544,7 +592,7 @@ fn load_persona(name: &str) -> String {
 /// `no_enhance && no_negative` the whole pass is deterministic (the corpus gate).
 /// Compile to the scenario HJSON plus any per-scene diligence warnings (6.26.2) — budget
 /// overflow / dropped style — for the CLI to surface. The warnings never change the output.
-pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>)> {
+pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
     let doc = parser::parse(input)?;
     let resolved = resolver::resolve(&doc, &opts.default_model)?;
     let eargs = crate::prompt::EnhanceArgs::default();
@@ -587,8 +635,19 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
     }
 
     let warnings: Vec<String> = compiled.iter().flat_map(|c| c.warnings.clone()).collect();
+
+    // Per-scene informational trace (6.27): a header line + the scene's steps, so the CLI can show what the
+    // pipeline did. Uses the FINAL (deduped) scene name.
+    let mut trace: Vec<String> = Vec::new();
+    for c in &compiled {
+        trace.push(format!("scene '{}' · {} · {}", c.scene.name, c.scene.family.label(), c.scene.model_for_family.as_deref().unwrap_or("(default)")));
+        for step in &c.trace {
+            trace.push(format!("  {step}"));
+        }
+    }
+
     let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);
-    Ok((hjson, warnings))
+    Ok((hjson, warnings, trace))
 }
 
 /// Lint a `prompts.txt` without calling the LLM (E-C2): unknown commands and
