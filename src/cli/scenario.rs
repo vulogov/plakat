@@ -2249,7 +2249,8 @@ pub async fn run_with_events(
         || s.t5_quant_level.is_some()
     {
         let q = s.quant_level.as_deref().unwrap_or("Q4_K_S");
-        if s.quantize_t5 {
+        // `t5-quant-level:` alone now enables T5 quantization (see the params block below).
+        if s.quantize_t5 || s.t5_quant_level.is_some() {
             let t5q = s.t5_quant_level.as_deref().unwrap_or("Q4_K_M");
             sout!("  gguf:      Flux={q}, T5={t5q} (quantized T5)");
         } else {
@@ -2548,7 +2549,9 @@ pub async fn run_with_events(
                 controlnets: flux_controlnets,
                 // v0.13 phase 10: surface --quantize-t5 + GGUF quant
                 // levels at scenario scope (load-time decisions).
-                quantize_t5: s.quantize_t5,
+                // 6.27: setting `t5-quant-level:` alone implies quantization — a level with no enable
+                // used to silently leave T5 at full BF16 (a memory footgun).
+                quantize_t5: s.quantize_t5 || s.t5_quant_level.is_some(),
                 flux_quant_level: s.quant_level.clone(),
                 t5_quant_level: s.t5_quant_level.clone(),
                 // v0.14 phase 3c: enable the Redux encoder if ANY
@@ -2708,14 +2711,22 @@ pub async fn run_with_events(
             .collect();
         let unique: BTreeSet<String> = pre_refines.iter().cloned().collect();
 
-        crate::ui::progress::println(&format!(
-            "  {} enhancing {} unique prompt(s) (from {} task{}) via {}…",
-            style("→").cyan().bold(),
-            unique.len(),
-            s.tasks.len(),
-            if s.tasks.len() == 1 { "" } else { "s" },
-            enhancer,
-        ));
+        if unique.is_empty() {
+            crate::ui::progress::println(&format!(
+                "  {} enhancement disabled — using the {} task prompt(s) verbatim (enhance: false)",
+                style("→").cyan().bold(),
+                s.tasks.len(),
+            ));
+        } else {
+            crate::ui::progress::println(&format!(
+                "  {} enhancing {} unique prompt(s) (from {} task{}) via {}…",
+                style("→").cyan().bold(),
+                unique.len(),
+                s.tasks.len(),
+                if s.tasks.len() == 1 { "" } else { "s" },
+                enhancer,
+            ));
+        }
 
         // Soft cap on concurrent requests to be polite to upstream APIs.
         const MAX_CONCURRENT_ENHANCE: usize = 8;
@@ -3495,7 +3506,12 @@ pub async fn run_with_events(
             task.scene,
             task.weather,
         ));
-        crate::ui::progress::println(&wrap_label("pre-enhance", &pre_refine));
+        // `enhance: false` tasks show a single `prompt:` line (below); enhanced tasks show the
+        // pre-enhance → enhanced → final trace.
+        let task_skip_enhance = matches!(task.enhance, Some(EnhanceCfg::Toggle(false)));
+        if !task_skip_enhance {
+            crate::ui::progress::println(&wrap_label("pre-enhance", &pre_refine));
+        }
 
         // -------- per-task style override --------
         // Trigger + negative_extras only — the pipeline pre-loaded its
@@ -3558,8 +3574,6 @@ pub async fn run_with_events(
         // scenario-level enhancer (the cache is built once with the
         // scenario provider, so per-task swap requires a wider
         // refactor — deferred).
-        let task_skip_enhance =
-            matches!(task.enhance, Some(EnhanceCfg::Toggle(false)));
         if let Some(EnhanceCfg::Provider(p)) = task.enhance.as_ref() {
             if p != &enhancer {
                 anyhow::bail!(
@@ -3585,10 +3599,12 @@ pub async fn run_with_events(
                     )
                 })?
         };
-        crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
+        if !task_skip_enhance {
+            crate::ui::progress::println(&wrap_label("enhanced", &enhanced));
+        }
 
         let mut final_prompt = join_parts(&[&task_lora_header, &enhanced, &s.lora_footer]);
-        crate::ui::progress::println(&wrap_label("final", &final_prompt));
+        crate::ui::progress::println(&wrap_label(if task_skip_enhance { "prompt" } else { "final" }, &final_prompt));
 
         if args.dry_run {
             // Show effective per-task values in dry-run so a user can see

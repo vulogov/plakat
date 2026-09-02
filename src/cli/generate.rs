@@ -1513,7 +1513,9 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
             .iter()
             .map(|s| crate::pipelines::tiled::RegionSpec::parse(s))
             .collect::<Result<Vec<_>>>()?,
-        quantize_t5: args.quantize_t5,
+        // 6.27: a `--t5-quant-level` with no `--quantize-t5` used to be ignored (T5 stayed BF16). Setting
+        // the level now implies quantization.
+        quantize_t5: args.quantize_t5 || args.t5_quant_level.is_some(),
         flux_quant_level: args.flux_quant_level,
         t5_quant_level: args.t5_quant_level,
         redux_images: args.redux_images,
