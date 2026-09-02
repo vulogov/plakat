@@ -115,6 +115,12 @@ A successful `repaint=` is **terminal** — the analog/paper pass is skipped unl
 weight-free knob (`paper=`, `grain=`, a focus). Companion tokens mirror the CLI: `repaint-strength=` is the
 `repaint=` value itself, plus `medium=`, `repaint-lora=`, `repaint-model=`.
 
+> **Repaint model.** The repaint runs through the **img2img (UNet) pipeline — SD1.5 / 2.1 / SDXL only.**
+> When the scenario's generation model is a transformer family (SD3/3.5, Flux, PixArt, Cascade, Sana) it
+> can't img2img, so plakat automatically repaints on **SDXL** (with a note). To choose the repaint model
+> yourself, add **`repaint-model=`** to the spec — e.g. a scenario on `model: sd35` that repaints on SDXL:
+> `naturalize: "repaint=0.4 medium=watercolor repaint-model=sdxl"`.
+
 Worked example — prose in, scenario out:
 
 ```text
