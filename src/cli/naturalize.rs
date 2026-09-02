@@ -805,7 +805,17 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut repainted_ok = false;
     if a.repaint {
         let repainted = tmp.path().join("repainted.png");
-        let rmodel = a.repaint_model.as_deref().unwrap_or(&a.model);
+        // img2img is UNet-only — fall back to SDXL when the model is a transformer family (unless the user
+        // named --repaint-model), so `--model sd35 --repaint` paints instead of erroring.
+        let rmodel: String = match a.repaint_model.as_deref() {
+            Some(m) => m.to_string(),
+            None if img2img_capable(&a.model) => a.model.clone(),
+            None => {
+                println!("  {} repaint: '{}' can't run img2img — using sdxl (set --repaint-model to override)", style("de-slop").yellow(), a.model);
+                "sdxl".to_string()
+            }
+        };
+        let rmodel = rmodel.as_str();
         let strength = a.repaint_strength.unwrap_or(0.38);
         let style_note = art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default();
         let mut done = false;
@@ -1035,6 +1045,20 @@ fn splice_png_text_chunks(src: &Path, dst: &Path) -> Result<bool> {
 /// the weight-free analog/brush/paper pass ONLY if the spec explicitly names one. With no `repaint=` it
 /// falls straight through to the sync [`apply_inplace`] (the pure weight-free + brush path). Metadata is
 /// preserved across the repaint.
+/// Whether a model alias can run the img2img (UNet) pipeline — SD1.5/2.1/SDXL yes; the transformer
+/// families (SD3/3.5, Flux, PixArt, Stable Cascade, Sana) no. Used to pick the naturalize repaint model.
+fn img2img_capable(model: &str) -> bool {
+    let m = model.to_lowercase();
+    !(m.contains("flux")
+        || m.contains("sd3")
+        || m.contains("sd35")
+        || m.contains("pixart")
+        || m.contains("cascade")
+        || m.contains("wuerstchen")
+        || m.contains("würstchen")
+        || m.contains("sana"))
+}
+
 pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Option<&str>, steps: usize) -> Result<()> {
     let Some(strength) = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0) else {
         return apply_inplace(path, spec);
@@ -1048,8 +1072,22 @@ pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Op
     let medium = crate::naturalize::spec_token(spec, "medium");
     let style = resolve_style(None, medium);
     let lora = crate::naturalize::spec_token(spec, "repaint-lora");
-    let rmodel = crate::naturalize::spec_token(spec, "repaint-model").unwrap_or(model);
-    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, rmodel, lora, device, steps)
+    // The repaint runs through the img2img (UNet) pipeline, which supports only SD1.5/2.1/SDXL. When the
+    // scenario/generation model is a transformer family (SD3/3.5, Flux, PixArt, Cascade, Sana) it CANNOT
+    // img2img — so, unless the user named an explicit `repaint-model=`, fall back to SDXL (a well-supported
+    // painterly model) instead of erroring. Set `repaint-model=` in the spec to override.
+    let rmodel = match crate::naturalize::spec_token(spec, "repaint-model") {
+        Some(m) => m.to_string(),
+        None if img2img_capable(model) => model.to_string(),
+        None => {
+            println!(
+                "  {} repaint: '{model}' can't run img2img (transformer family) — using sdxl for the painterly pass (set `repaint-model=` to override)",
+                console::style("de-slop").yellow()
+            );
+            "sdxl".to_string()
+        }
+    };
+    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, &rmodel, lora, device, steps)
         .await
         .with_context(|| format!("naturalize repaint of {}", path.display()))?;
 
