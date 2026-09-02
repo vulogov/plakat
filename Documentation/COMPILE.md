@@ -86,6 +86,12 @@ HJSON (global or per-scene), type-inferred — `aspect`, `base`, `device`, `offl
 6.27)*, **`control: kind:image[:strength]`** *(→ the `controls` object array, 6.27)* — all
 repeatable — and the generic **`set.<key>: value`** for anything else.
 
+The **`naturalize:`** value is a full spec string, carried verbatim — so the whole post-pass is reachable
+from prose/scenario, including the 6.27 media tokens: `naturalize: medium=oil brush=0.7 scale=0.6`
+(weight-free brush strokes) or `naturalize: repaint=0.4 medium=watercolor` (model-backed painterly repaint,
+the parity of `plakat naturalize --repaint`; companion tokens `repaint-lora=`, `repaint-model=`). A
+successful `repaint=` is terminal unless the spec also names a weight-free knob (`paper=`, `grain=`, a focus).
+
 **Scene/weather axes** *(6.27)*: define `scene.<name>: prompt` / `weather.<name>: prompt` in the
 global block to author the scenario's scene×weather variation matrix; each scene block selects one
 with `scene: <name>` / `weather: <name>`. With none defined, compile emits the single default axis

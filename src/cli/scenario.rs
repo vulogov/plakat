@@ -5281,7 +5281,10 @@ pub async fn run_with_events(
         if !new.is_empty() {
             crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", new.len()));
             for f in &new {
-                if let Err(e) = crate::cli::naturalize::apply_inplace(f, spec) {
+                // 6.27: `apply_inplace_spec` also honours the model-backed `repaint=` token (parity with
+                // `plakat naturalize --repaint`); a spec with no `repaint=` is the fast weight-free path.
+                let rmodel = s.model.as_deref().unwrap_or("sdxl");
+                if let Err(e) = crate::cli::naturalize::apply_inplace_spec(f, spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await {
                     crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
                 }
             }

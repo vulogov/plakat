@@ -363,6 +363,39 @@ pub fn paper_from_spec(spec: &str) -> Option<f32> {
         .find_map(|t| t.strip_prefix("paper=").and_then(|v| v.parse::<f32>().ok()))
 }
 
+/// Extract the raw string value of a `key=value` token from a naturalize spec (space/comma/semicolon
+/// separated), e.g. `spec_token("repaint=0.3 medium=watercolor", "medium")` → `Some("watercolor")`.
+pub fn spec_token<'a>(spec: &'a str, key: &str) -> Option<&'a str> {
+    spec.split([' ', ',', ';']).map(str::trim).find_map(|t| {
+        t.split_once('=')
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.trim())
+    })
+}
+
+/// The `repaint=<strength>` token, if present — the model-backed painterly repaint (6.27), the spec/prose
+/// parity of `plakat naturalize --repaint`. Companion tokens: `medium=`, `repaint-lora=`, `repaint-model=`.
+pub fn repaint_from_spec(spec: &str) -> Option<f32> {
+    spec_token(spec, "repaint").and_then(|v| v.parse::<f32>().ok())
+}
+
+/// Whether a spec names any **weight-free** analog token (a preset name / a focus / `grain=`…/`paper=`…).
+/// Used to port the CLI's "a successful `--repaint` is terminal" rule to the spec path: after a `repaint=`,
+/// the analog + paper pass is stacked ONLY when the user explicitly asked for it. The repaint/brush/medium
+/// control tokens themselves do NOT count as weight-free.
+pub fn spec_wants_weightfree(spec: &str) -> bool {
+    const CONTROL: &[&str] = &["repaint", "repaint-lora", "repaint-model", "medium", "brush", "scale"];
+    const ANALOG: &[&str] =
+        &["grain", "aberration", "vignette", "bloom", "desaturate", "warm", "defocus", "polish", "micro", "paper"];
+    spec.split([' ', ',', ';']).map(str::trim).filter(|t| !t.is_empty()).any(|tok| {
+        let key = tok.split_once('=').map(|(k, _)| k).unwrap_or(tok).trim().to_ascii_lowercase();
+        if CONTROL.contains(&key.as_str()) {
+            return false;
+        }
+        ANALOG.contains(&key.as_str()) || Preset::parse(tok).is_some() || Focus::parse(&key).is_some()
+    })
+}
+
 pub fn from_spec(spec: &str) -> Params {
     let mut base = Preset::Subtle;
     let mut focuses: Vec<(Focus, f32)> = Vec::new();
@@ -1403,6 +1436,24 @@ mod tests {
         let base_photo = blend_focus(Preset::Photo.params(), &[(Focus::Vegetation, 1.0), (Focus::Sky, 1.0)]);
         // aberration/vignette come from the blended photo+focuses (grain was overridden).
         assert!((p.aberration - base_photo.aberration).abs() < 1e-4);
+    }
+
+    #[test]
+    fn repaint_spec_helpers() {
+        // token extraction (handles `-` and `:` in values, case-insensitive keys).
+        assert_eq!(spec_token("repaint=0.34 medium=watercolor", "medium"), Some("watercolor"));
+        assert_eq!(spec_token("repaint=0.3 repaint-lora=my-lora:0.7", "repaint-lora"), Some("my-lora:0.7"));
+        assert_eq!(spec_token("grain=0.2", "medium"), None);
+        // repaint strength.
+        assert_eq!(repaint_from_spec("repaint=0.34 medium=oil"), Some(0.34));
+        assert_eq!(repaint_from_spec("medium=oil brush=0.6"), None);
+        // terminal rule: repaint + medium alone does NOT want the weight-free pass; adding an analog
+        // token or preset/focus does.
+        assert!(!spec_wants_weightfree("repaint=0.34 medium=watercolor"));
+        assert!(!spec_wants_weightfree("repaint=0.3 repaint-lora=x:0.7 medium=oil"));
+        assert!(spec_wants_weightfree("repaint=0.34 paper=0.3"));
+        assert!(spec_wants_weightfree("repaint=0.34 photo"));
+        assert!(spec_wants_weightfree("repaint=0.34 vegetation=1"));
     }
 
     #[test]

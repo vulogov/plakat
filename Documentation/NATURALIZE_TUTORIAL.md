@@ -130,9 +130,35 @@ plakat naturalize art.png --out out.png --repaint --auto-medium        # detect 
 - **`--repaint-strength`** (default `0.38`): low `~0.3–0.4` keeps the composition and adds media character;
   higher repaints more (more strokes, more form change). Start low, raise until it reads as painted.
 - **`--repaint-model`** (default `--model`): point at a painterly checkpoint for the most authentic media.
-- **`--repaint-lora`** `spec[:scale]`: push the medium harder than the prompt anchor (`watercolor-style:0.8`).
+- **`--repaint-lora`** `spec[:scale]`: optional — push the medium harder than the prompt anchor. `spec` must
+  be a **real** Hub id / local path you have (there is no bundled `*-style` LoRA). If it fails to load,
+  plakat **retries without it** (and says so) rather than reverting to the baseline — so omit it unless you
+  have one; the prompt anchor alone already reads as the medium.
 - The procedural brush pass is **skipped** under `--repaint` (the model already painted the strokes).
-- Needs a model; runs as the last model step, then the light film grade finishes it.
+- Needs a model. A successful `--repaint` is **terminal**: the analog/paper post-pass is skipped (the model
+  already painted the medium — stacking grain/paper on top only double-textures it). Add an explicit
+  weight-free knob (`--grain`, `--paper`, a focus, …) to stack it anyway.
+
+**In scenarios / compiled prose.** The same repaint is reachable from a scenario's `naturalize:` field (and
+therefore from compiled prose, where `naturalize:` passes straight through) via a **`repaint=`** spec token
+— no `--repaint` flag needed:
+
+```hjson
+// hand-written scenario, or emitted by `plakat compile`
+naturalize: "repaint=0.4 medium=watercolor"          // model repaint, terminal
+naturalize: "repaint=0.4 medium=oil repaint-lora=org/oil-lora:0.8"
+naturalize: "repaint=0.4 medium=oil paper=0.3"       // repaint + explicit paper (stacks)
+naturalize: "medium=oil brush=0.7 scale=0.6"         // weight-free brush strokes (no model)
+```
+
+```text
+# prose prompts.txt — the naturalize line is carried through verbatim
+naturalize: repaint=0.4 medium=watercolor
+A quiet harbour at dawn.
+```
+
+The `repaint=`, `medium=`, `repaint-lora=`, `repaint-model=` tokens mirror the CLI flags; the terminal rule
+applies here too (add `paper=`/`grain=`/a focus token to stack the weight-free pass on the repaint).
 
 ```bash
 plakat naturalize oil-portrait.png  --out out.png --medium oil                 # strokes at 0.6

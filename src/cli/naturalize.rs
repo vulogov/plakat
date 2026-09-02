@@ -1029,6 +1029,51 @@ fn splice_png_text_chunks(src: &Path, dst: &Path) -> Result<bool> {
 /// Apply the analog naturalize pass to `path` IN PLACE from a compact spec, preserving the PNG text
 /// chunks (the L0 etch carrier; the JSON sidecar is a separate file and is left untouched). Used by
 /// `generate --naturalize` and the scenario `naturalize:` field. Weight-free.
+/// Async spec applier used by the scenario / `generate --naturalize` post-passes. Handles the
+/// model-backed **`repaint=`** token (6.27 — the prose/scenario parity of `plakat naturalize --repaint`):
+/// repaint the image in the named `medium=`, then — following the CLI "repaint is terminal" rule — stack
+/// the weight-free analog/brush/paper pass ONLY if the spec explicitly names one. With no `repaint=` it
+/// falls straight through to the sync [`apply_inplace`] (the pure weight-free + brush path). Metadata is
+/// preserved across the repaint.
+pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Option<&str>, steps: usize) -> Result<()> {
+    let Some(strength) = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0) else {
+        return apply_inplace(path, spec);
+    };
+    // Preserve the source PNG's text chunks across the repaint + post pass.
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let chunks = extract_text_chunks(&bytes);
+
+    let tmp = tempfile::tempdir().context("temp dir for naturalize repaint")?;
+    let repainted = tmp.path().join("repaint.png");
+    let medium = crate::naturalize::spec_token(spec, "medium");
+    let style = resolve_style(None, medium);
+    let lora = crate::naturalize::spec_token(spec, "repaint-lora");
+    let rmodel = crate::naturalize::spec_token(spec, "repaint-model").unwrap_or(model);
+    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, rmodel, lora, device, steps)
+        .await
+        .with_context(|| format!("naturalize repaint of {}", path.display()))?;
+
+    let mut out = image::open(&repainted)
+        .with_context(|| format!("reading repaint {}", repainted.display()))?
+        .to_rgb8();
+    // Repaint-terminal rule (matches the CLI): stack analog/brush/paper only if explicitly requested.
+    if crate::naturalize::spec_wants_weightfree(spec) {
+        out = crate::naturalize::apply(&out, &crate::naturalize::from_spec(spec));
+        if let Some(m) = crate::naturalize::brush::medium_from_spec(spec) {
+            let bs = crate::naturalize::brush::brush_from_spec(spec).unwrap_or(0.6);
+            if bs > 0.0 {
+                out = crate::naturalize::brush::apply_brush(&out, m, bs, crate::naturalize::brush::scale_from_spec(spec).unwrap_or(1.0));
+            }
+        }
+        if let Some(pv) = crate::naturalize::paper_from_spec(spec).filter(|v| *v > 0.0) {
+            out = crate::naturalize::paper_texture(&out, pv);
+        }
+    }
+    out.save(path).with_context(|| format!("writing {}", path.display()))?;
+    inject_text_chunks(path, &chunks)?;
+    Ok(())
+}
+
 pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
     let params = crate::naturalize::from_spec(spec);
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;

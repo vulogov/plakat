@@ -956,6 +956,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     let naturalize_spec = args.naturalize.clone();
     let hires = args.hires;
     let hires_model = args.model.clone();
+    // Captured before `args` is moved into run_inner, for the naturalize `repaint=` token (6.27).
+    let naturalize_model = args.model.clone();
+    let naturalize_steps = args.steps;
     // Snapshot the out-dir before generating so we only touch this run's outputs — needed for
     // `--keep-best`/`--score`, `--import`, `--naturalize`, and `--hires`.
     let before =
@@ -974,7 +977,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             }
             if let Some(spec) = &naturalize_spec {
                 for f in &new_files {
-                    if let Err(e) = crate::cli::naturalize::apply_inplace(f, spec) {
+                    // 6.27: also honours the model-backed `repaint=` token (device→auto here; the
+                    // fast weight-free path runs when the spec has no `repaint=`).
+                    if let Err(e) = crate::cli::naturalize::apply_inplace_spec(f, spec, &naturalize_model, None, naturalize_steps).await {
                         tracing::warn!(target: "plakat", "naturalize {}: {e}", f.display());
                     }
                 }
