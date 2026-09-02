@@ -1066,15 +1066,19 @@ fn img2img_capable(model: &str) -> bool {
 /// per-file `repaint_batch` which reloaded it each time. Weight-free specs fall through to the cheap
 /// per-file path. Best-effort per image (a failure is reported, others continue).
 pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str, device: Option<&str>, steps: usize) {
-    let Some(strength) = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0) else {
+    let repaint_s = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0);
+    let repair_s = crate::naturalize::repair_from_spec(spec).filter(|v| *v > 0.0);
+    // Nothing model-backed → the cheap per-file weight-free path.
+    if repaint_s.is_none() && repair_s.is_none() {
         for f in paths {
             if let Err(e) = apply_inplace(f, spec) {
                 crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
             }
         }
         return;
-    };
-    // Resolve the repaint model (SDXL fallback for transformer families) + style + LoRA once.
+    }
+    // Resolve the img2img model (repaint AND repair need a UNet family; SDXL fallback for transformers),
+    // style + LoRA, once for the batch.
     let medium = crate::naturalize::spec_token(spec, "medium");
     let style = resolve_style(None, medium);
     let lora = crate::naturalize::spec_token(spec, "repaint-lora");
@@ -1082,56 +1086,89 @@ pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str
         Some(m) => m.to_string(),
         None if img2img_capable(model) => model.to_string(),
         None => {
-            crate::ui::progress::println(&format!("  {} repaint: '{model}' can't run img2img — using sdxl (set `repaint-model=` to override)", console::style("de-slop").yellow()));
+            crate::ui::progress::println(&format!("  {} '{model}' can't run img2img — using sdxl for the model pass (set `repaint-model=` to override)", console::style("de-slop").yellow()));
             "sdxl".to_string()
         }
     };
-    // Load the pipeline ONCE for the whole batch.
-    let (pipeline, dev) = match crate::naturalize::refine::load_repaint_pipeline(&rmodel, lora, device).await {
-        Ok(p) => p,
-        Err(e) => {
-            crate::ui::progress::println(&format!("  ! naturalize repaint: {e:#}"));
-            return;
+    // Load the repaint pipeline ONCE (only when repaint is requested — repair loads its own per image).
+    let repaint_pipe = if repaint_s.is_some() {
+        match crate::naturalize::refine::load_repaint_pipeline(&rmodel, lora, device).await {
+            Ok((pipeline, dev)) => {
+                crate::ui::progress::println(&format!("  {} repaint model {rmodel} loaded once for {} image(s)", console::style("de-slop").green(), paths.len()));
+                Some((pipeline, dev))
+            }
+            Err(e) => {
+                crate::ui::progress::println(&format!("  ! naturalize repaint: {e:#}"));
+                None
+            }
         }
+    } else {
+        None
     };
-    crate::ui::progress::println(&format!(
-        "  {} repaint model {rmodel} loaded once for {} image(s)",
-        console::style("de-slop").green(),
-        paths.len()
-    ));
     for f in paths {
-        if let Err(e) = repaint_one_with_pipeline(&pipeline, &dev, f, spec, style.as_deref(), strength, steps, medium).await {
-            crate::ui::progress::println(&format!("  ! naturalize repaint {}: {e:#}", f.display()));
+        if let Err(e) = model_pass_one(f, spec, &rmodel, device, steps, repaint_s, repair_s, style.as_deref(), medium, repaint_pipe.as_ref()).await {
+            crate::ui::progress::println(&format!("  ! naturalize {}: {e:#}", f.display()));
         }
     }
 }
 
-/// One image of a batch repaint: repaint (shared pipeline) → optional weight-free/paper stack → save +
-/// preserve metadata. Mirrors `repaint_batch`'s per-image body but takes the already-loaded pipeline.
-async fn repaint_one_with_pipeline(
-    pipeline: &crate::pipelines::portrait::Pipeline,
-    device: &candle_core::Device,
+/// One image of a batch model-pass: optional face-protected **repair** (fix anatomy first) → optional
+/// **repaint** (stylize, shared pipeline) → optional weight-free/paper stack → save + preserve metadata.
+#[allow(clippy::too_many_arguments)]
+async fn model_pass_one(
     path: &Path,
     spec: &str,
-    style: Option<&str>,
-    strength: f32,
+    rmodel: &str,
+    device: Option<&str>,
     steps: usize,
+    repaint_s: Option<f32>,
+    repair_s: Option<f32>,
+    style: Option<&str>,
     medium: Option<&str>,
+    repaint_pipe: Option<&(crate::pipelines::portrait::Pipeline, candle_core::Device)>,
 ) -> Result<()> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let chunks = extract_text_chunks(&bytes);
-    let tmp = tempfile::tempdir().context("temp dir for naturalize repaint")?;
-    let repainted = tmp.path().join("repaint.png");
-    let scene_prompt = scene_prompt_from_png(path);
-    crate::naturalize::refine::repaint_with_pipeline(pipeline, device, path, &repainted, style, strength, steps, scene_prompt.as_deref()).await?;
-    crate::ui::progress::println(&format!(
-        "  {} repainted → {} ({}{})",
-        console::style("de-slop").green(),
-        path.display(),
-        medium.unwrap_or("painterly"),
-        if scene_prompt.is_some() { ", scene-conditioned" } else { "" }
-    ));
-    let mut out = image::open(&repainted).with_context(|| format!("reading repaint {}", repainted.display()))?.to_rgb8();
+    let tmp = tempfile::tempdir().context("temp dir for naturalize model pass")?;
+
+    // 0. Repair (face-protected anatomy fix) FIRST — on the base render, before any stylize. Writes to a
+    //    temp that becomes the input to the repaint (or the final image if there's no repaint).
+    let mut src = path.to_path_buf();
+    if let Some(rstrength) = repair_s {
+        let repaired = tmp.path().join("repaired.png");
+        let scope = crate::naturalize::refine::RepairScope::parse(
+            crate::naturalize::spec_token(spec, "repair-scope").unwrap_or("figures"),
+        )
+        .unwrap_or(crate::naturalize::refine::RepairScope::Figures);
+        match crate::naturalize::refine::repair_protected(&src, &repaired, rstrength, style, scope, rmodel, device, steps, tmp.path()).await {
+            Ok(true) => {
+                crate::ui::progress::println(&format!("  {} repaired anatomy → {} (scope {scope:?}, strength {rstrength:.2})", console::style("de-slop").green(), path.display()));
+                src = repaired;
+            }
+            Ok(false) => crate::ui::progress::println(&format!("  {} repair: no faces detected in {} — skipped", console::style("de-slop").yellow(), path.display())),
+            Err(e) => crate::ui::progress::println(&format!("  ! repair {}: {e:#}", path.display())),
+        }
+    }
+
+    // 1. Repaint (stylize) — using the shared pipeline; conditioned on the scene prompt from the PNG.
+    let repainted;
+    let out_src: &Path = if let (Some(strength), Some((pipeline, dev))) = (repaint_s, repaint_pipe) {
+        repainted = tmp.path().join("repaint.png");
+        let scene_prompt = scene_prompt_from_png(path);
+        crate::naturalize::refine::repaint_with_pipeline(pipeline, dev, &src, &repainted, style, strength, steps, scene_prompt.as_deref()).await?;
+        crate::ui::progress::println(&format!(
+            "  {} repainted → {} ({}{})",
+            console::style("de-slop").green(),
+            path.display(),
+            medium.unwrap_or("painterly"),
+            if scene_prompt.is_some() { ", scene-conditioned" } else { "" }
+        ));
+        &repainted
+    } else {
+        &src // repair-only (or nothing): the weight-free stack runs on the repaired/original image
+    };
+
+    let mut out = image::open(out_src).with_context(|| format!("reading {}", out_src.display()))?.to_rgb8();
     if crate::naturalize::spec_wants_weightfree(spec) {
         out = crate::naturalize::apply(&out, &crate::naturalize::from_spec(spec));
         if let Some(m) = crate::naturalize::brush::medium_from_spec(spec) {

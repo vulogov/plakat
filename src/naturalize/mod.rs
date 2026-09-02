@@ -379,12 +379,18 @@ pub fn repaint_from_spec(spec: &str) -> Option<f32> {
     spec_token(spec, "repaint").and_then(|v| v.parse::<f32>().ok())
 }
 
+/// The `repair=<strength>` token, if present — the model-backed face-protected anatomy repair (spec parity
+/// of `plakat naturalize --repair`). Runs BEFORE the repaint. `repair-scope=` picks what it may touch.
+pub fn repair_from_spec(spec: &str) -> Option<f32> {
+    spec_token(spec, "repair").and_then(|v| v.parse::<f32>().ok())
+}
+
 /// Whether a spec names any **weight-free** analog token (a preset name / a focus / `grain=`…/`paper=`…).
 /// Used to port the CLI's "a successful `--repaint` is terminal" rule to the spec path: after a `repaint=`,
 /// the analog + paper pass is stacked ONLY when the user explicitly asked for it. The repaint/brush/medium
 /// control tokens themselves do NOT count as weight-free.
 pub fn spec_wants_weightfree(spec: &str) -> bool {
-    const CONTROL: &[&str] = &["repaint", "repaint-lora", "repaint-model", "medium", "brush", "scale"];
+    const CONTROL: &[&str] = &["repaint", "repaint-lora", "repaint-model", "medium", "brush", "scale", "repair", "repair-scope"];
     const ANALOG: &[&str] =
         &["grain", "aberration", "vignette", "bloom", "desaturate", "warm", "defocus", "polish", "micro", "paper"];
     spec.split([' ', ',', ';']).map(str::trim).filter(|t| !t.is_empty()).any(|tok| {

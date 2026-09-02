@@ -888,6 +888,12 @@ struct TaskDef {
     #[serde(rename = "lora-scale", default)]
     lora_scale: Option<f32>,
 
+    /// 6.27: per-task naturalize spec — OVERRIDES the scenario-global `naturalize:` for THIS task's
+    /// outputs. Lets one scene carry e.g. `"repaint=0.4 medium=watercolor repair=0.4"` while the others
+    /// keep the plain global pass. `None` → inherit the global spec.
+    #[serde(default)]
+    naturalize: Option<String>,
+
     // ---------- v0.29 phase 2: per-task animate overrides ----------
 
     /// v0.29 phase 2: per-task dispatch type override. Same accepted
@@ -2027,9 +2033,11 @@ pub async fn run_with_events(
         }
         set
     }
-    // Snapshot existing PNGs when EITHER a post-pass (naturalize / restore-faces) will touch this run's
-    // outputs, so we only process the ones this run produces.
-    let nat_before = (s.naturalize.is_some() || s.restore_faces).then(|| collect_pngs(&out_root));
+    // Snapshot existing PNGs when EITHER a post-pass (naturalize / per-task naturalize / restore-faces)
+    // will touch this run's outputs, so we only process the ones this run produces.
+    let any_task_naturalize = s.tasks.iter().any(|t| t.naturalize.is_some());
+    let nat_before =
+        (s.naturalize.is_some() || any_task_naturalize || s.restore_faces).then(|| collect_pngs(&out_root));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -5338,15 +5346,37 @@ pub async fn run_with_events(
         }
     }
 
-    // 6.10.0: naturalize this run's outputs (analog post-pass), preserving each PNG's metadata.
-    if let (Some(spec), Some(before)) = (s.naturalize.as_ref(), nat_before.as_ref()) {
+    // 6.10.0 / 6.27: naturalize this run's outputs (analog post-pass), preserving each PNG's metadata.
+    // Per-task override: each output's EFFECTIVE spec is its task's `naturalize:` if set, else the global.
+    // Outputs are grouped by effective spec so each distinct spec loads its model once (batch), and a
+    // scene can carry e.g. `repair=` while the others don't.
+    if (s.naturalize.is_some() || any_task_naturalize) && nat_before.is_some() {
+        let before = nat_before.as_ref().unwrap();
         let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
-        if !new.is_empty() {
-            crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", new.len()));
-            // 6.27: batch — a `repaint=` spec loads the img2img model ONCE and reuses it for every image
-            // (previously it reloaded per image). Weight-free specs fall through to the cheap per-file path.
-            let rmodel = s.model.as_deref().unwrap_or("sdxl");
-            crate::cli::naturalize::repaint_batch(&new, spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await;
+        // Map each new PNG → its task (parent dir == safe_name(task.name)) → effective spec.
+        let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
+        for png in new {
+            let parent = png.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+            let task_spec = s
+                .tasks
+                .iter()
+                .find(|t| safe_name(&t.name) == parent)
+                .and_then(|t| t.naturalize.as_deref());
+            if let Some(spec) = task_spec.or(s.naturalize.as_deref()) {
+                groups.entry(spec.to_string()).or_default().push(png);
+            }
+        }
+        let rmodel = s.model.as_deref().unwrap_or("sdxl");
+        // Deterministic order (sorted by spec) so logs/output are stable across runs.
+        let mut specs: Vec<String> = groups.keys().cloned().collect();
+        specs.sort();
+        for spec in specs {
+            let pngs = groups.remove(&spec).unwrap();
+            if pngs.is_empty() {
+                continue;
+            }
+            crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", pngs.len()));
+            crate::cli::naturalize::repaint_batch(&pngs, &spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await;
         }
     }
 
