@@ -164,6 +164,12 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
     let src_f: Vec<[f32; 3]> = src.pixels().map(|p| [p.0[0] as f32, p.0[1] as f32, p.0[2] as f32]).collect();
     let luma: Vec<f32> = src_f.iter().map(|c| lum(c[0], c[1], c[2])).collect();
     let (_, angle) = sobel(&luma, w, h);
+    // Local high-frequency energy → a "detail" field. Flat regions (sky) get LONG/WIDE strokes;
+    // busy regions (faces, market goods) get SHORT/NARROW strokes — so the marks aren't uniformly
+    // chunky (the "oil-filter" tell). Smoothed so the size varies gradually, not per-pixel.
+    let blur2 = box_blur_gray(&luma, w, h, 2);
+    let hf: Vec<f32> = (0..w * h).map(|i| (luma[i] - blur2[i]).abs()).collect();
+    let detail = box_blur_gray(&hf, w, h, 3);
 
     // Under-painting: a blurred copy per channel, so bare gaps between strokes look painted.
     let mut canvas: Vec<[f32; 3]> = {
@@ -174,8 +180,6 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
 
     let idx = |x: i32, y: i32| (y.clamp(0, h as i32 - 1) as usize) * w + x.clamp(0, w as i32 - 1) as usize;
     let step = st.spacing.max(1.0);
-    let half_len = st.length * 0.5;
-    let half_w = (st.width * 0.5).max(0.6);
 
     // Seed grid (deterministic order → later strokes layer over earlier, like real painting).
     let mut gy = step * 0.5;
@@ -186,6 +190,12 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
             let jy = (noise((gy as u32) ^ 0x1234, (gx as u32) ^ 0x5678) - 0.5) * step;
             let (sxf, syf) = ((gx + jx).clamp(0.0, w as f32 - 1.0), (gy + jy).clamp(0.0, h as f32 - 1.0));
             let seed = idx(sxf as i32, syf as i32);
+            // Detail-adaptive size: flat (low detail) → up to 1.35× longer/wider; busy → down to
+            // 0.4×. Makes the sky read as broad sweeps and the faces as small dabs, not one chunk size.
+            let d = detail[seed];
+            let scale = (1.35 - (d / 20.0).min(1.0) * 0.95).clamp(0.4, 1.35);
+            let half_len = st.length * 0.5 * scale;
+            let half_w = (st.width * 0.5 * scale).max(0.6);
             // Per-stroke brightness variation so neighbouring marks are distinguishable (not a
             // smooth average) — the thing that makes discrete strokes read as discrete.
             let cj = (noise((sxf as u32) ^ 0xa53f, (syf as u32) ^ 0x1b9d) - 0.5) * 2.0 * st.color_jitter;
