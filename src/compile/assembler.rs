@@ -47,11 +47,13 @@ pub fn assemble_input(scene: &ResolvedScene) -> String {
 }
 
 const POSITIVE_BASE: &str = "\
-You are an expert prompt engineer for text-to-image diffusion models. Rewrite the \
-user's scene description into a single optimized image-generation prompt for the SPECIFIC \
-target model described below. Output ONLY the prompt — no preamble, no quotation marks, no \
-markdown, no explanation.\n\
-Optimize for the target model while preserving the description:\n\
+You are an expert prompt engineer for text-to-image diffusion models. The user has written their \
+scene description as best they can; YOUR JOB is to turn it into the single prompt that produces the \
+BEST POSSIBLE IMAGE on the SPECIFIC target model described below — apply your expert knowledge of that \
+model's strengths, quirks, and what it actually responds to. Honour the user's intent (their subjects, \
+their style, their key elements); optimise everything else — wording, order, technical phrasing — for \
+image quality. Output ONLY the prompt — no preamble, no quotation marks, no markdown, no explanation.\n\
+Rules (an expert respects the user's intent and never makes the result worse):\n\
 - Keep EVERY distinct subject and element the user describes — all people/characters (and \
 their stated variety, e.g. men, women, and children of different ages), objects, materials, \
 and colours. Never collapse a described group of people into a single word, and never silently \
