@@ -175,7 +175,13 @@ pub async fn build(hardware: HardwareReport, want_network: bool) -> CapabilityRe
         let (weight_gb, size_source) = derive_size(&repo, want_network, token.as_deref()).await;
         let resident_gb = weight_gb.map(|w| w + OVERHEAD_GB);
         let verdict = verdict_for(resident_gb, &hardware, m, gated, token.is_some(), size_source);
-        let tuning = (verdict != "runs" && !m.tuning.is_empty()).then(|| m.tuning.to_string());
+        // The default Flux tuning points at the GGUF path — but that is BROKEN on Metal (candle's Metal
+        // quantized mat×mat kernel produces garbage; plakat blocks it). On Metal, warn instead of misleading.
+        let tuning = if hardware.backend == "metal" && m.alias.starts_with("flux") {
+            Some("GGUF Flux is broken on Metal (candle quantized-matmul bug — plakat blocks it); use full BF16 (needs the RAM, ~24 GB) or --device cpu (correct but slow). Not recommended on Metal.".to_string())
+        } else {
+            (verdict != "runs" && !m.tuning.is_empty()).then(|| m.tuning.to_string())
+        };
 
         models.push(ModelCapability {
             model: m.alias.to_string(),
