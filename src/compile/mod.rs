@@ -100,6 +100,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // ---- scenario commands (straight to HJSON) ----
     CommandSpec { key: "model",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "lora",      kind: CommandKind::Scenario, merge: Merge::AccumulateList },
+    CommandSpec { key: "loras",     kind: CommandKind::Scenario, merge: Merge::AccumulateList },
     CommandSpec { key: "seed",      kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "count",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "size",      kind: CommandKind::Scenario, merge: Merge::LastWins },
@@ -303,8 +304,12 @@ async fn compile_one_scene(
     let mut weight_note: Option<String> = None;
     if !opts.no_enhance && !assembled.is_empty() {
         let spans = dedup_spans(assembler::extract_weight_spans(&assembled));
-        let dropped = assembler::weight_span_count(&prompt) < spans.len();
-        if !spans.is_empty() && dropped {
+        // Only step in when the enhancer lost EVERY weight (a weak/local provider). Now that `auto` honours
+        // the system prompt, the enhancer normally keeps the weights inline and TRANSLATED — trust that and
+        // do NOT append a tail, which would duplicate them (and, from the pre-translation source, in the
+        // original language). All-or-nothing keeps the output clean.
+        let all_lost = !spans.is_empty() && assembler::weight_span_count(&prompt) == 0;
+        if all_lost {
             // Translate each phrase (identity when there's no `translate:` — English weights just re-appear).
             let mut english: Vec<(String, f32)> = Vec::with_capacity(spans.len());
             let mut ok = true;
@@ -332,7 +337,7 @@ async fn compile_one_scene(
                 let sep = if prompt.trim_end().ends_with(',') || prompt.trim().is_empty() { " " } else { ", " };
                 prompt = format!("{}{sep}{tail}", prompt.trim_end());
                 weight_note = Some(format!(
-                    "scene '{}': re-applied {} attention weight(s) `(term:N)` the enhancer flattened (weighted emphasis tail)",
+                    "scene '{}': the enhancer flattened all {} attention weight(s) `(term:N)` — re-applied them as a translated emphasis tail",
                     scene.name, spans.len()
                 ));
             } else {
@@ -450,9 +455,10 @@ async fn fit_to_budget(
         Some(f) => assembler::clean(&f),
         None => return (prompt.to_string(), None), // fit call failed — keep original; scene_warnings flags it
     };
-    // Deterministically guarantee the weights survived the compression (re-append any it dropped).
+    // Guarantee the weights survived the compression: only re-append if the fit pass lost them ALL (matches
+    // step 2b's all-or-nothing — avoids duplicating weights the fit pass kept).
     let mut out = fitted;
-    if !spans.is_empty() && assembler::weight_span_count(&out) < spans.len() {
+    if !spans.is_empty() && assembler::weight_span_count(&out) == 0 {
         let tail = spans.iter().map(|(p, w)| format!("({}:{})", p.trim(), w)).collect::<Vec<_>>().join(", ");
         let sep = if out.trim_end().ends_with(',') || out.trim().is_empty() { " " } else { ", " };
         out = format!("{}{sep}{tail}", out.trim_end());
@@ -481,8 +487,8 @@ async fn translate_phrase(
     eargs: &crate::prompt::EnhanceArgs,
 ) -> Option<String> {
     let sys = format!(
-        "Translate this short phrase from {lang} to English. Output ONLY the translated phrase itself — \
-         no quotes, no notes, no trailing punctuation, no markdown."
+        "Translate the following short phrase from {lang} into English. Return the English translation and \
+         nothing else — no quotes, no notes, no trailing punctuation, no markdown, no {lang} text."
     );
     cached_call(provider, &sys, phrase.trim(), cache::POSITIVE, cache_on, eargs)
         .await
@@ -624,7 +630,7 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
         // D2: duplicate command keys that don't allow repeats (e.g. two `seed:` lines).
         let mut keys_here: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (k, _) in &s.commands {
-            let repeatable = matches!(k.as_str(), "style" | "persona" | "lora") || k.contains('-');
+            let repeatable = matches!(k.as_str(), "style" | "persona" | "lora" | "loras") || k.contains('-');
             let n = keys_here.entry(k.as_str()).or_insert(0);
             *n += 1;
             if *n == 2 && !repeatable {

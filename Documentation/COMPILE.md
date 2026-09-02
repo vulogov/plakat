@@ -70,7 +70,7 @@ model: sdxl
 | Command | Merge | HJSON |
 |---|---|---|
 | `model:` | last-wins | global `model` + per-scene **family profile** (scenarios share one model) |
-| `lora:` | accumulate | global `loras` (repeatable) — value is a LoRA **spec** `SOURCE[:scale]` (scale default 1.0): a local `path.safetensors`, an HF repo `org/name` (add `#file`), or `civitai:ID` / `civitai-version:ID`. Put it in the global block — per-scene `lora:` isn't emitted |
+| `lora:` / `loras:` | accumulate | global `loras` — value is a LoRA **spec** `SOURCE[:scale]` (scale default 1.0): a local `path.safetensors`, an HF repo `org/name` (add `#file`), or `civitai:ID` / `civitai-version:ID`. Repeatable (`lora:` per line) **and** comma-separable (`loras: a:1.2, b:1.0, c:0.8` on one line) — both accumulate into the same list. Put it in the global block — per-scene lora isn't emitted |
 | `seed:` `count:` `size:` `steps:` `guidance:` `scheduler:` `refine:` | last-wins | scenario default (global block) or per-task override (scene block) |
 | `name:` | last-wins | task name — auto-slugged from the first 6 words; **with enhancement** from the *enhanced English* prompt (so `translate:` blocks get a meaningful name, not `scene_N`); else sequential `scene_N`. Auto names are de-duplicated |
 | `skip:` | last-wins | `true` omits the block |

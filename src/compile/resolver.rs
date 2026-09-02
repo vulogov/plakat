@@ -154,6 +154,21 @@ fn vals<'a>(b: Option<&'a Block>, key: &str) -> Vec<&'a str> {
     b.map(|b| b.values(key).collect()).unwrap_or_default()
 }
 
+/// Collect LoRA specs from both `lora:` (one per line, the documented form) and `loras:` (a plural
+/// convenience), splitting any comma-separated line into individual `source[:scale]` specs. A LoRA spec
+/// never contains a comma, so splitting is safe — and it means `loras: a:1.2, b:1.0` and repeated
+/// `lora: a:1.2` lines both resolve to the same accumulated list.
+fn lora_specs(g: Option<&Block>) -> Vec<String> {
+    vals(g, "lora")
+        .into_iter()
+        .chain(vals(g, "loras"))
+        .flat_map(|line| line.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn parse_opt<T: std::str::FromStr>(v: Option<&str>, what: &str) -> Result<Option<T>>
 where
     T::Err: std::fmt::Display,
@@ -297,7 +312,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
     let globals = ResolvedGlobals {
         family: classify_model(g_model.as_deref().unwrap_or(default_model)),
         model: g_model.clone(),
-        loras: list(&[], &vals(g, "lora")),
+        loras: lora_specs(g),
         seed: parse_opt(last_wins(&[], &vals(g, "seed")), "seed")?,
         count: parse_opt(last_wins(&[], &vals(g, "count")), "count")?,
         size: last_wins(&[], &vals(g, "size")).map(str::to_string),
@@ -414,6 +429,16 @@ mod tests {
         let r2 = resolve_str("A scene.\nlora: b:0.8\nlora: c:0.3\n");
         assert_eq!(r2.scenes[0].tags, Vec::<String>::new());
         assert_eq!(r2.globals.loras, Vec::<String>::new());
+    }
+
+    #[test]
+    fn loras_plural_and_comma_split() {
+        // `loras:` (plural) with a comma-separated line splits into individual specs.
+        let r = resolve_str("loras: a:1.2, b:1.0,c:0.8\n\nA scene.\n");
+        assert_eq!(r.globals.loras, vec!["a:1.2", "b:1.0", "c:0.8"]);
+        // `lora:` (singular) with a comma-separated line also splits; both keys accumulate together.
+        let r2 = resolve_str("lora: a:1.2\nloras: b:1.0, c:0.8\n\nA scene.\n");
+        assert_eq!(r2.globals.loras, vec!["a:1.2", "b:1.0", "c:0.8"]);
     }
 
     #[test]
