@@ -203,6 +203,9 @@ pub enum ModelFamily {
     /// SD3 / SD3.5 — CLIP-ish prose prompting like SD15, but the T5-XXL text encoder carries a much
     /// larger token budget, so the 77-token CLIP cap does NOT apply.
     Sd3,
+    /// Stable Cascade (Würstchen v3) — CLIP text encoders; descriptive prompting, and it does NOT honour
+    /// A1111 `(term:N)` attention weights (plakat's Cascade pipeline has no weight parser).
+    Cascade,
     Flux,
     #[default]
     Unknown,
@@ -215,6 +218,7 @@ impl ModelFamily {
             ModelFamily::Sd15 => "SD15",
             ModelFamily::Sdxl => "SDXL",
             ModelFamily::Sd3 => "SD3",
+            ModelFamily::Cascade => "Cascade",
             ModelFamily::Flux => "Flux",
             ModelFamily::Unknown => "Unknown",
         }
@@ -304,6 +308,11 @@ async fn compile_one_scene(
         }
     }
 
+    // Cascade's text encoders don't honour `(term:N)` weights, so keeping them inline would just add noisy
+    // punctuation tokens — for Cascade we strip to the plain phrase and let prose reinforcement (2d) carry
+    // the emphasis. Every other family keeps the inline weight (their CLIP/T5 encoders apply it).
+    let keep_weights = !matches!(scene.family, ModelFamily::Cascade);
+
     // 3) substitute the English weighted spans back INLINE, at their original positions (enhance path only;
     //    `--no-enhance` keeps the source text verbatim). The prose around them is still source-language here —
     //    the enhancer translates it and only has to KEEP the already-English `(phrase:N)` spans.
@@ -312,7 +321,11 @@ async fn compile_one_scene(
     } else {
         assembler::rewrite_weight_spans(&assembled, |p, w| {
             let en = en_map.get(p).map(|(t, _)| t.as_str()).unwrap_or(p);
-            format!("({}:{})", en, w)
+            if keep_weights {
+                format!("({}:{})", en, w)
+            } else {
+                en.to_string()
+            }
         })
     };
 
@@ -334,7 +347,7 @@ async fn compile_one_scene(
     //    emphasis is ever silently lost. The ones it KEPT stay inline (matched by substring), so there's no
     //    duplication. Ordered by `spans` for deterministic output.
     let mut weights_tailed = 0usize;
-    if !opts.no_enhance && !en_map.is_empty() {
+    if !opts.no_enhance && !en_map.is_empty() && keep_weights {
         let have: Vec<String> =
             assembler::extract_weight_spans(&prompt).into_iter().map(|(p, _)| p.to_lowercase()).collect();
         let missing: Vec<String> = spans
@@ -427,15 +440,21 @@ async fn compile_one_scene(
         }
     }
     if !spans.is_empty() {
-        if enhanced {
+        if !enhanced {
+            trace.push(format!("{} attention weight(s) kept verbatim (--no-enhance)", spans.len()));
+        } else if !keep_weights {
+            trace.push(format!(
+                "{} attention weight(s) stripped — {} ignores `(term:N)`; emphasis applied via prose",
+                spans.len(),
+                scene.family.label()
+            ));
+        } else {
             let inline = spans.len().saturating_sub(weights_tailed);
             trace.push(format!(
                 "{} attention weight(s): {inline} translated inline{}",
                 spans.len(),
                 if weights_tailed > 0 { format!(", {weights_tailed} re-added at end (enhancer dropped)") } else { String::new() }
             ));
-        } else {
-            trace.push(format!("{} attention weight(s) kept verbatim (--no-enhance)", spans.len()));
         }
     }
     if enhanced {
@@ -738,6 +757,8 @@ pub fn classify_model(name: &str) -> ModelFamily {
     let n = name.to_ascii_lowercase();
     if n.contains("flux") {
         ModelFamily::Flux
+    } else if n.contains("cascade") || n.contains("wuerstchen") || n.contains("würstchen") {
+        ModelFamily::Cascade
     } else if n.contains("sdxl") || n.contains("xl") {
         ModelFamily::Sdxl
     } else if n.contains("sd35") || n.contains("sd3") {
@@ -785,6 +806,8 @@ mod tests {
         assert_eq!(classify_model("sd35-medium"), ModelFamily::Sd3);
         assert_eq!(classify_model("sd35"), ModelFamily::Sd3);
         assert_eq!(classify_model("sd3"), ModelFamily::Sd3);
+        assert_eq!(classify_model("stable-cascade"), ModelFamily::Cascade);
+        assert_eq!(classify_model("cascade"), ModelFamily::Cascade);
         assert_eq!(classify_model("some-unknown-thing"), ModelFamily::Unknown);
         // flux wins over a stray "xl"-less name; xl wins over 1.5 substrings.
         assert_eq!(classify_model("flux-xl-weird"), ModelFamily::Flux);

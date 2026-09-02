@@ -177,10 +177,12 @@ identical `naturalize:` field — see NATURALIZE_TUTORIAL's "In scenarios / comp
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.
 
-**Model family** (`SD15` / `SDXL` / `SD3` / `Flux`) is detected from the scene model, else
+**Model family** (`SD15` / `SDXL` / `SD3` / `Cascade` / `Flux`) is detected from the scene model, else
 the global model, else `--model`. It selects the prompt-writing profile and token budget: SD15 →
 comma-keyword & <77 tokens; SDXL → mixed prose/keywords ~150; **SD3/3.5 → prose, ~256 tokens (T5-XXL, no
-77-token CLIP cap)**; Flux → prose ~300, short or empty negative. Over-budget prompts are **condensed to
+77-token CLIP cap)**; **Cascade → descriptive, ~120 tokens, and `(term:N)` weights are NOT honoured (the
+model has no weight parser) so they're stripped and the emphasis is applied via prose reinforcement
+instead**; Flux → prose ~300, short or empty negative. Over-budget prompts are **condensed to
 fit** the family (weights preserved) with a note, not just flagged.
 
 **Attention weights on SD3/Flux.** These T5-driven models honour descriptive *prose* far more than numeric

@@ -89,6 +89,13 @@ TARGET MODEL: Flux (transformer, guidance distillation, no CLIP token limit).\n\
 - Do NOT use SD-style quality boosters (no effect). Be specific about spatial \
 relationships, sizes, and positions.";
 
+const FAMILY_CASCADE: &str = "\
+TARGET MODEL: Stable Cascade (Würstchen v3, CLIP text encoders).\n\
+- Descriptive natural language with keyword clusters; aim 40-120 tokens. Front-load subject and style.\n\
+- Attention-weight `(term:N)` syntax is NOT honoured by this model — rely on clear description, concrete \
+detail and word order for emphasis, never on weights.\n\
+- Order: [style], [subject], [composition], [lighting], [mood].";
+
 const FAMILY_SD3: &str = "\
 TARGET MODEL: Stable Diffusion 3 / 3.5 (T5-XXL + dual CLIP, ~256-token range).\n\
 - Write natural-language prose describing the scene, NOT comma-separated booru tags. Aim 80-220 tokens.\n\
@@ -101,6 +108,7 @@ fn family_section(f: ModelFamily) -> &'static str {
         ModelFamily::Sd15 | ModelFamily::Unknown => FAMILY_SD15,
         ModelFamily::Sdxl => FAMILY_SDXL,
         ModelFamily::Sd3 => FAMILY_SD3,
+        ModelFamily::Cascade => FAMILY_CASCADE,
         ModelFamily::Flux => FAMILY_FLUX,
     }
 }
@@ -112,6 +120,8 @@ pub fn family_token_budget(f: ModelFamily) -> usize {
     match f {
         ModelFamily::Sd15 | ModelFamily::Unknown => 77,
         ModelFamily::Sdxl => 150,
+        // Cascade's CLIP text encoders take a moderate prompt — more forgiving than SD15's hard 77.
+        ModelFamily::Cascade => 120,
         // SD3/3.5 route the full prompt through T5-XXL (256-token context) alongside the CLIP pair.
         ModelFamily::Sd3 => 256,
         ModelFamily::Flux => 300,
@@ -231,7 +241,9 @@ fn join_and(items: &[String]) -> String {
 /// the inline `(term:N)` weights stay for the CLIP encoders, and this makes the emphasis actually land on
 /// T5. Returns the clause to append, or None for non-T5 families / no weighted spans. Dedups by phrase.
 pub fn prose_reinforcement(prompt: &str, family: ModelFamily) -> Option<String> {
-    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux) {
+    // SD3/Flux honour prose >> weights; Cascade honours NO numeric weights at all — so all three get the
+    // prose restatement (for Cascade it's the ONLY way to emphasise, since `(term:N)` does nothing there).
+    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade) {
         return None;
     }
     let (mut strong, mut moderate, mut faint) = (Vec::new(), Vec::new(), Vec::new());
@@ -455,7 +467,9 @@ mod tests {
         assert!(r.contains("Clearly present: green sky."), "got: {r}");
         // De-emphasis (<0.9): faint smoke.
         assert!(r.contains("Only subtle and understated: faint smoke."), "got: {r}");
-        // Non-T5 families get nothing; no weights → nothing.
+        // Cascade also reinforces (it honours NO numeric weights, so prose is the only lever).
+        assert!(prose_reinforcement(p, ModelFamily::Cascade).is_some());
+        // Weight-honouring CLIP families get nothing; no weights → nothing.
         assert!(prose_reinforcement(p, ModelFamily::Sdxl).is_none());
         assert!(prose_reinforcement("no weights here", ModelFamily::Flux).is_none());
         // Source-cased phrases are lowercased for mid-sentence use; acronyms are kept.
