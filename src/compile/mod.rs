@@ -397,14 +397,31 @@ async fn compile_one_scene(
         }
     }
 
-    // 3) negative — DETERMINISTIC, not LLM-generated. Asking a model to "write a negative" makes it
-    // hallucinate scene-specific content exclusions the user never asked for (weapons, blood, colours…) and
-    // can even run away into repetition. Instead: the user's `negative:` seeds (verbatim) plus a curated,
-    // generic QUALITY negative — deduped and capped. `--no-negative` keeps just the seeds.
+    // 3) negative — HYBRID: a deterministic base (the user's `negative:` seeds + a curated QUALITY set)
+    // ALWAYS, plus — on the enhance path — a FEW LLM scene-specific DEFECT terms. Bounded so the old
+    // failures can't recur: the whole thing is deduped + capped (no runaway), the LLM is told to add only
+    // defects (never content), and `strip_terms_in_positive` HARD-drops any suggestion echoing the positive
+    // prompt (so it can never negate a wanted green sky / orange sun). Flux ignores negatives → seeds only;
+    // `--no-negative` → seeds only; `--no-enhance` → deterministic (no LLM).
+    let mut scene_negatives = false;
     let negative = if opts.no_negative {
         scene.negative_seeds.clone()
-    } else {
+    } else if opts.no_enhance || matches!(scene.family, ModelFamily::Flux) {
         assembler::auto_negative(scene)
+    } else {
+        let sys = assembler::negative_scene_system();
+        let llm = cached_call(&opts.provider, sys, &prompt, cache::NEGATIVE, opts.cache, eargs)
+            .await
+            .map(|t| assembler::clean(&t))
+            .map(|t| assembler::strip_terms_in_positive(&t, &prompt))
+            .filter(|t| !t.trim().is_empty());
+        match llm {
+            Some(scene_terms) => {
+                scene_negatives = true;
+                assembler::merge_negative_terms(&[&scene.negative_seeds, &scene_terms, assembler::QUALITY_NEGATIVE], 40)
+            }
+            None => assembler::auto_negative(scene),
+        }
     };
 
     // 4) name upgrade (6.26.2): when the name was auto-derived AND the LLM enhanced the prompt,
@@ -474,10 +491,13 @@ async fn compile_one_scene(
     if reinforced {
         trace.push("reinforced weighted concepts as prose (SD3/Flux honour prose > weights)".to_string());
     }
+    let neg_count = negative.split(',').filter(|t| !t.trim().is_empty()).count();
     trace.push(if opts.no_negative {
         "negative: your seeds only (--no-negative)".to_string()
+    } else if scene_negatives {
+        format!("negative: {neg_count} terms (seeds + scene-specific defects + curated quality)")
     } else {
-        format!("negative: {} terms (seeds + curated quality)", negative.split(',').filter(|t| !t.trim().is_empty()).count())
+        format!("negative: {neg_count} terms (seeds + curated quality)")
     });
     if out_scene.name != scene.name {
         trace.push(format!("named from prompt → {}", out_scene.name));

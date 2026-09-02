@@ -451,6 +451,34 @@ pub fn merge_negative_terms(parts: &[&str], max_terms: usize) -> String {
     out.join(", ")
 }
 
+/// System prompt for the HYBRID negative: the LLM adds a FEW scene-specific DEFECT terms only. Strict
+/// rules keep it from the old failure modes (runaway, negating content the user wants). The output is
+/// still capped/deduped downstream, and any term echoing the positive prompt is stripped as a hard guard.
+pub fn negative_scene_system() -> &'static str {
+    "You add a FEW extra NEGATIVE-prompt terms for a text-to-image model, tailored to ONE scene. Given the \
+     POSITIVE prompt, output a SHORT comma-separated list — AT MOST 10 terms — of the QUALITY / ANATOMY / \
+     TECHNICAL DEFECT terms most worth suppressing FOR THIS SCENE. Examples: a crowd → 'cloned faces, \
+     duplicate people, merged bodies'; visible hands → 'extra fingers, fused fingers'; architecture → \
+     'warped perspective, crooked walls'; a vehicle/machine → 'melted metal, asymmetric wheels'. STRICT \
+     RULES: (1) ONLY defects and rendering artifacts — NEVER exclude any content, colour, subject, mood, \
+     style, medium, or setting the scene contains or wants (never negate the sky, the sun, colours, the \
+     people, the medium). (2) Do NOT repeat generic terms like 'blurry, low quality, watermark' — those are \
+     added separately. (3) At most 10 terms, no repetition. Output ONLY the comma-separated terms, nothing \
+     else."
+}
+
+/// Hard guard for the hybrid negative: drop any negative term whose text appears in the POSITIVE prompt, so
+/// an LLM suggestion can never suppress content the user actually asked for (e.g. 'green sky' / 'orange sun').
+pub fn strip_terms_in_positive(neg_terms: &str, positive: &str) -> String {
+    let pl = positive.to_lowercase();
+    neg_terms
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !pl.contains(&t.to_lowercase()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +640,18 @@ mod tests {
         let mut f = scene("", "x", "", ModelFamily::Flux);
         f.negative_seeds = "blurry, watermark".into();
         assert_eq!(auto_negative(&f), "blurry, watermark");
+    }
+
+    #[test]
+    fn strip_terms_in_positive_protects_wanted_content() {
+        // The hard guard: an LLM negative can never suppress content the positive asked for.
+        let positive = "a street with a bright green sky and an orange sun, five children";
+        let neg = "cloned faces, green sky, duplicate people, orange sun, extra fingers";
+        // 'green sky' and 'orange sun' echo the positive → dropped; the real defects stay.
+        assert_eq!(
+            strip_terms_in_positive(neg, positive),
+            "cloned faces, duplicate people, extra fingers"
+        );
     }
 
     #[test]
