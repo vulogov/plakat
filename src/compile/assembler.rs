@@ -68,7 +68,13 @@ them up front so they anchor the image. If no style is given, do not invent one.
 parentheses/brackets and the number unchanged — if the phrase is in another language, translate the \
 words INSIDE but keep the weight wrapper (e.g. `(Оранжевое солнце:1.5)` → `(orange sun:1.5)`). These \
 are deliberate emphasis controls, not prose — never drop or flatten them.\n\
-- Do not invent unrelated elements.";
+- DO NO HARM — enhancement must never make the image HARDER to render well than the user's own wording. \
+Do NOT add new subjects, people, animals, objects, or actions the user did not state. Do NOT invent \
+unrelated elements. Do NOT pad with atmospheric or mood filler ('bathed in golden light', 'a dreamlike \
+glow', 'bustling with life', 'casting warm light across the scene') — such phrases add tokens and dilute \
+the model's attention without adding a concrete subject, degrading quality. Keep the scene's complexity \
+exactly as the user set it (never more crowded). Prefer the FEWEST words that convey the scene faithfully \
+for the target model: clarify wording, fix word order, and translate — but never inflate.";
 
 const FAMILY_SD15: &str = "\
 TARGET MODEL: Stable Diffusion 1.5 family (CLIP text encoder, 77-token limit).\n\
