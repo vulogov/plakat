@@ -195,6 +195,26 @@ pub fn extract_weight_spans(text: &str) -> Vec<(String, f32)> {
     out
 }
 
+/// Lowercase the first character of a phrase for mid-sentence use, UNLESS it looks like a proper noun /
+/// acronym (word 2+ chars, all-uppercase, e.g. "T5"). Keeps a translated `(High first floor:1.5)` from
+/// reading as a broken mid-sentence capital in the reinforcement list.
+fn lower_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_uppercase() => {
+            // Don't lowercase an all-caps acronym (first word ≥2 chars, every letter uppercase).
+            let first_word = s.split_whitespace().next().unwrap_or("");
+            let is_acronym = first_word.len() >= 2 && first_word.chars().all(|c| c.is_uppercase() || !c.is_alphabetic());
+            if is_acronym {
+                s.to_string()
+            } else {
+                c.to_lowercase().collect::<String>() + chars.as_str()
+            }
+        }
+        _ => s.to_string(),
+    }
+}
+
 /// Join phrases as a readable English list: `a`, `a and b`, `a, b and c`.
 fn join_and(items: &[String]) -> String {
     match items {
@@ -217,7 +237,7 @@ pub fn prose_reinforcement(prompt: &str, family: ModelFamily) -> Option<String> 
     let (mut strong, mut moderate, mut faint) = (Vec::new(), Vec::new(), Vec::new());
     let mut seen = std::collections::HashSet::new();
     for (phrase, w) in extract_weight_spans(prompt) {
-        let p = phrase.trim().trim_end_matches(['.', ',']).to_string();
+        let p = lower_first(phrase.trim().trim_end_matches(['.', ',']));
         if p.is_empty() || !seen.insert(p.to_lowercase()) {
             continue;
         }
@@ -438,6 +458,10 @@ mod tests {
         // Non-T5 families get nothing; no weights → nothing.
         assert!(prose_reinforcement(p, ModelFamily::Sdxl).is_none());
         assert!(prose_reinforcement("no weights here", ModelFamily::Flux).is_none());
+        // Source-cased phrases are lowercased for mid-sentence use; acronyms are kept.
+        let r2 = prose_reinforcement("(High first floor:1.5), (T5 label:1.5)", ModelFamily::Sd3).unwrap();
+        assert!(r2.contains("high first floor"), "lowercased: {r2}");
+        assert!(r2.contains("T5 label"), "acronym kept: {r2}");
     }
 
     #[test]
