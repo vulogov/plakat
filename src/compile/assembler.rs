@@ -64,6 +64,10 @@ environment description.\n\
 - Honour the STYLE DIRECTION exactly as given — render in the style the user asked for and do \
 NOT substitute a different style or medium. Carry the user's style words into the prompt and put \
 them up front so they anchor the image. If no style is given, do not invent one.\n\
+- PRESERVE attention-weight syntax EXACTLY: `(phrase:1.5)`, `(phrase)`, `[phrase]`. Keep the \
+parentheses/brackets and the number unchanged — if the phrase is in another language, translate the \
+words INSIDE but keep the weight wrapper (e.g. `(Оранжевое солнце:1.5)` → `(orange sun:1.5)`). These \
+are deliberate emphasis controls, not prose — never drop or flatten them.\n\
 - Do not invent unrelated elements.";
 
 const FAMILY_SD15: &str = "\
@@ -109,6 +113,39 @@ pub fn family_token_budget(f: ModelFamily) -> usize {
 pub fn estimate_tokens(text: &str) -> usize {
     let words = text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()).count();
     (words * 4).div_ceil(3)
+}
+
+/// Count attention-weight spans `(…:number)` in a prompt — used to warn when the enhancer drops the
+/// user's deliberate emphasis (`(term:1.5)`) during translate/rewrite.
+pub fn weight_span_count(text: &str) -> usize {
+    let mut n = 0;
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut open_at = 0usize;
+    for (i, &c) in bytes.iter().enumerate() {
+        match c {
+            b'(' => {
+                if depth == 0 {
+                    open_at = i;
+                }
+                depth += 1;
+            }
+            b')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    // A top-level `(...)` group with a `:<digit>` inside is a weighted span.
+                    let inner = &text[open_at + 1..i];
+                    if let Some(colon) = inner.rfind(':') {
+                        if inner[colon + 1..].trim().chars().next().is_some_and(|d| d.is_ascii_digit()) {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    n
 }
 
 /// Whether the user's STYLE DIRECTION survived into the generated prompt — style-agnostic: it
@@ -235,6 +272,15 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn weight_span_count_counts_weighted_parens() {
+        assert_eq!(weight_span_count("(cobblestone street:1.5), (orange sun:1.5), plain text"), 2);
+        assert_eq!(weight_span_count("(a green sky: 1.4) and (tall floor:1.5)"), 2);
+        // Non-weighted parens / brackets aren't counted.
+        assert_eq!(weight_span_count("a (parenthetical) note, [deemphasis], plain"), 0);
+        assert_eq!(weight_span_count("no weights here at all"), 0);
     }
 
     #[test]

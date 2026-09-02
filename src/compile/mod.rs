@@ -258,7 +258,10 @@ async fn compile_one_scene(
         (Some(lang), false) if !lang.trim().is_empty() => {
             let sys = format!(
                 "You are a translator. Translate the user's text from {lang} to English. \
-                 Output ONLY the translation — no notes, no quotes, no markdown."
+                 PRESERVE any attention-weight syntax EXACTLY — `(phrase:number)`, `(phrase)`, \
+                 `[phrase]`: translate the words INSIDE the parentheses/brackets but keep the \
+                 parentheses, the colon and the number unchanged (e.g. `(Оранжевое солнце:1.5)` → \
+                 `(orange sun:1.5)`). Output ONLY the translation — no notes, no quotes, no markdown."
             );
             cached_call(&opts.provider, &sys, scene.free_text.trim(), cache::POSITIVE, opts.cache, eargs)
                 .await
@@ -318,13 +321,27 @@ async fn compile_one_scene(
 
     // 5) diligence warnings (6.26.2): budget overflow / dropped style. Style is only checked when
     // the enhancer actually ran (verbatim `--no-enhance` never injects the style directive).
-    let warnings = assembler::scene_warnings(
+    let mut warnings = assembler::scene_warnings(
         &out_scene.name,
         &scene.styles,
         &prompt,
         scene.family,
         !opts.no_enhance && !assembled.is_empty(),
     );
+
+    // Attention-weight contract: the enhancer is told to preserve `(term:1.5)` emphasis. A weak
+    // model still sometimes flattens them during translate/rewrite — warn when the count drops
+    // (the user's deliberate emphasis is lost). Only when the enhancer ran.
+    if !opts.no_enhance {
+        let (had, kept) = (assembler::weight_span_count(&assembled), assembler::weight_span_count(&prompt));
+        if had > kept {
+            warnings.push(format!(
+                "scene '{}': {} of {} attention weight(s) `(term:N)` were dropped by the enhancer — \
+                 re-add them to the prompt, use a stronger --provider, or --no-enhance to keep them verbatim",
+                out_scene.name, had - kept, had
+            ));
+        }
+    }
 
     emitter::CompiledScene { scene: out_scene, prompt, negative, warnings }
 }
