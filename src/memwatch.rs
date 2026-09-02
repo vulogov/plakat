@@ -207,18 +207,27 @@ impl MemoryGuard {
                     // crash is imminent (a fast single-buffer allocation can cross the
                     // cliff between samples), so abort on the FIRST such sample. Otherwise
                     // ride out the sustained window (the OS may reclaim / swap through it).
-                    let acute = free_gb < floor;
+                    //
+                    // 6.27: the acute path also requires that SWAP can't absorb the dip. With
+                    // ample free swap the OS can ride out a low-free-RAM spike (exactly what the
+                    // sustained window is for), so acute-aborting there cries wolf. When both RAM
+                    // and swap are below the floor, it's a true cliff → fast-abort still fires.
+                    let (used_swap, total_swap) = crate::hw::swap_gb();
+                    let free_swap = (total_swap - used_swap).max(0.0);
+                    let acute = free_gb < floor && free_swap < floor;
                     if acute || breaches >= sustained {
                         eprintln!(
                             "\n{} OOM GUARD — critical memory pressure attributable to plakat \
-                             while generating '{}' ({:.1} GB resident, {:.1} GB free); aborting \
-                             now to avoid crashing the host. Free RAM (close apps / `sudo purge`), \
-                             use a smaller model / --size / --device cpu, or run one `plakat \
-                             scenario` for batches. (PLAKAT_OOM_GUARD_GB=0 disables.)",
+                             while generating '{}' ({:.1} GB resident, {:.1} GB free RAM, {:.1} GB free \
+                             swap); aborting now to avoid crashing the host. Free RAM (close apps / \
+                             `sudo purge`), use a smaller model / --size / --device cpu, or run one `plakat \
+                             scenario` for batches. (PLAKAT_OOM_GUARD_GB=0 disables; \
+                             PLAKAT_OOM_GUARD_SUSTAINED raises the ride-out window.)",
                             console::style("⛔").red().bold(),
                             label,
                             rss_gb,
                             free_gb,
+                            free_swap,
                         );
                         // Restore the terminal (TUI) before the hard exit — `exit` skips
                         // Drop, so the alt-screen / raw mode would otherwise leak.
