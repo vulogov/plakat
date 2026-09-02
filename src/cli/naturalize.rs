@@ -802,6 +802,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // Painterly repaint (6.27): the model paints the image IN the medium — strokes/washes + form
     // together (real watercolor, oil impasto, …), the generation-side complement to the weight-free
     // `--medium` pass. Runs last in the model stage (over the cleaned image).
+    let mut repainted_ok = false;
     if a.repaint {
         let repainted = tmp.path().join("repainted.png");
         let rmodel = a.repaint_model.as_deref().unwrap_or(&a.model);
@@ -840,12 +841,31 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
                       un-repainted image, so expect the baseline look. Check the model download / --device.",
                 style("de-slop").yellow());
         }
+        repainted_ok = done;
     }
 
     let src_for_analog = current_input;
 
     let mut img = image::open(&src_for_analog).with_context(|| format!("reading {}", src_for_analog.display()))?.to_rgb8();
     let ai_before = naturalize::ai_tell_score(&img);
+
+    // A successful `--repaint` is the TERMINAL media render: the model already painted the medium
+    // (real washes / strokes), so slathering the weight-free analog pass (grain/bloom/aberration) AND
+    // auto-paper on top only double-textures it — visible speckle/pebble over a finished watercolor.
+    // Skip the post-pass after a good repaint UNLESS the user explicitly opted a weight-free knob in
+    // (then they clearly want it stacked). Auto-paper (fired implicitly by the medium) is NOT an opt-in.
+    let explicit_post = a.preset.is_some()
+        || a.grain.is_some() || a.aberration.is_some() || a.vignette.is_some() || a.bloom.is_some()
+        || a.desaturate.is_some() || a.warm.is_some() || a.defocus.is_some()
+        || a.polish.is_some() || a.micro.is_some()
+        || a.paper.is_some() || a.designature.is_some()
+        || a.auto_regions || !a.regions.is_empty()
+        || !focuses.is_empty() || a.brush_strength.is_some();
+    let skip_post = repainted_ok && !explicit_post;
+    if skip_post {
+        println!("  {} repaint is terminal — skipping the analog/paper post-pass (the model already painted the medium; add --grain/--paper/etc. to stack it)", style("de-slop").cyan());
+    }
+
     // ghost-signature removal (weight-free) before the analog pass.
     if let Some(cs) = a.designature.as_deref() {
         let corner = naturalize::Corner::parse(cs).with_context(|| format!("unknown corner `{cs}` (br|bl|tr|tl)"))?;
@@ -853,8 +873,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
     // QUALITY-6 P3: per-region focuses (manual --region + --auto-regions) → composite each region's own
     // de-slop with feathered seams. Falls through to the plain whole-frame apply when there are none.
-    let regions = build_regions(&a, &input, &img, &p).await?;
-    let mut out = if regions.is_empty() {
+    let regions = if skip_post { Vec::new() } else { build_regions(&a, &input, &img, &p).await? };
+    let mut out = if skip_post {
+        img.clone()
+    } else if regions.is_empty() {
         naturalize::apply(&img, &p)
     } else {
         println!("  {} {} region focus(es)", style("de-slop").cyan(), regions.len());
@@ -867,10 +889,13 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     }
     // Watercolor-paper / pigment authenticity (RFC QUALITY-4) — opt-in, for genuine watercolour/ink-wash
     // art (fixes the "simulated media" tell). Runs last so tooth/granulation ride the finished pixels.
-    if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
-        out = naturalize::paper_texture(&out, pv);
-        let how = if a.paper.is_some() { "" } else { " (auto: wet media)" };
-        println!("  {} watercolor paper/pigment (amount {pv:.2}{how})", style("de-slop").green());
+    // Suppressed when the repaint is terminal (the model's own paper/granulation is already there).
+    if !skip_post {
+        if let Some(pv) = paper_amt.filter(|v| *v > 0.0) {
+            out = naturalize::paper_texture(&out, pv);
+            let how = if a.paper.is_some() { "" } else { " (auto: wet media)" };
+            println!("  {} watercolor paper/pigment (amount {pv:.2}{how})", style("de-slop").green());
+        }
     }
     let ai_after = naturalize::ai_tell_score(&out);
 
