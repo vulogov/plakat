@@ -87,10 +87,18 @@ pub async fn repaint(
     lora: Option<&str>,
     device: Option<&str>,
     steps: usize,
+    scene: Option<&str>,
 ) -> Result<()> {
     let anchor = style.unwrap_or("a hand-painted illustration, visible directional brush strokes, painterly");
+    // Condition on the ORIGINAL scene description when we have it (read from the PNG's embedded prompt), so
+    // the repaint keeps the subjects — the specific sky, sun, vehicles, people — instead of drifting toward a
+    // generic image of the medium. Medium anchor leads so the STYLE still dominates the denoise.
+    let prompt = match scene.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => format!("{anchor}. {s}"),
+        None => anchor.to_string(),
+    };
     let mut g = crate::api::Img2img::new(model, input)
-        .prompt(anchor)
+        .prompt(&prompt)
         .negative("photograph, 3d render, cgi, smooth digital gradient, low quality, blurry, jpeg artifacts, deformed, extra fingers")
         .strength(strength.clamp(0.05, 0.95))
         .steps(steps)

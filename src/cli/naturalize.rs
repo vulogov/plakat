@@ -805,6 +805,8 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     let mut repainted_ok = false;
     if a.repaint {
         let repainted = tmp.path().join("repainted.png");
+        // Condition the repaint on the input's own embedded prompt (if any) so it keeps the subjects.
+        let scene_prompt = scene_prompt_from_png(&input);
         // img2img is UNet-only — fall back to SDXL when the model is a transformer family (unless the user
         // named --repaint-model), so `--model sd35 --repaint` paints instead of erroring.
         let rmodel: String = match a.repaint_model.as_deref() {
@@ -819,7 +821,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let strength = a.repaint_strength.unwrap_or(0.38);
         let style_note = art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default();
         let mut done = false;
-        match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps).await {
+        match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
             Ok(()) => {
                 println!("  {} painterly repaint (strength {strength:.2}{style_note})", style("de-slop").green());
                 current_input = repainted;
@@ -833,7 +835,7 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
                 if a.repaint_lora.is_some() {
                     println!("  {} --repaint-lora `{}` failed to load ({e}) — retrying repaint without it",
                         style("de-slop").yellow(), a.repaint_lora.as_deref().unwrap_or(""));
-                    match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps).await {
+                    match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
                         Ok(()) => {
                             println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA)", style("de-slop").green());
                             current_input = repainted;
@@ -1059,6 +1061,14 @@ fn img2img_capable(model: &str) -> bool {
         || m.contains("sana"))
 }
 
+/// The POSITIVE generation prompt embedded in a plakat PNG (the A1111 `parameters` tEXt chunk), if any —
+/// everything before the `Negative prompt:` line. Lets a repaint condition on the scene it's repainting.
+fn scene_prompt_from_png(path: &Path) -> Option<String> {
+    let chunk = crate::imaging::io::read_parameters_chunk(path).ok().flatten()?;
+    let positive = chunk.split("\nNegative prompt:").next().unwrap_or(&chunk).trim();
+    (!positive.is_empty()).then(|| positive.to_string())
+}
+
 pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Option<&str>, steps: usize) -> Result<()> {
     let Some(strength) = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0) else {
         return apply_inplace(path, spec);
@@ -1087,9 +1097,20 @@ pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Op
             "sdxl".to_string()
         }
     };
-    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, &rmodel, lora, device, steps)
+    // Recover the ORIGINAL generation prompt from the PNG so the repaint conditions on the scene (keeps the
+    // sky/sun/subjects) rather than drifting to a generic image of the medium.
+    let scene_prompt = scene_prompt_from_png(path);
+    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, &rmodel, lora, device, steps, scene_prompt.as_deref())
         .await
         .with_context(|| format!("naturalize repaint of {}", path.display()))?;
+    println!(
+        "  {} repainted → {} ({}{}{})",
+        console::style("de-slop").green(),
+        path.display(),
+        medium.unwrap_or("painterly"),
+        if scene_prompt.is_some() { ", scene-conditioned" } else { "" },
+        format!(", {rmodel} @ {strength:.2}")
+    );
 
     let mut out = image::open(&repainted)
         .with_context(|| format!("reading repaint {}", repainted.display()))?
