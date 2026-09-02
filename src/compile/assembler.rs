@@ -89,10 +89,18 @@ TARGET MODEL: Flux (transformer, guidance distillation, no CLIP token limit).\n\
 - Do NOT use SD-style quality boosters (no effect). Be specific about spatial \
 relationships, sizes, and positions.";
 
+const FAMILY_SD3: &str = "\
+TARGET MODEL: Stable Diffusion 3 / 3.5 (T5-XXL + dual CLIP, ~256-token range).\n\
+- Write natural-language prose describing the scene, NOT comma-separated booru tags. Aim 80-220 tokens.\n\
+- Do NOT use SD1.5 quality boosters (masterpiece, best quality, sharp focus — the T5 encoder ignores them).\n\
+- Be specific and concrete about composition and spatial layout (what is where), materials, and lighting; a \
+short style phrase up front is fine, then describe the scene as flowing prose.";
+
 fn family_section(f: ModelFamily) -> &'static str {
     match f {
-        ModelFamily::Sd15 | ModelFamily::Sd3 | ModelFamily::Unknown => FAMILY_SD15,
+        ModelFamily::Sd15 | ModelFamily::Unknown => FAMILY_SD15,
         ModelFamily::Sdxl => FAMILY_SDXL,
+        ModelFamily::Sd3 => FAMILY_SD3,
         ModelFamily::Flux => FAMILY_FLUX,
     }
 }
