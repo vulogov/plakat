@@ -187,6 +187,45 @@ pub fn extract_weight_spans(text: &str) -> Vec<(String, f32)> {
     out
 }
 
+/// Remove the attention-weight wrapper from every top-level `(phrase:N)` span, keeping the inner phrase:
+/// `roofs (голубого цвета:1.5)` → `roofs голубого цвета`. Bare `(...)` parentheticals (no `:number`) are
+/// left untouched. Used to hand the enhancer weight-free text — it can't flatten a weight it never sees —
+/// after which the weights are re-applied deterministically (translated) as an emphasis tail.
+pub fn strip_weight_spans(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut depth = 0i32;
+    let mut open_at = 0usize;
+    let mut copied = 0usize; // byte index in `text` up to which we've emitted into `out`
+    for (i, &c) in bytes.iter().enumerate() {
+        match c {
+            b'(' => {
+                if depth == 0 {
+                    open_at = i;
+                }
+                depth += 1;
+            }
+            b')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = &text[open_at + 1..i];
+                    if let Some(colon) = inner.rfind(':') {
+                        if inner[colon + 1..].trim().parse::<f32>().is_ok() {
+                            // Replace `(phrase:N)` with just `phrase` (parens/weight are ASCII → safe slices).
+                            out.push_str(&text[copied..open_at]);
+                            out.push_str(inner[..colon].trim());
+                            copied = i + 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
 /// Whether the user's STYLE DIRECTION survived into the generated prompt — style-agnostic: it
 /// checks that at least one *significant* word from any style value appears (case-insensitively)
 /// in the prompt, whatever the style is. Returns `true` when no style was given (nothing to check).
@@ -311,6 +350,19 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn strip_weight_spans_keeps_phrase_drops_wrapper() {
+        assert_eq!(
+            strip_weight_spans("roofs (blue tile:1.5) and (orange sun:2) here"),
+            "roofs blue tile and orange sun here"
+        );
+        // Non-ASCII inner phrases slice safely; bare parentheticals are left intact.
+        assert_eq!(strip_weight_spans("Крыши (голубого цвета:1.5)"), "Крыши голубого цвета");
+        assert_eq!(strip_weight_spans("a (plain) note"), "a (plain) note");
+        // Round-trips with extract: stripped text has no weighted spans left.
+        assert_eq!(weight_span_count(&strip_weight_spans("(a:1.5), (b:2), plain")), 0);
     }
 
     #[test]
