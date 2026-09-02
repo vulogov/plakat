@@ -263,92 +263,96 @@ async fn compile_one_scene(
     opts: &CompileOpts,
     eargs: &crate::prompt::EnhanceArgs,
 ) -> emitter::CompiledScene {
-    // Attention weights are handled DETERMINISTICALLY, not by trusting the LLM: capture the user's
-    // `(phrase:N)` spans from the ORIGINAL text, STRIP them before the translator/enhancer runs (it can't
-    // flatten — or partially drop — a weight it never sees), then re-apply the full set as a translated
-    // emphasis tail (2b). `--no-enhance` keeps the user's verbatim text (weights intact), so it strips
-    // nothing. Body spans come from the raw free_text (its weights are stripped for the translate step).
-    let body_spans = assembler::extract_weight_spans(&scene.free_text);
+    // Attention weights are TRANSLATED and kept INLINE. For each `(phrase:N)` we translate the phrase on its
+    // own (a reliable, unambiguous ask), substitute the English `(phrase_en:N)` back at its ORIGINAL position,
+    // THEN enhance — so the model sees the emphasis inline, in English, on the same tokens the prose uses
+    // (source-language weights would emphasise tokens an English-trained CLIP/T5 can't represent). A safety
+    // net re-adds — in English — any span a weak enhancer still drops. `--no-enhance` keeps the user's
+    // verbatim text (wording + weights untouched, no translation).
 
-    // 0) translate the body to English first (LLM, unless --no-enhance) — weight-free on the enhance path.
-    let body = match (&scene.translate, opts.no_enhance) {
-        (Some(lang), false) if !lang.trim().is_empty() => {
-            let sys = format!(
-                "Translate the user's text from {lang} into English. Output ONLY the English translation — \
-                 no notes, no quotes, no markdown, no {lang} text."
-            );
-            let src = assembler::strip_weight_spans(scene.free_text.trim());
-            cached_call(&opts.provider, &sys, &src, cache::POSITIVE, opts.cache, eargs)
-                .await
-                .unwrap_or(src)
-        }
-        _ => scene.free_text.clone(),
-    };
-
-    // 1) personas → loaded fragments.
+    // 1) personas + assemble with the ORIGINAL body (weights + wording intact; the enhancer translates it).
     let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
+    let assembled = assembler::assemble_with_body(scene, &scene.free_text);
 
-    let assembled = assembler::assemble_with_body(scene, &body);
+    // 2) translate every weighted phrase to English → phrase(src)→(English, weight) map (enhance path only).
+    let spans = dedup_spans(assembler::extract_weight_spans(&assembled));
+    let mut en_map: std::collections::HashMap<String, (String, f32)> = std::collections::HashMap::new();
+    let mut weight_note: Option<String> = None;
+    if !opts.no_enhance {
+        let mut failed = 0usize;
+        for (phrase, w) in &spans {
+            let en = match &scene.translate {
+                Some(lang) if !lang.trim().is_empty() => translate_phrase(phrase, lang, &opts.provider, opts.cache, eargs).await,
+                _ => Some(phrase.clone()), // no `translate:` → already the target language
+            };
+            match en {
+                Some(t) => {
+                    en_map.insert(phrase.clone(), (t, *w));
+                }
+                None => {
+                    failed += 1;
+                    en_map.insert(phrase.clone(), (phrase.clone(), *w)); // keep source-language rather than drop
+                }
+            }
+        }
+        if failed > 0 {
+            weight_note = Some(format!(
+                "scene '{}': could not translate {failed} attention-weighted phrase(s) — they stay in the source \
+                 language; try a different `--compile-provider`",
+                scene.name
+            ));
+        }
+    }
 
-    // 2) positive. On the enhance path, the component weights still live in `assembled` (only the body was
-    // stripped for translation) — capture them, then hand the enhancer weight-free text.
-    let component_spans = if opts.no_enhance { Vec::new() } else { assembler::extract_weight_spans(&assembled) };
-    let mut prompt = if opts.no_enhance || assembled.is_empty() {
+    // 3) substitute the English weighted spans back INLINE, at their original positions (enhance path only;
+    //    `--no-enhance` keeps the source text verbatim). The prose around them is still source-language here —
+    //    the enhancer translates it and only has to KEEP the already-English `(phrase:N)` spans.
+    let prepared = if opts.no_enhance {
         assembled.clone()
     } else {
-        let enhance_input = assembler::strip_weight_spans(&assembled);
+        assembler::rewrite_weight_spans(&assembled, |p, w| {
+            let en = en_map.get(p).map(|(t, _)| t.as_str()).unwrap_or(p);
+            format!("({}:{})", en, w)
+        })
+    };
+
+    // 4) positive enhance.
+    let mut prompt = if opts.no_enhance || prepared.is_empty() {
+        assembled.clone()
+    } else {
         let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
-        cached_call(&opts.provider, &sys, &enhance_input, cache::POSITIVE, opts.cache, eargs)
+        cached_call(&opts.provider, &sys, &prepared, cache::POSITIVE, opts.cache, eargs)
             .await
             .map(|p| assembler::clean(&p))
             .unwrap_or_else(|| {
                 tracing::warn!(target: "plakat", "compile: positive enhance failed for '{}', using verbatim", scene.name);
-                enhance_input
+                prepared.clone()
             })
     };
 
-    // 2b) DETERMINISTIC attention-weight preservation. The enhancer ran on WEIGHT-FREE text (both the body,
-    // stripped at step 0, and the components, stripped at step 2), so it emitted no `(phrase:N)` — nothing to
-    // flatten, partially drop, or duplicate. Re-apply the user's full set here as a translated emphasis tail:
-    // each phrase is translated on its own (an unambiguous ask a model handles reliably, unlike "keep this
-    // syntax"). Identity translation when there's no `translate:`. Skipped under `--no-enhance` (verbatim).
-    let mut weight_note: Option<String> = None;
-    if !opts.no_enhance && !assembled.is_empty() {
-        // Every weight the user specified: components (from the assembled text) + body (from raw free_text).
-        let spans = dedup_spans(component_spans.iter().chain(&body_spans).cloned().collect());
-        if !spans.is_empty() {
-            let mut english: Vec<(String, f32)> = Vec::with_capacity(spans.len());
-            let mut ok = true;
-            for (phrase, w) in &spans {
-                let en = match &scene.translate {
-                    Some(lang) if !lang.trim().is_empty() => match translate_phrase(phrase, lang, &opts.provider, opts.cache, eargs).await {
-                        Some(t) => t,
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    },
-                    _ => phrase.clone(),
-                };
-                english.push((en, *w));
-            }
-            if ok {
-                let tail = english
-                    .iter()
-                    .map(|(p, w)| format!("({}:{})", p.trim().trim_end_matches(['.', ',']), w))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let sep = if prompt.trim_end().ends_with(',') || prompt.trim().is_empty() { " " } else { ", " };
-                prompt = format!("{}{sep}{tail}", prompt.trim_end());
+    // 5) safety net: re-add — in English, as a short tail — any weighted span the enhancer dropped, so no
+    //    emphasis is ever silently lost. The ones it KEPT stay inline (matched by substring), so there's no
+    //    duplication. Ordered by `spans` for deterministic output.
+    if !opts.no_enhance && !en_map.is_empty() {
+        let have: Vec<String> =
+            assembler::extract_weight_spans(&prompt).into_iter().map(|(p, _)| p.to_lowercase()).collect();
+        let missing: Vec<String> = spans
+            .iter()
+            .filter_map(|(src, _)| en_map.get(src))
+            .filter(|(en, _)| {
+                let e = en.trim().to_lowercase();
+                !e.is_empty() && !have.iter().any(|h| h.contains(&e) || e.contains(h))
+            })
+            .map(|(en, w)| format!("({}:{})", en.trim().trim_end_matches(['.', ',']), w))
+            .collect();
+        if !missing.is_empty() {
+            let sep = if prompt.trim_end().ends_with(',') || prompt.trim().is_empty() { " " } else { ", " };
+            prompt = format!("{}{sep}{}", prompt.trim_end(), missing.join(", "));
+            if weight_note.is_none() {
                 weight_note = Some(format!(
-                    "scene '{}': applied {} attention weight(s) `(term:N)` as a translated emphasis tail (kept exact — the enhancer never sees them)",
-                    scene.name, spans.len()
-                ));
-            } else {
-                weight_note = Some(format!(
-                    "scene '{}': could not translate {} attention-weighted phrase(s) — run `--no-enhance --no-negative` \
-                     (keeps them verbatim, but also skips translation) or set a different `--compile-provider`",
-                    scene.name, spans.len()
+                    "scene '{}': the enhancer dropped {} inline weight(s) — re-added them (English) at the end",
+                    scene.name,
+                    missing.len()
                 ));
             }
         }

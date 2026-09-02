@@ -195,11 +195,10 @@ pub fn extract_weight_spans(text: &str) -> Vec<(String, f32)> {
     out
 }
 
-/// Remove the attention-weight wrapper from every top-level `(phrase:N)` span, keeping the inner phrase:
-/// `roofs (голубого цвета:1.5)` → `roofs голубого цвета`. Bare `(...)` parentheticals (no `:number`) are
-/// left untouched. Used to hand the enhancer weight-free text — it can't flatten a weight it never sees —
-/// after which the weights are re-applied deterministically (translated) as an emphasis tail.
-pub fn strip_weight_spans(text: &str) -> String {
+/// Rewrite every top-level attention-weight span `(phrase:N)` by replacing it with `f(phrase, weight)`.
+/// Bare `(...)` parentheticals (no trailing `:number`) are left untouched. The parens/colon/number are
+/// ASCII, so the slices are always on char boundaries even with non-ASCII phrases.
+pub fn rewrite_weight_spans(text: &str, mut f: impl FnMut(&str, f32) -> String) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut depth = 0i32;
@@ -218,11 +217,13 @@ pub fn strip_weight_spans(text: &str) -> String {
                 if depth == 0 {
                     let inner = &text[open_at + 1..i];
                     if let Some(colon) = inner.rfind(':') {
-                        if inner[colon + 1..].trim().parse::<f32>().is_ok() {
-                            // Replace `(phrase:N)` with just `phrase` (parens/weight are ASCII → safe slices).
-                            out.push_str(&text[copied..open_at]);
-                            out.push_str(inner[..colon].trim());
-                            copied = i + 1;
+                        if let Ok(w) = inner[colon + 1..].trim().parse::<f32>() {
+                            let phrase = inner[..colon].trim();
+                            if !phrase.is_empty() {
+                                out.push_str(&text[copied..open_at]);
+                                out.push_str(&f(phrase, w));
+                                copied = i + 1;
+                            }
                         }
                     }
                 }
@@ -232,6 +233,12 @@ pub fn strip_weight_spans(text: &str) -> String {
     }
     out.push_str(&text[copied..]);
     out
+}
+
+/// Remove the attention-weight wrapper from every top-level `(phrase:N)` span, keeping the inner phrase:
+/// `roofs (голубого цвета:1.5)` → `roofs голубого цвета`.
+pub fn strip_weight_spans(text: &str) -> String {
+    rewrite_weight_spans(text, |phrase, _| phrase.to_string())
 }
 
 /// Whether the user's STYLE DIRECTION survived into the generated prompt — style-agnostic: it
@@ -368,6 +375,27 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn rewrite_weight_spans_substitutes_inline() {
+        // Translate-in-place: replace the phrase, keep the weight + position.
+        let map = |p: &str, w: f32| {
+            let en = match p {
+                "голубого цвета" => "blue",
+                other => other,
+            };
+            format!("({en}:{w})")
+        };
+        assert_eq!(
+            rewrite_weight_spans("Крыши (голубого цвета:1.5) tiled", map),
+            "Крыши (blue:1.5) tiled"
+        );
+        // Bare parentheticals untouched; multiple spans handled.
+        assert_eq!(
+            rewrite_weight_spans("(a:1) and (b:2), a (note)", |p, w| format!("[{p}={w}]")),
+            "[a=1] and [b=2], a (note)"
+        );
     }
 
     #[test]
