@@ -80,9 +80,56 @@ fn total_ram_bytes() -> u64 {
 /// `total_memory`, this reflects current pressure from other processes / file
 /// cache — the figure that actually predicts an OOM kill of a fresh load.
 pub fn available_ram_gb() -> f64 {
+    // macOS: sysinfo's `available_memory()` under-reports reclaimable pages badly — a box with 11 GB
+    // genuinely free reads ~0, which made the OOM guard abort a fresh load that had plenty of room. Prefer
+    // the `vm_stat` figure (free + reclaimable), matching Activity Monitor / macmon; fall back to sysinfo.
+    #[cfg(target_os = "macos")]
+    if let Some(gb) = macos_available_gb() {
+        return gb;
+    }
     let mut sys = sysinfo::System::new();
     sys.refresh_memory();
     sys.available_memory() as f64 / 1e9
+}
+
+/// macOS: RAM actually available to a fresh allocation (GB) — free + reclaimable (inactive, speculative,
+/// purgeable, file-backed-clean) pages, parsed from `vm_stat`. This matches what Activity Monitor / macmon
+/// call free, unlike sysinfo's `available_memory()` (reads ~0 with GBs reclaimable). `None` on any parse
+/// failure so the caller falls back to sysinfo.
+#[cfg(target_os = "macos")]
+fn macos_available_gb() -> Option<f64> {
+    let out = std::process::Command::new("vm_stat").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut page: u64 = 16384; // M-series default; overridden from the header line if present
+    let val = |l: &str| -> u64 {
+        l.rsplit(':')
+            .next()
+            .map(|v| v.trim().trim_end_matches('.').replace(',', "").parse().unwrap_or(0))
+            .unwrap_or(0)
+    };
+    let (mut free, mut inactive, mut spec, mut purgeable, mut external) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    for line in text.lines() {
+        if let Some(rest) = line.split("page size of ").nth(1) {
+            if let Some(n) = rest.split_whitespace().next().and_then(|s| s.parse().ok()) {
+                page = n;
+            }
+        } else if line.starts_with("Pages free:") {
+            free = val(line);
+        } else if line.starts_with("Pages inactive:") {
+            inactive = val(line);
+        } else if line.starts_with("Pages speculative:") {
+            spec = val(line);
+        } else if line.starts_with("Pages purgeable:") {
+            purgeable = val(line);
+        } else if line.starts_with("File-backed pages:") {
+            external = val(line);
+        }
+    }
+    let bytes = (free + inactive + spec + purgeable + external).saturating_mul(page);
+    (bytes > 0).then(|| bytes as f64 / 1e9)
 }
 
 /// Total system RAM (GB). On Apple-Silicon unified memory this is also the GPU

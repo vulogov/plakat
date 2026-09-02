@@ -163,7 +163,9 @@ impl MemoryGuard {
                 // since now attributes the pressure to plakat's own work.
                 sys.refresh_memory();
                 let total_gb = sys.total_memory() as f64 / 1e9;
-                let baseline_free_gb = sys.available_memory() as f64 / 1e9;
+                // Use the ACCURATE available-RAM figure (vm_stat on macOS) — sysinfo's under-reports
+                // reclaimable pages, so a box with 11 GB free read as 0 and the guard cried wolf.
+                let baseline_free_gb = crate::hw::available_ram_gb();
                 let mut breaches = 0u32;
                 while !stop_t.load(Ordering::Relaxed) {
                     // Trust the kernel pressure level: it accounts for reclaimable pages,
@@ -188,7 +190,8 @@ impl MemoryGuard {
                     // Critical (rare) → attribute + decide. The extra process refresh is
                     // only paid under real pressure, not every tick.
                     sys.refresh_memory();
-                    let free_gb = sys.available_memory() as f64 / 1e9;
+                    // Accurate available RAM (vm_stat on macOS), NOT sysinfo's under-reporting figure.
+                    let free_gb = crate::hw::available_ram_gb();
                     sys.refresh_processes_specifics(
                         ProcessesToUpdate::Some(&[self_pid]),
                         true,
