@@ -740,7 +740,15 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
         // D2: duplicate command keys that don't allow repeats (e.g. two `seed:` lines).
         let mut keys_here: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (k, _) in &s.commands {
-            let repeatable = matches!(k.as_str(), "style" | "persona" | "lora" | "loras") || k.contains('-');
+            // A command may repeat when its merge kind accumulates/concatenates (lora, loras, region, redux,
+            // control, style, persona, header, footer, composition, negative) — deriving it from the spec
+            // keeps this correct as commands are added. Passthrough (`-`) keys and `component.`/axis keys
+            // also repeat. Only LastWins scalars (seed, count, …) are flagged when duplicated.
+            let repeatable = command_spec(k).is_some_and(|s| matches!(s.merge, Merge::AccumulateList | Merge::Concatenate))
+                || k.contains('-')
+                || k.starts_with("component.")
+                || k.starts_with("scene.")
+                || k.starts_with("weather.");
             let n = keys_here.entry(k.as_str()).or_insert(0);
             *n += 1;
             if *n == 2 && !repeatable {
