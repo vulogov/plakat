@@ -183,6 +183,13 @@ comma-keyword & <77 tokens; SDXL → mixed prose/keywords ~150; **SD3/3.5 → pr
 77-token CLIP cap)**; Flux → prose ~300, short or empty negative. Over-budget prompts are **condensed to
 fit** the family (weights preserved) with a note, not just flagged.
 
+**Attention weights on SD3/Flux.** These T5-driven models honour descriptive *prose* far more than numeric
+`(term:1.5)` weights, so a heavily-weighted prior-defying concept (a green sky, an orange sun) can still
+lose. For SD3/Flux, compile keeps the inline `(term:N)` weight (for the CLIP encoders) **and** restates each
+weighted concept as a short prose intensifier appended to the prompt — bucketed by weight (`≥1.5` prominent,
+`1.15–1.5` clearly present, `<0.9` subtle) — so the emphasis lands on T5 too. SD15/SDXL are unchanged
+(their CLIP encoders respond to the weights directly).
+
 ## Task-type blocks (`type: …`)
 
 A block can declare a **non-t2i task type** — it compiles to that task in the emitted scenario instead of
