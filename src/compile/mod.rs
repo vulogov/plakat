@@ -276,7 +276,7 @@ async fn compile_one_scene(
     let assembled = assembler::assemble_with_body(scene, &body);
 
     // 2) positive.
-    let prompt = if opts.no_enhance || assembled.is_empty() {
+    let mut prompt = if opts.no_enhance || assembled.is_empty() {
         assembled.clone()
     } else {
         let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
@@ -288,6 +288,58 @@ async fn compile_one_scene(
                 assembled.clone()
             })
     };
+
+    // 2b) DETERMINISTIC attention-weight preservation. LLM enhancers (esp. DeepSeek) flatten the user's
+    // `(phrase:1.5)` emphasis no matter how firmly the system prompt asks them not to — so we don't rely on
+    // that. When the enhancer ran and dropped weights, re-inject them as a weighted emphasis tail, with the
+    // inner phrase TRANSLATED (each phrase is translated on its own — an unambiguous ask a model handles
+    // reliably, unlike "keep this syntax"). The concept then appears both in the enhanced prose and,
+    // weighted, in the tail (harmless reinforcement for CLIP). This is skipped under `--no-enhance` (weights
+    // are already verbatim) and when the enhancer already kept them.
+    let mut weight_note: Option<String> = None;
+    if !opts.no_enhance && !assembled.is_empty() {
+        let spans = dedup_spans(assembler::extract_weight_spans(&assembled));
+        let dropped = assembler::weight_span_count(&prompt) < spans.len();
+        if !spans.is_empty() && dropped {
+            // Translate each phrase (identity when there's no `translate:` — English weights just re-appear).
+            let mut english: Vec<(String, f32)> = Vec::with_capacity(spans.len());
+            let mut ok = true;
+            for (phrase, w) in &spans {
+                let en = match &scene.translate {
+                    Some(lang) if !lang.trim().is_empty() => {
+                        match translate_phrase(phrase, lang, &opts.provider, opts.cache, eargs).await {
+                            Some(t) => t,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    _ => phrase.clone(),
+                };
+                english.push((en, *w));
+            }
+            if ok {
+                let tail = english
+                    .iter()
+                    .map(|(p, w)| format!("({}:{})", p.trim().trim_end_matches(['.', ',']), w))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sep = if prompt.trim_end().ends_with(',') || prompt.trim().is_empty() { " " } else { ", " };
+                prompt = format!("{}{sep}{tail}", prompt.trim_end());
+                weight_note = Some(format!(
+                    "scene '{}': re-applied {} attention weight(s) `(term:N)` the enhancer flattened (weighted emphasis tail)",
+                    scene.name, spans.len()
+                ));
+            } else {
+                weight_note = Some(format!(
+                    "scene '{}': the enhancer dropped {} attention weight(s) `(term:N)` and re-translation failed — \
+                     run `--no-enhance --no-negative` (keeps them verbatim, but also skips translation) or set a different `--compile-provider`",
+                    scene.name, spans.len()
+                ));
+            }
+        }
+    }
 
     // 3) negative — from the final positive prompt (RFC step 9).
     let negative = if opts.no_negative {
@@ -329,21 +381,42 @@ async fn compile_one_scene(
         !opts.no_enhance && !assembled.is_empty(),
     );
 
-    // Attention-weight contract: the enhancer is told to preserve `(term:1.5)` emphasis. A weak
-    // model still sometimes flattens them during translate/rewrite — warn when the count drops
-    // (the user's deliberate emphasis is lost). Only when the enhancer ran.
-    if !opts.no_enhance {
-        let (had, kept) = (assembler::weight_span_count(&assembled), assembler::weight_span_count(&prompt));
-        if had > kept {
-            warnings.push(format!(
-                "scene '{}': {} of {} attention weight(s) `(term:N)` were dropped by the enhancer — \
-                 re-add them to the prompt, use a stronger --provider, or --no-enhance to keep them verbatim",
-                out_scene.name, had - kept, had
-            ));
-        }
+    // Attention-weight note (from step 2b): success = weights were re-applied deterministically; failure =
+    // re-translation failed and the (corrected) advice stands. Either way it's surfaced, not silent.
+    if let Some(note) = weight_note {
+        warnings.push(note);
     }
 
     emitter::CompiledScene { scene: out_scene, prompt, negative, warnings }
+}
+
+/// Deduplicate weight spans by (phrase, weight), preserving first-seen order — so a phrase repeated across
+/// components is translated + re-injected once.
+fn dedup_spans(spans: Vec<(String, f32)>) -> Vec<(String, f32)> {
+    let mut seen = std::collections::HashSet::new();
+    spans
+        .into_iter()
+        .filter(|(p, w)| seen.insert((p.to_lowercase(), w.to_bits())))
+        .collect()
+}
+
+/// Translate a single short phrase to English (used to re-apply attention weights the enhancer flattened).
+/// One phrase per call — an unambiguous request a model handles reliably. Returns None on empty/failed.
+async fn translate_phrase(
+    phrase: &str,
+    lang: &str,
+    provider: &str,
+    cache_on: bool,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> Option<String> {
+    let sys = format!(
+        "Translate this short phrase from {lang} to English. Output ONLY the translated phrase itself — \
+         no quotes, no notes, no trailing punctuation, no markdown."
+    );
+    cached_call(provider, &sys, phrase.trim(), cache::POSITIVE, cache_on, eargs)
+        .await
+        .map(|t| t.trim().trim_matches('"').trim_end_matches(['.', ',']).to_string())
+        .filter(|t| !t.is_empty())
 }
 
 /// Whether an LLM-generated negative honours the user's explicit `negative:` seed terms — each

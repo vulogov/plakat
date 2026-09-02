@@ -148,6 +148,43 @@ pub fn weight_span_count(text: &str) -> usize {
     n
 }
 
+/// Extract every top-level attention-weight span `(phrase:N)` as `(phrase, weight)`, in order.
+/// Mirrors [`weight_span_count`]'s scan but returns the inner phrase (trimmed) and parsed weight, so the
+/// compiler can re-inject the user's deliberate emphasis deterministically after the enhancer (which may
+/// flatten it). Only explicit `:number` spans are returned — bare `(...)` prose parentheticals are ignored.
+pub fn extract_weight_spans(text: &str) -> Vec<(String, f32)> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut open_at = 0usize;
+    for (i, &c) in bytes.iter().enumerate() {
+        match c {
+            b'(' => {
+                if depth == 0 {
+                    open_at = i;
+                }
+                depth += 1;
+            }
+            b')' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = &text[open_at + 1..i];
+                    if let Some(colon) = inner.rfind(':') {
+                        let (phrase, w) = (inner[..colon].trim(), inner[colon + 1..].trim());
+                        if let Ok(weight) = w.parse::<f32>() {
+                            if !phrase.is_empty() {
+                                out.push((phrase.to_string(), weight));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Whether the user's STYLE DIRECTION survived into the generated prompt — style-agnostic: it
 /// checks that at least one *significant* word from any style value appears (case-insensitively)
 /// in the prompt, whatever the style is. Returns `true` when no style was given (nothing to check).
@@ -272,6 +309,21 @@ mod tests {
             family,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn extract_weight_spans_returns_phrase_and_weight() {
+        let spans = extract_weight_spans("(cobblestone street:1.5), plain, (green sky: 1.4) and (orange sun:2)");
+        assert_eq!(
+            spans,
+            vec![
+                ("cobblestone street".to_string(), 1.5),
+                ("green sky".to_string(), 1.4),
+                ("orange sun".to_string(), 2.0),
+            ]
+        );
+        // Bare parentheticals / brackets are ignored (only explicit `:number`).
+        assert!(extract_weight_spans("a (parenthetical) aside, [de-emphasis]").is_empty());
     }
 
     #[test]
