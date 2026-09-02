@@ -273,16 +273,15 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             println!("{} scene {:?} · family {:?}", style("──").cyan(), s.name, s.family);
             println!("{}", style("[positive system]").dim());
             println!("{}\n", compile::assembler::positive_system(s, sys_override.as_deref(), &[]));
-            // Also show the NEGATIVE system prompt + the resolved `negative:` seed terms, so a
-            // surprising negative is diagnosable without a model call. Empty seeds → the auto-
-            // negative is fully LLM-authored; non-empty seeds MUST survive into the output.
-            println!("{}", style("[negative system]").dim());
-            println!("{}", compile::assembler::negative_system(s));
+            // Show the DETERMINISTIC negative (seeds + curated quality set, deduped/capped) — no model call,
+            // no hallucinated content exclusions.
+            println!("{}", style("[negative (deterministic)]").dim());
+            println!("{}", compile::assembler::auto_negative(s));
             let seeds = s.negative_seeds.trim();
             println!(
                 "{} negative seeds: {}\n",
                 style("↳").cyan(),
-                if seeds.is_empty() { "(none — auto-negative is fully LLM-authored)" } else { seeds }
+                if seeds.is_empty() { "(none — quality terms only)" } else { seeds }
             );
         }
         return Ok(());

@@ -315,35 +315,45 @@ pub fn positive_system(
     s
 }
 
-const NEGATIVE_BASE: &str = "\
-You write the NEGATIVE prompt for a text-to-image model: a comma-separated list of \
-things to avoid, given the POSITIVE prompt the user will render. Output ONLY \
-comma-separated terms — no preamble, no sentences, no markdown.";
+/// A curated, GENERIC quality negative — terms that reliably reduce artifacts (resolution, anatomy,
+/// framing, watermarks) WITHOUT excluding scene content. We never invent scene-specific / content
+/// exclusions (an LLM asked to write a negative hallucinates "weapons, blood, dark mood…" and can even
+/// run away into repetition); the user's explicit `negative:` seeds carry any content intent.
+pub const QUALITY_NEGATIVE: &str = "lowres, low quality, worst quality, jpeg artifacts, blurry, \
+out of focus, bad anatomy, deformed, disfigured, mutated, extra limbs, extra fingers, fused fingers, \
+missing fingers, poorly drawn hands, poorly drawn face, bad proportions, duplicate, cropped, \
+out of frame, watermark, signature, text, logo";
 
-const NEG_FAMILY_FLUX: &str = "\
-TARGET: Flux. Guidance distillation makes negatives largely ineffective — output a \
-SHORT negative (10-20 tokens) with only critical content exclusions. Do NOT list \
-quality terms; they have no effect.";
-
-const NEG_FAMILY_SD: &str = "\
-TARGET: Stable Diffusion. Produce ~30-50 tokens covering quality defects \
-(blurry, low quality, artifacts), anatomy errors, and unwanted content.";
-
-/// Build the negative-call system prompt. Seed terms (the merged `negative:`
-/// values) are injected as a hard must-include instruction.
-pub fn negative_system(scene: &ResolvedScene) -> String {
-    let mut s = String::from(NEGATIVE_BASE);
-    s.push_str("\n\n");
-    s.push_str(match scene.family {
-        ModelFamily::Flux => NEG_FAMILY_FLUX,
-        _ => NEG_FAMILY_SD,
-    });
-    let seeds = scene.negative_seeds.trim();
-    if !seeds.is_empty() {
-        s.push_str("\n\nThe following terms MUST appear in your output verbatim: ");
-        s.push_str(seeds);
+/// Deterministic auto-negative: the user's `negative:` seeds (verbatim, first) plus the curated
+/// [`QUALITY_NEGATIVE`] — deduped case-insensitively (first occurrence wins, order preserved) and capped
+/// so it can never run away. Flux ignores negatives (guidance distillation), so it gets seeds only.
+pub fn auto_negative(scene: &ResolvedScene) -> String {
+    if matches!(scene.family, ModelFamily::Flux) {
+        return scene.negative_seeds.trim().to_string();
     }
-    s
+    merge_negative_terms(&[&scene.negative_seeds, QUALITY_NEGATIVE], 40)
+}
+
+/// Merge comma-separated negative term-lists in order, dedup case-insensitively (keep first), cap to
+/// `max_terms`. The cap is the runaway guard.
+pub fn merge_negative_terms(parts: &[&str], max_terms: usize) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for part in parts {
+        for term in part.split(',') {
+            let t = term.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if seen.insert(t.to_lowercase()) {
+                out.push(t.to_string());
+                if out.len() >= max_terms {
+                    return out.join(", ");
+                }
+            }
+        }
+    }
+    out.join(", ")
 }
 
 #[cfg(test)]
@@ -450,15 +460,28 @@ mod tests {
     }
 
     #[test]
-    fn negative_system_injects_seed_terms() {
+    fn auto_negative_is_deterministic_seeds_plus_quality() {
         let mut s = scene("", "x", "", ModelFamily::Sdxl);
         s.negative_seeds = "blurry, watermark".into();
-        let sys = negative_system(&s);
-        assert!(sys.contains("MUST appear"));
-        assert!(sys.contains("blurry, watermark"));
-        // Flux negative profile differs.
+        let neg = auto_negative(&s);
+        // Seeds come first (verbatim), quality terms follow.
+        assert!(neg.starts_with("blurry, watermark"), "seeds first: {neg}");
+        assert!(neg.contains("bad anatomy") && neg.contains("lowres"), "quality terms present");
+        // Deduped: 'blurry' (a seed AND a quality term) appears once.
+        assert_eq!(neg.matches("blurry").count(), 1, "deduped: {neg}");
+        // Capped — never a runaway.
+        assert!(neg.split(',').count() <= 40);
+        // Flux gets seeds only (guidance distillation ignores negatives).
         let mut f = scene("", "x", "", ModelFamily::Flux);
-        f.negative_seeds = String::new();
-        assert!(negative_system(&f).contains("largely ineffective"));
+        f.negative_seeds = "blurry, watermark".into();
+        assert_eq!(auto_negative(&f), "blurry, watermark");
+    }
+
+    #[test]
+    fn merge_negative_terms_caps_a_runaway() {
+        // A degenerate repeated list collapses to its unique terms, capped.
+        let runaway = "wrong, wrong, wrong, all, none, all, none, all";
+        assert_eq!(merge_negative_terms(&[runaway], 40), "wrong, all, none");
+        assert_eq!(merge_negative_terms(&["a, b, c, d, e"], 3), "a, b, c");
     }
 }
