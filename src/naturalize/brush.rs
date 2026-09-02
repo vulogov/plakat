@@ -99,20 +99,21 @@ pub fn apply_brush(src: &RgbImage, medium: Medium, strength: f32) -> RgbImage {
             out
         }
         // Thick opaque media: STROKE-BASED RENDERING — place discrete, textured, gradient-aligned
-        // brush marks (the shared engine below), tuned per medium. Oil also gets impasto highlights.
+        // brush marks (the shared engine below), tuned per medium. Each medium paints FULLY, then
+        // `strength` cross-blends the painted result against the TRUE ORIGINAL — so `--brush-strength
+        // 0.1` really is 10% painted / 90% original (not 90% of the blocky Kuwahara base).
         Medium::Oil => {
-            // Kuwahara first → flat painted regions; strokes then sample those cleaner colours.
-            let flat = kuwahara(src, 2);
-            let mut out = render_strokes(&flat, &stroke_style(medium), s);
-            let ol: Vec<f32> = out.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
-            impasto(&mut out, &ol, &angle, w, h, 0.5 * s);
-            out
+            let flat = kuwahara(src, 2); // flat painted regions; strokes sample the cleaner colours
+            let mut painted = render_strokes(&flat, &stroke_style(medium), 1.0);
+            let pl: Vec<f32> = painted.pixels().map(|p| lum(p.0[0] as f32, p.0[1] as f32, p.0[2] as f32)).collect();
+            impasto(&mut painted, &pl, &angle, w, h, 0.5);
+            blend(src, &painted, s)
         }
-        Medium::Gouache => render_strokes(src, &stroke_style(medium), s),
+        Medium::Gouache => blend(src, &render_strokes(src, &stroke_style(medium), 1.0), s),
         Medium::Pastel => {
-            let mut out = render_strokes(src, &stroke_style(medium), s);
-            chalk_grain(&mut out, w, h, 0.5 * s);
-            out
+            let mut painted = render_strokes(src, &stroke_style(medium), 1.0);
+            chalk_grain(&mut painted, w, h, 0.5);
+            blend(src, &painted, s)
         }
         // Ink: crisp, high-contrast, with directional hatching in the shadows.
         Medium::Ink => {
@@ -289,6 +290,19 @@ fn render_strokes(src: &RgbImage, st: &StrokeStyle, strength: f32) -> RgbImage {
             for c in 0..3 {
                 px.0[c] = (src_f[i][c] * (1.0 - s) + canvas[i][c] * s).clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+    out
+}
+
+/// Linear per-pixel cross-blend `a*(1-t) + b*t` (same dims). Used so `--brush-strength` really
+/// dials the painted result against the ORIGINAL image, not an intermediate.
+fn blend(a: &RgbImage, b: &RgbImage, t: f32) -> RgbImage {
+    let t = t.clamp(0.0, 1.0);
+    let mut out = a.clone();
+    for (o, (pa, pb)) in out.pixels_mut().zip(a.pixels().zip(b.pixels())) {
+        for c in 0..3 {
+            o.0[c] = (pa.0[c] as f32 * (1.0 - t) + pb.0[c] as f32 * t).clamp(0.0, 255.0) as u8;
         }
     }
     out
