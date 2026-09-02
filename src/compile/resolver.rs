@@ -350,7 +350,10 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             free_text,
             styles: list(&vals(g, "style"), &vals(Some(s), "style")),
             personas: list(&vals(g, "persona"), &vals(Some(s), "persona")),
-            translate: last_wins(&[], &vals(Some(s), "translate")).map(str::to_string),
+            // `translate:` inherits from the global block (declare it once for the whole file); a scene
+            // may still override. Reading it scene-only left a global `translate: Russian` as None, so
+            // weighted phrases were never translated even though the enhancer still Englished the prose.
+            translate: last_wins(&vals(g, "translate"), &vals(Some(s), "translate")).map(str::to_string),
             negative_seeds: concat(&vals(g, "negative"), &vals(Some(s), "negative")),
             seed: parse_opt(last_wins(&[], &vals(Some(s), "seed")), "seed")?,
             count: parse_opt(last_wins(&[], &vals(Some(s), "count")), "count")?,
@@ -419,6 +422,16 @@ mod tests {
     fn empty_header_resets_inherited_global() {
         let r = resolve_str("header: global,\n\nheader:\nheader: local,\nA scene.\n");
         assert_eq!(r.scenes[0].header, "local,", "empty header drops the global");
+    }
+
+    #[test]
+    fn translate_inherits_from_global_block() {
+        // A global `translate:` applies to every scene (the whole point — declare it once).
+        let r = resolve_str("model: sd35\ntranslate: Russian\n\nПо улице идут люди.\n");
+        assert_eq!(r.scenes[0].translate.as_deref(), Some("Russian"));
+        // A scene may override the global.
+        let r2 = resolve_str("translate: Russian\n\ntranslate: French\nUne scène.\n");
+        assert_eq!(r2.scenes[0].translate.as_deref(), Some("French"));
     }
 
     #[test]
