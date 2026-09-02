@@ -91,7 +91,7 @@ relationships, sizes, and positions.";
 
 fn family_section(f: ModelFamily) -> &'static str {
     match f {
-        ModelFamily::Sd15 | ModelFamily::Unknown => FAMILY_SD15,
+        ModelFamily::Sd15 | ModelFamily::Sd3 | ModelFamily::Unknown => FAMILY_SD15,
         ModelFamily::Sdxl => FAMILY_SDXL,
         ModelFamily::Flux => FAMILY_FLUX,
     }
@@ -104,6 +104,8 @@ pub fn family_token_budget(f: ModelFamily) -> usize {
     match f {
         ModelFamily::Sd15 | ModelFamily::Unknown => 77,
         ModelFamily::Sdxl => 150,
+        // SD3/3.5 route the full prompt through T5-XXL (256-token context) alongside the CLIP pair.
+        ModelFamily::Sd3 => 256,
         ModelFamily::Flux => 300,
     }
 }
@@ -237,7 +239,7 @@ pub fn scene_warnings(
     if enhanced && !styles.is_empty() && !style_survived(styles, prompt) {
         let asked = styles.join(", ");
         w.push(format!(
-            "scene '{name}': the STYLE you asked for ('{asked}') did not appear in the prompt — the enhancer may have dropped it (try a stronger --provider, or --no-enhance to keep your wording)"
+            "scene '{name}': the STYLE you asked for ('{asked}') did not appear in the prompt — the enhancer may have dropped it (try a different --compile-provider; note --no-enhance keeps your wording but also skips translation)"
         ));
     }
     w

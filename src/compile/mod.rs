@@ -194,6 +194,9 @@ pub fn is_known_command(key: &str) -> bool {
 pub enum ModelFamily {
     Sd15,
     Sdxl,
+    /// SD3 / SD3.5 — CLIP-ish prose prompting like SD15, but the T5-XXL text encoder carries a much
+    /// larger token budget, so the 77-token CLIP cap does NOT apply.
+    Sd3,
     Flux,
     #[default]
     Unknown,
@@ -205,6 +208,7 @@ impl ModelFamily {
         match self {
             ModelFamily::Sd15 => "SD15",
             ModelFamily::Sdxl => "SDXL",
+            ModelFamily::Sd3 => "SD3",
             ModelFamily::Flux => "Flux",
             ModelFamily::Unknown => "Unknown",
         }
@@ -341,6 +345,16 @@ async fn compile_one_scene(
         }
     }
 
+    // 2c) fit-to-budget: if the finished prompt overflows the model's effective token budget, condense it
+    // (model-specific) to fit while preserving subjects/style/weights, rather than only warning. Only when
+    // the enhancer ran (verbatim `--no-enhance` is the user's exact wording — never rewrite that).
+    let mut fit_note: Option<String> = None;
+    if !opts.no_enhance && !assembled.is_empty() {
+        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs).await;
+        prompt = fitted;
+        fit_note = note;
+    }
+
     // 3) negative — from the final positive prompt (RFC step 9).
     let negative = if opts.no_negative {
         scene.negative_seeds.clone()
@@ -386,6 +400,10 @@ async fn compile_one_scene(
     if let Some(note) = weight_note {
         warnings.push(note);
     }
+    // Fit-to-budget note (from step 2c): the prompt was condensed to fit the model's token budget.
+    if let Some(note) = fit_note {
+        warnings.push(note);
+    }
 
     emitter::CompiledScene { scene: out_scene, prompt, negative, warnings }
 }
@@ -398,6 +416,59 @@ fn dedup_spans(spans: Vec<(String, f32)>) -> Vec<(String, f32)> {
         .into_iter()
         .filter(|(p, w)| seen.insert((p.to_lowercase(), w.to_bits())))
         .collect()
+}
+
+/// Model-specific **fit-to-budget** (RFC step): when the finished prompt exceeds the family's effective
+/// token budget, ask the LLM to condense it to fit — preserving every distinct subject, the style, and the
+/// attention weights — then GUARANTEE the weights survived by re-appending any the fit pass dropped.
+/// Returns `(prompt, Some(note))` when it condensed the prompt to within budget (the note is user-facing);
+/// `(prompt, None)` when it already fit, the fit call failed, or it condensed but still couldn't reach
+/// budget — in the last case the (smaller) condensed prompt is returned and `scene_warnings` reports the
+/// remaining overflow, so there's exactly one message either way.
+async fn fit_to_budget(
+    prompt: &str,
+    family: ModelFamily,
+    scene_name: &str,
+    provider: &str,
+    cache_on: bool,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> (String, Option<String>) {
+    let budget = assembler::family_token_budget(family);
+    let before = assembler::estimate_tokens(prompt);
+    if before <= budget {
+        return (prompt.to_string(), None);
+    }
+    let spans = dedup_spans(assembler::extract_weight_spans(prompt));
+    let sys = format!(
+        "You compress text-to-image prompts to a token budget for the {label} model. Rewrite the prompt to \
+         fit within about {budget} CLIP tokens. PRESERVE every attention-weight span `(phrase:number)` \
+         EXACTLY — keep the parentheses and the number unchanged. Keep every distinct visual subject and the \
+         overall style; cut only filler, repetition and redundant adjectives. Output ONLY the rewritten prompt.",
+        label = family.label()
+    );
+    let fitted = match cached_call(provider, &sys, prompt, cache::POSITIVE, cache_on, eargs).await {
+        Some(f) => assembler::clean(&f),
+        None => return (prompt.to_string(), None), // fit call failed — keep original; scene_warnings flags it
+    };
+    // Deterministically guarantee the weights survived the compression (re-append any it dropped).
+    let mut out = fitted;
+    if !spans.is_empty() && assembler::weight_span_count(&out) < spans.len() {
+        let tail = spans.iter().map(|(p, w)| format!("({}:{})", p.trim(), w)).collect::<Vec<_>>().join(", ");
+        let sep = if out.trim_end().ends_with(',') || out.trim().is_empty() { " " } else { ", " };
+        out = format!("{}{sep}{tail}", out.trim_end());
+    }
+    let after = assembler::estimate_tokens(&out);
+    if after <= budget {
+        let note = format!(
+            "scene '{scene_name}': prompt was ~{before} tokens (over the {label} ~{budget}-token budget) — condensed to ~{after} to fit, weights preserved",
+            label = family.label()
+        );
+        (out, Some(note))
+    } else {
+        // Smaller than the original but still over — hand back the condensed text; `scene_warnings` reports
+        // the residual overflow (single message), which is honest.
+        (out, None)
+    }
 }
 
 /// Translate a single short phrase to English (used to re-apply attention weights the enhancer flattened).
@@ -596,9 +667,13 @@ pub fn classify_model(name: &str) -> ModelFamily {
         ModelFamily::Flux
     } else if n.contains("sdxl") || n.contains("xl") {
         ModelFamily::Sdxl
-    } else if n.contains("sd15") || n.contains("1-5") || n.contains("1.5") || n.contains("sd35") || n.contains("sd3") {
-        // sd15 / sd21 / sd35 all use comma-or-prose CLIP-ish prompting; the SD15
-        // profile is the safe default for the non-XL, non-Flux SD family.
+    } else if n.contains("sd35") || n.contains("sd3") {
+        // SD3 / SD3.5: prose prompting like SD15, but the T5-XXL encoder gives a MUCH larger token
+        // budget — so it gets its own family (77-token CLIP cap must not be imposed on it).
+        ModelFamily::Sd3
+    } else if n.contains("sd15") || n.contains("1-5") || n.contains("1.5") || n.contains("sd21") || n.contains("2-1") {
+        // sd15 / sd21 use comma-or-prose CLIP-ish prompting; the SD15 profile is the safe default for
+        // the non-XL, non-Flux, non-SD3 stable-diffusion family.
         ModelFamily::Sd15
     } else {
         ModelFamily::Unknown
@@ -650,7 +725,9 @@ mod tests {
         assert_eq!(classify_model("sdxl"), ModelFamily::Sdxl);
         assert_eq!(classify_model("stable-diffusion-xl-base"), ModelFamily::Sdxl);
         assert_eq!(classify_model("sd15"), ModelFamily::Sd15);
-        assert_eq!(classify_model("sd35-medium"), ModelFamily::Sd15);
+        assert_eq!(classify_model("sd35-medium"), ModelFamily::Sd3);
+        assert_eq!(classify_model("sd35"), ModelFamily::Sd3);
+        assert_eq!(classify_model("sd3"), ModelFamily::Sd3);
         assert_eq!(classify_model("some-unknown-thing"), ModelFamily::Unknown);
         // flux wins over a stray "xl"-less name; xl wins over 1.5 substrings.
         assert_eq!(classify_model("flux-xl-weird"), ModelFamily::Flux);

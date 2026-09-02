@@ -214,19 +214,24 @@ async fn enhance_auto(prompt: &str, system: &str, args: &EnhanceArgs) -> Result<
     let has_deepseek = cfg.as_ref().is_some_and(|c| c.deepseek_api_key.is_some());
     let has_gemini = cfg.as_ref().is_some_and(|c| c.gemini_api_key.is_some());
 
+    // Honour the CALLER's system prompt (compile builds family-aware / translate / weight-preserving
+    // systems; the TUI + generate pass the default SYSTEM). Passing it through is what `--enhance deepseek`
+    // already does via `complete`; `auto` used to call the single-arg `enhance()` and silently substitute
+    // the DEFAULT system — so every compile system prompt (translate, style, weights) was being discarded.
+    let sys = if system.trim().is_empty() { SYSTEM } else { system };
     if has_deepseek {
         tracing::info!(
             target: "plakat",
             "enhance auto: routing to DeepSeek (key in config.toml or env)"
         );
-        return deepseek::enhance(prompt).await;
+        return deepseek::enhance_with_system(sys, prompt).await;
     }
     if has_gemini {
         tracing::info!(
             target: "plakat",
             "enhance auto: routing to Gemini (key in config.toml or env)"
         );
-        return gemini::enhance(prompt).await;
+        return gemini::enhance_with_system(sys, prompt).await;
     }
     tracing::info!(
         target: "plakat",
