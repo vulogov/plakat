@@ -152,7 +152,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     // sizing / device
     "aspect", "base", "device", "offline", "fast", "lcm",
     // post-process
-    "naturalize", "upscale",
+    "naturalize", "upscale", "restore-faces", "restore-faces-model", "restore-faces-strength",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)

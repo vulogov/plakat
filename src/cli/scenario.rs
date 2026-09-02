@@ -157,6 +157,17 @@ struct ScenarioFile {
     /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
     naturalize: Option<String>,
 
+    /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
+    /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
+    #[serde(rename = "restore-faces", default)]
+    restore_faces: bool,
+    /// Model for the face refinement (must be img2img-capable: SD1.5/2.1/SDXL). Default: `sdxl`.
+    #[serde(rename = "restore-faces-model", default)]
+    restore_faces_model: Option<String>,
+    /// Face img2img strength (0.3–0.5 crisps detail while preserving identity). Default `0.4`.
+    #[serde(rename = "restore-faces-strength", default)]
+    restore_faces_strength: Option<f32>,
+
     #[serde(default)]
     loras: Vec<String>,
     #[serde(rename = "lora-scale")]
@@ -2016,7 +2027,9 @@ pub async fn run_with_events(
         }
         set
     }
-    let nat_before = s.naturalize.as_ref().map(|_| collect_pngs(&out_root));
+    // Snapshot existing PNGs when EITHER a post-pass (naturalize / restore-faces) will touch this run's
+    // outputs, so we only process the ones this run produces.
+    let nat_before = (s.naturalize.is_some() || s.restore_faces).then(|| collect_pngs(&out_root));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -5289,6 +5302,40 @@ pub async fn run_with_events(
             style("·").dim(),
             path.display()
         ));
+    }
+
+    // 6.27: face-restore (ADetailer) runs BEFORE naturalize — crisp the faces on the base render, THEN let
+    // the naturalize repaint stylize everything uniformly (restoring after a watercolor repaint would stamp
+    // sharp faces onto a painting). img2img is UNet-only, so the default face model is SDXL.
+    if s.restore_faces {
+        if let Some(before) = nat_before.as_ref() {
+            let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
+            if !new.is_empty() {
+                let fmodel = s.restore_faces_model.as_deref().unwrap_or("sdxl");
+                let strength = s.restore_faces_strength.unwrap_or(0.4);
+                crate::ui::progress::println(&format!(
+                    "  {} restore-faces: {} output(s) · {fmodel} @ {strength:.2}",
+                    style("◆").cyan(),
+                    new.len()
+                ));
+                match crate::device::select(s.device.as_deref().unwrap_or("auto")) {
+                    Ok(fdev) => {
+                        let cfg = crate::pipelines::adetailer::Config {
+                            model: fmodel.to_string(),
+                            strength,
+                            working_size: if fmodel.to_lowercase().contains("xl") { 1024 } else { 512 },
+                            device: fdev,
+                            ..crate::pipelines::adetailer::Config::defaults()
+                        };
+                        match crate::pipelines::adetailer::refine_files(&cfg, &new, None).await {
+                            Ok(n) => crate::ui::progress::println(&format!("  {} restore-faces: {n} face(s) refined", style("◆").green())),
+                            Err(e) => crate::ui::progress::println(&format!("  ! restore-faces: {e:#}")),
+                        }
+                    }
+                    Err(e) => crate::ui::progress::println(&format!("  ! restore-faces device: {e}")),
+                }
+            }
+        }
     }
 
     // 6.10.0: naturalize this run's outputs (analog post-pass), preserving each PNG's metadata.
