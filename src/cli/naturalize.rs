@@ -193,8 +193,10 @@ pub struct NaturalizeArgs {
     /// authentic media.
     #[arg(long = "repaint-model", value_name = "ALIAS", help_heading = "Corrective (needs a model)")]
     pub repaint_model: Option<String>,
-    /// A painterly LoRA for `--repaint` (`spec[:scale]`, e.g. `watercolor-style:0.8`) — pushes the
-    /// medium harder than the prompt anchor alone.
+    /// An optional painterly LoRA for `--repaint` (`spec[:scale]`, where `spec` is a real Hub id or local
+    /// path you have, `scale` defaults 0.8) — pushes the medium harder than the prompt anchor alone. Omit it
+    /// for a pure prompt-anchored repaint (the prompt medium already works well). If the LoRA can't load,
+    /// plakat retries WITHOUT it rather than reverting to the baseline.
     #[arg(long = "repaint-lora", value_name = "SPEC", help_heading = "Corrective (needs a model)")]
     pub repaint_lora: Option<String>,
     /// Art **style/medium** to preserve during model corrections (`--repair`/`--geometry`/`--anatomy`),
@@ -804,12 +806,39 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let repainted = tmp.path().join("repainted.png");
         let rmodel = a.repaint_model.as_deref().unwrap_or(&a.model);
         let strength = a.repaint_strength.unwrap_or(0.38);
+        let style_note = art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default();
+        let mut done = false;
         match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps).await {
             Ok(()) => {
-                println!("  {} painterly repaint (strength {strength:.2}{})", style("de-slop").green(), art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
+                println!("  {} painterly repaint (strength {strength:.2}{style_note})", style("de-slop").green());
                 current_input = repainted;
+                done = true;
             }
-            Err(e) => tracing::warn!(target: "plakat", "naturalize --repaint: {e}"),
+            Err(e) => {
+                // A bad `--repaint-lora` (missing / unresolvable) is the usual cause. Rather than silently
+                // fall all the way back to the un-repainted baseline (which then only gets the analog grain
+                // on top → looks like "nothing happened"), retry WITHOUT the LoRA so the base model still
+                // paints the medium — and say so LOUDLY on stdout, not just a hidden log line.
+                if a.repaint_lora.is_some() {
+                    println!("  {} --repaint-lora `{}` failed to load ({e}) — retrying repaint without it",
+                        style("de-slop").yellow(), a.repaint_lora.as_deref().unwrap_or(""));
+                    match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps).await {
+                        Ok(()) => {
+                            println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA)", style("de-slop").green());
+                            current_input = repainted;
+                            done = true;
+                        }
+                        Err(e2) => tracing::warn!(target: "plakat", "naturalize --repaint (no-lora retry): {e2}"),
+                    }
+                } else {
+                    tracing::warn!(target: "plakat", "naturalize --repaint: {e}");
+                }
+            }
+        }
+        if !done {
+            println!("  {} painterly repaint SKIPPED (model/img2img failed) — the analog pass is running on the \
+                      un-repainted image, so expect the baseline look. Check the model download / --device.",
+                style("de-slop").yellow());
         }
     }
 
