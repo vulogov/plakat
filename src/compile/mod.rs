@@ -188,6 +188,10 @@ pub fn passthrough_target(key: &str) -> Option<&str> {
 /// definition, or a pass-through scenario field (`set.<key>` or a known scalar). Used by the lint.
 pub fn is_known_command(key: &str) -> bool {
     command_spec(key).is_some()
+        // Compile MANAGES enhancement itself: it enhances at compile time (unless `--no-enhance`) and always
+        // emits `enhance: false` per task so the scenario won't re-enhance. A prose `enhance:`/`enhancer:` is
+        // accepted (no lint error) but ignored — the value has no effect on compile's own enhancement.
+        || matches!(key, "enhance" | "enhancer")
         || key.strip_prefix("component.").is_some_and(|n| !n.is_empty())
         // 6.27.0: `scene.<name>:` / `weather.<name>:` define the scenario's scene/weather axes.
         || key.strip_prefix("scene.").is_some_and(|n| !n.is_empty())
