@@ -5280,14 +5280,10 @@ pub async fn run_with_events(
         let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
         if !new.is_empty() {
             crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", new.len()));
-            for f in &new {
-                // 6.27: `apply_inplace_spec` also honours the model-backed `repaint=` token (parity with
-                // `plakat naturalize --repaint`); a spec with no `repaint=` is the fast weight-free path.
-                let rmodel = s.model.as_deref().unwrap_or("sdxl");
-                if let Err(e) = crate::cli::naturalize::apply_inplace_spec(f, spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await {
-                    crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
-                }
-            }
+            // 6.27: batch — a `repaint=` spec loads the img2img model ONCE and reuses it for every image
+            // (previously it reloaded per image). Weight-free specs fall through to the cheap per-file path.
+            let rmodel = s.model.as_deref().unwrap_or("sdxl");
+            crate::cli::naturalize::repaint_batch(&new, spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await;
         }
     }
 

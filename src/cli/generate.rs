@@ -976,13 +976,9 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
                 hires_refine(&new_files, factor, &hires_model, &device).await?;
             }
             if let Some(spec) = &naturalize_spec {
-                for f in &new_files {
-                    // 6.27: also honours the model-backed `repaint=` token (device→auto here; the
-                    // fast weight-free path runs when the spec has no `repaint=`).
-                    if let Err(e) = crate::cli::naturalize::apply_inplace_spec(f, spec, &naturalize_model, None, naturalize_steps).await {
-                        tracing::warn!(target: "plakat", "naturalize {}: {e}", f.display());
-                    }
-                }
+                // 6.27: honours the model-backed `repaint=` token, loading the img2img model ONCE for the
+                // whole batch (device→auto here; a spec with no `repaint=` is the cheap per-file path).
+                crate::cli::naturalize::repaint_batch(&new_files, spec, &naturalize_model, None, naturalize_steps).await;
             }
             if want_score {
                 score_outputs(new_files, keep_best, ai_tells, &device).await?;

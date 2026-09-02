@@ -120,6 +120,98 @@ pub async fn repaint(
     Ok(())
 }
 
+/// The repaint negative (push away from photo-realism toward the painted medium).
+const REPAINT_NEGATIVE: &str =
+    "photograph, 3d render, cgi, smooth digital gradient, low quality, blurry, jpeg artifacts, deformed, extra fingers";
+
+/// Build the repaint prompt: medium anchor first (so STYLE dominates), then the scene (so subjects survive).
+fn repaint_prompt(style: Option<&str>, scene: Option<&str>) -> String {
+    let anchor = style.unwrap_or("a hand-painted illustration, visible directional brush strokes, painterly");
+    match scene.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => format!("{anchor}. {s}"),
+        None => anchor.to_string(),
+    }
+}
+
+/// Load an img2img pipeline ONCE for a batch of repaints, so N images don't reload the model N times (the
+/// scenario naturalize pass hit exactly that). `lora` is `spec[:scale]` (default scale 0.8). Returns the
+/// loaded pipeline + its device (needed to build per-image requests).
+pub async fn load_repaint_pipeline(
+    model: &str,
+    lora: Option<&str>,
+    device: Option<&str>,
+) -> Result<(crate::pipelines::portrait::Pipeline, candle_core::Device)> {
+    let dev = crate::api::device(device.unwrap_or("auto")).context("resolving device for repaint")?;
+    let loras = match lora {
+        Some(spec) => {
+            let (src, scale) = match spec.rsplit_once(':').and_then(|(s, sc)| sc.parse::<f32>().ok().map(|v| (s, v))) {
+                Some((s, v)) => (s, v),
+                None => (spec, 0.8),
+            };
+            let mut ls = <crate::pipelines::lora::LoraSpec as std::str::FromStr>::from_str(src).with_context(|| format!("parsing repaint LoRA {src:?}"))?;
+            ls.scale = scale;
+            vec![ls]
+        }
+        None => Vec::new(),
+    };
+    let pipeline = crate::pipelines::portrait::Pipeline::load(crate::pipelines::portrait::LoadRequest {
+        model: model.to_string(),
+        device: dev.clone(),
+        loras,
+        lora_scale: 1.0,
+        identity: None,
+        shared_clip_h: None,
+    })
+    .await
+    .context("loading repaint pipeline")?;
+    Ok((pipeline, dev))
+}
+
+/// One repaint using an already-loaded pipeline (NO model reload). Writes the repainted image to `out`.
+pub async fn repaint_with_pipeline(
+    pipeline: &crate::pipelines::portrait::Pipeline,
+    device: &candle_core::Device,
+    input: &Path,
+    out: &Path,
+    style: Option<&str>,
+    strength: f32,
+    steps: usize,
+    scene: Option<&str>,
+) -> Result<()> {
+    let (iw, ih) = image::image_dimensions(input).unwrap_or((0, 0));
+    let tmp = tempfile::tempdir().context("temp dir for repaint")?;
+    let req = crate::pipelines::img2img::Request {
+        prompt: repaint_prompt(style, scene),
+        negative: REPAINT_NEGATIVE.to_string(),
+        model: String::new(), // ignored — run_with_pipeline uses the already-loaded pipeline
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        input: input.to_path_buf(),
+        mask: None,
+        mask_feather: 0,
+        mask_invert: false,
+        width: iw / 8 * 8,
+        height: ih / 8 * 8,
+        count: 1,
+        steps,
+        guidance: 7.5,
+        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+        strength: strength.clamp(0.05, 0.95),
+        seed: Some(0),
+        out_dir: tmp.path().to_path_buf(),
+        controls: Vec::new(),
+    };
+    crate::pipelines::img2img::run_with_pipeline(pipeline, &req).await.context("painterly repaint (img2img)")?;
+    let produced = std::fs::read_dir(tmp.path())
+        .context("reading repaint output dir")?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+        .context("repaint produced no image")?;
+    std::fs::copy(&produced, out).with_context(|| format!("saving repaint → {}", out.display()))?;
+    Ok(())
+}
+
 /// **Auto medium-detection** (RFC QUALITY-4 P2) — CLIP zero-shot: embed the image and a bank of medium
 /// probes into the shared CLIP space and pick the closest, returning the matching **style anchor** string
 /// for the model corrections (so `--repair`/`--geometry` hold the source medium without a manual

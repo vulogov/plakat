@@ -1061,61 +1061,77 @@ fn img2img_capable(model: &str) -> bool {
         || m.contains("sana"))
 }
 
-/// The POSITIVE generation prompt embedded in a plakat PNG (the A1111 `parameters` tEXt chunk), if any —
-/// everything before the `Negative prompt:` line. Lets a repaint condition on the scene it's repainting.
-fn scene_prompt_from_png(path: &Path) -> Option<String> {
-    let chunk = crate::imaging::io::read_parameters_chunk(path).ok().flatten()?;
-    let positive = chunk.split("\nNegative prompt:").next().unwrap_or(&chunk).trim();
-    (!positive.is_empty()).then(|| positive.to_string())
-}
-
-pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Option<&str>, steps: usize) -> Result<()> {
+/// Batch naturalize post-pass for many outputs sharing ONE spec (the scenario naturalize field). When the
+/// spec has a `repaint=`, the img2img model is loaded ONCE and reused across every image — instead of the
+/// per-file `repaint_batch` which reloaded it each time. Weight-free specs fall through to the cheap
+/// per-file path. Best-effort per image (a failure is reported, others continue).
+pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str, device: Option<&str>, steps: usize) {
     let Some(strength) = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0) else {
-        return apply_inplace(path, spec);
+        for f in paths {
+            if let Err(e) = apply_inplace(f, spec) {
+                crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
+            }
+        }
+        return;
     };
-    // Preserve the source PNG's text chunks across the repaint + post pass.
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let chunks = extract_text_chunks(&bytes);
-
-    let tmp = tempfile::tempdir().context("temp dir for naturalize repaint")?;
-    let repainted = tmp.path().join("repaint.png");
+    // Resolve the repaint model (SDXL fallback for transformer families) + style + LoRA once.
     let medium = crate::naturalize::spec_token(spec, "medium");
     let style = resolve_style(None, medium);
     let lora = crate::naturalize::spec_token(spec, "repaint-lora");
-    // The repaint runs through the img2img (UNet) pipeline, which supports only SD1.5/2.1/SDXL. When the
-    // scenario/generation model is a transformer family (SD3/3.5, Flux, PixArt, Cascade, Sana) it CANNOT
-    // img2img — so, unless the user named an explicit `repaint-model=`, fall back to SDXL (a well-supported
-    // painterly model) instead of erroring. Set `repaint-model=` in the spec to override.
     let rmodel = match crate::naturalize::spec_token(spec, "repaint-model") {
         Some(m) => m.to_string(),
         None if img2img_capable(model) => model.to_string(),
         None => {
-            println!(
-                "  {} repaint: '{model}' can't run img2img (transformer family) — using sdxl for the painterly pass (set `repaint-model=` to override)",
-                console::style("de-slop").yellow()
-            );
+            crate::ui::progress::println(&format!("  {} repaint: '{model}' can't run img2img — using sdxl (set `repaint-model=` to override)", console::style("de-slop").yellow()));
             "sdxl".to_string()
         }
     };
-    // Recover the ORIGINAL generation prompt from the PNG so the repaint conditions on the scene (keeps the
-    // sky/sun/subjects) rather than drifting to a generic image of the medium.
+    // Load the pipeline ONCE for the whole batch.
+    let (pipeline, dev) = match crate::naturalize::refine::load_repaint_pipeline(&rmodel, lora, device).await {
+        Ok(p) => p,
+        Err(e) => {
+            crate::ui::progress::println(&format!("  ! naturalize repaint: {e:#}"));
+            return;
+        }
+    };
+    crate::ui::progress::println(&format!(
+        "  {} repaint model {rmodel} loaded once for {} image(s)",
+        console::style("de-slop").green(),
+        paths.len()
+    ));
+    for f in paths {
+        if let Err(e) = repaint_one_with_pipeline(&pipeline, &dev, f, spec, style.as_deref(), strength, steps, medium).await {
+            crate::ui::progress::println(&format!("  ! naturalize repaint {}: {e:#}", f.display()));
+        }
+    }
+}
+
+/// One image of a batch repaint: repaint (shared pipeline) → optional weight-free/paper stack → save +
+/// preserve metadata. Mirrors `repaint_batch`'s per-image body but takes the already-loaded pipeline.
+async fn repaint_one_with_pipeline(
+    pipeline: &crate::pipelines::portrait::Pipeline,
+    device: &candle_core::Device,
+    path: &Path,
+    spec: &str,
+    style: Option<&str>,
+    strength: f32,
+    steps: usize,
+    medium: Option<&str>,
+) -> Result<()> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let chunks = extract_text_chunks(&bytes);
+    let tmp = tempfile::tempdir().context("temp dir for naturalize repaint")?;
+    let repainted = tmp.path().join("repaint.png");
     let scene_prompt = scene_prompt_from_png(path);
-    crate::naturalize::refine::repaint(path, &repainted, style.as_deref(), strength, &rmodel, lora, device, steps, scene_prompt.as_deref())
-        .await
-        .with_context(|| format!("naturalize repaint of {}", path.display()))?;
-    println!(
-        "  {} repainted → {} ({}{}{})",
+    crate::naturalize::refine::repaint_with_pipeline(pipeline, device, path, &repainted, style, strength, steps, scene_prompt.as_deref()).await?;
+    crate::ui::progress::println(&format!(
+        "  {} repainted → {} ({}{})",
         console::style("de-slop").green(),
         path.display(),
         medium.unwrap_or("painterly"),
-        if scene_prompt.is_some() { ", scene-conditioned" } else { "" },
-        format!(", {rmodel} @ {strength:.2}")
-    );
-
-    let mut out = image::open(&repainted)
-        .with_context(|| format!("reading repaint {}", repainted.display()))?
-        .to_rgb8();
-    // Repaint-terminal rule (matches the CLI): stack analog/brush/paper only if explicitly requested.
+        if scene_prompt.is_some() { ", scene-conditioned" } else { "" }
+    ));
+    let mut out = image::open(&repainted).with_context(|| format!("reading repaint {}", repainted.display()))?.to_rgb8();
     if crate::naturalize::spec_wants_weightfree(spec) {
         out = crate::naturalize::apply(&out, &crate::naturalize::from_spec(spec));
         if let Some(m) = crate::naturalize::brush::medium_from_spec(spec) {
@@ -1131,6 +1147,14 @@ pub async fn apply_inplace_spec(path: &Path, spec: &str, model: &str, device: Op
     out.save(path).with_context(|| format!("writing {}", path.display()))?;
     inject_text_chunks(path, &chunks)?;
     Ok(())
+}
+
+/// The POSITIVE generation prompt embedded in a plakat PNG (the A1111 `parameters` tEXt chunk), if any —
+/// everything before the `Negative prompt:` line. Lets a repaint condition on the scene it's repainting.
+fn scene_prompt_from_png(path: &Path) -> Option<String> {
+    let chunk = crate::imaging::io::read_parameters_chunk(path).ok().flatten()?;
+    let positive = chunk.split("\nNegative prompt:").next().unwrap_or(&chunk).trim();
+    (!positive.is_empty()).then(|| positive.to_string())
 }
 
 pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
