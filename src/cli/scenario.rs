@@ -894,6 +894,16 @@ struct TaskDef {
     #[serde(default)]
     naturalize: Option<String>,
 
+    /// 6.27: per-task face-restore override. `Some(true)` runs ADetailer on THIS task only (e.g. break
+    /// clone faces in a crowd scene) while soft scenes stay untouched; `Some(false)` disables it for this
+    /// task even when the global is on; `None` inherits the global `restore-faces:`.
+    #[serde(rename = "restore-faces", default)]
+    restore_faces: Option<bool>,
+    #[serde(rename = "restore-faces-model", default)]
+    restore_faces_model: Option<String>,
+    #[serde(rename = "restore-faces-strength", default)]
+    restore_faces_strength: Option<f32>,
+
     // ---------- v0.29 phase 2: per-task animate overrides ----------
 
     /// v0.29 phase 2: per-task dispatch type override. Same accepted
@@ -2033,11 +2043,12 @@ pub async fn run_with_events(
         }
         set
     }
-    // Snapshot existing PNGs when EITHER a post-pass (naturalize / per-task naturalize / restore-faces)
-    // will touch this run's outputs, so we only process the ones this run produces.
+    // Snapshot existing PNGs when EITHER a post-pass (naturalize / per-task naturalize / restore-faces,
+    // global or per-task) will touch this run's outputs, so we only process the ones this run produces.
     let any_task_naturalize = s.tasks.iter().any(|t| t.naturalize.is_some());
+    let any_restore_faces = s.restore_faces || s.tasks.iter().any(|t| t.restore_faces == Some(true));
     let nat_before =
-        (s.naturalize.is_some() || any_task_naturalize || s.restore_faces).then(|| collect_pngs(&out_root));
+        (s.naturalize.is_some() || any_task_naturalize || any_restore_faces).then(|| collect_pngs(&out_root));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -5314,17 +5325,39 @@ pub async fn run_with_events(
 
     // 6.27: face-restore (ADetailer) runs BEFORE naturalize — crisp the faces on the base render, THEN let
     // the naturalize repaint stylize everything uniformly (restoring after a watercolor repaint would stamp
-    // sharp faces onto a painting). img2img is UNet-only, so the default face model is SDXL.
-    if s.restore_faces {
+    // sharp faces onto a painting). img2img is UNet-only, so the default face model is SDXL. Per-task
+    // override: enable/model/strength come from the task, else the global — so a crowd scene can flip it on
+    // (break clone faces) while soft scenes stay untouched. Outputs grouped by (model, strength) so each
+    // distinct config loads its model once.
+    if any_restore_faces {
         if let Some(before) = nat_before.as_ref() {
             let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
-            if !new.is_empty() {
-                let fmodel = s.restore_faces_model.as_deref().unwrap_or("sdxl");
-                let strength = s.restore_faces_strength.unwrap_or(0.4);
+            // Map each new PNG → its task → effective restore-faces config; keep only the enabled ones.
+            let mut groups: std::collections::HashMap<(String, String), Vec<PathBuf>> = std::collections::HashMap::new();
+            for png in new {
+                let parent = png.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+                let task = s.tasks.iter().find(|t| safe_name(&t.name) == parent);
+                let enabled = task.and_then(|t| t.restore_faces).unwrap_or(s.restore_faces);
+                if !enabled {
+                    continue;
+                }
+                let fmodel = task.and_then(|t| t.restore_faces_model.clone()).or_else(|| s.restore_faces_model.clone()).unwrap_or_else(|| "sdxl".to_string());
+                let strength = task.and_then(|t| t.restore_faces_strength).or(s.restore_faces_strength).unwrap_or(0.4);
+                groups.entry((fmodel, format!("{strength:.3}"))).or_default().push(png);
+            }
+            let mut keys: Vec<(String, String)> = groups.keys().cloned().collect();
+            keys.sort();
+            for key in keys {
+                let pngs = groups.remove(&key).unwrap();
+                if pngs.is_empty() {
+                    continue;
+                }
+                let (fmodel, strength_s) = &key;
+                let strength: f32 = strength_s.parse().unwrap_or(0.4);
                 crate::ui::progress::println(&format!(
                     "  {} restore-faces: {} output(s) · {fmodel} @ {strength:.2}",
                     style("◆").cyan(),
-                    new.len()
+                    pngs.len()
                 ));
                 match crate::device::select(s.device.as_deref().unwrap_or("auto")) {
                     Ok(fdev) => {
@@ -5335,7 +5368,7 @@ pub async fn run_with_events(
                             device: fdev,
                             ..crate::pipelines::adetailer::Config::defaults()
                         };
-                        match crate::pipelines::adetailer::refine_files(&cfg, &new, None).await {
+                        match crate::pipelines::adetailer::refine_files(&cfg, &pngs, None).await {
                             Ok(n) => crate::ui::progress::println(&format!("  {} restore-faces: {n} face(s) refined", style("◆").green())),
                             Err(e) => crate::ui::progress::println(&format!("  ! restore-faces: {e:#}")),
                         }
