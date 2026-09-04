@@ -53,6 +53,7 @@ pub async fn refine(input: &Path, out: &Path, c: &Corrective, model: &str, devic
         if let Some(d) = device {
             g = g.device(d);
         }
+        let _quiet = crate::ui::progress::quiet_scope();
         let imgs = g.run().await.context("corrective img2img (geometry/anatomy)")?;
         let refined = tmp.join("refine_geom.png");
         imgs.first().context("img2img produced no image")?.save(&refined)?;
@@ -115,6 +116,7 @@ pub async fn repaint(
         };
         g = g.lora(src, scale);
     }
+    let _quiet = crate::ui::progress::quiet_scope();
     let imgs = g.run().await.context("painterly repaint (img2img)")?;
     imgs.first().context("repaint produced no image")?.save(out)?;
     Ok(())
@@ -202,6 +204,9 @@ pub async fn repaint_with_pipeline(
         out_dir: tmp.path().to_path_buf(),
         controls: Vec::new(),
     };
+    // Silence this internal render's own `◆ … from /tmp/…` / `→ /tmp/…` chatter + denoise bar — the caller
+    // (naturalize/scenario) reports the real result; the nested output only collided with it.
+    let _quiet = crate::ui::progress::quiet_scope();
     crate::pipelines::img2img::run_with_pipeline(pipeline, &req).await.context("painterly repaint (img2img)")?;
     let produced = std::fs::read_dir(tmp.path())
         .context("reading repaint output dir")?
@@ -391,6 +396,7 @@ pub async fn repair_protected(input: &Path, out: &Path, strength: f32, style: Op
     if let Some(d) = device {
         g = g.device(d);
     }
+    let _quiet = crate::ui::progress::quiet_scope();
     let imgs = g.run().await.context("face-protected repair img2img")?;
     imgs.first().context("repair produced no image")?.save(out)?;
     Ok(true)
@@ -448,6 +454,7 @@ async fn vary_lookalike_faces(input: &Path, weight: f32, model: &str, device: Op
         if let Some(d) = device {
             g = g.device(d);
         }
+        let _quiet = crate::ui::progress::quiet_scope();
         match g.run().await {
             Ok(imgs) => {
                 if let Some(im) = imgs.first() {

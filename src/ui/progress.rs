@@ -17,6 +17,30 @@ use std::time::Duration;
 
 static MULTI: OnceLock<MultiProgress> = OnceLock::new();
 static SINK: Mutex<Option<Sender<String>>> = Mutex::new(None);
+/// Nesting count of active [`quiet_scope`]s. When > 0, `println`/`spinner`/`step_bar`/`bytes_bar` are
+/// silenced — used to keep an INTERNAL nested render (e.g. the img2img the `naturalize --repair` pass runs
+/// as plumbing) from spraying its own `◆ … from /tmp/…` / `→ /tmp/…` lines + denoise bar into the outer
+/// scenario/naturalize output, which used to overwrite/truncate those lines.
+static QUIET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn is_quiet() -> bool {
+    QUIET.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
+/// Suppress ALL progress output (persistent lines AND bars/spinners) for the lifetime of the returned
+/// guard. Wrap a nested/internal render whose progress the user shouldn't see. Nesting-counted.
+pub fn quiet_scope() -> QuietGuard {
+    QUIET.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    QuietGuard(())
+}
+
+/// RAII guard from [`quiet_scope`]; restores output on drop.
+pub struct QuietGuard(());
+impl Drop for QuietGuard {
+    fn drop(&mut self) {
+        QUIET.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Reroute the shared progress into a channel (the TUI calls this once, before any
 /// bar is created) and return the receiver to drain each event-loop tick. After
@@ -96,6 +120,9 @@ impl TermLike for ChannelTerm {
 /// Add a new step-counted bar to the shared MultiProgress (the denoise loops use
 /// this — it renders a real `[bar] pos/len` that the TUI captures verbatim).
 pub fn step_bar(total: u64, label: &str) -> ProgressBar {
+    if is_quiet() {
+        return ProgressBar::hidden();
+    }
     let pb = shared().add(ProgressBar::new(total));
     pb.set_style(
         ProgressStyle::with_template(
@@ -112,10 +139,18 @@ pub fn step_bar(total: u64, label: &str) -> ProgressBar {
 /// MultiProgress (→ the capture channel); on a CLI TTY it lands above the bars; on
 /// a piped stream it falls back to `println!`.
 pub fn println(msg: &str) {
+    if is_quiet() {
+        return;
+    }
     if tui_mode() {
         let _ = shared().println(msg);
     } else if std::io::stderr().is_terminal() {
-        let _ = shared().println(msg);
+        // Serialize against the spinner's steady-tick redraw thread: `suspend` holds the draw lock while
+        // the line is written, so a tick frame can't interleave and truncate it (the plain `println` did
+        // race the tick thread, jamming header lines together). The bars redraw below the printed line.
+        shared().suspend(|| {
+            eprintln!("{msg}");
+        });
     } else {
         println!("{msg}");
     }
@@ -123,6 +158,9 @@ pub fn println(msg: &str) {
 
 /// v0.16 phase 7: bytes-counted progress bar for file downloads.
 pub fn bytes_bar(total: u64, label: &str) -> ProgressBar {
+    if is_quiet() {
+        return ProgressBar::hidden();
+    }
     let pb = shared().add(ProgressBar::new(total));
     pb.set_style(
         ProgressStyle::with_template(
@@ -137,6 +175,9 @@ pub fn bytes_bar(total: u64, label: &str) -> ProgressBar {
 
 /// Add a new spinner to the shared MultiProgress.
 pub fn spinner(msg: &str) -> ProgressBar {
+    if is_quiet() {
+        return ProgressBar::hidden();
+    }
     let pb = shared().add(ProgressBar::new_spinner());
     pb.set_style(
         ProgressStyle::with_template("{spinner:.cyan} {msg}")
@@ -146,4 +187,24 @@ pub fn spinner(msg: &str) -> ProgressBar {
     pb.enable_steady_tick(Duration::from_millis(80));
     pb.set_message(msg.to_string());
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_scope_nests_and_restores() {
+        assert!(!is_quiet(), "starts not quiet");
+        {
+            let _a = quiet_scope();
+            assert!(is_quiet());
+            {
+                let _b = quiet_scope(); // nesting composes
+                assert!(is_quiet());
+            }
+            assert!(is_quiet(), "still quiet while outer guard held");
+        }
+        assert!(!is_quiet(), "restored after all guards drop");
+    }
 }
