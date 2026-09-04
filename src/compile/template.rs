@@ -186,6 +186,8 @@ fn register_functions(tera: &mut Tera, input_path: Option<&Path>) {
         let fam = match super::classify_model(name) {
             super::ModelFamily::Sd15 => "sd15",
             super::ModelFamily::Sdxl => "sdxl",
+            super::ModelFamily::Sd3 => "sd3",
+            super::ModelFamily::Cascade => "cascade",
             super::ModelFamily::Flux => "flux",
             super::ModelFamily::Unknown => "unknown",
         };
