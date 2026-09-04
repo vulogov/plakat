@@ -238,7 +238,8 @@ scenario top level; scene block → that task), type-inferred (`fast: true`, `pa
 | Group | Keys |
 |---|---|
 | Sizing / device | `aspect`, `base`, `device`, `offline`, `fast`, `lcm` |
-| Post-process | `naturalize`, `upscale` |
+| Post-process | `naturalize`, `upscale`, `restore-faces` |
+| Output layout | `unique-files`, `keep-prenaturalize` |
 | Refiner / LoRA | `refiner`, `refine-strength`, `refiner-frac`, `lora-scale` |
 | Quality knobs | `pag-scale`, `guidance-rescale`, `freeu`, `dynamic-threshold` |
 | Style / image refs | `look`, `genre`, `style-ref`, `style-strength`, `concept-image` |
@@ -259,7 +260,8 @@ Plus the list/array specials:
 # Global
 model: sdxl
 aspect: 16:9
-naturalize: painting medium=watercolor brush=0.6   # ← de-slop + real brush strokes (6.27)
+unique-files: true                                 # ← keep every pass (timestamped run folder, 6.27)
+naturalize: repaint=0.28 medium=watercolor repaint-style="fine detailed watercolor, small strokes"
 pag-scale: 3.0
 
 # Scene — regional prompting + ControlNet + a per-task override
@@ -269,9 +271,13 @@ strength: 0.6
 A clean medieval street at dawn.
 ```
 
-The `naturalize:` value is a full **naturalize spec** — `preset` + focuses + `paper=`/`medium=`/`brush=`
-— so a compiled scenario can request the weight-free de-slop **and** hand-media brush strokes (6.27):
-`naturalize: photo`, `naturalize: painting paper=0.7 medium=watercolor`, `naturalize: photo medium=oil brush=0.8`.
+The `naturalize:` value is a full **naturalize spec** — `preset` + focuses + `paper=`/`medium=`/`brush=`, or
+the model-backed `repaint=`/`repaint-style=` — so a compiled scenario can request the weight-free de-slop,
+hand-media brush strokes, **or** a controllable painterly repaint (6.27): `naturalize: photo`,
+`naturalize: painting paper=0.7 medium=watercolor`, `naturalize: repaint=0.28 medium=watercolor repaint-style="fine detailed watercolor, small strokes"`.
+Write the inner `"…"` naturally in prose — **compile JSON-escapes them** into the emitted HJSON, so they
+round-trip without you touching the quoting. **`unique-files: true`** in prose likewise passes straight
+through, writing each render pass into its own timestamped `run-…/` folder so nothing is overwritten.
 
 ### Scene / weather axes from prose *(6.27)*
 

@@ -1065,13 +1065,13 @@ fn img2img_capable(model: &str) -> bool {
 /// spec has a `repaint=`, the img2img model is loaded ONCE and reused across every image — instead of the
 /// per-file `repaint_batch` which reloaded it each time. Weight-free specs fall through to the cheap
 /// per-file path. Best-effort per image (a failure is reported, others continue).
-pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str, device: Option<&str>, steps: usize) {
+pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str, device: Option<&str>, steps: usize, keep_original: bool) {
     let repaint_s = crate::naturalize::repaint_from_spec(spec).filter(|v| *v > 0.0);
     let repair_s = crate::naturalize::repair_from_spec(spec).filter(|v| *v > 0.0);
     // Nothing model-backed → the cheap per-file weight-free path.
     if repaint_s.is_none() && repair_s.is_none() {
         for f in paths {
-            if let Err(e) = apply_inplace(f, spec) {
+            if let Err(e) = apply_inplace(f, spec, keep_original) {
                 crate::ui::progress::println(&format!("  ! naturalize {}: {e}", f.display()));
             }
         }
@@ -1080,7 +1080,11 @@ pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str
     // Resolve the img2img model (repaint AND repair need a UNet family; SDXL fallback for transformers),
     // style + LoRA, once for the batch.
     let medium = crate::naturalize::spec_token(spec, "medium");
-    let style = resolve_style(None, medium);
+    // `repaint-style="..."` is a full custom anchor (brushwork descriptors and all) that overrides the
+    // medium's canned anchor — the lever for finer/coarser strokes without touching the medium keyword.
+    let style = crate::naturalize::spec_token(spec, "repaint-style")
+        .map(str::to_string)
+        .or_else(|| resolve_style(None, medium));
     let lora = crate::naturalize::spec_token(spec, "repaint-lora");
     let rmodel = match crate::naturalize::spec_token(spec, "repaint-model") {
         Some(m) => m.to_string(),
@@ -1106,7 +1110,7 @@ pub async fn repaint_batch(paths: &[std::path::PathBuf], spec: &str, model: &str
         None
     };
     for f in paths {
-        if let Err(e) = model_pass_one(f, spec, &rmodel, device, steps, repaint_s, repair_s, style.as_deref(), medium, repaint_pipe.as_ref()).await {
+        if let Err(e) = model_pass_one(f, spec, &rmodel, device, steps, repaint_s, repair_s, style.as_deref(), medium, repaint_pipe.as_ref(), keep_original).await {
             crate::ui::progress::println(&format!("  ! naturalize {}: {e:#}", f.display()));
         }
     }
@@ -1126,6 +1130,7 @@ async fn model_pass_one(
     style: Option<&str>,
     medium: Option<&str>,
     repaint_pipe: Option<&(crate::pipelines::portrait::Pipeline, candle_core::Device)>,
+    keep_original: bool,
 ) -> Result<()> {
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let chunks = extract_text_chunks(&bytes);
@@ -1181,8 +1186,12 @@ async fn model_pass_one(
             out = crate::naturalize::paper_texture(&out, pv);
         }
     }
-    out.save(path).with_context(|| format!("writing {}", path.display()))?;
-    inject_text_chunks(path, &chunks)?;
+    let dest = naturalized_dest(path, keep_original);
+    out.save(&dest).with_context(|| format!("writing {}", dest.display()))?;
+    inject_text_chunks(&dest, &chunks)?;
+    if keep_original {
+        crate::ui::progress::println(&format!("  {} kept pre-naturalize → naturalized to {}", console::style("de-slop").green(), dest.display()));
+    }
     Ok(())
 }
 
@@ -1194,7 +1203,19 @@ fn scene_prompt_from_png(path: &Path) -> Option<String> {
     (!positive.is_empty()).then(|| positive.to_string())
 }
 
-pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
+/// Destination for a naturalize write: the same path (overwrite in place) unless `keep_original`, in which
+/// case a `<stem>.natural.<ext>` sibling in the same directory — so the pre-naturalize render is preserved
+/// next to the naturalized one (`keep-prenaturalize: true`).
+pub(crate) fn naturalized_dest(path: &Path, keep_original: bool) -> std::path::PathBuf {
+    if !keep_original {
+        return path.to_path_buf();
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    path.with_file_name(format!("{stem}.natural.{ext}"))
+}
+
+pub fn apply_inplace(path: &Path, spec: &str, keep_original: bool) -> Result<()> {
     let params = crate::naturalize::from_spec(spec);
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let chunks = extract_text_chunks(&bytes);
@@ -1212,7 +1233,31 @@ pub fn apply_inplace(path: &Path, spec: &str) -> Result<()> {
     if let Some(pv) = crate::naturalize::paper_from_spec(spec).filter(|v| *v > 0.0) {
         out = crate::naturalize::paper_texture(&out, pv);
     }
-    out.save(path).with_context(|| format!("writing {}", path.display()))?;
-    inject_text_chunks(path, &chunks)?;
+    let dest = naturalized_dest(path, keep_original);
+    out.save(&dest).with_context(|| format!("writing {}", dest.display()))?;
+    inject_text_chunks(&dest, &chunks)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::naturalized_dest;
+    use std::path::Path;
+
+    #[test]
+    fn naturalized_dest_in_place_vs_sibling() {
+        let p = Path::new("/out/run/scene/plakat-sd3-denoise-24.png");
+        // keep_original = false → overwrite in place.
+        assert_eq!(naturalized_dest(p, false), p.to_path_buf());
+        // keep_original = true → `<stem>.natural.png` sibling in the SAME directory, original untouched.
+        assert_eq!(
+            naturalized_dest(p, true),
+            Path::new("/out/run/scene/plakat-sd3-denoise-24.natural.png").to_path_buf()
+        );
+        // Preserves a non-png extension.
+        assert_eq!(
+            naturalized_dest(Path::new("a/b.webp"), true),
+            Path::new("a/b.natural.webp").to_path_buf()
+        );
+    }
 }

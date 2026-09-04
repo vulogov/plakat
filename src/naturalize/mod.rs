@@ -363,13 +363,53 @@ pub fn paper_from_spec(spec: &str) -> Option<f32> {
         .find_map(|t| t.strip_prefix("paper=").and_then(|v| v.parse::<f32>().ok()))
 }
 
+/// Tokenize a naturalize spec on space/comma/semicolon, but keep a **quoted** value together so a
+/// multi-word value (e.g. `repaint-style="fine delicate watercolor, small strokes"`) survives as one
+/// token instead of splitting at its inner spaces/commas. A quote is only special once it follows the
+/// `=` of the current token; the matching close quote (same char) ends the quoted run.
+fn spec_tokens(spec: &str) -> Vec<&str> {
+    let b = spec.as_bytes();
+    let is_delim = |c: u8| matches!(c, b' ' | b',' | b';');
+    let mut toks = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        while i < b.len() && is_delim(b[i]) {
+            i += 1;
+        }
+        if i >= b.len() {
+            break;
+        }
+        let start = i;
+        while i < b.len() && !is_delim(b[i]) {
+            // A quote immediately after this token's `=` swallows everything to its closing quote,
+            // delimiters included — so a quoted value keeps its spaces and commas.
+            if (b[i] == b'"' || b[i] == b'\'') && i > start && b[i - 1] == b'=' {
+                let q = b[i];
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                if i < b.len() {
+                    i += 1; // consume the closing quote
+                }
+            } else {
+                i += 1;
+            }
+        }
+        toks.push(&spec[start..i]);
+    }
+    toks
+}
+
 /// Extract the raw string value of a `key=value` token from a naturalize spec (space/comma/semicolon
 /// separated), e.g. `spec_token("repaint=0.3 medium=watercolor", "medium")` → `Some("watercolor")`.
+/// Multi-word values are supported when quoted: `repaint-style="fine delicate watercolor"` → the surrounding
+/// quotes are stripped from the returned value.
 pub fn spec_token<'a>(spec: &'a str, key: &str) -> Option<&'a str> {
-    spec.split([' ', ',', ';']).map(str::trim).find_map(|t| {
+    spec_tokens(spec).into_iter().find_map(|t| {
         t.split_once('=')
             .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.trim())
+            .map(|(_, v)| v.trim().trim_matches('"').trim_matches('\''))
     })
 }
 
@@ -390,10 +430,11 @@ pub fn repair_from_spec(spec: &str) -> Option<f32> {
 /// the analog + paper pass is stacked ONLY when the user explicitly asked for it. The repaint/brush/medium
 /// control tokens themselves do NOT count as weight-free.
 pub fn spec_wants_weightfree(spec: &str) -> bool {
-    const CONTROL: &[&str] = &["repaint", "repaint-lora", "repaint-model", "medium", "brush", "scale", "repair", "repair-scope"];
+    const CONTROL: &[&str] =
+        &["repaint", "repaint-lora", "repaint-model", "repaint-style", "medium", "brush", "scale", "repair", "repair-scope"];
     const ANALOG: &[&str] =
         &["grain", "aberration", "vignette", "bloom", "desaturate", "warm", "defocus", "polish", "micro", "paper"];
-    spec.split([' ', ',', ';']).map(str::trim).filter(|t| !t.is_empty()).any(|tok| {
+    spec_tokens(spec).into_iter().map(str::trim).filter(|t| !t.is_empty()).any(|tok| {
         let key = tok.split_once('=').map(|(k, _)| k).unwrap_or(tok).trim().to_ascii_lowercase();
         if CONTROL.contains(&key.as_str()) {
             return false;
@@ -489,6 +530,56 @@ pub(crate) fn box_blur_gray(src: &[f32], w: usize, h: usize, r: i32) -> Vec<f32>
 /// report the before/after delta.
 pub fn ai_tell_score(img: &RgbImage) -> f32 {
     analyze(img).ai_tell
+}
+
+/// A heuristic **naturalize spec** that would nudge an image toward reading more natural, derived from its
+/// measured tells — a *starting point* for aesthetic naturalness, **not** a detector-defeater. Returns
+/// `None` when the image already reads natural (`ai_tell < 0.40`) so we only suggest work when there is a
+/// measurable tell (DO NO HARM: never fabricate work, never inflate). `is_art` picks hand-media texture
+/// (watercolor strokes + paper) over photo grain. All strengths are bounded to a moderate, safe range.
+///
+/// Surfaced by `plakat rank --suggest` and the `naturalize` folder scorecard: paste the line back as a
+/// scenario/prose `naturalize:` value, then eyeball the result — the scorer is coarse, not an oracle.
+pub fn suggest_spec(a: &Analysis, is_art: bool) -> Option<String> {
+    if a.ai_tell < 0.40 {
+        return None; // already reads natural — suggesting work here would be inventing it
+    }
+    let mut t: Vec<String> = Vec::new();
+    // Base regrade preset — a light denial of digital perfection, tuned to the medium.
+    t.push(if is_art { "painting" } else { "photo" }.to_string());
+    // Texture over-smoothness → break the uniform sheen with real, form-following texture.
+    if a.smoothness_tell > 0.55 {
+        if is_art {
+            t.extend(["medium=watercolor", "brush=0.4", "scale=0.55", "paper=0.3"].map(String::from));
+        } else {
+            t.extend(["grain=0.15", "micro=0.3"].map(String::from));
+        }
+    }
+    // Oversaturation the preset may not fully tame → a gentle explicit desaturate.
+    if a.saturation > 0.62 {
+        t.push("desaturate=0.15".to_string());
+    }
+    // Washed / muddy (low global contrast) → a light clarity pass.
+    if a.contrast < 0.12 {
+        t.push("polish=0.3".to_string());
+    }
+    Some(t.join(" "))
+}
+
+/// Human-readable one-liner explaining WHY [`suggest_spec`] proposed what it did (for the CLI display).
+/// Empty when nothing stood out (mirrors `suggest_spec` returning `None`).
+pub fn suggest_reasons(a: &Analysis) -> String {
+    let mut r: Vec<String> = Vec::new();
+    if a.smoothness_tell > 0.55 {
+        r.push(format!("over-smooth {:.2} → texture", a.smoothness_tell));
+    }
+    if a.saturation > 0.62 {
+        r.push(format!("saturated {:.2} → regrade", a.saturation));
+    }
+    if a.contrast < 0.12 {
+        r.push(format!("low contrast {:.2} → clarity", a.contrast));
+    }
+    r.join("; ")
 }
 
 /// The decomposed de-slop **analysis** of an image (RFC QUALITY-6 P1) — the drivers behind
@@ -1270,6 +1361,48 @@ pub fn apply(src: &RgbImage, p: &Params) -> RgbImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggest_spec_prescribes_for_tells_and_stays_quiet_when_natural() {
+        // Already natural (low ai_tell) → no suggestion (DO NO HARM: don't invent work).
+        let natural = Analysis { ai_tell: 0.30, saturation: 0.3, smoothness_tell: 0.3, contrast: 0.2 };
+        assert_eq!(suggest_spec(&natural, true), None);
+
+        // Over-smooth art → base preset + hand-media texture; the emitted spec must be a VALID spec that
+        // round-trips through the parsers (so a user can paste it verbatim).
+        let smooth = Analysis { ai_tell: 0.62, saturation: 0.4, smoothness_tell: 0.7, contrast: 0.2 };
+        let art = suggest_spec(&smooth, true).expect("a tell present → a suggestion");
+        assert!(art.starts_with("painting"), "got {art}");
+        assert!(art.contains("medium=watercolor"), "got {art}");
+        assert_eq!(spec_token(&art, "paper"), Some("0.3"));
+        assert!(spec_wants_weightfree(&art), "suggestion must trigger the weight-free pass");
+
+        // Photo path → grain/micro, not watercolor.
+        let photo = suggest_spec(&smooth, false).expect("suggestion");
+        assert!(photo.starts_with("photo") && photo.contains("grain=") && !photo.contains("medium="));
+
+        // Oversaturated + washed → explicit desaturate + clarity tokens appear.
+        let sat = Analysis { ai_tell: 0.7, saturation: 0.7, smoothness_tell: 0.4, contrast: 0.08 };
+        let s = suggest_spec(&sat, true).unwrap();
+        assert!(s.contains("desaturate=0.15") && s.contains("polish=0.3"), "got {s}");
+    }
+
+    #[test]
+    fn spec_token_reads_quoted_multiword_value() {
+        // A quoted value keeps its inner spaces AND commas; surrounding quotes are stripped.
+        let spec = r#"repaint=0.3 medium=watercolor repaint-style="fine delicate watercolor, small brush strokes" repair=0.4"#;
+        assert_eq!(spec_token(spec, "repaint"), Some("0.3"));
+        assert_eq!(spec_token(spec, "medium"), Some("watercolor"));
+        assert_eq!(spec_token(spec, "repaint-style"), Some("fine delicate watercolor, small brush strokes"));
+        assert_eq!(spec_token(spec, "repair"), Some("0.4"));
+        // Single-quoted inner value works too (lets HJSON use double-quotes on the outside).
+        let alt = "repaint=0.3 repaint-style='loose wet-on-wet washes'";
+        assert_eq!(spec_token(alt, "repaint-style"), Some("loose wet-on-wet washes"));
+        // The style's descriptor words must NOT trip the weight-free analog pass.
+        assert!(!spec_wants_weightfree(spec));
+        // …but a real analog token still does, even alongside a quoted style.
+        assert!(spec_wants_weightfree(r#"repaint=0.3 repaint-style="fine strokes" grain=0.2"#));
+    }
 
     /// A synthetic over-clean, over-saturated image: a flat saturated gradient + a uniform high-freq tile.
     fn ai_clean() -> RgbImage {

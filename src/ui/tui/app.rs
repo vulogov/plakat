@@ -3108,6 +3108,7 @@ impl App {
             only: Vec::new(),
             limit: 0,
             json_summary: None,
+            unique_files: false,
             out_override,
         };
         // Run on the model thread so it drops the loaded Chat pipeline first (no

@@ -278,6 +278,56 @@ keeping paper/grade). Media: `watercolor` · `oil`/`acrylic` · `gouache` · `in
 (no `medium=`) are unaffected. See [`../NATURALIZE_TUTORIAL.md`](../NATURALIZE_TUTORIAL.md). *(This is
 exactly what `plakat compile` emits from a `naturalize:` directive, so prose → scenario carries it too.)*
 
+For the **model-backed** painterly repaint (6.27), use `repaint=<strength>`, and steer the brushwork with
+a custom **`repaint-style="…"`** anchor. Its value has spaces + commas, so it must be **quoted** — pick an
+inner quote that doesn't collide with the outer HJSON string (or write a quoteless HJSON line):
+
+```hjson
+// single-quote the outer string → double-quote the style (cleanest):
+naturalize: 'repaint=0.28 medium=watercolor repaint-style="fine detailed watercolor, small strokes"'
+// or double-quote outer → single-quote the style:
+naturalize: "repaint=0.28 medium=watercolor repaint-style='fine detailed watercolor, small strokes'"
+```
+
+## 7c. Keep every pass — `unique-files` *(6.27)*
+
+By default a re-run **overwrites** the previous outputs in the out dir. Set **`unique-files: true`** (or pass
+**`--unique-files`** on the CLI) to write each run into a fresh timestamped subfolder
+(`<out>/run-YYYY-MM-DD_HH-MM-SS-mmm/…`), so repeated passes of the same scenario are kept side by side:
+
+```hjson
+{
+  model: "sd35"
+  out: "./out/street"
+  unique-files: true          // pass 1 → ./out/street/run-…-101/… ; pass 2 → run-…-880/…  (both kept)
+  tasks: [ … ]
+}
+```
+
+```bash
+plakat scenario street.hjson --unique-files      # CLI forces it on regardless of the file
+```
+
+Because every pass lands in a new folder, `--resume` has nothing to skip (each run is fresh). This pairs
+naturally with a **selection-corpus** workflow: bump `count:` (varies the seed per image) to render several
+variations, then `plakat rank <run-dir>` — or `plakat generate … --keep-best K` — surfaces the best draws.
+*(`plakat compile` passes `unique-files` straight through, so a prose `unique-files: true` reaches the scenario.)*
+
+### Keep the raw render — `keep-prenaturalize` *(6.27)*
+
+A naturalize pass edits each image **in place** by default. Set **`keep-prenaturalize: true`** to instead
+write the naturalized result to a `<stem>.natural.png` sibling, leaving the raw pre-naturalize render next
+to it — handy for A/B-ing the de-slop/repaint against the original, or ranking both:
+
+```hjson
+{
+  naturalize: "repaint=0.2 medium=watercolor paper=0.3"
+  keep-prenaturalize: true      // plakat-…-42.png (raw) + plakat-…-42.natural.png (naturalized)
+  tasks: [ … ]
+}
+```
+*(Also passes through from prose. Applies to both the model-backed `repaint=` and the weight-free specs.)*
+
 ## 8. Partial-run filters (v0.19)
 
 Three flags for working with subsets of a long scenario:

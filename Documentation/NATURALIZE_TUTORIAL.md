@@ -134,6 +134,11 @@ plakat naturalize art.png --out out.png --repaint --auto-medium        # detect 
   be a **real** Hub id / local path you have (there is no bundled `*-style` LoRA). If it fails to load,
   plakat **retries without it** (and says so) rather than reverting to the baseline — so omit it unless you
   have one; the prompt anchor alone already reads as the medium.
+- **`--style "…"`** (spec: **`repaint-style="…"`**) *(6.27)*: replace the medium's canned anchor with your
+  own — the lever for **controllable brushwork**. `--medium watercolor` is broad by design; a custom style
+  steers finer or coarser: `--style "fine detailed watercolor, delicate brushwork, small controlled strokes"`.
+  A diffusion repaint has no literal "brush-size" knob (the model paints emergently) — this prompt, a lower
+  `--repaint-strength`, and a higher render resolution are the three levers for stroke breadth.
 - The procedural brush pass is **skipped** under `--repaint` (the model already painted the strokes).
 - Needs a model. A successful `--repaint` is **terminal**: the analog/paper post-pass is skipped (the model
   already painted the medium — stacking grain/paper on top only double-textures it). Add an explicit
@@ -149,16 +154,24 @@ naturalize: "repaint=0.4 medium=watercolor"          // model repaint, terminal
 naturalize: "repaint=0.4 medium=oil repaint-lora=org/oil-lora:0.8"
 naturalize: "repaint=0.4 medium=oil paper=0.3"       // repaint + explicit paper (stacks)
 naturalize: "medium=oil brush=0.7 scale=0.6"         // weight-free brush strokes (no model)
+// 6.27: a multi-word repaint-style="…" for finer, controllable brushwork.
+// Its value has spaces + commas, so QUOTE it — pick an inner quote that
+// doesn't clash with the outer HJSON string:
+naturalize: 'repaint=0.28 medium=watercolor repaint-style="fine detailed watercolor, small strokes"'
+naturalize: "repaint=0.28 medium=watercolor repaint-style='fine detailed watercolor, small strokes'"
 ```
 
 ```text
-# prose prompts.txt — the naturalize line is carried through verbatim
-naturalize: repaint=0.4 medium=watercolor
+# prose prompts.txt — the naturalize line is carried through verbatim; write inner
+# double-quotes naturally, `plakat compile` JSON-escapes them into the emitted HJSON.
+naturalize: repaint=0.28 medium=watercolor repaint-style="fine detailed watercolor, small strokes"
 A quiet harbour at dawn.
 ```
 
-The `repaint=`, `medium=`, `repaint-lora=`, `repaint-model=` tokens mirror the CLI flags; the terminal rule
-applies here too (add `paper=`/`grain=`/a focus token to stack the weight-free pass on the repaint).
+The `repaint=`, `medium=`, `repaint-lora=`, `repaint-model=`, `repaint-style=` tokens mirror the CLI flags;
+the terminal rule applies here too (add `paper=`/`grain=`/a focus token to stack the weight-free pass on the
+repaint). Multi-word values (`repaint-style=`) must be **quoted**; both `"…"` and `'…'` inner quotes work, so
+choose the one that doesn't collide with the outer HJSON string (or use a quoteless HJSON line / `'''…'''`).
 
 ```bash
 plakat naturalize oil-portrait.png  --out out.png --medium oil                 # strokes at 0.6

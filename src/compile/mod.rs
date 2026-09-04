@@ -153,6 +153,8 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "aspect", "base", "device", "offline", "fast", "lcm",
     // post-process
     "naturalize", "upscale", "restore-faces", "restore-faces-model", "restore-faces-strength",
+    // output layout — keep every pass of a repeated run side by side
+    "unique-files", "keep-prenaturalize",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)

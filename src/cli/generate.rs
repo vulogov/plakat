@@ -281,6 +281,12 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Size & output", long, default_value = "./out")]
     pub out: PathBuf,
 
+    /// Write this run's images into a fresh timestamped subfolder of `--out`
+    /// (`run-<YYYY-MM-DD_HH-MM-SS-mmm>/`) so a repeat run never overwrites a
+    /// previous one — every pass is kept side by side.
+    #[arg(help_heading = "Size & output", long = "unique-files")]
+    pub unique_files: bool,
+
     /// LoRA to apply (kohya format). Repeatable. Each value can be:
     ///   - a local path:   `./mylora.safetensors`
     ///   - an HF repo:     `latent-consistency/lcm-lora-sdv1-5` (file auto-picked)
@@ -947,6 +953,13 @@ fn apply_quality(args: &mut GenerateArgs) {
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
+    // `--unique-files`: nest this whole run under a timestamped folder BEFORE any path derives from
+    // `args.out`, so every out_dir / reconstructed `plakat-<seed>.png` / grid / naturalize path inherits
+    // it and no prior run is clobbered. One redirect covers the entire pipeline.
+    if args.unique_files {
+        args.out = args.out.join(crate::cli::run_stamp());
+        crate::ui::progress::println(&format!("  unique-files: writing to {}", args.out.display()));
+    }
     let keep_best = args.keep_best;
     let ai_tells = args.ai_tells;
     let want_score = args.score || keep_best.is_some();
@@ -978,7 +991,7 @@ pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
             if let Some(spec) = &naturalize_spec {
                 // 6.27: honours the model-backed `repaint=` token, loading the img2img model ONCE for the
                 // whole batch (device→auto here; a spec with no `repaint=` is the cheap per-file path).
-                crate::cli::naturalize::repaint_batch(&new_files, spec, &naturalize_model, None, naturalize_steps).await;
+                crate::cli::naturalize::repaint_batch(&new_files, spec, &naturalize_model, None, naturalize_steps, false).await;
             }
             if want_score {
                 score_outputs(new_files, keep_best, ai_tells, &device).await?;
@@ -2152,6 +2165,7 @@ mod tests {
             wildcard_dir: None,
             clip_skip: 1,
             out: PathBuf::from("./out"),
+            unique_files: false,
             loras: Vec::new(),
             lora_scale: 1.0,
             scheduler: SchedulerKind::Default,

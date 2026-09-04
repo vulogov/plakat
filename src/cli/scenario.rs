@@ -82,6 +82,14 @@ pub struct ScenarioArgs {
     #[arg(help_heading = "Batch run", long = "json-summary", value_name = "PATH")]
     pub json_summary: Option<PathBuf>,
 
+    /// Write this run's outputs into a fresh timestamped subfolder of the out dir
+    /// (`run-<YYYY-MM-DD_HH-MM-SS-mmm>/`), so repeated passes of the same scenario
+    /// are kept side by side instead of overwriting each other. Overrides the
+    /// scenario file's `unique-files:` when passed. Implies fresh output (nothing
+    /// pre-exists in the new folder, so `--resume` has nothing to skip).
+    #[arg(help_heading = "Batch run", long = "unique-files")]
+    pub unique_files: bool,
+
     /// Programmatic override for the scenario's `out:` dir (not a CLI flag). The
     /// `plakat ui` runner sets this to a path under the workspace `out/` so generated
     /// images land where History scans them, regardless of the scenario's own `out:`.
@@ -156,6 +164,18 @@ struct ScenarioFile {
     /// 6.10.0: apply the naturalize analog post-pass (RFC QUALITY-1) to every image this scenario
     /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
     naturalize: Option<String>,
+
+    /// 6.27: `unique-files: true` — write this scenario's outputs into a fresh timestamped subfolder
+    /// (`run-<stamp>/`) of the out dir, so repeated passes are kept side by side rather than
+    /// overwriting. The `--unique-files` CLI flag forces it on regardless of this value.
+    #[serde(rename = "unique-files", default)]
+    unique_files: bool,
+
+    /// 6.27: `keep-prenaturalize: true` — when a naturalize pass runs, write the naturalized image to a
+    /// `<stem>.natural.png` sibling instead of overwriting, so the raw pre-naturalize render is kept
+    /// alongside it. Default `false` (naturalize edits the image in place).
+    #[serde(rename = "keep-prenaturalize", default)]
+    keep_prenaturalize: bool,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -2020,11 +2040,18 @@ pub async fn run_with_events(
     let seed = s.seed.unwrap_or(0);
     // The TUI's `out_override` wins so scenario images land under the workspace `out/`
     // (where History scans); else the scenario's own `out:`; else `./out`.
-    let out_root = args
+    let mut out_root = args
         .out_override
         .clone()
         .or_else(|| s.out.clone())
         .unwrap_or_else(|| PathBuf::from("./out"));
+    // `--unique-files` (CLI) or `unique-files: true` (scenario) → nest the whole run under a fresh
+    // timestamped folder BEFORE any `out_root.join(task)` derives from it, so every task subdir and
+    // seed-named image inherits it and no previous pass is overwritten. One redirect covers all tasks.
+    if args.unique_files || s.unique_files {
+        out_root = out_root.join(crate::cli::run_stamp());
+        crate::ui::progress::println(&format!("  unique-files: writing this run to {}", out_root.display()));
+    }
     // 6.10.0: if the scenario asks to naturalize, snapshot the existing PNGs so we only touch this run's.
     fn collect_pngs(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
         let mut set = std::collections::HashSet::new();
@@ -5409,7 +5436,7 @@ pub async fn run_with_events(
                 continue;
             }
             crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", pngs.len()));
-            crate::cli::naturalize::repaint_batch(&pngs, &spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28)).await;
+            crate::cli::naturalize::repaint_batch(&pngs, &spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28), s.keep_prenaturalize).await;
         }
     }
 
@@ -6921,6 +6948,25 @@ mod tests {
         assert_eq!(s.fast.as_deref(), Some("hyper-8"));
     }
 
+    #[test]
+    fn scenario_file_parses_unique_files_flag() {
+        // Absent → false; `unique-files: true` → true. Drives the per-run timestamped out folder.
+        let off = deser_hjson::from_str::<ScenarioFile>("{\n  model: sdxl\n}").expect("parses");
+        assert!(!off.unique_files);
+        let on = deser_hjson::from_str::<ScenarioFile>("{\n  model: sdxl\n  unique-files: true\n}")
+            .expect("scenario with unique-files parses");
+        assert!(on.unique_files);
+    }
+
+    #[test]
+    fn scenario_file_parses_keep_prenaturalize_flag() {
+        let off = deser_hjson::from_str::<ScenarioFile>("{\n  model: sdxl\n}").expect("parses");
+        assert!(!off.keep_prenaturalize);
+        let on = deser_hjson::from_str::<ScenarioFile>("{\n  model: sdxl\n  keep-prenaturalize: true\n}")
+            .expect("scenario with keep-prenaturalize parses");
+        assert!(on.keep_prenaturalize);
+    }
+
     // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.
 
     #[test]
@@ -7846,6 +7892,7 @@ mod tests {
             only: Vec::new(),
             limit: 0,
             json_summary: Some(summary.clone()),
+            unique_files: false,
             out_override: Some(override_dir.clone()),
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -7878,6 +7925,7 @@ mod tests {
             only: Vec::new(),
             limit: 0,
             json_summary: None,
+            unique_files: false,
             out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -7916,6 +7964,7 @@ mod tests {
             only: Vec::new(),
             limit: 0,
             json_summary: None,
+            unique_files: false,
             out_override: None,
         };
         let rt = tokio::runtime::Runtime::new().unwrap();

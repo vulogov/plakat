@@ -51,6 +51,20 @@ pub mod restore_faces;
 #[cfg(feature = "photos")]
 pub mod photos;
 
+/// A filesystem-safe per-run token for `--unique-files`: `run-YYYY-MM-DD_HH-MM-SS-mmm`. Used as a
+/// subdirectory of the requested `--out` so successive passes of the same `generate`/`scenario` land
+/// in distinct folders and never overwrite each other's images. Millisecond precision keeps rapid,
+/// scripted re-runs distinct; the RFC3339 stamp is sanitized of the characters (`:`) Windows rejects.
+pub fn run_stamp() -> String {
+    let stamp = humantime::format_rfc3339_millis(std::time::SystemTime::now())
+        .to_string()
+        .trim_end_matches('Z')
+        .replace('T', "_")
+        .replace(':', "-")
+        .replace('.', "-");
+    format!("run-{stamp}")
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "plakat", version, about = "Local text-to-image and style-transfer CLI")]
 pub struct Cli {
@@ -477,4 +491,19 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     // loaded once, only if already cached). No-op unless `--etch` + L3 + a store are active.
     crate::etch::l3_flush(&candle_core::Device::Cpu).await;
     dispatch_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_stamp;
+
+    #[test]
+    fn run_stamp_is_filesystem_safe_and_prefixed() {
+        let s = run_stamp();
+        assert!(s.starts_with("run-"), "got {s}");
+        // No characters Windows rejects in a path component.
+        for c in [':', '.', 'T', '/', '\\', '*', '?', '"', '<', '>', '|'] {
+            assert!(!s.contains(c), "stamp {s} must not contain {c:?}");
+        }
+    }
 }
