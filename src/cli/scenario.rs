@@ -165,6 +165,14 @@ struct ScenarioFile {
     /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
     naturalize: Option<String>,
 
+    /// 6.28: auto-ranking. After a t2i task generates its `count:` images, rank them and process only the
+    /// ones that clear the bar — the subpar images move to `culls/` and the naturalize/restore-faces
+    /// passes never touch them. A compact spec: `on` (defaults), `off`, or
+    /// `by=ai-tell threshold=0.5 min=2 max-tries=6`. Mode C: keep those under the threshold; if fewer than
+    /// `min` pass, generate more with fresh seeds (up to `max-tries` rounds); on exhaustion keep the best
+    /// `min` anyway (no death march). Off by default.
+    ranking: Option<String>,
+
     /// 6.27: `unique-files: true` — write this scenario's outputs into a fresh timestamped subfolder
     /// (`run-<stamp>/`) of the out dir, so repeated passes are kept side by side rather than
     /// overwriting. The `--unique-files` CLI flag forces it on regardless of this value.
@@ -1191,6 +1199,105 @@ fn resolve_scenario_compositions(s: &mut ScenarioFile) -> Result<Vec<String>> {
         }
     }
     Ok(warnings)
+}
+
+/// 6.28: parsed `ranking:` spec — the auto-ranking config for a scenario. See the [`ScenarioFile::ranking`]
+/// field. `parse` returns `None` for a disabled/empty spec so the caller skips ranking entirely.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RankingSpec {
+    /// false = AI-tell (weight-free, no download; lower is better), true = LAION aesthetic (higher better).
+    by_aesthetic: bool,
+    /// Pass cutoff: AI-tell `score <= threshold`, aesthetic `score >= threshold`.
+    threshold: f32,
+    /// Minimum images that must pass before the task is done (Mode-C floor). Regenerate until met.
+    min: usize,
+    /// Maximum generation ROUNDS (each round = one `count:` batch). The death-march guard.
+    max_tries: usize,
+}
+
+impl RankingSpec {
+    /// `off`/empty → None. `on` → defaults. Otherwise token spec: `by=ai-tell|aesthetic threshold= min= max-tries=`.
+    fn parse(spec: &str) -> Option<RankingSpec> {
+        let s = spec.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("no") {
+            return None;
+        }
+        let tok = |k: &str| crate::naturalize::spec_token(s, k);
+        let by_aesthetic = tok("by").map(|v| v.eq_ignore_ascii_case("aesthetic")).unwrap_or(false);
+        let threshold = tok("threshold")
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(if by_aesthetic { 6.0 } else { 0.5 });
+        let min = tok("min").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
+        let max_tries = tok("max-tries").and_then(|v| v.parse::<usize>().ok()).unwrap_or(5).max(1);
+        Some(RankingSpec { by_aesthetic, threshold, min, max_tries })
+    }
+
+    /// Whether a score clears the bar (AI-tell: lower is better; aesthetic: higher is better).
+    fn passes(&self, score: f32) -> bool {
+        if self.by_aesthetic { score >= self.threshold } else { score <= self.threshold }
+    }
+
+    /// "Badness" key for sorting worst→best-cull order (ascending badness = best first). AI-tell is already
+    /// badness (higher = worse); aesthetic is inverted (higher = better → negate).
+    fn badness(&self, score: f32) -> f32 {
+        if self.by_aesthetic { -score } else { score }
+    }
+}
+
+/// 6.28 (ranking phase 1): rank a t2i task's freshly-generated PNGs by AI-tell (weight-free, no model) and
+/// move the subpar ones to `task_out/culls/` so the downstream artefact/style/upscale/naturalize/restore-
+/// faces passes only ever touch the keepers. Mode-C floor: keep every image that clears `threshold`, but
+/// never fewer than `min` (promote the best sub-threshold ones so a task can't drop below its floor).
+/// Scores only THIS round's raw renders — the `plakat*-<seed>.png` files whose seed is in
+/// `[task_seed, task_seed+eff_count)`. Returns `(kept, culled)`.
+fn rank_and_cull(task_out: &std::path::Path, ranking: &RankingSpec, task_seed: u64, eff_count: u32) -> (usize, usize) {
+    let seeds: std::collections::HashSet<u64> =
+        (0..eff_count as u64).map(|i| (task_seed + i) & (u32::MAX as u64)).collect();
+    let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(task_out) else { return (0, 0) };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().and_then(|x| x.to_str()) != Some("png") {
+            continue;
+        }
+        let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("");
+        // raw renders only: `plakat…-<seed>` whose trailing seed is in this round's band (skips grids,
+        // style/upscale siblings, previews).
+        if !stem.starts_with("plakat") {
+            continue;
+        }
+        let in_band = stem
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .is_some_and(|s| seeds.contains(&s));
+        if !in_band {
+            continue;
+        }
+        if let Ok(img) = image::open(&p).map(|i| i.to_rgb8()) {
+            imgs.push((p, crate::naturalize::ai_tell_score(&img)));
+        }
+    }
+    if imgs.is_empty() {
+        return (0, 0);
+    }
+    // Best first (lowest badness). Keep those that pass, but never fewer than `min` best.
+    imgs.sort_by(|a, b| ranking.badness(a.1).partial_cmp(&ranking.badness(b.1)).unwrap_or(std::cmp::Ordering::Equal));
+    let n = imgs.len();
+    let pass = imgs.iter().filter(|(_, s)| ranking.passes(*s)).count();
+    let keep = pass.max(ranking.min).min(n);
+    let culls_dir = task_out.join("culls");
+    let mut culled = 0usize;
+    for (p, _) in imgs.iter().skip(keep) {
+        if std::fs::create_dir_all(&culls_dir).is_ok() {
+            if let Some(name) = p.file_name() {
+                if std::fs::rename(p, culls_dir.join(name)).is_ok() {
+                    culled += 1;
+                }
+            }
+        }
+    }
+    (keep, culled)
 }
 
 pub fn validate_hjson(hjson: &str) -> Result<()> {
@@ -3013,6 +3120,15 @@ pub async fn run_with_events(
     // paths — each of which pushes its own record — are all reported.
     emit(&events, ScenarioEvent::Started { total: s.tasks.len() });
     let mut emitted_records = 0usize;
+
+    // 6.28: auto-ranking config (phase 1 = rank + cull, weight-free AI-tell). `by=aesthetic` and the
+    // generate-until-`min` regeneration loop land in phase 2; for now aesthetic falls back to AI-tell.
+    let ranking_cfg = s.ranking.as_deref().and_then(RankingSpec::parse);
+    if let Some(rk) = &ranking_cfg {
+        if rk.by_aesthetic {
+            crate::ui::progress::println("  ranking: by=aesthetic not yet wired — using AI-tell (threshold 0.5)");
+        }
+    }
 
     for (idx, task) in s.tasks.iter().enumerate() {
         // Report any task(s) that finished since the last iteration, then mark this
@@ -5184,6 +5300,21 @@ pub async fn run_with_events(
             }
         }
 
+        // 6.28 auto-ranking (phase 1): rank this task's fresh renders and move the subpar ones into
+        // `culls/` BEFORE artefacts/style/upscale, so every downstream pass only touches the keepers.
+        if let Some(rk) = ranking_cfg {
+            // phase 1: AI-tell only — normalize an aesthetic request to AI-tell semantics.
+            let eff = if rk.by_aesthetic { RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk } } else { rk };
+            let (kept, culled) = rank_and_cull(&task_out, &eff, task_seed, eff_count);
+            if culled > 0 {
+                crate::ui::progress::println(&format!(
+                    "  {} kept {kept}, culled {culled} → culls/ (min {})",
+                    style("ranking").cyan(),
+                    rk.min
+                ));
+            }
+        }
+
         // -------- artefact compositing (post-generate, pre-stylize) --------
         // Stylize will re-paint over the composited artefacts via IP-Adapter,
         // unifying their palette with the generated scene — that's the
@@ -5462,7 +5593,7 @@ pub async fn run_with_events(
     // distinct config loads its model once.
     if any_restore_faces {
         if let Some(before) = nat_before.as_ref() {
-            let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
+            let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).cloned().collect();
             // Map each new PNG → its task → effective restore-faces config; keep only the enabled ones.
             let mut groups: std::collections::HashMap<(String, String), Vec<PathBuf>> = std::collections::HashMap::new();
             for png in new {
@@ -5516,7 +5647,7 @@ pub async fn run_with_events(
     // scene can carry e.g. `repair=` while the others don't.
     if (s.naturalize.is_some() || any_task_naturalize) && nat_before.is_some() {
         let before = nat_before.as_ref().unwrap();
-        let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).cloned().collect();
+        let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).cloned().collect();
         // Map each new PNG → its task (parent dir == safe_name(task.name)) → effective spec.
         let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
         for png in new {
@@ -7079,6 +7210,29 @@ mod tests {
         let on = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  sd3controlnet: true\n}")
             .expect("scenario with sd3controlnet parses");
         assert!(on.sd3_controlnet);
+    }
+
+    #[test]
+    fn ranking_spec_parses_modes_and_defaults() {
+        // off / empty → disabled.
+        assert_eq!(RankingSpec::parse(""), None);
+        assert_eq!(RankingSpec::parse("off"), None);
+        // on → defaults (ai-tell, threshold 0.5, min 1, max-tries 5).
+        let on = RankingSpec::parse("on").expect("on enables");
+        assert_eq!((on.by_aesthetic, on.threshold, on.min, on.max_tries), (false, 0.5, 1, 5));
+        // full token spec.
+        let full = RankingSpec::parse("by=aesthetic threshold=6.5 min=3 max-tries=8").unwrap();
+        assert_eq!((full.by_aesthetic, full.threshold, full.min, full.max_tries), (true, 6.5, 3, 8));
+        // pass semantics: ai-tell lower-is-better; aesthetic higher-is-better.
+        let ai = RankingSpec::parse("threshold=0.5").unwrap();
+        assert!(ai.passes(0.42) && !ai.passes(0.6));
+        assert!(ai.badness(0.6) > ai.badness(0.42)); // higher ai-tell = worse
+        let aes = RankingSpec::parse("by=aesthetic threshold=6.0").unwrap();
+        assert!(aes.passes(6.4) && !aes.passes(5.1));
+        assert!(aes.badness(5.1) > aes.badness(6.4)); // lower aesthetic = worse
+        // deserializes as a scenario field.
+        let s = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  ranking: on\n}").expect("parses");
+        assert_eq!(s.ranking.as_deref(), Some("on"));
     }
 
     // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.

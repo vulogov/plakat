@@ -328,6 +328,31 @@ to it — handy for A/B-ing the de-slop/repaint against the original, or ranking
 ```
 *(Also passes through from prose. Applies to both the model-backed `repaint=` and the weight-free specs.)*
 
+## 7d. Auto-ranking — `ranking` *(6.28)*
+
+Generating `count: N` and then naturalizing all N wastes time on frames you'd never keep. **`ranking:`**
+scores each task's fresh renders (weight-free **AI-tell**, no model download), moves the subpar ones into a
+**`culls/`** subfolder, and lets the artefact / style / upscale / naturalize / restore-faces passes touch
+**only the keepers**.
+
+```hjson
+{
+  count: 12
+  ranking: on                              // defaults: AI-tell, threshold 0.5, min 1
+  naturalize: "repaint=0.2 medium=watercolor"
+  tasks: [ … ]
+}
+```
+Full spec: `ranking: by=ai-tell threshold=0.5 min=2 max-tries=6`
+- **`threshold=`** pass cutoff (AI-tell ≤ x keeps).
+- **`min=`** the floor — never keep fewer than this many (the best sub-threshold ones are promoted so a
+  task can't drop below `min`). Default `1`.
+- **`by=`** `ai-tell` (default) — `aesthetic` and the **generate-until-`min` regeneration** (`max-tries`)
+  land in a follow-up; today aesthetic falls back to AI-tell.
+
+Culled frames sit in `culls/` (recoverable). Composes with `unique-files` (each run's ranking is scoped to
+its own `run-…/` folder) and `keep-prenaturalize`. *(Passes through from prose too.)*
+
 ## 8. Partial-run filters (v0.19)
 
 Three flags for working with subsets of a long scenario:
