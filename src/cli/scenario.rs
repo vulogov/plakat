@@ -177,6 +177,13 @@ struct ScenarioFile {
     #[serde(rename = "keep-prenaturalize", default)]
     keep_prenaturalize: bool,
 
+    /// 6.28: `sd3controlnet: true` — enable the SD3 ControlNet dispatch for this scenario (preload one
+    /// InstantX CN per distinct control kind used, drive per task). **Off by default**: SD3 + LoRA + a
+    /// ControlNet is memory-heavy (a large CN won't co-reside with sd35-large on 24 GB), so CN loading is
+    /// strictly opt-in. When false, any task `control:`/`controls:` on an SD3 model is ignored (with a note).
+    #[serde(rename = "sd3controlnet", default)]
+    sd3_controlnet: bool,
+
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
     #[serde(rename = "restore-faces", default)]
@@ -2398,6 +2405,37 @@ pub async fn run_with_events(
     // scenario (previously the scenario fell through to t2i::Pipeline
     // which bailed on SD3). Per-task LoRA dispatches via
     // `sd3::Pipeline::apply_loras` between tasks.
+    // 6.28: SD3 ControlNet in scenarios. InstantX SD3 CNs are kind-specific repos (canny / depth / pose /
+    // …), not one union model like Flux — so we preload one slot per DISTINCT kind requested across all
+    // tasks, and each task's control maps to its kind's slot. This ordered kind list is the slot map.
+    let sd3_cn_kinds: Vec<crate::pipelines::controlnet::ControlKind> =
+        if s.sd3_controlnet && !args.dry_run && variant.is_sd3() {
+            let mut kinds = Vec::new();
+            for t in &s.tasks {
+                for c in task_effective_controls(t)? {
+                    let k: crate::pipelines::controlnet::ControlKind =
+                        c.kind.parse().with_context(|| {
+                            format!("task {:?}: control kind '{}' not recognised", t.name, c.kind)
+                        })?;
+                    if !kinds.contains(&k) {
+                        kinds.push(k);
+                    }
+                }
+            }
+            kinds
+        } else {
+            // Opt-in off (or non-SD3 / dry-run): load no CN slots. If the scenario DOES carry SD3 control
+            // specs but the flag is off, say so once — the controls are silently inert otherwise.
+            if !s.sd3_controlnet
+                && variant.is_sd3()
+                && s.tasks.iter().any(|t| task_effective_controls(t).map(|v| !v.is_empty()).unwrap_or(false))
+            {
+                crate::ui::progress::println(
+                    "  note: SD3 control: specs present but `sd3controlnet:` is off — ControlNet skipped (set `sd3controlnet: true` to enable; memory-heavy)",
+                );
+            }
+            Vec::new()
+        };
     let mut sd3_pipeline: Option<crate::pipelines::sd3::Pipeline> =
         if args.dry_run || !variant.is_sd3() {
             None
@@ -2415,6 +2453,13 @@ pub async fn run_with_events(
             } else {
                 crate::hf::resolve_alias(&model).to_string()
             };
+            // One InstantX CN per distinct kind (canny/depth/pose/…), loaded alongside the LoRA-merged
+            // MMDiT. Repo + config are picked by variant. `strength` here is a load-time default; the
+            // per-task dispatch overrides scale/start/end via `set_controlnet_call_params`.
+            let sd3_cns = sd3_cn_kinds
+                .iter()
+                .map(|&k| crate::pipelines::t2i::sd3_controlnet_load_for(k, sd3_variant, 1.0))
+                .collect::<Result<Vec<_>>>()?;
             Some(
                 sd3::Pipeline::load(sd3::LoadRequest {
                     variant: sd3_variant,
@@ -2422,13 +2467,7 @@ pub async fn run_with_events(
                     device: device.clone(),
                     loras: loras.clone(),
                     lora_scale,
-                    // SD3 ControlNet wiring into scenarios lands in
-                    // a later phase. For now scenarios load with no
-                    // SD3 CN slots; the per-task CN spec dispatch
-                    // mirrors what the existing Flux scenario path
-                    // does (max_flux_controls + scenario-wide
-                    // preload).
-                    controlnets: Vec::new(),
+                    controlnets: sd3_cns,
                     embeddings: Vec::new(),
                 })
                 .await?,
@@ -4825,6 +4864,71 @@ pub async fn run_with_events(
                     // default to PNG (the v0.17 A1111-compat path).
                     output_format: crate::imaging::io::OutputFormat::Png,
                 };
+                // 6.28: SD3 ControlNet per-task dispatch. Drive the preloaded kind-slots this task
+                // requests (conditioning + scale/window); clear the rest so a prior task's conditioning
+                // doesn't bleed. Mirrors the Flux CN block; the annotator is family-agnostic and the tmp
+                // PNGs must outlive `generate`.
+                let task_sd3_controls = task_effective_controls(task)?;
+                let mut _cn_tmps: Vec<tempfile::TempDir> = Vec::new();
+                if sp.has_controlnets() {
+                    if !task_sd3_controls.is_empty() && eff_tiled.is_some() {
+                        bail!("task {:?}: SD3 ControlNet + tiled denoise is unsupported", task.name);
+                    }
+                    let mut driven: Vec<usize> = Vec::new();
+                    for cspec in &task_sd3_controls {
+                        let parsed: crate::pipelines::controlnet::ControlKind =
+                            cspec.kind.parse().with_context(|| {
+                                format!("task {:?}: control kind '{}' not recognised", task.name, cspec.kind)
+                            })?;
+                        let slot = sd3_cn_kinds.iter().position(|k| *k == parsed).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "task {:?}: control kind '{}' not in the preloaded SD3 CN set",
+                                task.name, cspec.kind
+                            )
+                        })?;
+                        let scale = cspec.strength.unwrap_or(1.0);
+                        let start = cspec.start.unwrap_or(0.0);
+                        let end = cspec.end.unwrap_or(1.0);
+                        sp.set_controlnet_call_params(slot, scale, start, end)?;
+                        let cond_path = match (cspec.image.as_ref(), cspec.auto_from.as_ref()) {
+                            (Some(p), None) => p.clone(),
+                            (None, Some(from_path)) => {
+                                let anno_dtype = if matches!(device, Device::Cpu) {
+                                    candle_core::DType::F32
+                                } else {
+                                    candle_core::DType::BF16
+                                };
+                                let anno = crate::pipelines::controlnet_annotator::annotate(
+                                    parsed, from_path, eff_w, eff_h, &device, anno_dtype,
+                                )
+                                .await?;
+                                let tmp = tempfile::Builder::new()
+                                    .prefix("plakat-scenario-sd3-anno-")
+                                    .tempdir()?;
+                                let out_path =
+                                    tmp.path().join(format!("cn{slot}-{}.png", parsed.slug()));
+                                crate::pipelines::t2i::write_annotator_tensor_as_png(&anno, &out_path)?;
+                                _cn_tmps.push(tmp);
+                                out_path
+                            }
+                            (Some(_), Some(_)) => bail!(
+                                "task {:?}: control image and auto-from are mutually exclusive",
+                                task.name
+                            ),
+                            (None, None) => {
+                                bail!("task {:?}: control requires image or auto-from", task.name)
+                            }
+                        };
+                        sp.set_controlnet_conditioning(slot, Some(cond_path))?;
+                        driven.push(slot);
+                    }
+                    // Clear any preloaded slot this task does not drive.
+                    for slot in 0..sp.n_controlnets() {
+                        if !driven.contains(&slot) {
+                            sp.set_controlnet_conditioning(slot, None)?;
+                        }
+                    }
+                }
                 sp.generate(&sd3_req)?;
                 if task_lora_applied {
                     sp.clear_all_loras()?;
@@ -6965,6 +7069,16 @@ mod tests {
         let on = deser_hjson::from_str::<ScenarioFile>("{\n  model: sdxl\n  keep-prenaturalize: true\n}")
             .expect("scenario with keep-prenaturalize parses");
         assert!(on.keep_prenaturalize);
+    }
+
+    #[test]
+    fn scenario_file_parses_sd3controlnet_flag() {
+        // Off by default (SD3 CN is memory-heavy, strictly opt-in).
+        let off = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n}").expect("parses");
+        assert!(!off.sd3_controlnet);
+        let on = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  sd3controlnet: true\n}")
+            .expect("scenario with sd3controlnet parses");
+        assert!(on.sd3_controlnet);
     }
 
     // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.

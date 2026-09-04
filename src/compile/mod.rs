@@ -155,6 +155,8 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "naturalize", "upscale", "restore-faces", "restore-faces-model", "restore-faces-strength",
     // output layout — keep every pass of a repeated run side by side
     "unique-files", "keep-prenaturalize",
+    // SD3 ControlNet opt-in (memory-heavy; off by default)
+    "sd3controlnet",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
