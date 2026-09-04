@@ -265,7 +265,7 @@ pub fn parse(input: &str) -> Result<Document> {
     for (i, s) in doc.scenes.iter().enumerate() {
         // A `composition:` also gives the block content (its prompt comes from components), so a
         // composition-only block is valid — free text is optional (compose, then prose).
-        if !s.has_free_text() && !declares_composition(s) && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
+        if !s.has_free_text() && !declares_composition(s) && !declares_relations(s) && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
             bail!(
                 "compile: scene block #{} (line {}) has commands but no description text — \
                  a stray blank line, or a global block not placed first?",
@@ -280,6 +280,12 @@ pub fn parse(input: &str) -> Result<Document> {
 /// Does this block declare a `composition:` (so its prompt comes from components — no prose needed)?
 fn declares_composition(b: &Block) -> bool {
     b.values("composition").next().is_some()
+}
+
+/// Does this block declare a `relate:` (6.28)? Its prompt gets a grounding clause built from the related
+/// components' descriptions, so — like `composition:` — free text is optional (relate, then optional prose).
+fn declares_relations(b: &Block) -> bool {
+    b.values("relate").next().is_some()
 }
 
 /// Does this block declare a `map` task (so it may omit a prose description)?
@@ -403,6 +409,19 @@ mod tests {
         assert_eq!(doc.scenes.len(), 1);
         assert!(doc.scenes[0].free_text.is_empty());
         assert_eq!(doc.scenes[0].values("type").collect::<Vec<_>>(), vec!["faceswap"]);
+    }
+
+    #[test]
+    fn relate_block_needs_no_free_text() {
+        // 6.28: a scene block whose content is `relate:` (a grounding clause built from components) is
+        // valid without free-text prose — like `composition:`. Global block first, then the relate scene.
+        let doc = parse(
+            "model: sd35\ncomponent.tram: a tram\ncomponent.rails: rails\n\nrelate: tram on rails\n",
+        )
+        .unwrap();
+        assert_eq!(doc.scenes.len(), 1);
+        assert!(doc.scenes[0].free_text.is_empty());
+        assert_eq!(doc.scenes[0].values("relate").collect::<Vec<_>>(), vec!["tram on rails"]);
     }
 
     #[test]
