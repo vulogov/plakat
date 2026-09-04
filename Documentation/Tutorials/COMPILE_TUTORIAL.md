@@ -95,6 +95,13 @@ compiles to `basic.hjson` and renders the tundra rider and the cartographer
 - **Explain the LLM inputs** — `--explain` prints the resolved model family + the exact
   **positive and negative** system prompts (and the resolved `negative:` seeds) per
   scene, no LLM — the way to debug a surprising prompt or negative.
+- **Relationship grounding** *(6.28)* — a generic, weight-free pass: when a description says
+  how objects relate (*resting on / held by / in front of / attached to / next to*), compile
+  merges generic **relationship-violation negatives** (`floating, detached, merging, not
+  touching`) and, for prose families (SD3/Flux/Cascade), appends a short *coherent-placement*
+  clause. Object-agnostic — it improves "a tram on the rails", "a lamp not merging into
+  foliage", "a basket held by the hand" alike, from the prompt, with no model and no sketch.
+  Scenes with no described relationships are untouched (DO NO HARM).
 
 ## Adding a LoRA
 
@@ -161,6 +168,37 @@ composition: component.street, component.sky
 This **extends** the existing keys — `header:`/`footer:`/`persona:`/`style:` and free-text all work
 exactly as before; composition just slots in. *(A component's text is literal — one level, not itself
 a composition.)*
+
+### Object relationships — `relate:` *(6.28)*
+
+Declare **how named objects relate** and compile writes a grounded, physically-coherent description.
+Name the objects as components, then relate them (repeatable):
+
+```
+component.tram:     старомодный двухвагонный трамвай в красно-оранжевых полосах
+component.rails:    трамвайные рельсы
+component.pavilion: круглая белая беседка
+
+relate: tram on rails
+relate: tram beside pavilion
+```
+
+Compile translates each referenced component's description, maps the verb to a relationship phrase, and
+prepends an English **grounding clause** to the prose — introducing each object once, then referring to it
+by name — e.g. *"the old-fashioned two-car tram in red-orange stripes rests on the tram rails; the tram
+stands beside the round white pavilion."* It also fires the generic **relationship-violation negatives**
+(`floating, detached, merging, not touching`).
+
+- **Syntax:** `relate: <component> <relationship> <component>` — first token is A, last is B, everything
+  between is the verb, so multi-word verbs work (`in front of`, `next to`).
+- **Vocabulary** (unknown verbs pass through literally): `on` · `under` · `above` · `in front of` ·
+  `behind` · `next to`/`beside` · `near` · `holding`/`held by` · `attached to`/`coupled to` · `inside` ·
+  `leaning against` · `riding` · `surrounded by`.
+- **Language-agnostic:** the object *names* are ASCII keys; the *descriptions* are translated. Both
+  endpoints must be defined components (an unknown reference is a clear error).
+- This is the **explicit** layer. Even without `relate:`, compile preserves relationships from the prose
+  automatically (the enhancer is instructed to, and generic relationship negatives fire when the
+  description implies a relation) — `relate:` is for when you want to **guarantee** a specific one.
 
 **In a hand-authored scenario too.** The same feature works directly in scenario HJSON: a global
 `components` map + a per-task `composition` list. At render the components fold into the task's

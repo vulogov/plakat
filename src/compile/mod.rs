@@ -102,6 +102,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     // `composition:` (per-scene, comma-list of `component.<name>` refs) assembles them into the
     // prompt (before the block's own prose). `component.*` keys are matched by prefix (below).
     CommandSpec { key: "composition", kind: CommandKind::Prompt, merge: Merge::Concatenate },
+    // 6.28: explicit relationship layer. `relate: <component> <relationship> <component>` (repeatable)
+    // declares how two named objects relate (`relate: tram on rails`) → an English grounding clause built
+    // from the components' (translated) descriptions + a verb phrase, prepended to the prose.
+    CommandSpec { key: "relate", kind: CommandKind::Prompt, merge: Merge::AccumulateList },
     // ---- scenario commands (straight to HJSON) ----
     CommandSpec { key: "model",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "lora",      kind: CommandKind::Scenario, merge: Merge::AccumulateList },
@@ -283,8 +287,19 @@ async fn compile_one_scene(
     // verbatim text (wording + weights untouched, no translation).
 
     // 1) personas + assemble with the ORIGINAL body (weights + wording intact; the enhancer translates it).
+    // 6.28 `relate:` — build an English grounding clause from the declared object relationships (component
+    // descriptions translated, verb → phrase, first mention full / repeat by name) and PREPEND it to the
+    // prose, so it flows through the same translate+enhance pipeline. Explicit + language-agnostic.
     let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
-    let assembled = assembler::assemble_with_body(scene, &scene.free_text);
+    let grounding = build_grounding(scene, opts, eargs).await;
+    let body = if grounding.is_empty() {
+        scene.free_text.clone()
+    } else if scene.free_text.trim().is_empty() {
+        grounding
+    } else {
+        format!("{}. {}", grounding, scene.free_text.trim())
+    };
+    let assembled = assembler::assemble_with_body(scene, &body);
 
     // 2) translate every weighted phrase to English → phrase(src)→(English, weight) map (enhance path only).
     let spans = dedup_spans(assembler::extract_weight_spans(&assembled));
@@ -396,12 +411,22 @@ async fn compile_one_scene(
     // weighted concepts as a short prose intensifier appended to the prompt — the inline `(term:N)` weights
     // stay for the CLIP encoders. Runs after fit so it isn't condensed away; the SD3/Flux budgets (256/300)
     // leave ample room for the clause. Only on the enhance path.
+    // 6.28: generic relationship grounding — detect object-to-object relationships on the ORIGINAL prompt
+    // (before any clause is appended; the grounding clause itself contains markers). Drives a short
+    // coherent-placement clause (prose families) + generic relationship-violation negatives below.
+    let has_rel = assembler::has_relationships(&prompt) || !scene.relations.is_empty();
     let mut reinforced = false;
     if !opts.no_enhance {
         if let Some(clause) = assembler::prose_reinforcement(&prompt, scene.family) {
             let sep = if prompt.trim_end().ends_with(['.', ',']) || prompt.trim().is_empty() { " " } else { ". " };
             prompt = format!("{}{sep}{clause}", prompt.trim_end());
             reinforced = true;
+        }
+        if has_rel {
+            if let Some(clause) = assembler::relationship_reinforcement(scene.family) {
+                let sep = if prompt.trim_end().ends_with(['.', ',']) || prompt.trim().is_empty() { " " } else { ". " };
+                prompt = format!("{}{sep}{clause}", prompt.trim_end());
+            }
         }
     }
 
@@ -430,6 +455,14 @@ async fn compile_one_scene(
             }
             None => assembler::auto_negative(scene),
         }
+    };
+    // 6.28: weight-free relationship grounding (negative side) — when the scene describes object
+    // relationships, merge generic relationship-violation terms (floating / detached / merging), deduped
+    // and capped. Object-agnostic. Flux ignores negatives; `--no-negative` stays seeds-only.
+    let negative = if has_rel && !opts.no_negative && !matches!(scene.family, ModelFamily::Flux) {
+        assembler::merge_negative_terms(&[&negative, assembler::RELATIONSHIP_NEGATIVE], 48)
+    } else {
+        negative
     };
 
     // 4) name upgrade (6.26.2): when the name was auto-derived AND the LLM enhanced the prompt,
@@ -605,6 +638,53 @@ async fn translate_phrase(
         .await
         .map(|t| t.trim().trim_matches('"').trim_end_matches(['.', ',']).to_string())
         .filter(|t| !t.is_empty())
+}
+
+/// 6.28: build the English grounding clause for a scene's `relate:` relationships. Each object is
+/// introduced once by its (translated) description — `the <english desc>` — and referred to by its short
+/// name on repeat (`the tram`), so a chain of relations reads naturally. Verb → phrase via
+/// [`assembler::relation_phrase`]. Empty when the scene declares no relations. Translation runs on the
+/// enhance path only (mirrors the weighted-phrase loop); under `--no-enhance` the source description is
+/// used verbatim.
+async fn build_grounding(
+    scene: &resolver::ResolvedScene,
+    opts: &CompileOpts,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> String {
+    if scene.relations.is_empty() {
+        return String::new();
+    }
+    let mut introduced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut clauses: Vec<String> = Vec::new();
+    for rel in &scene.relations {
+        let a = grounding_ref(&rel.a, &rel.a_desc, &mut introduced, scene, opts, eargs).await;
+        let b = grounding_ref(&rel.b, &rel.b_desc, &mut introduced, scene, opts, eargs).await;
+        clauses.push(format!("{a} {} {b}", assembler::relation_phrase(&rel.verb)));
+    }
+    clauses.join("; ")
+}
+
+/// A reference to one related object: full (translated) description on first mention, short name on repeat.
+async fn grounding_ref(
+    name: &str,
+    desc: &str,
+    introduced: &mut std::collections::HashSet<String>,
+    scene: &resolver::ResolvedScene,
+    opts: &CompileOpts,
+    eargs: &crate::prompt::EnhanceArgs,
+) -> String {
+    if !introduced.insert(name.to_string()) {
+        return format!("the {name}");
+    }
+    let en = match &scene.translate {
+        Some(lang) if !opts.no_enhance && !lang.trim().is_empty() => {
+            translate_phrase(desc, lang, &opts.provider, opts.cache, eargs)
+                .await
+                .unwrap_or_else(|| desc.to_string())
+        }
+        _ => desc.to_string(),
+    };
+    format!("the {}", en.trim())
 }
 
 

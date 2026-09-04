@@ -70,6 +70,11 @@ them up front so they anchor the image. If no style is given, do not invent one.
 parentheses/brackets and the number unchanged — if the phrase is in another language, translate the \
 words INSIDE but keep the weight wrapper (e.g. `(Оранжевое солнце:1.5)` → `(orange sun:1.5)`). These \
 are deliberate emphasis controls, not prose — never drop or flatten them.\n\
+- PRESERVE spatial and contact RELATIONSHIPS between objects exactly as described — what rests ON, is \
+HELD BY, is ATTACHED TO, is IN FRONT OF / BEHIND / NEXT TO / UNDER what — and render them as physically \
+coherent: objects touch, rest, and connect as stated (a vehicle sits ON its track; a basket is HELD in \
+the hand; a lamp is BESIDE, not merged into, the foliage). The source may be in ANY language — keep the \
+relationship intact through translation. Do NOT invent relationships the user did not state.\n\
 - DO NO HARM — enhancement must never make the image HARDER to render well than the user's own wording. \
 Do NOT add new subjects, people, animals, objects, or actions the user did not state. Do NOT invent \
 unrelated elements. Do NOT pad with atmospheric or mood filler ('bathed in golden light', 'a dreamlike \
@@ -479,6 +484,76 @@ pub fn strip_terms_in_positive(neg_terms: &str, positive: &str) -> String {
         .join(", ")
 }
 
+// ─────────────────────────── weight-free relationship grounding (6.28) ───────────────────────────
+// A generic pass: when a POSITIVE prompt describes how objects relate (one resting on / held by / in
+// front of another), push against the universal failure class (things float, detach, or merge instead
+// of touching as described) — object-agnostic, never scene-specific. Improves "tram on rails", "lamp not
+// merging into foliage", "basket held by the hand" alike, from the prompt, with no model and no sketch.
+
+/// Spatial/contact **relationship markers**. Curated to be specific enough to avoid firing on incidental
+/// prepositions ("on a sunny day"): mostly multi-word contact/placement cues + spatial arrangements.
+/// Case-insensitive substring match. English (this runs after `translate:`).
+pub const RELATIONSHIP_MARKERS: &[&str] = &[
+    // contact / support
+    "on top of", "stands on", "standing on", "sits on", "sitting on", "seated on", "rests on",
+    "resting on", "lying on", "placed on", "set on", "mounted on", "perched on", "atop",
+    "attached to", "connected to", "fastened to", "tied to", "coupled to", "leaning against",
+    "leaning on", "hanging from", "held by", "holding", "carrying", "riding",
+    // spatial arrangement
+    "in front of", "next to", "beside", "underneath", "on either side of", "at the edge of",
+    "in the middle of", "surrounded by",
+];
+
+/// Generic **relationship-violation** negatives — the universal failure class when a scene describes
+/// objects in relation. Object-agnostic by design: "not floating / not detached", never "tram off rails".
+pub const RELATIONSHIP_NEGATIVE: &str = "floating objects, disconnected, detached, hovering, levitating, \
+merging objects, fused together, clipping through, incoherent placement, misaligned, not touching, \
+overlapping incorrectly";
+
+/// Whether a POSITIVE prompt describes any object-to-object spatial/contact relationship. Drives the
+/// weight-free relationship pass. Check this on the ORIGINAL prompt before appending the grounding clause
+/// (the clause itself contains markers).
+pub fn has_relationships(positive: &str) -> bool {
+    let p = positive.to_lowercase();
+    RELATIONSHIP_MARKERS.iter().any(|m| p.contains(m))
+}
+
+/// A short, generic positive clause reinforcing coherent object placement — for prose families (SD3 /
+/// Flux / Cascade, which read natural language and have the budget). Object-agnostic; DO NO HARM (one
+/// sentence, no filler). `None` for weight-capable families (SD1.5/SDXL) where the tight budget makes the
+/// negative side alone the right call.
+pub fn relationship_reinforcement(family: ModelFamily) -> Option<&'static str> {
+    // Purely AFFIRMATIVE — no "not floating" negation (models mishandle negation in a positive prompt,
+    // and it would collide with the strip-terms-in-positive guard). The violations live in the negative.
+    matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade).then_some(
+        "The described objects sit in clear, physically coherent spatial relationships — touching, \
+         resting on, and connected exactly as stated, each correctly placed and firmly grounded.",
+    )
+}
+
+/// Map a `relate:` verb to an English relationship phrase for the grounding clause. Small, extensible
+/// vocabulary; an unknown verb passes through literally (`the A <verb> the B`), so the directive never
+/// breaks on a word we didn't anticipate. Hyphens are normalized to spaces (`in-front-of` == `in front of`).
+pub fn relation_phrase(verb: &str) -> String {
+    match verb.trim().to_lowercase().replace('-', " ").as_str() {
+        "on" | "on top of" | "onto" | "atop" | "sitting on" | "standing on" | "resting on" => "rests on".into(),
+        "under" | "underneath" | "beneath" | "below" => "is beneath".into(),
+        "above" | "over" => "is above".into(),
+        "in front of" | "before" => "is in front of".into(),
+        "behind" => "is behind".into(),
+        "next to" | "beside" | "by" => "stands beside".into(),
+        "near" => "is near".into(),
+        "holding" | "holds" | "carrying" => "holds".into(),
+        "held by" => "is held by".into(),
+        "attached to" | "coupled to" | "connected to" | "fastened to" | "tied to" => "is coupled to".into(),
+        "inside" | "in" | "within" => "is inside".into(),
+        "leaning on" | "leaning against" | "against" => "leans against".into(),
+        "riding" | "rides" => "rides on".into(),
+        "surrounded by" => "is surrounded by".into(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +697,32 @@ mod tests {
         assert!(sys.contains("Flux"));
         assert!(sys.contains("STYLE DIRECTION: impressionist"));
         assert!(sys.contains("PERSONA: a grizzled sea captain"));
+    }
+
+    #[test]
+    fn relationship_pass_fires_on_relations_not_incidental_prepositions() {
+        // Genuine object relationships fire.
+        assert!(has_relationships("a tram standing on the rails beside the pavilion"));
+        assert!(has_relationships("a woman holding a basket in front of the shop"));
+        assert!(has_relationships("a lamp mounted on a post"));
+        // Incidental prepositions / temporal "on" do NOT fire.
+        assert!(!has_relationships("a quiet street on a sunny day, muted palette"));
+        assert!(!has_relationships("an impressionist painting of a harbor at dawn"));
+        // Prose families get a grounding clause; weight-capable families get the negative side only.
+        assert!(relationship_reinforcement(ModelFamily::Sd3).is_some());
+        assert!(relationship_reinforcement(ModelFamily::Flux).is_some());
+        assert!(relationship_reinforcement(ModelFamily::Sdxl).is_none());
+        assert!(relationship_reinforcement(ModelFamily::Sd15).is_none());
+        // The generic negatives merge + dedup cleanly on top of an existing negative.
+        let merged = merge_negative_terms(&["blurry, floating objects", RELATIONSHIP_NEGATIVE], 48);
+        assert!(merged.contains("detached") && merged.contains("merging objects"));
+        assert_eq!(merged.matches("floating objects").count(), 1, "deduped: {merged}");
+        // relate: verb vocabulary — known verbs map to phrases; hyphen == space; unknown passes through.
+        assert_eq!(relation_phrase("on"), "rests on");
+        assert_eq!(relation_phrase("in-front-of"), "is in front of");
+        assert_eq!(relation_phrase("next to"), "stands beside");
+        assert_eq!(relation_phrase("held by"), "is held by");
+        assert_eq!(relation_phrase("dangling above"), "dangling above"); // unknown → literal
     }
 
     #[test]

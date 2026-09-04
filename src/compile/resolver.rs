@@ -50,6 +50,9 @@ pub struct ResolvedScene {
     /// 6.26.x: the resolved `composition:` — referenced `component.<name>` fragments joined in
     /// order. Assembled BEFORE the free-text prose (compose, then prose). Empty when no composition.
     pub composition_text: String,
+    /// 6.28: resolved `relate:` object relationships — each references two `component.<name>` objects and a
+    /// verb. compile_one_scene translates the descriptions and builds an English grounding clause.
+    pub relations: Vec<RelationSpec>,
     pub free_text: String,
     pub styles: Vec<String>,
     pub personas: Vec<String>,
@@ -260,6 +263,60 @@ fn collect_passthrough(b: Option<&crate::compile::parser::Block>) -> Vec<(String
 /// Resolve a scene's `composition:` into a single prompt fragment: each comma-separated reference
 /// (`component.<name>` or a bare `<name>`) is looked up in the global `components` map and joined in
 /// order. An unknown reference is a hard error with the available names (6.26.x).
+/// One resolved `relate: <A> <verb> <B>` — the two referenced `component.<name>` objects (name = English
+/// key for repeat-reference; desc = source-language description looked up from the component map) plus the
+/// relationship verb. The English grounding clause is built later in compile_one_scene (translate + verb).
+#[derive(Debug, Clone, Default)]
+pub struct RelationSpec {
+    pub a: String,
+    pub a_desc: String,
+    pub verb: String,
+    pub b: String,
+    pub b_desc: String,
+}
+
+/// Resolve a scene's `relate:` directives against the component map. Each `relate:` value is
+/// `<component> <relationship…> <component>` — first token is A, last is B, everything between is the verb
+/// (so multi-word `in front of` / `next to` work). Both endpoints must be defined components.
+fn resolve_relations(
+    s: &crate::compile::parser::Block,
+    components: &std::collections::HashMap<String, String>,
+) -> Result<Vec<RelationSpec>> {
+    let lookup = |raw: &str| -> Result<(String, String)> {
+        let key = raw.strip_prefix("component.").unwrap_or(raw).trim();
+        match components.get(key) {
+            Some(text) => Ok((key.to_string(), text.trim().to_string())),
+            None => {
+                let mut avail: Vec<&str> = components.keys().map(String::as_str).collect();
+                avail.sort_unstable();
+                let known = if avail.is_empty() {
+                    "no components are defined".to_string()
+                } else {
+                    format!("defined components: {}", avail.join(", "))
+                };
+                anyhow::bail!(
+                    "relate references unknown component `{raw}` — define it in the global block as \
+                     `component.{key}: …` ({known})"
+                )
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for line in s.values("relate") {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.len() < 3 {
+            anyhow::bail!(
+                "relate: `{line}` — expected `<component> <relationship> <component>`, e.g. `relate: tram on rails`"
+            );
+        }
+        let (a, a_desc) = lookup(toks[0])?;
+        let (b, b_desc) = lookup(toks[toks.len() - 1])?;
+        let verb = toks[1..toks.len() - 1].join(" ");
+        out.push(RelationSpec { a, a_desc, verb, b, b_desc });
+    }
+    Ok(out)
+}
+
 fn resolve_composition(
     s: &crate::compile::parser::Block,
     components: &std::collections::HashMap<String, String>,
@@ -334,6 +391,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         let explicit_name = last_wins(&[], &vals(Some(s), "name")).map(str::to_string);
         let name_auto = explicit_name.is_none();
         let composition_text = resolve_composition(s, &components)?;
+        let relations = resolve_relations(s, &components)?;
         // A composition can name the scene too (when there's no prose and no explicit name).
         let name_seed = if free_text.trim().is_empty() { composition_text.as_str() } else { free_text.as_str() };
         let name = explicit_name.unwrap_or_else(|| auto_name(name_seed, i));
@@ -343,6 +401,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             name,
             name_auto,
             composition_text,
+            relations,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),
@@ -422,6 +481,27 @@ mod tests {
     fn empty_header_resets_inherited_global() {
         let r = resolve_str("header: global,\n\nheader:\nheader: local,\nA scene.\n");
         assert_eq!(r.scenes[0].header, "local,", "empty header drops the global");
+    }
+
+    #[test]
+    fn relate_resolves_against_components() {
+        // `relate:` references components; first token = A, last = B, middle = verb (multi-word ok).
+        let src = "component.tram: старомодный трамвай\ncomponent.rails: рельсы\n\n\
+                   relate: tram on rails\nrelate: tram in front of rails\nСцена.\n";
+        let r = resolve_str(src);
+        let rel = &r.scenes[0].relations;
+        assert_eq!(rel.len(), 2);
+        assert_eq!((rel[0].a.as_str(), rel[0].verb.as_str(), rel[0].b.as_str()), ("tram", "on", "rails"));
+        assert_eq!(rel[0].a_desc, "старомодный трамвай");
+        assert_eq!(rel[1].verb, "in front of"); // multi-word verb preserved
+    }
+
+    #[test]
+    fn relate_unknown_component_is_a_clear_error() {
+        let err = resolve(&parse("component.tram: t\n\nrelate: tram on rails\nS.\n").unwrap(), "sdxl")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown component") && err.contains("rails"), "got: {err}");
     }
 
     #[test]
