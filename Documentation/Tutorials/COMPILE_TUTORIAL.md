@@ -276,8 +276,9 @@ scenario top level; scene block → that task), type-inferred (`fast: true`, `pa
 | Group | Keys |
 |---|---|
 | Sizing / device | `aspect`, `base`, `device`, `offline`, `fast`, `lcm` |
-| Post-process | `naturalize`, `upscale`, `restore-faces` |
+| Post-process | `naturalize`, `upscale`, `restore-faces`, `ranking` |
 | Output layout | `unique-files`, `keep-prenaturalize` |
+| ControlNet | `sd3controlnet` (enables SD3 ControlNet; per-scene `control:` below) |
 | Refiner / LoRA | `refiner`, `refine-strength`, `refiner-frac`, `lora-scale` |
 | Quality knobs | `pag-scale`, `guidance-rescale`, `freeu`, `dynamic-threshold` |
 | Style / image refs | `look`, `genre`, `style-ref`, `style-strength`, `concept-image` |

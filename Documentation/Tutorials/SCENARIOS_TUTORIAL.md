@@ -353,6 +353,36 @@ Full spec: `ranking: by=ai-tell threshold=0.5 min=2 max-tries=6`
 Culled frames sit in `culls/` (recoverable). Composes with `unique-files` (each run's ranking is scoped to
 its own `run-…/` folder) and `keep-prenaturalize`. *(Passes through from prose too.)*
 
+## 7e. SD3 ControlNet — `sd3controlnet` *(6.28)*
+
+ControlNet now works for **SD3 / SD3.5** scenes (previously SD 1.5 / SDXL / Flux only), so an sd3 task can
+hold a layout **and keep its LoRAs on the same pipeline**. It's **opt-in** because SD3 + a LoRA + a
+ControlNet is memory-heavy — a large CN won't co-reside with sd35-large on 24 GB.
+
+```hjson
+{
+  model: "sd35"
+  loras: ["vladimir-style.safetensors:0.7"]
+  sd3controlnet: true               // enable SD3 CN for this scenario (off by default)
+  tasks: [
+    {
+      name: tram
+      // per-task control, exactly like the Flux/SDXL form:
+      control: { kind: canny, image: ./tram-sketch.png, strength: 0.6 }
+      prompt: "an old-fashioned tram on the rails beside a white pavilion, impressionist"
+    }
+  ]
+}
+```
+
+- **`sd3controlnet: true`** (scenario + prose passthrough) turns it on. When **off** (default), a task's
+  `control:` on an SD3 model is skipped with a one-line note — no CN loads, no memory hit.
+- **Kinds:** canny / depth / pose / tile (InstantX SD3 CNs; the repo is auto-picked by variant). Conditioning
+  is a pre-rendered `image:` **or** `auto-from: <ref>` (auto-annotated) — same as every other family.
+- One InstantX CN is preloaded per **distinct** kind used across tasks; each task drives its kind's slot.
+- **Memory:** on 24 GB, prefer **sd35-medium** (smaller CN). `PLAKAT_SD3_LOWMEM=0` keeps LoRAs eager; a
+  large CN may simply not fit.
+
 ## 8. Partial-run filters (v0.19)
 
 Three flags for working with subsets of a long scenario:
