@@ -244,15 +244,30 @@ pub fn parse(input: &str) -> Result<Document> {
         bail!("compile: no blocks found (empty prompts.txt?)");
     }
 
-    // First block is global iff it has commands and NO free text. Otherwise the
-    // document has no global block and every block (including the first) is a scene.
+    // Global fragments vs scenes. A block that is ONLY commands — no free-text prose, no `composition:`,
+    // no `relate:`, and no spec-task directive (map/bookart/…) — is a GLOBAL FRAGMENT: `model:`/`style:`/
+    // `naturalize:`/`component.*` config that carries no scene of its own. Merge EVERY such fragment into
+    // one global block; the rest are scenes. This makes `@include` robust — global/component fragments can
+    // be split across blank-line boundaries (a blank line at the end of an included file, several component
+    // files) without any of them becoming a description-less "scene". (Previously only the FIRST block could
+    // be global, so a component/global fragment in block 2+ errored.)
     let mut doc = Document::default();
-    let first_is_global = !blocks[0].has_free_text() && !blocks[0].commands.is_empty();
-    let mut iter = blocks.into_iter();
-    if first_is_global {
-        doc.global = Some(iter.next().unwrap());
+    let mut global = Block::default();
+    let mut scenes: Vec<Block> = Vec::new();
+    for b in blocks {
+        if is_global_fragment(&b) {
+            if global.line_start == 0 {
+                global.line_start = b.line_start;
+            }
+            global.commands.extend(b.commands);
+        } else {
+            scenes.push(b);
+        }
     }
-    doc.scenes = iter.collect();
+    if !global.commands.is_empty() {
+        doc.global = Some(global);
+    }
+    doc.scenes = scenes;
 
     if doc.scenes.is_empty() {
         bail!("compile: no scene blocks (a scene block needs free-text description)");
@@ -286,6 +301,22 @@ fn declares_composition(b: &Block) -> bool {
 /// components' descriptions, so — like `composition:` — free text is optional (relate, then optional prose).
 fn declares_relations(b: &Block) -> bool {
     b.values("relate").next().is_some()
+}
+
+/// A GLOBAL FRAGMENT: commands only, with nothing that makes it a renderable scene (no prose, no
+/// `composition:`, no `relate:`, no spec-task). These are `model:`/`style:`/`naturalize:`/`component.*`
+/// config that `@include` may split across blank-line boundaries; they all merge into the global block.
+fn is_global_fragment(b: &Block) -> bool {
+    !b.has_free_text()
+        && !declares_composition(b)
+        && !declares_relations(b)
+        && !declares_map_task(b)
+        && !declares_bookart_task(b)
+        && !declares_texture_task(b)
+        && !declares_comic_task(b)
+        && !declares_product_task(b)
+        && !declares_faceswap_task(b)
+        && !declares_fractal_task(b)
 }
 
 /// Does this block declare a `map` task (so it may omit a prose description)?
@@ -412,6 +443,25 @@ mod tests {
     }
 
     #[test]
+    fn global_fragments_merge_across_blank_lines() {
+        // The @include shape: global config, a component block, and more component blocks are separated by
+        // blank lines (from included files) — they ALL merge into the global block; only the composition/
+        // relate/prose block is a scene. (Previously a component block in slot 2+ errored as a scene.)
+        let doc = parse(
+            "model: sd35\nstyle: impressionist\n\n\
+             component.sky: a clear sky\n\n\
+             component.sun: a low sun\n\n\
+             composition: component.sky, component.sun\nrelate: sun on sky\nsome prose.\n",
+        )
+        .unwrap();
+        assert_eq!(doc.scenes.len(), 1, "only the composition/relate block is a scene");
+        let g = doc.global.as_ref().expect("global merged from all fragments");
+        assert_eq!(g.values("model").collect::<Vec<_>>(), vec!["sd35"]);
+        assert!(g.commands.iter().any(|(k, _)| k == "component.sky"));
+        assert!(g.commands.iter().any(|(k, _)| k == "component.sun"));
+    }
+
+    #[test]
     fn relate_block_needs_no_free_text() {
         // 6.28: a scene block whose content is `relate:` (a grounding clause built from components) is
         // valid without free-text prose — like `composition:`. Global block first, then the relate scene.
@@ -471,9 +521,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_commands_only_scene() {
-        // A second block with commands but no description is an error.
-        let err = parse("A real scene.\n\nseed: 5\ncount: 2\n").unwrap_err();
-        assert!(err.to_string().contains("no description"), "got: {err}");
+    fn commands_only_block_merges_into_global() {
+        // 6.28: a commands-only block (no prose/composition/relate/spec-task) is a GLOBAL FRAGMENT — it
+        // merges into the global block rather than erroring as a description-less scene. (Scene-specific
+        // directives stay attached to their scene when written in the SAME block, no blank line between.)
+        let doc = parse("A real scene.\n\nseed: 5\ncount: 2\n").unwrap();
+        assert_eq!(doc.scenes.len(), 1);
+        assert!(doc.scenes[0].has_free_text());
+        let g = doc.global.as_ref().expect("trailing commands merged to global");
+        assert_eq!(g.values("seed").collect::<Vec<_>>(), vec!["5"]);
     }
 }
