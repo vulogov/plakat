@@ -1250,7 +1250,13 @@ impl RankingSpec {
 /// never fewer than `min` (promote the best sub-threshold ones so a task can't drop below its floor).
 /// Scores only THIS round's raw renders — the `plakat*-<seed>.png` files whose seed is in
 /// `[task_seed, task_seed+eff_count)`. Returns `(kept, culled)`.
-fn rank_and_cull(task_out: &std::path::Path, ranking: &RankingSpec, task_seed: u64, eff_count: u32) -> (usize, usize) {
+fn rank_and_cull(
+    task_out: &std::path::Path,
+    ranking: &RankingSpec,
+    scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+    task_seed: u64,
+    eff_count: u32,
+) -> (usize, usize) {
     let seeds: std::collections::HashSet<u64> =
         (0..eff_count as u64).map(|i| (task_seed + i) & (u32::MAX as u64)).collect();
     let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
@@ -1274,9 +1280,19 @@ fn rank_and_cull(task_out: &std::path::Path, ranking: &RankingSpec, task_seed: u
         if !in_band {
             continue;
         }
-        if let Ok(img) = image::open(&p).map(|i| i.to_rgb8()) {
-            imgs.push((p, crate::naturalize::ai_tell_score(&img)));
-        }
+        // `by=aesthetic` → LAION scorer (higher is better); else weight-free AI-tell (lower is better).
+        // `RankingSpec::passes/badness` interpret the score per `by_aesthetic`.
+        let score = match scorer {
+            Some(sc) => match sc.score_path(&p) {
+                Ok(v) => v,
+                Err(_) => continue,
+            },
+            None => match image::open(&p).map(|i| i.to_rgb8()) {
+                Ok(img) => crate::naturalize::ai_tell_score(&img),
+                Err(_) => continue,
+            },
+        };
+        imgs.push((p, score));
     }
     if imgs.is_empty() {
         return (0, 0);
@@ -3121,14 +3137,23 @@ pub async fn run_with_events(
     emit(&events, ScenarioEvent::Started { total: s.tasks.len() });
     let mut emitted_records = 0usize;
 
-    // 6.28: auto-ranking config (phase 1 = rank + cull, weight-free AI-tell). `by=aesthetic` and the
-    // generate-until-`min` regeneration loop land in phase 2; for now aesthetic falls back to AI-tell.
+    // 6.28: auto-ranking config (rank + cull). `by=aesthetic` loads the LAION scorer once (falls back to
+    // weight-free AI-tell if it can't load). The generate-until-`min` regeneration loop is a later phase.
     let ranking_cfg = s.ranking.as_deref().and_then(RankingSpec::parse);
-    if let Some(rk) = &ranking_cfg {
-        if rk.by_aesthetic {
-            crate::ui::progress::println("  ranking: by=aesthetic not yet wired — using AI-tell (threshold 0.5)");
+    let aesthetic_scorer = match ranking_cfg {
+        Some(rk) if rk.by_aesthetic => {
+            match crate::pipelines::aesthetic::AestheticScorer::load(&device).await {
+                Ok(sc) => Some(sc),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  ranking: aesthetic scorer failed to load ({e}) — falling back to AI-tell",
+                    ));
+                    None
+                }
+            }
         }
-    }
+        _ => None,
+    };
 
     for (idx, task) in s.tasks.iter().enumerate() {
         // Report any task(s) that finished since the last iteration, then mark this
@@ -5303,9 +5328,15 @@ pub async fn run_with_events(
         // 6.28 auto-ranking (phase 1): rank this task's fresh renders and move the subpar ones into
         // `culls/` BEFORE artefacts/style/upscale, so every downstream pass only touches the keepers.
         if let Some(rk) = ranking_cfg {
-            // phase 1: AI-tell only — normalize an aesthetic request to AI-tell semantics.
-            let eff = if rk.by_aesthetic { RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk } } else { rk };
-            let (kept, culled) = rank_and_cull(&task_out, &eff, task_seed, eff_count);
+            // Aesthetic only if the scorer actually loaded; otherwise normalize to AI-tell semantics.
+            let use_aesthetic = rk.by_aesthetic && aesthetic_scorer.is_some();
+            let eff = if rk.by_aesthetic && !use_aesthetic {
+                RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk }
+            } else {
+                rk
+            };
+            let scorer = if use_aesthetic { aesthetic_scorer.as_ref() } else { None };
+            let (kept, culled) = rank_and_cull(&task_out, &eff, scorer, task_seed, eff_count);
             if culled > 0 {
                 crate::ui::progress::println(&format!(
                     "  {} kept {kept}, culled {culled} → culls/ (min {})",
