@@ -330,28 +330,38 @@ to it — handy for A/B-ing the de-slop/repaint against the original, or ranking
 
 ## 7d. Auto-ranking — `ranking` *(6.28)*
 
-Generating `count: N` and then naturalizing all N wastes time on frames you'd never keep. **`ranking:`**
-scores each task's fresh renders (weight-free **AI-tell**, no model download), moves the subpar ones into a
-**`culls/`** subfolder, and lets the artefact / style / upscale / naturalize / restore-faces passes touch
-**only the keepers**.
+Generating a batch and then naturalizing all of it wastes time on frames you'd never keep. **`ranking:`**
+scores each task's fresh renders (weight-free **AI-tell**, no model download), keeps the ones that PASS a
+quality threshold, moves the rest into a **`culls/`** subfolder, and — if too few pass — **generates more
+until enough do**. Downstream passes (artefact / style / upscale / naturalize / restore-faces) touch **only
+the keepers**.
 
 ```hjson
 {
-  count: 12
-  ranking: on                              // defaults: AI-tell, threshold 0.5, min 1
+  count: 2
+  ranking: "by=ai-tell threshold=0.5 min=2 max-tries=6"
   naturalize: "repaint=0.2 medium=watercolor"
   tasks: [ … ]
 }
 ```
-Full spec: `ranking: by=ai-tell threshold=0.5 min=2 max-tries=6`
-- **`threshold=`** pass cutoff (AI-tell ≤ x keeps).
-- **`min=`** the floor — never keep fewer than this many (the best sub-threshold ones are promoted so a
-  task can't drop below `min`). Default `1`.
-- **`by=`** `ai-tell` (default) — `aesthetic` and the **generate-until-`min` regeneration** (`max-tries`)
-  land in a follow-up; today aesthetic falls back to AI-tell.
+- **`threshold=`** the pass cutoff — AI-tell **≤** x is "good" (aesthetic **≥** x). Default `0.5`.
+- **`min=`** the **minimum number of *good* (passing) images**, not a keep-count. If a round of `count`
+  yields fewer than `min` passers, plakat **regenerates** another `count` (fresh seeds), keeping the failures
+  in `culls/`, until `min` pass or `max-tries` rounds elapse. It never promotes a failing frame to hit the
+  number. Default `1`.
+- **`max-tries=`** cap on generation rounds (the anti-death-march guard). Default `5`.
+- **`by=`** `ai-tell` (default, weight-free) or `aesthetic` (LAION scorer, higher-is-better; falls back to
+  AI-tell if it can't load).
 
-Culled frames sit in `culls/` (recoverable). Composes with `unique-files` (each run's ranking is scoped to
-its own `run-…/` folder) and `keep-prenaturalize`. *(Passes through from prose too.)*
+Every render is printed with its score + keep/cull verdict. If `< min` pass after `max-tries`, the best
+available is kept with a note (a task is never left empty).
+
+**Scope:** the regenerate-until-`min` loop runs for **SD3/SD3.5** tasks (other families cull-to-passers
+without extra rounds for now), and only for **plain t2i** tasks — a task using artefacts / per-task `style` /
+global `upscale` skips ranking (those key off a contiguous seed band regeneration would break). Note that
+AI-tell scores *general* quality, not scene correctness — it prunes worse frames but won't fix a composition
+defect (that's ControlNet's job). Composes with `unique-files` (ranking scoped per run folder) and
+`keep-prenaturalize`. *(Passes through from prose too.)*
 
 ## 7e. SD3 ControlNet — `sd3controlnet` *(6.28)*
 
