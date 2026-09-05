@@ -81,8 +81,11 @@ pub struct Config {
 }
 
 impl Config {
-    /// 12-layer compact CN matching InstantX's SD3-Controlnet-Canny /
-    /// -Pose / -Tile / -Depth checkpoints against SD3.5-Medium.
+    /// 12-layer compact CN matching InstantX's SD3-Controlnet-Canny / -Pose / -Tile / -Depth. These are
+    /// trained for the ORIGINAL SD3-medium, whose MMDiT uses `pos_embed_max_size = 192` (verified against
+    /// the checkpoint: `pos_embed.pos_embed` is `[1, 192², 1536]`). NOTE: SD3.5-medium's base uses 384, so
+    /// pairing this CN with an sd35-medium base is an architecture mismatch — it loads but the positional
+    /// grids differ, so spatial control is imprecise. There is no InstantX ControlNet for SD3.5-medium.
     pub fn instantx_sd35_medium() -> Self {
         Self {
             num_layers: 12,
@@ -91,7 +94,7 @@ impl Config {
             hidden_size: 1536,
             num_heads: 24,
             adm_in_channels: 2048,
-            pos_embed_max_size: 384,
+            pos_embed_max_size: 192,
             context_embed_size: 4096,
             frequency_embedding_size: 256,
         }
@@ -177,13 +180,15 @@ impl Sd3ControlNet {
         )
         .context("loading CN pos_embed_input.proj")?;
 
+        // The learned positional embedding lives at `pos_embed.pos_embed` in the diffusers checkpoint (the
+        // `pos_embed` PatchEmbed module's buffer), NOT at the root `pos_embed`. Load it from that prefix.
         let pos_embedder = PositionEmbedder::new(
             cfg.hidden_size,
             cfg.patch_size,
             cfg.pos_embed_max_size,
-            vb.clone(),
+            vb.pp("pos_embed"),
         )
-        .context("loading CN pos_embedder")?;
+        .context("loading CN pos_embedder (pos_embed.pos_embed)")?;
 
         // Diffusers' `time_text_embed` packs a timestep MLP + a text
         // (pooled) MLP. We split into the two standard MMDiT
@@ -426,7 +431,9 @@ mod tests {
         assert_eq!(c.num_layers, 12);
         assert_eq!(c.hidden_size, 1536);
         assert_eq!(c.num_heads, 24);
-        assert_eq!(c.pos_embed_max_size, 384);
+        // 192², not 384: this config loads InstantX/SD3-Controlnet-Canny, whose `pos_embed.pos_embed` is
+        // `[1, 192², 1536]` (verified against the checkpoint). It's an original-SD3-medium CN.
+        assert_eq!(c.pos_embed_max_size, 192);
         assert_eq!(c.in_channels, 16);
         assert_eq!(c.context_embed_size, 4096);
     }

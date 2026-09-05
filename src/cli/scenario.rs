@@ -2598,6 +2598,16 @@ pub async fn run_with_events(
             // One InstantX CN per distinct kind (canny/depth/pose/…), loaded alongside the LoRA-merged
             // MMDiT. Repo + config are picked by variant. `strength` here is a load-time default; the
             // per-task dispatch overrides scale/start/end via `set_controlnet_call_params`.
+            // HONEST CAVEAT: the only InstantX CNs for an sd35-*medium* base are the ORIGINAL SD3-medium
+            // ones (192² positions), while SD3.5-medium's base is 384². They load, but the positional grids
+            // differ, so spatial control is imprecise — there is no InstantX ControlNet built for
+            // SD3.5-medium. (SD3.5-Large has matched CNs, but won't fit a 24 GB box.)
+            if matches!(sd3_variant, crate::pipelines::sd3::Variant::Sd35Medium) {
+                crate::ui::progress::println(&format!(
+                    "  {} SD3 ControlNet on sd35-medium uses original-SD3 weights (192² vs the base's 384²) — control is spatially IMPRECISE; no InstantX CN exists for SD3.5-medium",
+                    style("warn:").yellow().bold(),
+                ));
+            }
             let sd3_cns = sd3_cn_kinds
                 .iter()
                 .map(|&k| crate::pipelines::t2i::sd3_controlnet_load_for(k, sd3_variant, 1.0))
