@@ -1250,38 +1250,29 @@ impl RankingSpec {
 /// never fewer than `min` (promote the best sub-threshold ones so a task can't drop below its floor).
 /// Scores only THIS round's raw renders — the `plakat*-<seed>.png` files whose seed is in
 /// `[task_seed, task_seed+eff_count)`. Returns `(kept, culled)`.
-fn rank_and_cull(
+fn rank_dir(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
-    task_seed: u64,
-    eff_count: u32,
-) -> (usize, usize) {
-    let seeds: std::collections::HashSet<u64> =
-        (0..eff_count as u64).map(|i| (task_seed + i) & (u32::MAX as u64)).collect();
+) -> Vec<(PathBuf, f32)> {
     let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
-    let Ok(rd) = std::fs::read_dir(task_out) else { return (0, 0) };
+    let Ok(rd) = std::fs::read_dir(task_out) else { return imgs };
     for e in rd.flatten() {
         let p = e.path();
         if p.extension().and_then(|x| x.to_str()) != Some("png") {
             continue;
         }
         let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("");
-        // raw renders only: `plakat…-<seed>` whose trailing seed is in this round's band (skips grids,
-        // style/upscale siblings, previews).
-        if !stem.starts_with("plakat") {
-            continue;
-        }
-        let in_band = stem
-            .rsplit('-')
-            .next()
-            .and_then(|s| s.parse::<u64>().ok())
-            .is_some_and(|s| seeds.contains(&s));
-        if !in_band {
+        // Raw renders only across ALL regeneration rounds: `plakat…-<seed>` (trailing numeric seed). Skips
+        // grids, `.natural` siblings, previews. (The unique-files run dir isolates this task's rounds.)
+        let is_raw = stem.starts_with("plakat")
+            && !stem.contains("grid")
+            && !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(".natural."))
+            && stem.rsplit('-').next().and_then(|s| s.parse::<u64>().ok()).is_some();
+        if !is_raw {
             continue;
         }
         // `by=aesthetic` → LAION scorer (higher is better); else weight-free AI-tell (lower is better).
-        // `RankingSpec::passes/badness` interpret the score per `by_aesthetic`.
         let score = match scorer {
             Some(sc) => match sc.score_path(&p) {
                 Ok(v) => v,
@@ -1294,14 +1285,42 @@ fn rank_and_cull(
         };
         imgs.push((p, score));
     }
-    if imgs.is_empty() {
+    // Best first (lowest badness).
+    imgs.sort_by(|a, b| ranking.badness(a.1).partial_cmp(&ranking.badness(b.1)).unwrap_or(std::cmp::Ordering::Equal));
+    imgs
+}
+
+/// How many of this task's raw renders currently PASS the threshold — the regenerate-until-`min` gate.
+fn count_passers(
+    task_out: &std::path::Path,
+    ranking: &RankingSpec,
+    scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+) -> usize {
+    rank_dir(task_out, ranking, scorer).iter().filter(|(_, s)| ranking.passes(*s)).count()
+}
+
+/// Final ranking: `min` means minimum GOOD (passing) images. Keep every image that PASSES the threshold,
+/// cull the rest into `culls/` — never promote a failing frame to hit a count (that's what regeneration is
+/// for). If nothing passed after regeneration, keep the single best so the task isn't empty, and warn.
+/// Returns `(kept, culled)`.
+fn cull_to_passers(
+    task_out: &std::path::Path,
+    ranking: &RankingSpec,
+    scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+) -> (usize, usize) {
+    let imgs = rank_dir(task_out, ranking, scorer);
+    let n = imgs.len();
+    if n == 0 {
         return (0, 0);
     }
-    // Best first (lowest badness). Keep those that pass, but never fewer than `min` best.
-    imgs.sort_by(|a, b| ranking.badness(a.1).partial_cmp(&ranking.badness(b.1)).unwrap_or(std::cmp::Ordering::Equal));
-    let n = imgs.len();
-    let pass = imgs.iter().filter(|(_, s)| ranking.passes(*s)).count();
-    let keep = pass.max(ranking.min).min(n);
+    let passers = imgs.iter().filter(|(_, s)| ranking.passes(*s)).count();
+    let keep = passers.max(1).min(n); // never leave the task with zero images
+    let metric = if ranking.by_aesthetic { "aesthetic" } else { "ai-tell" };
+    for (idx, (p, score)) in imgs.iter().enumerate() {
+        let verdict = if idx < keep { "keep" } else { "cull" };
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        crate::ui::progress::println(&format!("      ranking {metric} {score:.3} · {verdict}  {name}"));
+    }
     let culls_dir = task_out.join("culls");
     let mut culled = 0usize;
     for (p, _) in imgs.iter().skip(keep) {
@@ -4291,6 +4310,28 @@ pub async fn run_with_events(
 
         let task_out = out_root.join(safe_name(&task.name));
 
+        // 6.28 ranking: this task's effective config (aesthetic normalized to AI-tell if the scorer didn't
+        // load) + whether it may regenerate. Regeneration + culling are only safe for PLAIN t2i — artefacts,
+        // per-task `style`, and global `upscale` key off the contiguous `[task_seed, task_seed+count)` band,
+        // which multi-round regeneration + culling would break; those tasks skip ranking (with a note).
+        let task_can_rank = task.artefacts.is_empty() && task.style.is_none() && !s.upscale.upscale;
+        let task_rank: Option<(RankingSpec, bool)> = ranking_cfg.map(|rk| {
+            let use_aesthetic = rk.by_aesthetic && aesthetic_scorer.is_some();
+            let eff = if rk.by_aesthetic && !use_aesthetic {
+                RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk }
+            } else {
+                rk
+            };
+            (eff, use_aesthetic)
+        });
+        if ranking_cfg.is_some() && !task_can_rank {
+            crate::ui::progress::println(&format!(
+                "  {} task {:?} uses artefacts/style/upscale — ranking skipped (its seed-band post-processing is incompatible)",
+                style("ranking").yellow(),
+                task.name,
+            ));
+        }
+
         // v0.17 phase 5: --resume skip. If every expected output
         // PNG for this task already exists on disk, skip the
         // task entirely (no model dispatch, no enhancer call).
@@ -5071,6 +5112,33 @@ pub async fn run_with_events(
                     }
                 }
                 sp.generate(&sd3_req)?;
+                // 6.28 ranking: regenerate-until-`min`-good. `min` = minimum images that PASS the
+                // threshold; if fewer do, generate more rounds with fresh seeds (up to `max-tries`),
+                // keeping the failures for the post-dispatch cull. Fresh seeds are offset far from the
+                // task's band so rounds don't collide.
+                if task_can_rank {
+                    if let Some((eff, use_aes)) = task_rank {
+                        let scorer = if use_aes { aesthetic_scorer.as_ref() } else { None };
+                        let mut round = 1u64;
+                        while round < eff.max_tries as u64 {
+                            let good = count_passers(&task_out, &eff, scorer);
+                            if good >= eff.min {
+                                break;
+                            }
+                            crate::ui::progress::println(&format!(
+                                "  {} {good}/{} good after round {round} — regenerating (round {})…",
+                                style("ranking").cyan(),
+                                eff.min,
+                                round + 1,
+                            ));
+                            let fresh = task_seed.wrapping_add(round.wrapping_mul(65_536)) & (u32::MAX as u64);
+                            let mut req = sd3_req.clone();
+                            req.seed = Some(fresh);
+                            sp.generate(&req)?;
+                            round += 1;
+                        }
+                    }
+                }
                 if task_lora_applied {
                     sp.clear_all_loras()?;
                     tracing::debug!(
@@ -5325,24 +5393,30 @@ pub async fn run_with_events(
             }
         }
 
-        // 6.28 auto-ranking (phase 1): rank this task's fresh renders and move the subpar ones into
-        // `culls/` BEFORE artefacts/style/upscale, so every downstream pass only touches the keepers.
-        if let Some(rk) = ranking_cfg {
-            // Aesthetic only if the scorer actually loaded; otherwise normalize to AI-tell semantics.
-            let use_aesthetic = rk.by_aesthetic && aesthetic_scorer.is_some();
-            let eff = if rk.by_aesthetic && !use_aesthetic {
-                RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk }
-            } else {
-                rk
-            };
-            let scorer = if use_aesthetic { aesthetic_scorer.as_ref() } else { None };
-            let (kept, culled) = rank_and_cull(&task_out, &eff, scorer, task_seed, eff_count);
-            if culled > 0 {
+        // 6.28 auto-ranking: after generation (incl. any regeneration rounds), keep every PASSING render
+        // and cull the failures into `culls/` — BEFORE artefacts/style/upscale so they only touch keepers.
+        // `min` = minimum good; the regeneration above already tried to reach it.
+        if task_can_rank {
+            if let Some((eff, use_aesthetic)) = task_rank {
+                let scorer = if use_aesthetic { aesthetic_scorer.as_ref() } else { None };
+                let good = count_passers(&task_out, &eff, scorer);
+                let (kept, culled) = cull_to_passers(&task_out, &eff, scorer);
+                let (metric, cmp) = if use_aesthetic { ("aesthetic", "≥") } else { ("ai-tell", "≤") };
                 crate::ui::progress::println(&format!(
-                    "  {} kept {kept}, culled {culled} → culls/ (min {})",
+                    "  {} {metric} {cmp} {:.2} → {good} good (min {}), kept {kept}, culled {culled}{}",
                     style("ranking").cyan(),
-                    rk.min
+                    eff.threshold,
+                    eff.min,
+                    if culled > 0 { " → culls/" } else { "" },
                 ));
+                if good < eff.min {
+                    crate::ui::progress::println(&format!(
+                        "      {} only {good}/{} good after {} round(s) — kept the best available (raise max-tries or relax threshold)",
+                        style("note:").yellow(),
+                        eff.min,
+                        eff.max_tries,
+                    ));
+                }
             }
         }
 

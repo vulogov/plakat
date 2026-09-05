@@ -385,6 +385,7 @@ pub struct LoadRequest {
     pub embeddings: Vec<crate::pipelines::embedding::EmbeddingSpec>,
 }
 
+#[derive(Clone)]
 pub struct GenRequest {
     pub prompt: String,
     pub negative: String,
