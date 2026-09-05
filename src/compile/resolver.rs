@@ -355,15 +355,19 @@ fn resolve_composition(
 pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
     let g = doc.global.as_ref();
 
-    // 6.26.x: reusable prompt components defined in the global block as `component.<name>: text`.
+    // 6.26.x: reusable prompt components — `component.<name>: text`. Collected from the global block AND
+    // every scene block (6.28), so a component may be declared inline in a scene next to its
+    // `composition:`/`relate:` — components are one shared namespace regardless of where they're defined.
+    // Global definitions come first, so a same-named scene-local component overrides.
     let components: std::collections::HashMap<String, String> = g
-        .map(|b| {
+        .into_iter()
+        .chain(doc.scenes.iter())
+        .flat_map(|b| {
             b.commands
                 .iter()
                 .filter_map(|(k, v)| k.strip_prefix("component.").map(|name| (name.to_string(), v.clone())))
-                .collect()
         })
-        .unwrap_or_default();
+        .collect();
 
     let g_model = last_wins(&[], &vals(g, "model")).map(str::to_string);
     let globals = ResolvedGlobals {
@@ -494,6 +498,17 @@ mod tests {
         assert_eq!((rel[0].a.as_str(), rel[0].verb.as_str(), rel[0].b.as_str()), ("tram", "on", "rails"));
         assert_eq!(rel[0].a_desc, "старомодный трамвай");
         assert_eq!(rel[1].verb, "in front of"); // multi-word verb preserved
+    }
+
+    #[test]
+    fn components_defined_in_a_scene_block_are_usable() {
+        // 6.28: a component declared inline in a scene (next to its composition/relate — the block has
+        // relate:, so it's a scene, not a global fragment) is still collected and usable.
+        let src = "model: sd35\n\ncomponent.bench: a wooden bench\ncomponent.woman: a woman\nrelate: woman on bench\n";
+        let r = resolve_str(src);
+        assert_eq!(r.scenes[0].relations.len(), 1);
+        assert_eq!(r.scenes[0].relations[0].a_desc, "a woman");
+        assert_eq!(r.scenes[0].relations[0].b_desc, "a wooden bench");
     }
 
     #[test]
