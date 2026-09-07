@@ -165,7 +165,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "sd3controlnet",
     // 6.28 two-pass structure: SDXL/composition draft → task-model img2img finish
     "control-generate", "control-generate-strength", "control-generate-count", "control-generate-min-score",
-    "control-generate-tries",
+    "control-generate-tries", "control-generate-size",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
@@ -279,10 +279,29 @@ fn effective_parallelism(requested: usize, provider: &str) -> usize {
 /// Compile one scene end-to-end (translate → positive → negative). Never errors —
 /// every LLM step falls back (verbatim / seed terms), so scenes are independent
 /// and parallelizable.
+/// The SYSTEM prompt for the `control-generate` STRUCTURE draft. Unlike the positive-enhance system (which
+/// is told to CARRY the user's style words up front), this one explicitly STRIPS every style/medium/mood
+/// word — so the draft is a clean composition base (layout + anatomy), not a soft-focus rendering that
+/// fights the finish. The draft is an img2img base, not a finished image.
+const STRUCTURE_SYSTEM: &str = "You rewrite a scene description into a CLEAN STRUCTURAL LAYOUT prompt for an \
+    image that will be REPAINTED later (an img2img composition base). Output ONE English prompt that:\n\
+    - describes ONLY the concrete subjects, their COUNT, their POSITIONS and spatial relationships \
+    (left/centre/right, foreground/midground/background, who holds / leans on / stands beside what), and \
+    CORRECT ANATOMY with natural PROPORTIONS (complete unbroken bodies, all limbs, hands and feet, natural \
+    poses);\n\
+    - STRIPS and OMITS every style, medium, mood, colour-grade and rendering word — e.g. impressionist, \
+    painting, painterly, soft focus, loose brushwork, watercolour, oil, muted, atmospheric, delicate, soft, \
+    hazy, 'without detailed portraits'. NEVER carry ANY of them into the output;\n\
+    - keeps concrete environment and colour facts that define the scene (a green sky, an orange sun, town \
+    buildings, a street) and any (weighted:N) spans verbatim;\n\
+    - reads as clear, sharp, readable composition — solid forms, plain lighting — not a finished artwork.\n\
+    Translate any non-English source to English. Output ONLY the prompt, no preamble, no quotes.";
+
 async fn compile_one_scene(
     scene: &resolver::ResolvedScene,
     opts: &CompileOpts,
     eargs: &crate::prompt::EnhanceArgs,
+    wants_structure: bool,
 ) -> emitter::CompiledScene {
     // Attention weights are TRANSLATED and kept INLINE. For each `(phrase:N)` we translate the phrase on its
     // own (a reliable, unambiguous ask), substitute the English `(phrase_en:N)` back at its ORIGINAL position,
@@ -371,6 +390,25 @@ async fn compile_one_scene(
                 prepared.clone()
             }
         }
+    };
+
+    // 4b) 6.28 STRUCTURE prompt for `control-generate`: enhance the SAME content prose (`prepared`) but with
+    // a composition-focused, style-STRIPPED directive instead of the user's style — so SDXL's structure
+    // draft is a clean layout base (figures placed, environment present), not a soft-focus rendering that
+    // fights the finish. Only when the scenario uses control-generate (avoids a needless LLM call otherwise).
+    let structure_prompt: Option<String> = if wants_structure && !opts.no_enhance && !prepared.is_empty() {
+        // A DEDICATED style-stripping system prompt (not the style-carrying positive one) + persona
+        // fragments so named characters keep their identity while all style/medium words are removed.
+        let mut ssys = STRUCTURE_SYSTEM.to_string();
+        for frag in &persona_fragments {
+            ssys.push_str("\n\nCharacter (keep identity, drop any style words): ");
+            ssys.push_str(frag);
+        }
+        cached_call(&opts.provider, &ssys, &prepared, cache::STRUCTURE, opts.cache, eargs)
+            .await
+            .map(|p| assembler::clean(&p))
+    } else {
+        None
     };
 
     // 5) safety net: re-add — in English, as a short tail — any weighted span the enhancer dropped, so no
@@ -569,7 +607,10 @@ async fn compile_one_scene(
         warnings.push(note);
     }
 
-    emitter::CompiledScene { scene: out_scene, prompt, negative, warnings, trace }
+    if structure_prompt.is_some() {
+        trace.push("structure prompt (composition-focused) built for control-generate".to_string());
+    }
+    emitter::CompiledScene { scene: out_scene, prompt, negative, structure_prompt, warnings, trace }
 }
 
 /// Deduplicate weight spans by (phrase, weight), preserving first-seen order — so a phrase repeated across
@@ -781,6 +822,17 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         "  compiling {total} scene(s) via {label}{}…",
         if n > 1 { format!(" ({n} in parallel)") } else { String::new() }
     ));
+    // Does this scenario use `control-generate`? If so, each scene also gets a style-stripped STRUCTURE
+    // prompt (one extra LLM call). Checked once across globals + scenes so we don't pay it otherwise.
+    let is_on = |v: &str| {
+        let v = v.trim();
+        !v.is_empty()
+            && !v.eq_ignore_ascii_case("off")
+            && !v.eq_ignore_ascii_case("false")
+            && !v.eq_ignore_ascii_case("none")
+    };
+    let wants_structure = resolved.globals.passthrough.iter().any(|(k, v)| k == "control-generate" && is_on(v))
+        || active.iter().any(|s| s.passthrough.iter().any(|(k, v)| k == "control-generate" && is_on(v)));
     let done = std::sync::atomic::AtomicUsize::new(0);
     let tick = |name: &str| {
         let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -789,7 +841,7 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
     let mut compiled: Vec<emitter::CompiledScene> = if n <= 1 {
         let mut v = Vec::with_capacity(active.len());
         for s in active.iter().copied() {
-            let r = compile_one_scene(s, opts, &eargs).await;
+            let r = compile_one_scene(s, opts, &eargs, wants_structure).await;
             tick(&s.name);
             v.push(r);
         }
@@ -799,7 +851,7 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         let eargs_ref = &eargs;
         let tick_ref = &tick;
         stream::iter(active.iter().copied().map(|s| async move {
-            let r = compile_one_scene(s, opts, eargs_ref).await;
+            let r = compile_one_scene(s, opts, eargs_ref, wants_structure).await;
             tick_ref(&s.name);
             r
         }))

@@ -10,6 +10,9 @@ pub struct CompiledScene {
     pub scene: ResolvedScene,
     pub prompt: String,
     pub negative: String,
+    /// 6.28: the style-stripped, composition-focused STRUCTURE prompt for the `control-generate` draft
+    /// pass, emitted as a per-task `structure-prompt`. `None` when the scenario doesn't use control-generate.
+    pub structure_prompt: Option<String>,
     /// 6.26.2 diligence warnings for this scene (budget overflow / dropped style) — surfaced to
     /// the user by the CLI rather than silently accepted. Empty when the scene compiled cleanly.
     pub warnings: Vec<String>,
@@ -170,6 +173,9 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
         // ignores the top-level prompt/negative — don't emit them (they'd be dead, and confusing).
         if !matches!(s.task_type.as_deref(), Some("bookart") | Some("texture") | Some("comic") | Some("product") | Some("faceswap") | Some("fractal")) {
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
+            if let Some(sp) = cs.structure_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
+                o.push_str(&format!("      structure-prompt: {}\n", q(sp)));
+            }
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
             }
@@ -399,10 +405,22 @@ mod tests {
             scene,
             prompt: "a frozen tundra, lone rider, aurora".into(),
             negative: "blurry, watermark, daylight".into(),
+            structure_prompt: None,
             warnings: Vec::new(),
             trace: Vec::new(),
         };
         (globals, vec![cs])
+    }
+
+    #[test]
+    fn emits_structure_prompt_when_present() {
+        let (g, mut scenes) = compiled();
+        scenes[0].structure_prompt = Some("lone rider on a plain, correct anatomy, clear layout".into());
+        let out = emit(&g, &scenes, "prompts.txt", "deepseek");
+        assert!(out.contains("structure-prompt:"), "structure prompt emitted: {out}");
+        assert!(out.contains("correct anatomy"));
+        let _: serde_json::Value = deser_hjson::from_str(&out)
+            .unwrap_or_else(|e| panic!("emitted HJSON did not parse: {e}\n---\n{out}"));
     }
 
     #[test]

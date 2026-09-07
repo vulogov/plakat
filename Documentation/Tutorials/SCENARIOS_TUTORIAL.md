@@ -432,7 +432,17 @@ control-generate: sdxl            # pass 1: SDXL lays out the structure
 control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower = keep more structure)
 ```
 
-- **Pass 1** runs each task's prompt on the named model (e.g. `sdxl`, which places figures far better than
+- **Style-stripped draft.** Your finish style ("soft focus, loose brushwork") *fights* structural clarity,
+  so compile emits a separate **composition-focused structure prompt** (style stripped, emphasising layout,
+  positioning, and correct anatomy/proportions over fine detail — the draft is an img2img base, not a
+  finished image). The draft renders from *that*; the finish keeps your full styled prompt. Wide scenes want
+  a wide `size:` (e.g. `1152x768`) in **both** passes — a wide structure resized into a square finish squashes
+  the composition, so set the finish size to the scene's real aspect rather than a separate structure size.
+  When the finish/print size must stay fixed (e.g. `768x768`), use **`control-generate-size`** to render the
+  DRAFT larger at the **same aspect** (e.g. `1024x1024`) — SDXL composes multi-figure scenes far better at
+  its native 1024² — then the winner is downscaled to the finish size for img2img. A *different* aspect
+  warns (it would squash on downscale). This keeps print size + OOM budget fixed while improving layout.
+- **Pass 1** runs that structure prompt on the named model (e.g. `sdxl`, which places figures far better than
   SD3.5) and **vision-ranks the drafts** — a bad layout dooms the finish, so it ranks the *foundation*, not
   just the output. `control-generate-count` drafts (default **4**) are scored 0–10 against the prompt (same
   faithfulness judge as `by=vision`: figures/counts/completeness — missing town/sky/sun tanks the score),

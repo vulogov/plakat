@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 pub const POSITIVE: &str = "positive";
 pub const NEGATIVE: &str = "negative";
+/// 6.28: the style-stripped, composition-focused STRUCTURE prompt for the `control-generate` draft pass.
+pub const STRUCTURE: &str = "structure";
 
 fn root(namespace: &str) -> PathBuf {
     crate::llm::cache::cache_dir()

@@ -217,6 +217,12 @@ struct ScenarioFile {
     /// good enough or the coach repeats). Default `3`; `1` = rank one batch, no coaching. Needs a vision provider.
     #[serde(rename = "control-generate-tries", default)]
     control_generate_tries: Option<usize>,
+    /// Resolution to render the structure DRAFT at (e.g. `1024x1024`), independent of the finish `size:`.
+    /// SDXL composes multi-figure scenes far better at its native 1024² than at 768², so draft big and the
+    /// winner is downscaled to the finish size for img2img. **Keep the SAME ASPECT as `size:`** — a different
+    /// aspect would squash on downscale (a warning fires). Default: the finish size.
+    #[serde(rename = "control-generate-size", default)]
+    control_generate_size: Option<String>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -977,6 +983,13 @@ struct TaskDef {
     control_generate_min_score: Option<f32>,
     #[serde(rename = "control-generate-tries", default)]
     control_generate_tries: Option<usize>,
+    #[serde(rename = "control-generate-size", default)]
+    control_generate_size: Option<String>,
+    /// 6.28: compile-emitted style-stripped, composition-focused prompt for the control-generate DRAFT. When
+    /// present, the structure pass renders from THIS (realistic layout) instead of the styled finish prompt,
+    /// so SDXL isn't rendering soft-focus. `None` (hand-written scenarios) → the draft uses `prompt`.
+    #[serde(rename = "structure-prompt", default)]
+    structure_prompt: Option<String>,
     /// Runtime-only (never deserialized): the structure pass's coaching trail — each round's structure
     /// prompt + best score + the defects the coach named — captured by the pre-pass and folded into the
     /// winning-params sidecar so a good foundation is reproducible.
@@ -2165,6 +2178,59 @@ fn parse_wh(s: Option<&str>) -> Option<(u32, u32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
+/// Generate ONE structure draft on an already-loaded pipeline into `dest` (plain t2i, no controls). The
+/// pipeline writes seed-named PNGs, so we render into a temp dir and copy the single result out — keeping
+/// the draft model loaded ONCE across every draft/round/task instead of reloading per image.
+fn draft_generate(
+    pipe: &Pipeline,
+    prompt: &str,
+    negative: &str,
+    w: u32,
+    h: u32,
+    seed: u64,
+    dest: &std::path::Path,
+) -> Result<()> {
+    let tmp = dest.with_extension("tmpdir");
+    std::fs::create_dir_all(&tmp)?;
+    let req = GenRequest {
+        prompt: prompt.to_string(),
+        negative: negative.to_string(),
+        width: w,
+        height: h,
+        count: 1,
+        steps: 30,
+        guidance: 7.5,
+        seed: Some(seed),
+        subseed: None,
+        subseed_strength: 0.0,
+        out_dir: tmp.clone(),
+        scheduler: SchedulerKind::default(),
+        refine: None,
+        refine_strength: 0.0,
+        refiner_frac: None,
+        clip_skip: 1,
+        metadata: None,
+        preview_every: None,
+        preview_size: None,
+        output_format: crate::imaging::io::OutputFormat::Png,
+    };
+    let rendered = pipe.generate(&req, &[]);
+    let produced = std::fs::read_dir(&tmp)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("png"));
+    let result = rendered.and_then(|()| {
+        produced
+            .ok_or_else(|| anyhow::anyhow!("draft produced no image"))
+            .and_then(|p| std::fs::copy(&p, dest).map(|_| ()).map_err(Into::into))
+    });
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
 /// 6.28 two-pass structure ("control-generate"): a composition-capable model (e.g. SDXL) runs the FIRST
 /// pass for every qualifying task — with the task's `control:` canny when present, else plain t2i — laying
 /// out structure the task's own model can't hold from a flat prompt (multi-figure scenes). Each draft is
@@ -2189,12 +2255,26 @@ async fn control_generate_prepass(
     let g_min = s.control_generate_min_score;
     let g_tries = s.control_generate_tries;
     let g_size = s.size.clone();
+    let g_dsize = s.control_generate_size.clone();
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
     // can't be ranked — fall back to a single unranked draft.
     let vprovider = s.enhancer.clone().unwrap_or_else(|| "auto".into());
     let vision_ok = !crate::prompt::vision::resolve_vision_provider(&vprovider).starts_with("local");
+    let dev = match crate::api::device(&device) {
+        Ok(d) => d,
+        Err(e) => {
+            crate::ui::progress::println(&format!(
+                "  {} device select failed ({e}) — skipping structure pass",
+                style("control-generate:").yellow()
+            ));
+            return Ok(());
+        }
+    };
+    // Load the draft model ONCE and reuse it for every draft/round/task (reload only if a task names a
+    // different structure model). Dropped at function end → freed before the main loop loads the task model.
+    let mut draft_pipe: Option<(String, Pipeline)> = None;
     let mut seed_off = 0u64;
     let mut to_drop: Vec<usize> = Vec::new();
     for i in 0..s.tasks.len() {
@@ -2218,13 +2298,31 @@ async fn control_generate_prepass(
             ));
             continue;
         }
-        let prompt = s.tasks[i].prompt.clone();
+        // Prefer the compile-emitted style-stripped structure prompt (composition, not soft-focus); fall
+        // back to the styled task prompt for hand-written scenarios.
+        let styled_prompt = s.tasks[i].prompt.clone();
+        let prompt = s.tasks[i]
+            .structure_prompt
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .unwrap_or_else(|| styled_prompt.clone());
         if prompt.trim().is_empty() {
             continue;
         }
+        let has_structure_prompt = s.tasks[i].structure_prompt.as_deref().is_some_and(|p| !p.trim().is_empty());
         let negative = s.tasks[i].negative.clone().unwrap_or_default();
         let strength = s.tasks[i].control_generate_strength.or(g_strength).unwrap_or(0.55);
         let (w, h) = parse_wh(s.tasks[i].size.as_deref().or(g_size.as_deref())).unwrap_or((768, 768));
+        // Draft resolution (SDXL composes better at native 1024²); the winner is downscaled to (w,h) for the
+        // finish. Default = finish size. Warn on an aspect mismatch (downscale would squash the composition).
+        let (dw, dh) = parse_wh(s.tasks[i].control_generate_size.as_deref().or(g_dsize.as_deref())).unwrap_or((w, h));
+        if (dw as f32 / dh as f32 - w as f32 / h as f32).abs() > 0.02 {
+            crate::ui::progress::println(&format!(
+                "  {} control-generate-size {dw}×{dh} has a different aspect than the finish {w}×{h} — the \
+                 draft will be SQUASHED on downscale. Match the aspect (e.g. 1024×1024 for a 768×768 finish).",
+                style("control-generate:").yellow(),
+            ));
+        }
         let task_seed = s.tasks[i].seed.unwrap_or(base_seed + seed_off);
         seed_off += 1;
         let name = s.tasks[i].name.clone();
@@ -2242,9 +2340,38 @@ async fn control_generate_prepass(
         let target = min_score.unwrap_or(7.0); // "good enough" bar for the coach's early-stop
         let task_out = out_root.join(safe_name(&name));
         let _ = std::fs::create_dir_all(&task_out);
+        // Ensure the draft model is loaded (once; reload only on a model change).
+        if draft_pipe.as_ref().is_none_or(|(m, _)| !m.eq_ignore_ascii_case(&cg)) {
+            crate::ui::progress::println(&format!(
+                "  {} loading {cg} once for the structure pass…",
+                style("control-generate:").cyan()
+            ));
+            match Pipeline::load(LoadRequest {
+                model: cg.clone(),
+                device: dev.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                use_refiner: false,
+                embeddings: Vec::new(),
+                vae_cache: None,
+            })
+            .await
+            {
+                Ok(p) => draft_pipe = Some((cg.clone(), p)),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} could not load {cg} ({e}) — running plain t2i",
+                        style("control-generate:").yellow()
+                    ));
+                    continue;
+                }
+            }
+        }
+        let pipe = &draft_pipe.as_ref().expect("draft pipeline loaded above").1;
         crate::ui::progress::println(&format!(
-            "  {} {cg} structure pass · {n_draft} draft(s) × up to {tries} round(s){} → {task_model} img2img (strength {strength})",
+            "  {} {cg} structure pass · {n_draft} draft(s) @ {dw}×{dh} × up to {tries} round(s){}{} → {task_model} img2img @ {w}×{h} (strength {strength})",
             style("control-generate:").cyan(),
+            if has_structure_prompt { " · style-stripped composition prompt" } else { "" },
             if vision_ok { " · vision-ranked + coached" } else { " · no vision provider — unranked" },
         ));
         // A bad layout dooms the finish (no img2img/prompt fiddling fixes it), so optimise the FOUNDATION:
@@ -2260,25 +2387,11 @@ async fn control_generate_prepass(
             for d in 0..n_draft {
                 let seed = task_seed.wrapping_add((round as u64) << 12).wrapping_add(d as u64);
                 let path = task_out.join(format!("structure-draft-r{round}-{d}.png"));
-                let g = crate::api::Generate::new(&cg)
-                    .prompt(&cur_prompt)
-                    .negative(&negative)
-                    .size(w, h)
-                    .seed(seed)
-                    .steps(30)
-                    .device(&device);
-                let img = match g.run().await {
-                    Ok(mut v) if !v.is_empty() => v.remove(0),
-                    Ok(_) => continue,
-                    Err(e) => {
-                        crate::ui::progress::println(&format!(
-                            "      {} r{round} draft {d} failed: {e}",
-                            style("control-generate:").yellow()
-                        ));
-                        continue;
-                    }
-                };
-                if img.save(&path).is_err() {
+                if let Err(e) = draft_generate(pipe, &cur_prompt, &negative, dw, dh, seed, &path) {
+                    crate::ui::progress::println(&format!(
+                        "      {} r{round} draft {d} failed: {e}",
+                        style("control-generate:").yellow()
+                    ));
                     continue;
                 }
                 let score = if vision_ok {
@@ -2360,8 +2473,20 @@ async fn control_generate_prepass(
             }
         }
         // Canonical best → structure-draft.png, wired as the finish pass's init-image.
+        // Canonical best → structure-draft.png at the FINISH size (downscale the SDXL-native draft), so the
+        // img2img init matches the finish dimensions exactly.
         let draft = task_out.join("structure-draft.png");
-        let _ = std::fs::copy(&best_path, &draft);
+        match image::open(&best_path) {
+            Ok(img) if img.width() != w || img.height() != h => {
+                let _ = img.resize_exact(w, h, image::imageops::FilterType::Lanczos3).save(&draft);
+            }
+            Ok(img) => {
+                let _ = img.save(&draft);
+            }
+            Err(_) => {
+                let _ = std::fs::copy(&best_path, &draft);
+            }
+        }
         crate::ui::progress::println(&format!(
             "  {} picked {} ({}) → init for {task_model} img2img",
             style("control-generate:").green(),
@@ -2375,9 +2500,28 @@ async fn control_generate_prepass(
             s.tasks[i].structure_trail = Some(trail.join("\n"));
         }
     }
-    // Apply refusals (highest index first so earlier indices stay valid).
+    // Free the draft model NOW — before the main loop loads the task model (no co-residence).
+    drop(draft_pipe);
+    // Apply refusals (highest index first so earlier indices stay valid) and say so LOUDLY — otherwise the
+    // main run just reports "0 tasks" and it looks like nothing happened.
+    let refused = to_drop.len();
     for i in to_drop.into_iter().rev() {
         s.tasks.remove(i);
+    }
+    if refused > 0 {
+        crate::ui::progress::println(&format!(
+            "  {} {refused} task(s) REFUSED — the structure never reached control-generate-min-score, so \
+             they were NOT generated (a weak foundation can't be rescued by the finish pass). Fix: lower \
+             control-generate-min-score, raise control-generate-count/-tries, widen `size:`, or simplify \
+             the scene.",
+            style("control-generate:").red().bold(),
+        ));
+        if s.tasks.is_empty() {
+            crate::ui::progress::println(&format!(
+                "  {} every task was refused — nothing to generate this run.",
+                style("control-generate:").red().bold(),
+            ));
+        }
     }
     Ok(())
 }
@@ -8128,6 +8272,7 @@ mod tests {
         assert_eq!(s.control_generate_count, Some(6));
         assert_eq!(s.control_generate_min_score, Some(6.5));
         assert_eq!(s.control_generate_tries, None); // absent → runtime default (3)
+        assert_eq!(parse_wh(Some("1024x1024")), Some((1024, 1024)));
         // Per-task empty string is the documented per-task disable.
         assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
         assert_eq!(parse_wh(Some("768x512")), Some((768, 512)));
