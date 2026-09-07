@@ -355,17 +355,19 @@ async fn compile_one_scene(
     };
 
     // 4) positive enhance.
+    let mut positive_failed = false;
     let mut prompt = if opts.no_enhance || prepared.is_empty() {
         assembled.clone()
     } else {
         let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
-        cached_call(&opts.provider, &sys, &prepared, cache::POSITIVE, opts.cache, eargs)
-            .await
-            .map(|p| assembler::clean(&p))
-            .unwrap_or_else(|| {
+        match cached_call(&opts.provider, &sys, &prepared, cache::POSITIVE, opts.cache, eargs).await {
+            Some(p) => assembler::clean(&p),
+            None => {
+                positive_failed = true;
                 tracing::warn!(target: "plakat", "compile: positive enhance failed for '{}', using verbatim", scene.name);
                 prepared.clone()
-            })
+            }
+        }
     };
 
     // 5) safety net: re-add — in English, as a short tail — any weighted span the enhancer dropped, so no
@@ -518,7 +520,15 @@ async fn compile_one_scene(
         }
     }
     if enhanced {
-        trace.push(format!("positive enhanced via {}", crate::prompt::resolve_provider_label(&opts.provider)));
+        let label = crate::prompt::resolve_provider_label(&opts.provider);
+        if positive_failed {
+            trace.push(format!(
+                "positive enhance FAILED via {label} — kept verbatim (see the WARN above: bad key / \
+                 blocked / truncated; try a different --compile-provider or --no-enhance)"
+            ));
+        } else {
+            trace.push(format!("positive enhanced via {label}"));
+        }
     } else {
         trace.push("positive kept verbatim (--no-enhance)".to_string());
     }
@@ -711,7 +721,16 @@ async fn cached_call(
     }
     let out = match crate::prompt::complete(provider, system, user, eargs).await {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => return None,
+        Ok(_) => {
+            tracing::warn!(target: "plakat", "compile: {provider} returned empty for {namespace} — falling back");
+            return None;
+        }
+        Err(e) => {
+            // Surface the real reason (HTTP status, SAFETY/MAX_TOKENS finishReason, bad key) instead of a
+            // silent verbatim fallback — this is what made a failed enhance look like a success.
+            tracing::warn!(target: "plakat", "compile: {provider} call failed for {namespace}: {e}");
+            return None;
+        }
     };
     if let Some(k) = &key {
         cache::store(namespace, k, &out);
