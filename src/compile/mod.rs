@@ -163,6 +163,8 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "unique-files", "keep-prenaturalize",
     // SD3 ControlNet opt-in (memory-heavy; off by default)
     "sd3controlnet",
+    // 6.28 two-pass structure: SDXL/composition draft → task-model img2img finish
+    "control-generate", "control-generate-strength",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
@@ -770,18 +772,39 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
     // Scenes are independent → run up to N concurrently. `buffered` preserves
     // input order, so the emitted task order is deterministic regardless of N.
     let n = effective_parallelism(opts.parallel, &opts.provider);
+    // Live progress: each scene fires several LLM calls (translate + positive + negative), which used to
+    // leave the screen frozen until the final trace. Emit a header + a per-scene ✓ as each completes.
+    let total = active.len();
+    let label = crate::prompt::resolve_provider_label(&opts.provider);
+    crate::ui::progress::println(&format!(
+        "  compiling {total} scene(s) via {label}{}…",
+        if n > 1 { format!(" ({n} in parallel)") } else { String::new() }
+    ));
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let tick = |name: &str| {
+        let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        crate::ui::progress::println(&format!("  {} {k}/{total} · {name}", console::style("✓").green()));
+    };
     let mut compiled: Vec<emitter::CompiledScene> = if n <= 1 {
         let mut v = Vec::with_capacity(active.len());
         for s in active.iter().copied() {
-            v.push(compile_one_scene(s, opts, &eargs).await);
+            let r = compile_one_scene(s, opts, &eargs).await;
+            tick(&s.name);
+            v.push(r);
         }
         v
     } else {
         use futures_util::stream::{self, StreamExt};
-        stream::iter(active.iter().copied().map(|s| compile_one_scene(s, opts, &eargs)))
-            .buffered(n)
-            .collect()
-            .await
+        let eargs_ref = &eargs;
+        let tick_ref = &tick;
+        stream::iter(active.iter().copied().map(|s| async move {
+            let r = compile_one_scene(s, opts, eargs_ref).await;
+            tick_ref(&s.name);
+            r
+        }))
+        .buffered(n)
+        .collect()
+        .await
     };
 
     // De-duplicate AUTO-derived names (two scenes can slug to the same words) — a numeric suffix
