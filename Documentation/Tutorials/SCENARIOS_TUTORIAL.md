@@ -350,8 +350,17 @@ the keepers**.
   in `culls/`, until `min` pass or `max-tries` rounds elapse. It never promotes a failing frame to hit the
   number. Default `1`.
 - **`max-tries=`** cap on generation rounds (the anti-death-march guard). Default `5`.
-- **`by=`** `ai-tell` (default, weight-free) or `aesthetic` (LAION scorer, higher-is-better; falls back to
-  AI-tell if it can't load).
+- **`by=`** `ai-tell` (default, weight-free) · `aesthetic` (LAION scorer) · **`vision`** *(6.28)* — a
+  vision LLM rates each frame **0–10 on quality + faithfulness**: correct anatomy (all limbs, natural poses,
+  proper hands), the **right attributes/counts** (e.g. the vest on the *right* person), and **no
+  hallucinated extras** — ignoring art style. This is the only axis that judges what a cheap scorer can't,
+  so it keeps the anatomically-right frame and culls the broken one. Costs one vision call per scored image
+  (cached per run). Provider-agnostic: Gemini (native) or any OpenAI-compatible vision endpoint via the
+  DeepSeek slot; falls back to AI-tell (with a note) if no vision provider is configured.
+- **`coach=on`** *(6.28)* — the **corrective aide**: when a round can't reach `min`, a vision LLM looks at
+  the best failing frame, names the defects (broken limbs, wrong person, hallucinations, negative
+  violations), and **rewrites the prompt + negatives** — keeping your subject/scene/style — so the next
+  regeneration rounds stop re-rolling the same broken dice. Needs a vision provider.
 - **`anatomy=`** `on` (weight 0.25) or `<0..1>` — folds a **SCRFD face-coherence** penalty into the score,
   so regeneration also chases better **faces**: frames whose detected faces are weak/garbled score worse;
   face-less scenes (landscapes) are neutral. Catches **faces, not hands** (no weight-free hand detector) —

@@ -42,6 +42,34 @@ pub struct RankArgs {
     /// hand-media (watercolor strokes + paper). Only affects the texture family of the suggestion.
     #[arg(help_heading = "Ranking", long, default_value_t = false)]
     pub photo: bool,
+
+    /// Rank by the **vision judge** (0–10, higher = better) instead of aesthetic/AI-tell: a vision LLM
+    /// scores each image on QUALITY + FAITHFULNESS to `--prompt` — correct anatomy, right attributes/counts,
+    /// no hallucinated extras — ignoring art style. Needs a vision provider (`--provider`, default `auto` →
+    /// Gemini if `GEMINI_API_KEY` is set) and `--prompt`. One vision call per image. `--write` records `vision`.
+    #[arg(help_heading = "Vision", long, default_value_t = false)]
+    pub vision: bool,
+
+    /// The intended prompt the images were generated from — the vision judge/coach measure faithfulness
+    /// against it. Required for `--vision` / `--coach`.
+    #[arg(help_heading = "Vision", long, value_name = "TEXT")]
+    pub prompt: Option<String>,
+
+    /// The negative prompt that was in force (what was forbidden). Sharpens `--coach`'s defect detection.
+    #[arg(help_heading = "Vision", long, value_name = "TEXT", default_value = "")]
+    pub negative: String,
+
+    /// **Coach**: for each image, ask a vision LLM to name the concrete defects (broken anatomy, wrong
+    /// person, hallucinations, negative violations) and propose a corrective **prompt + negative** rewrite
+    /// — keeping your subject/scene/style. The aide for "why is this bad and what do I change?". Implies a
+    /// vision provider; pairs naturally with `--vision`. Needs `--prompt`.
+    #[arg(help_heading = "Vision", long, default_value_t = false)]
+    pub coach: bool,
+
+    /// Vision provider for `--vision` / `--coach`: `auto` (default) · `gemini` · `deepseek` (or any
+    /// OpenAI-compatible vision endpoint configured in that slot) · `local`.
+    #[arg(help_heading = "Vision", long, value_name = "NAME", default_value = "auto")]
+    pub provider: String,
 }
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp"];
@@ -128,6 +156,101 @@ pub async fn run(args: RankArgs, device: Device) -> Result<()> {
                             }
                         }
                         None => println!("        {}", style("↳ already natural — no change").dim()),
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Vision judge / coach — a vision LLM scores QUALITY + FAITHFULNESS (anatomy, attributes, no
+    // hallucination) against the intended prompt, and (with --coach) proposes a corrective prompt rewrite.
+    if args.vision || args.coach {
+        let prompt = args
+            .prompt
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+            .context("--vision / --coach need --prompt \"<the intended prompt>\" to judge faithfulness against")?;
+        let resolved = crate::prompt::vision::resolve_vision_provider(&args.provider);
+        anyhow::ensure!(
+            !resolved.starts_with("local"),
+            "no vision provider available for `{}` (set GEMINI_API_KEY, or pass --provider gemini|deepseek). \
+             `--vision`/`--coach` need a vision-capable LLM.",
+            args.provider
+        );
+
+        let mut scored: Vec<(PathBuf, Option<f32>)> = Vec::with_capacity(files.len());
+        for f in &files {
+            let s = if args.vision {
+                crate::cli::scenario::vision_score(&args.provider, f, prompt).await
+            } else {
+                None
+            };
+            scored.push((f.clone(), s));
+        }
+        // Best first when we have vision scores (higher = better); otherwise keep input order.
+        if args.vision {
+            scored.sort_by(|a, b| {
+                b.1.unwrap_or(-1.0)
+                    .partial_cmp(&a.1.unwrap_or(-1.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if args.write {
+                for (p, s) in &scored {
+                    if let Some(v) = s {
+                        let _ = crate::imaging::io::patch_sidecar_ai_tell(p, *v as f64);
+                    }
+                }
+            }
+            if let Some(n) = args.top {
+                scored.truncate(n);
+            }
+        }
+
+        if args.json {
+            let mut items: Vec<String> = Vec::with_capacity(scored.len());
+            for (p, s) in &scored {
+                let mut obj = format!("  {{\"path\": {:?}", p.display().to_string());
+                if let Some(v) = s {
+                    obj.push_str(&format!(", \"vision\": {v:.2}"));
+                }
+                if args.coach {
+                    if let Some(c) =
+                        crate::cli::scenario::vision_critique(&args.provider, p, prompt, &args.negative).await
+                    {
+                        obj.push_str(&format!(
+                            ", \"defects\": {:?}, \"suggested_prompt\": {:?}, \"suggested_negative\": {:?}",
+                            c.defects, c.prompt, c.extra_negative
+                        ));
+                    }
+                }
+                obj.push('}');
+                items.push(obj);
+            }
+            println!("[\n{}\n]", items.join(",\n"));
+        } else {
+            for (rank, (p, s)) in scored.iter().enumerate() {
+                let tag = if args.vision && rank == 0 {
+                    style("★").green().to_string()
+                } else {
+                    " ".to_string()
+                };
+                match s {
+                    Some(v) => println!("{tag} {v:5.2}  {}", p.display()),
+                    None => println!("{tag}    ·   {}", p.display()),
+                }
+                if args.coach {
+                    match crate::cli::scenario::vision_critique(&args.provider, p, prompt, &args.negative).await {
+                        Some(c) => {
+                            if !c.defects.is_empty() {
+                                println!("        {} {}", style("↳ defects").red(), c.defects);
+                            }
+                            println!("        {} {}", style("↳ prompt").cyan(), c.prompt);
+                            if !c.extra_negative.trim().is_empty() {
+                                println!("        {} {}", style("↳ negative").yellow(), c.extra_negative);
+                            }
+                        }
+                        None => println!("        {}", style("↳ coach: no critique returned").dim()),
                     }
                 }
             }

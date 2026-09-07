@@ -70,6 +70,47 @@ The aesthetic score is the **first sort key** for the forthcoming
 collection manager, so ranking today lines your library up for
 quality-first browsing later.
 
+## Vision judge & coach — the corrective aide
+
+Aesthetic and AI-tell scores reward a smooth, pleasing look — which is
+*anti-correlated* with the things that actually break: bad anatomy,
+hallucinated extras, wrong attributes, ignored negatives. A smooth image
+with a missing arm outscores a slightly rougher, anatomically-correct one.
+`--vision` fixes that by asking a **vision LLM** to judge what a pixel
+statistic can't:
+
+```bash
+# Score 0–10 on QUALITY + FAITHFULNESS to the prompt (anatomy, attributes,
+# counts, no hallucinations) — art style ignored. Higher = better.
+plakat rank ./out --vision \
+  --prompt "a man and a woman sitting on a park bench, autumn" \
+  --top 5
+```
+
+Needs a vision provider: `--provider auto` (the default) uses **Gemini**
+when `GEMINI_API_KEY` is set; `--provider deepseek` uses any
+OpenAI-compatible vision endpoint in that slot. One vision call per image.
+
+`--coach` turns ranking into an *aide*: for each image it names the
+concrete defects and proposes a corrective **prompt + negative** rewrite —
+keeping your subject, scene, and style. Point it at the frame you're
+unhappy with:
+
+```bash
+plakat rank ./out/broken_frame.png --coach \
+  --prompt   "a man and a woman sitting on a park bench, autumn" \
+  --negative "missing limbs, extra fingers, deformed hands"
+# ★  4.20  broken_frame.png
+#         ↳ defects  woman's left arm missing below elbow; third hand on bench
+#         ↳ prompt   ... , both arms fully visible, natural relaxed pose, correct anatomy, exactly two people
+#         ↳ negative missing limbs, extra fingers, deformed hands, third arm, floating hand
+```
+
+Combine `--vision --coach` to both score and critique. The same judge and
+coach drive `ranking: by=vision coach=on` inside a scenario (see the
+[Scenarios tutorial](SCENARIOS_TUTORIAL.md)) — there they also *regenerate*
+until enough frames pass, feeding the coach's rewrite into the next rounds.
+
 ## Where to next
 
 - **Generate the batches you'll rank** → [`GENERATE_TUTORIAL.md`](GENERATE_TUTORIAL.md)

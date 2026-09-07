@@ -1205,35 +1205,46 @@ fn resolve_scenario_compositions(s: &mut ScenarioFile) -> Result<Vec<String>> {
 /// field. `parse` returns `None` for a disabled/empty spec so the caller skips ranking entirely.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct RankingSpec {
-    /// false = AI-tell (weight-free, no download; lower is better), true = LAION aesthetic (higher better).
+    /// AI-tell (weight-free, lower is better) unless one of the below is set.
     by_aesthetic: bool,
-    /// Pass cutoff: AI-tell `score <= threshold`, aesthetic `score >= threshold`.
+    /// 6.28: `by=vision` — a vision LLM rates each frame 0–10 on CORRECTNESS (anatomy/limbs/coherence/
+    /// scene-match). Higher is better. This is the only axis that judges what a cheap scorer can't — it
+    /// keeps the anatomically-right frame and culls the broken one. Costs one vision call per scored image.
+    by_vision: bool,
+    /// Pass cutoff: lower-is-better metrics `score <= threshold`, higher-is-better `score >= threshold`.
     threshold: f32,
-    /// Minimum images that must pass before the task is done (Mode-C floor). Regenerate until met.
+    /// Minimum GOOD (passing) images. If fewer pass, regenerate until met (or `max_tries`).
     min: usize,
     /// Maximum generation ROUNDS (each round = one `count:` batch). The death-march guard.
     max_tries: usize,
-    /// 6.28: anatomy-aware weight (0 = off). Folds a SCRFD face-COHERENCE penalty into the score so
-    /// regeneration also chases better faces: frames whose detected faces are weak/garbled get penalized;
-    /// face-less scenes (landscapes) are neutral. Catches faces, NOT hands (no weight-free hand detector).
+    /// Anatomy-aware weight (0 = off) — a SCRFD face-coherence penalty folded into the score.
     anatomy: f32,
+    /// 6.28: `coach=on` — when a round fails to reach `min`, a vision LLM critiques the best failing frame
+    /// and rewrites the prompt/negatives; subsequent regeneration rounds use the revision. Needs a vision
+    /// provider. The corrective aide: it doesn't just judge, it tries to FIX the prompt.
+    coach: bool,
 }
 
 impl RankingSpec {
-    /// `off`/empty → None. `on` → defaults. Otherwise token spec: `by=ai-tell|aesthetic threshold= min= max-tries= anatomy=`.
+    /// `off`/empty → None. `on` → defaults. Token spec: `by=ai-tell|aesthetic|vision threshold= min= max-tries= anatomy= coach=on`.
     fn parse(spec: &str) -> Option<RankingSpec> {
         let s = spec.trim();
         if s.is_empty() || s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("no") {
             return None;
         }
         let tok = |k: &str| crate::naturalize::spec_token(s, k);
-        let by_aesthetic = tok("by").map(|v| v.eq_ignore_ascii_case("aesthetic")).unwrap_or(false);
-        let threshold = tok("threshold")
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(if by_aesthetic { 6.0 } else { 0.5 });
+        let by = tok("by").unwrap_or("ai-tell");
+        let by_aesthetic = by.eq_ignore_ascii_case("aesthetic");
+        let by_vision = by.eq_ignore_ascii_case("vision");
+        let threshold = tok("threshold").and_then(|v| v.parse::<f32>().ok()).unwrap_or(if by_vision {
+            7.0 // vision rates 0–10
+        } else if by_aesthetic {
+            6.0
+        } else {
+            0.5
+        });
         let min = tok("min").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
         let max_tries = tok("max-tries").and_then(|v| v.parse::<usize>().ok()).unwrap_or(5).max(1);
-        // `anatomy=on` → a sensible default weight; `anatomy=<f>` → explicit; absent/off → 0.
         let anatomy = tok("anatomy")
             .map(|v| {
                 if v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true") {
@@ -1244,18 +1255,28 @@ impl RankingSpec {
             })
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
-        Some(RankingSpec { by_aesthetic, threshold, min, max_tries, anatomy })
+        let coach = tok("coach").is_some_and(|v| v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"));
+        Some(RankingSpec { by_aesthetic, by_vision, threshold, min, max_tries, anatomy, coach })
     }
 
-    /// Whether a score clears the bar (AI-tell: lower is better; aesthetic: higher is better).
+    /// Higher-is-better metric (aesthetic / vision) vs lower-is-better (AI-tell).
+    fn higher_is_better(&self) -> bool {
+        self.by_aesthetic || self.by_vision
+    }
+
+    /// Whether a score clears the bar.
     fn passes(&self, score: f32) -> bool {
-        if self.by_aesthetic { score >= self.threshold } else { score <= self.threshold }
+        if self.higher_is_better() { score >= self.threshold } else { score <= self.threshold }
     }
 
-    /// "Badness" key for sorting worst→best-cull order (ascending badness = best first). AI-tell is already
-    /// badness (higher = worse); aesthetic is inverted (higher = better → negate).
+    /// "Badness" key for sorting worst→best-cull order (ascending badness = best first).
     fn badness(&self, score: f32) -> f32 {
-        if self.by_aesthetic { -score } else { score }
+        if self.higher_is_better() { -score } else { score }
+    }
+
+    /// Short label for the metric (progress display).
+    fn metric(&self) -> &'static str {
+        if self.by_vision { "vision" } else if self.by_aesthetic { "aesthetic" } else { "ai-tell" }
     }
 }
 
@@ -1278,84 +1299,214 @@ fn face_incoherence(det: &crate::pipelines::scrfd::SCRFDDetector, path: &std::pa
     (1.0 - mean).clamp(0.0, 1.0)
 }
 
-fn rank_dir(
+/// This task's raw renders across ALL regeneration rounds — `plakat…-<seed>.png` (trailing numeric seed).
+/// Skips grids, `.natural` siblings, previews. The unique-files run dir isolates this task's rounds.
+fn raw_render_paths(task_out: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(task_out) else { return Vec::new() };
+    rd.flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            if p.extension().and_then(|x| x.to_str()) != Some("png") {
+                return false;
+            }
+            let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("");
+            stem.starts_with("plakat")
+                && !stem.contains("grid")
+                && !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(".natural."))
+                && stem.rsplit('-').next().and_then(|s| s.parse::<u64>().ok()).is_some()
+        })
+        .collect()
+}
+
+/// `by=vision`: a vision LLM rates a frame 0–10 on CORRECTNESS (anatomy/limbs/coherence/scene-match).
+/// Provider-agnostic (`describe_image` → Gemini native, or any OpenAI-compatible vision endpoint via the
+/// DeepSeek slot). Returns `None` if the provider has no vision or the reply has no number.
+pub(crate) async fn vision_score(provider: &str, path: &std::path::Path, prompt: &str) -> Option<f32> {
+    let instruction = format!(
+        "Judge how well this AI image realises its intended prompt AND how correct it is — IGNORE art style \
+         (any style is fine, do not reward or penalise it). Intended image:\n\"{prompt}\"\n\nRate 0-10 on \
+         QUALITY + FAITHFULNESS. 10 = every requested subject/object is present with the CORRECT attributes \
+         and counts, anatomy is correct (all limbs, proper five-fingered hands, natural poses), and there \
+         are NO hallucinated extras (nothing present that the prompt did not ask for). HEAVILY penalize: \
+         broken/missing/extra limbs, deformed hands, unnatural/impossible poses, wrong attributes (e.g. a \
+         garment on the wrong person), wrong counts, and hallucinated objects/people not in the prompt. \
+         Output ONLY a single number 0-10, nothing else."
+    );
+    let resp = match crate::prompt::vision::describe_image(provider, path, &instruction).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Loud, not silent: a broken vision call would otherwise score every frame 0.0 and burn every
+            // regeneration round invisibly (exactly the class of failure that hid the retired-model bug).
+            tracing::warn!(target: "plakat", "ranking: vision score failed via {provider}: {e}");
+            return None;
+        }
+    };
+    let num: f32 = resp
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .find(|s| !s.is_empty() && s.parse::<f32>().is_ok())?
+        .parse()
+        .ok()?;
+    Some(num.clamp(0.0, 10.0))
+}
+
+/// Score every raw render (best first). AI-tell (weight-free) / aesthetic (LAION) / vision (LLM, cached).
+/// The anatomy face-coherence penalty is folded in for the cheap metrics; vision already judges anatomy.
+async fn rank_dir(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
     face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
+    provider: &str,
+    prompt: &str,
+    vcache: &mut std::collections::HashMap<PathBuf, f32>,
 ) -> Vec<(PathBuf, f32)> {
     let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
-    let Ok(rd) = std::fs::read_dir(task_out) else { return imgs };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("png") {
-            continue;
-        }
-        let stem = p.file_stem().and_then(|x| x.to_str()).unwrap_or("");
-        // Raw renders only across ALL regeneration rounds: `plakat…-<seed>` (trailing numeric seed). Skips
-        // grids, `.natural` siblings, previews. (The unique-files run dir isolates this task's rounds.)
-        let is_raw = stem.starts_with("plakat")
-            && !stem.contains("grid")
-            && !p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains(".natural."))
-            && stem.rsplit('-').next().and_then(|s| s.parse::<u64>().ok()).is_some();
-        if !is_raw {
-            continue;
-        }
-        // `by=aesthetic` → LAION scorer (higher is better); else weight-free AI-tell (lower is better).
-        let base = match scorer {
-            Some(sc) => match sc.score_path(&p) {
+    for p in raw_render_paths(task_out) {
+        let base = if ranking.by_vision {
+            match vcache.get(&p) {
+                Some(&v) => v,
+                None => {
+                    let v = vision_score(provider, &p, prompt).await.unwrap_or(0.0);
+                    vcache.insert(p.clone(), v);
+                    v
+                }
+            }
+        } else if let Some(sc) = scorer {
+            match sc.score_path(&p) {
                 Ok(v) => v,
                 Err(_) => continue,
-            },
-            None => match image::open(&p).map(|i| i.to_rgb8()) {
+            }
+        } else {
+            match image::open(&p).map(|i| i.to_rgb8()) {
                 Ok(img) => crate::naturalize::ai_tell_score(&img),
                 Err(_) => continue,
-            },
+            }
         };
-        // Fold the anatomy (face-coherence) penalty into the score, in the metric's own direction: AI-tell
-        // is badness (add), aesthetic is goodness (subtract). Neutral when anatomy=0 or no detector.
-        let score = match (ranking.anatomy > 0.0, face_det) {
+        // Anatomy penalty for the cheap metrics only (vision already accounts for anatomy).
+        let score = match (ranking.anatomy > 0.0 && !ranking.by_vision, face_det) {
             (true, Some(det)) => {
                 let pen = ranking.anatomy * face_incoherence(det, &p);
-                if ranking.by_aesthetic { base - pen } else { base + pen }
+                if ranking.higher_is_better() { base - pen } else { base + pen }
             }
             _ => base,
         };
         imgs.push((p, score));
     }
-    // Best first (lowest badness).
     imgs.sort_by(|a, b| ranking.badness(a.1).partial_cmp(&ranking.badness(b.1)).unwrap_or(std::cmp::Ordering::Equal));
     imgs
 }
 
-/// How many of this task's raw renders currently PASS the threshold — the regenerate-until-`min` gate.
-fn count_passers(
+/// How many raw renders currently PASS the threshold — the regenerate-until-`min` gate.
+async fn count_passers(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
     face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
+    provider: &str,
+    prompt: &str,
+    vcache: &mut std::collections::HashMap<PathBuf, f32>,
 ) -> usize {
-    rank_dir(task_out, ranking, scorer, face_det).iter().filter(|(_, s)| ranking.passes(*s)).count()
+    rank_dir(task_out, ranking, scorer, face_det, provider, prompt, vcache)
+        .await
+        .iter()
+        .filter(|(_, s)| ranking.passes(*s))
+        .count()
+}
+
+/// 6.28 COACH: when a round can't reach `min`, ask a vision LLM to critique the best failing frame and
+/// rewrite the prompt/negatives. Returns `(revised_prompt, merged_negative)` for the next rounds, or `None`
+/// (no vision provider / unparseable reply → regeneration just re-rolls seeds).
+/// A vision LLM's critique of one image against its prompt: the concrete defects it sees, a corrective
+/// prompt rewrite (same subject/scene/style), and extra negative terms. Shared by the scenario COACH and
+/// `plakat rank --coach`.
+pub(crate) struct VisionCritique {
+    pub defects: String,
+    pub prompt: String,
+    /// The extra negative terms only (not merged with any prior negative).
+    pub extra_negative: String,
+}
+
+/// Ask a vision LLM to critique ONE image against its prompt/negative and propose a corrective rewrite.
+/// Style-agnostic, anatomy/hallucination/faithfulness-focused. `None` on no-provider / unparseable reply.
+pub(crate) async fn vision_critique(
+    provider: &str,
+    path: &std::path::Path,
+    cur_prompt: &str,
+    cur_negative: &str,
+) -> Option<VisionCritique> {
+    let instruction = format!(
+        "You are an art director fixing an AI image. It was generated from this PROMPT:\n\"{cur_prompt}\"\n\n\
+         and these things were FORBIDDEN (negative prompt):\n\"{cur_negative}\"\n\nJudge the ACTUAL problems, \
+         IGNORING art style: (1) In ONE line, name the concrete DEFECTS — broken/missing/extra limbs, \
+         deformed hands, unnatural poses, wrong attributes or wrong person (e.g. a garment on the wrong \
+         figure), wrong counts, HALLUCINATED objects/people the prompt never asked for, and anything present \
+         that the negative forbids. (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
+         the SAME art style/medium exactly as written (do not change or add a style) — add only concrete \
+         corrective cues (e.g. 'both arms visible, natural relaxed pose, correct anatomy, only the people \
+         listed'). (3) Extra negative terms targeting the defects. Format EXACTLY, one per line:\nDEFECTS: \
+         <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
+    );
+    let resp = match crate::prompt::vision::describe_image(provider, path, &instruction).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(target: "plakat", "coach: vision critique failed via {provider}: {e}");
+            return None;
+        }
+    };
+    let field = |tag: &str| resp.lines().find_map(|l| l.trim().strip_prefix(tag).map(|s| s.trim().to_string()));
+    let new_prompt = field("PROMPT:").filter(|s| !s.is_empty())?;
+    Some(VisionCritique {
+        defects: field("DEFECTS:").unwrap_or_default(),
+        prompt: new_prompt,
+        extra_negative: field("NEGATIVE:").unwrap_or_default(),
+    })
+}
+
+async fn coach_revise(
+    task_out: &std::path::Path,
+    cur_prompt: &str,
+    cur_negative: &str,
+    provider: &str,
+    ranking: &RankingSpec,
+    scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+    face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
+    vcache: &mut std::collections::HashMap<PathBuf, f32>,
+) -> Option<(String, String)> {
+    let imgs = rank_dir(task_out, ranking, scorer, face_det, provider, cur_prompt, vcache).await;
+    let best = imgs.first()?.0.clone();
+    let crit = vision_critique(provider, &best, cur_prompt, cur_negative).await?;
+    if !crit.defects.is_empty() {
+        crate::ui::progress::println(&format!("  {} sees: {}", style("coach").magenta(), crit.defects));
+    }
+    let merged_neg = if crit.extra_negative.trim().is_empty() {
+        cur_negative.to_string()
+    } else {
+        format!("{cur_negative}, {}", crit.extra_negative)
+    };
+    Some((crit.prompt, merged_neg))
 }
 
 /// Final ranking: `min` means minimum GOOD (passing) images. Keep every image that PASSES the threshold,
 /// cull the rest into `culls/` — never promote a failing frame to hit a count (that's what regeneration is
 /// for). If nothing passed after regeneration, keep the single best so the task isn't empty, and warn.
 /// Returns `(kept, culled)`.
-fn cull_to_passers(
+async fn cull_to_passers(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
     face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
+    provider: &str,
+    prompt: &str,
+    vcache: &mut std::collections::HashMap<PathBuf, f32>,
 ) -> (usize, usize) {
-    let imgs = rank_dir(task_out, ranking, scorer, face_det);
+    let imgs = rank_dir(task_out, ranking, scorer, face_det, provider, prompt, vcache).await;
     let n = imgs.len();
     if n == 0 {
         return (0, 0);
     }
     let passers = imgs.iter().filter(|(_, s)| ranking.passes(*s)).count();
     let keep = passers.max(1).min(n); // never leave the task with zero images
-    let metric = if ranking.by_aesthetic { "aesthetic" } else { "ai-tell" };
+    let metric = ranking.metric();
     for (idx, (p, score)) in imgs.iter().enumerate() {
         let verdict = if idx < keep { "keep" } else { "cull" };
         let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -3247,6 +3398,18 @@ pub async fn run_with_events(
         },
         _ => None,
     };
+    // 6.28: vision provider for `by=vision` / `coach` (Gemini native, or an OpenAI-compatible vision
+    // endpoint via the DeepSeek slot). Uses the scenario's enhancer provider; `local` = no vision.
+    let vprovider = enhancer.clone();
+    let vision_available = !crate::prompt::vision::resolve_vision_provider(&vprovider).starts_with("local");
+    if let Some(rk) = &ranking_cfg {
+        if (rk.by_vision || rk.coach) && !vision_available {
+            crate::ui::progress::println(&format!(
+                "  {} ranking by=vision/coach needs a vision provider (set GEMINI_API_KEY, or a vision-capable OpenAI-compatible endpoint) — falling back to AI-tell, coach off",
+                style("warn:").yellow().bold(),
+            ));
+        }
+    }
 
     for (idx, task) in s.tasks.iter().enumerate() {
         // Report any task(s) that finished since the last iteration, then mark this
@@ -4389,15 +4552,27 @@ pub async fn run_with_events(
         // per-task `style`, and global `upscale` key off the contiguous `[task_seed, task_seed+count)` band,
         // which multi-round regeneration + culling would break; those tasks skip ranking (with a note).
         let task_can_rank = task.artefacts.is_empty() && task.style.is_none() && !s.upscale.upscale;
+        // Effective ranking spec + whether to use the aesthetic scorer. Fall back to AI-tell when the
+        // chosen provider isn't available (vision → no vision provider; aesthetic → scorer didn't load),
+        // and disable coach without vision. A vision/aesthetic threshold (>1) resets to the AI-tell 0.5.
         let task_rank: Option<(RankingSpec, bool)> = ranking_cfg.map(|rk| {
-            let use_aesthetic = rk.by_aesthetic && aesthetic_scorer.is_some();
-            let eff = if rk.by_aesthetic && !use_aesthetic {
-                RankingSpec { by_aesthetic: false, threshold: 0.5, ..rk }
-            } else {
-                rk
-            };
+            let mut eff = rk;
+            if (eff.by_vision || eff.coach) && !vision_available {
+                eff.by_vision = false;
+                eff.coach = false;
+                if eff.threshold > 1.0 {
+                    eff.threshold = 0.5;
+                }
+            }
+            let use_aesthetic = eff.by_aesthetic && aesthetic_scorer.is_some();
+            if eff.by_aesthetic && !use_aesthetic {
+                eff.by_aesthetic = false;
+                eff.threshold = 0.5;
+            }
             (eff, use_aesthetic)
         });
+        // Per-task vision-score cache so regeneration rounds don't re-score prior frames.
+        let mut vcache: std::collections::HashMap<PathBuf, f32> = std::collections::HashMap::new();
         if ranking_cfg.is_some() && !task_can_rank {
             crate::ui::progress::println(&format!(
                 "  {} task {:?} uses artefacts/style/upscale — ranking skipped (its seed-band post-processing is incompatible)",
@@ -5086,7 +5261,7 @@ pub async fn run_with_events(
                 // Only forwards steps / guidance when the user moved
                 // them off plakat's defaults so SD3's variant-specific
                 // recommendations stay in play otherwise.
-                let sd3_req = sd3::GenRequest {
+                let mut sd3_req = sd3::GenRequest {
                     prompt: final_prompt.clone(),
                     negative: eff_negative.clone(),
                     width: eff_w,
@@ -5195,7 +5370,7 @@ pub async fn run_with_events(
                         let scorer = if use_aes { aesthetic_scorer.as_ref() } else { None };
                         let mut round = 1u64;
                         while round < eff.max_tries as u64 {
-                            let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref());
+                            let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref(), &vprovider, &sd3_req.prompt, &mut vcache).await;
                             if good >= eff.min {
                                 break;
                             }
@@ -5205,6 +5380,27 @@ pub async fn run_with_events(
                                 eff.min,
                                 round + 1,
                             ));
+                            // COACH: a vision LLM critiques the best failing frame and rewrites the
+                            // prompt/negatives for the coming rounds — regeneration stops re-rolling the
+                            // same broken dice.
+                            if eff.coach {
+                                if let Some((np, nn)) = coach_revise(
+                                    &task_out,
+                                    &sd3_req.prompt,
+                                    &sd3_req.negative,
+                                    &vprovider,
+                                    &eff,
+                                    scorer,
+                                    face_detector.as_ref(),
+                                    &mut vcache,
+                                )
+                                .await
+                                {
+                                    crate::ui::progress::println(&format!("  {} revised the prompt for the next round(s)", style("coach").magenta()));
+                                    sd3_req.prompt = np;
+                                    sd3_req.negative = nn;
+                                }
+                            }
                             let fresh = task_seed.wrapping_add(round.wrapping_mul(65_536)) & (u32::MAX as u64);
                             let mut req = sd3_req.clone();
                             req.seed = Some(fresh);
@@ -5473,9 +5669,10 @@ pub async fn run_with_events(
         if task_can_rank {
             if let Some((eff, use_aesthetic)) = task_rank {
                 let scorer = if use_aesthetic { aesthetic_scorer.as_ref() } else { None };
-                let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref());
-                let (kept, culled) = cull_to_passers(&task_out, &eff, scorer, face_detector.as_ref());
-                let (metric, cmp) = if use_aesthetic { ("aesthetic", "≥") } else { ("ai-tell", "≤") };
+                let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref(), &vprovider, &final_prompt, &mut vcache).await;
+                let (kept, culled) = cull_to_passers(&task_out, &eff, scorer, face_detector.as_ref(), &vprovider, &final_prompt, &mut vcache).await;
+                let cmp = if eff.higher_is_better() { "≥" } else { "≤" };
+                let metric = eff.metric();
                 crate::ui::progress::println(&format!(
                     "  {} {metric} {cmp} {:.2} → {good} good (min {}), kept {kept}, culled {culled}{}",
                     style("ranking").cyan(),
@@ -7402,6 +7599,12 @@ mod tests {
         // anatomy: `on` → default weight 0.25; explicit `<f>`; absent → 0.
         assert_eq!(RankingSpec::parse("anatomy=on").unwrap().anatomy, 0.25);
         assert_eq!(RankingSpec::parse("anatomy=0.4").unwrap().anatomy, 0.4);
+        // by=vision → higher-is-better, default threshold 7 (0–10 scale); coach=on toggles the aide.
+        let v = RankingSpec::parse("by=vision coach=on min=2").unwrap();
+        assert!(v.by_vision && !v.by_aesthetic && v.higher_is_better() && v.coach);
+        assert_eq!((v.threshold, v.min), (7.0, 2));
+        assert!(v.passes(8.0) && !v.passes(6.5));
+        assert_eq!(RankingSpec::parse("by=vision").unwrap().coach, false);
         // full token spec.
         let full = RankingSpec::parse("by=aesthetic threshold=6.5 min=3 max-tries=8").unwrap();
         assert_eq!((full.by_aesthetic, full.threshold, full.min, full.max_tries), (true, 6.5, 3, 8));

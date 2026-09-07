@@ -125,9 +125,14 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
     // 6.26.x parity: scenario-global pass-through keys (aspect, naturalize, quality knobs, …).
     emit_passthrough(&mut o, "  ", &globals.passthrough);
     // Prompts are pre-enhanced by compile, so every task opts out of the
-    // scenario-time enhancer. `enhancer: auto` satisfies the schema (a missing
-    // key/no-LLM still validates); the per-task `enhance: false` does the work.
-    o.push_str("  enhancer: auto\n\n");
+    // scenario-time enhancer via per-task `enhance: false`. The scenario-level
+    // `enhancer:` still names the provider the *runtime* uses for vision ranking
+    // (`ranking: by=vision` / `coach=on`), so we emit the compile provider rather
+    // than a bare `auto` — `--compile-provider gemini` ⇒ `enhancer: gemini`, and
+    // the by=vision judge/coach then use Gemini too. `auto` still validates and
+    // resolves to whatever key is present.
+    let enh = if provider.trim().is_empty() { "auto" } else { provider.trim() };
+    o.push_str(&format!("  enhancer: {enh}\n\n"));
 
     // ---- scene/weather axes (6.27.0: authored from prose via `scene.<n>:`/`weather.<n>:`, else
     // the single default entry — byte-identical to the old output when no axes are defined). ----
