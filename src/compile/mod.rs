@@ -164,7 +164,8 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     // SD3 ControlNet opt-in (memory-heavy; off by default)
     "sd3controlnet",
     // 6.28 two-pass structure: SDXL/composition draft → task-model img2img finish
-    "control-generate", "control-generate-strength",
+    "control-generate", "control-generate-strength", "control-generate-count", "control-generate-min-score",
+    "control-generate-tries",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)

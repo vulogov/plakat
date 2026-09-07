@@ -433,7 +433,24 @@ control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower 
 ```
 
 - **Pass 1** runs each task's prompt on the named model (e.g. `sdxl`, which places figures far better than
-  SD3.5) → a `structure-draft.png`.
+  SD3.5) and **vision-ranks the drafts** — a bad layout dooms the finish, so it ranks the *foundation*, not
+  just the output. `control-generate-count` drafts (default **4**) are scored 0–10 against the prompt (same
+  faithfulness judge as `by=vision`: figures/counts/completeness — missing town/sky/sun tanks the score),
+  and the best is kept as `structure-draft.png` (numbered drafts stay beside it for inspection).
+- **Coached structure** — ranking alone can only *pick* from what SDXL rolled; the structure pass also
+  **optimises the prompt on the fly**. Each of up to `control-generate-tries` rounds (default **3**) ranks
+  `count` drafts, and if the best still doesn't match the prompt (missing town/sun, wrong figure count), a
+  vision LLM rewrites the *structure* prompt for the next round — stopping early when a draft clears the bar
+  (`control-generate-min-score`, else 7.0) or when the coach repeats itself (same wall). The finish pass
+  keeps your original prompt; only the structure search is coached. The full structure-coaching trail (each
+  round's prompt + score + the defects the coach named) is preserved in the winning frame's sidecar under
+  `extras.structure_coach_history`, so a good foundation is reproducible.
+- **`control-generate-min-score`** *(optional)* — the coach's target **and** the **refuse** bar: skip the
+  task when even the best draft across all rounds scores below it. Default off (always keep the best; coach
+  targets 7.0). Needs a vision provider (the scenario `enhancer:`); with none, one unranked draft is used.
+
+> Cost note: the structure search is `count × tries` SDXL generations + vision calls per task (default up
+> to 12) *before* the finish pass — thorough but slow. Lower `count`/`tries` for quicker runs.
 - **Pass 2** wires that draft back as the task's `init-image` (+ `strength`), so the task's own model
   img2img-finishes it in *its* style and LoRAs. SDXL places the figures; sd35 paints them.
 - **Memory-safe:** the whole structure pass runs and **unloads its model before the task model loads** — the

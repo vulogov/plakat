@@ -203,6 +203,20 @@ struct ScenarioFile {
     /// draft's structure; higher = more restyle. Default `0.55`.
     #[serde(rename = "control-generate-strength", default)]
     control_generate_strength: Option<f32>,
+    /// How many structure drafts to generate and VISION-RANK per task, keeping the best (a bad draft dooms
+    /// the finish — no img2img/prompt fiddling fixes a broken layout). Default `4`. Needs a vision provider;
+    /// with none, one draft is used unranked.
+    #[serde(rename = "control-generate-count", default)]
+    control_generate_count: Option<usize>,
+    /// Refuse the task when the BEST draft's vision score is below this (0–10) — structure too weak to be
+    /// worth finishing. Default: none (always keep the best draft). Set e.g. `6` to skip hopeless layouts.
+    #[serde(rename = "control-generate-min-score", default)]
+    control_generate_min_score: Option<f32>,
+    /// How many COACHED rounds the structure pass may run: each round ranks `count` drafts and, if the best
+    /// still doesn't match the prompt, a vision LLM rewrites the prompt for the next round (stops early when
+    /// good enough or the coach repeats). Default `3`; `1` = rank one batch, no coaching. Needs a vision provider.
+    #[serde(rename = "control-generate-tries", default)]
+    control_generate_tries: Option<usize>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -957,6 +971,17 @@ struct TaskDef {
     control_generate: Option<String>,
     #[serde(rename = "control-generate-strength", default)]
     control_generate_strength: Option<f32>,
+    #[serde(rename = "control-generate-count", default)]
+    control_generate_count: Option<usize>,
+    #[serde(rename = "control-generate-min-score", default)]
+    control_generate_min_score: Option<f32>,
+    #[serde(rename = "control-generate-tries", default)]
+    control_generate_tries: Option<usize>,
+    /// Runtime-only (never deserialized): the structure pass's coaching trail — each round's structure
+    /// prompt + best score + the defects the coach named — captured by the pre-pass and folded into the
+    /// winning-params sidecar so a good foundation is reproducible.
+    #[serde(skip)]
+    structure_trail: Option<String>,
 
     // ---------- v0.29 phase 2: per-task animate overrides ----------
 
@@ -1398,6 +1423,9 @@ struct Sd3WinnerMeta {
     task_seed: u64,
     count: u32,
     naturalize: Option<String>,
+    /// The control-generate structure pass's coaching trail (if any) — preserved so a good foundation is
+    /// reproducible alongside the finish pass's own history.
+    structure_trail: Option<String>,
 }
 
 impl Sd3WinnerMeta {
@@ -1464,6 +1492,9 @@ impl Sd3WinnerMeta {
                 hist.push_str(&format!("round {r} prompt: {p}\n"));
             }
             m.extras.push(("coach_history".into(), hist.trim_end().to_string()));
+        }
+        if let Some(t) = &self.structure_trail {
+            m.extras.push(("structure_coach_history".into(), t.clone()));
         }
         if let Some(n) = &self.naturalize {
             m.extras.push(("naturalize".into(), n.clone()));
@@ -1592,9 +1623,12 @@ pub(crate) async fn vision_critique(
          deformed hands, unnatural poses, wrong attributes or wrong person (e.g. a garment on the wrong \
          figure), wrong counts, HALLUCINATED objects/people the prompt never asked for, and anything present \
          that the negative forbids. (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
-         the SAME art style/medium exactly as written (do not change or add a style) — add only concrete \
-         corrective cues (e.g. 'both arms visible, natural relaxed pose, correct anatomy, only the people \
-         listed'). (3) Extra negative terms targeting the defects. Format EXACTLY, one per line:\nDEFECTS: \
+         the SAME art style/medium exactly as written (do not change or add a style). CRITICAL: PRESERVE \
+         EVERY element already described — not only the figures but the BACKGROUND, setting, architecture, \
+         landscape, sky, sun, weather and lighting. Never drop, omit, or shorten any of them; carry them all \
+         forward verbatim and add only concrete corrective cues (e.g. 'both arms visible, natural relaxed \
+         pose, correct anatomy, only the people listed, the full town street and sky remain visible behind \
+         them'). (3) Extra negative terms targeting the defects. Format EXACTLY, one per line:\nDEFECTS: \
          <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
     );
     let resp = match crate::prompt::vision::describe_image(provider, path, &instruction).await {
@@ -2151,10 +2185,18 @@ async fn control_generate_prepass(
         return Ok(()); // nothing asks for a structure pass
     }
     let g_strength = s.control_generate_strength;
+    let g_count = s.control_generate_count;
+    let g_min = s.control_generate_min_score;
+    let g_tries = s.control_generate_tries;
     let g_size = s.size.clone();
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
+    // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
+    // can't be ranked — fall back to a single unranked draft.
+    let vprovider = s.enhancer.clone().unwrap_or_else(|| "auto".into());
+    let vision_ok = !crate::prompt::vision::resolve_vision_provider(&vprovider).starts_with("local");
     let mut seed_off = 0u64;
+    let mut to_drop: Vec<usize> = Vec::new();
     for i in 0..s.tasks.len() {
         let cg = s.tasks[i]
             .control_generate
@@ -2185,45 +2227,157 @@ async fn control_generate_prepass(
         let (w, h) = parse_wh(s.tasks[i].size.as_deref().or(g_size.as_deref())).unwrap_or((768, 768));
         let task_seed = s.tasks[i].seed.unwrap_or(base_seed + seed_off);
         seed_off += 1;
-        let task_out = out_root.join(safe_name(&s.tasks[i].name));
+        let name = s.tasks[i].name.clone();
+        let n_draft = if vision_ok {
+            s.tasks[i].control_generate_count.or(g_count).unwrap_or(4).max(1)
+        } else {
+            1
+        };
+        let tries = if vision_ok {
+            s.tasks[i].control_generate_tries.or(g_tries).unwrap_or(3).max(1)
+        } else {
+            1
+        };
+        let min_score = s.tasks[i].control_generate_min_score.or(g_min);
+        let target = min_score.unwrap_or(7.0); // "good enough" bar for the coach's early-stop
+        let task_out = out_root.join(safe_name(&name));
         let _ = std::fs::create_dir_all(&task_out);
-        let draft = task_out.join("structure-draft.png");
         crate::ui::progress::println(&format!(
-            "  {} {cg} structure pass → {task_model} img2img (strength {strength})",
+            "  {} {cg} structure pass · {n_draft} draft(s) × up to {tries} round(s){} → {task_model} img2img (strength {strength})",
             style("control-generate:").cyan(),
+            if vision_ok { " · vision-ranked + coached" } else { " · no vision provider — unranked" },
         ));
-        // Plain t2i draft on the composition model (SDXL lays out figures better than SD3.5). Forwarding a
-        // task `control:` canny into the draft is a follow-up (scenario→controlnet spec conversion).
-        let g = crate::api::Generate::new(&cg)
-            .prompt(&prompt)
-            .negative(&negative)
-            .size(w, h)
-            .seed(task_seed)
-            .steps(30)
-            .device(&device);
-        match g.run().await {
-            Ok(imgs) if !imgs.is_empty() => match imgs[0].save(&draft) {
-                Ok(()) => {
-                    s.tasks[i].init_image = Some(draft);
-                    s.tasks[i].strength = Some(strength);
+        // A bad layout dooms the finish (no img2img/prompt fiddling fixes it), so optimise the FOUNDATION:
+        // each round ranks `n_draft` drafts; if the best still doesn't match the prompt, a vision LLM
+        // rewrites the prompt for the next round (stops early when good enough or the coach repeats).
+        let mut cur_prompt = prompt.clone();
+        let mut best: Option<(std::path::PathBuf, f32)> = None;
+        let mut prev_defects: Option<String> = None;
+        let mut stuck = 0usize;
+        let mut trail: Vec<String> = Vec::new();
+        for round in 0..tries {
+            let mut round_best: Option<(std::path::PathBuf, f32)> = None;
+            for d in 0..n_draft {
+                let seed = task_seed.wrapping_add((round as u64) << 12).wrapping_add(d as u64);
+                let path = task_out.join(format!("structure-draft-r{round}-{d}.png"));
+                let g = crate::api::Generate::new(&cg)
+                    .prompt(&cur_prompt)
+                    .negative(&negative)
+                    .size(w, h)
+                    .seed(seed)
+                    .steps(30)
+                    .device(&device);
+                let img = match g.run().await {
+                    Ok(mut v) if !v.is_empty() => v.remove(0),
+                    Ok(_) => continue,
+                    Err(e) => {
+                        crate::ui::progress::println(&format!(
+                            "      {} r{round} draft {d} failed: {e}",
+                            style("control-generate:").yellow()
+                        ));
+                        continue;
+                    }
+                };
+                if img.save(&path).is_err() {
+                    continue;
                 }
-                Err(e) => crate::ui::progress::println(&format!(
-                    "  {} {:?}: draft save failed ({e}) — running plain t2i",
-                    style("control-generate:").yellow(),
-                    s.tasks[i].name,
-                )),
-            },
-            Ok(_) => crate::ui::progress::println(&format!(
-                "  {} {:?}: draft produced no image — running plain t2i",
-                style("control-generate:").yellow(),
-                s.tasks[i].name,
-            )),
-            Err(e) => crate::ui::progress::println(&format!(
-                "  {} {:?}: draft failed ({e}) — running plain t2i",
-                style("control-generate:").yellow(),
-                s.tasks[i].name,
-            )),
+                let score = if vision_ok {
+                    vision_score(&vprovider, &path, &prompt).await.unwrap_or(-1.0)
+                } else {
+                    -1.0
+                };
+                let is_best = round_best.as_ref().is_none_or(|(_, b)| score > *b);
+                crate::ui::progress::println(&format!(
+                    "      r{round} draft {d}  {}{}",
+                    if score >= 0.0 { format!("vision {score:.1}") } else { "(unscored)".to_string() },
+                    if is_best && vision_ok { "  ★" } else { "" },
+                ));
+                if is_best {
+                    round_best = Some((path, score));
+                }
+            }
+            let Some((rb_path, rb_score)) = round_best else { break };
+            trail.push(format!("round {round} prompt: {cur_prompt}"));
+            trail.push(format!("round {round} best: vision {rb_score:.1}"));
+            if best.as_ref().is_none_or(|(_, b)| rb_score > *b) {
+                best = Some((rb_path.clone(), rb_score));
+            }
+            // Good enough, last round, or no coaching → stop.
+            if rb_score >= target || round + 1 >= tries || !vision_ok {
+                if rb_score >= target {
+                    crate::ui::progress::println(&format!(
+                        "  {} structure good (vision {rb_score:.1} ≥ {target:.1}) after round {round}",
+                        style("control-generate:").green(),
+                    ));
+                }
+                break;
+            }
+            // Coach: critique the round's best draft and rewrite the prompt for the next round.
+            let Some(crit) = vision_critique(&vprovider, &rb_path, &cur_prompt, &negative).await else { break };
+            if !crit.defects.is_empty() {
+                crate::ui::progress::println(&format!(
+                    "  {} sees: {}",
+                    style("structure coach").magenta(),
+                    crit.defects,
+                ));
+                trail.push(format!("round {round} ← structure coach saw: {}", crit.defects));
+            }
+            let repeated = prev_defects.as_deref().is_some_and(|p| defects_similar(p, &crit.defects));
+            stuck = if repeated { stuck + 1 } else { 0 };
+            prev_defects = Some(crit.defects.clone());
+            if stuck >= STUCK_PATIENCE {
+                crate::ui::progress::println(&format!(
+                    "  {} same structure defects {} rounds — stopping (SDXL can't place this from a prompt)",
+                    style("structure coach stuck:").yellow(),
+                    stuck + 1,
+                ));
+                break;
+            }
+            cur_prompt = crit.prompt;
+            crate::ui::progress::println(&format!(
+                "  {} revised the structure prompt for round {}",
+                style("structure coach").magenta(),
+                round + 1,
+            ));
         }
+        let Some((best_path, best_score)) = best else {
+            crate::ui::progress::println(&format!(
+                "  {} {name:?}: no draft produced — running plain t2i",
+                style("control-generate:").yellow(),
+            ));
+            continue;
+        };
+        // Refuse (skip the task) when even the best draft is too weak — opt-in via `control-generate-min-score`.
+        if let Some(min) = min_score {
+            if best_score >= 0.0 && best_score < min {
+                crate::ui::progress::println(&format!(
+                    "  {} best draft {best_score:.1} < min {min:.1} — REFUSING task {name:?} (structure too weak; \
+                     refine the prompt, raise control-generate-count, or lower min-score)",
+                    style("control-generate:").red().bold(),
+                ));
+                to_drop.push(i);
+                continue;
+            }
+        }
+        // Canonical best → structure-draft.png, wired as the finish pass's init-image.
+        let draft = task_out.join("structure-draft.png");
+        let _ = std::fs::copy(&best_path, &draft);
+        crate::ui::progress::println(&format!(
+            "  {} picked {} ({}) → init for {task_model} img2img",
+            style("control-generate:").green(),
+            best_path.file_name().and_then(|s| s.to_str()).unwrap_or("draft"),
+            if best_score >= 0.0 { format!("vision {best_score:.1}") } else { "unranked".to_string() },
+        ));
+        s.tasks[i].init_image = Some(draft);
+        s.tasks[i].strength = Some(strength);
+        if !trail.is_empty() {
+            trail.push(format!("kept: vision {best_score:.1}"));
+            s.tasks[i].structure_trail = Some(trail.join("\n"));
+        }
+    }
+    // Apply refusals (highest index first so earlier indices stay valid).
+    for i in to_drop.into_iter().rev() {
+        s.tasks.remove(i);
     }
     Ok(())
 }
@@ -5732,6 +5886,7 @@ pub async fn run_with_events(
                     task_seed,
                     count: eff_count,
                     naturalize: task.naturalize.clone().or_else(|| s.naturalize.clone()),
+                    structure_trail: task.structure_trail.clone(),
                 });
             } else {
             match (&pipeline, flux_pipeline.as_mut()) {
@@ -7966,10 +8121,13 @@ mod tests {
 
     #[test]
     fn scenario_parses_control_generate() {
-        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
+        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  control-generate-count: 6\n  control-generate-min-score: 6.5\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
         let s = deser_hjson::from_str::<ScenarioFile>(hjson).expect("parses");
         assert_eq!(s.control_generate.as_deref(), Some("sdxl"));
         assert_eq!(s.control_generate_strength, Some(0.6));
+        assert_eq!(s.control_generate_count, Some(6));
+        assert_eq!(s.control_generate_min_score, Some(6.5));
+        assert_eq!(s.control_generate_tries, None); // absent → runtime default (3)
         // Per-task empty string is the documented per-task disable.
         assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
         assert_eq!(parse_wh(Some("768x512")), Some((768, 512)));
@@ -8013,6 +8171,7 @@ mod tests {
             task_seed: 0,
             count: 4,
             naturalize: Some("repaint=0.1".into()),
+            structure_trail: Some("round 0 best: vision 5.0\nround 0 ← structure coach saw: no town\nkept: vision 7.0".into()),
         };
         // seed→round attribution.
         assert_eq!(w.round_of(2), 0);
@@ -8031,6 +8190,8 @@ mod tests {
         let hist = ex("coach_history").unwrap();
         assert!(hist.contains("missing left arm") && hist.contains("third hand on bench"));
         assert!(hist.contains("orig prompt") && hist.contains("round2 rewrite"));
+        // The structure pass's coaching trail is preserved too.
+        assert_eq!(ex("structure_coach_history"), Some("round 0 best: vision 5.0\nround 0 ← structure coach saw: no town\nkept: vision 7.0"));
     }
 
     // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.
