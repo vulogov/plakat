@@ -1321,6 +1321,101 @@ fn raw_render_paths(task_out: &std::path::Path) -> Vec<PathBuf> {
 /// `by=vision`: a vision LLM rates a frame 0–10 on CORRECTNESS (anatomy/limbs/coherence/scene-match).
 /// Provider-agnostic (`describe_image` → Gemini native, or any OpenAI-compatible vision endpoint via the
 /// DeepSeek slot). Returns `None` if the provider has no vision or the reply has no number.
+/// Captured SD3 generation parameters for post-cull sidecar writing — the SD3 pipeline saves PNGs with no
+/// `.json` sidecar, so the winning frame's params (seed + the possibly coach-mutated prompt) would otherwise
+/// be lost. `round_prompts[r]` is the (prompt, negative) actually used for regeneration round `r`, so a
+/// coach rewrite is attributed to the exact frames it produced.
+struct Sd3WinnerMeta {
+    round_prompts: Vec<(String, String)>,
+    /// The coach's chat history: (round, defects it named before rewriting for that round).
+    coach_log: Vec<(u64, String)>,
+    /// The effective ranking spec (metric + threshold) — recorded so the sidecar documents the bar.
+    ranking: Option<RankingSpec>,
+    model: String,
+    steps: usize,
+    guidance: f64,
+    scheduler: String,
+    width: u32,
+    height: u32,
+    lora_entries: Vec<crate::imaging::metadata::LoraEntry>,
+    lora_scale: f32,
+    task_seed: u64,
+    count: u32,
+    naturalize: Option<String>,
+}
+
+impl Sd3WinnerMeta {
+    /// Which regeneration round produced a frame with this seed. Round 0 = `[task_seed, +count)`; round r>0
+    /// = `[(task_seed + r*65536) & u32::MAX, +count)`. Falls back to the last (most-refined) round.
+    fn round_of(&self, seed: u64) -> usize {
+        for r in 0..self.round_prompts.len() {
+            let base = if r == 0 {
+                self.task_seed
+            } else {
+                self.task_seed.wrapping_add((r as u64).wrapping_mul(65_536)) & (u32::MAX as u64)
+            };
+            if seed >= base && seed < base + self.count as u64 {
+                return r;
+            }
+        }
+        self.round_prompts.len().saturating_sub(1)
+    }
+
+    /// Build the sidecar metadata for one kept frame at `seed`, using that frame's round's prompt/negative,
+    /// plus the ranking score (if known) and the full coach chat history.
+    fn metadata_for(&self, seed: u64, score: Option<f32>) -> crate::imaging::metadata::GenerationMetadata {
+        let idx = self.round_of(seed);
+        let (prompt, negative) = &self.round_prompts[idx.min(self.round_prompts.len().saturating_sub(1))];
+        let mut m = crate::imaging::metadata::GenerationMetadata::new(
+            prompt.clone(),
+            self.model.clone(),
+            seed,
+            self.steps,
+            self.guidance,
+            self.scheduler.clone(),
+            self.width,
+            self.height,
+        );
+        m.negative = negative.clone();
+        if !self.lora_entries.is_empty() {
+            m.with_lora_stack(self.lora_entries.clone());
+            m.lora_scale = Some(self.lora_scale);
+        }
+        m.score = score.map(|v| v as f64);
+        // Ranking: the bar this frame was judged against + its score.
+        if let Some(rk) = &self.ranking {
+            let cmp = if rk.higher_is_better() { "≥" } else { "≤" };
+            let mut r = format!("{} {cmp} {:.2}", rk.metric(), rk.threshold);
+            if let Some(s) = score {
+                let verdict = if rk.passes(s) { "pass" } else { "best-available" };
+                r.push_str(&format!(" · this frame {s:.2} ({verdict})"));
+            }
+            m.extras.push(("ranking".into(), r));
+        }
+        if idx > 0 {
+            m.extras.push(("coach_refined_round".into(), idx.to_string()));
+        }
+        // Chat history: the full coaching trail — each round's prompt and the defects the coach named
+        // before rewriting for the next round — so the winning parameters are self-documenting.
+        if !self.coach_log.is_empty() || self.round_prompts.len() > 1 {
+            let mut hist = String::new();
+            for (r, (p, _)) in self.round_prompts.iter().enumerate() {
+                if let Some((_, defects)) = self.coach_log.iter().find(|(rr, _)| *rr as usize == r) {
+                    if !defects.is_empty() {
+                        hist.push_str(&format!("round {r} ← coach saw: {defects}\n"));
+                    }
+                }
+                hist.push_str(&format!("round {r} prompt: {p}\n"));
+            }
+            m.extras.push(("coach_history".into(), hist.trim_end().to_string()));
+        }
+        if let Some(n) = &self.naturalize {
+            m.extras.push(("naturalize".into(), n.clone()));
+        }
+        m
+    }
+}
+
 pub(crate) async fn vision_score(provider: &str, path: &std::path::Path, prompt: &str) -> Option<f32> {
     let instruction = format!(
         "Judge how well this AI image realises its intended prompt AND how correct it is — IGNORE art style \
@@ -1471,7 +1566,7 @@ async fn coach_revise(
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
     face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
     vcache: &mut std::collections::HashMap<PathBuf, f32>,
-) -> Option<(String, String)> {
+) -> Option<(String, String, String)> {
     let imgs = rank_dir(task_out, ranking, scorer, face_det, provider, cur_prompt, vcache).await;
     let best = imgs.first()?.0.clone();
     let crit = vision_critique(provider, &best, cur_prompt, cur_negative).await?;
@@ -1483,7 +1578,7 @@ async fn coach_revise(
     } else {
         format!("{cur_negative}, {}", crit.extra_negative)
     };
-    Some((crit.prompt, merged_neg))
+    Some((crit.prompt, merged_neg, crit.defects))
 }
 
 /// Final ranking: `min` means minimum GOOD (passing) images. Keep every image that PASSES the threshold,
@@ -4573,6 +4668,9 @@ pub async fn run_with_events(
         });
         // Per-task vision-score cache so regeneration rounds don't re-score prior frames.
         let mut vcache: std::collections::HashMap<PathBuf, f32> = std::collections::HashMap::new();
+        // 6.28: SD3 saves PNGs without sidecars — capture its final params (incl. any coach-mutated prompt
+        // per round) so the kept frame's `.json` can be written after the cull. `None` for non-SD3 tasks.
+        let mut sd3_winner: Option<Sd3WinnerMeta> = None;
         if ranking_cfg.is_some() && !task_can_rank {
             crate::ui::progress::println(&format!(
                 "  {} task {:?} uses artefacts/style/upscale — ranking skipped (its seed-band post-processing is incompatible)",
@@ -5361,6 +5459,13 @@ pub async fn run_with_events(
                     }
                 }
                 sp.generate(&sd3_req)?;
+                // Track the (prompt, negative) used per regeneration round so a coach rewrite is attributed
+                // to the exact frames it produced. Index 0 = the round-0 batch just generated.
+                let mut round_prompts: Vec<(String, String)> =
+                    vec![(sd3_req.prompt.clone(), sd3_req.negative.clone())];
+                // The coach's per-round critique (round, defects) → preserved in the winning sidecar as the
+                // coaching chat history. Empty when coach is off / never fired.
+                let mut coach_log: Vec<(u64, String)> = Vec::new();
                 // 6.28 ranking: regenerate-until-`min`-good. `min` = minimum images that PASS the
                 // threshold; if fewer do, generate more rounds with fresh seeds (up to `max-tries`),
                 // keeping the failures for the post-dispatch cull. Fresh seeds are offset far from the
@@ -5384,7 +5489,7 @@ pub async fn run_with_events(
                             // prompt/negatives for the coming rounds — regeneration stops re-rolling the
                             // same broken dice.
                             if eff.coach {
-                                if let Some((np, nn)) = coach_revise(
+                                if let Some((np, nn, defects)) = coach_revise(
                                     &task_out,
                                     &sd3_req.prompt,
                                     &sd3_req.negative,
@@ -5399,12 +5504,18 @@ pub async fn run_with_events(
                                     crate::ui::progress::println(&format!("  {} revised the prompt for the next round(s)", style("coach").magenta()));
                                     sd3_req.prompt = np;
                                     sd3_req.negative = nn;
+                                    // Record the coach's critique for THIS upcoming round → the winning
+                                    // sidecar's chat history.
+                                    coach_log.push((round, defects));
                                 }
                             }
                             let fresh = task_seed.wrapping_add(round.wrapping_mul(65_536)) & (u32::MAX as u64);
                             let mut req = sd3_req.clone();
                             req.seed = Some(fresh);
                             sp.generate(&req)?;
+                            // Record the prompt/negative for THIS round (index == round) so the sidecar can
+                            // attribute the mutated prompt to the frames it produced.
+                            round_prompts.push((sd3_req.prompt.clone(), sd3_req.negative.clone()));
                             round += 1;
                         }
                     }
@@ -5417,6 +5528,24 @@ pub async fn run_with_events(
                         task.name
                     );
                 }
+                // Capture the final params so the kept frame(s) get a `.json` sidecar after the cull —
+                // seed + the possibly coach-mutated prompt, attributed per round.
+                sd3_winner = Some(Sd3WinnerMeta {
+                    round_prompts,
+                    coach_log,
+                    ranking: task_rank.map(|(e, _)| e),
+                    model: model.clone(),
+                    steps: eff_steps,
+                    guidance: eff_guidance,
+                    scheduler: format!("{eff_scheduler:?}").to_lowercase(),
+                    width: eff_w,
+                    height: eff_h,
+                    lora_entries: loras.iter().map(|s| s.to_entry()).collect(),
+                    lora_scale,
+                    task_seed,
+                    count: eff_count,
+                    naturalize: task.naturalize.clone().or_else(|| s.naturalize.clone()),
+                });
             } else {
             match (&pipeline, flux_pipeline.as_mut()) {
                 // SD: reuse the loaded UNet/VAE/CLIP/LoRA across tasks.
@@ -5687,6 +5816,30 @@ pub async fn run_with_events(
                         eff.min,
                         eff.max_tries,
                     ));
+                }
+            }
+        }
+
+        // 6.28: the SD3 pipeline saves PNGs without sidecars — now that the cull has decided the KEEPERS,
+        // write a `.json` beside each surviving `plakat-sd3-*` frame recording its seed and the exact
+        // (possibly coach-mutated) prompt/params that produced it, so the winning parameters are reviewable
+        // and reproducible. Runs before naturalize, so `<stem>.png.json` sits beside the kept raw frame
+        // (and its `.natural.png` when keep-prenaturalize is set). Best-effort per file.
+        if let Some(w) = &sd3_winner {
+            for p in raw_render_paths(&task_out) {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if !name.starts_with("plakat-sd3") {
+                    continue;
+                }
+                let seed = name
+                    .rsplit_once('-')
+                    .and_then(|(_, tail)| tail.strip_suffix(".png"))
+                    .and_then(|s| s.parse::<u64>().ok());
+                if let Some(seed) = seed {
+                    let meta = w.metadata_for(seed, vcache.get(&p).copied());
+                    if let Err(e) = crate::imaging::io::write_sidecar(&p, &meta) {
+                        tracing::warn!(target: "plakat", "sidecar write failed for {}: {e}", p.display());
+                    }
                 }
             }
         }
@@ -7618,6 +7771,48 @@ mod tests {
         // deserializes as a scenario field.
         let s = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  ranking: on\n}").expect("parses");
         assert_eq!(s.ranking.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn sd3_winner_sidecar_attributes_round_and_preserves_coach_trail() {
+        // task_seed 0, count 4 → round 0 = [0,4), round 1 base = 65536, round 2 base = 131072.
+        let w = Sd3WinnerMeta {
+            round_prompts: vec![
+                ("orig prompt".into(), "orig neg".into()),
+                ("round1 rewrite".into(), "neg, more".into()),
+                ("round2 rewrite".into(), "neg, more, extra".into()),
+            ],
+            coach_log: vec![(1, "missing left arm".into()), (2, "third hand on bench".into())],
+            ranking: RankingSpec::parse("by=vision threshold=7"),
+            model: "sd35".into(),
+            steps: 31,
+            guidance: 7.5,
+            scheduler: "flowmatcheuler".into(),
+            width: 768,
+            height: 768,
+            lora_entries: Vec::new(),
+            lora_scale: 0.8,
+            task_seed: 0,
+            count: 4,
+            naturalize: Some("repaint=0.1".into()),
+        };
+        // seed→round attribution.
+        assert_eq!(w.round_of(2), 0);
+        assert_eq!(w.round_of(65_537), 1);
+        assert_eq!(w.round_of(131_072), 2);
+        // The winner from round 2 records the round-2 (coach-mutated) prompt + its score.
+        let m = w.metadata_for(131_072, Some(8.5));
+        assert_eq!(m.prompt, "round2 rewrite");
+        assert_eq!(m.seed, 131_072);
+        assert_eq!(m.score, Some(8.5));
+        let ex = |k: &str| m.extras.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(ex("coach_refined_round"), Some("2"));
+        assert_eq!(ex("naturalize"), Some("repaint=0.1"));
+        assert!(ex("ranking").unwrap().contains("vision") && ex("ranking").unwrap().contains("pass"));
+        // Chat history carries every round's prompt + the coach's defects.
+        let hist = ex("coach_history").unwrap();
+        assert!(hist.contains("missing left arm") && hist.contains("third hand on bench"));
+        assert!(hist.contains("orig prompt") && hist.contains("round2 rewrite"));
     }
 
     // v0.25 phase 7 — scenario + per-task look/genre/offline parsing.

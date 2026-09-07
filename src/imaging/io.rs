@@ -111,6 +111,20 @@ pub fn patch_sidecar_ai_tell(image_path: &Path, ai_tell: f64) -> Result<()> {
     Ok(())
 }
 
+/// Write a full metadata `.json` sidecar next to an EXISTING image (no re-encode). For pipelines that
+/// save their own PNGs without a sidecar (the SD3 scenario path) but whose final generation parameters —
+/// including a coach-refined prompt — should still be preserved beside the kept frame. Overwrites any
+/// existing sidecar. Best-effort at the call site.
+pub fn write_sidecar(image_path: &Path, metadata: &GenerationMetadata) -> Result<()> {
+    let sidecar = sidecar_path(image_path);
+    let json = metadata
+        .to_json_pretty()
+        .with_context(|| format!("serialising sidecar {}", sidecar.display()))?;
+    std::fs::write(&sidecar, json)
+        .with_context(|| format!("writing sidecar {}", sidecar.display()))?;
+    Ok(())
+}
+
 pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;

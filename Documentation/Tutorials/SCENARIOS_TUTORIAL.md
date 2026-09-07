@@ -369,6 +369,15 @@ the keepers**.
 Every render is printed with its score + keep/cull verdict. If `< min` pass after `max-tries`, the best
 available is kept with a note (a task is never left empty).
 
+**Winning-parameters sidecar** *(6.28)* — the SD3 pipeline writes PNGs without metadata, so each **kept**
+SD3 frame now gets a `<frame>.png.json` sidecar recording exactly what produced it: the **seed**, the
+**actual prompt/negative** for that frame's regeneration round (so a `coach`-mutated prompt is captured, not
+the original), model/steps/guidance/scheduler/size/LoRAs, its **ranking score**, and — under
+`extras.coach_history` — the full **coaching trail** (each round's prompt and the defects the coach named
+before rewriting). With `keep-prenaturalize`, the sidecar is copied onto the `.natural.png` too, so the
+final naturalized deliverable is reviewable and reproducible. Inspect with `plakat metadata <frame>` or just
+open the `.json`.
+
 **Scope:** the regenerate-until-`min` loop runs for **SD3/SD3.5** tasks (other families cull-to-passers
 without extra rounds for now), and only for **plain t2i** tasks — a task using artefacts / per-task `style` /
 global `upscale` skips ranking (those key off a contiguous seed band regeneration would break). Note that

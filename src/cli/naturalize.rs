@@ -1189,6 +1189,15 @@ async fn model_pass_one(
     let dest = naturalized_dest(path, keep_original);
     out.save(&dest).with_context(|| format!("writing {}", dest.display()))?;
     inject_text_chunks(&dest, &chunks)?;
+    // When naturalize writes a `.natural.<ext>` sibling, copy any params `.json` sidecar from the raw frame
+    // (e.g. the SD3 winner's seed + coach-mutated prompt) onto the naturalized deliverable so the final
+    // selection is reviewable/reproducible too. In-place (dest == path) already has its sidecar.
+    if dest.as_path() != path {
+        let src_side = crate::imaging::io::sidecar_path(path);
+        if src_side.exists() {
+            let _ = std::fs::copy(&src_side, crate::imaging::io::sidecar_path(&dest));
+        }
+    }
     if keep_original {
         crate::ui::progress::println(&format!("  {} kept pre-naturalize → naturalized to {}", console::style("de-slop").green(), dest.display()));
     }
