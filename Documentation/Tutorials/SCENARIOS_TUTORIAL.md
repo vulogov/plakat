@@ -352,6 +352,10 @@ the keepers**.
 - **`max-tries=`** cap on generation rounds (the anti-death-march guard). Default `5`.
 - **`by=`** `ai-tell` (default, weight-free) or `aesthetic` (LAION scorer, higher-is-better; falls back to
   AI-tell if it can't load).
+- **`anatomy=`** `on` (weight 0.25) or `<0..1>` — folds a **SCRFD face-coherence** penalty into the score,
+  so regeneration also chases better **faces**: frames whose detected faces are weak/garbled score worse;
+  face-less scenes (landscapes) are neutral. Catches **faces, not hands** (no weight-free hand detector) —
+  pair with `by=aesthetic` for general distortion. Loads SCRFD once; off if the weights can't load.
 
 Every render is printed with its score + keep/cull verdict. If `< min` pass after `max-tries`, the best
 available is kept with a note (a task is never left empty).

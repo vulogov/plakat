@@ -1213,10 +1213,14 @@ struct RankingSpec {
     min: usize,
     /// Maximum generation ROUNDS (each round = one `count:` batch). The death-march guard.
     max_tries: usize,
+    /// 6.28: anatomy-aware weight (0 = off). Folds a SCRFD face-COHERENCE penalty into the score so
+    /// regeneration also chases better faces: frames whose detected faces are weak/garbled get penalized;
+    /// face-less scenes (landscapes) are neutral. Catches faces, NOT hands (no weight-free hand detector).
+    anatomy: f32,
 }
 
 impl RankingSpec {
-    /// `off`/empty → None. `on` → defaults. Otherwise token spec: `by=ai-tell|aesthetic threshold= min= max-tries=`.
+    /// `off`/empty → None. `on` → defaults. Otherwise token spec: `by=ai-tell|aesthetic threshold= min= max-tries= anatomy=`.
     fn parse(spec: &str) -> Option<RankingSpec> {
         let s = spec.trim();
         if s.is_empty() || s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("false") || s.eq_ignore_ascii_case("no") {
@@ -1229,7 +1233,18 @@ impl RankingSpec {
             .unwrap_or(if by_aesthetic { 6.0 } else { 0.5 });
         let min = tok("min").and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
         let max_tries = tok("max-tries").and_then(|v| v.parse::<usize>().ok()).unwrap_or(5).max(1);
-        Some(RankingSpec { by_aesthetic, threshold, min, max_tries })
+        // `anatomy=on` → a sensible default weight; `anatomy=<f>` → explicit; absent/off → 0.
+        let anatomy = tok("anatomy")
+            .map(|v| {
+                if v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true") {
+                    0.25
+                } else {
+                    v.parse::<f32>().ok().filter(|f| *f > 0.0).unwrap_or(0.0)
+                }
+            })
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0);
+        Some(RankingSpec { by_aesthetic, threshold, min, max_tries, anatomy })
     }
 
     /// Whether a score clears the bar (AI-tell: lower is better; aesthetic: higher is better).
@@ -1250,10 +1265,24 @@ impl RankingSpec {
 /// never fewer than `min` (promote the best sub-threshold ones so a task can't drop below its floor).
 /// Scores only THIS round's raw renders — the `plakat*-<seed>.png` files whose seed is in
 /// `[task_seed, task_seed+eff_count)`. Returns `(kept, culled)`.
+/// Anatomy-aware **face-coherence** penalty in `[0,1]` from SCRFD: 0 when a frame's faces are detected
+/// with high confidence OR when there are no faces at all (a landscape — can't be penalized), rising toward
+/// 1 as detected faces get weak/garbled (low confidence). Catches faces, not hands.
+fn face_incoherence(det: &crate::pipelines::scrfd::SCRFDDetector, path: &std::path::Path) -> f32 {
+    let Ok(faces) = det.detect(path) else { return 0.0 };
+    let scores: Vec<f32> = faces.iter().map(|f| f.score).filter(|s| *s >= 0.2).collect();
+    if scores.is_empty() {
+        return 0.0; // no detectable faces → neutral (landscape, or garbled past detection — can't tell)
+    }
+    let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+    (1.0 - mean).clamp(0.0, 1.0)
+}
+
 fn rank_dir(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+    face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
 ) -> Vec<(PathBuf, f32)> {
     let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
     let Ok(rd) = std::fs::read_dir(task_out) else { return imgs };
@@ -1273,7 +1302,7 @@ fn rank_dir(
             continue;
         }
         // `by=aesthetic` → LAION scorer (higher is better); else weight-free AI-tell (lower is better).
-        let score = match scorer {
+        let base = match scorer {
             Some(sc) => match sc.score_path(&p) {
                 Ok(v) => v,
                 Err(_) => continue,
@@ -1282,6 +1311,15 @@ fn rank_dir(
                 Ok(img) => crate::naturalize::ai_tell_score(&img),
                 Err(_) => continue,
             },
+        };
+        // Fold the anatomy (face-coherence) penalty into the score, in the metric's own direction: AI-tell
+        // is badness (add), aesthetic is goodness (subtract). Neutral when anatomy=0 or no detector.
+        let score = match (ranking.anatomy > 0.0, face_det) {
+            (true, Some(det)) => {
+                let pen = ranking.anatomy * face_incoherence(det, &p);
+                if ranking.by_aesthetic { base - pen } else { base + pen }
+            }
+            _ => base,
         };
         imgs.push((p, score));
     }
@@ -1295,8 +1333,9 @@ fn count_passers(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+    face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
 ) -> usize {
-    rank_dir(task_out, ranking, scorer).iter().filter(|(_, s)| ranking.passes(*s)).count()
+    rank_dir(task_out, ranking, scorer, face_det).iter().filter(|(_, s)| ranking.passes(*s)).count()
 }
 
 /// Final ranking: `min` means minimum GOOD (passing) images. Keep every image that PASSES the threshold,
@@ -1307,8 +1346,9 @@ fn cull_to_passers(
     task_out: &std::path::Path,
     ranking: &RankingSpec,
     scorer: Option<&crate::pipelines::aesthetic::AestheticScorer>,
+    face_det: Option<&crate::pipelines::scrfd::SCRFDDetector>,
 ) -> (usize, usize) {
-    let imgs = rank_dir(task_out, ranking, scorer);
+    let imgs = rank_dir(task_out, ranking, scorer, face_det);
     let n = imgs.len();
     if n == 0 {
         return (0, 0);
@@ -3181,6 +3221,30 @@ pub async fn run_with_events(
                 }
             }
         }
+        _ => None,
+    };
+    // 6.28: anatomy-aware ranking — load SCRFD once if any ranking asks for `anatomy=`. Off on failure.
+    let face_detector = match ranking_cfg {
+        Some(rk) if rk.anatomy > 0.0 => match crate::pipelines::scrfd::resolve_scrfd_weights().await {
+            Ok(Some(path)) => match crate::pipelines::scrfd::SCRFDDetector::load(
+                &path,
+                crate::pipelines::scrfd::SCRFDConfig::default(),
+                &device,
+                candle_core::DType::F32,
+            ) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  ranking: SCRFD (anatomy) failed to load ({e}) — anatomy scoring off",
+                    ));
+                    None
+                }
+            },
+            _ => {
+                crate::ui::progress::println("  ranking: SCRFD weights unavailable — anatomy scoring off");
+                None
+            }
+        },
         _ => None,
     };
 
@@ -5131,7 +5195,7 @@ pub async fn run_with_events(
                         let scorer = if use_aes { aesthetic_scorer.as_ref() } else { None };
                         let mut round = 1u64;
                         while round < eff.max_tries as u64 {
-                            let good = count_passers(&task_out, &eff, scorer);
+                            let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref());
                             if good >= eff.min {
                                 break;
                             }
@@ -5409,8 +5473,8 @@ pub async fn run_with_events(
         if task_can_rank {
             if let Some((eff, use_aesthetic)) = task_rank {
                 let scorer = if use_aesthetic { aesthetic_scorer.as_ref() } else { None };
-                let good = count_passers(&task_out, &eff, scorer);
-                let (kept, culled) = cull_to_passers(&task_out, &eff, scorer);
+                let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref());
+                let (kept, culled) = cull_to_passers(&task_out, &eff, scorer, face_detector.as_ref());
                 let (metric, cmp) = if use_aesthetic { ("aesthetic", "≥") } else { ("ai-tell", "≤") };
                 crate::ui::progress::println(&format!(
                     "  {} {metric} {cmp} {:.2} → {good} good (min {}), kept {kept}, culled {culled}{}",
@@ -7332,9 +7396,12 @@ mod tests {
         // off / empty → disabled.
         assert_eq!(RankingSpec::parse(""), None);
         assert_eq!(RankingSpec::parse("off"), None);
-        // on → defaults (ai-tell, threshold 0.5, min 1, max-tries 5).
+        // on → defaults (ai-tell, threshold 0.5, min 1, max-tries 5, anatomy off).
         let on = RankingSpec::parse("on").expect("on enables");
-        assert_eq!((on.by_aesthetic, on.threshold, on.min, on.max_tries), (false, 0.5, 1, 5));
+        assert_eq!((on.by_aesthetic, on.threshold, on.min, on.max_tries, on.anatomy), (false, 0.5, 1, 5, 0.0));
+        // anatomy: `on` → default weight 0.25; explicit `<f>`; absent → 0.
+        assert_eq!(RankingSpec::parse("anatomy=on").unwrap().anatomy, 0.25);
+        assert_eq!(RankingSpec::parse("anatomy=0.4").unwrap().anatomy, 0.4);
         // full token spec.
         let full = RankingSpec::parse("by=aesthetic threshold=6.5 min=3 max-tries=8").unwrap();
         assert_eq!((full.by_aesthetic, full.threshold, full.min, full.max_tries), (true, 6.5, 3, 8));
