@@ -192,6 +192,18 @@ struct ScenarioFile {
     #[serde(rename = "sd3controlnet", default)]
     sd3_controlnet: bool,
 
+    /// 6.28: `control-generate: <model>` — TWO-PASS structure. A CN/composition-capable model (e.g. `sdxl`)
+    /// runs the FIRST pass to lay out structure — with the task's `control:` (canny) when present, else plain
+    /// t2i — then the task's own model img2img-finishes that draft in its style/LoRAs. The honest fix for
+    /// layouts SD3.5 can't hold from a flat prompt (multi-figure scenes): SDXL places the figures, sd35
+    /// paints them. Off when empty. Loads/unloads the draft model BEFORE the task model (no co-residence).
+    #[serde(rename = "control-generate", default)]
+    control_generate: Option<String>,
+    /// img2img strength for the SECOND (finish) pass over the structure draft. Lower = keep more of the
+    /// draft's structure; higher = more restyle. Default `0.55`.
+    #[serde(rename = "control-generate-strength", default)]
+    control_generate_strength: Option<f32>,
+
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
     #[serde(rename = "restore-faces", default)]
@@ -938,6 +950,13 @@ struct TaskDef {
     restore_faces_model: Option<String>,
     #[serde(rename = "restore-faces-strength", default)]
     restore_faces_strength: Option<f32>,
+
+    /// 6.28: per-task two-pass structure model — overrides the scenario `control-generate:` for THIS task
+    /// (empty string disables it for this task even when the global is set). `None` inherits the global.
+    #[serde(rename = "control-generate", default)]
+    control_generate: Option<String>,
+    #[serde(rename = "control-generate-strength", default)]
+    control_generate_strength: Option<f32>,
 
     // ---------- v0.29 phase 2: per-task animate overrides ----------
 
@@ -2106,6 +2125,109 @@ fn emit(events: &Option<std::sync::mpsc::Sender<ScenarioEvent>>, ev: ScenarioEve
     }
 }
 
+/// Parse a `"WxH"` size string.
+fn parse_wh(s: Option<&str>) -> Option<(u32, u32)> {
+    let (a, b) = s?.split_once(['x', 'X'])?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+}
+
+/// 6.28 two-pass structure ("control-generate"): a composition-capable model (e.g. SDXL) runs the FIRST
+/// pass for every qualifying task — with the task's `control:` canny when present, else plain t2i — laying
+/// out structure the task's own model can't hold from a flat prompt (multi-figure scenes). Each draft is
+/// wired back as that task's `init-image` (+ `strength`), so the main loop img2img-finishes it in the task
+/// model's style/LoRAs.
+///
+/// Runs ALL drafts up front and returns before the main loop loads the task model. `api::Generate::run()`
+/// loads and DROPS its own pipeline per call, so the draft model is fully unloaded before the task model
+/// loads — they never co-reside (the key constraint on 24 GB unified memory). Best-effort per task: a draft
+/// that fails leaves the task as plain t2i, with a note.
+async fn control_generate_prepass(
+    s: &mut ScenarioFile,
+    out_root: &std::path::Path,
+    base_seed: u64,
+) -> Result<()> {
+    let g_model = s.control_generate.clone();
+    if g_model.is_none() && s.tasks.iter().all(|t| t.control_generate.is_none()) {
+        return Ok(()); // nothing asks for a structure pass
+    }
+    let g_strength = s.control_generate_strength;
+    let g_size = s.size.clone();
+    let device = s.device.clone().unwrap_or_else(|| "auto".into());
+    let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
+    let mut seed_off = 0u64;
+    for i in 0..s.tasks.len() {
+        let cg = s.tasks[i]
+            .control_generate
+            .clone()
+            .or_else(|| g_model.clone())
+            .map(|m| m.trim().to_string())
+            .filter(|m| {
+                !m.is_empty()
+                    && !m.eq_ignore_ascii_case("off")
+                    && !m.eq_ignore_ascii_case("false")
+                    && !m.eq_ignore_ascii_case("none")
+            });
+        let Some(cg) = cg else { continue };
+        if cg.eq_ignore_ascii_case(&task_model) {
+            crate::ui::progress::println(&format!(
+                "  {} task {:?}: draft model == task model ({cg}) — skipping (no cross-model gain)",
+                style("control-generate:").yellow(),
+                s.tasks[i].name,
+            ));
+            continue;
+        }
+        let prompt = s.tasks[i].prompt.clone();
+        if prompt.trim().is_empty() {
+            continue;
+        }
+        let negative = s.tasks[i].negative.clone().unwrap_or_default();
+        let strength = s.tasks[i].control_generate_strength.or(g_strength).unwrap_or(0.55);
+        let (w, h) = parse_wh(s.tasks[i].size.as_deref().or(g_size.as_deref())).unwrap_or((768, 768));
+        let task_seed = s.tasks[i].seed.unwrap_or(base_seed + seed_off);
+        seed_off += 1;
+        let task_out = out_root.join(safe_name(&s.tasks[i].name));
+        let _ = std::fs::create_dir_all(&task_out);
+        let draft = task_out.join("structure-draft.png");
+        crate::ui::progress::println(&format!(
+            "  {} {cg} structure pass → {task_model} img2img (strength {strength})",
+            style("control-generate:").cyan(),
+        ));
+        // Plain t2i draft on the composition model (SDXL lays out figures better than SD3.5). Forwarding a
+        // task `control:` canny into the draft is a follow-up (scenario→controlnet spec conversion).
+        let g = crate::api::Generate::new(&cg)
+            .prompt(&prompt)
+            .negative(&negative)
+            .size(w, h)
+            .seed(task_seed)
+            .steps(30)
+            .device(&device);
+        match g.run().await {
+            Ok(imgs) if !imgs.is_empty() => match imgs[0].save(&draft) {
+                Ok(()) => {
+                    s.tasks[i].init_image = Some(draft);
+                    s.tasks[i].strength = Some(strength);
+                }
+                Err(e) => crate::ui::progress::println(&format!(
+                    "  {} {:?}: draft save failed ({e}) — running plain t2i",
+                    style("control-generate:").yellow(),
+                    s.tasks[i].name,
+                )),
+            },
+            Ok(_) => crate::ui::progress::println(&format!(
+                "  {} {:?}: draft produced no image — running plain t2i",
+                style("control-generate:").yellow(),
+                s.tasks[i].name,
+            )),
+            Err(e) => crate::ui::progress::println(&format!(
+                "  {} {:?}: draft failed ({e}) — running plain t2i",
+                style("control-generate:").yellow(),
+                s.tasks[i].name,
+            )),
+        }
+    }
+    Ok(())
+}
+
 /// Run a scenario, dispatching CLI-side (no structured event sink). The
 /// task-by-task progress still streams to `ui::progress` as before.
 pub async fn run(args: ScenarioArgs) -> Result<()> {
@@ -2269,6 +2391,30 @@ pub async fn run_with_events(
                 crate::pipelines::faceswap_scenario::validate(&cfg).with_context(|| format!("task {:?} (faceswap)", t.name))?;
             }
         }
+    }
+
+    let seed = s.seed.unwrap_or(0);
+    // The TUI's `out_override` wins so scenario images land under the workspace `out/`
+    // (where History scans); else the scenario's own `out:`; else `./out`.
+    let mut out_root = args
+        .out_override
+        .clone()
+        .or_else(|| s.out.clone())
+        .unwrap_or_else(|| PathBuf::from("./out"));
+    // `--unique-files` (CLI) or `unique-files: true` (scenario) → nest the whole run under a fresh
+    // timestamped folder BEFORE any `out_root.join(task)` derives from it, so every task subdir and
+    // seed-named image inherits it and no previous pass is overwritten. One redirect covers all tasks.
+    if args.unique_files || s.unique_files {
+        out_root = out_root.join(crate::cli::run_stamp());
+        crate::ui::progress::println(&format!("  unique-files: writing this run to {}", out_root.display()));
+    }
+    // 6.28 two-pass structure: run every `control-generate` task's draft on the composition model FIRST,
+    // wiring each draft back as that task's init-image. Runs (and fully unloads its model) BEFORE `scenes`
+    // borrows `s` and before the main loop loads the task model. Skipped in dry-run (it generates images).
+    if !args.dry_run {
+        control_generate_prepass(&mut s, &out_root, seed)
+            .await
+            .context("control-generate structure pass")?;
     }
 
     let scenes: HashMap<&str, &str> = s
@@ -2509,21 +2655,6 @@ pub async fn run_with_events(
     // at plakat's documented defaults 28 / 7.5).
     let mut steps = s.steps.unwrap_or(28);
     let mut guidance = s.guidance.unwrap_or(7.5);
-    let seed = s.seed.unwrap_or(0);
-    // The TUI's `out_override` wins so scenario images land under the workspace `out/`
-    // (where History scans); else the scenario's own `out:`; else `./out`.
-    let mut out_root = args
-        .out_override
-        .clone()
-        .or_else(|| s.out.clone())
-        .unwrap_or_else(|| PathBuf::from("./out"));
-    // `--unique-files` (CLI) or `unique-files: true` (scenario) → nest the whole run under a fresh
-    // timestamped folder BEFORE any `out_root.join(task)` derives from it, so every task subdir and
-    // seed-named image inherits it and no previous pass is overwritten. One redirect covers all tasks.
-    if args.unique_files || s.unique_files {
-        out_root = out_root.join(crate::cli::run_stamp());
-        crate::ui::progress::println(&format!("  unique-files: writing this run to {}", out_root.display()));
-    }
     // 6.10.0: if the scenario asks to naturalize, snapshot the existing PNGs so we only touch this run's.
     fn collect_pngs(dir: &std::path::Path) -> std::collections::HashSet<PathBuf> {
         let mut set = std::collections::HashSet::new();
@@ -7831,6 +7962,18 @@ mod tests {
         // deserializes as a scenario field.
         let s = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  ranking: on\n}").expect("parses");
         assert_eq!(s.ranking.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn scenario_parses_control_generate() {
+        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
+        let s = deser_hjson::from_str::<ScenarioFile>(hjson).expect("parses");
+        assert_eq!(s.control_generate.as_deref(), Some("sdxl"));
+        assert_eq!(s.control_generate_strength, Some(0.6));
+        // Per-task empty string is the documented per-task disable.
+        assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
+        assert_eq!(parse_wh(Some("768x512")), Some((768, 512)));
+        assert_eq!(parse_wh(Some("bad")), None);
     }
 
     #[test]

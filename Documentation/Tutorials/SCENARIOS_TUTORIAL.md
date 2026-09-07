@@ -420,6 +420,28 @@ ControlNet is memory-heavy — a large CN won't co-reside with sd35-large on 24 
 - **Memory:** on 24 GB, prefer **sd35-medium** (smaller CN). `PLAKAT_SD3_LOWMEM=0` keeps LoRAs eager; a
   large CN may simply not fit.
 
+## 7f. Two-pass structure — `control-generate` *(6.28)*
+
+Some models can't hold a composition from a flat prompt — SD3.5 collapses four-figure scenes no matter how
+precise the wording (the coach can *see* it fail but can't *fix* it with text). `control-generate` puts a
+**composition-capable model in front**:
+
+```
+model: sd35
+control-generate: sdxl            # pass 1: SDXL lays out the structure
+control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower = keep more structure)
+```
+
+- **Pass 1** runs each task's prompt on the named model (e.g. `sdxl`, which places figures far better than
+  SD3.5) → a `structure-draft.png`.
+- **Pass 2** wires that draft back as the task's `init-image` (+ `strength`), so the task's own model
+  img2img-finishes it in *its* style and LoRAs. SDXL places the figures; sd35 paints them.
+- **Memory-safe:** the whole structure pass runs and **unloads its model before the task model loads** — the
+  two never co-reside (the constraint on 24 GB). It runs once up front for every qualifying task.
+- Per-task override: `control-generate: ""` disables it for one task; a model name overrides the global.
+- Ranking/coach still run on the finished pass. *(Prose passthrough.)* Forwarding a task `control:` canny
+  into the draft is a follow-up — today the draft is plain t2i on the composition model.
+
 ## 8. Partial-run filters (v0.19)
 
 Three flags for working with subsets of a long scenario:
