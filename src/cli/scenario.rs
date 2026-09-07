@@ -223,6 +223,12 @@ struct ScenarioFile {
     /// aspect would squash on downscale (a warning fires). Default: the finish size.
     #[serde(rename = "control-generate-size", default)]
     control_generate_size: Option<String>,
+    /// What the structure pass renders: `render` (default — a realistic composition base) or `wireframe` —
+    /// a clean line-art BLUEPRINT (bold outlines on white, every figure/object/building drawn with correct
+    /// proportions, anatomy and perspective, no colour/shading). A wireframe is a purer compositional target
+    /// (easier to vision-verify for correctness) and a strong img2img/control base for the finish model.
+    #[serde(rename = "control-generate-mode", default)]
+    control_generate_mode: Option<String>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -985,6 +991,8 @@ struct TaskDef {
     control_generate_tries: Option<usize>,
     #[serde(rename = "control-generate-size", default)]
     control_generate_size: Option<String>,
+    #[serde(rename = "control-generate-mode", default)]
+    control_generate_mode: Option<String>,
     /// 6.28: compile-emitted style-stripped, composition-focused prompt for the control-generate DRAFT. When
     /// present, the structure pass renders from THIS (realistic layout) instead of the styled finish prompt,
     /// so SDXL isn't rendering soft-focus. `None` (hand-written scenarios) → the draft uses `prompt`.
@@ -2178,6 +2186,23 @@ fn parse_wh(s: Option<&str>) -> Option<(u32, u32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
+/// Appended to the draft prompt in `control-generate-mode: wireframe` — makes SDXL render a clean line-art
+/// compositional BLUEPRINT (a purer, easier-to-verify structural target) rather than a finished render.
+const WIREFRAME_SUFFIX: &str = "Rendered as a clean line-art WIREFRAME BLUEPRINT: bold black outlines on a \
+    plain white background, every figure, object, building, doorway, vehicle, animal and tree drawn as clear \
+    distinct outlines with CORRECT proportions, anatomy and perspective; flat schematic line drawing, no \
+    colour, no shading, no texture — a compositional blueprint for a painter to fill in.";
+
+/// The wireframe-mode negative — keep colour/shading/photorealism out of the blueprint.
+const WIREFRAME_NEGATIVE: &str = "colour, colored, full colour, shading, gradients, painterly, oil painting, \
+    watercolour, photograph, photorealistic, texture, detailed rendering, blurry";
+
+/// Prepended to the FINISH prompt when the init is a wireframe — tells the finish model (sd35) that its
+/// init is a line-art blueprint to build a finished image ON TOP of, following its layout exactly.
+const WIREFRAME_FINISH_PREFIX: &str = "Paint a complete, fully rendered image over this line-art composition \
+    blueprint, faithfully following its exact layout, figure placement, counts, proportions and perspective — \
+    keep every outlined figure and object where the blueprint places them. Render it as: ";
+
 /// Generate ONE structure draft on an already-loaded pipeline into `dest` (plain t2i, no controls). The
 /// pipeline writes seed-named PNGs, so we render into a temp dir and copy the single result out — keeping
 /// the draft model loaded ONCE across every draft/round/task instead of reloading per image.
@@ -2189,6 +2214,7 @@ fn draft_generate(
     h: u32,
     seed: u64,
     dest: &std::path::Path,
+    controls: &[crate::pipelines::controlnet::ControlRequest],
 ) -> Result<()> {
     let tmp = dest.with_extension("tmpdir");
     std::fs::create_dir_all(&tmp)?;
@@ -2214,7 +2240,7 @@ fn draft_generate(
         preview_size: None,
         output_format: crate::imaging::io::OutputFormat::Png,
     };
-    let rendered = pipe.generate(&req, &[]);
+    let rendered = pipe.generate(&req, controls);
     let produced = std::fs::read_dir(&tmp)
         .ok()
         .into_iter()
@@ -2229,6 +2255,40 @@ fn draft_generate(
     });
     let _ = std::fs::remove_dir_all(&tmp);
     result
+}
+
+/// 3-stage wireframe: inject an ACCEPTED wireframe as a Canny control and render the placed realistic
+/// structure from it on the same (SDXL) pipeline. The wireframe is canny-annotated (handles line polarity),
+/// so SDXL places every figure/object EXACTLY where the blueprint puts them — and the finish model then
+/// img2img's this full composition at LOW strength (placement locked, only restyled). `dest` gets the image.
+async fn render_structure_from_wireframe(
+    pipe: &Pipeline,
+    cn_cache: &mut std::collections::HashMap<crate::pipelines::controlnet::ControlKind, crate::pipelines::controlnet::ControlNet>,
+    dev: &candle_core::Device,
+    cn_dtype: candle_core::DType,
+    cn_variant: crate::pipelines::controlnet::ControlNetVariant,
+    wireframe: &std::path::Path,
+    prompt: &str,
+    negative: &str,
+    w: u32,
+    h: u32,
+    seed: u64,
+    dest: &std::path::Path,
+) -> Result<()> {
+    let kind = crate::pipelines::controlnet::ControlKind::Canny;
+    if !cn_cache.contains_key(&kind) {
+        let net = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await?;
+        cn_cache.insert(kind, net);
+    }
+    let cond = crate::pipelines::controlnet_annotator::annotate(kind, wireframe, w, h, dev, cn_dtype).await?;
+    let control = crate::pipelines::controlnet::ControlRequest {
+        net: cn_cache.get(&kind).expect("loaded above"),
+        conditioning: cond,
+        strength: 0.85,
+        start: 0.0,
+        end: 1.0,
+    };
+    draft_generate(pipe, prompt, negative, w, h, seed, dest, std::slice::from_ref(&control))
 }
 
 /// 6.28 two-pass structure ("control-generate"): a composition-capable model (e.g. SDXL) runs the FIRST
@@ -2256,6 +2316,7 @@ async fn control_generate_prepass(
     let g_tries = s.control_generate_tries;
     let g_size = s.size.clone();
     let g_dsize = s.control_generate_size.clone();
+    let g_mode = s.control_generate_mode.clone();
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2275,6 +2336,15 @@ async fn control_generate_prepass(
     // Load the draft model ONCE and reuse it for every draft/round/task (reload only if a task names a
     // different structure model). Dropped at function end → freed before the main loop loads the task model.
     let mut draft_pipe: Option<(String, Pipeline)> = None;
+    // 6.28 control-forwarding: a task `control:` (scribble/canny/pose wireframe) drives SDXL's ControlNet so
+    // the draft is PLACED, not prompt-guessed. ControlNets cached per kind for the current draft model.
+    let cn_dtype = if matches!(dev, candle_core::Device::Cpu) {
+        candle_core::DType::F32
+    } else {
+        candle_core::DType::F16
+    };
+    let mut cn_cache: std::collections::HashMap<crate::pipelines::controlnet::ControlKind, crate::pipelines::controlnet::ControlNet> =
+        std::collections::HashMap::new();
     let mut seed_off = 0u64;
     let mut to_drop: Vec<usize> = Vec::new();
     for i in 0..s.tasks.len() {
@@ -2338,10 +2408,16 @@ async fn control_generate_prepass(
         };
         let min_score = s.tasks[i].control_generate_min_score.or(g_min);
         let target = min_score.unwrap_or(7.0); // "good enough" bar for the coach's early-stop
+        let wireframe = s.tasks[i]
+            .control_generate_mode
+            .as_deref()
+            .or(g_mode.as_deref())
+            .is_some_and(|m| m.eq_ignore_ascii_case("wireframe"));
         let task_out = out_root.join(safe_name(&name));
         let _ = std::fs::create_dir_all(&task_out);
         // Ensure the draft model is loaded (once; reload only on a model change).
         if draft_pipe.as_ref().is_none_or(|(m, _)| !m.eq_ignore_ascii_case(&cg)) {
+            cn_cache.clear(); // ControlNets are variant-specific; a new draft model invalidates them
             crate::ui::progress::println(&format!(
                 "  {} loading {cg} once for the structure pass…",
                 style("control-generate:").cyan()
@@ -2369,11 +2445,82 @@ async fn control_generate_prepass(
         }
         let pipe = &draft_pipe.as_ref().expect("draft pipeline loaded above").1;
         crate::ui::progress::println(&format!(
-            "  {} {cg} structure pass · {n_draft} draft(s) @ {dw}×{dh} × up to {tries} round(s){}{} → {task_model} img2img @ {w}×{h} (strength {strength})",
+            "  {} {cg} {} pass · {n_draft} draft(s) @ {dw}×{dh} × up to {tries} round(s){}{} → {task_model} img2img @ {w}×{h} (strength {strength})",
             style("control-generate:").cyan(),
+            if wireframe { "WIREFRAME" } else { "structure" },
             if has_structure_prompt { " · style-stripped composition prompt" } else { "" },
             if vision_ok { " · vision-ranked + coached" } else { " · no vision provider — unranked" },
         ));
+        // Control-forwarding: resolve any task `control:` (a wireframe/scribble/canny/pose) into ControlNet
+        // conditioning at the draft resolution, so SDXL PLACES figures per the control image instead of
+        // guessing from the prompt. Scoped so the &s.tasks[i] borrow ends before the task is mutated below.
+        let cn_variant = crate::pipelines::controlnet::ControlNetVariant::detect(&cg);
+        let mut cn_resolved: Vec<(crate::pipelines::controlnet::ControlKind, candle_core::Tensor, f32, f32, f32)> = Vec::new();
+        {
+            let specs = task_effective_controls(&s.tasks[i]).unwrap_or_default();
+            for spec in &specs {
+                let kind: crate::pipelines::controlnet::ControlKind = match spec.kind.parse() {
+                    Ok(k) => k,
+                    Err(_) => {
+                        crate::ui::progress::println(&format!(
+                            "  {} unknown control kind {:?} — ignored for the draft",
+                            style("control-generate:").yellow(),
+                            spec.kind
+                        ));
+                        continue;
+                    }
+                };
+                if !cn_cache.contains_key(&kind) {
+                    match crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await {
+                        Ok(net) => {
+                            cn_cache.insert(kind, net);
+                        }
+                        Err(e) => {
+                            crate::ui::progress::println(&format!(
+                                "  {} could not load {kind:?} ControlNet for {cg} ({e}) — draft runs uncontrolled",
+                                style("control-generate:").yellow()
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                let cond = match (spec.image.as_ref(), spec.auto_from.as_ref()) {
+                    (Some(p), None) => crate::pipelines::controlnet::prepare_conditioning(p, dw, dh, &dev, cn_dtype),
+                    (None, Some(p)) => crate::pipelines::controlnet_annotator::annotate(kind, p, dw, dh, &dev, cn_dtype).await,
+                    _ => continue,
+                };
+                match cond {
+                    Ok(t) => cn_resolved.push((
+                        kind,
+                        t,
+                        spec.strength.unwrap_or(1.0),
+                        spec.start.unwrap_or(0.0),
+                        spec.end.unwrap_or(1.0),
+                    )),
+                    Err(e) => crate::ui::progress::println(&format!(
+                        "  {} control conditioning failed ({e}) — draft runs uncontrolled",
+                        style("control-generate:").yellow()
+                    )),
+                }
+            }
+        }
+        if !cn_resolved.is_empty() {
+            crate::ui::progress::println(&format!(
+                "  {} {} control(s) forwarded to the {cg} draft → figures PLACED by the control image, not guessed",
+                style("control-generate:").green(),
+                cn_resolved.len(),
+            ));
+        }
+        let control_reqs: Vec<crate::pipelines::controlnet::ControlRequest> = cn_resolved
+            .iter()
+            .map(|(kind, cond, st, start, end)| crate::pipelines::controlnet::ControlRequest {
+                net: cn_cache.get(kind).expect("loaded above"),
+                conditioning: cond.clone(),
+                strength: *st,
+                start: *start,
+                end: *end,
+            })
+            .collect();
         // A bad layout dooms the finish (no img2img/prompt fiddling fixes it), so optimise the FOUNDATION:
         // each round ranks `n_draft` drafts; if the best still doesn't match the prompt, a vision LLM
         // rewrites the prompt for the next round (stops early when good enough or the coach repeats).
@@ -2387,7 +2534,14 @@ async fn control_generate_prepass(
             for d in 0..n_draft {
                 let seed = task_seed.wrapping_add((round as u64) << 12).wrapping_add(d as u64);
                 let path = task_out.join(format!("structure-draft-r{round}-{d}.png"));
-                if let Err(e) = draft_generate(pipe, &cur_prompt, &negative, dw, dh, seed, &path) {
+                // In wireframe mode SDXL renders a line-art blueprint; the vision judge still scores against
+                // the ORIGINAL prompt (style-agnostic), so it checks the blueprint has all the right elements.
+                let (gen_prompt, gen_negative) = if wireframe {
+                    (format!("{cur_prompt}\n\n{WIREFRAME_SUFFIX}"), format!("{negative}, {WIREFRAME_NEGATIVE}"))
+                } else {
+                    (cur_prompt.clone(), negative.clone())
+                };
+                if let Err(e) = draft_generate(pipe, &gen_prompt, &gen_negative, dw, dh, seed, &path, &control_reqs) {
                     crate::ui::progress::println(&format!(
                         "      {} r{round} draft {d} failed: {e}",
                         style("control-generate:").yellow()
@@ -2453,13 +2607,72 @@ async fn control_generate_prepass(
                 round + 1,
             ));
         }
-        let Some((best_path, best_score)) = best else {
+        let Some((mut best_path, best_score)) = best else {
             crate::ui::progress::println(&format!(
                 "  {} {name:?}: no draft produced — running plain t2i",
                 style("control-generate:").yellow(),
             ));
             continue;
         };
+        // 3-stage wireframe: the accepted best is a ranked WIREFRAME. Free the round's control borrow, then
+        // INJECT the wireframe as a Canny control and render the placed realistic structure with SDXL — that
+        // controlled composition (not the raw wireframe) becomes the finish init, so sd35 restyles at LOW
+        // strength with the placement LOCKED. Fallback: the wireframe itself as a blueprint init.
+        drop(control_reqs);
+        let mut init_is_raw_wireframe = false;
+        if wireframe && best_score >= min_score.unwrap_or(0.0) {
+            // Stage 2: ControlNet locks PLACEMENT from the wireframe, but SDXL still fills attributes/anatomy
+            // freely — so render `n_draft` canny-controlled compositions and vision-pick the best (a green
+            // dress or a bad hand inside a correctly-placed figure is still a defect). No coaching: the layout
+            // is fixed, only attributes/quality vary across seeds.
+            let wireframe_path = best_path.clone();
+            let mut comp_best: Option<(std::path::PathBuf, f32)> = None;
+            for d in 0..n_draft {
+                let structure = task_out.join(format!("structure-controlled-{d}.png"));
+                let seed = task_seed.wrapping_add(1u64 << 20).wrapping_add(d as u64);
+                if let Err(e) = render_structure_from_wireframe(
+                    pipe, &mut cn_cache, &dev, cn_dtype, cn_variant, &wireframe_path, &prompt, &negative, dw, dh, seed, &structure,
+                )
+                .await
+                {
+                    crate::ui::progress::println(&format!(
+                        "      {} controlled composition {d} failed: {e}",
+                        style("control-generate:").yellow()
+                    ));
+                    continue;
+                }
+                let score = if vision_ok {
+                    vision_score(&vprovider, &structure, &prompt).await.unwrap_or(-1.0)
+                } else {
+                    -1.0
+                };
+                let is_best = comp_best.as_ref().is_none_or(|(_, b)| score > *b);
+                crate::ui::progress::println(&format!(
+                    "      controlled comp {d}  {}{}",
+                    if score >= 0.0 { format!("vision {score:.1}") } else { "(unscored)".to_string() },
+                    if is_best && vision_ok { "  ★" } else { "" },
+                ));
+                if is_best {
+                    comp_best = Some((structure, score));
+                }
+            }
+            match comp_best {
+                Some((p, s)) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} wireframe (vision {best_score:.1}) → {n_draft} canny-controlled SDXL composition(s) → best {s:.1} → {task_model} img2img",
+                        style("control-generate:").green(),
+                    ));
+                    best_path = p;
+                }
+                None => {
+                    crate::ui::progress::println(&format!(
+                        "  {} no controlled composition produced — using the wireframe itself as a blueprint init",
+                        style("control-generate:").yellow(),
+                    ));
+                    init_is_raw_wireframe = true;
+                }
+            }
+        }
         // Refuse (skip the task) when even the best draft is too weak — opt-in via `control-generate-min-score`.
         if let Some(min) = min_score {
             if best_score >= 0.0 && best_score < min {
@@ -2495,6 +2708,16 @@ async fn control_generate_prepass(
         ));
         s.tasks[i].init_image = Some(draft);
         s.tasks[i].strength = Some(strength);
+        // Only when we FELL BACK to the raw wireframe as init (the SDXL structure render failed) does the
+        // finish model need the "paint over this blueprint" instruction. On the 3-stage success path the init
+        // is a full realistic composition, so the styled prompt is used as-is at low strength.
+        if init_is_raw_wireframe {
+            s.tasks[i].prompt = format!("{WIREFRAME_FINISH_PREFIX}{styled_prompt}");
+            crate::ui::progress::println(&format!(
+                "  {} fallback: finish prompt instructs {task_model} to paint over the raw blueprint",
+                style("control-generate:").cyan(),
+            ));
+        }
         if !trail.is_empty() {
             trail.push(format!("kept: vision {best_score:.1}"));
             s.tasks[i].structure_trail = Some(trail.join("\n"));
@@ -8265,9 +8488,10 @@ mod tests {
 
     #[test]
     fn scenario_parses_control_generate() {
-        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  control-generate-count: 6\n  control-generate-min-score: 6.5\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
+        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  control-generate-count: 6\n  control-generate-min-score: 6.5\n  control-generate-mode: wireframe\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
         let s = deser_hjson::from_str::<ScenarioFile>(hjson).expect("parses");
         assert_eq!(s.control_generate.as_deref(), Some("sdxl"));
+        assert_eq!(s.control_generate_mode.as_deref(), Some("wireframe"));
         assert_eq!(s.control_generate_strength, Some(0.6));
         assert_eq!(s.control_generate_count, Some(6));
         assert_eq!(s.control_generate_min_score, Some(6.5));

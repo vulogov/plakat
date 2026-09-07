@@ -165,7 +165,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "sd3controlnet",
     // 6.28 two-pass structure: SDXL/composition draft → task-model img2img finish
     "control-generate", "control-generate-strength", "control-generate-count", "control-generate-min-score",
-    "control-generate-tries", "control-generate-size",
+    "control-generate-tries", "control-generate-size", "control-generate-mode",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
@@ -279,23 +279,26 @@ fn effective_parallelism(requested: usize, provider: &str) -> usize {
 /// Compile one scene end-to-end (translate → positive → negative). Never errors —
 /// every LLM step falls back (verbatim / seed terms), so scenes are independent
 /// and parallelizable.
-/// The SYSTEM prompt for the `control-generate` STRUCTURE draft. Unlike the positive-enhance system (which
-/// is told to CARRY the user's style words up front), this one explicitly STRIPS every style/medium/mood
-/// word — so the draft is a clean composition base (layout + anatomy), not a soft-focus rendering that
-/// fights the finish. The draft is an img2img base, not a finished image.
-const STRUCTURE_SYSTEM: &str = "You rewrite a scene description into a CLEAN STRUCTURAL LAYOUT prompt for an \
-    image that will be REPAINTED later (an img2img composition base). Output ONE English prompt that:\n\
-    - describes ONLY the concrete subjects, their COUNT, their POSITIONS and spatial relationships \
-    (left/centre/right, foreground/midground/background, who holds / leans on / stands beside what), and \
-    CORRECT ANATOMY with natural PROPORTIONS (complete unbroken bodies, all limbs, hands and feet, natural \
-    poses);\n\
-    - STRIPS and OMITS every style, medium, mood, colour-grade and rendering word — e.g. impressionist, \
-    painting, painterly, soft focus, loose brushwork, watercolour, oil, muted, atmospheric, delicate, soft, \
-    hazy, 'without detailed portraits'. NEVER carry ANY of them into the output;\n\
-    - keeps concrete environment and colour facts that define the scene (a green sky, an orange sun, town \
-    buildings, a street) and any (weighted:N) spans verbatim;\n\
-    - reads as clear, sharp, readable composition — solid forms, plain lighting — not a finished artwork.\n\
-    Translate any non-English source to English. Output ONLY the prompt, no preamble, no quotes.";
+/// The SYSTEM prompt for the `control-generate` STRUCTURE draft. It is consumed by **SDXL** (77-token CLIP),
+/// not sd35's long-context T5 — so it must be CONCISE and keyword-forward, NOT verbose prose. It also STRIPS
+/// every style/medium word (the finish owns style) and keeps positions terse (the wireframe/ControlNet owns
+/// exact placement), spending the tight budget on subjects + ATTRIBUTES + anatomy.
+const STRUCTURE_SYSTEM: &str = "You rewrite a scene into a CONCISE SDXL prompt for a composition/layout image \
+    (an img2img / ControlNet base for SDXL, whose text encoder holds only ~75 tokens). Output ONE short \
+    English prompt of COMMA-SEPARATED KEYWORD CLUSTERS, UNDER ~70 TOKENS — keywords, NOT prose, no full \
+    sentences. Order:\n\
+    1) the scene/setting in a few words;\n\
+    2) EACH subject as one terse cluster '[position] [key visual attributes]' — position in ONE word \
+    (foreground/left/right/centre/background), then colours, clothing, held objects (e.g. 'centre woman red \
+    dress vegetable basket', 'left old man blue shirt cane doorway', 'right bearded merchant grey tunic black \
+    hat counter customer backpack');\n\
+    3) concrete environment/colour facts and any (weighted:N) spans verbatim (e.g. '(pale green sky:1.4), \
+    (orange sun:1.4)');\n\
+    4) end with 'correct anatomy, natural proportions, distinct separated figures'.\n\
+    STRIP every style/medium/mood/rendering word (impressionist, painting, painterly, soft focus, loose \
+    brushwork, watercolour, oil, muted, atmospheric, delicate, soft, 'without detailed portraits') — NEVER \
+    include any. Keep it SHORT so nothing important falls past the token limit. Translate to English. Output \
+    ONLY the prompt, no preamble, no quotes.";
 
 async fn compile_one_scene(
     scene: &resolver::ResolvedScene,
