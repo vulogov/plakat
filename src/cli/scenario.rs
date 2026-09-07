@@ -1223,6 +1223,39 @@ struct RankingSpec {
     /// and rewrites the prompt/negatives; subsequent regeneration rounds use the revision. Needs a vision
     /// provider. The corrective aide: it doesn't just judge, it tries to FIX the prompt.
     coach: bool,
+    /// 6.28: `coach-stuck=on` (default) — stop regenerating early when the coach reports the SAME defects
+    /// `STUCK_PATIENCE` rounds running. That's a model-capability wall (prompt rewrites can't fix it), so
+    /// more rounds just burn vision calls. `coach-stuck=off` runs the full `max-tries`.
+    coach_stuck: bool,
+}
+
+/// How many consecutive rounds of near-identical coach defects before the loop calls it stuck and stops.
+const STUCK_PATIENCE: usize = 2;
+
+/// Are two coach defect reports describing the same failures? The coach re-words them each round, so this
+/// compares normalized content-word sets (Jaccard), not exact text. High overlap ⇒ same wall.
+fn defects_similar(a: &str, b: &str) -> bool {
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        const STOP: &[&str] = &[
+            "the", "and", "with", "into", "that", "this", "are", "was", "not", "only", "instead",
+            "rather", "than", "her", "his", "she", "him", "for", "from", "has", "have", "one", "two",
+            "present", "scene", "image", "wearing", "holding", "looks", "looking", "placed",
+        ];
+        s.to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 3 && !STOP.contains(w))
+            .map(|w| w.to_string())
+            .collect()
+    }
+    let (ta, tb) = (tokens(a), tokens(b));
+    if ta.is_empty() || tb.is_empty() {
+        return false;
+    }
+    let inter = ta.intersection(&tb).count() as f32;
+    let union = ta.union(&tb).count() as f32;
+    // 0.4 Jaccard on content words: consecutive "same wall" coach reports (re-worded but same failures)
+    // clear it comfortably; a genuinely different critique doesn't.
+    inter / union >= 0.4
 }
 
 impl RankingSpec {
@@ -1256,7 +1289,11 @@ impl RankingSpec {
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
         let coach = tok("coach").is_some_and(|v| v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true"));
-        Some(RankingSpec { by_aesthetic, by_vision, threshold, min, max_tries, anatomy, coach })
+        // On by default; `coach-stuck=off|false|no` disables the early-stop.
+        let coach_stuck = tok("coach-stuck")
+            .map(|v| !(v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no")))
+            .unwrap_or(true);
+        Some(RankingSpec { by_aesthetic, by_vision, threshold, min, max_tries, anatomy, coach, coach_stuck })
     }
 
     /// Higher-is-better metric (aesthetic / vision) vs lower-is-better (AI-tell).
@@ -5474,6 +5511,10 @@ pub async fn run_with_events(
                     if let Some((eff, use_aes)) = task_rank {
                         let scorer = if use_aes { aesthetic_scorer.as_ref() } else { None };
                         let mut round = 1u64;
+                        // Coach-stuck early-stop: track the previous round's defects + a run-length of
+                        // near-identical reports. Same defects = a model wall prompt rewrites can't move.
+                        let mut prev_defects: Option<String> = None;
+                        let mut stuck = 0usize;
                         while round < eff.max_tries as u64 {
                             let good = count_passers(&task_out, &eff, scorer, face_detector.as_ref(), &vprovider, &sd3_req.prompt, &mut vcache).await;
                             if good >= eff.min {
@@ -5504,9 +5545,24 @@ pub async fn run_with_events(
                                     crate::ui::progress::println(&format!("  {} revised the prompt for the next round(s)", style("coach").magenta()));
                                     sd3_req.prompt = np;
                                     sd3_req.negative = nn;
+                                    // Coach-stuck early-stop: if the coach names the same defects as the
+                                    // previous round(s), regeneration is fighting a model wall — bail before
+                                    // spending another batch + vision pass on it.
+                                    let repeated = prev_defects.as_deref().is_some_and(|p| defects_similar(p, &defects));
+                                    stuck = if repeated { stuck + 1 } else { 0 };
+                                    prev_defects = Some(defects.clone());
                                     // Record the coach's critique for THIS upcoming round → the winning
                                     // sidecar's chat history.
                                     coach_log.push((round, defects));
+                                    if eff.coach_stuck && stuck >= STUCK_PATIENCE {
+                                        crate::ui::progress::println(&format!(
+                                            "  {} same defects {} rounds running — stopping early (a model-capability wall; \
+                                             try sd3controlnet or regions for layout). Kept best available.",
+                                            style("coach stuck:").yellow(),
+                                            stuck + 1,
+                                        ));
+                                        break;
+                                    }
                                 }
                             }
                             let fresh = task_seed.wrapping_add(round.wrapping_mul(65_536)) & (u32::MAX as u64);
@@ -7756,6 +7812,10 @@ mod tests {
         let v = RankingSpec::parse("by=vision coach=on min=2").unwrap();
         assert!(v.by_vision && !v.by_aesthetic && v.higher_is_better() && v.coach);
         assert_eq!((v.threshold, v.min), (7.0, 2));
+        // coach-stuck early-stop: on by default, toggled off.
+        assert!(v.coach_stuck);
+        assert!(!RankingSpec::parse("by=vision coach=on coach-stuck=off").unwrap().coach_stuck);
+        assert!(RankingSpec::parse("by=vision coach=on coach-stuck=on").unwrap().coach_stuck);
         assert!(v.passes(8.0) && !v.passes(6.5));
         assert_eq!(RankingSpec::parse("by=vision").unwrap().coach, false);
         // full token spec.
@@ -7771,6 +7831,21 @@ mod tests {
         // deserializes as a scenario field.
         let s = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  ranking: on\n}").expect("parses");
         assert_eq!(s.ranking.as_deref(), Some("on"));
+    }
+
+    #[test]
+    fn coach_defects_similarity_detects_a_repeated_wall() {
+        // Same failures, re-worded round to round (real consecutive-round coach output) → similar.
+        let r1 = "Only three figures present, woman looks sideways holding basket with both hands, old man \
+                  wears a hat in center instead of left doorway, multiple canes present, disfigured counter \
+                  figure missing separate customer, missing visible orange sun and orange clouds.";
+        let r2 = "Only three figures present, woman looks sideways holding basket with both hands, old man \
+                  is misplaced wearing a hat, counter figures are missing and fused with an extra cane, and \
+                  the orange sun and orange clouds are missing.";
+        assert!(defects_similar(r1, r2), "re-worded same-defect reports should read as similar");
+        // A genuinely different critique → not similar.
+        let other = "Hands look good; the sky is fine; the only issue is the bench colour is too saturated.";
+        assert!(!defects_similar(r1, other));
     }
 
     #[test]

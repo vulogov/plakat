@@ -357,6 +357,11 @@ the keepers**.
   so it keeps the anatomically-right frame and culls the broken one. Costs one vision call per scored image
   (cached per run). Provider-agnostic: Gemini (native) or any OpenAI-compatible vision endpoint via the
   DeepSeek slot; falls back to AI-tell (with a note) if no vision provider is configured.
+- **`coach-stuck=on`** *(6.28, default on)* — **early-stop when the coach hits a wall**: if it reports the
+  same defects two rounds running (a model-capability limit that prompt rewrites can't move — e.g. SD3.5
+  collapsing a four-figure layout), the loop stops instead of burning the remaining `max-tries` on vision
+  calls. The winning sidecar's `coach_history` shows the repeated critique. `coach-stuck=off` runs the full
+  `max-tries`. When you see it fire, the real fix is spatial (`sd3controlnet` / `region:`), not more rounds.
 - **`coach=on`** *(6.28)* — the **corrective aide**: when a round can't reach `min`, a vision LLM looks at
   the best failing frame, names the defects (broken limbs, wrong person, hallucinations, negative
   violations), and **rewrites the prompt + negatives** — keeping your subject/scene/style — so the next
