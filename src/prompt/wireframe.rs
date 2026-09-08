@@ -63,6 +63,10 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     clearly be larger and lower than a background one.\n\
     Rules: sky/sun near the top; buildings frame the left and right edges; keep every distinct FIGURE as its \
     own NON-OVERLAPPING box at the position the scene states. Include every person and key object named. \
+    A CROWD or GROUP of unspecified, unnamed people (e.g. 'a group of townsfolk', 'a crowd', 'several \
+    people', 'men, women and children in the background') is NOT distinct figures — do NOT emit a separate \
+    'person' box for each; leave them to the background (omit them, or add ONE element with kind 'ground' \
+    labelled as the crowd). Emit a 'person' box ONLY for an individually-described person. \
     Output ONLY the JSON array — no prose, no code fences.";
 
 /// Ask an LLM to plan the layout for `scene_prompt`. Returns the placed elements (may be empty on a bad reply).
@@ -112,6 +116,37 @@ const BACKGROUND_SYSTEM: &str = "You rewrite a scene description into a BACKGROU
     style/medium EXACTLY as written. REMOVE every person, figure, animal and anything they wear or hold — no \
     people at all. The result is an EMPTY setting (a stage with no actors). Do not add new elements. Output \
     ONLY the rewritten description, no preamble, no quotes.";
+
+/// System prompt for [`demote_to_background`].
+const DEMOTE_SYSTEM: &str = "You are given an image prompt and a list of figures. Rewrite the prompt so that \
+    EACH listed figure becomes a DISTANT BACKGROUND figure — small, further away, part of the background \
+    crowd, without fine detail — instead of a prominent foreground subject. Keep the figure PRESENT (do not \
+    delete it), just move it back and describe it briefly. Use the figure's own RELATIONSHIP from the prompt \
+    to PLACE it — whoever it stands beside, what it is near, who it interacts with (e.g. 'beside the stall', \
+    'next to the doorway', 'talking to X') — so the demoted figure sits in a plausible spot relative to the \
+    rest, just further back; do not drop it somewhere random. Keep EVERY other subject, the setting, sky, \
+    lighting, weather, colours and art style/medium EXACTLY as written — change ONLY the listed figures. \
+    Output ONLY the rewritten prompt, no preamble, no quotes.";
+
+/// Rewrite `prompt` so the named `figures` read as distant BACKGROUND people rather than foreground subjects.
+/// Used when the structure pass demotes overflow figures (beyond the reliable count) to the background base:
+/// the FINISH prompt must match, or it (and its faithfulness judge) still expects a prominent figure that was
+/// deliberately painted small. Best-effort — returns the original prompt on empty `figures` or an LLM error.
+pub async fn demote_to_background(provider: &str, prompt: &str, figures: &[String]) -> Result<String> {
+    let figures: Vec<&str> = figures.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    if figures.is_empty() {
+        return Ok(prompt.to_string());
+    }
+    let user = format!("PROMPT:\n{prompt}\n\nFIGURES TO MOVE TO THE BACKGROUND:\n- {}", figures.join("\n- "));
+    let out = crate::prompt::complete(provider, DEMOTE_SYSTEM, &user, &crate::prompt::EnhanceArgs::default())
+        .await
+        .context("demote-to-background LLM call")?;
+    let out = out.trim().trim_matches('"').trim().to_string();
+    if out.is_empty() {
+        anyhow::bail!("demote-to-background returned empty");
+    }
+    Ok(out)
+}
 
 /// Produce a FIGURE-FREE version of the scene — the setting, architecture, sky, lighting and art style with
 /// every person removed. Used as the BASE prompt for regional generation: the regions own the figures, so a

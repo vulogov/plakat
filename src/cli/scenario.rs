@@ -1065,6 +1065,11 @@ struct TaskDef {
     /// winning-params sidecar so a good foundation is reproducible.
     #[serde(skip)]
     structure_trail: Option<String>,
+    /// Runtime-only: figures the structure pass DEMOTED to the background (beyond the reliable count),
+    /// `"; "`-joined. Surfaced in the terminal + the winning-params sidecar so it's clear which described
+    /// figures were deliberately painted as soft background rather than distinct foreground subjects.
+    #[serde(skip)]
+    demoted_figures: Option<String>,
 
     // ---------- v0.29 phase 2: per-task animate overrides ----------
 
@@ -1513,6 +1518,9 @@ struct Sd3WinnerMeta {
     /// The control-generate structure pass's coaching trail (if any) — preserved so a good foundation is
     /// reproducible alongside the finish pass's own history.
     structure_trail: Option<String>,
+    /// Figures the structure pass demoted to the background (`"; "`-joined) — recorded so it's clear which
+    /// described figures were painted as soft background rather than distinct foreground subjects.
+    demoted_figures: Option<String>,
 }
 
 impl Sd3WinnerMeta {
@@ -1582,6 +1590,9 @@ impl Sd3WinnerMeta {
         }
         if let Some(t) = &self.structure_trail {
             m.extras.push(("structure_coach_history".into(), t.clone()));
+        }
+        if let Some(d) = &self.demoted_figures {
+            m.extras.push(("demoted_to_background".into(), d.clone()));
         }
         if let Some(n) = &self.naturalize {
             m.extras.push(("naturalize".into(), n.clone()));
@@ -2763,20 +2774,76 @@ async fn control_generate_prepass(
         if wireframe {
             match crate::prompt::wireframe::plan_best_layout(&vprovider, &prompt, tries).await {
                 Ok(elems) if !elems.is_empty() => {
-                    let n_person = elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).count();
+                    // Diffusion places only ~3 distinct figures reliably (beyond that, boxes shrink and OpenPose
+                    // skeletons tangle). Give the OpenPose+region treatment to the most FOREGROUND figures and
+                    // fold the overflow into the BACKGROUND base as soft, unplaced people — never explode them
+                    // into weak skeletons. This keeps the pre-image an honest, achievable foundation.
+                    const MAX_DISTINCT_FIGURES: usize = 3;
+                    let mut persons: Vec<crate::prompt::wireframe::LayoutElement> =
+                        elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).cloned().collect();
+                    // Foreground prominence = box AREA × BASELINE (y+h): larger AND lower wins.
+                    persons.sort_by(|a, b| {
+                        let (pa, pb) = ((a.w * a.h) * (a.y + a.h), (b.w * b.h) * (b.y + b.h));
+                        pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    let n_person = persons.len();
+                    let overflow: Vec<crate::prompt::wireframe::LayoutElement> =
+                        persons.split_off(persons.len().min(MAX_DISTINCT_FIGURES));
                     crate::ui::progress::println(&format!(
-                        "  {} best of {tries} layout plan(s): {} element(s) ({n_person} figure(s))",
+                        "  {} best of {tries} layout plan(s): {} element(s) ({} figure(s) placed{})",
                         style("control-generate:").cyan(),
                         elems.len(),
+                        persons.len(),
+                        if overflow.is_empty() { String::new() } else { format!(", {} → background", overflow.len()) },
                     ));
-                    // The DRAFT is driven by BOTH: the OpenPose skeleton (below) gives every figure a sound
-                    // ANATOMY + pose + placement, and PLAKAT-DERIVED REGIONAL PROMPTS (here) bind each figure's
-                    // ATTRIBUTES to its box so the garment is FORCED onto the right body (a global prompt let
-                    // "red" float onto the wrong figure — the core failure). generate_regional applies the pose
-                    // residuals to every region's forward, so the two combine.
-                    let _ = crate::prompt::wireframe::render_wireframe(&elems, dw, dh).save(task_out.join("wireframe.png"));
+                    if !overflow.is_empty() {
+                        crate::ui::progress::println(&format!(
+                            "  {} {n_person} distinct figures named — diffusion reliably places ~{MAX_DISTINCT_FIGURES}; \
+                             the {} most foreground get precise placement, the rest render as soft background. \
+                             (Fewer named figures, or describe extras as a 'crowd', for a cleaner result.)",
+                            style("control-generate:").yellow(),
+                            persons.len(),
+                        ));
+                        // Tell the 3rd (finish) pass that these figures are now BACKGROUND — using their prompt
+                        // RELATIONSHIPS to place them — else the finish prompt (and its faithfulness judge) still
+                        // expects a prominent figure that the draft deliberately painted small.
+                        let labels: Vec<String> = overflow
+                            .iter()
+                            .map(|e| e.label.trim().to_string())
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        let demoted_list = labels.join("; ");
+                        s.tasks[i].demoted_figures = Some(demoted_list.clone());
+                        crate::ui::progress::println(&format!(
+                            "  {} demoted to background: {demoted_list}",
+                            style("control-generate:").yellow(),
+                        ));
+                        let cur = s.tasks[i].prompt.clone();
+                        match crate::prompt::wireframe::demote_to_background(&vprovider, &cur, &labels).await {
+                            Ok(rewritten) => {
+                                s.tasks[i].prompt = rewritten;
+                                crate::ui::progress::println(&format!(
+                                    "  {} finish prompt amended — {} figure(s) placed by relationship in the background",
+                                    style("control-generate:").green(),
+                                    labels.len(),
+                                ));
+                            }
+                            Err(e) => tracing::warn!(target: "plakat", "demote-to-background: {e} — finish prompt unchanged"),
+                        }
+                    }
+                    // draw_elems = kept foreground figures + all non-person elements — the skeleton, wireframe
+                    // and regions are built from THESE; the overflow figures are not drawn/controlled.
+                    let mut draw_elems: Vec<crate::prompt::wireframe::LayoutElement> = persons.clone();
+                    draw_elems.extend(elems.iter().filter(|e| !e.kind.eq_ignore_ascii_case("person")).cloned());
+                    let placed = persons.len();
+
+                    // The DRAFT is driven by BOTH: the OpenPose skeleton gives each kept figure a sound ANATOMY
+                    // + pose + placement, and PLAKAT-DERIVED REGIONAL PROMPTS bind its ATTRIBUTES to its box so
+                    // the garment is FORCED onto the right body. generate_regional applies the pose residuals to
+                    // every region's forward, so the two combine.
+                    let _ = crate::prompt::wireframe::render_wireframe(&draw_elems, dw, dh).save(task_out.join("wireframe.png"));
                     let pose_path = task_out.join("wireframe-pose.png");
-                    let pose_saved = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(&pose_path).is_ok();
+                    let pose_saved = crate::prompt::wireframe::render_openpose(&draw_elems, dw, dh).save(&pose_path).is_ok();
                     let kind = crate::pipelines::controlnet::ControlKind::OpenPose;
                     if pose_saved && !cn_cache.contains_key(&kind) {
                         if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await {
@@ -2791,7 +2858,7 @@ async fn control_generate_prepass(
                         Some(cond) => {
                             cn_resolved.push((kind, cond, 0.8, 0.0, 1.0));
                             crate::ui::progress::println(&format!(
-                                "  {} openpose skeleton: {n_person} figure(s) → anatomy + placement",
+                                "  {} openpose skeleton: {placed} figure(s) → anatomy + placement",
                                 style("control-generate:").green(),
                             ));
                         }
@@ -2800,10 +2867,9 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         )),
                     }
-                    // Bind figures AND distinctive non-person elements (the sun, standalone objects) to their
-                    // boxes — a "round orange sun" region makes the sun actually appear where the layout placed
-                    // it. Buildings + ground stay in the background base (the base paints them).
-                    for e in elems.iter().filter(|e| {
+                    // Bind kept figures AND distinctive non-person elements (the sun, standalone objects) to
+                    // their boxes. Buildings + ground stay in the background base (the base paints them).
+                    for e in draw_elems.iter().filter(|e| {
                         matches!(e.kind.to_lowercase().as_str(), "person" | "sun" | "object")
                     }) {
                         let label = e.label.trim();
@@ -2831,15 +2897,28 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         ));
                     } else {
-                        // Strip the figures out of the base so it only paints the SETTING — the regions own the
-                        // people. Best-effort: keep the full prompt if the LLM call fails.
+                        // Strip the KEPT figures out of the base (the regions own them), then fold the OVERFLOW
+                        // figures back in as background people — so they still appear, soft and unplaced, rather
+                        // than as broken skeletons. Best-effort: keep the full prompt if the strip call fails.
                         match crate::prompt::wireframe::scene_background(&vprovider, &prompt).await {
                             Ok(bg) => {
-                                regional_base = Some(bg);
+                                let extra: String = overflow
+                                    .iter()
+                                    .map(|e| e.label.trim())
+                                    .filter(|l| !l.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                let base = if extra.is_empty() {
+                                    bg
+                                } else {
+                                    format!("{bg} Further back, as soft background figures: {extra}.")
+                                };
+                                regional_base = Some(base);
                                 crate::ui::progress::println(&format!(
-                                    "  {} {} regional prompt(s) over a figure-free base → attributes bound per box",
+                                    "  {} {} regional prompt(s) over a figure-free base → attributes bound per box{}",
                                     style("control-generate:").green(),
                                     regions.len(),
+                                    if overflow.is_empty() { String::new() } else { format!(" (+{} background)", overflow.len()) },
                                 ));
                             }
                             Err(e) => {
@@ -6579,6 +6658,7 @@ pub async fn run_with_events(
                     count: eff_count,
                     naturalize: task.naturalize.clone().or_else(|| s.naturalize.clone()),
                     structure_trail: task.structure_trail.clone(),
+                    demoted_figures: task.demoted_figures.clone(),
                 });
             } else {
             match (&pipeline, flux_pipeline.as_mut()) {
@@ -8976,6 +9056,7 @@ mod tests {
             count: 4,
             naturalize: Some("repaint=0.1".into()),
             structure_trail: Some("round 0 best: vision 5.0\nround 0 ← structure coach saw: no town\nkept: vision 7.0".into()),
+            demoted_figures: Some("a distant beggar by the wall".into()),
         };
         // seed→round attribution.
         assert_eq!(w.round_of(2), 0);
