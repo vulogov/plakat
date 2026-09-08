@@ -2380,6 +2380,7 @@ fn draft_generate(
     seed: u64,
     dest: &std::path::Path,
     controls: &[crate::pipelines::controlnet::ControlRequest],
+    regions: &[crate::pipelines::tiled::RegionSpec],
 ) -> Result<()> {
     let tmp = dest.with_extension("tmpdir");
     std::fs::create_dir_all(&tmp)?;
@@ -2405,7 +2406,14 @@ fn draft_generate(
         preview_size: None,
         output_format: crate::imaging::io::OutputFormat::Png,
     };
-    let rendered = pipe.generate(&req, controls);
+    // Regional prompting (plakat-derived, from the wireframe layout) binds each figure's ATTRIBUTES to its
+    // box — the piece a global prompt + pose control can't do (garments float onto the wrong figure). When
+    // regions are present they REPLACE the OpenPose control for the draft (MultiDiffusion places by box).
+    let rendered = if regions.is_empty() {
+        pipe.generate(&req, controls)
+    } else {
+        pipe.generate_regional(&req, regions)
+    };
     let produced = std::fs::read_dir(&tmp)
         .ok()
         .into_iter()
@@ -2649,6 +2657,10 @@ async fn control_generate_prepass(
         // guessing from the prompt. Scoped so the &s.tasks[i] borrow ends before the task is mutated below.
         let cn_variant = crate::pipelines::controlnet::ControlNetVariant::detect(&cg);
         let mut cn_resolved: Vec<(crate::pipelines::controlnet::ControlKind, candle_core::Tensor, f32, f32, f32)> = Vec::new();
+        // Plakat-derived regional prompts (wireframe mode): one per planned figure, bbox = its layout box,
+        // prompt = its full attribute label. Bind garments/props to the RIGHT figure (a global prompt floats
+        // them onto the wrong body). Non-empty → drives generate_regional, replacing OpenPose for the draft.
+        let mut regions: Vec<crate::pipelines::tiled::RegionSpec> = Vec::new();
         {
             let specs = task_effective_controls(&s.tasks[i]).unwrap_or_default();
             for spec in &specs {
@@ -2709,39 +2721,45 @@ async fn control_generate_prepass(
                         style("control-generate:").cyan(),
                         elems.len(),
                     ));
-                    // Save the human-inspectable schematic, and the OpenPose SKELETON that actually drives the
-                    // control — OpenPose renders a real clothed body at each figure (Canny only traced sticks).
+                    // Save the human-inspectable schematic + the OpenPose skeleton (both still useful to eyeball
+                    // the plan). The DRAFT is now driven by PLAKAT-DERIVED REGIONAL PROMPTS, not the pose control:
+                    // each figure's box becomes a region whose prompt is its full attribute label, so the garment
+                    // is FORCED onto the right body (a global prompt let "red" float onto the wrong figure — the
+                    // core failure). Regional MultiDiffusion also places each subject in its box.
                     let _ = crate::prompt::wireframe::render_wireframe(&elems, dw, dh).save(task_out.join("wireframe.png"));
-                    let pose_path = task_out.join("wireframe-pose.png");
-                    let pose_saved = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(&pose_path).is_ok();
-                    let kind = crate::pipelines::controlnet::ControlKind::OpenPose;
-                    if pose_saved && !cn_cache.contains_key(&kind) {
-                        if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await {
-                            cn_cache.insert(kind, net);
+                    let _ = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(task_out.join("wireframe-pose.png"));
+                    for e in elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")) {
+                        let label = e.label.trim();
+                        if label.is_empty() {
+                            continue;
                         }
+                        // Grow the box slightly (a tight crop clips heads/feet) and clamp to the canvas.
+                        let gx = (e.w * 0.10).min(0.05);
+                        let gy = (e.h * 0.08).min(0.05);
+                        regions.push(crate::pipelines::tiled::RegionSpec {
+                            bbox: [
+                                (e.x - gx).clamp(0.0, 1.0),
+                                (e.y - gy).clamp(0.0, 1.0),
+                                (e.x + e.w + gx).clamp(0.0, 1.0),
+                                (e.y + e.h + gy).clamp(0.0, 1.0),
+                            ],
+                            prompt: label.to_string(),
+                            weight: 1.0,
+                            feather: crate::pipelines::tiled::DEFAULT_REGION_FEATHER,
+                        });
                     }
-                    // The skeleton is already in OpenPose format, so use it DIRECTLY (no annotator, which would
-                    // try to detect a pose in a drawing).
-                    match (pose_saved && cn_cache.contains_key(&kind))
-                        .then(|| ())
-                        .and(crate::pipelines::controlnet::prepare_conditioning(&pose_path, dw, dh, &dev, cn_dtype).ok())
-                    {
-                        Some(cond) => {
-                            cn_resolved.push((kind, cond, 0.8, 0.0, 1.0));
-                            crate::ui::progress::println(&format!(
-                                "  {} openpose skeleton: {n_person} figure(s) → pose control (SDXL renders real bodies at each position)",
-                                style("control-generate:").green(),
-                            ));
-                        }
-                        None => crate::ui::progress::println(&format!(
-                            "  {} wireframe/pose control failed — composition runs prompt-only",
+                    if regions.is_empty() {
+                        crate::ui::progress::println(&format!(
+                            "  {} layout has no labelled figures — composition runs prompt-only",
                             style("control-generate:").yellow()
-                        )),
+                        ));
+                    } else {
+                        crate::ui::progress::println(&format!(
+                            "  {} {} regional prompt(s) from the layout → each figure's attributes bound to its box",
+                            style("control-generate:").green(),
+                            regions.len(),
+                        ));
                     }
-                    // NOTE: no Canny control for the structure boxes — Canny reproduces EDGES, so building/sun
-                    // outlines get drawn into the image as literal geometry (visible boxes/triangles/circles).
-                    // Buildings/sun/street come from the PROMPT (SDXL renders them coherently); only the
-                    // OpenPose figure control drives the composition.
                 }
                 Ok(_) => crate::ui::progress::println(&format!(
                     "  {} layout planner returned no elements — composition runs prompt-only",
@@ -2786,7 +2804,7 @@ async fn control_generate_prepass(
                 // The round generates realistic compositions. In wireframe mode a procedural wireframe (built
                 // below) drives a Canny ControlNet in `control_reqs`, so placement is FIXED and the coach only
                 // needs to fix attributes; without it this is a plain (prompt-only) structure draft.
-                if let Err(e) = draft_generate(pipe, &cur_prompt, &negative, dw, dh, seed, &path, &control_reqs) {
+                if let Err(e) = draft_generate(pipe, &cur_prompt, &negative, dw, dh, seed, &path, &control_reqs, &regions) {
                     crate::ui::progress::println(&format!(
                         "      {} r{round} draft {d} failed: {e}",
                         style("control-generate:").yellow()

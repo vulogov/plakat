@@ -38,7 +38,12 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     a JSON array of its main elements. Each element is an object: {\"label\": string, \"kind\": one of \
     \"person\" | \"building\" | \"object\" | \"sun\" | \"ground\", \"x\": number, \"y\": number, \"w\": \
     number, \"h\": number, \"facing\": string, \"pose\": string}. x, y, w, h are FRACTIONS of the image in \
-    0..1, where (x, y) is the TOP-LEFT of the box. For each PERSON also give:\n\
+    0..1, where (x, y) is the TOP-LEFT of the box.\n\
+    For a PERSON, \"label\" MUST be that person's FULL visual description exactly as the scene states — sex \
+    and age, each garment WITH its colour, any HELD object, and who they interact with (e.g. \"an old man in \
+    a blue shirt and blue trousers leaning on a wooden cane\", \"a woman in a red dress holding a basket of \
+    vegetables\"). NEVER a bare noun like \"woman\" or \"person\": this label is used verbatim to paint that \
+    figure, so a terse label loses the attributes. For each PERSON also give:\n\
     - \"facing\": which way they LOOK — one of front / left / right / away. Make it natural to the scene: \
     two people talking FACE EACH OTHER (one left, one right), not the viewer; someone leaving a doorway may \
     face front or their direction of travel. Avoid everyone facing front.\n\
