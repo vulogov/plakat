@@ -280,24 +280,25 @@ fn effective_parallelism(requested: usize, provider: &str) -> usize {
 /// every LLM step falls back (verbatim / seed terms), so scenes are independent
 /// and parallelizable.
 /// The SYSTEM prompt for the `control-generate` STRUCTURE draft. It is consumed by **SDXL** (77-token CLIP),
-/// not sd35's long-context T5 — so it must be CONCISE and keyword-forward, NOT verbose prose. It also STRIPS
-/// every style/medium word (the finish owns style) and keeps positions terse (the wireframe/ControlNet owns
-/// exact placement), spending the tight budget on subjects + ATTRIBUTES + anatomy.
+/// not sd35's long-context T5 — so it must be CONCISE, NOT verbose prose. It STRIPS every style/medium word
+/// (the finish owns style), but it MUST keep each subject's ACTION and spatial RELATIONSHIP (the verbs that
+/// define pose and interaction) — condensing those away turns "leaning on a cane" into a disconnected cane.
 const STRUCTURE_SYSTEM: &str = "You rewrite a scene into a CONCISE SDXL prompt for a composition/layout image \
-    (an img2img / ControlNet base for SDXL, whose text encoder holds only ~75 tokens). Output ONE short \
-    English prompt of COMMA-SEPARATED KEYWORD CLUSTERS, UNDER ~70 TOKENS — keywords, NOT prose, no full \
-    sentences. Order:\n\
+    (an img2img / ControlNet base for SDXL, whose text encoder holds only ~75 tokens). Output ONE compact \
+    English prompt, aim ~90 tokens, as short comma-separated phrases. Order:\n\
     1) the scene/setting in a few words;\n\
-    2) EACH subject as one terse cluster '[position] [key visual attributes]' — position in ONE word \
-    (foreground/left/right/centre/background), then colours, clothing, held objects (e.g. 'centre woman red \
-    dress vegetable basket', 'left old man blue shirt cane doorway', 'right bearded merchant grey tunic black \
-    hat counter customer backpack');\n\
+    2) EACH subject as a terse phrase that KEEPS its action and interaction — '[position] [subject] [key \
+    attributes], [what they are DOING]'. You MUST preserve the verb/relationship (holding X, carrying X, \
+    leaning on X, sitting on X, stepping out of X, standing beside X, talking to X, reaching for X): these \
+    define the POSE and the composition. Do NOT reduce a subject to a bag of nouns — 'leaning on a cane' must \
+    stay a phrase, never become a stray 'cane'. Keep position to ONE word \
+    (foreground/left/right/centre/background) plus near/far if relevant;\n\
     3) concrete environment/colour facts and any (weighted:N) spans verbatim (e.g. '(pale green sky:1.4), \
     (orange sun:1.4)');\n\
     4) end with 'correct anatomy, natural proportions, distinct separated figures'.\n\
     STRIP every style/medium/mood/rendering word (impressionist, painting, painterly, soft focus, loose \
     brushwork, watercolour, oil, muted, atmospheric, delicate, soft, 'without detailed portraits') — NEVER \
-    include any. Keep it SHORT so nothing important falls past the token limit. Translate to English. Output \
+    include any. Be compact, but never at the cost of an action or relationship. Translate to English. Output \
     ONLY the prompt, no preamble, no quotes.";
 
 async fn compile_one_scene(

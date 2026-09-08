@@ -1535,16 +1535,20 @@ pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, pr
     // Dictate JSON so parsing is deterministic and provider-agnostic — we read the `score` field.
     let instruction = if composition {
         format!(
-            "Judge the COMPOSITION of this DRAFT image — it is a STRUCTURE that will be repainted and \
-             refined later, so IGNORE art style, exact colours, exact clothing, small missing props, and \
-             minor attribute swaps. Intended scene:\n\"{prompt}\"\n\nScore 0-10 on STRUCTURE ONLY: (1) is \
-             the correct NUMBER of people present, each a COMPLETE figure — full body, limbs, natural pose, \
-             not merged/duplicated/broken? (2) are they POSITIONED as intended (foreground / left / right)? \
-             (3) is the overall SCENE coherent with the setting and major elements present (street, \
-             buildings, sky/sun)? 10 = right count + placement + sound anatomy + coherent scene. Penalize \
-             wrong people-count, merged/extra/broken figures, and incoherent layout. Do NOT penalize \
-             colours, clothing, style, or small missing objects — those are fixed downstream.\n\nReply with \
-             ONLY a JSON object, no prose, no code fences:\n{{\"score\": <0 to 10>, \"reason\": \"<one short line>\"}}"
+            "Judge ONLY the STRUCTURE of this DRAFT — a rough under-painting whose colours, clothing and \
+             identities are set by a LATER stage. Intended scene (for the count of main figures + the general \
+             setting only):\n\"{prompt}\"\n\nThe following DO NOT change the score and you must NOT dock for \
+             them: art style; ALL colours including the SKY colour; clothing; lighting; small missing props; \
+             EXTRA background / passer-by people (a populated scene is fine); and WHICH specific person or \
+             role is at which spot (identity/role swaps — e.g. a man where the woman should be, or two roles \
+             exchanged left↔right). Those are attributes a later stage fixes; they are NOT structure.\n\n\
+             Score 0-10 on STRUCTURE ONLY — three things: (1) COUNT: are there about the intended number of \
+             MAIN foreground figures? (2) DISTINCT + SOUND: is each a separate, complete, anatomically \
+             plausible person — NOT merged/fused into a neighbour, duplicated, or broken? (3) COHERENT: is it \
+             one believable place (not a cut-up collage), figures at separate positions with some depth? \
+             10 = right number of distinct, sound figures in a coherent scene. Penalise ONLY: MISSING main \
+             figures, FUSED/merged or broken figures, or a collage/incoherent layout. Nothing else.\n\nReply \
+             with ONLY a JSON object, no prose, no code fences:\n{{\"score\": <0 to 10>, \"reason\": \"<one short line>\"}}"
         )
     } else {
         format!(
@@ -1731,21 +1735,48 @@ pub(crate) async fn vision_critique(
     cur_prompt: &str,
     cur_negative: &str,
 ) -> Option<VisionCritique> {
-    let instruction = format!(
-        "You are an art director fixing an AI image. It was generated from this PROMPT:\n\"{cur_prompt}\"\n\n\
-         and these things were FORBIDDEN (negative prompt):\n\"{cur_negative}\"\n\nJudge the ACTUAL problems, \
-         IGNORING art style: (1) In ONE line, name the concrete DEFECTS — broken/missing/extra limbs, \
-         deformed hands, unnatural poses, wrong attributes or wrong person (e.g. a garment on the wrong \
-         figure), wrong counts, HALLUCINATED objects/people the prompt never asked for, and anything present \
-         that the negative forbids. (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
-         the SAME art style/medium exactly as written (do not change or add a style). CRITICAL: PRESERVE \
-         EVERY element already described — not only the figures but the BACKGROUND, setting, architecture, \
-         landscape, sky, sun, weather and lighting. Never drop, omit, or shorten any of them; carry them all \
-         forward verbatim and add only concrete corrective cues (e.g. 'both arms visible, natural relaxed \
-         pose, correct anatomy, only the people listed, the full town street and sky remain visible behind \
-         them'). (3) Extra negative terms targeting the defects. Format EXACTLY, one per line:\nDEFECTS: \
-         <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
-    );
+    vision_critique_kind(provider, path, cur_prompt, cur_negative, false).await
+}
+
+/// `composition = true`: critique only STRUCTURAL defects of a draft (missing/fused/broken figures,
+/// incoherent layout) — ignore colours/clothing/identity/extras, which a later stage sets. `false`: the
+/// full faithfulness art-director critique (attributes, hallucinations, negative violations).
+pub(crate) async fn vision_critique_kind(
+    provider: &str,
+    path: &std::path::Path,
+    cur_prompt: &str,
+    cur_negative: &str,
+    composition: bool,
+) -> Option<VisionCritique> {
+    let instruction = if composition {
+        format!(
+            "You are fixing the STRUCTURE of a rough draft — its colours, clothing and identities are set by \
+             a LATER stage, so IGNORE them. It came from this PROMPT:\n\"{cur_prompt}\"\n\n(1) In ONE line, \
+             name ONLY STRUCTURAL defects: MISSING main figures, FUSED/merged or duplicated figures, broken \
+             anatomy, or an incoherent/collage layout. IGNORE colours (including the sky), clothing, art \
+             style, background/passer-by extras, and WHICH person is at which spot. (2) Rewrite the prompt to \
+             fix ONLY those structural defects, keeping the same scene and EVERY element already described \
+             (add cues like 'N separate fully-visible people, each distinct and not merged, complete correct \
+             anatomy'). (3) Extra negative terms for structural defects only. Format EXACTLY, one per line:\n\
+             DEFECTS: <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
+        )
+    } else {
+        format!(
+            "You are an art director fixing an AI image. It was generated from this PROMPT:\n\"{cur_prompt}\"\n\n\
+             and these things were FORBIDDEN (negative prompt):\n\"{cur_negative}\"\n\nJudge the ACTUAL problems, \
+             IGNORING art style: (1) In ONE line, name the concrete DEFECTS — broken/missing/extra limbs, \
+             deformed hands, unnatural poses, wrong attributes or wrong person (e.g. a garment on the wrong \
+             figure), wrong counts, HALLUCINATED objects/people the prompt never asked for, and anything present \
+             that the negative forbids. (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
+             the SAME art style/medium exactly as written (do not change or add a style). CRITICAL: PRESERVE \
+             EVERY element already described — not only the figures but the BACKGROUND, setting, architecture, \
+             landscape, sky, sun, weather and lighting. Never drop, omit, or shorten any of them; carry them all \
+             forward verbatim and add only concrete corrective cues (e.g. 'both arms visible, natural relaxed \
+             pose, correct anatomy, only the people listed, the full town street and sky remain visible behind \
+             them'). (3) Extra negative terms targeting the defects. Format EXACTLY, one per line:\nDEFECTS: \
+             <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
+        )
+    };
     let resp = match crate::prompt::vision::describe_image(provider, path, &instruction).await {
         Ok(r) => r,
         Err(e) => {
@@ -2676,7 +2707,8 @@ async fn control_generate_prepass(
                 break;
             }
             // Coach: critique the round's best draft and rewrite the prompt for the next round.
-            let Some(crit) = vision_critique(&vprovider, &rb_path, &cur_prompt, &negative).await else { break };
+            // Structure coach → composition critique (fix fused/missing/broken figures, not colours/roles).
+            let Some(crit) = vision_critique_kind(&vprovider, &rb_path, &cur_prompt, &negative, true).await else { break };
             if !crit.defects.is_empty() {
                 crate::ui::progress::println(&format!(
                     "  {} sees: {}",
