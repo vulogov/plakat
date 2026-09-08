@@ -920,10 +920,15 @@ impl Pipeline {
             None => {
                 // Low-mem: the MMDiT loads lazily per denoise, so runtime LoRAs aren't applied here
                 // yet (they'd need re-application after each reload). Disable low-mem
-                // (PLAKAT_SD3_LOWMEM=0) on a machine with the RAM to run SD3.5 LoRAs.
-                crate::ui::progress::println(
-                    "SD3 low-mem: runtime LoRAs skipped (MMDiT loads per-denoise; set PLAKAT_SD3_LOWMEM=0 to use LoRAs)",
-                );
+                // (PLAKAT_SD3_LOWMEM=0) on a machine with the RAM to run SD3.5 LoRAs. LOUD — a silently
+                // skipped LoRA looks like "the style didn't work", not "the LoRA never loaded".
+                crate::ui::progress::println(&format!(
+                    "  {} {} LoRA(s) NOT APPLIED — SD3.5 is in low-mem mode (MMDiT loads per-denoise). Your \
+                     style LoRAs had NO effect. To apply them: set PLAKAT_SD3_LOWMEM=0 (needs more RAM; may \
+                     OOM sd35-medium on 24 GB).",
+                    console::style("⚠ LoRA SKIPPED:").yellow().bold(),
+                    specs.len(),
+                ));
                 Ok(0)
             }
         }

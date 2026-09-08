@@ -823,7 +823,14 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let mut done = false;
         match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
             Ok(()) => {
-                println!("  {} painterly repaint (strength {strength:.2}{style_note})", style("de-slop").green());
+                // Protect face STRUCTURE from the whole-image repaint (small faces deform otherwise).
+                // `current_input` is still the pre-repaint original here; feather-composited into `repainted`.
+                let faces_kept = matches!(
+                    naturalize::refine::protect_repaint_faces(&current_input, &repainted, Some(&a.device), 0.85).await,
+                    Ok(true)
+                );
+                println!("  {} painterly repaint (strength {strength:.2}{style_note}{})", style("de-slop").green(),
+                    if faces_kept { ", faces protected" } else { "" });
                 current_input = repainted;
                 done = true;
             }
@@ -837,7 +844,12 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
                         style("de-slop").yellow(), a.repaint_lora.as_deref().unwrap_or(""));
                     match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
                         Ok(()) => {
-                            println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA)", style("de-slop").green());
+                            let faces_kept = matches!(
+                                naturalize::refine::protect_repaint_faces(&current_input, &repainted, Some(&a.device), 0.85).await,
+                                Ok(true)
+                            );
+                            println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA{})", style("de-slop").green(),
+                                if faces_kept { ", faces protected" } else { "" });
                             current_input = repainted;
                             done = true;
                         }
@@ -1161,12 +1173,20 @@ async fn model_pass_one(
         repainted = tmp.path().join("repaint.png");
         let scene_prompt = scene_prompt_from_png(path);
         crate::naturalize::refine::repaint_with_pipeline(pipeline, dev, &src, &repainted, style, strength, steps, scene_prompt.as_deref()).await?;
+        // Protect face STRUCTURE from the whole-image repaint — small (crowd) faces deform otherwise. The
+        // later analog grain/paper pass still softens these pixels, so detail degrades gracefully; only the
+        // deforming re-generation is undone. `&src` is the pre-repaint original; feather-composited back.
+        let faces_kept = matches!(
+            crate::naturalize::refine::protect_repaint_faces(&src, &repainted, None, 0.85).await,
+            Ok(true)
+        );
         crate::ui::progress::println(&format!(
-            "  {} repainted → {} ({}{})",
+            "  {} repainted → {} ({}{}{})",
             console::style("de-slop").green(),
             path.display(),
             medium.unwrap_or("painterly"),
-            if scene_prompt.is_some() { ", scene-conditioned" } else { "" }
+            if scene_prompt.is_some() { ", scene-conditioned" } else { "" },
+            if faces_kept { ", faces protected" } else { "" }
         ));
         &repainted
     } else {

@@ -229,6 +229,12 @@ struct ScenarioFile {
     /// (easier to vision-verify for correctness) and a strong img2img/control base for the finish model.
     #[serde(rename = "control-generate-mode", default)]
     control_generate_mode: Option<String>,
+    /// 6.28: `control-generate-opportunistic: true` — stop generating structure drafts as soon as ONE clears
+    /// `control-generate-min-score`, and use it, instead of always rendering the full `count × tries` batch
+    /// and keeping the best. A speed win when any good-enough layout will do (the structure pass is the slow
+    /// part). Default `false` (exhaustive: render all, keep the best). No effect without a `min-score` + vision.
+    #[serde(rename = "control-generate-opportunistic", default)]
+    control_generate_opportunistic: Option<bool>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -993,6 +999,8 @@ struct TaskDef {
     control_generate_size: Option<String>,
     #[serde(rename = "control-generate-mode", default)]
     control_generate_mode: Option<String>,
+    #[serde(rename = "control-generate-opportunistic", default)]
+    control_generate_opportunistic: Option<bool>,
     /// 6.28: compile-emitted style-stripped, composition-focused prompt for the control-generate DRAFT. When
     /// present, the structure pass renders from THIS (realistic layout) instead of the styled finish prompt,
     /// so SDXL isn't rendering soft-focus. `None` (hand-written scenarios) → the draft uses `prompt`.
@@ -2391,6 +2399,7 @@ async fn control_generate_prepass(
     let g_size = s.size.clone();
     let g_dsize = s.control_generate_size.clone();
     let g_mode = s.control_generate_mode.clone();
+    let g_opportunistic = s.control_generate_opportunistic;
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2482,6 +2491,9 @@ async fn control_generate_prepass(
         };
         let min_score = s.tasks[i].control_generate_min_score.or(g_min);
         let target = min_score.unwrap_or(7.0); // "good enough" bar for the coach's early-stop
+        // Opportunistic: stop generating drafts the moment one clears `target`, instead of rendering the
+        // whole `count × tries` batch and keeping the best. A speed lever when any good-enough layout will do.
+        let opportunistic = s.tasks[i].control_generate_opportunistic.or(g_opportunistic).unwrap_or(false);
         let wireframe = s.tasks[i]
             .control_generate_mode
             .as_deref()
@@ -2688,6 +2700,16 @@ async fn control_generate_prepass(
                 ));
                 if is_best {
                     round_best = Some((path, score));
+                }
+                // Opportunistic early-exit: the first draft that clears `target` is good enough — skip the
+                // rest of this round's batch (the outer loop then stops, since round_best ≥ target).
+                if opportunistic && score >= target {
+                    crate::ui::progress::println(&format!(
+                        "      {} opportunistic — draft {d} cleared {target:.1}, skipping {} remaining draft(s)",
+                        style("control-generate:").cyan(),
+                        n_draft.saturating_sub(d + 1),
+                    ));
+                    break;
                 }
             }
             let Some((rb_path, rb_score)) = round_best else { break };

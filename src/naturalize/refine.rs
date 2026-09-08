@@ -217,6 +217,97 @@ pub async fn repaint_with_pipeline(
     Ok(())
 }
 
+/// Protect FACE STRUCTURE after a painterly repaint. The repaint is a whole-image img2img, so it
+/// RE-GENERATES every face; at small (crowd) sizes a ~30 px face has too little structure to survive the
+/// denoise and comes back DEFORMED (melted eyes, warped features). We detect faces in the ORIGINAL
+/// (pre-repaint) image and feather-composite them back over the repaint: the medium/strokes still cover the
+/// whole scene, but each face keeps its original geometry. Softer face DETAIL is fine (the later analog
+/// grain/paper pass still runs over these pixels) — deformed STRUCTURE is not, and this stops it.
+///
+/// `protect` (0..1) is how strongly the original face wins at the mask centre; the feathered border blends
+/// back into the surrounding repaint so there's no hard paste edge. Best-effort: no detector / no faces →
+/// `Ok(false)` and the repaint is left untouched.
+pub async fn protect_repaint_faces(
+    original: &Path,
+    repainted: &Path,
+    device: Option<&str>,
+    protect: f32,
+) -> Result<bool> {
+    let Some(scrfd) = crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten() else {
+        return Ok(false);
+    };
+    let dev = crate::api::device(device.unwrap_or("auto")).unwrap_or(candle_core::Device::Cpu);
+    let Ok(det) = crate::pipelines::scrfd::SCRFDDetector::load(
+        &scrfd,
+        crate::pipelines::scrfd::SCRFDConfig::default(),
+        &dev,
+        candle_core::DType::F32,
+    ) else {
+        return Ok(false);
+    };
+    let Ok(mut faces) = det.detect(original) else { return Ok(false) };
+    faces.retain(|f| f.score >= 0.35);
+    if faces.is_empty() {
+        return Ok(false);
+    }
+
+    let mut orig = image::open(original)
+        .with_context(|| format!("reading pre-repaint image {}", original.display()))?
+        .to_rgb8();
+    let mut paint = image::open(repainted)
+        .with_context(|| format!("reading repainted image {}", repainted.display()))?
+        .to_rgb8();
+    let (w, h) = paint.dimensions();
+    if orig.dimensions() != (w, h) {
+        orig = image::imageops::resize(&orig, w, h, image::imageops::FilterType::Lanczos3);
+    }
+    // Union a feathered mask over each face box, grown to cover hairline/jaw/neck (a border cutting the
+    // chin reads as uncanny) and feathered by face size so the protected face blends into the repaint.
+    let mut alpha = vec![0f32; (w as usize) * (h as usize)];
+    for f in &faces {
+        let (fw, fh) = (f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]);
+        let feather = (fw.max(fh) * 0.35).max(4.0);
+        let m = crate::naturalize::feathered_rect(
+            w,
+            h,
+            f.bbox[0] - fw * 0.35,
+            f.bbox[1] - fh * 0.45,
+            f.bbox[2] + fw * 0.35,
+            f.bbox[3] + fh * 0.45,
+            feather,
+        );
+        for (i, px) in m.pixels().enumerate() {
+            let v = px[0] as f32 / 255.0;
+            if v > alpha[i] {
+                alpha[i] = v;
+            }
+        }
+    }
+    let protect = protect.clamp(0.0, 1.0);
+    for (i, a) in alpha.iter().enumerate() {
+        let blend = a * protect;
+        if blend <= 0.0 {
+            continue;
+        }
+        let (x, y) = ((i as u32) % w, (i as u32) / w);
+        let po = orig.get_pixel(x, y).0;
+        let pp = paint.get_pixel(x, y).0;
+        paint.put_pixel(
+            x,
+            y,
+            image::Rgb([
+                (po[0] as f32 * blend + pp[0] as f32 * (1.0 - blend)).round() as u8,
+                (po[1] as f32 * blend + pp[1] as f32 * (1.0 - blend)).round() as u8,
+                (po[2] as f32 * blend + pp[2] as f32 * (1.0 - blend)).round() as u8,
+            ]),
+        );
+    }
+    paint
+        .save(repainted)
+        .with_context(|| format!("saving face-protected repaint → {}", repainted.display()))?;
+    Ok(true)
+}
+
 /// **Auto medium-detection** (RFC QUALITY-4 P2) — CLIP zero-shot: embed the image and a bank of medium
 /// probes into the shared CLIP space and pick the closest, returning the matching **style anchor** string
 /// for the model corrections (so `--repair`/`--geometry` hold the source medium without a manual
