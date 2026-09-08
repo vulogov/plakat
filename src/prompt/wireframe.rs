@@ -39,11 +39,18 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     \"person\" | \"building\" | \"object\" | \"sun\" | \"ground\", \"x\": number, \"y\": number, \"w\": \
     number, \"h\": number, \"facing\": string, \"pose\": string}. x, y, w, h are FRACTIONS of the image in \
     0..1, where (x, y) is the TOP-LEFT of the box.\n\
-    For a PERSON, \"label\" MUST be that person's FULL visual description exactly as the scene states — sex \
-    and age, each garment WITH its colour, any HELD object, and who they interact with (e.g. \"an old man in \
-    a blue shirt and blue trousers leaning on a wooden cane\", \"a woman in a red dress holding a basket of \
-    vegetables\"). NEVER a bare noun like \"woman\" or \"person\": this label is used verbatim to paint that \
-    figure, so a terse label loses the attributes. For each PERSON also give:\n\
+    EVERY element's \"label\" MUST be its FULL visual description taken WORD-FOR-WORD from the scene — copy \
+    the scene's OWN attributes (a person's sex/age, garments and their stated colours, held objects and \
+    interactions; an object's stated material and colour; the sun's stated colour, size and height) and \
+    invent or assume NOTHING the scene did not say. The label is painted VERBATIM, so a bare noun loses the \
+    attributes the scene gave, but an ADDED attribute (a colour the scene never stated) paints something \
+    wrong. If the scene names an element's colour, copy that exact colour; if it names none, add none. Always \
+    the scene's own words, never a default.\n\
+    POSITIONING — the author may not be technical, so they describe WHERE things go in plain words. When the \
+    scene states a position — upper / lower, left / right / centre, foreground / background, near / far, \
+    \"in the doorway\", \"beside the stall\" — you MUST place that element THERE (translate the words into x, \
+    y, w, h). Only choose a position yourself for elements the scene leaves unplaced.\n\
+    For each PERSON also give:\n\
     - \"facing\": which way they LOOK — one of front / left / right / away. Make it natural to the scene: \
     two people talking FACE EACH OTHER (one left, one right), not the viewer; someone leaving a doorway may \
     face front or their direction of travel. Avoid everyone facing front.\n\
