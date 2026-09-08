@@ -168,6 +168,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "control-generate-strength", "control-generate-count", "control-generate-min-score",
     "control-generate-tries", "control-generate-size", "control-generate-mode",
     "control-generate-opportunistic", "control-generate-figure-shuffle", "control-generate-finish",
+    "control-generate-seed",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)

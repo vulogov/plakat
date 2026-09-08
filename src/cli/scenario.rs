@@ -265,6 +265,13 @@ struct ScenarioFile {
     /// coach + max-tries). Only affects tasks fed by control-generate / control-preimage.
     #[serde(rename = "control-generate-finish", default)]
     control_generate_finish: Option<String>,
+    /// 6.28: `control-generate-seed: <n>` — fix the seed the structure pass renders its SDXL drafts from, so
+    /// re-running reproduces the SAME draft NOISE (repeatable pre-images), independent of the scenario/finish
+    /// `seed:`. NOTE: the LLM LAYOUT planner is not seedable, so its boxes may still vary run-to-run; for a
+    /// byte-identical pre-image, capture a good draft and feed it back with `control-preimage:`. Global or
+    /// per-task (per-task wins).
+    #[serde(rename = "control-generate-seed", default)]
+    control_generate_seed: Option<u64>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -1041,6 +1048,8 @@ struct TaskDef {
     control_generate_figure_shuffle: Option<bool>,
     #[serde(rename = "control-generate-finish", default)]
     control_generate_finish: Option<String>,
+    #[serde(rename = "control-generate-seed", default)]
+    control_generate_seed: Option<u64>,
     /// Runtime-only: set by the pre-pass when it wires a control-generate draft (or a control-preimage) as
     /// this task's init. Lets the main loop apply the LIGHT finish (no coach, one round) to control-generate
     /// tasks without mistaking a plain user img2img (which also has an init-image) for one.
@@ -2491,6 +2500,7 @@ async fn control_generate_prepass(
     let g_mode = s.control_generate_mode.clone();
     let g_opportunistic = s.control_generate_opportunistic;
     let g_shuffle = s.control_generate_figure_shuffle;
+    let g_cg_seed = s.control_generate_seed;
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2616,7 +2626,13 @@ async fn control_generate_prepass(
                 style("control-generate:").yellow(),
             ));
         }
-        let task_seed = s.tasks[i].seed.unwrap_or(base_seed + seed_off);
+        // Repeatable pre-images: a control-generate-seed fixes the draft NOISE (task → scenario → the run's
+        // base seed). It is NOT advanced by `seed_off`, so re-running reproduces the same drafts.
+        let task_seed = s.tasks[i]
+            .control_generate_seed
+            .or(g_cg_seed)
+            .or(s.tasks[i].seed)
+            .unwrap_or(base_seed + seed_off);
         seed_off += 1;
         let name = s.tasks[i].name.clone();
         let n_draft = if vision_ok {
