@@ -44,10 +44,14 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     face front or their direction of travel. Avoid everyone facing front.\n\
     - \"pose\": what they are DOING — one of standing / holding / leaning / walking / gesturing (e.g. a \
     basket-carrier = holding, a person on a cane = leaning, a talker = gesturing).\n\
-    Rules: place figures standing ON the ground (box bottom near y+h≈0.95); sky/sun near the top; buildings \
-    frame the left and right edges; keep every distinct FIGURE as its own NON-OVERLAPPING box at the position \
-    the scene states. Include every person and key object named. Output ONLY the JSON array — no prose, no \
-    code fences.";
+    Convey DEPTH with SIZE and BASELINE — do NOT put every figure on the same line at the same size: a figure \
+    CLOSER to the viewer has a TALLER box sitting LOWER (its bottom, y+h, near 0.90-0.98); a figure FARTHER \
+    away has a SHORTER box sitting HIGHER (feet up toward the horizon — bottom y+h around 0.55-0.78, height \
+    maybe half the nearest figure's). Use the scene's cues for who is near vs far; a foreground subject should \
+    clearly be larger and lower than a background one.\n\
+    Rules: sky/sun near the top; buildings frame the left and right edges; keep every distinct FIGURE as its \
+    own NON-OVERLAPPING box at the position the scene states. Include every person and key object named. \
+    Output ONLY the JSON array — no prose, no code fences.";
 
 /// Ask an LLM to plan the layout for `scene_prompt`. Returns the placed elements (may be empty on a bad reply).
 pub async fn plan_layout(provider: &str, scene_prompt: &str) -> Result<Vec<LayoutElement>> {
@@ -121,28 +125,30 @@ fn extract_json_array(s: &str) -> Option<String> {
     (end > start).then(|| s[start..=end].to_string())
 }
 
-/// COCO-18 standing-pose template: keypoint positions as fractions of a person's bounding box
+/// COCO-18 RELAXED standing pose (contrapposto): keypoint positions as fractions of a person's bounding box
 /// (x: 0=left…1=right, y: 0=top…1=bottom). Order: nose, neck, Rsho, Relb, Rwri, Lsho, Lelb, Lwri, Rhip,
-/// Rknee, Rank, Lhip, Lknee, Lank, Reye, Leye, Rear, Lear.
+/// Rknee, Rank, Lhip, Lknee, Lank, Reye, Leye, Rear, Lear. Weight on the figure's RIGHT leg (straight,
+/// vertical); LEFT leg eased out and bent; elbows bent so forearms angle in (not stiff hanging arms); head
+/// tilted slightly. `posed_keypoints` mirrors this per figure so they aren't clones.
 const POSE_TEMPLATE: [(f32, f32); 18] = [
-    (0.50, 0.09), // nose
-    (0.50, 0.18), // neck
-    (0.36, 0.19), // R shoulder
-    (0.30, 0.35), // R elbow
-    (0.28, 0.52), // R wrist
-    (0.64, 0.19), // L shoulder
-    (0.70, 0.35), // L elbow
-    (0.72, 0.52), // L wrist
-    (0.43, 0.53), // R hip
-    (0.41, 0.76), // R knee
-    (0.40, 0.98), // R ankle
-    (0.57, 0.53), // L hip
-    (0.59, 0.76), // L knee
-    (0.60, 0.98), // L ankle
-    (0.47, 0.07), // R eye
-    (0.53, 0.07), // L eye
-    (0.44, 0.08), // R ear
-    (0.56, 0.08), // L ear
+    (0.515, 0.085), // nose (slight tilt)
+    (0.50, 0.185),  // neck
+    (0.375, 0.20),  // R shoulder
+    (0.33, 0.35),   // R elbow (out)
+    (0.40, 0.49),   // R wrist (forearm angled in → bent elbow)
+    (0.62, 0.195),  // L shoulder
+    (0.675, 0.35),  // L elbow (out)
+    (0.61, 0.49),   // L wrist (angled in)
+    (0.45, 0.54),   // R hip (weight side, slightly higher)
+    (0.45, 0.76),   // R knee (straight, vertical)
+    (0.455, 0.985), // R ankle
+    (0.575, 0.555), // L hip (relaxed, slightly lower)
+    (0.605, 0.75),  // L knee (eased out, bent)
+    (0.585, 0.985), // L ankle
+    (0.485, 0.065), // R eye
+    (0.55, 0.065),  // L eye
+    (0.45, 0.075),  // R ear
+    (0.575, 0.075), // L ear
 ];
 
 /// OpenPose limb connections (0-indexed keypoint pairs) — the standard `limbSeq` the annotators/ControlNets
@@ -167,9 +173,9 @@ const POSE_LIMBS: [(usize, usize, [u8; 3]); 17] = [
     (15, 17, [255, 0, 170]),
 ];
 
-/// Deform the standing template by a figure's `pose` (arms/legs) and `facing` (turn), so figures aren't
-/// identical frontal mannequins staring at the viewer. Heuristic but enough to vary the OpenPose skeleton.
-fn posed_keypoints(facing: &str, pose: &str) -> [(f32, f32); 18] {
+/// Deform the relaxed template by a figure's `pose` (arms/legs) and `facing` (turn), and `mirror` the stance
+/// (weight leg + arm swing flip) per figure so they aren't identical clones. Heuristic, but varies the pose.
+fn posed_keypoints(facing: &str, pose: &str, mirror: bool) -> [(f32, f32); 18] {
     let mut k = POSE_TEMPLATE;
     // GENERIC posture categories only (the LLM maps the scene's specifics — a basket, a cane, a conversation
     // — onto these; this code knows nothing scene-specific). Match the canonical category the planner emits.
@@ -207,6 +213,16 @@ fn posed_keypoints(facing: &str, pose: &str) -> [(f32, f32); 18] {
             k[idx].0 += 0.07 * dir; // shift head/eyes toward the facing side
         }
     }
+    // Mirror the whole stance (flip x + swap L/R keypoint pairs so limb colours stay side-correct) — gives
+    // adjacent figures the opposite weight leg / arm swing instead of being clones.
+    if mirror {
+        for pt in k.iter_mut() {
+            pt.0 = 1.0 - pt.0;
+        }
+        for (a, b) in [(2, 5), (3, 6), (4, 7), (8, 11), (9, 12), (10, 13), (14, 15), (16, 17)] {
+            k.swap(a, b);
+        }
+    }
     k
 }
 
@@ -215,12 +231,13 @@ fn posed_keypoints(facing: &str, pose: &str) -> [(f32, f32); 18] {
 /// planned pose/facing. Non-person elements are ignored (environment comes from the prompt).
 pub fn render_openpose(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
     let mut img = RgbImage::from_pixel(w, h, Rgb([0, 0, 0]));
-    for e in elements.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")) {
+    for (i, e) in elements.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).enumerate() {
         let bx = e.x.clamp(0.0, 1.0) * w as f32;
         let by = e.y.clamp(0.0, 1.0) * h as f32;
         let bw = e.w.clamp(0.02, 1.0) * w as f32;
         let bh = e.h.clamp(0.02, 1.0) * h as f32;
-        let kp = posed_keypoints(&e.facing, &e.pose);
+        // Alternate the mirrored stance per figure so adjacent people aren't identical.
+        let kp = posed_keypoints(&e.facing, &e.pose, i % 2 == 1);
         let pt = |k: usize| -> (f32, f32) {
             let (fx, fy) = kp[k];
             (bx + fx * bw, by + fy * bh)
@@ -338,16 +355,19 @@ mod tests {
 
     #[test]
     fn posed_keypoints_vary_by_facing_and_pose() {
-        let front = posed_keypoints("front", "standing");
+        let front = posed_keypoints("front", "standing", false);
         // Facing right shifts the head/nose to the right and narrows the torso vs a frontal template.
-        let right = posed_keypoints("right", "standing");
+        let right = posed_keypoints("right", "standing", false);
         assert!(right[0].0 > front[0].0, "nose shifts toward the facing side");
         assert!((right[2].0 - right[5].0).abs() < (front[2].0 - front[5].0).abs(), "turned torso is narrower");
         // 'gesturing' raises a wrist (smaller y) vs standing.
-        let gest = posed_keypoints("front", "gesturing");
+        let gest = posed_keypoints("front", "gesturing", false);
         assert!(gest[4].1 < front[4].1, "gesturing raises the wrist");
         // Unknown pose falls back to the neutral template.
-        assert_eq!(posed_keypoints("front", "loitering"), front);
+        assert_eq!(posed_keypoints("front", "loitering", false), front);
+        // Mirroring flips the stance across the centre (nose lands on the opposite side of 0.5).
+        let mirrored = posed_keypoints("front", "standing", true);
+        assert!((mirrored[0].0 - 0.5).signum() != (front[0].0 - 0.5).signum() || (front[0].0 - 0.5).abs() < 1e-3);
     }
 
     #[test]
