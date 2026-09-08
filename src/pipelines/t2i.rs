@@ -2162,6 +2162,11 @@ impl Pipeline {
         &self,
         req: &GenRequest,
         regions: &[crate::pipelines::tiled::RegionSpec],
+        // ControlNet stack (e.g. an OpenPose skeleton). The pose scaffold is GLOBAL, so its residuals are
+        // computed once per step (from the base prompt) and applied to every region's UNet forward — regions
+        // then only change ATTRIBUTES inside their box while every figure keeps a sound skeleton. Empty =
+        // pure regional (no control).
+        controls: &[crate::pipelines::controlnet::ControlRequest],
     ) -> Result<()> {
         use crate::pipelines::tiled::region_mask;
         crate::pipelines::scheduler::check_device_support(req.scheduler, &self.core.device)?;
@@ -2249,7 +2254,8 @@ impl Pipeline {
                 && std::env::var("PLAKAT_CANDLE_UNET").is_err()
                 && !self.variant.is_v_prediction();
 
-            for &timestep in &timesteps {
+            let total_steps = timesteps.len().max(1);
+            for (step_i, &timestep) in timesteps.iter().enumerate() {
                 // Scale the (CFG-batched) latent once — all prompts denoise the
                 // SAME latent, only the conditioning differs. Computed outside the
                 // closure so it never borrows the scheduler (frees `scheduler.step`).
@@ -2259,14 +2265,45 @@ impl Pipeline {
                     latents.clone()
                 };
                 let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-                let predict = |emb: &Tensor, pooled: &Option<Tensor>| -> Result<Tensor> {
-                    let pred = self.core.unet.forward(
+                // Pose scaffold: compute the ControlNet residuals ONCE (from the base prompt) and reuse them
+                // for the base + every region forward. The residuals are spatial feature maps (emb-independent
+                // in shape), so applying the globally-computed pose to each region is correct — every figure
+                // gets a sound skeleton while its box only changes attributes.
+                let progress = step_i as f32 / total_steps as f32;
+                let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
+                    controls.iter().filter(|c| c.active_at(progress)).collect();
+                let residuals = if active_controls.is_empty() {
+                    None
+                } else {
+                    Some(crate::pipelines::controlnet::sum_controlnet_residuals(
+                        &active_controls,
                         &latent_in,
-                        timestep as f64,
-                        emb,
-                        pooled.as_ref(),
+                        timestep,
+                        &base_emb,
+                        do_cfg,
+                        base_pooled.as_ref(),
                         add_time_ids.as_ref(),
-                    )?;
+                    )?)
+                };
+                let predict = |emb: &Tensor, pooled: &Option<Tensor>| -> Result<Tensor> {
+                    let pred = match &residuals {
+                        Some((down, mid)) => self.core.unet.forward_with_additional_residuals(
+                            &latent_in,
+                            timestep as f64,
+                            emb,
+                            pooled.as_ref(),
+                            add_time_ids.as_ref(),
+                            Some(down),
+                            Some(mid),
+                        )?,
+                        None => self.core.unet.forward(
+                            &latent_in,
+                            timestep as f64,
+                            emb,
+                            pooled.as_ref(),
+                            add_time_ids.as_ref(),
+                        )?,
+                    };
                     if do_cfg {
                         let c = pred.chunk(2, 0)?;
                         let cfg = (&c[0] + ((&c[1] - &c[0])? * req.guidance)?)?;
@@ -3434,7 +3471,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     };
     if !req.regions.is_empty() {
         crate::pipelines::tiled::check_regional_combo(req.tiled.is_some(), !control_reqs.is_empty())?;
-        pipeline.generate_regional(&gen_req, &req.regions)?;
+        pipeline.generate_regional(&gen_req, &req.regions, &[])?;
     } else {
         match req.tiled {
             None => pipeline.generate(&gen_req, &control_reqs)?,

@@ -570,7 +570,7 @@ fn model_loop(
                     let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
                     pipeline.generate_hooked(&req, &[], Some(&mut hook))
                 } else {
-                    pipeline.generate_regional(&req, &job.regions)
+                    pipeline.generate_regional(&req, &job.regions, &[])
                 };
                 match result {
                     Ok(()) => {

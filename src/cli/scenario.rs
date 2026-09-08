@@ -2408,11 +2408,12 @@ fn draft_generate(
     };
     // Regional prompting (plakat-derived, from the wireframe layout) binds each figure's ATTRIBUTES to its
     // box — the piece a global prompt + pose control can't do (garments float onto the wrong figure). When
-    // regions are present they REPLACE the OpenPose control for the draft (MultiDiffusion places by box).
+    // regions are present, generate_regional COMBINES them WITH `controls` (the OpenPose skeleton): the pose
+    // gives anatomy + placement, the regions force the right attributes per box.
     let rendered = if regions.is_empty() {
         pipe.generate(&req, controls)
     } else {
-        pipe.generate_regional(&req, regions)
+        pipe.generate_regional(&req, regions, controls)
     };
     let produced = std::fs::read_dir(&tmp)
         .ok()
@@ -2721,13 +2722,37 @@ async fn control_generate_prepass(
                         style("control-generate:").cyan(),
                         elems.len(),
                     ));
-                    // Save the human-inspectable schematic + the OpenPose skeleton (both still useful to eyeball
-                    // the plan). The DRAFT is now driven by PLAKAT-DERIVED REGIONAL PROMPTS, not the pose control:
-                    // each figure's box becomes a region whose prompt is its full attribute label, so the garment
-                    // is FORCED onto the right body (a global prompt let "red" float onto the wrong figure — the
-                    // core failure). Regional MultiDiffusion also places each subject in its box.
+                    // The DRAFT is driven by BOTH: the OpenPose skeleton (below) gives every figure a sound
+                    // ANATOMY + pose + placement, and PLAKAT-DERIVED REGIONAL PROMPTS (here) bind each figure's
+                    // ATTRIBUTES to its box so the garment is FORCED onto the right body (a global prompt let
+                    // "red" float onto the wrong figure — the core failure). generate_regional applies the pose
+                    // residuals to every region's forward, so the two combine.
                     let _ = crate::prompt::wireframe::render_wireframe(&elems, dw, dh).save(task_out.join("wireframe.png"));
-                    let _ = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(task_out.join("wireframe-pose.png"));
+                    let pose_path = task_out.join("wireframe-pose.png");
+                    let pose_saved = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(&pose_path).is_ok();
+                    let kind = crate::pipelines::controlnet::ControlKind::OpenPose;
+                    if pose_saved && !cn_cache.contains_key(&kind) {
+                        if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await {
+                            cn_cache.insert(kind, net);
+                        }
+                    }
+                    // The skeleton is already OpenPose format → use it DIRECTLY (no annotator).
+                    match (pose_saved && cn_cache.contains_key(&kind))
+                        .then(|| ())
+                        .and(crate::pipelines::controlnet::prepare_conditioning(&pose_path, dw, dh, &dev, cn_dtype).ok())
+                    {
+                        Some(cond) => {
+                            cn_resolved.push((kind, cond, 0.8, 0.0, 1.0));
+                            crate::ui::progress::println(&format!(
+                                "  {} openpose skeleton: {n_person} figure(s) → anatomy + placement",
+                                style("control-generate:").green(),
+                            ));
+                        }
+                        None => crate::ui::progress::println(&format!(
+                            "  {} pose control failed — regional runs without the skeleton (anatomy may suffer)",
+                            style("control-generate:").yellow()
+                        )),
+                    }
                     for e in elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")) {
                         let label = e.label.trim();
                         if label.is_empty() {
@@ -6511,7 +6536,7 @@ pub async fn run_with_events(
                             eff_tiled.is_some(),
                             !make_control_reqs().is_empty(),
                         )?;
-                        p.generate_regional(&gen_req, &eff_regions)?;
+                        p.generate_regional(&gen_req, &eff_regions, &[])?;
                     } else {
                         match eff_tiled.as_ref() {
                             Some(tcfg) => p.generate_tiled(&gen_req, tcfg.clone())?,
