@@ -6,6 +6,7 @@ pub mod break_chunks;
 pub mod deepseek;
 pub mod gemini;
 pub mod vision;
+pub mod wireframe;
 pub mod lora_tags;
 pub mod negative_presets;
 pub mod scheduling;

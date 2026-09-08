@@ -447,21 +447,22 @@ control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower 
   just the output. `control-generate-count` drafts (default **4**) are scored 0–10 against the prompt (same
   faithfulness judge as `by=vision`: figures/counts/completeness — missing town/sky/sun tanks the score),
   and the best is kept as `structure-draft.png` (numbered drafts stay beside it for inspection).
-- **`control-generate-mode: wireframe`** — a **3-stage** placement pipeline for scenes the finish model
-  can't lay out from a prompt (distinct figures at distinct positions):
-  1. **Wireframe** — SDXL renders a line-art blueprint (bold outlines, correct proportions/anatomy/
-     perspective, no colour); vision-ranked + coached against your prompt for **structural correctness**
-     (all elements present, right counts/placement).
-  2. **Controlled composition** — the accepted wireframe is injected as a **Canny ControlNet** and SDXL
-     renders `count` realistic compositions with placement **locked** to the blueprint; these are
-     vision-ranked too (ControlNet fixes *where*, not *what* — so this catches wrong attributes/anatomy the
-     placement can't).
-  3. **Finish** — the best composition is the sd35 **img2img init at LOW strength** (~0.4–0.5), so sd35
-     only restyles in your look + LoRAs while the placement holds.
+- **`control-generate-mode: wireframe`** — a placement pipeline for scenes the finish model can't lay out
+  from a prompt (distinct figures at distinct positions). A wireframe is a real **2-D skeletal blueprint**,
+  built *deterministically* — not diffused (diffusion renders scenes, it can't draw a reliable skeleton):
+  1. **Procedural wireframe** — an LLM plans a bounding-box layout (per element: box + kind); plakat picks
+     the **best of `control-generate-tries` plans** (scored programmatically — most distinct, non-overlapping
+     figures + environment) and **draws** it as black line-art (stick-figures / boxes / circle-sun on white).
+     Correct *by construction*, not guessed.
+  2. **Controlled composition** — the wireframe drives a **Canny ControlNet**; SDXL renders `count`
+     compositions with placement **locked** to the blueprint, vision-ranked + coached (the coach now only
+     fixes *attributes* — colour, clothing — since placement is fixed).
+  3. **Finish** — the best composition is the sd35 **img2img init at LOW strength** (~0.4–0.5), so sd35 only
+     restyles in your look + LoRAs while the placement holds.
 
-  This beats sd35-straight-off-a-wireframe (which needs high strength to fill line-art → drifts from the
-  placement). Fallback: if the controlled render fails, the raw wireframe is used as the init with a
-  "paint over this blueprint" finish prefix.
+  Needs a vision/LLM provider (the `enhancer:`) for the layout plan. If planning fails, the composition runs
+  prompt-only (unconditioned) with a note. For a **hand-drawn** wireframe, skip the mode and set a manual
+  `control: canny:mywireframe.png:0.8` on the task instead.
 - **Coached structure** — ranking alone can only *pick* from what SDXL rolled; the structure pass also
   **optimises the prompt on the fly**. Each of up to `control-generate-tries` rounds (default **3**) ranks
   `count` drafts, and if the best still doesn't match the prompt (missing town/sun, wrong figure count), a

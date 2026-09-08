@@ -1,0 +1,211 @@
+//! 6.28: procedural / LLM-planned WIREFRAME generation for `control-generate`.
+//!
+//! A wireframe is a 2-D skeletal outline — boxes and simple figure glyphs showing WHERE each element goes,
+//! styling kept to a minimum — NOT a rendered image. Diffusion can't produce this reliably (it renders
+//! scenes), so we build it deterministically: an LLM plans a bounding-box layout for the scene's elements,
+//! and we draw them as clean black line-art on white. That wireframe then drives a Canny/Scribble ControlNet
+//! so the composition is PLACED by construction, not guessed by the renderer.
+
+use anyhow::{Context, Result};
+use image::{Rgb, RgbImage};
+use imageproc::drawing::{draw_hollow_circle_mut, draw_hollow_rect_mut, draw_line_segment_mut};
+use imageproc::rect::Rect;
+use serde::Deserialize;
+
+/// One planned element with a normalized bounding box (`x`,`y` = top-left, all in `0..1`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LayoutElement {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub kind: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// The layout-planner system prompt: turn a scene into a JSON array of placed boxes.
+const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture. Given a scene, output ONLY \
+    a JSON array of its main elements. Each element is an object: {\"label\": string, \"kind\": one of \
+    \"person\" | \"building\" | \"object\" | \"sun\" | \"ground\", \"x\": number, \"y\": number, \"w\": \
+    number, \"h\": number}. x, y, w, h are FRACTIONS of the image in 0..1, where (x, y) is the TOP-LEFT of \
+    the box. Rules: place figures standing ON the ground (their box bottom near y+h≈0.95); put sky/sun near \
+    the top; buildings frame the left and right edges; keep every distinct FIGURE as its own NON-OVERLAPPING \
+    box, at the position the scene states (left / centre / right / foreground). Include every person and key \
+    object named. Output ONLY the JSON array — no prose, no code fences.";
+
+/// Ask an LLM to plan the layout for `scene_prompt`. Returns the placed elements (may be empty on a bad reply).
+pub async fn plan_layout(provider: &str, scene_prompt: &str) -> Result<Vec<LayoutElement>> {
+    let resp = crate::prompt::complete(provider, PLANNER_SYSTEM, scene_prompt, &crate::prompt::EnhanceArgs::default())
+        .await
+        .context("layout planner LLM call")?;
+    let json = extract_json_array(&resp).context("layout planner returned no JSON array")?;
+    let elems: Vec<LayoutElement> = serde_json::from_str(&json)
+        .with_context(|| format!("parsing layout JSON: {json}"))?;
+    Ok(elems
+        .into_iter()
+        .filter(|e| e.w > 0.0 && e.h > 0.0)
+        .collect())
+}
+
+/// Generate up to `tries` layout plans and keep the best by a programmatic **completeness** score (a vision
+/// judge can't reliably read abstract stick-figure line-art, but the structured plan is easy to score):
+/// more DISTINCT, NON-OVERLAPPING figures + at least some environment = better. Re-planning is varied with a
+/// hint so the LLM doesn't return the same arrangement. Returns the best plan, or an error if none parsed.
+pub async fn plan_best_layout(provider: &str, scene_prompt: &str, tries: usize) -> Result<Vec<LayoutElement>> {
+    let mut best: Option<(Vec<LayoutElement>, f32)> = None;
+    let mut attempts = 0usize;
+    for t in 0..tries.max(1) {
+        let user = if t == 0 {
+            scene_prompt.to_string()
+        } else {
+            format!("{scene_prompt}\n\n(layout variation {t}: a DIFFERENT but valid arrangement; keep every figure separated)")
+        };
+        let elems = match plan_layout(provider, &user).await {
+            Ok(e) if !e.is_empty() => e,
+            _ => continue,
+        };
+        attempts += 1;
+        let score = score_layout(&elems);
+        if best.as_ref().is_none_or(|(_, b)| score > *b) {
+            best = Some((elems, score));
+        }
+    }
+    let _ = attempts;
+    best.map(|(e, _)| e).context("layout planner produced no usable plan")
+}
+
+/// Completeness score for a plan: reward distinct figures, penalise overlapping figure boxes, small bonus
+/// for having environment (buildings/sun/objects) so the scene isn't figures-in-a-void.
+fn score_layout(elems: &[LayoutElement]) -> f32 {
+    let persons: Vec<&LayoutElement> = elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).collect();
+    let mut overlaps = 0usize;
+    for i in 0..persons.len() {
+        for j in (i + 1)..persons.len() {
+            if boxes_overlap(persons[i], persons[j]) {
+                overlaps += 1;
+            }
+        }
+    }
+    let has_env = elems.iter().any(|e| !e.kind.eq_ignore_ascii_case("person"));
+    persons.len() as f32 * 2.0 - overlaps as f32 * 1.5 + if has_env { 1.0 } else { 0.0 }
+}
+
+fn boxes_overlap(a: &LayoutElement, b: &LayoutElement) -> bool {
+    let ax2 = a.x + a.w;
+    let ay2 = a.y + a.h;
+    let bx2 = b.x + b.w;
+    let by2 = b.y + b.h;
+    a.x < bx2 && b.x < ax2 && a.y < by2 && b.y < ay2
+}
+
+/// Pull the first `[ … ]` array out of an LLM reply (tolerates preamble / code fences).
+fn extract_json_array(s: &str) -> Option<String> {
+    let start = s.find('[')?;
+    let end = s.rfind(']')?;
+    (end > start).then(|| s[start..=end].to_string())
+}
+
+/// Render the planned layout as a clean black-on-white line-art wireframe of `w`×`h`.
+pub fn render_wireframe(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
+    let mut img = RgbImage::from_pixel(w, h, Rgb([255, 255, 255]));
+    let ink = Rgb([0u8, 0, 0]);
+    for e in elements {
+        let x0 = (e.x.clamp(0.0, 1.0) * w as f32) as i32;
+        let y0 = (e.y.clamp(0.0, 1.0) * h as f32) as i32;
+        let bw = ((e.w.clamp(0.0, 1.0) * w as f32) as i32).max(2);
+        let bh = ((e.h.clamp(0.0, 1.0) * h as f32) as i32).max(2);
+        match e.kind.to_lowercase().as_str() {
+            "person" => draw_person(&mut img, x0, y0, bw, bh, ink),
+            "building" => draw_building(&mut img, x0, y0, bw, bh, ink),
+            "sun" => {
+                let r = (bw.min(bh) / 2).max(2);
+                draw_hollow_circle_mut(&mut img, (x0 + bw / 2, y0 + bh / 2), r, ink);
+            }
+            "ground" | "sky" => {} // background regions carry no strong edge — skip
+            _ => draw_hollow_box(&mut img, x0, y0, bw, bh, ink), // generic object
+        }
+    }
+    img
+}
+
+fn line(img: &mut RgbImage, a: (i32, i32), b: (i32, i32), ink: Rgb<u8>) {
+    draw_line_segment_mut(img, (a.0 as f32, a.1 as f32), (b.0 as f32, b.1 as f32), ink);
+}
+
+fn draw_hollow_box(img: &mut RgbImage, x: i32, y: i32, w: i32, h: i32, ink: Rgb<u8>) {
+    if w <= 0 || h <= 0 {
+        return;
+    }
+    draw_hollow_rect_mut(img, Rect::at(x, y).of_size(w as u32, h as u32), ink);
+}
+
+/// A simple stick-figure silhouette inside the box (head circle + spine + arms + legs) — enough for a
+/// Canny/Scribble ControlNet to place a standing person there.
+fn draw_person(img: &mut RgbImage, x: i32, y: i32, w: i32, h: i32, ink: Rgb<u8>) {
+    let cx = x + w / 2;
+    let head_r = (w.min(h) / 8).max(2);
+    let head_cy = y + head_r + h / 20;
+    draw_hollow_circle_mut(img, (cx, head_cy), head_r, ink);
+    let neck = head_cy + head_r;
+    let hip = y + (h as f32 * 0.62) as i32;
+    let feet = y + h - 1;
+    // spine
+    line(img, (cx, neck), (cx, hip), ink);
+    // shoulders + arms
+    let shoulder = neck + (h as f32 * 0.06) as i32;
+    line(img, (cx - w / 3, shoulder + h / 8), (cx, shoulder), ink);
+    line(img, (cx, shoulder), (cx + w / 3, shoulder + h / 8), ink);
+    // legs
+    line(img, (cx, hip), (cx - w / 4, feet), ink);
+    line(img, (cx, hip), (cx + w / 4, feet), ink);
+}
+
+/// A house outline: body rectangle + a simple roof triangle.
+fn draw_building(img: &mut RgbImage, x: i32, y: i32, w: i32, h: i32, ink: Rgb<u8>) {
+    let roof = y + h / 4;
+    draw_hollow_box(img, x, roof, w, h - h / 4, ink);
+    line(img, (x, roof), (x + w / 2, y), ink);
+    line(img, (x + w / 2, y), (x + w, roof), ink);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_json_array_tolerates_fences_and_preamble() {
+        let s = "Here is the layout:\n```json\n[{\"label\":\"a\",\"kind\":\"person\",\"x\":0.1,\"y\":0.2,\"w\":0.2,\"h\":0.6}]\n```";
+        let j = extract_json_array(s).expect("finds array");
+        let v: Vec<LayoutElement> = serde_json::from_str(&j).expect("parses");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].kind, "person");
+    }
+
+    #[test]
+    fn score_prefers_more_distinct_non_overlapping_figures() {
+        let p = |x: f32| LayoutElement { label: "p".into(), kind: "person".into(), x, y: 0.4, w: 0.15, h: 0.5 };
+        let env = LayoutElement { label: "sun".into(), kind: "sun".into(), x: 0.4, y: 0.05, w: 0.2, h: 0.2 };
+        // 3 separated figures + env beats 1 figure, and beats 3 overlapping figures.
+        let three_sep = vec![p(0.05), p(0.4), p(0.75), env.clone()];
+        let one = vec![p(0.4), env.clone()];
+        let three_overlap = vec![p(0.4), p(0.42), p(0.44), env];
+        assert!(score_layout(&three_sep) > score_layout(&one));
+        assert!(score_layout(&three_sep) > score_layout(&three_overlap));
+    }
+
+    #[test]
+    fn render_wireframe_draws_ink_on_white() {
+        let elems = vec![
+            LayoutElement { label: "woman".into(), kind: "person".into(), x: 0.4, y: 0.4, w: 0.2, h: 0.55 },
+            LayoutElement { label: "house".into(), kind: "building".into(), x: 0.0, y: 0.1, w: 0.3, h: 0.8 },
+            LayoutElement { label: "sun".into(), kind: "sun".into(), x: 0.4, y: 0.05, w: 0.2, h: 0.2 },
+        ];
+        let img = render_wireframe(&elems, 256, 256);
+        // white background dominant, but some black ink drawn.
+        let ink = img.pixels().filter(|p| p.0 == [0, 0, 0]).count();
+        assert!(ink > 0, "wireframe should contain ink");
+        assert!(ink < (256 * 256) as usize / 2, "wireframe is mostly white (skeletal)");
+    }
+}
