@@ -165,6 +165,14 @@ struct ScenarioFile {
     /// produces. A compact spec — a preset and/or focuses, e.g. `"photo vegetation=1 sky=0.5"`.
     naturalize: Option<String>,
 
+    /// 6.28: `relight: <preset> [angle=<deg>]` — run an IC-Light relighting pass over every output (BEFORE
+    /// naturalize) to enforce a lighting mood/direction the base model couldn't hold. `<preset>` is a named
+    /// light (`golden-hour` / `sunset` / `key-left` / `rim` / `moonlight` / … — see `plakat relight
+    /// --list-lights`); optional `angle=<deg>` overrides the direction (0=left, 90=top, 180=right,
+    /// 270=bottom). Global or per-task (per-task wins). IC-Light is SD1.5; relights the whole frame.
+    #[serde(rename = "relight", default)]
+    relight: Option<String>,
+
     /// 6.28: auto-ranking. After a t2i task generates its `count:` images, rank them and process only the
     /// ones that clear the bar — the subpar images move to `culls/` and the naturalize/restore-faces
     /// passes never touch them. A compact spec: `on` (defaults), `off`, or
@@ -994,6 +1002,10 @@ struct TaskDef {
     /// keep the plain global pass. `None` → inherit the global spec.
     #[serde(default)]
     naturalize: Option<String>,
+
+    /// 6.28: per-task relight spec — OVERRIDES the scenario-global `relight:` for THIS task's outputs.
+    #[serde(rename = "relight", default)]
+    relight: Option<String>,
 
     /// 6.27: per-task face-restore override. `Some(true)` runs ADetailer on THIS task only (e.g. break
     /// clone faces in a crowd scene) while soft scenes stay untouched; `Some(false)` disables it for this
@@ -3477,8 +3489,9 @@ pub async fn run_with_events(
     // global or per-task) will touch this run's outputs, so we only process the ones this run produces.
     let any_task_naturalize = s.tasks.iter().any(|t| t.naturalize.is_some());
     let any_restore_faces = s.restore_faces || s.tasks.iter().any(|t| t.restore_faces == Some(true));
+    let any_relight = s.relight.is_some() || s.tasks.iter().any(|t| t.relight.is_some());
     let nat_before =
-        (s.naturalize.is_some() || any_task_naturalize || any_restore_faces).then(|| collect_pngs(&out_root));
+        (s.naturalize.is_some() || any_task_naturalize || any_restore_faces || any_relight).then(|| collect_pngs(&out_root));
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -7121,6 +7134,88 @@ pub async fn run_with_events(
 
     // 6.27: face-restore (ADetailer) runs BEFORE naturalize — crisp the faces on the base render, THEN let
     // the naturalize repaint stylize everything uniformly (restoring after a watercolor repaint would stamp
+    // 6.28: relight this run's outputs (IC-Light) BEFORE restore-faces/naturalize — enforce a lighting
+    // preset/direction the base model couldn't. Grouped by effective spec so IC-Light loads once per spec.
+    // Overwrites the PNG (the `.json` sidecar is left in place); any embedded PNG metadata is not carried.
+    if any_relight && nat_before.is_some() {
+        let before = nat_before.as_ref().unwrap();
+        let new: Vec<PathBuf> = collect_pngs(&out_root)
+            .difference(before)
+            .filter(|p| !p.components().any(|c| c.as_os_str() == "culls"))
+            .cloned()
+            .collect();
+        let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
+        for png in new {
+            let parent = png.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+            let task = s.tasks.iter().find(|t| safe_name(&t.name) == parent);
+            let spec = task.and_then(|t| t.relight.clone()).or_else(|| s.relight.clone());
+            if let Some(spec) = spec.filter(|s| !s.trim().is_empty()) {
+                groups.entry(spec).or_default().push(png);
+            }
+        }
+        let mut specs: Vec<String> = groups.keys().cloned().collect();
+        specs.sort();
+        for spec in specs {
+            let pngs = groups.remove(&spec).unwrap();
+            if pngs.is_empty() {
+                continue;
+            }
+            // Parse "<preset> [angle=<deg>]" — a named light + optional direction override.
+            let (mut preset_name, mut angle): (Option<String>, Option<f32>) = (None, None);
+            for tok in spec.split_whitespace() {
+                if let Some(v) = tok.strip_prefix("angle=") {
+                    angle = v.parse().ok();
+                } else if preset_name.is_none() {
+                    preset_name = Some(tok.to_string());
+                }
+            }
+            let preset = preset_name.as_deref().and_then(crate::pipelines::ic_light::light_preset);
+            let (prompt, negative, mut backdrop) = match preset {
+                Some(p) => (p.prompt.to_string(), p.negative.to_string(), p.backdrop),
+                None => {
+                    crate::ui::progress::println(&format!(
+                        "  {} unknown preset {:?} — see `plakat relight --list-lights`; skipping",
+                        style("relight:").yellow(),
+                        preset_name.as_deref().unwrap_or("")
+                    ));
+                    continue;
+                }
+            };
+            if let Some(a) = angle {
+                backdrop = crate::pipelines::ic_light::Backdrop::Directional(a);
+            }
+            let dev = match crate::device::select(s.device.as_deref().unwrap_or("auto")) {
+                Ok(d) => d,
+                Err(e) => {
+                    crate::ui::progress::println(&format!("  ! relight device: {e}"));
+                    continue;
+                }
+            };
+            let pipe = match crate::pipelines::ic_light::Pipeline::load(dev).await {
+                Ok(p) => p,
+                Err(e) => {
+                    crate::ui::progress::println(&format!("  ! relight: IC-Light load failed: {e:#}"));
+                    continue;
+                }
+            };
+            crate::ui::progress::println(&format!(
+                "  {} relight: {} output(s) · {spec}",
+                style("◆").cyan(),
+                pngs.len()
+            ));
+            for png in &pngs {
+                let (w, h) = image::image_dimensions(png).unwrap_or((768, 768));
+                match pipe.relight(png, &prompt, &negative, w, h, 20, 2.0, 0, backdrop) {
+                    Ok((pixels, ow, oh)) => match image::RgbImage::from_raw(ow, oh, pixels) {
+                        Some(img) if img.save(png).is_ok() => {}
+                        _ => crate::ui::progress::println(&format!("  ! relight save {}", png.display())),
+                    },
+                    Err(e) => crate::ui::progress::println(&format!("  ! relight {}: {e:#}", png.display())),
+                }
+            }
+        }
+    }
+
     // sharp faces onto a painting). img2img is UNet-only, so the default face model is SDXL. Per-task
     // override: enable/model/strength come from the task, else the global — so a crowd scene can flip it on
     // (break clone faces) while soft scenes stay untouched. Outputs grouped by (model, strength) so each
