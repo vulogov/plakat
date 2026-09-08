@@ -235,6 +235,13 @@ struct ScenarioFile {
     /// part). Default `false` (exhaustive: render all, keep the best). No effect without a `min-score` + vision.
     #[serde(rename = "control-generate-opportunistic", default)]
     control_generate_opportunistic: Option<bool>,
+    /// 6.28: `control-generate-figure-shuffle: true` — the judge + coach accept the described figures in ANY
+    /// arrangement, grading only that the correct SET of attributed people is all present (right sex, garment,
+    /// held object, interaction), NOT which one stands where. Placing four correct figures *somewhere* is far
+    /// easier for a medium model than binding each to an exact slot (4 people = 24 arrangements, only one of
+    /// which strict grading accepts). Default `false` (placement graded strictly, as described).
+    #[serde(rename = "control-generate-figure-shuffle", default)]
+    control_generate_figure_shuffle: Option<bool>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -1001,6 +1008,8 @@ struct TaskDef {
     control_generate_mode: Option<String>,
     #[serde(rename = "control-generate-opportunistic", default)]
     control_generate_opportunistic: Option<bool>,
+    #[serde(rename = "control-generate-figure-shuffle", default)]
+    control_generate_figure_shuffle: Option<bool>,
     /// 6.28: compile-emitted style-stripped, composition-focused prompt for the control-generate DRAFT. When
     /// present, the structure pass renders from THIS (realistic layout) instead of the styled finish prompt,
     /// so SDXL isn't rendering soft-focus. `None` (hand-written scenarios) → the draft uses `prompt`.
@@ -1300,6 +1309,10 @@ struct RankingSpec {
     /// `STUCK_PATIENCE` rounds running. That's a model-capability wall (prompt rewrites can't fix it), so
     /// more rounds just burn vision calls. `coach-stuck=off` runs the full `max-tries`.
     coach_stuck: bool,
+    /// 6.28: figure-shuffle — grade/coach the correct SET of attributed figures regardless of WHICH stands
+    /// where (from `control-generate-figure-shuffle`). Not parsed from the `ranking:` string; set per task in
+    /// the run loop. Threads into the vision judge + coach so a placement-permuted-but-correct frame passes.
+    shuffle: bool,
 }
 
 /// How many consecutive rounds of near-identical coach defects before the loop calls it stuck and stops.
@@ -1366,7 +1379,7 @@ impl RankingSpec {
         let coach_stuck = tok("coach-stuck")
             .map(|v| !(v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no")))
             .unwrap_or(true);
-        Some(RankingSpec { by_aesthetic, by_vision, threshold, min, max_tries, anatomy, coach, coach_stuck })
+        Some(RankingSpec { by_aesthetic, by_vision, threshold, min, max_tries, anatomy, coach, coach_stuck, shuffle: false })
     }
 
     /// Higher-is-better metric (aesthetic / vision) vs lower-is-better (AI-tell).
@@ -1533,30 +1546,42 @@ impl Sd3WinnerMeta {
 }
 
 pub(crate) async fn vision_score(provider: &str, path: &std::path::Path, prompt: &str) -> Option<f32> {
-    vision_score_kind(provider, path, prompt, false).await
+    vision_score_kind(provider, path, prompt, false, false).await
 }
 
 /// Vision score with an explicit axis. `composition = true` judges a STRUCTURE draft (count / placement /
 /// anatomy / coherent scene — colours, clothing and small props are IGNORED because the finish stage fixes
 /// them); `false` is the strict FAITHFULNESS judge for a finished image (attributes, counts, no extras).
-pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, prompt: &str, composition: bool) -> Option<f32> {
+pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, prompt: &str, composition: bool, shuffle: bool) -> Option<f32> {
+    // `shuffle` (figure-shuffle) — grade the correct SET of attributed figures regardless of WHICH stands
+    // where. Placement text swaps in/out below; the ATTRIBUTE bar never relaxes (a wrong-sex/wrong-garment
+    // figure means the described one is MISSING, shuffle or not).
+    let placement = if shuffle {
+        "PLACEMENT IS FREE — the described people may appear in ANY arrangement. Do NOT penalise which \
+         person is at which spot, or which is nearer/farther. Grade only that the correct SET of \
+         attributed figures is ALL present."
+    } else {
+        "PLACEMENT — each described person should be at roughly its described position and depth (near/far); \
+         penalise a figure in clearly the wrong place."
+    };
     // Dictate JSON so parsing is deterministic and provider-agnostic — we read the `score` field.
     let instruction = if composition {
         format!(
-            "Judge ONLY the STRUCTURE of this DRAFT — a rough under-painting whose colours, clothing and \
-             identities are set by a LATER stage. Intended scene (for the count of main figures + the general \
-             setting only):\n\"{prompt}\"\n\nThe following DO NOT change the score and you must NOT dock for \
-             them: art style; ALL colours including the SKY colour; clothing; lighting; small missing props; \
-             EXTRA background / passer-by people (a populated scene is fine); and WHICH specific person or \
-             role is at which spot (identity/role swaps — e.g. a man where the woman should be, or two roles \
-             exchanged left↔right). Those are attributes a later stage fixes; they are NOT structure.\n\n\
-             Score 0-10 on STRUCTURE ONLY — three things: (1) COUNT: are there about the intended number of \
-             MAIN foreground figures? (2) DISTINCT + SOUND: is each a separate, complete, anatomically \
-             plausible person — NOT merged/fused into a neighbour, duplicated, or broken? (3) COHERENT: is it \
-             one believable place (not a cut-up collage), figures at separate positions with some depth? \
-             10 = right number of distinct, sound figures in a coherent scene. Penalise ONLY: MISSING main \
-             figures, FUSED/merged or broken figures, or a collage/incoherent layout. Nothing else.\n\nReply \
-             with ONLY a JSON object, no prose, no code fences:\n{{\"score\": <0 to 10>, \"reason\": \"<one short line>\"}}"
+            "Judge this DRAFT. A LATER low-strength stage only adds art STYLE + polish; it will NOT move \
+             figures or repaint their clothing/identity, so those must be right HERE. Intended scene:\n\
+             \"{prompt}\"\n\nDo NOT dock for these (a later stage / not the figures): art style; the SKY \
+             colour and overall palette; lighting; small missing background props; EXTRA distant background \
+             passers-by (a populated street is fine).\n\nScore 0-10 on the MAIN foreground figures:\n\
+             (1) COUNT — about the intended number of main figures.\n(2) DISTINCT + SOUND — each a separate, \
+             complete, anatomically plausible person, not merged/fused/duplicated/broken.\n(3) COHERENT — one \
+             believable place (not a collage), figures at separate positions with some depth.\n(4) ATTRIBUTES \
+             — each described person appears with the CORRECT sex/age, garment, HELD OBJECT (e.g. basket, \
+             cane) and INTERACTION (who they act on / talk to). A wrong-sex or wrong-garment figure means the \
+             described one is MISSING and an unwanted one is EXTRA.\n(5) {placement}\n\n10 = the right number \
+             of distinct, sound, correctly-attributed figures. Penalise missing/fused/broken/duplicated \
+             figures, wrong-attributed figures (wrong sex, wrong garment, missing held object/interaction), \
+             and extras among the MAIN figures.\n\nReply with ONLY a JSON object, no prose, no code fences:\n\
+             {{\"score\": <0 to 10>, \"reason\": \"<one short line>\"}}"
         )
     } else {
         format!(
@@ -1565,7 +1590,8 @@ pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, pr
              QUALITY + FAITHFULNESS from 0 to 10. 10 = every requested subject/object present with the \
              CORRECT attributes and counts, correct anatomy (all limbs, proper hands, natural poses), and NO \
              hallucinated extras. Penalize: broken/missing/extra limbs, deformed hands, wrong attributes (a \
-             garment on the wrong person), wrong counts, and objects/people not in the prompt.\n\nReply with \
+             garment on the wrong person), wrong counts, and objects/people not in the prompt.\n\n\
+             {placement}\n\nReply with \
              ONLY a JSON object, no prose, no code fences:\n{{\"score\": <a number from 0 to 10>, \"reason\": \"<one short line>\"}}"
         )
     };
@@ -1671,7 +1697,7 @@ async fn rank_dir(
             let v = match vcache.get(&p) {
                 Some(&v) => v,
                 None => {
-                    let v = vision_score(provider, &p, prompt).await.unwrap_or(f32::NAN);
+                    let v = vision_score_kind(provider, &p, prompt, false, ranking.shuffle).await.unwrap_or(f32::NAN);
                     vcache.insert(p.clone(), v);
                     v
                 }
@@ -1743,7 +1769,7 @@ pub(crate) async fn vision_critique(
     cur_prompt: &str,
     cur_negative: &str,
 ) -> Option<VisionCritique> {
-    vision_critique_kind(provider, path, cur_prompt, cur_negative, false).await
+    vision_critique_kind(provider, path, cur_prompt, cur_negative, false, false).await
 }
 
 /// `composition = true`: critique only STRUCTURAL defects of a draft (missing/fused/broken figures,
@@ -1755,17 +1781,30 @@ pub(crate) async fn vision_critique_kind(
     cur_prompt: &str,
     cur_negative: &str,
     composition: bool,
+    shuffle: bool,
 ) -> Option<VisionCritique> {
+    // figure-shuffle: never tell the model to MOVE a figure (position pins fight a medium model that can't
+    // bind roles to exact slots). Only ever fix attributes/anatomy/count/interaction. Whichever branch, the
+    // rewrite must not add "X on the left / in front" cues when shuffle is on.
+    let placement_rule = if shuffle {
+        "PLACEMENT IS FREE: do NOT critique or rewrite WHERE any figure stands or its depth, and do NOT add \
+         any position cue (no 'on the left', 'in the foreground', 'in front'). Fix only attributes, sex/age, \
+         held objects, interactions, count, and anatomy."
+    } else {
+        "You MAY fix placement (a figure in the wrong spot / wrong depth) with concrete position cues."
+    };
     let instruction = if composition {
         format!(
-            "You are fixing the STRUCTURE of a rough draft — its colours, clothing and identities are set by \
-             a LATER stage, so IGNORE them. It came from this PROMPT:\n\"{cur_prompt}\"\n\n(1) In ONE line, \
-             name ONLY STRUCTURAL defects: MISSING main figures, FUSED/merged or duplicated figures, broken \
-             anatomy, or an incoherent/collage layout. IGNORE colours (including the sky), clothing, art \
-             style, background/passer-by extras, and WHICH person is at which spot. (2) Rewrite the prompt to \
-             fix ONLY those structural defects, keeping the same scene and EVERY element already described \
-             (add cues like 'N separate fully-visible people, each distinct and not merged, complete correct \
-             anatomy'). (3) Extra negative terms for structural defects only. Format EXACTLY, one per line:\n\
+            "You are fixing a rough DRAFT. A LATER low-strength stage adds only art STYLE + polish — it will \
+             NOT move figures or repaint clothing/identity, so those must be right in the DRAFT. It came from \
+             this PROMPT:\n\"{cur_prompt}\"\n\n(1) In ONE line, name the defects in the MAIN figures: MISSING \
+             or FUSED/merged/duplicated figures, broken anatomy, a collage layout, and WRONG-ATTRIBUTE \
+             figures (wrong sex/age, wrong garment, missing HELD OBJECT like a basket or cane, wrong or \
+             missing INTERACTION). IGNORE art style, the SKY colour and palette, lighting, and distant \
+             background passers-by. {placement_rule} (2) Rewrite the prompt to fix ONLY those defects, keeping \
+             the same scene and EVERY element already described (add cues like 'N separate fully-visible \
+             people, each distinct and not merged, correct anatomy, correct garments and held objects'). \
+             (3) Extra negative terms for those defects only. Format EXACTLY, one per line:\n\
              DEFECTS: <one line>\nPROMPT: <revised prompt>\nNEGATIVE: <comma-separated terms>"
         )
     } else {
@@ -1775,7 +1814,7 @@ pub(crate) async fn vision_critique_kind(
              IGNORING art style: (1) In ONE line, name the concrete DEFECTS — broken/missing/extra limbs, \
              deformed hands, unnatural poses, wrong attributes or wrong person (e.g. a garment on the wrong \
              figure), wrong counts, HALLUCINATED objects/people the prompt never asked for, and anything present \
-             that the negative forbids. (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
+             that the negative forbids. {placement_rule} (2) Rewrite the prompt to fix them, KEEPING the same subject, scene, and \
              the SAME art style/medium exactly as written (do not change or add a style). CRITICAL: PRESERVE \
              EVERY element already described — not only the figures but the BACKGROUND, setting, architecture, \
              landscape, sky, sun, weather and lighting. Never drop, omit, or shorten any of them; carry them all \
@@ -1813,7 +1852,7 @@ async fn coach_revise(
 ) -> Option<(String, String, String)> {
     let imgs = rank_dir(task_out, ranking, scorer, face_det, provider, cur_prompt, vcache).await;
     let best = imgs.first()?.0.clone();
-    let crit = vision_critique(provider, &best, cur_prompt, cur_negative).await?;
+    let crit = vision_critique_kind(provider, &best, cur_prompt, cur_negative, false, ranking.shuffle).await?;
     if !crit.defects.is_empty() {
         crate::ui::progress::println(&format!("  {} sees: {}", style("coach").magenta(), crit.defects));
     }
@@ -2400,6 +2439,7 @@ async fn control_generate_prepass(
     let g_dsize = s.control_generate_size.clone();
     let g_mode = s.control_generate_mode.clone();
     let g_opportunistic = s.control_generate_opportunistic;
+    let g_shuffle = s.control_generate_figure_shuffle;
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2494,6 +2534,9 @@ async fn control_generate_prepass(
         // Opportunistic: stop generating drafts the moment one clears `target`, instead of rendering the
         // whole `count × tries` batch and keeping the best. A speed lever when any good-enough layout will do.
         let opportunistic = s.tasks[i].control_generate_opportunistic.or(g_opportunistic).unwrap_or(false);
+        // figure-shuffle: the draft judge + coach grade the correct SET of attributed figures regardless of
+        // which stands where — a far easier target for a medium model than binding each to an exact slot.
+        let shuffle = s.tasks[i].control_generate_figure_shuffle.or(g_shuffle).unwrap_or(false);
         let wireframe = s.tasks[i]
             .control_generate_mode
             .as_deref()
@@ -2688,7 +2731,7 @@ async fn control_generate_prepass(
                 }
                 let score = if vision_ok {
                     // Structure pass → COMPOSITION judge (placement/anatomy/coherence), not strict attributes.
-                    vision_score_kind(&vprovider, &path, &prompt, true).await.unwrap_or(-1.0)
+                    vision_score_kind(&vprovider, &path, &prompt, true, shuffle).await.unwrap_or(-1.0)
                 } else {
                     -1.0
                 };
@@ -2730,7 +2773,7 @@ async fn control_generate_prepass(
             }
             // Coach: critique the round's best draft and rewrite the prompt for the next round.
             // Structure coach → composition critique (fix fused/missing/broken figures, not colours/roles).
-            let Some(crit) = vision_critique_kind(&vprovider, &rb_path, &cur_prompt, &negative, true).await else { break };
+            let Some(crit) = vision_critique_kind(&vprovider, &rb_path, &cur_prompt, &negative, true, shuffle).await else { break };
             if !crit.defects.is_empty() {
                 crate::ui::progress::println(&format!(
                     "  {} sees: {}",
@@ -5422,6 +5465,9 @@ pub async fn run_with_events(
         // and disable coach without vision. A vision/aesthetic threshold (>1) resets to the AI-tell 0.5.
         let task_rank: Option<(RankingSpec, bool)> = ranking_cfg.map(|rk| {
             let mut eff = rk;
+            // figure-shuffle: the final faithfulness judge + coach accept any placement of the correct set
+            // of attributed figures (task override → scenario global → off).
+            eff.shuffle = task.control_generate_figure_shuffle.or(s.control_generate_figure_shuffle).unwrap_or(false);
             if (eff.by_vision || eff.coach) && !vision_available {
                 eff.by_vision = false;
                 eff.coach = false;
@@ -8569,7 +8615,7 @@ mod tests {
 
     #[test]
     fn scenario_parses_control_generate() {
-        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  control-generate-count: 6\n  control-generate-min-score: 6.5\n  control-generate-mode: wireframe\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
+        let hjson = "{\n  model: sd35\n  control-generate: sdxl\n  control-generate-strength: 0.6\n  control-generate-count: 6\n  control-generate-min-score: 6.5\n  control-generate-mode: wireframe\n  control-generate-opportunistic: true\n  control-generate-figure-shuffle: true\n  tasks:\n  [\n    {\n      name: a\n      control-generate: \"\"\n      prompt: \"x\"\n    }\n  ]\n}";
         let s = deser_hjson::from_str::<ScenarioFile>(hjson).expect("parses");
         assert_eq!(s.control_generate.as_deref(), Some("sdxl"));
         assert_eq!(s.control_generate_mode.as_deref(), Some("wireframe"));
@@ -8577,6 +8623,8 @@ mod tests {
         assert_eq!(s.control_generate_count, Some(6));
         assert_eq!(s.control_generate_min_score, Some(6.5));
         assert_eq!(s.control_generate_tries, None); // absent → runtime default (3)
+        assert_eq!(s.control_generate_opportunistic, Some(true));
+        assert_eq!(s.control_generate_figure_shuffle, Some(true));
         assert_eq!(parse_wh(Some("1024x1024")), Some((1024, 1024)));
         // Per-task empty string is the documented per-task disable.
         assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
