@@ -167,7 +167,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "control-generate", "control-preimage",
     "control-generate-strength", "control-generate-count", "control-generate-min-score",
     "control-generate-tries", "control-generate-size", "control-generate-mode",
-    "control-generate-opportunistic", "control-generate-figure-shuffle",
+    "control-generate-opportunistic", "control-generate-figure-shuffle", "control-generate-finish",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
@@ -292,8 +292,8 @@ const STRUCTURE_SYSTEM: &str = "You rewrite a scene into a CONCISE SDXL prompt f
     2) EACH subject as a terse phrase that KEEPS its action and interaction — '[position] [subject] [key \
     attributes], [what they are DOING]'. You MUST preserve the verb/relationship (holding X, carrying X, \
     leaning on X, sitting on X, stepping out of X, standing beside X, talking to X, reaching for X): these \
-    define the POSE and the composition. Do NOT reduce a subject to a bag of nouns — 'leaning on a cane' must \
-    stay a phrase, never become a stray 'cane'. Keep position to ONE word \
+    define the POSE and the composition. Do NOT reduce a subject to a bag of nouns — a '[verb]-ing on/with X' \
+    phrase must stay a phrase, never collapse to a stray noun 'X'. Keep position to ONE word \
     (foreground/left/right/centre/background) plus near/far if relevant;\n\
     3) concrete environment/colour facts and any (weighted:N) spans verbatim (e.g. '(pale green sky:1.4), \
     (orange sun:1.4)');\n\

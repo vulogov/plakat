@@ -250,6 +250,13 @@ struct ScenarioFile {
     /// which strict grading accepts). Default `false` (placement graded strictly, as described).
     #[serde(rename = "control-generate-figure-shuffle", default)]
     control_generate_figure_shuffle: Option<bool>,
+    /// 6.28: `control-generate-finish:` — how hard the sd35 finish works over the structure draft. `light`
+    /// (DEFAULT) = one gentle stylize pass, NO coach, no regeneration: the draft is already correct, so the
+    /// finish only applies the model's style instead of grinding rounds trying to "fix" a good image (a
+    /// medium model can't, and it drifts worse). `coach`/`full` = the old behaviour (honour the `ranking:`
+    /// coach + max-tries). Only affects tasks fed by control-generate / control-preimage.
+    #[serde(rename = "control-generate-finish", default)]
+    control_generate_finish: Option<String>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -1020,6 +1027,13 @@ struct TaskDef {
     control_generate_opportunistic: Option<bool>,
     #[serde(rename = "control-generate-figure-shuffle", default)]
     control_generate_figure_shuffle: Option<bool>,
+    #[serde(rename = "control-generate-finish", default)]
+    control_generate_finish: Option<String>,
+    /// Runtime-only: set by the pre-pass when it wires a control-generate draft (or a control-preimage) as
+    /// this task's init. Lets the main loop apply the LIGHT finish (no coach, one round) to control-generate
+    /// tasks without mistaking a plain user img2img (which also has an init-image) for one.
+    #[serde(skip)]
+    from_control_generate: bool,
     /// 6.28: compile-emitted style-stripped, composition-focused prompt for the control-generate DRAFT. When
     /// present, the structure pass renders from THIS (realistic layout) instead of the styled finish prompt,
     /// so SDXL isn't rendering soft-focus. `None` (hand-written scenarios) → the draft uses `prompt`.
@@ -1585,8 +1599,8 @@ pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, pr
              (1) COUNT — about the intended number of main figures.\n(2) DISTINCT + SOUND — each a separate, \
              complete, anatomically plausible person, not merged/fused/duplicated/broken.\n(3) COHERENT — one \
              believable place (not a collage), figures at separate positions with some depth.\n(4) ATTRIBUTES \
-             — each described person appears with the CORRECT sex/age, garment, HELD OBJECT (e.g. basket, \
-             cane) and INTERACTION (who they act on / talk to). A wrong-sex or wrong-garment figure means the \
+             — each described person appears with the CORRECT sex/age, garment, any HELD OBJECT the scene \
+             gave them, and INTERACTION (who they act on / talk to). A wrong-sex or wrong-garment figure means the \
              described one is MISSING and an unwanted one is EXTRA.\n(5) {placement}\n\n10 = the right number \
              of distinct, sound, correctly-attributed figures. Penalise missing/fused/broken/duplicated \
              figures, wrong-attributed figures (wrong sex, wrong garment, missing held object/interaction), \
@@ -1809,7 +1823,7 @@ pub(crate) async fn vision_critique_kind(
              NOT move figures or repaint clothing/identity, so those must be right in the DRAFT. It came from \
              this PROMPT:\n\"{cur_prompt}\"\n\n(1) In ONE line, name the defects in the MAIN figures: MISSING \
              or FUSED/merged/duplicated figures, broken anatomy, a collage layout, and WRONG-ATTRIBUTE \
-             figures (wrong sex/age, wrong garment, missing HELD OBJECT like a basket or cane, wrong or \
+             figures (wrong sex/age, wrong garment, a missing HELD OBJECT the scene specified, wrong or \
              missing INTERACTION). IGNORE art style, the SKY colour and palette, lighting, and distant \
              background passers-by. {placement_rule} (2) Rewrite the prompt to fix ONLY those defects, keeping \
              the same scene and EVERY element already described (add cues like 'N separate fully-visible \
@@ -2532,6 +2546,7 @@ async fn control_generate_prepass(
                     ));
                     s.tasks[i].init_image = Some(dest);
                     s.tasks[i].strength = Some(strength);
+                    s.tasks[i].from_control_generate = true;
                 }
                 Err(e) => {
                     crate::ui::progress::println(&format!(
@@ -2757,7 +2772,12 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         )),
                     }
-                    for e in elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")) {
+                    // Bind figures AND distinctive non-person elements (the sun, standalone objects) to their
+                    // boxes — a "round orange sun" region makes the sun actually appear where the layout placed
+                    // it. Buildings + ground stay in the background base (the base paints them).
+                    for e in elems.iter().filter(|e| {
+                        matches!(e.kind.to_lowercase().as_str(), "person" | "sun" | "object")
+                    }) {
                         let label = e.label.trim();
                         if label.is_empty() {
                             continue;
@@ -2976,6 +2996,7 @@ async fn control_generate_prepass(
         ));
         s.tasks[i].init_image = Some(draft);
         s.tasks[i].strength = Some(strength);
+        s.tasks[i].from_control_generate = true;
         if !trail.is_empty() {
             trail.push(format!("kept: vision {best_score:.1}"));
             s.tasks[i].structure_trail = Some(trail.join("\n"));
@@ -5613,6 +5634,20 @@ pub async fn run_with_events(
             if eff.by_aesthetic && !use_aesthetic {
                 eff.by_aesthetic = false;
                 eff.threshold = 0.5;
+            }
+            // LIGHT finish (default under control-generate): the structure draft is already correct, so the
+            // sd35 finish only STYLIZES — no coach, one round. This kills the 10-round grind where the coach
+            // rewrites a prompt a medium model can't act on and drifts a good image worse. Opt back into the
+            // coach with `control-generate-finish: coach`.
+            let finish_light = task
+                .control_generate_finish
+                .as_deref()
+                .or(s.control_generate_finish.as_deref())
+                .map(|m| m.eq_ignore_ascii_case("light"))
+                .unwrap_or(true);
+            if task.from_control_generate && finish_light && (eff.coach || eff.max_tries > 1) {
+                eff.coach = false;
+                eff.max_tries = 1;
             }
             (eff, use_aesthetic)
         });
@@ -8759,6 +8794,10 @@ mod tests {
         assert_eq!(s.control_generate_tries, None); // absent → runtime default (3)
         assert_eq!(s.control_generate_opportunistic, Some(true));
         assert_eq!(s.control_generate_figure_shuffle, Some(true));
+        // finish mode defaults to None (→ light at runtime); parses when set.
+        assert_eq!(s.control_generate_finish, None);
+        let sf = deser_hjson::from_str::<ScenarioFile>("{\n  model: sd35\n  control-generate-finish: coach\n}").expect("parses");
+        assert_eq!(sf.control_generate_finish.as_deref(), Some("coach"));
         // control-preimage: global + per-task (empty string = per-task opt-out of the global).
         let pre = "{\n  model: sd35\n  control-preimage: /tmp/scene.png\n  tasks:\n  [\n    {\n      name: a\n      prompt: \"x\"\n    }\n    {\n      name: b\n      prompt: \"y\"\n      control-preimage: \"\"\n    }\n    {\n      name: c\n      prompt: \"z\"\n      control-preimage: /tmp/other.png\n    }\n  ]\n}";
         let sp = deser_hjson::from_str::<ScenarioFile>(pre).expect("parses");
