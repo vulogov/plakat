@@ -2660,8 +2660,12 @@ async fn control_generate_prepass(
         let mut cn_resolved: Vec<(crate::pipelines::controlnet::ControlKind, candle_core::Tensor, f32, f32, f32)> = Vec::new();
         // Plakat-derived regional prompts (wireframe mode): one per planned figure, bbox = its layout box,
         // prompt = its full attribute label. Bind garments/props to the RIGHT figure (a global prompt floats
-        // them onto the wrong body). Non-empty → drives generate_regional, replacing OpenPose for the draft.
+        // them onto the wrong body). Non-empty → drives generate_regional together with the OpenPose control.
         let mut regions: Vec<crate::pipelines::tiled::RegionSpec> = Vec::new();
+        // The BACKGROUND-ONLY base prompt for regional generation (figures removed). A base that still names
+        // people bleeds their attributes into a neighbouring region's box (the "bearded woman in red" bug).
+        // `None` until built; falls back to the full prompt if the figure-strip LLM call fails.
+        let mut regional_base: Option<String> = None;
         {
             let specs = task_effective_controls(&s.tasks[i]).unwrap_or_default();
             for spec in &specs {
@@ -2779,11 +2783,26 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         ));
                     } else {
-                        crate::ui::progress::println(&format!(
-                            "  {} {} regional prompt(s) from the layout → each figure's attributes bound to its box",
-                            style("control-generate:").green(),
-                            regions.len(),
-                        ));
+                        // Strip the figures out of the base so it only paints the SETTING — the regions own the
+                        // people. Best-effort: keep the full prompt if the LLM call fails.
+                        match crate::prompt::wireframe::scene_background(&vprovider, &prompt).await {
+                            Ok(bg) => {
+                                regional_base = Some(bg);
+                                crate::ui::progress::println(&format!(
+                                    "  {} {} regional prompt(s) over a figure-free base → attributes bound per box",
+                                    style("control-generate:").green(),
+                                    regions.len(),
+                                ));
+                            }
+                            Err(e) => {
+                                tracing::warn!(target: "plakat", "scene-background: {e} — regional base keeps the full prompt");
+                                crate::ui::progress::println(&format!(
+                                    "  {} {} regional prompt(s) from the layout → attributes bound per box (base = full prompt)",
+                                    style("control-generate:").green(),
+                                    regions.len(),
+                                ));
+                            }
+                        }
                     }
                 }
                 Ok(_) => crate::ui::progress::println(&format!(
@@ -2829,7 +2848,15 @@ async fn control_generate_prepass(
                 // The round generates realistic compositions. In wireframe mode a procedural wireframe (built
                 // below) drives a Canny ControlNet in `control_reqs`, so placement is FIXED and the coach only
                 // needs to fix attributes; without it this is a plain (prompt-only) structure draft.
-                if let Err(e) = draft_generate(pipe, &cur_prompt, &negative, dw, dh, seed, &path, &control_reqs, &regions) {
+                // Regional mode paints the figures from the per-box region prompts, so the BASE must be the
+                // figure-free background (else it bleeds "old man" into the woman's box). Non-regional keeps the
+                // coach-mutated full prompt.
+                let draft_base: &str = if !regions.is_empty() {
+                    regional_base.as_deref().unwrap_or(&cur_prompt)
+                } else {
+                    &cur_prompt
+                };
+                if let Err(e) = draft_generate(pipe, draft_base, &negative, dw, dh, seed, &path, &control_reqs, &regions) {
                     crate::ui::progress::println(&format!(
                         "      {} r{round} draft {d} failed: {e}",
                         style("control-generate:").yellow()

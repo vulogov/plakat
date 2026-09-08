@@ -99,6 +99,29 @@ pub async fn plan_best_layout(provider: &str, scene_prompt: &str, tries: usize) 
     best.map(|(e, _)| e).context("layout planner produced no usable plan")
 }
 
+/// System prompt for [`scene_background`].
+const BACKGROUND_SYSTEM: &str = "You rewrite a scene description into a BACKGROUND-ONLY setting. Keep the \
+    place, architecture, streets, ground, sky, sun, clouds, weather, lighting, colours, atmosphere and art \
+    style/medium EXACTLY as written. REMOVE every person, figure, animal and anything they wear or hold — no \
+    people at all. The result is an EMPTY setting (a stage with no actors). Do not add new elements. Output \
+    ONLY the rewritten description, no preamble, no quotes.";
+
+/// Produce a FIGURE-FREE version of the scene — the setting, architecture, sky, lighting and art style with
+/// every person removed. Used as the BASE prompt for regional generation: the regions own the figures, so a
+/// base that still names people (an "old man", a "merchant") bleeds those attributes into a neighbouring
+/// region's box (the "bearded woman in a red dress" failure). Best-effort — the caller falls back to the full
+/// prompt if this errors or comes back empty.
+pub async fn scene_background(provider: &str, scene_prompt: &str) -> Result<String> {
+    let out = crate::prompt::complete(provider, BACKGROUND_SYSTEM, scene_prompt, &crate::prompt::EnhanceArgs::default())
+        .await
+        .context("scene-background LLM call")?;
+    let out = out.trim().trim_matches('"').trim().to_string();
+    if out.is_empty() {
+        anyhow::bail!("scene-background returned empty");
+    }
+    Ok(out)
+}
+
 /// Completeness score for a plan: reward distinct figures, penalise overlapping figure boxes, small bonus
 /// for having environment (buildings/sun/objects) so the scene isn't figures-in-a-void.
 fn score_layout(elems: &[LayoutElement]) -> f32 {
