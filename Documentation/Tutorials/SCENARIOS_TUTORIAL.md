@@ -454,9 +454,11 @@ control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower 
      the **best of `control-generate-tries` plans** (scored programmatically — most distinct, non-overlapping
      figures + environment) and **draws** it as black line-art (stick-figures / boxes / circle-sun on white).
      Correct *by construction*, not guessed.
-  2. **Controlled composition** — the wireframe drives a **Canny ControlNet**; SDXL renders `count`
-     compositions with placement **locked** to the blueprint, vision-ranked + coached (the coach now only
-     fixes *attributes* — colour, clothing — since placement is fixed).
+  2. **Controlled composition** — the layout drives **stacked ControlNets**: figures as an **OpenPose
+     skeleton** (OpenPose renders a real clothed body from a skeleton — Canny would just trace the sticks),
+     and buildings/objects as **Canny** box outlines (a building ≈ a box, so its outline guides SDXL; sky/sun
+     come from the prompt). SDXL renders `count` compositions with placement **locked**, vision-ranked +
+     coached (the coach now only fixes *attributes* — colour, clothing — since placement is fixed).
   3. **Finish** — the best composition is the sd35 **img2img init at LOW strength** (~0.4–0.5), so sd35 only
      restyles in your look + LoRAs while the placement holds.
 

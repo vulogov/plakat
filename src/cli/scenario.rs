@@ -2461,34 +2461,60 @@ async fn control_generate_prepass(
                 Ok(elems) if !elems.is_empty() => {
                     let n_person = elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).count();
                     crate::ui::progress::println(&format!(
-                        "  {} best of {tries} layout plan(s): {} element(s) ({n_person} figure(s)) → wireframe",
+                        "  {} best of {tries} layout plan(s): {} element(s) ({n_person} figure(s))",
                         style("control-generate:").cyan(),
                         elems.len(),
                     ));
-                    let wf_path = task_out.join("wireframe.png");
-                    let saved = crate::prompt::wireframe::render_wireframe(&elems, dw, dh).save(&wf_path).is_ok();
-                    let kind = crate::pipelines::controlnet::ControlKind::Canny;
-                    if saved && !cn_cache.contains_key(&kind) {
+                    // Save the human-inspectable schematic, and the OpenPose SKELETON that actually drives the
+                    // control — OpenPose renders a real clothed body at each figure (Canny only traced sticks).
+                    let _ = crate::prompt::wireframe::render_wireframe(&elems, dw, dh).save(task_out.join("wireframe.png"));
+                    let pose_path = task_out.join("wireframe-pose.png");
+                    let pose_saved = crate::prompt::wireframe::render_openpose(&elems, dw, dh).save(&pose_path).is_ok();
+                    let kind = crate::pipelines::controlnet::ControlKind::OpenPose;
+                    if pose_saved && !cn_cache.contains_key(&kind) {
                         if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, kind, cn_variant).await {
                             cn_cache.insert(kind, net);
                         }
                     }
-                    match (saved && cn_cache.contains_key(&kind))
+                    // The skeleton is already in OpenPose format, so use it DIRECTLY (no annotator, which would
+                    // try to detect a pose in a drawing).
+                    match (pose_saved && cn_cache.contains_key(&kind))
                         .then(|| ())
-                        .and(crate::pipelines::controlnet_annotator::annotate(kind, &wf_path, dw, dh, &dev, cn_dtype).await.ok())
+                        .and(crate::pipelines::controlnet::prepare_conditioning(&pose_path, dw, dh, &dev, cn_dtype).ok())
                     {
                         Some(cond) => {
-                            cn_resolved.push((kind, cond, 0.9, 0.0, 1.0));
+                            cn_resolved.push((kind, cond, 0.8, 0.0, 1.0));
                             crate::ui::progress::println(&format!(
-                                "  {} procedural wireframe: {} element(s) placed → canny control (composition placed by construction)",
+                                "  {} openpose skeleton: {n_person} figure(s) → pose control (SDXL renders real bodies at each position)",
                                 style("control-generate:").green(),
-                                elems.len(),
                             ));
                         }
                         None => crate::ui::progress::println(&format!(
-                            "  {} wireframe render/control failed — composition runs prompt-only",
+                            "  {} wireframe/pose control failed — composition runs prompt-only",
                             style("control-generate:").yellow()
                         )),
+                    }
+                    // Stack a Canny control for the STRUCTURES (buildings/objects boxes) — box outlines guide
+                    // SDXL to place buildings (a building ≈ a box, unlike a person). Moderate strength so it
+                    // guides rather than hard-traces. Environment/sky come from the prompt.
+                    if let Some(struct_img) = crate::prompt::wireframe::render_structures(&elems, dw, dh) {
+                        let sp = task_out.join("wireframe-structures.png");
+                        let ckind = crate::pipelines::controlnet::ControlKind::Canny;
+                        let ok = struct_img.save(&sp).is_ok();
+                        if ok && !cn_cache.contains_key(&ckind) {
+                            if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, ckind, cn_variant).await {
+                                cn_cache.insert(ckind, net);
+                            }
+                        }
+                        if ok && cn_cache.contains_key(&ckind) {
+                            if let Ok(cond) = crate::pipelines::controlnet_annotator::annotate(ckind, &sp, dw, dh, &dev, cn_dtype).await {
+                                cn_resolved.push((ckind, cond, 0.45, 0.0, 1.0));
+                                crate::ui::progress::println(&format!(
+                                    "  {} structure boxes → canny control (buildings/objects placed)",
+                                    style("control-generate:").green(),
+                                ));
+                            }
+                        }
                     }
                 }
                 Ok(_) => crate::ui::progress::println(&format!(

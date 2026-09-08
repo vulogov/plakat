@@ -107,7 +107,118 @@ fn extract_json_array(s: &str) -> Option<String> {
     (end > start).then(|| s[start..=end].to_string())
 }
 
-/// Render the planned layout as a clean black-on-white line-art wireframe of `w`×`h`.
+/// COCO-18 standing-pose template: keypoint positions as fractions of a person's bounding box
+/// (x: 0=left…1=right, y: 0=top…1=bottom). Order: nose, neck, Rsho, Relb, Rwri, Lsho, Lelb, Lwri, Rhip,
+/// Rknee, Rank, Lhip, Lknee, Lank, Reye, Leye, Rear, Lear.
+const POSE_TEMPLATE: [(f32, f32); 18] = [
+    (0.50, 0.09), // nose
+    (0.50, 0.18), // neck
+    (0.36, 0.19), // R shoulder
+    (0.30, 0.35), // R elbow
+    (0.28, 0.52), // R wrist
+    (0.64, 0.19), // L shoulder
+    (0.70, 0.35), // L elbow
+    (0.72, 0.52), // L wrist
+    (0.43, 0.53), // R hip
+    (0.41, 0.76), // R knee
+    (0.40, 0.98), // R ankle
+    (0.57, 0.53), // L hip
+    (0.59, 0.76), // L knee
+    (0.60, 0.98), // L ankle
+    (0.47, 0.07), // R eye
+    (0.53, 0.07), // L eye
+    (0.44, 0.08), // R ear
+    (0.56, 0.08), // L ear
+];
+
+/// OpenPose limb connections (0-indexed keypoint pairs) — the standard `limbSeq` the annotators/ControlNets
+/// are trained on, with the canonical per-limb colours.
+const POSE_LIMBS: [(usize, usize, [u8; 3]); 17] = [
+    (1, 2, [255, 0, 0]),
+    (1, 5, [255, 85, 0]),
+    (2, 3, [255, 170, 0]),
+    (3, 4, [255, 255, 0]),
+    (5, 6, [170, 255, 0]),
+    (6, 7, [85, 255, 0]),
+    (1, 8, [0, 255, 0]),
+    (8, 9, [0, 255, 85]),
+    (9, 10, [0, 255, 170]),
+    (1, 11, [0, 255, 255]),
+    (11, 12, [0, 170, 255]),
+    (12, 13, [0, 85, 255]),
+    (1, 0, [0, 0, 255]),
+    (0, 14, [85, 0, 255]),
+    (14, 16, [170, 0, 255]),
+    (0, 15, [255, 0, 255]),
+    (15, 17, [255, 0, 170]),
+];
+
+/// Render the PERSON elements as an OpenPose skeleton image (coloured joints + limbs on BLACK) — the format
+/// the OpenPose ControlNet is trained on, so SDXL renders a real standing human at each figure's box.
+/// Non-person elements are ignored (environment comes from the prompt, which OpenPose doesn't constrain).
+pub fn render_openpose(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
+    let mut img = RgbImage::from_pixel(w, h, Rgb([0, 0, 0]));
+    for e in elements.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")) {
+        let bx = e.x.clamp(0.0, 1.0) * w as f32;
+        let by = e.y.clamp(0.0, 1.0) * h as f32;
+        let bw = e.w.clamp(0.02, 1.0) * w as f32;
+        let bh = e.h.clamp(0.02, 1.0) * h as f32;
+        let pt = |k: usize| -> (f32, f32) {
+            let (fx, fy) = POSE_TEMPLATE[k];
+            (bx + fx * bw, by + fy * bh)
+        };
+        let thick = (bw.min(bh) / 22.0).clamp(2.0, 8.0);
+        for (a, b, c) in POSE_LIMBS {
+            draw_thick_line(&mut img, pt(a), pt(b), thick, Rgb(c));
+        }
+        for k in 0..18 {
+            let (x, y) = pt(k);
+            imageproc::drawing::draw_filled_circle_mut(&mut img, (x as i32, y as i32), (thick * 0.8) as i32, Rgb([255, 255, 255]));
+        }
+    }
+    img
+}
+
+/// Draw a filled thick line (several parallel offsets) so limbs read at ControlNet resolution.
+fn draw_thick_line(img: &mut RgbImage, a: (f32, f32), b: (f32, f32), thick: f32, c: Rgb<u8>) {
+    let t = thick.max(1.0) as i32;
+    for dx in -t / 2..=t / 2 {
+        for dy in -t / 2..=t / 2 {
+            draw_line_segment_mut(img, (a.0 + dx as f32, a.1 + dy as f32), (b.0 + dx as f32, b.1 + dy as f32), c);
+        }
+    }
+}
+
+/// Render ONLY the non-person STRUCTURES (buildings / objects / sun) as black line-art on white — the Canny
+/// control that places the environment. Buildings/objects are box-like, so their outlines guide SDXL well
+/// (unlike people, whose skeletons go through OpenPose instead). Returns `None` if there's nothing to draw.
+pub fn render_structures(elements: &[LayoutElement], w: u32, h: u32) -> Option<RgbImage> {
+    let structures: Vec<&LayoutElement> = elements.iter().filter(|e| !e.kind.eq_ignore_ascii_case("person")).collect();
+    if structures.is_empty() {
+        return None;
+    }
+    let mut img = RgbImage::from_pixel(w, h, Rgb([255, 255, 255]));
+    let ink = Rgb([0u8, 0, 0]);
+    for e in structures {
+        let x0 = (e.x.clamp(0.0, 1.0) * w as f32) as i32;
+        let y0 = (e.y.clamp(0.0, 1.0) * h as f32) as i32;
+        let bw = ((e.w.clamp(0.0, 1.0) * w as f32) as i32).max(2);
+        let bh = ((e.h.clamp(0.0, 1.0) * h as f32) as i32).max(2);
+        match e.kind.to_lowercase().as_str() {
+            "building" => draw_building(&mut img, x0, y0, bw, bh, ink),
+            "sun" => {
+                let r = (bw.min(bh) / 2).max(2);
+                draw_hollow_circle_mut(&mut img, (x0 + bw / 2, y0 + bh / 2), r, ink);
+            }
+            "ground" | "sky" => {}
+            _ => draw_hollow_box(&mut img, x0, y0, bw, bh, ink),
+        }
+    }
+    Some(img)
+}
+
+/// Render the FULL planned layout as black-on-white line-art (all elements incl. person stick-figures) —
+/// a human-inspectable schematic. The OpenPose skeleton + structures line-art are what drive the ControlNets.
 pub fn render_wireframe(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
     let mut img = RgbImage::from_pixel(w, h, Rgb([255, 255, 255]));
     let ink = Rgb([0u8, 0, 0]);
