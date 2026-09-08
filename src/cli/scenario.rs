@@ -1525,31 +1525,98 @@ impl Sd3WinnerMeta {
 }
 
 pub(crate) async fn vision_score(provider: &str, path: &std::path::Path, prompt: &str) -> Option<f32> {
+    // Dictate the reply FORMAT so parsing is deterministic and provider-agnostic — we read the labelled
+    // `SCORE:` field, not "some number". A brief REASON is allowed (and ignored) so the model can think.
     let instruction = format!(
         "Judge how well this AI image realises its intended prompt AND how correct it is — IGNORE art style \
-         (any style is fine, do not reward or penalise it). Intended image:\n\"{prompt}\"\n\nRate 0-10 on \
-         QUALITY + FAITHFULNESS. 10 = every requested subject/object is present with the CORRECT attributes \
-         and counts, anatomy is correct (all limbs, proper five-fingered hands, natural poses), and there \
-         are NO hallucinated extras (nothing present that the prompt did not ask for). HEAVILY penalize: \
-         broken/missing/extra limbs, deformed hands, unnatural/impossible poses, wrong attributes (e.g. a \
-         garment on the wrong person), wrong counts, and hallucinated objects/people not in the prompt. \
-         Output ONLY a single number 0-10, nothing else."
+         (any style is fine, do not reward or penalise it). Intended image:\n\"{prompt}\"\n\nRate QUALITY + \
+         FAITHFULNESS from 0 to 10. 10 = every requested subject/object present with the CORRECT attributes \
+         and counts, correct anatomy (all limbs, proper hands, natural poses), and NO hallucinated extras. \
+         Penalize: broken/missing/extra limbs, deformed hands, wrong attributes (a garment on the wrong \
+         person), wrong counts, and objects/people not in the prompt.\n\nReply with ONLY a JSON object, no \
+         prose, no code fences:\n{{\"score\": <a number from 0 to 10>, \"reason\": \"<one short line>\"}}"
     );
-    let resp = match crate::prompt::vision::describe_image(provider, path, &instruction).await {
-        Ok(r) => r,
-        Err(e) => {
-            // Loud, not silent: a broken vision call would otherwise score every frame 0.0 and burn every
-            // regeneration round invisibly (exactly the class of failure that hid the retired-model bug).
-            tracing::warn!(target: "plakat", "ranking: vision score failed via {provider}: {e}");
-            return None;
+    // Up to 2 attempts: a transient error or an unparseable reply gets one retry before we give up (and
+    // NEVER silently score 0 — an unscored frame returns None and is skipped by the ranker).
+    for attempt in 0..2 {
+        match crate::prompt::vision::describe_image(provider, path, &instruction).await {
+            Ok(resp) => {
+                let num = parse_vision_score(&resp);
+                if std::env::var("PLAKAT_VISION_DEBUG").is_ok() {
+                    crate::ui::progress::println(&format!(
+                        "      {} {} → {}",
+                        style("vision raw:").dim(),
+                        resp.replace('\n', " ").chars().take(140).collect::<String>(),
+                        num.map(|n| format!("{n:.1}")).unwrap_or_else(|| "UNPARSED".into()),
+                    ));
+                }
+                if let Some(n) = num {
+                    return Some(n);
+                }
+                tracing::warn!(target: "plakat", "ranking: vision reply had no SCORE (attempt {}): {}", attempt + 1, resp.chars().take(120).collect::<String>());
+            }
+            Err(e) => {
+                tracing::warn!(target: "plakat", "ranking: vision score failed via {provider} (attempt {}): {e}", attempt + 1);
+            }
         }
-    };
-    let num: f32 = resp
-        .split(|c: char| !c.is_ascii_digit() && c != '.')
-        .find(|s| !s.is_empty() && s.parse::<f32>().is_ok())?
-        .parse()
-        .ok()?;
-    Some(num.clamp(0.0, 10.0))
+    }
+    tracing::warn!(target: "plakat", "ranking: could not score {} — skipping it (not counted as 0)", path.display());
+    None
+}
+
+/// Parse a 0–10 score from a vision reply. Prefers the JSON `{"score": …}` object we ask for (robust,
+/// provider-agnostic); falls back to a labelled `SCORE:`, then `X/10`, then a lone number for providers
+/// that ignore the format — while NOT mistaking the scale mention (`0-10`, `out of 10`) for the score.
+/// Returns `None` when there is genuinely no score.
+fn parse_vision_score(resp: &str) -> Option<f32> {
+    // Preferred: a JSON object with a numeric (or numeric-string) "score" field.
+    if let (Some(a), Some(b)) = (resp.find('{'), resp.rfind('}')) {
+        if b > a {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp[a..=b]) {
+                if let Some(n) = v.get("score").and_then(|s| {
+                    s.as_f64().or_else(|| s.as_str().and_then(|t| t.trim().parse::<f64>().ok()))
+                }) {
+                    return Some((n as f32).clamp(0.0, 10.0));
+                }
+            }
+        }
+    }
+    let low = resp.to_lowercase();
+    // Fallback: a labelled "SCORE:" field.
+    if let Some(idx) = low.find("score:") {
+        if let Some(v) = low[idx + "score:".len()..]
+            .split(|c: char| !c.is_ascii_digit() && c != '.')
+            .find(|t| !t.is_empty() && t.parse::<f32>().is_ok())
+            .and_then(|t| t.parse::<f32>().ok())
+        {
+            return Some(v.clamp(0.0, 10.0));
+        }
+    }
+    // Further fallbacks for lenient providers. Strip scale mentions so their digits aren't the score.
+    let s = low
+        .replace("0-10", " ")
+        .replace("0 to 10", " ")
+        .replace("out of 10", "/10")
+        .replace("/ 10", "/10");
+    if let Some(idx) = s.find("/10") {
+        if let Some(v) = s[..idx]
+            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
+            .find(|t| !t.is_empty() && t.parse::<f32>().is_ok())
+            .and_then(|t| t.parse::<f32>().ok())
+        {
+            return Some(v.clamp(0.0, 10.0));
+        }
+    }
+    let mut first = None;
+    for tok in s.split(|c: char| !c.is_ascii_digit() && c != '.') {
+        if let Ok(v) = tok.parse::<f32>() {
+            first.get_or_insert(v);
+            if (0.0..=10.0).contains(&v) {
+                return Some(v);
+            }
+        }
+    }
+    first.map(|v| v.clamp(0.0, 10.0))
 }
 
 /// Score every raw render (best first). AI-tell (weight-free) / aesthetic (LAION) / vision (LLM, cached).
@@ -1566,14 +1633,20 @@ async fn rank_dir(
     let mut imgs: Vec<(PathBuf, f32)> = Vec::new();
     for p in raw_render_paths(task_out) {
         let base = if ranking.by_vision {
-            match vcache.get(&p) {
+            // Unscored frames cache as NaN and are SKIPPED (not scored 0) — a frame we can't judge must not
+            // be ranked as the worst. The NaN is cached so we don't re-call the LLM for it every pass.
+            let v = match vcache.get(&p) {
                 Some(&v) => v,
                 None => {
-                    let v = vision_score(provider, &p, prompt).await.unwrap_or(0.0);
+                    let v = vision_score(provider, &p, prompt).await.unwrap_or(f32::NAN);
                     vcache.insert(p.clone(), v);
                     v
                 }
+            };
+            if v.is_nan() {
+                continue;
             }
+            v
         } else if let Some(sc) = scorer {
             match sc.score_path(&p) {
                 Ok(v) => v,
@@ -8451,6 +8524,21 @@ mod tests {
         assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
         assert_eq!(parse_wh(Some("768x512")), Some((768, 512)));
         assert_eq!(parse_wh(Some("bad")), None);
+    }
+
+    #[test]
+    fn vision_score_parse_handles_json_prose_and_scales() {
+        // Preferred JSON form (what we ask for), incl. code-fence wrapping + numeric-string score.
+        assert_eq!(parse_vision_score(r#"{"score": 7, "reason": "good"}"#), Some(7.0));
+        assert_eq!(parse_vision_score("```json\n{\"score\": 6.5, \"reason\": \"x\"}\n```"), Some(6.5));
+        assert_eq!(parse_vision_score(r#"{"score":"8","reason":"ok"}"#), Some(8.0));
+        // Text fallbacks for providers that ignore the format.
+        assert_eq!(parse_vision_score("SCORE: 5"), Some(5.0));
+        assert_eq!(parse_vision_score("8/10"), Some(8.0));
+        assert_eq!(parse_vision_score("I'd rate this 6 out of 10."), Some(6.0));
+        // Must NOT grab the "0" from a "0-10 scale" mention (the old first-number bug).
+        assert_eq!(parse_vision_score("On a 0-10 scale, this is a 6."), Some(6.0));
+        assert_eq!(parse_vision_score("no number here"), None);
     }
 
     #[test]
