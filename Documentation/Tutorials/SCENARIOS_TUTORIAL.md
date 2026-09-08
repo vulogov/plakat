@@ -450,14 +450,18 @@ control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower 
 - **`control-generate-mode: wireframe`** — a placement pipeline for scenes the finish model can't lay out
   from a prompt (distinct figures at distinct positions). A wireframe is a real **2-D skeletal blueprint**,
   built *deterministically* — not diffused (diffusion renders scenes, it can't draw a reliable skeleton):
-  1. **Procedural wireframe** — an LLM plans a bounding-box layout (per element: box + kind); plakat picks
-     the **best of `control-generate-tries` plans** (scored programmatically — most distinct, non-overlapping
-     figures + environment) and **draws** it as black line-art (stick-figures / boxes / circle-sun on white).
-     Correct *by construction*, not guessed.
-  2. **Controlled composition** — the layout drives **stacked ControlNets**: figures as an **OpenPose
-     skeleton** (OpenPose renders a real clothed body from a skeleton — Canny would just trace the sticks),
-     and buildings/objects as **Canny** box outlines (a building ≈ a box, so its outline guides SDXL; sky/sun
-     come from the prompt). SDXL renders `count` compositions with placement **locked**, and they're ranked
+  1. **Procedural wireframe** — an LLM plans a bounding-box layout (per element: box + kind, and per figure a
+     **`facing`** and **`pose`** so people face their task/each other rather than all staring at the viewer);
+     plakat picks the **best of `control-generate-tries` plans** (scored programmatically — most distinct,
+     non-overlapping figures + environment) and **draws** the figures as **OpenPose skeletons** deformed by
+     each figure's facing/pose. Correct *by construction*, not guessed. (The `facing`/`pose` are generic
+     categories — front/left/right, standing/holding/leaning/walking/gesturing — the LLM maps the scene's
+     specifics onto them; the renderer knows nothing scene-specific.)
+  2. **Controlled composition** — the layout's figures drive an **OpenPose ControlNet** (OpenPose renders a
+     real clothed body *from* a skeleton — it interprets, whereas Canny would just *trace* the sticks). The
+     **environment (buildings, sun, street) comes from the prompt** — SDXL renders it coherently, and a Canny
+     control on the box outlines is deliberately NOT used because Canny traces those outlines into the image
+     as literal geometry. SDXL renders `count` compositions with figure placement **locked**, and they're ranked
      by a **composition judge** — it scores count / placement / anatomy / scene coherence and deliberately
      **ignores colours, clothing and small props** (those are the finish stage's job). The final sd35 output
      is still ranked by the strict **faithfulness** judge. This split is why a good structure isn't rejected

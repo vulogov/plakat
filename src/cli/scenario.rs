@@ -2588,28 +2588,10 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         )),
                     }
-                    // Stack a Canny control for the STRUCTURES (buildings/objects boxes) — box outlines guide
-                    // SDXL to place buildings (a building ≈ a box, unlike a person). Moderate strength so it
-                    // guides rather than hard-traces. Environment/sky come from the prompt.
-                    if let Some(struct_img) = crate::prompt::wireframe::render_structures(&elems, dw, dh) {
-                        let sp = task_out.join("wireframe-structures.png");
-                        let ckind = crate::pipelines::controlnet::ControlKind::Canny;
-                        let ok = struct_img.save(&sp).is_ok();
-                        if ok && !cn_cache.contains_key(&ckind) {
-                            if let Ok(net) = crate::pipelines::controlnet::ControlNet::load(dev.clone(), cn_dtype, ckind, cn_variant).await {
-                                cn_cache.insert(ckind, net);
-                            }
-                        }
-                        if ok && cn_cache.contains_key(&ckind) {
-                            if let Ok(cond) = crate::pipelines::controlnet_annotator::annotate(ckind, &sp, dw, dh, &dev, cn_dtype).await {
-                                cn_resolved.push((ckind, cond, 0.45, 0.0, 1.0));
-                                crate::ui::progress::println(&format!(
-                                    "  {} structure boxes → canny control (buildings/objects placed)",
-                                    style("control-generate:").green(),
-                                ));
-                            }
-                        }
-                    }
+                    // NOTE: no Canny control for the structure boxes — Canny reproduces EDGES, so building/sun
+                    // outlines get drawn into the image as literal geometry (visible boxes/triangles/circles).
+                    // Buildings/sun/street come from the PROMPT (SDXL renders them coherently); only the
+                    // OpenPose figure control drives the composition.
                 }
                 Ok(_) => crate::ui::progress::println(&format!(
                     "  {} layout planner returned no elements — composition runs prompt-only",
