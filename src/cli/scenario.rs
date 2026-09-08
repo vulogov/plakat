@@ -1525,17 +1525,38 @@ impl Sd3WinnerMeta {
 }
 
 pub(crate) async fn vision_score(provider: &str, path: &std::path::Path, prompt: &str) -> Option<f32> {
-    // Dictate the reply FORMAT so parsing is deterministic and provider-agnostic — we read the labelled
-    // `SCORE:` field, not "some number". A brief REASON is allowed (and ignored) so the model can think.
-    let instruction = format!(
-        "Judge how well this AI image realises its intended prompt AND how correct it is — IGNORE art style \
-         (any style is fine, do not reward or penalise it). Intended image:\n\"{prompt}\"\n\nRate QUALITY + \
-         FAITHFULNESS from 0 to 10. 10 = every requested subject/object present with the CORRECT attributes \
-         and counts, correct anatomy (all limbs, proper hands, natural poses), and NO hallucinated extras. \
-         Penalize: broken/missing/extra limbs, deformed hands, wrong attributes (a garment on the wrong \
-         person), wrong counts, and objects/people not in the prompt.\n\nReply with ONLY a JSON object, no \
-         prose, no code fences:\n{{\"score\": <a number from 0 to 10>, \"reason\": \"<one short line>\"}}"
-    );
+    vision_score_kind(provider, path, prompt, false).await
+}
+
+/// Vision score with an explicit axis. `composition = true` judges a STRUCTURE draft (count / placement /
+/// anatomy / coherent scene — colours, clothing and small props are IGNORED because the finish stage fixes
+/// them); `false` is the strict FAITHFULNESS judge for a finished image (attributes, counts, no extras).
+pub(crate) async fn vision_score_kind(provider: &str, path: &std::path::Path, prompt: &str, composition: bool) -> Option<f32> {
+    // Dictate JSON so parsing is deterministic and provider-agnostic — we read the `score` field.
+    let instruction = if composition {
+        format!(
+            "Judge the COMPOSITION of this DRAFT image — it is a STRUCTURE that will be repainted and \
+             refined later, so IGNORE art style, exact colours, exact clothing, small missing props, and \
+             minor attribute swaps. Intended scene:\n\"{prompt}\"\n\nScore 0-10 on STRUCTURE ONLY: (1) is \
+             the correct NUMBER of people present, each a COMPLETE figure — full body, limbs, natural pose, \
+             not merged/duplicated/broken? (2) are they POSITIONED as intended (foreground / left / right)? \
+             (3) is the overall SCENE coherent with the setting and major elements present (street, \
+             buildings, sky/sun)? 10 = right count + placement + sound anatomy + coherent scene. Penalize \
+             wrong people-count, merged/extra/broken figures, and incoherent layout. Do NOT penalize \
+             colours, clothing, style, or small missing objects — those are fixed downstream.\n\nReply with \
+             ONLY a JSON object, no prose, no code fences:\n{{\"score\": <0 to 10>, \"reason\": \"<one short line>\"}}"
+        )
+    } else {
+        format!(
+            "Judge how well this AI image realises its intended prompt AND how correct it is — IGNORE art \
+             style (any style is fine, do not reward or penalise it). Intended image:\n\"{prompt}\"\n\nRate \
+             QUALITY + FAITHFULNESS from 0 to 10. 10 = every requested subject/object present with the \
+             CORRECT attributes and counts, correct anatomy (all limbs, proper hands, natural poses), and NO \
+             hallucinated extras. Penalize: broken/missing/extra limbs, deformed hands, wrong attributes (a \
+             garment on the wrong person), wrong counts, and objects/people not in the prompt.\n\nReply with \
+             ONLY a JSON object, no prose, no code fences:\n{{\"score\": <a number from 0 to 10>, \"reason\": \"<one short line>\"}}"
+        )
+    };
     // Up to 2 attempts: a transient error or an unparseable reply gets one retry before we give up (and
     // NEVER silently score 0 — an unscored frame returns None and is skipped by the ranker).
     for attempt in 0..2 {
@@ -2641,7 +2662,8 @@ async fn control_generate_prepass(
                     continue;
                 }
                 let score = if vision_ok {
-                    vision_score(&vprovider, &path, &prompt).await.unwrap_or(-1.0)
+                    // Structure pass → COMPOSITION judge (placement/anatomy/coherence), not strict attributes.
+                    vision_score_kind(&vprovider, &path, &prompt, true).await.unwrap_or(-1.0)
                 } else {
                     -1.0
                 };

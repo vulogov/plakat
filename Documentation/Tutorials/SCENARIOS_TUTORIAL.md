@@ -457,8 +457,11 @@ control-generate-strength: 0.55   # pass 2: sd35 img2img over that draft (lower 
   2. **Controlled composition** — the layout drives **stacked ControlNets**: figures as an **OpenPose
      skeleton** (OpenPose renders a real clothed body from a skeleton — Canny would just trace the sticks),
      and buildings/objects as **Canny** box outlines (a building ≈ a box, so its outline guides SDXL; sky/sun
-     come from the prompt). SDXL renders `count` compositions with placement **locked**, vision-ranked +
-     coached (the coach now only fixes *attributes* — colour, clothing — since placement is fixed).
+     come from the prompt). SDXL renders `count` compositions with placement **locked**, and they're ranked
+     by a **composition judge** — it scores count / placement / anatomy / scene coherence and deliberately
+     **ignores colours, clothing and small props** (those are the finish stage's job). The final sd35 output
+     is still ranked by the strict **faithfulness** judge. This split is why a good structure isn't rejected
+     for a wrong dress colour it was never meant to fix.
   3. **Finish** — the best composition is the sd35 **img2img init at LOW strength** (~0.4–0.5), so sd35 only
      restyles in your look + LoRAs while the placement holds.
 
