@@ -199,6 +199,14 @@ struct ScenarioFile {
     /// paints them. Off when empty. Loads/unloads the draft model BEFORE the task model (no co-residence).
     #[serde(rename = "control-generate", default)]
     control_generate: Option<String>,
+    /// 6.28: `control-preimage: <path>` — SKIP the structure pass entirely (no draft model, no wireframe, no
+    /// generation): the composition image ALREADY EXISTS. It is resized to the finish `size:` and wired as the
+    /// stage-3 img2img init, so you iterate the FINISH (strength/model/loras/naturalize/ranking) with zero wait
+    /// for stages 1–2. Global (applies to every task — e.g. many finishes of one scene) or per-task; per-task
+    /// wins, and `control-preimage: ""` opts a task out of a global one. Overrides `control-generate` when both
+    /// are set (the preimage means there is nothing to generate).
+    #[serde(rename = "control-preimage", default)]
+    control_preimage: Option<std::path::PathBuf>,
     /// img2img strength for the SECOND (finish) pass over the structure draft. Lower = keep more of the
     /// draft's structure; higher = more restyle. Default `0.55`.
     #[serde(rename = "control-generate-strength", default)]
@@ -994,6 +1002,8 @@ struct TaskDef {
     /// (empty string disables it for this task even when the global is set). `None` inherits the global.
     #[serde(rename = "control-generate", default)]
     control_generate: Option<String>,
+    #[serde(rename = "control-preimage", default)]
+    control_preimage: Option<std::path::PathBuf>,
     #[serde(rename = "control-generate-strength", default)]
     control_generate_strength: Option<f32>,
     #[serde(rename = "control-generate-count", default)]
@@ -2428,8 +2438,14 @@ async fn control_generate_prepass(
     base_seed: u64,
 ) -> Result<()> {
     let g_model = s.control_generate.clone();
-    if g_model.is_none() && s.tasks.iter().all(|t| t.control_generate.is_none()) {
-        return Ok(()); // nothing asks for a structure pass
+    // control-preimage skips generation but still uses this prepass to wire the existing image as the stage-3
+    // init — so the pass must run when a (non-empty) preimage is present even with no structure model set.
+    let g_preimage = s.control_preimage.clone();
+    let non_empty = |p: &std::path::PathBuf| !p.as_os_str().is_empty();
+    let any_preimage = g_preimage.as_ref().is_some_and(non_empty)
+        || s.tasks.iter().any(|t| t.control_preimage.as_ref().is_some_and(non_empty));
+    if g_model.is_none() && s.tasks.iter().all(|t| t.control_generate.is_none()) && !any_preimage {
+        return Ok(()); // nothing asks for a structure pass or a preimage hand-off
     }
     let g_strength = s.control_generate_strength;
     let g_count = s.control_generate_count;
@@ -2471,6 +2487,54 @@ async fn control_generate_prepass(
     let mut seed_off = 0u64;
     let mut to_drop: Vec<usize> = Vec::new();
     for i in 0..s.tasks.len() {
+        // control-preimage: the structure image ALREADY EXISTS → skip stages 1–2 entirely (no draft model, no
+        // wireframe, no gen/rank/coach). Runs BEFORE the `cg` resolution so it works even with no structure
+        // model set. Global or per-task; per-task wins, `control-preimage: ""` opts a task out of a global one.
+        let preimage = s.tasks[i]
+            .control_preimage
+            .clone()
+            .or_else(|| g_preimage.clone())
+            .filter(|p| !p.as_os_str().is_empty());
+        if let Some(pre) = preimage {
+            let name = s.tasks[i].name.clone();
+            let strength = s.tasks[i].control_generate_strength.or(g_strength).unwrap_or(0.55);
+            let (w, h) = parse_wh(s.tasks[i].size.as_deref().or(g_size.as_deref())).unwrap_or((768, 768));
+            let task_out = out_root.join(safe_name(&name));
+            let _ = std::fs::create_dir_all(&task_out);
+            match image::open(&pre) {
+                Ok(img) => {
+                    let dest = task_out.join("control-preimage.png");
+                    if img.width() != w || img.height() != h {
+                        if (img.width() as f32 / img.height() as f32 - w as f32 / h as f32).abs() > 0.02 {
+                            crate::ui::progress::println(&format!(
+                                "  {} {}×{} preimage has a different aspect than the finish {w}×{h} — it will be \
+                                 SQUASHED on resize (set size: to the image's, or crop it first).",
+                                style("control-preimage:").yellow(), img.width(), img.height(),
+                            ));
+                        }
+                        let _ = img.resize_exact(w, h, image::imageops::FilterType::Lanczos3).save(&dest);
+                    } else {
+                        let _ = img.save(&dest);
+                    }
+                    crate::ui::progress::println(&format!(
+                        "  {} using {} → init for {task_model} img2img (stages 1–2 skipped, no generation)",
+                        style("control-preimage:").green(),
+                        pre.display(),
+                    ));
+                    s.tasks[i].init_image = Some(dest);
+                    s.tasks[i].strength = Some(strength);
+                }
+                Err(e) => {
+                    crate::ui::progress::println(&format!(
+                        "  {} cannot open {} ({e}) — dropping task (fix the path; it is NOT silently regenerated)",
+                        style("control-preimage:").red(),
+                        pre.display(),
+                    ));
+                    to_drop.push(i);
+                }
+            }
+            continue;
+        }
         let cg = s.tasks[i]
             .control_generate
             .clone()
@@ -8625,6 +8689,13 @@ mod tests {
         assert_eq!(s.control_generate_tries, None); // absent → runtime default (3)
         assert_eq!(s.control_generate_opportunistic, Some(true));
         assert_eq!(s.control_generate_figure_shuffle, Some(true));
+        // control-preimage: global + per-task (empty string = per-task opt-out of the global).
+        let pre = "{\n  model: sd35\n  control-preimage: /tmp/scene.png\n  tasks:\n  [\n    {\n      name: a\n      prompt: \"x\"\n    }\n    {\n      name: b\n      prompt: \"y\"\n      control-preimage: \"\"\n    }\n    {\n      name: c\n      prompt: \"z\"\n      control-preimage: /tmp/other.png\n    }\n  ]\n}";
+        let sp = deser_hjson::from_str::<ScenarioFile>(pre).expect("parses");
+        assert_eq!(sp.control_preimage.as_deref(), Some(std::path::Path::new("/tmp/scene.png")));
+        assert_eq!(sp.tasks[0].control_preimage, None); // inherits the global
+        assert_eq!(sp.tasks[1].control_preimage.as_deref(), Some(std::path::Path::new(""))); // opt-out
+        assert_eq!(sp.tasks[2].control_preimage.as_deref(), Some(std::path::Path::new("/tmp/other.png")));
         assert_eq!(parse_wh(Some("1024x1024")), Some((1024, 1024)));
         // Per-task empty string is the documented per-task disable.
         assert_eq!(s.tasks[0].control_generate.as_deref(), Some(""));
