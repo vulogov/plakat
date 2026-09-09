@@ -3286,7 +3286,10 @@ async fn control_generate_prepass(
                     steps: 28,
                     guidance: 7.5,
                     scheduler: SchedulerKind::default(),
-                    strength: 0.75,
+                    // High strength — the box must be REGENERATED from the skeleton, not blended with a strong
+                    // background feature (a bright archway / doorway) that otherwise survives and no figure
+                    // renders. The OpenPose control keeps anatomy sound even at near-full re-noise.
+                    strength: 0.92,
                     seed: Some(task_seed.wrapping_add(0xF16).wrapping_add(idx as u64)),
                     out_dir: tmp.clone(),
                     controls,
