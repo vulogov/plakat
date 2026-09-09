@@ -1983,6 +1983,16 @@ async fn cull_to_passers(
     (keep, culled)
 }
 
+/// True when `png` lives in a task directory whose ranking passed NOTHING — excluded from the post-passes
+/// (naturalize / restore-faces / relight) so a reject isn't polished into a false success.
+fn in_failed_dir(png: &std::path::Path, failed: &std::collections::HashSet<String>) -> bool {
+    png.parent()
+        .and_then(|d| d.file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| failed.contains(n))
+        .unwrap_or(false)
+}
+
 /// The `<stem>.natural.png` sibling of a finish PNG (where `keep-prenaturalize` writes the naturalized image).
 fn natural_sibling(finish_png: &std::path::Path) -> PathBuf {
     let stem = finish_png.file_stem().and_then(|s| s.to_str()).unwrap_or("plakat");
@@ -3835,6 +3845,9 @@ pub async fn run_with_events(
     let any_relight = s.relight.is_some() || s.tasks.iter().any(|t| t.relight.is_some());
     let nat_before =
         (s.naturalize.is_some() || any_task_naturalize || any_restore_faces || any_relight).then(|| collect_pngs(&out_root));
+    // Tasks whose ranking passed NOTHING (0 good) — kept only a best-available reject. Their outputs are
+    // excluded from the post-passes (naturalize / restore-faces / relight): don't polish a failed image.
+    let mut failed_rank_dirs: std::collections::HashSet<String> = std::collections::HashSet::new();
     let lora_scale = s.lora_scale.unwrap_or(1.0);
     let refine_strength = s.refine_strength.unwrap_or(0.3);
     let scheduler: SchedulerKind = match s.scheduler.as_deref() {
@@ -7179,6 +7192,16 @@ pub async fn run_with_events(
                         eff.max_tries,
                     ));
                 }
+                // 0 passed → the kept frame is a REJECT. Don't waste the post-passes polishing it; skip
+                // naturalize/restore-faces/relight for this task and say so loudly.
+                if good == 0 {
+                    failed_rank_dirs.insert(safe_name(&task.name));
+                    crate::ui::progress::println(&format!(
+                        "  {} {:?}: 0 passed the ranking — SKIPPING naturalize/relight (not polishing a reject; raw best-available kept)",
+                        style("ranking FAILED:").red().bold(),
+                        task.name,
+                    ));
+                }
             }
         }
 
@@ -7483,6 +7506,7 @@ pub async fn run_with_events(
         Some(before) => collect_pngs(&out_root)
             .difference(before)
             .filter(|p| !p.components().any(|c| c.as_os_str() == "culls"))
+            .filter(|p| !in_failed_dir(p, &failed_rank_dirs))
             .cloned()
             .collect(),
         None => Vec::new(),
@@ -7499,7 +7523,7 @@ pub async fn run_with_events(
     // distinct config loads its model once.
     if any_restore_faces {
         if let Some(before) = nat_before.as_ref() {
-            let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).cloned().collect();
+            let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).filter(|p| !in_failed_dir(p, &failed_rank_dirs)).cloned().collect();
             // Map each new PNG → its task → effective restore-faces config; keep only the enabled ones.
             let mut groups: std::collections::HashMap<(String, String), Vec<PathBuf>> = std::collections::HashMap::new();
             for png in new {
@@ -7553,7 +7577,7 @@ pub async fn run_with_events(
     // scene can carry e.g. `repair=` while the others don't.
     if (s.naturalize.is_some() || any_task_naturalize) && nat_before.is_some() {
         let before = nat_before.as_ref().unwrap();
-        let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).cloned().collect();
+        let new: Vec<PathBuf> = collect_pngs(&out_root).difference(before).filter(|p| !p.components().any(|c| c.as_os_str() == "culls")).filter(|p| !in_failed_dir(p, &failed_rank_dirs)).cloned().collect();
         // Map each new PNG → its task (parent dir == safe_name(task.name)) → effective spec.
         let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
         for png in new {
