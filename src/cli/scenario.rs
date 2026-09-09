@@ -277,6 +277,17 @@ struct ScenarioFile {
     /// per-task (per-task wins).
     #[serde(rename = "control-generate-seed", default)]
     control_generate_seed: Option<u64>,
+    /// 6.28: `control-generate-max-figures: <n>` — how many DISTINCT figures get the OpenPose+region
+    /// treatment (the rest fold into the background). Diffusion reliably places ~2; the 3rd+ tends to drop.
+    /// Default `2`. Raise it with `control-generate-inpaint-figures: true` (per-figure inpaint forces the
+    /// extra figures to render). Global or per-task.
+    #[serde(rename = "control-generate-max-figures", default)]
+    control_generate_max_figures: Option<usize>,
+    /// 6.28: `control-generate-inpaint-figures: true` — after the structure draft, INPAINT each kept figure
+    /// into its own box (one at a time, at its attribute prompt) so figures a single regional pass dropped are
+    /// forced to render. Lets `control-generate-max-figures` go past the ~2 a single pass manages. Default off.
+    #[serde(rename = "control-generate-inpaint-figures", default)]
+    control_generate_inpaint_figures: Option<bool>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -1058,6 +1069,10 @@ struct TaskDef {
     control_generate_finish: Option<String>,
     #[serde(rename = "control-generate-seed", default)]
     control_generate_seed: Option<u64>,
+    #[serde(rename = "control-generate-max-figures", default)]
+    control_generate_max_figures: Option<usize>,
+    #[serde(rename = "control-generate-inpaint-figures", default)]
+    control_generate_inpaint_figures: Option<bool>,
     /// Runtime-only: set by the pre-pass when it wires a control-generate draft (or a control-preimage) as
     /// this task's init. Lets the main loop apply the LIGHT finish (no coach, one round) to control-generate
     /// tasks without mistaking a plain user img2img (which also has an init-image) for one.
@@ -2610,6 +2625,8 @@ async fn control_generate_prepass(
     let g_opportunistic = s.control_generate_opportunistic;
     let g_shuffle = s.control_generate_figure_shuffle;
     let g_cg_seed = s.control_generate_seed;
+    let g_max_figures = s.control_generate_max_figures;
+    let g_inpaint_figures = s.control_generate_inpaint_figures;
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2762,6 +2779,10 @@ async fn control_generate_prepass(
         // figure-shuffle: the draft judge + coach grade the correct SET of attributed figures regardless of
         // which stands where — a far easier target for a medium model than binding each to an exact slot.
         let shuffle = s.tasks[i].control_generate_figure_shuffle.or(g_shuffle).unwrap_or(false);
+        // How many distinct figures get the OpenPose+region treatment (rest → background). Default 2 (the
+        // count a single regional pass reliably renders); `control-generate-inpaint-figures` forces more.
+        let max_figures = s.tasks[i].control_generate_max_figures.or(g_max_figures).unwrap_or(2).max(1);
+        let inpaint_figures = s.tasks[i].control_generate_inpaint_figures.or(g_inpaint_figures).unwrap_or(false);
         let wireframe = s.tasks[i]
             .control_generate_mode
             .as_deref()
@@ -2818,6 +2839,11 @@ async fn control_generate_prepass(
         // people bleeds their attributes into a neighbouring region's box (the "bearded woman in red" bug).
         // `None` until built; falls back to the full prompt if the figure-strip LLM call fails.
         let mut regional_base: Option<String> = None;
+        // Kept (foreground) figures — (bbox, attribute label) — for the optional per-figure inpaint pass.
+        let mut figure_boxes: Vec<([f32; 4], String)> = Vec::new();
+        // The prompt the DRAFT is SCORED against. Defaults to the structure prompt; when figures are demoted,
+        // a note pins the MAIN figures to the kept ones so the judge doesn't count a demoted figure as missing.
+        let mut judge_prompt = prompt.clone();
         {
             let specs = task_effective_controls(&s.tasks[i]).unwrap_or_default();
             for spec in &specs {
@@ -2872,11 +2898,11 @@ async fn control_generate_prepass(
         if wireframe {
             match crate::prompt::wireframe::plan_best_layout(&vprovider, &prompt, tries).await {
                 Ok(elems) if !elems.is_empty() => {
-                    // Diffusion places only ~3 distinct figures reliably (beyond that, boxes shrink and OpenPose
-                    // skeletons tangle). Give the OpenPose+region treatment to the most FOREGROUND figures and
-                    // fold the overflow into the BACKGROUND base as soft, unplaced people — never explode them
-                    // into weak skeletons. This keeps the pre-image an honest, achievable foundation.
-                    const MAX_DISTINCT_FIGURES: usize = 3;
+                    // Diffusion places only ~2 distinct figures reliably (beyond that, boxes shrink and OpenPose
+                    // skeletons tangle). Give the OpenPose+region treatment to the most FOREGROUND `max_figures`
+                    // and fold the overflow into the BACKGROUND base as soft, unplaced people — never explode
+                    // them into weak skeletons. `control-generate-inpaint-figures` later forces the kept ones to
+                    // render even past ~2. This keeps the pre-image an honest, achievable foundation.
                     let mut persons: Vec<crate::prompt::wireframe::LayoutElement> =
                         elems.iter().filter(|e| e.kind.eq_ignore_ascii_case("person")).cloned().collect();
                     // Foreground prominence = box AREA × BASELINE (y+h): larger AND lower wins.
@@ -2886,7 +2912,7 @@ async fn control_generate_prepass(
                     });
                     let n_person = persons.len();
                     let overflow: Vec<crate::prompt::wireframe::LayoutElement> =
-                        persons.split_off(persons.len().min(MAX_DISTINCT_FIGURES));
+                        persons.split_off(persons.len().min(max_figures));
                     crate::ui::progress::println(&format!(
                         "  {} best of {tries} layout plan(s): {} element(s) ({} figure(s) placed{})",
                         style("control-generate:").cyan(),
@@ -2894,14 +2920,35 @@ async fn control_generate_prepass(
                         persons.len(),
                         if overflow.is_empty() { String::new() } else { format!(", {} → background", overflow.len()) },
                     ));
+                    // Kept figures → the inpaint list (bbox + label) so a later pass can force each to render.
+                    figure_boxes = persons
+                        .iter()
+                        .filter(|e| !e.label.trim().is_empty())
+                        .map(|e| ([e.x, e.y, e.x + e.w, e.y + e.h], e.label.trim().to_string()))
+                        .collect();
                     if !overflow.is_empty() {
                         crate::ui::progress::println(&format!(
-                            "  {} {n_person} distinct figures named — diffusion reliably places ~{MAX_DISTINCT_FIGURES}; \
+                            "  {} {n_person} distinct figures named — diffusion reliably places ~{max_figures}; \
                              the {} most foreground get precise placement, the rest render as soft background. \
-                             (Fewer named figures, or describe extras as a 'crowd', for a cleaner result.)",
+                             (Raise control-generate-max-figures + control-generate-inpaint-figures, use fewer \
+                             named figures, or describe extras as a 'crowd'.)",
                             style("control-generate:").yellow(),
                             persons.len(),
                         ));
+                        // Score the DRAFT against the KEPT figures only, so a deliberately-demoted figure is not
+                        // counted as "missing" (the bug that pinned the draft at 4).
+                        let kept = persons
+                            .iter()
+                            .map(|e| e.label.trim())
+                            .filter(|l| !l.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        if !kept.is_empty() {
+                            judge_prompt = format!(
+                                "{prompt}\n\nFor scoring, the MAIN foreground figures are ONLY: {kept}. Any other \
+                                 named person is a distant background figure — do NOT count it as a missing main figure."
+                            );
+                        }
                         // Tell the 3rd (finish) pass that these figures are now BACKGROUND — using their prompt
                         // RELATIONSHIPS to place them — else the finish prompt (and its faithfulness judge) still
                         // expects a prominent figure that the draft deliberately painted small.
@@ -3090,7 +3137,7 @@ async fn control_generate_prepass(
                 }
                 let score = if vision_ok {
                     // Structure pass → COMPOSITION judge (placement/anatomy/coherence), not strict attributes.
-                    vision_score_kind(&vprovider, &path, &prompt, true, shuffle).await.unwrap_or(-1.0)
+                    vision_score_kind(&vprovider, &path, &judge_prompt, true, shuffle).await.unwrap_or(-1.0)
                 } else {
                     -1.0
                 };
@@ -3177,6 +3224,76 @@ async fn control_generate_prepass(
                 to_drop.push(i);
                 continue;
             }
+        }
+        // Per-figure inpaint (STAGE 2): a single regional pass reliably renders ~2 figures; the rest drop.
+        // Force each kept figure to appear by inpainting its box ONE AT A TIME at its attribute prompt (full
+        // attention on one figure) — sequentially, so each sees the last. Runs at DRAFT resolution on
+        // `best_path`, reusing the loaded SDXL core (no reload). Stage 3 can only preserve, so figures must be
+        // complete HERE. Opt-in via `control-generate-inpaint-figures`.
+        if inpaint_figures && !figure_boxes.is_empty() {
+            let ip = crate::pipelines::portrait::Pipeline::from_core(pipe.core());
+            let feather = ((dw.min(dh) as f32) * 0.03).max(4.0);
+            for (idx, (bbox, label)) in figure_boxes.iter().enumerate() {
+                let tmp = task_out.join(format!("inpaint-{idx}.tmpdir"));
+                let _ = std::fs::create_dir_all(&tmp);
+                let mask = crate::naturalize::feathered_rect(
+                    dw,
+                    dh,
+                    bbox[0] * dw as f32,
+                    bbox[1] * dh as f32,
+                    bbox[2] * dw as f32,
+                    bbox[3] * dh as f32,
+                    feather,
+                );
+                let mask_path = tmp.join("mask.png");
+                if mask.save(&mask_path).is_err() {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    continue;
+                }
+                let req = crate::pipelines::img2img::Request {
+                    prompt: label.clone(),
+                    negative: negative.clone(),
+                    model: cg.clone(),
+                    device: dev.clone(),
+                    loras: Vec::new(),
+                    lora_scale: 1.0,
+                    input: best_path.clone(),
+                    mask: Some(mask_path),
+                    mask_feather: 0, // the mask is already feathered
+                    mask_invert: false,
+                    width: dw,
+                    height: dh,
+                    count: 1,
+                    steps: 28,
+                    guidance: 7.5,
+                    scheduler: SchedulerKind::default(),
+                    strength: 0.75,
+                    seed: Some(task_seed.wrapping_add(0xF16).wrapping_add(idx as u64)),
+                    out_dir: tmp.clone(),
+                    controls: Vec::new(),
+                };
+                match crate::pipelines::img2img::run_with_pipeline(&ip, &req).await {
+                    Ok(()) => {
+                        if let Some(out) = std::fs::read_dir(&tmp)
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .map(|e| e.path())
+                            .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("plakat")))
+                        {
+                            let _ = std::fs::copy(&out, &best_path); // next figure inpaints the updated image
+                        }
+                    }
+                    Err(e) => crate::ui::progress::println(&format!("  ! figure inpaint {label:?}: {e:#}")),
+                }
+                let _ = std::fs::remove_dir_all(&tmp);
+            }
+            crate::ui::progress::println(&format!(
+                "  {} inpainted {} figure(s) into the draft (each forced to render)",
+                style("control-generate:").green(),
+                figure_boxes.len(),
+            ));
         }
         // Canonical best → structure-draft.png, wired as the finish pass's init-image.
         // Canonical best → structure-draft.png at the FINISH size (downscale the SDXL-native draft), so the
