@@ -172,6 +172,11 @@ struct ScenarioFile {
     /// 270=bottom). Global or per-task (per-task wins). IC-Light is SD1.5; relights the whole frame.
     #[serde(rename = "relight", default)]
     relight: Option<String>,
+    /// 6.28: `relight-when: after` (DEFAULT) | `before` — run the relight pass AFTER the naturalize stylize
+    /// (light the FINISHED image) or BEFORE it. `before` lets naturalize paint over the relit frame, which
+    /// muddies a watercolor; `after` lights the final look. Global or per-task (per-task wins).
+    #[serde(rename = "relight-when", default)]
+    relight_when: Option<String>,
 
     /// 6.28: auto-ranking. After a t2i task generates its `count:` images, rank them and process only the
     /// ones that clear the bar — the subpar images move to `culls/` and the naturalize/restore-faces
@@ -1013,6 +1018,9 @@ struct TaskDef {
     /// 6.28: per-task relight spec — OVERRIDES the scenario-global `relight:` for THIS task's outputs.
     #[serde(rename = "relight", default)]
     relight: Option<String>,
+    /// 6.28: per-task `relight-when` override (`after` | `before`).
+    #[serde(rename = "relight-when", default)]
+    relight_when: Option<String>,
 
     /// 6.27: per-task face-restore override. `Some(true)` runs ADetailer on THIS task only (e.g. break
     /// clone faces in a crowd scene) while soft scenes stay untouched; `Some(false)` disables it for this
@@ -1958,6 +1966,96 @@ async fn cull_to_passers(
         }
     }
     (keep, culled)
+}
+
+/// The `<stem>.natural.png` sibling of a finish PNG (where `keep-prenaturalize` writes the naturalized image).
+fn natural_sibling(finish_png: &std::path::Path) -> PathBuf {
+    let stem = finish_png.file_stem().and_then(|s| s.to_str()).unwrap_or("plakat");
+    finish_png.with_file_name(format!("{stem}.natural.png"))
+}
+
+/// 6.28: run the IC-Light relight pass over `targets` whose effective `relight-when` matches `when_filter`
+/// (`before` | `after` naturalize). Grouped by effective spec (per-task → global) so IC-Light loads once per
+/// spec. Overwrites each PNG in place (the `.json` sidecar is left; embedded PNG metadata is not carried).
+async fn run_relight_pass(s: &ScenarioFile, targets: &[PathBuf], when_filter: &str) {
+    let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
+    for png in targets {
+        let parent = png.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
+        let task = s.tasks.iter().find(|t| safe_name(&t.name) == parent);
+        // Default AFTER: light the finished image rather than painting over the relit frame.
+        let this_when = task
+            .and_then(|t| t.relight_when.clone())
+            .or_else(|| s.relight_when.clone())
+            .unwrap_or_else(|| "after".into());
+        if !this_when.eq_ignore_ascii_case(when_filter) {
+            continue;
+        }
+        let spec = task.and_then(|t| t.relight.clone()).or_else(|| s.relight.clone());
+        if let Some(spec) = spec.filter(|s| !s.trim().is_empty()) {
+            groups.entry(spec).or_default().push(png.clone());
+        }
+    }
+    let mut specs: Vec<String> = groups.keys().cloned().collect();
+    specs.sort();
+    for spec in specs {
+        let pngs = groups.remove(&spec).unwrap();
+        if pngs.is_empty() {
+            continue;
+        }
+        // Parse "<preset> [angle=<deg>]" — a named light + optional direction override.
+        let (mut preset_name, mut angle): (Option<String>, Option<f32>) = (None, None);
+        for tok in spec.split_whitespace() {
+            if let Some(v) = tok.strip_prefix("angle=") {
+                angle = v.parse().ok();
+            } else if preset_name.is_none() {
+                preset_name = Some(tok.to_string());
+            }
+        }
+        let preset = preset_name.as_deref().and_then(crate::pipelines::ic_light::light_preset);
+        let (prompt, negative, mut backdrop) = match preset {
+            Some(p) => (p.prompt.to_string(), p.negative.to_string(), p.backdrop),
+            None => {
+                crate::ui::progress::println(&format!(
+                    "  {} unknown preset {:?} — see `plakat relight --list-lights`; skipping",
+                    style("relight:").yellow(),
+                    preset_name.as_deref().unwrap_or("")
+                ));
+                continue;
+            }
+        };
+        if let Some(a) = angle {
+            backdrop = crate::pipelines::ic_light::Backdrop::Directional(a);
+        }
+        let dev = match crate::device::select(s.device.as_deref().unwrap_or("auto")) {
+            Ok(d) => d,
+            Err(e) => {
+                crate::ui::progress::println(&format!("  ! relight device: {e}"));
+                continue;
+            }
+        };
+        let pipe = match crate::pipelines::ic_light::Pipeline::load(dev).await {
+            Ok(p) => p,
+            Err(e) => {
+                crate::ui::progress::println(&format!("  ! relight: IC-Light load failed: {e:#}"));
+                continue;
+            }
+        };
+        crate::ui::progress::println(&format!(
+            "  {} relight ({when_filter}): {} output(s) · {spec}",
+            style("◆").cyan(),
+            pngs.len()
+        ));
+        for png in &pngs {
+            let (w, h) = image::image_dimensions(png).unwrap_or((768, 768));
+            match pipe.relight(png, &prompt, &negative, w, h, 20, 2.0, 0, backdrop) {
+                Ok((pixels, ow, oh)) => match image::RgbImage::from_raw(ow, oh, pixels) {
+                    Some(img) if img.save(png).is_ok() => {}
+                    _ => crate::ui::progress::println(&format!("  ! relight save {}", png.display())),
+                },
+                Err(e) => crate::ui::progress::println(&format!("  ! relight {}: {e:#}", png.display())),
+            }
+        }
+    }
 }
 
 pub fn validate_hjson(hjson: &str) -> Result<()> {
@@ -7230,86 +7328,19 @@ pub async fn run_with_events(
 
     // 6.27: face-restore (ADetailer) runs BEFORE naturalize — crisp the faces on the base render, THEN let
     // the naturalize repaint stylize everything uniformly (restoring after a watercolor repaint would stamp
-    // 6.28: relight this run's outputs (IC-Light) BEFORE restore-faces/naturalize — enforce a lighting
-    // preset/direction the base model couldn't. Grouped by effective spec so IC-Light loads once per spec.
-    // Overwrites the PNG (the `.json` sidecar is left in place); any embedded PNG metadata is not carried.
-    if any_relight && nat_before.is_some() {
-        let before = nat_before.as_ref().unwrap();
-        let new: Vec<PathBuf> = collect_pngs(&out_root)
+    // Post-pass targets: the frames THIS run generated, captured before any post-pass touches them.
+    let finish_outputs: Vec<PathBuf> = match nat_before.as_ref() {
+        Some(before) => collect_pngs(&out_root)
             .difference(before)
             .filter(|p| !p.components().any(|c| c.as_os_str() == "culls"))
             .cloned()
-            .collect();
-        let mut groups: std::collections::HashMap<String, Vec<PathBuf>> = std::collections::HashMap::new();
-        for png in new {
-            let parent = png.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("");
-            let task = s.tasks.iter().find(|t| safe_name(&t.name) == parent);
-            let spec = task.and_then(|t| t.relight.clone()).or_else(|| s.relight.clone());
-            if let Some(spec) = spec.filter(|s| !s.trim().is_empty()) {
-                groups.entry(spec).or_default().push(png);
-            }
-        }
-        let mut specs: Vec<String> = groups.keys().cloned().collect();
-        specs.sort();
-        for spec in specs {
-            let pngs = groups.remove(&spec).unwrap();
-            if pngs.is_empty() {
-                continue;
-            }
-            // Parse "<preset> [angle=<deg>]" — a named light + optional direction override.
-            let (mut preset_name, mut angle): (Option<String>, Option<f32>) = (None, None);
-            for tok in spec.split_whitespace() {
-                if let Some(v) = tok.strip_prefix("angle=") {
-                    angle = v.parse().ok();
-                } else if preset_name.is_none() {
-                    preset_name = Some(tok.to_string());
-                }
-            }
-            let preset = preset_name.as_deref().and_then(crate::pipelines::ic_light::light_preset);
-            let (prompt, negative, mut backdrop) = match preset {
-                Some(p) => (p.prompt.to_string(), p.negative.to_string(), p.backdrop),
-                None => {
-                    crate::ui::progress::println(&format!(
-                        "  {} unknown preset {:?} — see `plakat relight --list-lights`; skipping",
-                        style("relight:").yellow(),
-                        preset_name.as_deref().unwrap_or("")
-                    ));
-                    continue;
-                }
-            };
-            if let Some(a) = angle {
-                backdrop = crate::pipelines::ic_light::Backdrop::Directional(a);
-            }
-            let dev = match crate::device::select(s.device.as_deref().unwrap_or("auto")) {
-                Ok(d) => d,
-                Err(e) => {
-                    crate::ui::progress::println(&format!("  ! relight device: {e}"));
-                    continue;
-                }
-            };
-            let pipe = match crate::pipelines::ic_light::Pipeline::load(dev).await {
-                Ok(p) => p,
-                Err(e) => {
-                    crate::ui::progress::println(&format!("  ! relight: IC-Light load failed: {e:#}"));
-                    continue;
-                }
-            };
-            crate::ui::progress::println(&format!(
-                "  {} relight: {} output(s) · {spec}",
-                style("◆").cyan(),
-                pngs.len()
-            ));
-            for png in &pngs {
-                let (w, h) = image::image_dimensions(png).unwrap_or((768, 768));
-                match pipe.relight(png, &prompt, &negative, w, h, 20, 2.0, 0, backdrop) {
-                    Ok((pixels, ow, oh)) => match image::RgbImage::from_raw(ow, oh, pixels) {
-                        Some(img) if img.save(png).is_ok() => {}
-                        _ => crate::ui::progress::println(&format!("  ! relight save {}", png.display())),
-                    },
-                    Err(e) => crate::ui::progress::println(&format!("  ! relight {}: {e:#}", png.display())),
-                }
-            }
-        }
+            .collect(),
+        None => Vec::new(),
+    };
+    // relight BEFORE naturalize — opt-in via `relight-when: before`. Lights the raw finish; naturalize then
+    // paints over it (can muddy a watercolor). The DEFAULT is `after` (below), which lights the FINISHED image.
+    if any_relight {
+        run_relight_pass(&s, &finish_outputs, "before").await;
     }
 
     // sharp faces onto a painting). img2img is UNet-only, so the default face model is SDXL. Per-task
@@ -7398,6 +7429,24 @@ pub async fn run_with_events(
             crate::ui::progress::println(&format!("  naturalize: {} output(s) · {spec}", pngs.len()));
             crate::cli::naturalize::repaint_batch(&pngs, &spec, rmodel, s.device.as_deref(), s.steps.unwrap_or(28), s.keep_prenaturalize).await;
         }
+    }
+
+    // relight AFTER naturalize (DEFAULT) — light the FINISHED image instead of getting painted over. Targets
+    // each output's final variant: the `.natural.png` when `keep-prenaturalize` kept it, else the (in-place
+    // naturalized, or un-naturalized) finish png.
+    if any_relight {
+        let after_targets: Vec<PathBuf> = finish_outputs
+            .iter()
+            .map(|p| {
+                if s.keep_prenaturalize {
+                    let np = natural_sibling(p);
+                    if np.exists() { np } else { p.clone() }
+                } else {
+                    p.clone()
+                }
+            })
+            .collect();
+        run_relight_pass(&s, &after_targets, "after").await;
     }
 
     // v0.34 phase 2: if any task failed, exit non-zero. Summary

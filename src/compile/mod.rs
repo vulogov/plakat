@@ -156,7 +156,7 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     // sizing / device
     "aspect", "base", "device", "offline", "fast", "lcm",
     // post-process
-    "naturalize", "relight", "upscale", "restore-faces", "restore-faces-model", "restore-faces-strength",
+    "naturalize", "relight", "relight-when", "upscale", "restore-faces", "restore-faces-model", "restore-faces-strength",
     // auto-ranking (generate → rank → cull → regenerate; process only survivors)
     "ranking",
     // output layout — keep every pass of a repeated run side by side
