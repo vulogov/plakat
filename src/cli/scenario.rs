@@ -2839,8 +2839,9 @@ async fn control_generate_prepass(
         // people bleeds their attributes into a neighbouring region's box (the "bearded woman in red" bug).
         // `None` until built; falls back to the full prompt if the figure-strip LLM call fails.
         let mut regional_base: Option<String> = None;
-        // Kept (foreground) figures — (bbox, attribute label) — for the optional per-figure inpaint pass.
-        let mut figure_boxes: Vec<([f32; 4], String)> = Vec::new();
+        // Kept (foreground) figure elements — for the optional per-figure inpaint pass (box + label + the
+        // pose/facing needed to render that figure's own OpenPose skeleton as an anatomy control).
+        let mut figure_elems: Vec<crate::prompt::wireframe::LayoutElement> = Vec::new();
         // The prompt the DRAFT is SCORED against. Defaults to the structure prompt; when figures are demoted,
         // a note pins the MAIN figures to the kept ones so the judge doesn't count a demoted figure as missing.
         let mut judge_prompt = prompt.clone();
@@ -2920,11 +2921,12 @@ async fn control_generate_prepass(
                         persons.len(),
                         if overflow.is_empty() { String::new() } else { format!(", {} → background", overflow.len()) },
                     ));
-                    // Kept figures → the inpaint list (bbox + label) so a later pass can force each to render.
-                    figure_boxes = persons
+                    // Kept figures → the inpaint list (full element: box + label + pose) so a later pass can
+                    // force each to render, guided by its own skeleton.
+                    figure_elems = persons
                         .iter()
                         .filter(|e| !e.label.trim().is_empty())
-                        .map(|e| ([e.x, e.y, e.x + e.w, e.y + e.h], e.label.trim().to_string()))
+                        .cloned()
                         .collect();
                     if !overflow.is_empty() {
                         crate::ui::progress::println(&format!(
@@ -3230,19 +3232,20 @@ async fn control_generate_prepass(
         // attention on one figure) — sequentially, so each sees the last. Runs at DRAFT resolution on
         // `best_path`, reusing the loaded SDXL core (no reload). Stage 3 can only preserve, so figures must be
         // complete HERE. Opt-in via `control-generate-inpaint-figures`.
-        if inpaint_figures && !figure_boxes.is_empty() {
+        if inpaint_figures && !figure_elems.is_empty() {
             let ip = crate::pipelines::portrait::Pipeline::from_core(pipe.core());
             let feather = ((dw.min(dh) as f32) * 0.03).max(4.0);
-            for (idx, (bbox, label)) in figure_boxes.iter().enumerate() {
+            for (idx, elem) in figure_elems.iter().enumerate() {
+                let (bx0, by0, bx1, by1) = (elem.x, elem.y, elem.x + elem.w, elem.y + elem.h);
                 let tmp = task_out.join(format!("inpaint-{idx}.tmpdir"));
                 let _ = std::fs::create_dir_all(&tmp);
                 let mask = crate::naturalize::feathered_rect(
                     dw,
                     dh,
-                    bbox[0] * dw as f32,
-                    bbox[1] * dh as f32,
-                    bbox[2] * dw as f32,
-                    bbox[3] * dh as f32,
+                    bx0 * dw as f32,
+                    by0 * dh as f32,
+                    bx1 * dw as f32,
+                    by1 * dh as f32,
                     feather,
                 );
                 let mask_path = tmp.join("mask.png");
@@ -3250,8 +3253,23 @@ async fn control_generate_prepass(
                     let _ = std::fs::remove_dir_all(&tmp);
                     continue;
                 }
+                // Render THIS figure's own OpenPose skeleton (its pose/facing) as an anatomy control, so the
+                // inpaint paints a sound body in the box rather than guessing from the prompt alone.
+                let mut controls = Vec::new();
+                let skel_path = tmp.join("skeleton.png");
+                if crate::prompt::wireframe::render_openpose(std::slice::from_ref(elem), dw, dh).save(&skel_path).is_ok() {
+                    controls.push(crate::pipelines::controlnet::ControlSpec {
+                        kind: crate::pipelines::controlnet::ControlKind::OpenPose,
+                        image: Some(skel_path),
+                        from: None,
+                        video: None,
+                        strength: 0.8,
+                        start: 0.0,
+                        end: 1.0,
+                    });
+                }
                 let req = crate::pipelines::img2img::Request {
-                    prompt: label.clone(),
+                    prompt: elem.label.trim().to_string(),
                     negative: negative.clone(),
                     model: cg.clone(),
                     device: dev.clone(),
@@ -3270,7 +3288,7 @@ async fn control_generate_prepass(
                     strength: 0.75,
                     seed: Some(task_seed.wrapping_add(0xF16).wrapping_add(idx as u64)),
                     out_dir: tmp.clone(),
-                    controls: Vec::new(),
+                    controls,
                 };
                 match crate::pipelines::img2img::run_with_pipeline(&ip, &req).await {
                     Ok(()) => {
@@ -3285,14 +3303,14 @@ async fn control_generate_prepass(
                             let _ = std::fs::copy(&out, &best_path); // next figure inpaints the updated image
                         }
                     }
-                    Err(e) => crate::ui::progress::println(&format!("  ! figure inpaint {label:?}: {e:#}")),
+                    Err(e) => crate::ui::progress::println(&format!("  ! figure inpaint {:?}: {e:#}", elem.label)),
                 }
                 let _ = std::fs::remove_dir_all(&tmp);
             }
             crate::ui::progress::println(&format!(
-                "  {} inpainted {} figure(s) into the draft (each forced to render)",
+                "  {} inpainted {} figure(s) into the draft (skeleton-guided, each forced to render)",
                 style("control-generate:").green(),
-                figure_boxes.len(),
+                figure_elems.len(),
             ));
         }
         // Canonical best → structure-draft.png, wired as the finish pass's init-image.
