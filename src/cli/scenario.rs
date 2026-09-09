@@ -2782,12 +2782,15 @@ async fn control_generate_prepass(
         // How many distinct figures get the OpenPose+region treatment (rest → background). Default 2 (the
         // count a single regional pass reliably renders); `control-generate-inpaint-figures` forces more.
         let max_figures = s.tasks[i].control_generate_max_figures.or(g_max_figures).unwrap_or(2).max(1);
-        let inpaint_figures = s.tasks[i].control_generate_inpaint_figures.or(g_inpaint_figures).unwrap_or(false);
         let wireframe = s.tasks[i]
             .control_generate_mode
             .as_deref()
             .or(g_mode.as_deref())
             .is_some_and(|m| m.eq_ignore_ascii_case("wireframe"));
+        // Per-figure inpaint defaults ON in wireframe mode — a single regional pass drops figure 2+, and the
+        // inpaint is the only DETERMINISTIC way to paint each figure into its box. Disable with
+        // `control-generate-inpaint-figures: false`.
+        let inpaint_figures = s.tasks[i].control_generate_inpaint_figures.or(g_inpaint_figures).unwrap_or(wireframe);
         let task_out = out_root.join(safe_name(&name));
         let _ = std::fs::create_dir_all(&task_out);
         // Ensure the draft model is loaded (once; reload only on a model change).
@@ -3208,25 +3211,13 @@ async fn control_generate_prepass(
                 round + 1,
             ));
         }
-        let Some((best_path, best_score)) = best else {
+        let Some((best_path, mut best_score)) = best else {
             crate::ui::progress::println(&format!(
                 "  {} {name:?}: no draft produced — running plain t2i",
                 style("control-generate:").yellow(),
             ));
             continue;
         };
-        // Refuse (skip the task) when even the best draft is too weak — opt-in via `control-generate-min-score`.
-        if let Some(min) = min_score {
-            if best_score >= 0.0 && best_score < min {
-                crate::ui::progress::println(&format!(
-                    "  {} best draft {best_score:.1} < min {min:.1} — REFUSING task {name:?} (structure too weak; \
-                     refine the prompt, raise control-generate-count, or lower min-score)",
-                    style("control-generate:").red().bold(),
-                ));
-                to_drop.push(i);
-                continue;
-            }
-        }
         // Per-figure inpaint (STAGE 2): a single regional pass reliably renders ~2 figures; the rest drop.
         // Force each kept figure to appear by inpainting its box ONE AT A TIME at its attribute prompt (full
         // attention on one figure) — sequentially, so each sees the last. Runs at DRAFT resolution on
@@ -3312,6 +3303,30 @@ async fn control_generate_prepass(
                 style("control-generate:").green(),
                 figure_elems.len(),
             ));
+            // Re-score the COMPLETED draft — the inpaint may have added the figures the regional pass dropped,
+            // so the min-score gate below must judge the FINAL draft, not the incomplete pre-inpaint one.
+            if vision_ok {
+                if let Some(ns) = vision_score_kind(&vprovider, &best_path, &judge_prompt, true, shuffle).await {
+                    crate::ui::progress::println(&format!(
+                        "  {} draft re-scored after inpaint: {best_score:.1} → {ns:.1}",
+                        style("control-generate:").cyan(),
+                    ));
+                    best_score = ns;
+                }
+            }
+        }
+        // Refuse (skip the task) when even the best draft — AFTER any inpaint — is too weak. Opt-in via
+        // `control-generate-min-score`.
+        if let Some(min) = min_score {
+            if best_score >= 0.0 && best_score < min {
+                crate::ui::progress::println(&format!(
+                    "  {} best draft {best_score:.1} < min {min:.1} — REFUSING task {name:?} (structure too weak; \
+                     enable control-generate-inpaint-figures, refine the prompt, raise count, or lower min-score)",
+                    style("control-generate:").red().bold(),
+                ));
+                to_drop.push(i);
+                continue;
+            }
         }
         // Canonical best → structure-draft.png, wired as the finish pass's init-image.
         // Canonical best → structure-draft.png at the FINISH size (downscale the SDXL-native draft), so the
