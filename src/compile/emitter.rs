@@ -13,6 +13,9 @@ pub struct CompiledScene {
     /// 6.28: the style-stripped, composition-focused STRUCTURE prompt for the `control-generate` draft
     /// pass, emitted as a per-task `structure-prompt`. `None` when the scenario doesn't use control-generate.
     pub structure_prompt: Option<String>,
+    /// 6.28: number of DELIBERATE foreground figures (`foreground:` list length) → emitted as
+    /// `control-generate-max-figures`. `None` when the scene declares no `foreground:` list.
+    pub control_generate_max_figures: Option<usize>,
     /// 6.26.2 diligence warnings for this scene (budget overflow / dropped style) — surfaced to
     /// the user by the CLI rather than silently accepted. Empty when the scene compiled cleanly.
     pub warnings: Vec<String>,
@@ -175,6 +178,9 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
             o.push_str(&format!("      prompt: {}\n", q(&cs.prompt)));
             if let Some(sp) = cs.structure_prompt.as_deref().filter(|s| !s.trim().is_empty()) {
                 o.push_str(&format!("      structure-prompt: {}\n", q(sp)));
+            }
+            if let Some(n) = cs.control_generate_max_figures {
+                o.push_str(&format!("      control-generate-max-figures: {n}\n"));
             }
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
@@ -406,6 +412,7 @@ mod tests {
             prompt: "a frozen tundra, lone rider, aurora".into(),
             negative: "blurry, watermark, daylight".into(),
             structure_prompt: None,
+            control_generate_max_figures: None,
             warnings: Vec::new(),
             trace: Vec::new(),
         };

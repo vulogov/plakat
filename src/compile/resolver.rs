@@ -53,6 +53,13 @@ pub struct ResolvedScene {
     /// 6.28: resolved `relate:` object relationships — each references two `component.<name>` objects and a
     /// verb. compile_one_scene translates the descriptions and builds an English grounding clause.
     pub relations: Vec<RelationSpec>,
+    /// 6.28: the 3-tier figure model. `foreground` = the 1–2 deliberate hero components (each `(name, desc)`,
+    /// with attach-verb objects — holding/leaning-on — folded into `desc`). `background` = specific people
+    /// painted in the base. `crowd`/`crowd_density` = a free-text unspecified group + how many.
+    pub foreground: Vec<(String, String)>,
+    pub background: Vec<(String, String)>,
+    pub crowd: String,
+    pub crowd_density: Option<String>,
     pub free_text: String,
     pub styles: Vec<String>,
     pub personas: Vec<String>,
@@ -317,6 +324,85 @@ fn resolve_relations(
     Ok(out)
 }
 
+/// Verbs that ATTACH object B onto subject A (fold B's description INTO A's) vs place-verbs (layout only).
+/// A held basket / a leaned-on cane belongs to the figure, so it must travel in the figure's own prompt.
+pub(crate) fn is_attach_verb(verb: &str) -> bool {
+    matches!(
+        verb.trim().to_lowercase().as_str(),
+        "holding" | "holds" | "carrying" | "carries" | "leaning-on" | "leaning on"
+            | "leaning against" | "wearing" | "wears" | "resting-on" | "resting on" | "with"
+    )
+}
+
+/// The phrase used when folding an attach-object into its figure's description (`A <phrase> B`).
+fn attach_phrase(verb: &str) -> &'static str {
+    match verb.trim().to_lowercase().as_str() {
+        "holding" | "holds" => "holding",
+        "carrying" | "carries" => "carrying",
+        "leaning-on" | "leaning on" | "leaning against" => "leaning on",
+        "wearing" | "wears" => "wearing",
+        "resting-on" | "resting on" => "resting on",
+        _ => "with",
+    }
+}
+
+/// Resolve a comma-list of `component.<name>` refs (a `foreground:` / `background:` list) into `(name, desc)`,
+/// FOLDING every attach-verb relation whose subject is this component into its description — so a held/worn
+/// object is part of the figure's own prompt (kills the floating-object failure at the source).
+fn resolve_figure_list(
+    s: &crate::compile::parser::Block,
+    key: &str,
+    components: &std::collections::HashMap<String, String>,
+    relations: &[RelationSpec],
+) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for line in s.values(key) {
+        for raw in line.split(',') {
+            let r = raw.trim();
+            if r.is_empty() {
+                continue;
+            }
+            let name = r.strip_prefix("component.").unwrap_or(r).trim();
+            let Some(base) = components.get(name) else {
+                let mut avail: Vec<&str> = components.keys().map(String::as_str).collect();
+                avail.sort_unstable();
+                anyhow::bail!(
+                    "{key} references unknown component `{r}` — define it as `component.{name}: …` \
+                     (defined: {})",
+                    avail.join(", ")
+                );
+            };
+            let mut desc = base.trim().to_string();
+            for rel in relations.iter().filter(|rel| rel.a == name && is_attach_verb(&rel.verb)) {
+                desc = format!("{desc} {} {}", attach_phrase(&rel.verb), rel.b_desc.trim());
+            }
+            out.push((name.to_string(), desc));
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve the `crowd:` value — a free-text unspecified group (pure background atmosphere). A bare
+/// `component.<name>` token resolves to its description; anything else is used verbatim.
+fn resolve_crowd(
+    s: &crate::compile::parser::Block,
+    components: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for line in s.values("crowd") {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let name = t.strip_prefix("component.").unwrap_or(t).trim();
+        match components.get(name) {
+            Some(desc) => parts.push(desc.trim().to_string()),
+            None => parts.push(t.to_string()),
+        }
+    }
+    parts.join(", ")
+}
+
 fn resolve_composition(
     s: &crate::compile::parser::Block,
     components: &std::collections::HashMap<String, String>,
@@ -396,6 +482,11 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         let name_auto = explicit_name.is_none();
         let composition_text = resolve_composition(s, &components)?;
         let relations = resolve_relations(s, &components)?;
+        // Figure tiers (attach-objects folded into each figure via `relations`).
+        let foreground = resolve_figure_list(s, "foreground", &components, &relations)?;
+        let background = resolve_figure_list(s, "background", &components, &relations)?;
+        let crowd = resolve_crowd(s, &components);
+        let crowd_density = last_wins(&[], &vals(Some(s), "crowd-density")).map(str::to_string);
         // A composition can name the scene too (when there's no prose and no explicit name).
         let name_seed = if free_text.trim().is_empty() { composition_text.as_str() } else { free_text.as_str() };
         let name = explicit_name.unwrap_or_else(|| auto_name(name_seed, i));
@@ -406,6 +497,10 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             name_auto,
             composition_text,
             relations,
+            foreground,
+            background,
+            crowd,
+            crowd_density,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),

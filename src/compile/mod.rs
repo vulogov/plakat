@@ -106,6 +106,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     // declares how two named objects relate (`relate: tram on rails`) → an English grounding clause built
     // from the components' (translated) descriptions + a verb phrase, prepended to the prose.
     CommandSpec { key: "relate", kind: CommandKind::Prompt, merge: Merge::AccumulateList },
+    // 6.28: the 3-tier figure model. `foreground:` = the 1–2 DELIBERATE hero components (full OpenPose+region
+    // treatment; sets control-generate-max-figures). `background:` = specific people painted in the base (no
+    // skeleton). `crowd:` = free-text unspecified group (pure atmosphere); `crowd-density:` = sparse/moderate/
+    // dense. Comma-lists of `component.<name>` (foreground/background) or free text (crowd).
+    CommandSpec { key: "foreground", kind: CommandKind::Prompt, merge: Merge::Concatenate },
+    CommandSpec { key: "background", kind: CommandKind::Prompt, merge: Merge::Concatenate },
+    CommandSpec { key: "crowd", kind: CommandKind::Prompt, merge: Merge::Concatenate },
+    CommandSpec { key: "crowd-density", kind: CommandKind::Prompt, merge: Merge::LastWins },
     // ---- scenario commands (straight to HJSON) ----
     CommandSpec { key: "model",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "lora",      kind: CommandKind::Scenario, merge: Merge::AccumulateList },
@@ -322,14 +330,15 @@ async fn compile_one_scene(
     // descriptions translated, verb → phrase, first mention full / repeat by name) and PREPEND it to the
     // prose, so it flows through the same translate+enhance pipeline. Explicit + language-agnostic.
     let persona_fragments: Vec<String> = scene.personas.iter().map(|n| load_persona(n)).collect();
+    // 3-tier figures (foreground heroes with folded attach-objects · background people · crowd) +
+    // PLACE-relation grounding + the prose. Attach relations are already folded into each figure's desc.
+    let figures = build_figures_clause(scene);
     let grounding = build_grounding(scene, opts, eargs).await;
-    let body = if grounding.is_empty() {
-        scene.free_text.clone()
-    } else if scene.free_text.trim().is_empty() {
-        grounding
-    } else {
-        format!("{}. {}", grounding, scene.free_text.trim())
-    };
+    let body = [figures, grounding, scene.free_text.trim().to_string()]
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(". ");
     let assembled = assembler::assemble_with_body(scene, &body);
 
     // 2) translate every weighted phrase to English → phrase(src)→(English, weight) map (enhance path only).
@@ -617,7 +626,9 @@ async fn compile_one_scene(
     if structure_prompt.is_some() {
         trace.push("structure prompt (composition-focused) built for control-generate".to_string());
     }
-    emitter::CompiledScene { scene: out_scene, prompt, negative, structure_prompt, warnings, trace }
+    // A `foreground:` list sets the deliberate-figure count for the control-generate cap.
+    let control_generate_max_figures = (!scene.foreground.is_empty()).then_some(scene.foreground.len());
+    emitter::CompiledScene { scene: out_scene, prompt, negative, structure_prompt, control_generate_max_figures, warnings, trace }
 }
 
 /// Deduplicate weight spans by (phrase, weight), preserving first-seen order — so a phrase repeated across
@@ -709,6 +720,26 @@ async fn translate_phrase(
 /// [`assembler::relation_phrase`]. Empty when the scene declares no relations. Translation runs on the
 /// enhance path only (mirrors the weighted-phrase loop); under `--no-enhance` the source description is
 /// used verbatim.
+/// 6.28: the 3-tier figure clause — foreground heroes (attach-objects already folded in), specific
+/// background people, and the non-deterministic crowd — assembled ahead of the prose so the scene names its
+/// subjects explicitly. Empty when the scene uses none of the tiers (a plain prose/composition scene).
+fn build_figures_clause(scene: &resolver::ResolvedScene) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !scene.foreground.is_empty() {
+        let fg = scene.foreground.iter().map(|(_, d)| d.trim()).collect::<Vec<_>>().join("; ");
+        parts.push(format!("In the foreground: {fg}"));
+    }
+    if !scene.background.is_empty() {
+        let bg = scene.background.iter().map(|(_, d)| d.trim()).collect::<Vec<_>>().join("; ");
+        parts.push(format!("In the background: {bg}"));
+    }
+    if !scene.crowd.trim().is_empty() {
+        let density = scene.crowd_density.as_deref().map(|d| format!("{} ", d.trim())).unwrap_or_default();
+        parts.push(format!("further back, {density}{}", scene.crowd.trim()));
+    }
+    parts.join(". ")
+}
+
 async fn build_grounding(
     scene: &resolver::ResolvedScene,
     opts: &CompileOpts,
@@ -719,7 +750,9 @@ async fn build_grounding(
     }
     let mut introduced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut clauses: Vec<String> = Vec::new();
-    for rel in &scene.relations {
+    // PLACE relations only — ATTACH relations (holding / leaning-on) are folded into the figure's own
+    // description at resolve time, so re-stating them here would double the held object.
+    for rel in scene.relations.iter().filter(|rel| !resolver::is_attach_verb(&rel.verb)) {
         let a = grounding_ref(&rel.a, &rel.a_desc, &mut introduced, scene, opts, eargs).await;
         let b = grounding_ref(&rel.b, &rel.b_desc, &mut introduced, scene, opts, eargs).await;
         clauses.push(format!("{a} {} {b}", assembler::relation_phrase(&rel.verb)));
@@ -747,7 +780,9 @@ async fn grounding_ref(
         }
         _ => desc.to_string(),
     };
-    format!("the {}", en.trim())
+    // Language-agnostic: use the description as-is. Prepending an English "the" both double-articles
+    // English ("the a merchant") AND mixes languages on non-English prose ("the бородатый торговец").
+    en.trim().to_string()
 }
 
 
