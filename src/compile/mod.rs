@@ -457,15 +457,9 @@ async fn compile_one_scene(
         }
     }
 
-    // 2c) fit-to-budget: if the finished prompt overflows the model's effective token budget, condense it
-    // (model-specific) to fit while preserving subjects/style/weights, rather than only warning. Only when
-    // the enhancer ran (verbatim `--no-enhance` is the user's exact wording — never rewrite that).
+    // fit-to-budget runs LAST (step 2e below), AFTER the prose reinforcement — otherwise the reinforcement
+    // clauses append after a fit and push the prompt back over budget (the ~256→260 overflow bug).
     let mut fit_note: Option<String> = None;
-    if !opts.no_enhance && !assembled.is_empty() {
-        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs).await;
-        prompt = fitted;
-        fit_note = note;
-    }
 
     // 2d) SD3/Flux prose reinforcement: these T5-driven families honour prose >> numeric weights, so a
     // heavily-weighted concept still loses to strong priors (a green sky, an orange sun). Restate the
@@ -489,6 +483,15 @@ async fn compile_one_scene(
                 prompt = format!("{}{sep}{clause}", prompt.trim_end());
             }
         }
+    }
+
+    // 2e) fit-to-budget — LAST, so the enhanced + reinforced prompt is condensed to the model's effective
+    // token budget (preserving every distinct subject, the style, and the inline weights) rather than only
+    // warning. Runs after the reinforcement clauses so they can't push it back over budget.
+    if !opts.no_enhance && !assembled.is_empty() {
+        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs).await;
+        prompt = fitted;
+        fit_note = note;
     }
 
     // 3) negative — HYBRID: a deterministic base (the user's `negative:` seeds + a curated QUALITY set)
@@ -662,17 +665,30 @@ async fn fit_to_budget(
         return (prompt.to_string(), None);
     }
     let spans = dedup_spans(assembler::extract_weight_spans(prompt));
-    let sys = format!(
-        "You compress text-to-image prompts to a token budget for the {label} model. Rewrite the prompt to \
-         fit within about {budget} CLIP tokens. PRESERVE every attention-weight span `(phrase:number)` \
-         EXACTLY — keep the parentheses and the number unchanged. Keep every distinct visual subject and the \
-         overall style; cut only filler, repetition and redundant adjectives. Output ONLY the rewritten prompt.",
-        label = family.label()
-    );
-    let fitted = match cached_call(provider, &sys, prompt, cache::POSITIVE, cache_on, eargs).await {
-        Some(f) => assembler::clean(&f),
-        None => return (prompt.to_string(), None), // fit call failed — keep original; scene_warnings flags it
-    };
+    // Two attempts: if the first condense still overshoots (LLMs are imprecise about token counts), retry
+    // with a firmer, lower target so the prompt actually fits rather than overflowing with only a warning.
+    let mut fitted = String::new();
+    let mut current = prompt.to_string();
+    for attempt in 0..2 {
+        let target = if attempt == 0 { budget } else { budget.saturating_sub(budget / 8).max(32) };
+        let sys = format!(
+            "You compress text-to-image prompts to a token budget for the {label} model. Rewrite the prompt to \
+             fit within AT MOST {target} CLIP tokens (shorter is fine). PRESERVE every attention-weight span \
+             `(phrase:number)` EXACTLY — keep the parentheses and the number unchanged. Keep every distinct \
+             visual subject and the overall style; cut filler, repetition and redundant adjectives. Output \
+             ONLY the rewritten prompt.",
+            label = family.label()
+        );
+        fitted = match cached_call(provider, &sys, &current, cache::POSITIVE, cache_on, eargs).await {
+            Some(f) => assembler::clean(&f),
+            None if attempt == 0 => return (prompt.to_string(), None), // fit call failed — keep original
+            None => break,                                             // retry failed — keep the first fit
+        };
+        if assembler::estimate_tokens(&fitted) <= budget {
+            break;
+        }
+        current = fitted.clone(); // still over — condense the condensed once more
+    }
     // Guarantee the weights survived the compression: only re-append if the fit pass lost them ALL (matches
     // step 2b's all-or-nothing — avoids duplicating weights the fit pass kept).
     let mut out = fitted;
