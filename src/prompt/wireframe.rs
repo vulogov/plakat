@@ -27,7 +27,8 @@ pub struct LayoutElement {
     /// not the viewer). Empty = front. Only meaningful for `person`.
     #[serde(default)]
     pub facing: String,
-    /// What a person is DOING: `standing` / `holding` / `leaning` / `walking` / `gesturing` — shapes the
+    /// What a person is DOING: `standing` / `sitting` / `kneeling` / `squatting` / `jumping` / `walking` /
+    /// `holding` / `gesturing` / `waving` / `embracing` / `holding hands` / `holding baby` — shapes the
     /// skeleton's arms/legs so figures aren't identical frontal mannequins. Empty = standing.
     #[serde(default)]
     pub pose: String,
@@ -54,8 +55,12 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     - \"facing\": which way they LOOK — one of front / left / right / away. Make it natural to the scene: \
     two people talking FACE EACH OTHER (one left, one right), not the viewer; someone leaving a doorway may \
     face front or their direction of travel. Avoid everyone facing front.\n\
-    - \"pose\": what they are DOING — one of standing / holding / leaning / walking / gesturing (e.g. a \
-    basket-carrier = holding, a person on a cane = leaning, a talker = gesturing).\n\
+    - \"pose\": what they are DOING — one of standing / sitting / kneeling / squatting / jumping / walking / \
+    holding / leaning / gesturing / waving / embracing / \"holding hands\" / \"holding baby\". Choose the one \
+    that matches the scene: someone on a bench/chair = sitting, someone crouched low = squatting, someone on \
+    their knees = kneeling, someone mid-leap = jumping, a basket-carrier = holding, a person on a cane = \
+    leaning, a talker = gesturing, a greeter = waving, a couple hugging = embracing, two people hand in hand \
+    = \"holding hands\", a parent cradling an infant = \"holding baby\".\n\
     Convey DEPTH with SIZE and BASELINE — do NOT put every figure on the same line at the same size: a figure \
     CLOSER to the viewer has a TALLER box sitting LOWER (its bottom, y+h, near 0.90-0.98); a figure FARTHER \
     away has a SHORTER box sitting HIGHER (feet up toward the horizon — bottom y+h around 0.55-0.78, height \
@@ -265,6 +270,47 @@ fn posed_keypoints(facing: &str, pose: &str, mirror: bool) -> [(f32, f32); 18] {
             k[9] = (0.44, 0.74); k[10] = (0.36, 0.98); // mid-stride legs
             k[12] = (0.56, 0.80); k[13] = (0.63, 0.98);
         }
+        "sitting" => {
+            // seated: hips forward, thighs down-and-out to bent knees, shins to feet; hands rest on the lap.
+            k[8] = (0.44, 0.56); k[9] = (0.37, 0.64); k[10] = (0.40, 0.85);
+            k[11] = (0.57, 0.56); k[12] = (0.64, 0.64); k[13] = (0.61, 0.85);
+            k[3] = (0.37, 0.42); k[4] = (0.45, 0.55);
+            k[6] = (0.64, 0.42); k[7] = (0.55, 0.55);
+        }
+        "kneeling" => {
+            // knees on the ground, thighs near-vertical, shins folded back under the hips.
+            k[8] = (0.46, 0.60); k[9] = (0.44, 0.82); k[10] = (0.42, 0.96);
+            k[11] = (0.56, 0.60); k[12] = (0.58, 0.82); k[13] = (0.60, 0.96);
+        }
+        "squatting" => {
+            // deep knee bend: hips low, knees at hip height and spread wide, feet flat below.
+            k[8] = (0.44, 0.62); k[9] = (0.33, 0.64); k[10] = (0.39, 0.88);
+            k[11] = (0.57, 0.62); k[12] = (0.67, 0.64); k[13] = (0.61, 0.88);
+        }
+        "jumping" => {
+            // airborne: both arms up, legs bent and tucked (feet off the ground, higher than standing).
+            k[3] = (0.30, 0.22); k[4] = (0.26, 0.08);
+            k[6] = (0.70, 0.22); k[7] = (0.74, 0.08);
+            k[9] = (0.42, 0.70); k[10] = (0.40, 0.82);
+            k[12] = (0.58, 0.70); k[13] = (0.60, 0.82);
+        }
+        "waving" => {
+            k[3] = (0.30, 0.16); k[4] = (0.25, 0.04); // one arm raised high in a wave
+        }
+        "embracing" => {
+            // arms forward and crossing toward the centre (hugging a partner beside them).
+            k[3] = (0.42, 0.32); k[4] = (0.55, 0.42);
+            k[6] = (0.58, 0.32); k[7] = (0.45, 0.42);
+        }
+        "holding hands" | "holding-hands" | "holding hand" | "holding-hand" => {
+            // one arm reaches out to the side toward the neighbouring figure's hand (mirror aims them at each other).
+            k[6] = (0.72, 0.46); k[7] = (0.84, 0.60);
+        }
+        "holding baby" | "holding-baby" | "cradling" => {
+            // both forearms cradle across the front, hands meeting low-centre (an infant in arms).
+            k[3] = (0.40, 0.40); k[4] = (0.50, 0.52);
+            k[6] = (0.60, 0.40); k[7] = (0.50, 0.52);
+        }
         _ => {} // standing / unspecified → the neutral template
     }
     // facing: turn the torso (narrower, head offset) so the figure looks aside, not at the camera.
@@ -435,6 +481,14 @@ mod tests {
         assert!(gest[4].1 < front[4].1, "gesturing raises the wrist");
         // Unknown pose falls back to the neutral template.
         assert_eq!(posed_keypoints("front", "loitering", false), front);
+        // Seated: feet leave the box bottom (knees bent) — the whole point of the sitting skeleton.
+        let sit = posed_keypoints("front", "sitting", false);
+        assert!(sit[10].1 < front[10].1 && sit[13].1 < front[13].1, "sitting lifts the ankles off the floor");
+        assert!(sit[9].1 < front[9].1, "sitting bends the knee higher than a straight standing leg");
+        // Jumping raises both wrists above the standing template; multi-word poses resolve.
+        assert!(posed_keypoints("front", "jumping", false)[4].1 < front[4].1, "jumping raises the arms");
+        assert_ne!(posed_keypoints("front", "holding baby", false), front, "'holding baby' deforms the arms");
+        assert_ne!(posed_keypoints("front", "holding hands", false), front, "'holding hands' deforms an arm");
         // Mirroring flips the stance across the centre (nose lands on the opposite side of 0.5).
         let mirrored = posed_keypoints("front", "standing", true);
         assert!((mirrored[0].0 - 0.5).signum() != (front[0].0 - 0.5).signum() || (front[0].0 - 0.5).abs() < 1e-3);
