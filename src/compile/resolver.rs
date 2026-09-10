@@ -60,6 +60,9 @@ pub struct ResolvedScene {
     pub background: Vec<(String, String)>,
     pub crowd: String,
     pub crowd_density: Option<String>,
+    /// 6.28: LoRA activation token(s) — prepended VERBATIM to the final prompt, excluded from enhancement and
+    /// reserved from the token budget. Empty when no `lora-trigger:` is set.
+    pub lora_trigger: String,
     pub free_text: String,
     pub styles: Vec<String>,
     pub personas: Vec<String>,
@@ -487,6 +490,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         let background = resolve_figure_list(s, "background", &components, &relations)?;
         let crowd = resolve_crowd(s, &components);
         let crowd_density = last_wins(&[], &vals(Some(s), "crowd-density")).map(str::to_string);
+        let lora_trigger = concat(&vals(g, "lora-trigger"), &vals(Some(s), "lora-trigger"));
         // A composition can name the scene too (when there's no prose and no explicit name).
         let name_seed = if free_text.trim().is_empty() { composition_text.as_str() } else { free_text.as_str() };
         let name = explicit_name.unwrap_or_else(|| auto_name(name_seed, i));
@@ -501,6 +505,7 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             background,
             crowd,
             crowd_density,
+            lora_trigger,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),

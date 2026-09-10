@@ -114,6 +114,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec { key: "background", kind: CommandKind::Prompt, merge: Merge::Concatenate },
     CommandSpec { key: "crowd", kind: CommandKind::Prompt, merge: Merge::Concatenate },
     CommandSpec { key: "crowd-density", kind: CommandKind::Prompt, merge: Merge::LastWins },
+    // 6.28: `lora-trigger:` — a LoRA's activation token(s). PREPENDED verbatim to the FINAL prompt (never
+    // sent through enhance/translate/fit, which would rewrite or drop a non-semantic trigger), and its tokens
+    // are RESERVED from the fit budget so the total still fits. Global + per-task (concatenated).
+    CommandSpec { key: "lora-trigger", kind: CommandKind::Prompt, merge: Merge::Concatenate },
     // ---- scenario commands (straight to HJSON) ----
     CommandSpec { key: "model",     kind: CommandKind::Scenario, merge: Merge::LastWins },
     CommandSpec { key: "lora",      kind: CommandKind::Scenario, merge: Merge::AccumulateList },
@@ -487,11 +491,20 @@ async fn compile_one_scene(
 
     // 2e) fit-to-budget — LAST, so the enhanced + reinforced prompt is condensed to the model's effective
     // token budget (preserving every distinct subject, the style, and the inline weights) rather than only
-    // warning. Runs after the reinforcement clauses so they can't push it back over budget.
+    // warning. Runs after the reinforcement clauses so they can't push it back over budget. Reserves room for
+    // the `lora-trigger:` that gets prepended below.
+    let trigger = scene.lora_trigger.trim();
+    let trigger_reserve = if trigger.is_empty() { 0 } else { assembler::estimate_tokens(trigger) + 2 };
     if !opts.no_enhance && !assembled.is_empty() {
-        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs).await;
+        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs, trigger_reserve).await;
         prompt = fitted;
         fit_note = note;
+    }
+    // 2f) PREPEND the LoRA trigger verbatim — after enhance/fit/reinforce, so a non-semantic activation token
+    // can't be rewritten or dropped, and the budget already reserved its tokens (2e) so the total fits.
+    if !trigger.is_empty() {
+        let sep = if prompt.trim().is_empty() { "" } else { ", " };
+        prompt = format!("{trigger}{sep}{}", prompt.trim());
     }
 
     // 3) negative — HYBRID: a deterministic base (the user's `negative:` seeds + a curated QUALITY set)
@@ -656,8 +669,11 @@ async fn fit_to_budget(
     provider: &str,
     cache_on: bool,
     eargs: &crate::prompt::EnhanceArgs,
+    // Tokens RESERVED for text prepended/appended outside the fit (e.g. a `lora-trigger:`), so the total
+    // still fits the model's budget once that text is added back.
+    reserve: usize,
 ) -> (String, Option<String>) {
-    let budget = assembler::family_token_budget(family);
+    let budget = assembler::family_token_budget(family).saturating_sub(reserve).max(16);
     let before = assembler::estimate_tokens(prompt);
     if before <= budget {
         return (prompt.to_string(), None);
