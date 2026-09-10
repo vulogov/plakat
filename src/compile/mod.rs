@@ -598,9 +598,6 @@ async fn compile_one_scene(
         assembler::family_token_budget(scene.family),
         scene.family.label()
     ));
-    if fit_note.is_some() {
-        trace.push("condensed to fit the token budget".to_string());
-    }
     if reinforced {
         trace.push("reinforced weighted concepts as prose (SD3/Flux honour prose > weights)".to_string());
     }
@@ -621,9 +618,10 @@ async fn compile_one_scene(
     if let Some(note) = weight_note {
         warnings.push(note);
     }
-    // Fit-to-budget note (from step 2c): the prompt was condensed to fit the model's token budget.
+    // Fit-to-budget note: a SUCCESSFUL condense (the prompt now fits) is INFO, not a ⚠ warning — only a
+    // fit that couldn't reach budget is surfaced as a warning (by the diligence check below).
     if let Some(note) = fit_note {
-        warnings.push(note);
+        trace.push(note);
     }
 
     if structure_prompt.is_some() {
@@ -673,10 +671,11 @@ async fn fit_to_budget(
         let target = if attempt == 0 { budget } else { budget.saturating_sub(budget / 8).max(32) };
         let sys = format!(
             "You compress text-to-image prompts to a token budget for the {label} model. Rewrite the prompt to \
-             fit within AT MOST {target} CLIP tokens (shorter is fine). PRESERVE every attention-weight span \
+             fit within AT MOST {target} CLIP tokens — but keep as MUCH of the detail as fits; do NOT \
+             over-shorten (aim close to the budget, not far under it). PRESERVE every attention-weight span \
              `(phrase:number)` EXACTLY — keep the parentheses and the number unchanged. Keep every distinct \
-             visual subject and the overall style; cut filler, repetition and redundant adjectives. Output \
-             ONLY the rewritten prompt.",
+             visual subject and the overall style; cut only filler, repetition and redundant adjectives. \
+             Output ONLY the rewritten prompt.",
             label = family.label()
         );
         fitted = match cached_call(provider, &sys, &current, cache::POSITIVE, cache_on, eargs).await {
