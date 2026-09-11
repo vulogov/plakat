@@ -63,6 +63,19 @@ pub struct ResolvedScene {
     /// 6.28: LoRA activation token(s) — prepended VERBATIM to the final prompt, excluded from enhancement and
     /// reserved from the token budget. Empty when no `lora-trigger:` is set.
     pub lora_trigger: String,
+    /// 6.29: per-figure DECLARED pose. Each `(desc, pose)` names a foreground figure (by its component
+    /// description) that is the subject of a POSTURE relate (`sitting-on` / `standing-by` / `lying-on` …).
+    /// Handed to control-generate so the skeleton is posed DETERMINISTICALLY (author-declared), instead of
+    /// the layout planner defaulting every figure to standing. `pose` is a `posed_keypoints` vocabulary word.
+    pub figure_poses: Vec<(String, String)>,
+    /// 6.29: person-person CONTACT relations (holding / embracing / hand-in-hand). Each `(a_desc, b_desc)` is
+    /// handed to control-generate, which pulls the two matched figures together (touching, leveled, facing each
+    /// other) so a declared contact SHOWS in the skeleton instead of two figures floating apart.
+    pub figure_contacts: Vec<(String, String)>,
+    /// 6.29: `objects:` — STRUCTURAL objects (a vehicle, a towed cart, machinery, furniture) that must each be
+    /// placed as a DISTINCT region so the model can't fuse connected objects (a tractor + its trailer merging
+    /// into one machine). Handed to control-generate as per-object regions. `(name, desc)` like `foreground`.
+    pub objects: Vec<(String, String)>,
     pub free_text: String,
     pub styles: Vec<String>,
     pub personas: Vec<String>,
@@ -337,6 +350,85 @@ pub(crate) fn is_attach_verb(verb: &str) -> bool {
     )
 }
 
+/// POSTURE verbs declare the SUBJECT's body pose (and place them on/by object B). Returns the
+/// `posed_keypoints` vocabulary word, or `None` for a non-posture verb. Universal: the author declares each
+/// figure's posture in the prose (`woman sitting-on bench`, `man standing-by bench`), and it is handed to
+/// control-generate so the skeleton is posed deterministically — the layout planner never defaults it to
+/// standing. Any persona, any posture, any object; per-figure. `-`/spaces are equivalent.
+pub(crate) fn posture_verb_pose(verb: &str) -> Option<&'static str> {
+    match verb.trim().to_lowercase().replace('-', " ").as_str() {
+        "sitting on" | "sits on" | "seated on" | "sitting at" | "sits at" => Some("sitting"),
+        "standing on" | "stands on" | "standing by" | "stands by" | "standing at" | "standing beside" => {
+            Some("standing")
+        }
+        "kneeling on" | "kneels on" | "kneeling by" | "kneeling at" => Some("kneeling"),
+        "squatting on" | "squats on" | "crouching on" | "crouches on" | "crouching by" => Some("squatting"),
+        "lying on" | "lies on" | "lying faceup on" | "lying face up on" | "supine on" => Some("lying"),
+        "lying facedown on" | "lying face down on" | "prone on" => Some("lying-facedown"),
+        // `leaning on` a cane/wall is BOTH an attach (the object folds into the figure, handled separately) AND
+        // a posture — so the figure's stance is guided by the skeleton, not left to the planner.
+        "leaning on" | "leaning against" | "leans on" => Some("leaning"),
+        _ => None,
+    }
+}
+
+/// Verbs where subject A physically CONTACTS figure B — an arm around, a hug, hand in hand, one leaning on the
+/// other. The layout should place the two figures TOUCHING, level (a shared baseline), and turned toward each
+/// other — not as two separate boxes with a gap. Universal: any two figures the prose says are in contact.
+pub(crate) fn is_contact_verb(verb: &str) -> bool {
+    matches!(
+        verb.trim().to_lowercase().replace('-', " ").as_str(),
+        "holding" | "holds" | "embracing" | "embraces" | "hugging" | "hugs" | "holding hands"
+            | "hand in hand" | "arm around" | "arm in arm" | "leaning on" | "leaning against"
+    )
+}
+
+/// Person-person CONTACT relations — those whose BOTH endpoints are foreground figures. Each `(a_desc, b_desc)`
+/// carries the folded foreground descriptions so control-generate can match them to the planned figures and pull
+/// them together. A contact whose object is a prop (a basket, a cane) is left to the attach-fold, not here.
+fn resolve_figure_contacts(
+    foreground: &[(String, String)],
+    relations: &[RelationSpec],
+) -> Vec<(String, String)> {
+    let desc_of = |name: &str| foreground.iter().find(|(n, _)| n == name).map(|(_, d)| d.clone());
+    let mut out = Vec::new();
+    for rel in relations {
+        if !is_contact_verb(&rel.verb) {
+            continue;
+        }
+        if let (Some(a), Some(b)) = (desc_of(&rel.a), desc_of(&rel.b)) {
+            out.push((a, b));
+        }
+    }
+    out
+}
+
+/// Build the per-figure DECLARED-pose list from the POSTURE relates: each `(desc, pose)` pairs the subject's
+/// description with its `posed_keypoints` word. Works whether or not the subject is listed in `foreground:` —
+/// a figure introduced only via `relate:` still declares its posture. The folded foreground description (with
+/// attach-objects) is preferred for matching when available, else the relate's own subject description. One
+/// pose per figure (first posture relate wins). Consumed by control-generate.
+fn resolve_figure_poses(
+    foreground: &[(String, String)],
+    relations: &[RelationSpec],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for rel in relations {
+        let Some(pose) = posture_verb_pose(&rel.verb) else { continue };
+        if !seen.insert(rel.a.clone()) {
+            continue;
+        }
+        let desc = foreground
+            .iter()
+            .find(|(name, _)| name == &rel.a)
+            .map(|(_, d)| d.clone())
+            .unwrap_or_else(|| rel.a_desc.clone());
+        out.push((desc, pose.to_string()));
+    }
+    out
+}
+
 /// The phrase used when folding an attach-object into its figure's description (`A <phrase> B`).
 fn attach_phrase(verb: &str) -> &'static str {
     match verb.trim().to_lowercase().as_str() {
@@ -488,6 +580,9 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
         // Figure tiers (attach-objects folded into each figure via `relations`).
         let foreground = resolve_figure_list(s, "foreground", &components, &relations)?;
         let background = resolve_figure_list(s, "background", &components, &relations)?;
+        let objects = resolve_figure_list(s, "objects", &components, &relations)?;
+        let figure_poses = resolve_figure_poses(&foreground, &relations);
+        let figure_contacts = resolve_figure_contacts(&foreground, &relations);
         let crowd = resolve_crowd(s, &components);
         let crowd_density = last_wins(&[], &vals(Some(s), "crowd-density")).map(str::to_string);
         let lora_trigger = concat(&vals(g, "lora-trigger"), &vals(Some(s), "lora-trigger"));
@@ -506,6 +601,9 @@ pub fn resolve(doc: &Document, default_model: &str) -> Result<Resolved> {
             crowd,
             crowd_density,
             lora_trigger,
+            figure_poses,
+            figure_contacts,
+            objects,
             family,
             model_for_family,
             header: concat(&vals(g, "header"), &vals(Some(s), "header")),
@@ -585,6 +683,32 @@ mod tests {
     fn empty_header_resets_inherited_global() {
         let r = resolve_str("header: global,\n\nheader:\nheader: local,\nA scene.\n");
         assert_eq!(r.scenes[0].header, "local,", "empty header drops the global");
+    }
+
+    #[test]
+    fn posture_verbs_declare_per_figure_poses() {
+        // POSTURE relates (sitting-on / standing-by / lying-on) declare each figure's pose deterministically;
+        // a non-posture relate (holding) contributes none. One pose per figure (first posture relate wins).
+        let src = "component.bench: a bench\ncomponent.w: a woman in a red vest\n\
+                   component.m: a man in a white cap\n\nforeground: component.w, component.m\n\
+                   relate: w sitting-on bench\nrelate: m standing-by bench\nrelate: m holding w\nA scene.\n";
+        let poses = &resolve_str(src).scenes[0].figure_poses;
+        assert_eq!(poses.len(), 2, "two posture relates → two declared poses (holding is not one)");
+        assert_eq!(poses[0], ("a woman in a red vest".into(), "sitting".into()));
+        // The subject desc prefers the folded FOREGROUND description, so the man's attach-object (holding the
+        // woman) travels with it — the same fold the planner's label carries, which aids the runtime match.
+        assert_eq!(poses[1], ("a man in a white cap holding a woman in a red vest".into(), "standing".into()));
+    }
+
+    #[test]
+    fn posture_verb_pose_maps_vocabulary() {
+        assert_eq!(posture_verb_pose("sitting-on"), Some("sitting"));
+        assert_eq!(posture_verb_pose("standing by"), Some("standing"));
+        assert_eq!(posture_verb_pose("lying-on"), Some("lying"));
+        assert_eq!(posture_verb_pose("lying-facedown-on"), Some("lying-facedown"));
+        assert_eq!(posture_verb_pose("crouching-on"), Some("squatting"));
+        assert_eq!(posture_verb_pose("holding"), None, "attach verb is not a posture");
+        assert_eq!(posture_verb_pose("on"), None, "plain placement is not a posture");
     }
 
     #[test]

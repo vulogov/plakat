@@ -288,6 +288,30 @@ struct ScenarioFile {
     /// forced to render. Lets `control-generate-max-figures` go past the ~2 a single pass manages. Default off.
     #[serde(rename = "control-generate-inpaint-figures", default)]
     control_generate_inpaint_figures: Option<bool>,
+    /// 6.29: `control-generate-figure-poses: ["<pose>|<figure description>", …]` — per-figure DECLARED
+    /// poses (emitted by `compile` from POSTURE relates like `woman sitting-on bench`). The pre-pass matches
+    /// each description to its planned figure and overrides the skeleton pose, so posture is deterministic
+    /// (author-declared) instead of the layout planner defaulting every figure to standing. Global or per-task.
+    #[serde(rename = "control-generate-figure-poses", default)]
+    control_generate_figure_poses: Vec<String>,
+    /// 6.29: `control-generate-figure-contacts: ["<figure A>|<figure B>", …]` — person-person CONTACT relations
+    /// (emitted by `compile` from `holding`/`embracing`/`hand-in-hand`). The pre-pass matches both figures and
+    /// pulls them together (touching, leveled, facing each other) so a declared contact SHOWS in the skeleton.
+    #[serde(rename = "control-generate-figure-contacts", default)]
+    control_generate_figure_contacts: Vec<String>,
+    /// 6.29: `control-generate-objects: ["<object description>", …]` — STRUCTURAL objects (a vehicle, a towed
+    /// cart, machinery) that must each render as a DISTINCT unit. The pre-pass gives every matched object its
+    /// own region so connected objects (a tractor + its trailer) don't fuse into one machine. Emitted by
+    /// `compile` from an `objects:` list. Needs the planner to place the object boxes (it is nudged to keep a
+    /// towed trailer separate from its vehicle).
+    #[serde(rename = "control-generate-objects", default)]
+    control_generate_objects: Vec<String>,
+    /// 6.29: `control-generate-regional: false` — SKIP the regional attribute-binding layer and drive the draft
+    /// by the OpenPose skeleton ALONE (pure pose / anatomy control, no per-box prompts). Regional only helps
+    /// when MULTIPLE figures' attributes would otherwise cross onto the wrong body; for a single figure — or
+    /// any pose-only intent — it adds nothing and dilutes the pose. Default `true`. Global or per-task.
+    #[serde(rename = "control-generate-regional", default)]
+    control_generate_regional: Option<bool>,
 
     /// 6.27: `restore-faces: true` — run ADetailer (detect each face → gentle img2img → feather-composite)
     /// on every output BEFORE the naturalize pass, so crowd/small faces are crisped before any stylize.
@@ -1073,6 +1097,14 @@ struct TaskDef {
     control_generate_max_figures: Option<usize>,
     #[serde(rename = "control-generate-inpaint-figures", default)]
     control_generate_inpaint_figures: Option<bool>,
+    #[serde(rename = "control-generate-figure-poses", default)]
+    control_generate_figure_poses: Vec<String>,
+    #[serde(rename = "control-generate-figure-contacts", default)]
+    control_generate_figure_contacts: Vec<String>,
+    #[serde(rename = "control-generate-objects", default)]
+    control_generate_objects: Vec<String>,
+    #[serde(rename = "control-generate-regional", default)]
+    control_generate_regional: Option<bool>,
     /// Runtime-only: set by the pre-pass when it wires a control-generate draft (or a control-preimage) as
     /// this task's init. Lets the main loop apply the LIGHT finish (no coach, one round) to control-generate
     /// tasks without mistaking a plain user img2img (which also has an init-image) for one.
@@ -2600,6 +2632,170 @@ fn draft_generate(
     result
 }
 
+/// Content-word set of a figure label/description (lowercased, punctuation-split, short/stop words dropped).
+/// Used to match a compile-declared figure description to the layout planner's paraphrased figure label.
+fn pose_match_tokens(s: &str) -> std::collections::HashSet<String> {
+    const STOP: &[&str] = &[
+        "the", "and", "with", "her", "his", "their", "for", "over", "into", "onto", "who", "that",
+        "wearing", "holding", "person", "man", "woman", "young", "old", "older", "light", "dark",
+    ];
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3 && !STOP.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Apply compile-DECLARED per-figure poses to the planned figures. Each `figure_poses` entry is
+/// `"<pose>|<figure description>"`; every entry is matched to the person whose label shares the most
+/// content words (each declared pose binds to one distinct figure) and that figure's `pose` is overridden.
+/// Universal: the author declares each posture in the prose; the skeleton follows deterministically. Returns
+/// how many poses were applied. `man`/`woman` etc. are stop-words, so matching keys on distinctive attributes
+/// (red vest, kippah, garment colours) — robust to the planner paraphrasing the label.
+fn apply_declared_poses(
+    persons: &mut [crate::prompt::wireframe::LayoutElement],
+    figure_poses: &[String],
+) -> usize {
+    let declared: Vec<(&str, &str)> = figure_poses
+        .iter()
+        .filter_map(|e| e.split_once('|'))
+        .map(|(p, d)| (p.trim(), d.trim()))
+        .filter(|(p, _)| !p.is_empty())
+        .collect();
+    if declared.is_empty() || persons.is_empty() {
+        return 0;
+    }
+    let ptoks: Vec<std::collections::HashSet<String>> =
+        persons.iter().map(|p| pose_match_tokens(&p.label)).collect();
+    let mut used = vec![false; persons.len()];
+    let mut assigned: Vec<Option<&str>> = vec![None; persons.len()];
+    let mut matched = vec![false; declared.len()];
+    // Phase 1 — by CONTENT: bind each declaration to the unused person whose label shares the most distinctive
+    // words (garment colours, hats). Robust when the planner echoes the scene's attributes into its labels.
+    for (di, (pose, desc)) in declared.iter().enumerate() {
+        let dtoks = pose_match_tokens(desc);
+        let best = ptoks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !used[*i])
+            .map(|(i, pt)| (i, pt.intersection(&dtoks).count()))
+            .max_by_key(|&(_, ov)| ov);
+        if let Some((i, ov)) = best {
+            if ov > 0 {
+                assigned[i] = Some(pose);
+                used[i] = true;
+                matched[di] = true;
+            }
+        }
+    }
+    // Phase 2 — by ORDER: the planner often labels figures tersely ("older woman"), leaving zero overlap. When
+    // the figure count equals the declared-pose count, bind the still-unmatched declarations to the remaining
+    // figures in declaration order — so the same-pose case (both sitting) always lands regardless of labels.
+    if persons.len() == declared.len() && matched.iter().any(|m| !m) {
+        let free: Vec<usize> = (0..persons.len()).filter(|i| !used[*i]).collect();
+        let mut free = free.into_iter();
+        for (di, (pose, _)) in declared.iter().enumerate() {
+            if matched[di] {
+                continue;
+            }
+            if let Some(i) = free.next() {
+                assigned[i] = Some(pose);
+                used[i] = true;
+            }
+        }
+    }
+    let mut applied = 0usize;
+    for (i, pose) in assigned.iter().enumerate() {
+        if let Some(p) = pose {
+            persons[i].pose = (*p).to_string();
+            reshape_box_for_pose(&mut persons[i]);
+            applied += 1;
+        }
+    }
+    applied
+}
+
+/// Reshape a figure's BOX to match its posture's silhouette, so the region prompt + OpenPose skeleton agree.
+/// A planner sizes every figure as a TALL standing box; leaving that shape under a `sitting` skeleton makes
+/// SDXL paint a standing person and ignore the seated skeleton (the "why are they standing" bug). A seated /
+/// crouched figure is SHORTER and a touch WIDER, still grounded (feet stay put); a lying figure is WIDE and
+/// short. Centre-x and the baseline (bottom) are preserved so placement doesn't drift.
+fn reshape_box_for_pose(e: &mut crate::prompt::wireframe::LayoutElement) {
+    let bottom = e.y + e.h;
+    let cx = e.x + e.w / 2.0;
+    let (nw, nh) = match e.pose.trim().to_lowercase().as_str() {
+        "sitting" | "kneeling" | "squatting" => (e.w * 1.2, e.h * 0.66),
+        p if p.starts_with("lying") => (e.w.max(e.h) * 1.7, e.w.min(e.h) * 0.95),
+        _ => return,
+    };
+    e.w = nw.clamp(0.05, 1.0);
+    e.h = nh.clamp(0.05, 1.0);
+    e.x = (cx - e.w / 2.0).clamp(0.0, 1.0 - e.w);
+    e.y = (bottom - e.h).clamp(0.0, 1.0 - e.h);
+}
+
+/// Apply compile-DECLARED person-person CONTACTS to the planned figures. Each `figure_contacts` entry is
+/// `"<figure A description>|<figure B description>"`; the two are matched to distinct figures (by content
+/// overlap, else — when the counts line up — taken as the two figures) and pulled into contact: their boxes are
+/// closed to a slight overlap, leveled onto a shared baseline (as on one bench), and each is turned to face the
+/// other. Universal: any declared touching relationship shows in the skeleton. Returns contacts applied.
+fn apply_declared_contacts(
+    persons: &mut [crate::prompt::wireframe::LayoutElement],
+    figure_contacts: &[String],
+) -> usize {
+    if persons.len() < 2 {
+        return 0;
+    }
+    let ptoks: Vec<std::collections::HashSet<String>> =
+        persons.iter().map(|p| pose_match_tokens(&p.label)).collect();
+    let best = |desc: &str, exclude: Option<usize>| -> Option<usize> {
+        let dt = pose_match_tokens(desc);
+        ptoks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != exclude)
+            .map(|(i, pt)| (i, pt.intersection(&dt).count()))
+            .max_by_key(|&(_, ov)| ov)
+            .filter(|&(_, ov)| ov > 0)
+            .map(|(i, _)| i)
+    };
+    let mut applied = 0usize;
+    for entry in figure_contacts {
+        let Some((a_desc, b_desc)) = entry.split_once('|') else { continue };
+        // Match A and B to two DISTINCT figures. When labels are terse (no overlap) but there are exactly two
+        // figures, they ARE the pair — take them in order so a lone declared contact always lands.
+        let (ai, bi) = match (best(a_desc.trim(), None), best(b_desc.trim(), None)) {
+            (Some(a), Some(b)) if a != b => (a, b),
+            _ if persons.len() == 2 => (0, 1),
+            (Some(a), _) if persons.len() >= 2 => (a, (a + 1) % persons.len()),
+            _ => continue,
+        };
+        // Left/right by current x; close the horizontal gap to a slight overlap so they touch.
+        let (li, ri) = if persons[ai].x <= persons[bi].x { (ai, bi) } else { (bi, ai) };
+        let gap = persons[ri].x - (persons[li].x + persons[li].w);
+        if gap > -0.03 {
+            let shift = (gap + 0.05) / 2.0; // close the gap + ~0.05 overlap, split between the two
+            persons[li].x = (persons[li].x + shift).clamp(0.0, 1.0 - persons[li].w);
+            persons[ri].x = (persons[ri].x - shift).clamp(0.0, 1.0 - persons[ri].w);
+        }
+        // Level onto a shared baseline (bottom aligned — feet on the same bench/ground).
+        let base = ((persons[li].y + persons[li].h) + (persons[ri].y + persons[ri].h)) / 2.0;
+        persons[li].y = (base - persons[li].h).clamp(0.0, 1.0 - persons[li].h);
+        persons[ri].y = (base - persons[ri].h).clamp(0.0, 1.0 - persons[ri].h);
+        // Turn each toward the other (unless already posed lying, where facing is meaningless).
+        if !persons[li].pose.starts_with("lying") {
+            persons[li].facing = "right".into();
+        }
+        if !persons[ri].pose.starts_with("lying") {
+            persons[ri].facing = "left".into();
+        }
+        // The HOLDER (subject A of "A holding B") puts an arm AROUND the partner — reach toward the partner's side.
+        persons[ai].reach = if ai == li { "right".into() } else { "left".into() };
+        applied += 1;
+    }
+    applied
+}
+
 /// 6.28 two-pass structure ("control-generate"): a composition-capable model (e.g. SDXL) runs the FIRST
 /// pass for every qualifying task — with the task's `control:` canny when present, else plain t2i — laying
 /// out structure the task's own model can't hold from a flat prompt (multi-figure scenes). Each draft is
@@ -2637,6 +2833,10 @@ async fn control_generate_prepass(
     let g_cg_seed = s.control_generate_seed;
     let g_max_figures = s.control_generate_max_figures;
     let g_inpaint_figures = s.control_generate_inpaint_figures;
+    let g_figure_poses = s.control_generate_figure_poses.clone();
+    let g_figure_contacts = s.control_generate_figure_contacts.clone();
+    let g_objects = s.control_generate_objects.clone();
+    let g_regional = s.control_generate_regional;
     let device = s.device.clone().unwrap_or_else(|| "auto".into());
     let task_model = s.model.clone().unwrap_or_else(|| "sdxl".into());
     // Vision provider for ranking the drafts (same as the scenario's `enhancer:`). Without one, drafts
@@ -2762,6 +2962,28 @@ async fn control_generate_prepass(
                 style("control-generate:").yellow(),
             ));
         }
+        // Draft-model ↔ size guardrail: SDXL is trained for ~1024² and DEGRADES badly below ~768 (blocky,
+        // doubled figures); SD1.5-class composes at ~512² and REPEATS past ~768. Mismatching them is a costly
+        // footgun (a whole draft round of garbage), so warn loudly before rendering.
+        {
+            let long_edge = dw.max(dh);
+            let cg_is_xl = cg.to_lowercase().contains("xl");
+            if cg_is_xl && long_edge < 768 {
+                crate::ui::progress::println(&format!(
+                    "  {} draft model '{cg}' is SDXL but control-generate-size is {dw}×{dh} — SDXL needs ~1024² and \
+                     degrades badly this small (blocky, doubled). Set control-generate-size: 1024x1024, or use \
+                     control-generate: sd15 for {dw}×{dh}.",
+                    style("control-generate:").yellow(),
+                ));
+            } else if !cg_is_xl && long_edge > 768 {
+                crate::ui::progress::println(&format!(
+                    "  {} draft model '{cg}' is SD1.5-class but control-generate-size is {dw}×{dh} — SD1.5 composes \
+                     at ~512² and repeats/duplicates past ~768. Set control-generate-size: 512x512, or use \
+                     control-generate: sdxl for {dw}×{dh}.",
+                    style("control-generate:").yellow(),
+                ));
+            }
+        }
         // Repeatable pre-images: a control-generate-seed fixes the draft NOISE (task → scenario → the run's
         // base seed). It is NOT advanced by `seed_off`, so re-running reproduces the same drafts.
         let task_seed = s.tasks[i]
@@ -2792,6 +3014,22 @@ async fn control_generate_prepass(
         // How many distinct figures get the OpenPose+region treatment (rest → background). Default 2 (the
         // count a single regional pass reliably renders); `control-generate-inpaint-figures` forces more.
         let max_figures = s.tasks[i].control_generate_max_figures.or(g_max_figures).unwrap_or(2).max(1);
+        // Per-figure DECLARED poses (from compile's POSTURE relates): task list wins, else the global list.
+        let figure_poses: Vec<String> = {
+            let t = &s.tasks[i].control_generate_figure_poses;
+            if t.is_empty() { g_figure_poses.clone() } else { t.clone() }
+        };
+        let figure_contacts: Vec<String> = {
+            let t = &s.tasks[i].control_generate_figure_contacts;
+            if t.is_empty() { g_figure_contacts.clone() } else { t.clone() }
+        };
+        let declared_objects: Vec<String> = {
+            let t = &s.tasks[i].control_generate_objects;
+            if t.is_empty() { g_objects.clone() } else { t.clone() }
+        };
+        // Regional attribute-binding ON by default; `control-generate-regional: false` → pose-only draft
+        // (OpenPose skeleton alone drives generation, no per-box prompts).
+        let regional_on = s.tasks[i].control_generate_regional.or(g_regional).unwrap_or(true);
         let wireframe = s.tasks[i]
             .control_generate_mode
             .as_deref()
@@ -2927,6 +3165,45 @@ async fn control_generate_prepass(
                     let n_person = persons.len();
                     let overflow: Vec<crate::prompt::wireframe::LayoutElement> =
                         persons.split_off(persons.len().min(max_figures));
+                    // DETERMINISTIC posture: override each KEPT figure's pose with the author-DECLARED pose
+                    // (compile's POSTURE relates). Applied AFTER the cap so `persons` is exactly the foreground
+                    // figures we keep — matching the declared-pose count even when the planner emitted extra people
+                    // (which would otherwise break the order-fallback). The planner never defaults these to standing.
+                    if !figure_poses.is_empty() {
+                        let n = apply_declared_poses(&mut persons, &figure_poses);
+                        crate::ui::progress::println(&format!(
+                            "  {} {n}/{} declared pose(s) applied to the {} kept figure(s) (posture from prose, not planner)",
+                            style("control-generate:").cyan(),
+                            figure_poses.len(),
+                            persons.len(),
+                        ));
+                        if n < figure_poses.len() {
+                            // Diagnose an unmatched declaration: show the kept figures' labels + declared descs so a
+                            // token-overlap miss (planner paraphrased/dropped attributes) is visible, not silent.
+                            for (fi, p) in persons.iter().enumerate() {
+                                crate::ui::progress::println(&format!(
+                                    "      figure {fi} label: \"{}\" → pose {}",
+                                    p.label.trim(),
+                                    p.pose.trim(),
+                                ));
+                            }
+                            for fp in &figure_poses {
+                                crate::ui::progress::println(&format!("      declared: {fp}"));
+                            }
+                        }
+                    }
+                    // DECLARED CONTACT: pull figures the prose says are touching (holding / embracing) together —
+                    // adjacent, leveled onto a shared baseline, turned to face each other — so the relationship
+                    // shows in the skeleton instead of two figures floating apart.
+                    if !figure_contacts.is_empty() {
+                        let n = apply_declared_contacts(&mut persons, &figure_contacts);
+                        if n > 0 {
+                            crate::ui::progress::println(&format!(
+                                "  {} {n} declared contact(s) applied — figures pulled together + facing each other",
+                                style("control-generate:").cyan(),
+                            ));
+                        }
+                    }
                     crate::ui::progress::println(&format!(
                         "  {} best of {tries} layout plan(s): {} element(s) ({} figure(s) placed{})",
                         style("control-generate:").cyan(),
@@ -3016,7 +3293,7 @@ async fn control_generate_prepass(
                         .and(crate::pipelines::controlnet::prepare_conditioning(&pose_path, dw, dh, &dev, cn_dtype).ok())
                     {
                         Some(cond) => {
-                            cn_resolved.push((kind, cond, 0.8, 0.0, 1.0));
+                            cn_resolved.push((kind, cond, 0.95, 0.0, 1.0));
                             crate::ui::progress::println(&format!(
                                 "  {} openpose skeleton: {placed} figure(s) → anatomy + placement",
                                 style("control-generate:").green(),
@@ -3027,14 +3304,27 @@ async fn control_generate_prepass(
                             style("control-generate:").yellow()
                         )),
                     }
-                    // Bind kept figures AND distinctive non-person elements (the sun, standalone objects) to
-                    // their boxes. Buildings + ground stay in the background base (the base paints them).
-                    for e in draw_elems.iter().filter(|e| {
-                        matches!(e.kind.to_lowercase().as_str(), "person" | "sun" | "object")
+                    // Bind the FIGURES (and the sun — a distinctive coloured disc) to their boxes. Do NOT make a
+                    // region for every scene prop the planner labelled "object" (bench, bushes, trees, clouds):
+                    // a region per prop over-segments the canvas into disjoint blobs (the "blocky garden") and
+                    // steals attention from the figures. Scenery is painted coherently by the background base.
+                    // Figure regions when regional binding is on OR when structural objects are declared — in
+                    // the latter case the big object regions would otherwise PAINT OVER the figures' skeletons
+                    // (a person inside the engine/trailer box gets erased). Giving each figure its own region at
+                    // a HIGHER weight than the objects makes it render IN FRONT of the machine instead.
+                    let want_person_regions = regional_on || !declared_objects.is_empty();
+                    let person_region_weight = if !declared_objects.is_empty() { 1.35 } else { 1.0 };
+                    let mut has_person_region = false;
+                    for e in draw_elems.iter().filter(|_| want_person_regions).filter(|e| {
+                        matches!(e.kind.to_lowercase().as_str(), "person" | "sun")
                     }) {
                         let label = e.label.trim();
                         if label.is_empty() {
                             continue;
+                        }
+                        let is_person = e.kind.eq_ignore_ascii_case("person");
+                        if is_person {
+                            has_person_region = true;
                         }
                         // Grow the box slightly (a tight crop clips heads/feet) and clamp to the canvas.
                         let gx = (e.w * 0.10).min(0.05);
@@ -3047,14 +3337,99 @@ async fn control_generate_prepass(
                                 (e.y + e.h + gy).clamp(0.0, 1.0),
                             ],
                             prompt: label.to_string(),
-                            weight: 1.0,
+                            // People outweigh the object regions so they occlude the machine, not vice-versa.
+                            weight: if is_person { person_region_weight } else { 1.0 },
                             feather: crate::pipelines::tiled::DEFAULT_REGION_FEATHER,
                         });
                     }
+                    // 6.29: STRUCTURAL objects — give each DECLARED object (a vehicle, a towed cart, machinery)
+                    // its OWN region so connected objects don't fuse into one machine. Match each declared
+                    // object to the best-overlapping planner "object" box; the region PROMPT is the full
+                    // declared description. Runs regardless of the people-regional toggle — separating the
+                    // objects IS the point. Scenery props (unmatched) stay in the base, so no over-segmentation.
+                    if declared_objects.len() == 2 {
+                        // Vehicle + TOWED TRAILER: the planner makes the trailer a tiny distant cart or overlaps
+                        // the vehicle, so the two fuse into one chassis. DETERMINISTICALLY force two separated
+                        // regions with a GAP between them (empty street + the drawbar) — leading vehicle on the
+                        // right, towed trailer on the left — so the model renders TWO bodies joined by a bar, not
+                        // one long vehicle. Touching boxes fuse; the gap is what forces two separate chassis.
+                        // Declaration order = leading vehicle first, trailer second.
+                        let boxes = [[0.57f32, 0.38, 0.96, 0.90], [0.03, 0.46, 0.40, 0.90]];
+                        for (desc, bb) in declared_objects.iter().zip(boxes.iter()) {
+                            regions.push(crate::pipelines::tiled::RegionSpec {
+                                bbox: *bb,
+                                prompt: desc.trim().to_string(),
+                                weight: 1.15,
+                                feather: crate::pipelines::tiled::DEFAULT_REGION_FEATHER,
+                            });
+                        }
+                        crate::ui::progress::println(&format!(
+                            "  {} 2 declared objects FORCED into adjacent regions (leading vehicle + towed trailer, planner ignored for placement)",
+                            style("control-generate:").cyan(),
+                        ));
+                    } else if !declared_objects.is_empty() {
+                        // 1, or 3+: match each declared object to the best-overlapping planner object box.
+                        let obj_elems: Vec<&crate::prompt::wireframe::LayoutElement> = draw_elems
+                            .iter()
+                            .filter(|e| e.kind.eq_ignore_ascii_case("object") && !e.label.trim().is_empty())
+                            .collect();
+                        let otoks: Vec<std::collections::HashSet<String>> =
+                            obj_elems.iter().map(|e| pose_match_tokens(&e.label)).collect();
+                        let mut used = vec![false; obj_elems.len()];
+                        let mut placed = 0usize;
+                        for desc in &declared_objects {
+                            let dt = pose_match_tokens(desc);
+                            let best = otoks
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| !used[*i])
+                                .map(|(i, t)| (i, t.intersection(&dt).count()))
+                                .max_by_key(|&(_, ov)| ov)
+                                .filter(|&(_, ov)| ov > 0);
+                            if let Some((i, _)) = best {
+                                used[i] = true;
+                                let e = obj_elems[i];
+                                let gx = (e.w * 0.06).min(0.04);
+                                let gy = (e.h * 0.06).min(0.04);
+                                regions.push(crate::pipelines::tiled::RegionSpec {
+                                    bbox: [
+                                        (e.x - gx).clamp(0.0, 1.0),
+                                        (e.y - gy).clamp(0.0, 1.0),
+                                        (e.x + e.w + gx).clamp(0.0, 1.0),
+                                        (e.y + e.h + gy).clamp(0.0, 1.0),
+                                    ],
+                                    prompt: desc.trim().to_string(),
+                                    weight: 1.0,
+                                    feather: crate::pipelines::tiled::DEFAULT_REGION_FEATHER,
+                                });
+                                placed += 1;
+                            }
+                        }
+                        crate::ui::progress::println(&format!(
+                            "  {} {placed}/{} declared object(s) placed as distinct regions (connected objects kept apart)",
+                            style("control-generate:").cyan(),
+                            declared_objects.len(),
+                        ));
+                    }
                     if regions.is_empty() {
                         crate::ui::progress::println(&format!(
-                            "  {} layout has no labelled figures — composition runs prompt-only",
-                            style("control-generate:").yellow()
+                            "  {} {}",
+                            style("control-generate:").cyan(),
+                            if regional_on {
+                                "layout has no labelled figures — composition runs prompt-only + OpenPose"
+                            } else {
+                                "regional OFF — draft driven by the OpenPose skeleton ALONE (pose/anatomy, no per-box binding)"
+                            }
+                        ));
+                    } else if !has_person_region {
+                        // Only OBJECT regions (e.g. a vehicle + its towed trailer), no figure regions — so the
+                        // figures have nothing to paint them. KEEP the full prompt as the base (regional_base
+                        // stays None → base = cur_prompt) so the OpenPose-placed figures still render; the object
+                        // regions just separate the objects on top. (Stripping figures here made them VANISH.)
+                        crate::ui::progress::println(&format!(
+                            "  {} {} object region(s) over the FULL-prompt base (figures kept, drawn by the skeleton)",
+                            style("control-generate:").green(),
+                            regions.len(),
                         ));
                     } else {
                         // Strip the KEPT figures out of the base (the regions own them), then fold the OVERFLOW
@@ -8873,6 +9248,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn declared_contacts_pull_figures_together_and_face_them() {
+        use crate::prompt::wireframe::LayoutElement;
+        let mk = |x: f32, label: &str| LayoutElement {
+            label: label.into(), kind: "person".into(), x, y: 0.15, w: 0.24, h: 0.7,
+            facing: String::new(), pose: "sitting".into(), reach: String::new(),
+        };
+        // Two seated figures far apart (a wide gap between the boxes).
+        let mut persons = vec![mk(0.05, "an older woman"), mk(0.70, "a young man")];
+        let contacts = vec!["a young man holding a woman|an older woman".to_string()];
+        assert_eq!(apply_declared_contacts(&mut persons, &contacts), 1);
+        // Gap closed to a slight overlap, and each turned toward the other.
+        let (l, r) = if persons[0].x <= persons[1].x { (&persons[0], &persons[1]) } else { (&persons[1], &persons[0]) };
+        assert!(r.x < l.x + l.w, "boxes now overlap (touching), not floating apart");
+        assert_eq!(l.facing, "right");
+        assert_eq!(r.facing, "left");
+        // The holder (subject A = "a young man") reaches an arm toward the partner on their side.
+        let holder = persons.iter().find(|p| p.label.contains("man")).unwrap();
+        assert!(!holder.reach.is_empty(), "the holder puts an arm around the partner");
+    }
+
+    #[test]
+    fn declared_poses_bind_by_attribute_to_planned_figures() {
+        use crate::prompt::wireframe::LayoutElement;
+        let mk = |label: &str| LayoutElement {
+            label: label.into(), kind: "person".into(), x: 0.0, y: 0.0, w: 0.3, h: 0.6,
+            facing: String::new(), pose: "standing".into(), reach: String::new(),
+        };
+        // Planner paraphrases labels + reorders vs the declared list; matching keys on distinctive attributes
+        // (red vest, kippah) — man/woman are stop-words — so each declared pose lands on the right body.
+        let mut persons = vec![mk("a young man with a white knitted kippah"), mk("an older woman in a red vest")];
+        let declared = vec![
+            "sitting|an older plump woman in a red vest".to_string(),
+            "standing|a young man wearing a white kippah".to_string(),
+        ];
+        assert_eq!(apply_declared_poses(&mut persons, &declared), 2);
+        assert_eq!(persons[0].pose, "standing", "the kippah figure got the standing pose");
+        assert_eq!(persons[1].pose, "sitting", "the red-vest figure got the sitting pose");
+    }
+
+    #[test]
+    fn declared_poses_skip_when_count_mismatch_and_no_overlap() {
+        use crate::prompt::wireframe::LayoutElement;
+        let mk = |label: &str| LayoutElement {
+            label: label.into(), kind: "person".into(), x: 0.0, y: 0.0, w: 0.3, h: 0.6,
+            facing: String::new(), pose: "standing".into(), reach: String::new(),
+        };
+        // 2 figures, 1 declaration, zero content overlap → counts differ, so the order-fallback stays off and
+        // nothing is guessed (assigning a lone pose to an arbitrary one of two figures would be a coin flip).
+        let mut persons = vec![mk("a tram conductor"), mk("a lamplighter")];
+        assert_eq!(apply_declared_poses(&mut persons, &["sitting|a woman in a red vest".to_string()]), 0);
+        assert!(persons.iter().all(|p| p.pose == "standing"));
+    }
+
+    #[test]
+    fn declared_poses_fall_back_to_order_when_labels_are_terse() {
+        use crate::prompt::wireframe::LayoutElement;
+        let mk = |label: &str| LayoutElement {
+            label: label.into(), kind: "person".into(), x: 0.0, y: 0.0, w: 0.3, h: 0.6,
+            facing: String::new(), pose: "standing".into(), reach: String::new(),
+        };
+        // The planner labelled both figures tersely (all stop-words → zero overlap). Since the figure count
+        // equals the declared-pose count, both poses bind by order — the same-pose case can't be lost.
+        let mut persons = vec![mk("an older woman"), mk("a young man")];
+        let declared = vec![
+            "sitting|an older plump woman in a red vest".to_string(),
+            "sitting|a young man in a white kippah".to_string(),
+        ];
+        assert_eq!(apply_declared_poses(&mut persons, &declared), 2);
+        assert!(persons.iter().all(|p| p.pose == "sitting"), "both figures seated via order fallback");
+    }
+
+    #[test]
     fn scenario_composition_folds_components_then_prose() {
         let src = r#"{
   model: "sdxl"
@@ -8932,6 +9379,19 @@ mod tests {
 
     fn parse_task(src: &str) -> TaskDef {
         deser_hjson::from_str::<TaskDef>(src).expect("task parses")
+    }
+
+    #[test]
+    fn control_generate_figure_poses_deserializes() {
+        // The REAL value carries weight syntax — parens + colons inside the quoted strings.
+        let t = parse_task(
+            "{ name: t\n scene: s\n weather: w\n prompt: p\n \
+             control-generate-figure-poses: [\"sitting|woman, older, in a long dress and (a red vest over the dress:1.4)\", \
+             \"sitting|man, (without a vest:1.2), (white knitted kippah on head:1.4) holding a woman\"] }",
+        );
+        assert_eq!(t.control_generate_figure_poses.len(), 2, "the pose field must parse from the task");
+        assert!(t.control_generate_figure_poses[0].starts_with("sitting|woman"));
+        assert!(t.control_generate_figure_poses[1].contains("without a vest:1.2"));
     }
 
     /// HJSON requires newline-separated keys (commas are optional but

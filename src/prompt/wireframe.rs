@@ -28,10 +28,16 @@ pub struct LayoutElement {
     #[serde(default)]
     pub facing: String,
     /// What a person is DOING: `standing` / `sitting` / `kneeling` / `squatting` / `jumping` / `walking` /
-    /// `holding` / `gesturing` / `waving` / `embracing` / `holding hands` / `holding baby` — shapes the
-    /// skeleton's arms/legs so figures aren't identical frontal mannequins. Empty = standing.
+    /// `holding` / `lifting` / `carrying` / `gesturing` / `waving` / `embracing` / `holding hands` /
+    /// `holding baby` / `lying` (`lying-facedown` for prone) — shapes the skeleton's joints so figures aren't
+    /// mannequins. Empty = standing. Compile's POSTURE relates set this deterministically per figure.
     #[serde(default)]
     pub pose: String,
+    /// A declared CONTACT reach: `left` / `right` (empty = none). When set, this figure extends its near arm
+    /// ACROSS toward the neighbour on that side — an arm around a partner. Set by control-generate from a
+    /// person-person contact relation (holding / embracing), composed on top of whatever `pose` is set.
+    #[serde(default)]
+    pub reach: String,
 }
 
 /// The layout-planner system prompt: turn a scene into a JSON array of placed boxes.
@@ -56,11 +62,12 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     two people talking FACE EACH OTHER (one left, one right), not the viewer; someone leaving a doorway may \
     face front or their direction of travel. Avoid everyone facing front.\n\
     - \"pose\": what they are DOING — one of standing / sitting / kneeling / squatting / jumping / walking / \
-    holding / leaning / gesturing / waving / embracing / \"holding hands\" / \"holding baby\". Choose the one \
-    that matches the scene: someone on a bench/chair = sitting, someone crouched low = squatting, someone on \
-    their knees = kneeling, someone mid-leap = jumping, a basket-carrier = holding, a person on a cane = \
-    leaning, a talker = gesturing, a greeter = waving, a couple hugging = embracing, two people hand in hand \
-    = \"holding hands\", a parent cradling an infant = \"holding baby\".\n\
+    holding / leaning / gesturing / waving / embracing / lifting / carrying / \"holding hands\" / \"holding \
+    baby\". Choose the one that matches the scene: someone on a bench/chair = sitting, someone crouched low = \
+    squatting, someone on their knees = kneeling, someone mid-leap = jumping, a basket-carrier = holding, \
+    someone bent over hauling/loading a heavy object = lifting, someone bearing a load on their shoulder = \
+    carrying, a person on a cane = leaning, a talker = gesturing, a greeter = waving, a couple hugging = \
+    embracing, two people hand in hand = \"holding hands\", a parent cradling an infant = \"holding baby\".\n\
     Convey DEPTH with SIZE and BASELINE — do NOT put every figure on the same line at the same size: a figure \
     CLOSER to the viewer has a TALLER box sitting LOWER (its bottom, y+h, near 0.90-0.98); a figure FARTHER \
     away has a SHORTER box sitting HIGHER (feet up toward the horizon — bottom y+h around 0.55-0.78, height \
@@ -68,6 +75,9 @@ const PLANNER_SYSTEM: &str = "You are a composition LAYOUT PLANNER for a picture
     clearly be larger and lower than a background one.\n\
     Rules: sky/sun near the top; buildings frame the left and right edges; keep every distinct FIGURE as its \
     own NON-OVERLAPPING box at the position the scene states. Include every person and key object named. \
+    A named VEHICLE and a SEPARATE towed trailer / cart it pulls are TWO DISTINCT 'object' boxes — the \
+    trailer sits BEHIND (or beside) the vehicle with a small gap, NEVER merged into one box — so a tractor \
+    and its loaded cart stay two connected units, not one fused machine. \
     A CROWD or GROUP of unspecified, unnamed people (e.g. 'a group of townsfolk', 'a crowd', 'several \
     people', 'men, women and children in the background') is NOT distinct figures — do NOT emit a separate \
     'person' box for each; leave them to the background (omit them, or add ONE element with kind 'ground' \
@@ -270,12 +280,31 @@ fn posed_keypoints(facing: &str, pose: &str, mirror: bool) -> [(f32, f32); 18] {
             k[9] = (0.44, 0.74); k[10] = (0.36, 0.98); // mid-stride legs
             k[12] = (0.56, 0.80); k[13] = (0.63, 0.98);
         }
+        "lifting" | "lift" | "loading" | "bending" | "bending-over" | "picking-up" => {
+            // Bent forward over a load: torso pitches down, BOTH arms reach down-and-in to a load held low in
+            // front (hands meeting), knees softly bent to take the weight. Reads as heaving/lifting, not standing.
+            k[0] = (0.52, 0.22); k[1] = (0.50, 0.31); // head + neck pitched forward/down
+            k[2] = (0.40, 0.31); k[3] = (0.38, 0.45); k[4] = (0.46, 0.57); // R arm down to the load
+            k[5] = (0.60, 0.31); k[6] = (0.62, 0.45); k[7] = (0.54, 0.57); // L arm down to the load (hands meet)
+            k[9] = (0.44, 0.73); k[12] = (0.58, 0.73); // knees softly bent
+        }
+        "carrying" | "carry" | "bearing" | "shoulder" | "shouldering" | "hauling" => {
+            // A load borne on ONE shoulder: that arm is raised and bent, hand up steadying the load by the head;
+            // the legs stride (mid-walk) since a carrier is usually moving. The other arm hangs for balance.
+            k[6] = (0.66, 0.26); k[7] = (0.60, 0.13); // L arm up, hand steadying the shoulder load
+            k[3] = (0.34, 0.40); k[4] = (0.30, 0.58); // R arm hangs for balance
+            k[9] = (0.44, 0.74); k[10] = (0.36, 0.98); // striding legs
+            k[12] = (0.56, 0.80); k[13] = (0.63, 0.98);
+        }
         "sitting" => {
-            // seated: hips forward, thighs down-and-out to bent knees, shins to feet; hands rest on the lap.
-            k[8] = (0.44, 0.56); k[9] = (0.37, 0.64); k[10] = (0.40, 0.85);
-            k[11] = (0.57, 0.56); k[12] = (0.64, 0.64); k[13] = (0.61, 0.85);
-            k[3] = (0.37, 0.42); k[4] = (0.45, 0.55);
-            k[6] = (0.64, 0.42); k[7] = (0.55, 0.55);
+            // Seated on a bench, facing viewer: the thigh is FORESHORTENED (a SHORT hip→knee segment — knees
+            // just below the hips, only moderately apart) and the shin is LONG and VERTICAL down to feet planted
+            // under the knees. That short-thigh / long-shin asymmetry is the seated signal — NOT a wide splay
+            // (which reads as a squat) and NOT equal-length legs (which read as standing). Hands rest on the lap.
+            k[8] = (0.42, 0.53); k[9] = (0.30, 0.55); k[10] = (0.34, 0.95);
+            k[11] = (0.58, 0.53); k[12] = (0.70, 0.55); k[13] = (0.66, 0.95);
+            k[3] = (0.36, 0.44); k[4] = (0.44, 0.56);
+            k[6] = (0.64, 0.44); k[7] = (0.56, 0.56);
         }
         "kneeling" => {
             // knees on the ground, thighs near-vertical, shins folded back under the hips.
@@ -310,6 +339,28 @@ fn posed_keypoints(facing: &str, pose: &str, mirror: bool) -> [(f32, f32); 18] {
             // both forearms cradle across the front, hands meeting low-centre (an infant in arms).
             k[3] = (0.40, 0.40); k[4] = (0.50, 0.52);
             k[6] = (0.60, 0.40); k[7] = (0.50, 0.52);
+        }
+        "lying" | "lying-faceup" | "lying face up" | "lying-face-up" | "supine" => {
+            // HORIZONTAL body (head left, feet right), face UP — a wide, short bounding box.
+            k = [
+                (0.11, 0.42), (0.22, 0.42),                          // nose, neck
+                (0.24, 0.33), (0.34, 0.28), (0.44, 0.26),            // R sho/elb/wri (arm up along the body)
+                (0.24, 0.51), (0.34, 0.56), (0.44, 0.58),            // L sho/elb/wri
+                (0.58, 0.42), (0.75, 0.40), (0.93, 0.39),            // R hip/knee/ankle (legs extended)
+                (0.58, 0.50), (0.75, 0.52), (0.93, 0.53),            // L hip/knee/ankle
+                (0.09, 0.38), (0.09, 0.46), (0.07, 0.35), (0.07, 0.49), // eyes / ears (face up)
+            ];
+        }
+        "lying-facedown" | "lying face down" | "lying-face-down" | "prone" => {
+            // HORIZONTAL body, face DOWN: head dips toward the surface, arms reach forward past the head.
+            k = [
+                (0.10, 0.50), (0.21, 0.46),                          // nose (lower), neck
+                (0.23, 0.38), (0.15, 0.34), (0.06, 0.32),            // R sho/elb/wri (arm forward past head)
+                (0.23, 0.54), (0.15, 0.58), (0.06, 0.60),            // L sho/elb/wri
+                (0.58, 0.46), (0.75, 0.44), (0.93, 0.43),            // R hip/knee/ankle
+                (0.58, 0.54), (0.75, 0.56), (0.93, 0.57),            // L hip/knee/ankle
+                (0.09, 0.53), (0.09, 0.47), (0.07, 0.56), (0.07, 0.44), // eyes / ears (face toward surface)
+            ];
         }
         _ => {} // standing / unspecified → the neutral template
     }
@@ -353,7 +404,8 @@ pub fn render_openpose(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
         let bw = e.w.clamp(0.02, 1.0) * w as f32;
         let bh = e.h.clamp(0.02, 1.0) * h as f32;
         // Alternate the mirrored stance per figure so adjacent people aren't identical.
-        let kp = posed_keypoints(&e.facing, &e.pose, i % 2 == 1);
+        let mut kp = posed_keypoints(&e.facing, &e.pose, i % 2 == 1);
+        apply_reach(&mut kp, &e.reach);
         let pt = |k: usize| -> (f32, f32) {
             let (fx, fy) = kp[k];
             (bx + fx * bw, by + fy * bh)
@@ -368,6 +420,23 @@ pub fn render_openpose(elements: &[LayoutElement], w: u32, h: u32) -> RgbImage {
         }
     }
     img
+}
+
+/// Extend one arm ACROSS toward a neighbour (a declared contact — an arm around a partner). `reach` = `right`
+/// reaches the figure's left-side arm (5→6→7) out to the right edge at shoulder height; `left` reaches the
+/// right-side arm (2→3→4) to the left edge. Composed on top of the pose so it works with sitting/standing/etc.
+fn apply_reach(k: &mut [(f32, f32); 18], reach: &str) {
+    match reach.trim().to_lowercase().as_str() {
+        "right" => {
+            k[6] = (0.82, 0.24); // left elbow lifts toward the neighbour
+            k[7] = (1.0, 0.16); // left wrist HIGH at the edge — draped over the partner's shoulder, not lap-level
+        }
+        "left" => {
+            k[3] = (0.18, 0.24); // right elbow lifts toward the neighbour
+            k[4] = (0.0, 0.16); // right wrist HIGH at the edge
+        }
+        _ => {}
+    }
 }
 
 /// Draw a filled thick line (several parallel offsets) so limbs read at ControlNet resolution.
@@ -485,6 +554,12 @@ mod tests {
         let sit = posed_keypoints("front", "sitting", false);
         assert!(sit[10].1 < front[10].1 && sit[13].1 < front[13].1, "sitting lifts the ankles off the floor");
         assert!(sit[9].1 < front[9].1, "sitting bends the knee higher than a straight standing leg");
+        // Knees SPLAY WIDE past the hips (the seated "M") — a subtle bend reads as standing, so this is the
+        // signal that makes a seated skeleton unmistakable to the ControlNet.
+        assert!(sit[9].0 < sit[8].0 && sit[12].0 > sit[11].0, "seated knees splay outside the hips");
+        // Lying is a HORIZONTAL body: the ankle sits far to one side of the head, not below it.
+        let lie = posed_keypoints("front", "lying", false);
+        assert!((lie[10].0 - lie[0].0).abs() > 0.6, "lying lays the body out horizontally");
         // Jumping raises both wrists above the standing template; multi-word poses resolve.
         assert!(posed_keypoints("front", "jumping", false)[4].1 < front[4].1, "jumping raises the arms");
         assert_ne!(posed_keypoints("front", "holding baby", false), front, "'holding baby' deforms the arms");

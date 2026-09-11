@@ -83,6 +83,37 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub decompile: bool,
 
+    /// *(6.29)* Analyse the prose (any language) and write two files instead of compiling: a strategy file
+    /// `composition_<NNN>.txt` (which pipeline suits the scene — pure sd / skeleton / skeleton+regional — plus
+    /// scene-tuned naturalize), and `<stem>_optimized.txt` — a cleaner, less hallucination-prone rewrite of the
+    /// prose IN ITS ORIGINAL LANGUAGE (all relationships/figures kept, a tailored negative) that `@include`s the
+    /// strategy file. Advisory starting points to review + `@include` in your real prose.
+    #[arg(help_heading = "Compile", long = "make-composition", default_value_t = false)]
+    pub make_composition: bool,
+
+    /// *(6.29)* Which DRAFT model `--make-composition` should pick when it selects a control-generate strategy
+    /// (SKELETON / REGIONAL). The strategist emits `control-generate: <this>` and the model's native
+    /// `control-generate-size` (1024×1024 for `sdxl`/any `xl` model, else 512×512). Default `sdxl`. Use
+    /// `sd15` for the strongest pose control on seated/unusual poses.
+    #[arg(help_heading = "Compile", long = "composition-model", value_name = "MODEL", default_value = "sdxl")]
+    pub composition_model: String,
+
+    /// *(6.29)* Analyse the prose (any language) and print a FEASIBILITY REPORT instead of compiling — a
+    /// grade (N/10) plus the specific risks that make generation fail (over-stuffing, fused vehicle+trailer,
+    /// person+cargo fusion, rare object names, negation-in-positive, hard poses, count ambiguity, …) each with
+    /// a concrete fix. The polish-loop companion to `--make-composition`: iterate the prose until it's low-risk
+    /// BEFORE spending tokens on a generation run. Writes nothing, generates nothing.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub analyze: bool,
+
+    /// *(6.29)* With `--analyze`: also AUTO-APPLY the safe text fixes. Traces each offending phrase to the
+    /// exact source `@include` file it lives in, backs that file up to `<file>.<N>` first, edits it in place
+    /// (preserving each phrase's language — Russian stays Russian, English stays English), and reports what
+    /// changed where. Structural issues (split the scene, control-preimage, config conflicts) are reported for
+    /// you to handle, never auto-edited. No-op without `--analyze`.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub fix: bool,
+
     /// Compare the freshly-compiled scenario against an existing HJSON; print the
     /// per-task add/change/remove diff instead of writing output.
     #[arg(help_heading = "Compile", long, value_name = "PATH")]
@@ -324,6 +355,53 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
         None => None,
     };
+
+    // --analyze: print a feasibility report (grade + risks + fixes) and stop. The polish-loop companion to
+    // --make-composition — iterate the prose until it's low-risk before spending a generation run.
+    if args.analyze {
+        let opts = CompileOpts {
+            provider: args.provider.clone(),
+            default_model: args.model.clone(),
+            no_enhance: args.no_enhance,
+            no_negative: args.no_negative,
+            system_override: system_override.clone(),
+            cache: args.compile_cache,
+            parallel: args.parallel,
+            input_name: input_name.clone(),
+        };
+        let report = compile::analyze_prose(&input, &opts).await?;
+        println!("{}", report.trim());
+        if args.fix {
+            anyhow::ensure!(!stdin_input, "--fix needs a file input (not stdin) so it can edit + back up the source");
+            println!("\n{}  applying safe auto-fixes to the source prose…", style("--fix").cyan());
+            let fixreport = compile::apply_fixes(&args.input, &opts, &report).await?;
+            println!("{}", fixreport.trim());
+            println!("\n{}  re-run `--analyze` to confirm the grade improved.", style("→").dim());
+        }
+        return Ok(());
+    }
+
+    // --make-composition: analyse the prose with two LLM passes and write a strategy file + an optimized
+    // prose that @includes it. Analysis-only: emit the pair and stop (the author then compiles the optimized).
+    if args.make_composition {
+        anyhow::ensure!(!stdin_input, "--make-composition needs a file input (not stdin)");
+        let opts = CompileOpts {
+            provider: args.provider.clone(),
+            default_model: args.model.clone(),
+            no_enhance: args.no_enhance,
+            no_negative: args.no_negative,
+            system_override,
+            cache: args.compile_cache,
+            parallel: args.parallel,
+            input_name: input_name.clone(),
+        };
+        let (comp, opt) = compile::make_composition(&input, &args.input, &opts, &args.composition_model).await?;
+        println!("{}  strategy    → {}", style("✓").green(), comp.display());
+        println!("{}  optimized   → {}  (@includes {})", style("✓").green(), opt.display(),
+            comp.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        println!("   review both, then: {} scenario {}", style("plakat compile").dim(), opt.display());
+        return Ok(());
+    }
 
     let (hjson, warnings, trace) = compile::compile_to_string(
         &input,

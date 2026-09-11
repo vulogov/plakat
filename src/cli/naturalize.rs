@@ -189,6 +189,12 @@ pub struct NaturalizeArgs {
     /// character; higher repaints more (more strokes, more form change). Default 0.38.
     #[arg(long = "repaint-strength", value_name = "N", help_heading = "Corrective (needs a model)")]
     pub repaint_strength: Option<f32>,
+    /// What `--repaint` PRESERVES from the pre-repaint image (feather-composited back over the wash):
+    /// `figures` (default — each figure's whole body: face, hands, clothing, so the subject stays crisp while
+    /// the surroundings loosen — the "detailed subject, loose background" look) · `faces` (faces only) ·
+    /// `none` (repaint everything — most painterly, but small figures melt into AI-tell blobs).
+    #[arg(long = "repaint-protect", value_name = "SCOPE", default_value = "figures", help_heading = "Corrective (needs a model)")]
+    pub repaint_protect: String,
     /// Model alias for `--repaint` (default: `--model`). A painterly checkpoint gives the most
     /// authentic media.
     #[arg(long = "repaint-model", value_name = "ALIAS", help_heading = "Corrective (needs a model)")]
@@ -477,6 +483,30 @@ async fn detect_people_mask(input: &Path, img: &image::RgbImage, device: &str) -
     Some(out)
 }
 
+/// Preserve the pre-repaint SUBJECT from a whole-image repaint per `--repaint-protect`
+/// (`figures` | `faces` | `none`), feather-compositing the original back into `repainted`.
+/// Returns a display suffix for the log line.
+async fn protect_repaint_scope(original: &Path, repainted: &Path, scope: &str, device: &str) -> &'static str {
+    match scope.trim().to_lowercase().as_str() {
+        "none" | "off" => "",
+        "faces" | "face" => {
+            if matches!(naturalize::refine::protect_repaint_faces(original, repainted, Some(device), 0.85).await, Ok(true)) {
+                ", faces protected"
+            } else {
+                ""
+            }
+        }
+        _ => {
+            // `figures` (default): the whole body — face, hands, clothing stay crisp; background loosens.
+            if matches!(naturalize::refine::protect_repaint_figures(original, repainted, Some(device), 0.85).await, Ok(true)) {
+                ", figures protected"
+            } else {
+                ""
+            }
+        }
+    }
+}
+
 /// QUALITY-7 P1: scan a folder and print a ranked scorecard (worst-AI first) + an aggregate summary.
 /// Weight-free (no CLIP medium probe — kept fast for large folders).
 fn folder_report(a: &NaturalizeArgs, input: &Path) -> Result<()> {
@@ -699,7 +729,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     // already named.
     let wants_model = a.repair.unwrap_or(0.0) > 0.0 || a.geometry.unwrap_or(0.0) > 0.0 || a.anatomy.unwrap_or(0.0) > 0.0;
     if art_style.is_none() && (wants_model || a.auto_medium) {
-        if let Some(m) = naturalize::refine::detect_medium(&input, Some(&a.device)).await {
+        let sp = crate::ui::progress::spinner("detecting art medium (CLIP)…");
+        let m = naturalize::refine::detect_medium(&input, Some(&a.device)).await;
+        sp.finish_and_clear();
+        if let Some(m) = m {
             println!("  {} auto-detected medium → {m}", style("de-slop").cyan());
             art_style = Some(m);
         }
@@ -734,7 +767,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let scope = naturalize::refine::RepairScope::parse(&a.repair_scope)
             .with_context(|| format!("unknown --repair-scope `{}` (figures|non-face|full)", a.repair_scope))?;
         let repaired = tmp.path().join("repaired.png");
-        match naturalize::refine::repair_protected(&input, &repaired, strength, art_style.as_deref(), scope, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await {
+        let sp = crate::ui::progress::spinner(&format!("repairing figures (face-protected, scope {scope:?}) — loading model + img2img…"));
+        let res = naturalize::refine::repair_protected(&input, &repaired, strength, art_style.as_deref(), scope, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await;
+        sp.finish_and_clear();
+        match res {
             Ok(true) => {
                 println!("  {} face-protected repair (scope {:?}, strength {strength:.2}{})", style("de-slop").green(), scope, art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default());
                 current_input = repaired;
@@ -753,7 +789,10 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
     };
     current_input = if corrective.any() {
         let refined = tmp.path().join("refined.png");
-        naturalize::refine::refine(&current_input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await?;
+        let sp = crate::ui::progress::spinner("correcting geometry/anatomy (whole-image img2img)…");
+        let r = naturalize::refine::refine(&current_input, &refined, &corrective, &a.model, Some(&a.device), a.refine_steps, tmp.path()).await;
+        sp.finish_and_clear();
+        r?;
         refined
     } else {
         current_input
@@ -821,20 +860,21 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
         let strength = a.repaint_strength.unwrap_or(0.38);
         let style_note = art_style.as_deref().map(|s| format!(", style: {s}")).unwrap_or_default();
         let mut done = false;
+        let medium_label = a.medium.as_deref().unwrap_or("the medium");
+        let sp = crate::ui::progress::spinner(&format!("painterly repaint in {medium_label} — loading model + img2img…"));
         match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, a.repaint_lora.as_deref(), Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
             Ok(()) => {
-                // Protect face STRUCTURE from the whole-image repaint (small faces deform otherwise).
-                // `current_input` is still the pre-repaint original here; feather-composited into `repainted`.
-                let faces_kept = matches!(
-                    naturalize::refine::protect_repaint_faces(&current_input, &repainted, Some(&a.device), 0.85).await,
-                    Ok(true)
-                );
-                println!("  {} painterly repaint (strength {strength:.2}{style_note}{})", style("de-slop").green(),
-                    if faces_kept { ", faces protected" } else { "" });
+                // Preserve the SUBJECT's structure from the whole-image repaint (small figures deform
+                // otherwise). `current_input` is still the pre-repaint original here; feather-composited back.
+                sp.set_message(format!("repaint done — preserving {} structure…", a.repaint_protect));
+                let kept = protect_repaint_scope(&current_input, &repainted, &a.repaint_protect, &a.device).await;
+                sp.finish_and_clear();
+                println!("  {} painterly repaint (strength {strength:.2}{style_note}{})", style("de-slop").green(), kept);
                 current_input = repainted;
                 done = true;
             }
             Err(e) => {
+                sp.finish_and_clear();
                 // A bad `--repaint-lora` (missing / unresolvable) is the usual cause. Rather than silently
                 // fall all the way back to the un-repainted baseline (which then only gets the analog grain
                 // on top → looks like "nothing happened"), retry WITHOUT the LoRA so the base model still
@@ -842,18 +882,21 @@ pub async fn run(a: NaturalizeArgs) -> Result<()> {
                 if a.repaint_lora.is_some() {
                     println!("  {} --repaint-lora `{}` failed to load ({e}) — retrying repaint without it",
                         style("de-slop").yellow(), a.repaint_lora.as_deref().unwrap_or(""));
-                    match naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await {
+                    let sp2 = crate::ui::progress::spinner(&format!("painterly repaint in {medium_label} (no LoRA) — img2img…"));
+                    let retry = naturalize::refine::repaint(&current_input, &repainted, art_style.as_deref(), strength, rmodel, None, Some(&a.device), a.refine_steps, scene_prompt.as_deref()).await;
+                    match retry {
                         Ok(()) => {
-                            let faces_kept = matches!(
-                                naturalize::refine::protect_repaint_faces(&current_input, &repainted, Some(&a.device), 0.85).await,
-                                Ok(true)
-                            );
-                            println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA{})", style("de-slop").green(),
-                                if faces_kept { ", faces protected" } else { "" });
+                            sp2.set_message(format!("repaint done — preserving {} structure…", a.repaint_protect));
+                            let kept = protect_repaint_scope(&current_input, &repainted, &a.repaint_protect, &a.device).await;
+                            sp2.finish_and_clear();
+                            println!("  {} painterly repaint (strength {strength:.2}{style_note}, no LoRA{})", style("de-slop").green(), kept);
                             current_input = repainted;
                             done = true;
                         }
-                        Err(e2) => tracing::warn!(target: "plakat", "naturalize --repaint (no-lora retry): {e2}"),
+                        Err(e2) => {
+                            sp2.finish_and_clear();
+                            tracing::warn!(target: "plakat", "naturalize --repaint (no-lora retry): {e2}");
+                        }
                     }
                 } else {
                     tracing::warn!(target: "plakat", "naturalize --repaint: {e}");
@@ -1177,7 +1220,7 @@ async fn model_pass_one(
         // later analog grain/paper pass still softens these pixels, so detail degrades gracefully; only the
         // deforming re-generation is undone. `&src` is the pre-repaint original; feather-composited back.
         let faces_kept = matches!(
-            crate::naturalize::refine::protect_repaint_faces(&src, &repainted, None, 0.85).await,
+            crate::naturalize::refine::protect_repaint_figures(&src, &repainted, None, 0.85).await,
             Ok(true)
         );
         crate::ui::progress::println(&format!(

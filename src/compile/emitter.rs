@@ -182,6 +182,27 @@ pub fn emit(globals: &ResolvedGlobals, scenes: &[CompiledScene], input_name: &st
             if let Some(n) = cs.control_generate_max_figures {
                 o.push_str(&format!("      control-generate-max-figures: {n}\n"));
             }
+            // 6.29: per-figure DECLARED poses (posture relates) → control-generate poses the skeleton
+            // deterministically. Each entry is `"<pose>|<figure description>"`; the runtime matches the
+            // description to the planned figure and overrides its pose (no LLM-defaulted standing).
+            if !s.figure_poses.is_empty() {
+                let items: Vec<String> =
+                    s.figure_poses.iter().map(|(desc, pose)| q(&format!("{pose}|{desc}"))).collect();
+                o.push_str(&format!("      control-generate-figure-poses: [{}]\n", items.join(", ")));
+            }
+            // 6.29: person-person CONTACT relations → control-generate pulls the two figures together. Each
+            // entry is `"<figure A description>|<figure B description>"`.
+            if !s.figure_contacts.is_empty() {
+                let items: Vec<String> =
+                    s.figure_contacts.iter().map(|(a, b)| q(&format!("{a}|{b}"))).collect();
+                o.push_str(&format!("      control-generate-figure-contacts: [{}]\n", items.join(", ")));
+            }
+            // 6.29: structural objects (vehicle + towed trailer, machinery) → control-generate places each in
+            // its own region so connected objects don't fuse. Each entry is the object's description.
+            if !s.objects.is_empty() {
+                let items: Vec<String> = s.objects.iter().map(|(_, d)| q(d)).collect();
+                o.push_str(&format!("      control-generate-objects: [{}]\n", items.join(", ")));
+            }
             if !cs.negative.trim().is_empty() {
                 o.push_str(&format!("      negative: {}\n", q(&cs.negative)));
             }

@@ -536,7 +536,16 @@ pub fn relationship_reinforcement(family: ModelFamily) -> Option<&'static str> {
 /// breaks on a word we didn't anticipate. Hyphens are normalized to spaces (`in-front-of` == `in front of`).
 pub fn relation_phrase(verb: &str) -> String {
     match verb.trim().to_lowercase().replace('-', " ").as_str() {
-        "on" | "on top of" | "onto" | "atop" | "sitting on" | "standing on" | "resting on" => "rests on".into(),
+        "on" | "on top of" | "onto" | "atop" | "resting on" => "rests on".into(),
+        // Posture placements: read the pose in the grounding clause too (the deterministic pose handoff to
+        // control-generate is separate — this keeps the prose describing what the figure is DOING).
+        "sitting on" | "sits on" | "seated on" | "sitting at" | "sits at" => "sits on".into(),
+        "standing on" | "stands on" => "stands on".into(),
+        "standing by" | "stands by" | "standing beside" | "standing at" => "stands beside".into(),
+        "kneeling on" | "kneels on" | "kneeling by" | "kneeling at" => "kneels on".into(),
+        "squatting on" | "squats on" | "crouching on" | "crouches on" | "crouching by" => "crouches on".into(),
+        "lying on" | "lies on" | "lying faceup on" | "lying face up on" | "supine on" => "lies on".into(),
+        "lying facedown on" | "lying face down on" | "prone on" => "lies face-down on".into(),
         "under" | "underneath" | "beneath" | "below" => "is beneath".into(),
         "above" | "over" => "is above".into(),
         "in front of" | "before" => "is in front of".into(),
@@ -549,6 +558,8 @@ pub fn relation_phrase(verb: &str) -> String {
         "inside" | "in" | "within" => "is inside".into(),
         "leaning on" | "leaning against" | "against" => "leans against".into(),
         "riding" | "rides" => "rides on".into(),
+        "towing" | "tows" | "hauling" | "hauls" | "pulling" | "pulls" | "drawing" => "tows".into(),
+        "towed by" | "hauled by" | "pulled by" => "is towed by".into(),
         "surrounded by" => "is surrounded by".into(),
         other => other.to_string(),
     }

@@ -227,11 +227,26 @@ pub async fn repaint_with_pipeline(
 /// `protect` (0..1) is how strongly the original face wins at the mask centre; the feathered border blends
 /// back into the surrounding repaint so there's no hard paste edge. Best-effort: no detector / no faces →
 /// `Ok(false)` and the repaint is left untouched.
-pub async fn protect_repaint_faces(
+/// Composite the pre-repaint FACES back into a whole-image repaint (small faces deform otherwise).
+pub async fn protect_repaint_faces(original: &Path, repainted: &Path, device: Option<&str>, protect: f32) -> Result<bool> {
+    protect_repaint_impl(original, repainted, device, protect, false).await
+}
+
+/// Composite the pre-repaint FIGURES (each face → its projected body box: head, torso, hands, clothing) back
+/// into a whole-image repaint, feathered into the loosened background. Keeps the subject's structure crisp —
+/// the LoRA's good rendering — while the surroundings take the painterly wash: the classic "detailed subject,
+/// loose surroundings" watercolor look, and it kills the melted-face / merged-hands AI tells the whole-image
+/// repaint otherwise creates.
+pub async fn protect_repaint_figures(original: &Path, repainted: &Path, device: Option<&str>, protect: f32) -> Result<bool> {
+    protect_repaint_impl(original, repainted, device, protect, true).await
+}
+
+async fn protect_repaint_impl(
     original: &Path,
     repainted: &Path,
     device: Option<&str>,
     protect: f32,
+    body: bool,
 ) -> Result<bool> {
     let Some(scrfd) = crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten() else {
         return Ok(false);
@@ -264,18 +279,34 @@ pub async fn protect_repaint_faces(
     // Union a feathered mask over each face box, grown to cover hairline/jaw/neck (a border cutting the
     // chin reads as uncanny) and feathered by face size so the protected face blends into the repaint.
     let mut alpha = vec![0f32; (w as usize) * (h as usize)];
+    let (wf, hf) = (w as f32, h as f32);
     for f in &faces {
         let (fw, fh) = (f.bbox[2] - f.bbox[0], f.bbox[3] - f.bbox[1]);
-        let feather = (fw.max(fh) * 0.35).max(4.0);
-        let m = crate::naturalize::feathered_rect(
-            w,
-            h,
-            f.bbox[0] - fw * 0.35,
-            f.bbox[1] - fh * 0.45,
-            f.bbox[2] + fw * 0.35,
-            f.bbox[3] + fh * 0.45,
-            feather,
-        );
+        // `feathered_rect` takes NORMALISED 0..1 corners (it multiplies by w/h) — the old code passed raw
+        // pixel coords, which clamped to 1.0 and collapsed the mask to nothing (protection was a silent no-op).
+        let m = if body {
+            // Project the whole figure from the face: ~2.2× face wide, from just above the head down ~5 face
+            // heights (torso, hands, clothing). Same projection `--repair-scope figures`/`--auto-regions` use.
+            let cx = (f.bbox[0] + f.bbox[2]) * 0.5;
+            crate::naturalize::feathered_rect(
+                w, h,
+                (cx - 1.1 * fw) / wf,
+                (f.bbox[1] - 0.2 * fh) / hf,
+                (cx + 1.1 * fw) / wf,
+                (f.bbox[3] + 5.0 * fh) / hf,
+                (w.min(h) as f32) * 0.03,
+            )
+        } else {
+            let feather = (fw.max(fh) * 0.35).max(4.0);
+            crate::naturalize::feathered_rect(
+                w, h,
+                (f.bbox[0] - fw * 0.35) / wf,
+                (f.bbox[1] - fh * 0.45) / hf,
+                (f.bbox[2] + fw * 0.35) / wf,
+                (f.bbox[3] + fh * 0.45) / hf,
+                feather,
+            )
+        };
         for (i, px) in m.pixels().enumerate() {
             let v = px[0] as f32 / 255.0;
             if v > alpha[i] {
@@ -304,7 +335,7 @@ pub async fn protect_repaint_faces(
     }
     paint
         .save(repainted)
-        .with_context(|| format!("saving face-protected repaint → {}", repainted.display()))?;
+        .with_context(|| format!("saving protected repaint → {}", repainted.display()))?;
     Ok(true)
 }
 

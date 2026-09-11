@@ -2265,27 +2265,30 @@ impl Pipeline {
                     latents.clone()
                 };
                 let latent_in = scheduler.scale_model_input(latent_in, timestep)?;
-                // Pose scaffold: compute the ControlNet residuals ONCE (from the base prompt) and reuse them
-                // for the base + every region forward. The residuals are spatial feature maps (emb-independent
-                // in shape), so applying the globally-computed pose to each region is correct — every figure
-                // gets a sound skeleton while its box only changes attributes.
+                // Pose scaffold. The ControlNet conditions on the TEXT embedding as well as the skeleton, so
+                // the residuals MUST be computed with the same emb as the forward they steer. The old code
+                // computed them ONCE from the figure-FREE base prompt ("empty garden") and reused them for
+                // every region — a weak "no people here" pose that let seated/kneeling figures drift back to
+                // STANDING under regional (proven: pose-only mode, which feeds the full figure prompt, keeps
+                // them seated). Now each forward computes its own residuals from ITS emb: every region's figure
+                // gets a strong, correctly-posed skeleton while its box still only changes attributes.
                 let progress = step_i as f32 / total_steps as f32;
                 let active_controls: Vec<&crate::pipelines::controlnet::ControlRequest> =
                     controls.iter().filter(|c| c.active_at(progress)).collect();
-                let residuals = if active_controls.is_empty() {
-                    None
-                } else {
-                    Some(crate::pipelines::controlnet::sum_controlnet_residuals(
-                        &active_controls,
-                        &latent_in,
-                        timestep,
-                        &base_emb,
-                        do_cfg,
-                        base_pooled.as_ref(),
-                        add_time_ids.as_ref(),
-                    )?)
-                };
                 let predict = |emb: &Tensor, pooled: &Option<Tensor>| -> Result<Tensor> {
+                    let residuals = if active_controls.is_empty() {
+                        None
+                    } else {
+                        Some(crate::pipelines::controlnet::sum_controlnet_residuals(
+                            &active_controls,
+                            &latent_in,
+                            timestep,
+                            emb,
+                            do_cfg,
+                            pooled.as_ref(),
+                            add_time_ids.as_ref(),
+                        )?)
+                    };
                     let pred = match &residuals {
                         Some((down, mid)) => self.core.unet.forward_with_additional_residuals(
                             &latent_in,

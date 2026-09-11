@@ -181,6 +181,10 @@ pub const PASSTHROUGH_KEYS: &[&str] = &[
     "control-generate-tries", "control-generate-size", "control-generate-mode",
     "control-generate-opportunistic", "control-generate-figure-shuffle", "control-generate-finish",
     "control-generate-seed", "control-generate-max-figures", "control-generate-inpaint-figures",
+    "control-generate-regional",
+    // 6.29: hand-declarable pose/contact/object hints (normally auto-generated from relates, but a user may
+    // set them directly — e.g. a `carrying` pose that has no relate verb). Passed through VERBATIM.
+    "control-generate-figure-poses", "control-generate-figure-contacts", "control-generate-objects",
     // refiner + LoRA scale
     "refiner", "refine-strength", "refiner-frac", "lora-scale",
     // quality knobs (the guidance bundle)
@@ -552,6 +556,33 @@ async fn compile_one_scene(
             out_scene.name = better;
         }
     }
+    // 6.29: the DECLARED-pose descriptions must match the runtime planner's figure labels, which are built
+    // from the ENGLISHED structure-prompt. So translate each pose's description the same way the grounding
+    // clause is (source-language descs would share no tokens with the English labels → no pose applied).
+    if !opts.no_enhance {
+        if let Some(lang) = scene.translate.clone().filter(|l| !l.trim().is_empty()) {
+            for (desc, _pose) in out_scene.figure_poses.iter_mut() {
+                if let Some(en) = translate_phrase(desc, &lang, &opts.provider, opts.cache, eargs).await {
+                    *desc = en;
+                }
+            }
+            // Contact descriptions must match the runtime figure labels too (English planner labels).
+            for (a, b) in out_scene.figure_contacts.iter_mut() {
+                if let Some(en) = translate_phrase(a, &lang, &opts.provider, opts.cache, eargs).await {
+                    *a = en;
+                }
+                if let Some(en) = translate_phrase(b, &lang, &opts.provider, opts.cache, eargs).await {
+                    *b = en;
+                }
+            }
+            // Object descriptions likewise match the English planner object labels + drive the region prompt.
+            for (_name, desc) in out_scene.objects.iter_mut() {
+                if let Some(en) = translate_phrase(desc, &lang, &opts.provider, opts.cache, eargs).await {
+                    *desc = en;
+                }
+            }
+        }
+    }
 
     // 5) diligence warnings (6.26.2): budget overflow / dropped style. Style is only checked when
     // the enhancer actually ran (verbatim `--no-enhance` never injects the style directive).
@@ -870,6 +901,398 @@ fn load_persona(name: &str) -> String {
     }
 }
 
+/// `--make-composition` STRATEGIST system prompt: read a scene (ANY language) and pick the generation
+/// pipeline best suited to it, emitting plakat directive lines only. Encodes the tool-selection lesson —
+/// pure diffusion for common compositions, skeleton-only for posed few-figure scenes, skeleton+regional for
+/// many distinct figures. No scene-specific hardcoding: the LLM maps scene features onto the categories.
+const STRATEGIST_SYSTEM: &str = "You are a GENERATION STRATEGIST for the plakat text-to-image compiler. You \
+    are given a scene prose file (possibly NOT in English). Decide the best generation PIPELINE for it and \
+    output ONLY plakat directive lines and `#` comment lines. NEVER translate or restate the scene.\n\
+    Judge from the scene: how many DISTINCT people are individually described; their poses (standing / sitting \
+    / lying / kneeling / leaning / mid-action); whether distinct figures' garments and colours could be \
+    painted onto the WRONG body; whether it is a common everyday composition or a hard multi-figure layout.\n\
+    Pick EXACTLY ONE strategy and emit its directives verbatim:\n\
+    # PURE — a common/intimate composition the diffusion model renders well ALONE: a single figure, a \
+    portrait, a couple, a landscape; standing OR sitting naturally; no attribute-crossing risk. Control tools \
+    would FIGHT the model here, so emit NO control-generate directives — instead:\n\
+    count: 6\n\
+    ranking: on by=vision threshold=5 coach=on coach-stuck=on min=2 max-tries=10\n\
+    # SKELETON — 1 to 3 figures in an UNUSUAL / non-standing pose (seated, lying, kneeling, leaning, action) \
+    where correct ANATOMY/POSE is the priority and attribute-crossing is NOT a real risk. Pose control is \
+    strongest WITHOUT the regional layer:\n\
+    control-generate: sd15\n\
+    control-generate-mode: wireframe\n\
+    control-generate-regional: false\n\
+    control-generate-size: 512x512\n\
+    control-generate-min-score: 4\n\
+    # REGIONAL — MANY (3 or more) distinct figures, usually standing, whose garments MUST stay on the right \
+    body. Regional binds attributes per box:\n\
+    control-generate: sdxl\n\
+    control-generate-mode: wireframe\n\
+    control-generate-regional: true\n\
+    control-generate-size: 1024x1024\n\
+    control-generate-max-figures: 2\n\
+    control-generate-inpaint-figures: true\n\
+    control-generate-min-score: 5\n\
+    Additionally, ALWAYS emit ONE `naturalize:` line tuned to THIS scene: infer the art MEDIUM from the prose \
+    (watercolor / oil / ink-wash / gouache / pencil — or omit it for a photoreal scene) and set `medium=<that>`; \
+    a gentler `repaint` (~0.25) for detailed realistic scenes, a stronger one (~0.4) for loose impressionist \
+    ones; keep `brush`, `scale`, `paper`, `repair` modest. Example: `naturalize: repaint=0.35 medium=watercolor \
+    brush=0.3 scale=0.55 paper=0.3 repair=0.15`.\n\
+    Rules: the plakat prose format uses UNQUOTED values — write `control-generate: sd15`, and NEVER wrap any \
+    value in quotes. START with one line `# strategy: PURE|SKELETON|REGIONAL — <one-line reason>`. For \
+    REGIONAL set control-generate-max-figures to the count of DELIBERATE foreground HERO figures (usually 2; \
+    the rest go to the background). Output ONLY `#` comment lines and directive lines. No prose paragraphs, \
+    no code fences.";
+
+/// `--make-composition` OPTIMIZER system prompt: rewrite the prose CLEANER + less hallucination-prone while
+/// KEEPING the original language and every structural directive (relationships / figures), plus a tailored
+/// negative. The companion of the strategist — together they turn a rough prose into a ready-to-run pair.
+const OPTIMIZER_SYSTEM: &str = "You are a PROMPT EDITOR for the plakat text-to-image compiler. You are given a \
+    plakat prose file that MAY be non-English. Produce a CLEANER, less hallucination-prone version.\n\
+    HARD RULES:\n\
+    - KEEP the ORIGINAL LANGUAGE of every human-readable description. Do NOT translate the scene text.\n\
+    - PRESERVE every structural directive with its key and references intact — `component.<name>:`, \
+    `composition:`, `relate:`, `foreground:`, `background:`, `crowd:`, `crowd-density:`, `name:`, `persona:`, \
+    `style:`, `translate:`, `lora-trigger:`. NEVER drop a relationship or a figure. You may fix an obvious \
+    mistake, but every relate/foreground/background line must survive.\n\
+    - DO NOT emit any generation-STRATEGY directive — no `control-generate-*`, `naturalize:`, `ranking:`, \
+    `count:`, `size:`, `steps:` — the included composition file owns all of those. KEEP infrastructure + \
+    content: `model:`, `loras:`, `lora-trigger:`, `quantize-t5:`, `t5-quant-level:`, `style:`, `translate:`, \
+    `persona:`, and every component / scene line.\n\
+    IMPROVE:\n\
+    - Rewrite the free-text scene sentences to be concrete and unambiguous, in the SAME language.\n\
+    - Remove NEGATION from every positive description and component: never write 'without X' / 'no X' / \
+    '(без X)' (the model paints X). Describe what the subject DOES have, and MOVE the absence into the \
+    negative.\n\
+    - Make figure COUNT explicit where it matters (e.g. 'a couple', 'two people').\n\
+    - Drop duplicated or redundant phrases and stray attention weights.\n\
+    NEGATIVE: output exactly ONE `negative:` line, in ENGLISH, tailored to THIS scene — fold in every \
+    'without/no' you moved out of the positive, plus concise anatomy/quality guards (bad anatomy, deformed \
+    hands, extra fingers, extra limbs, blurry, lowres, low quality). Keep it focused, not a wall of tags.\n\
+    Output ONLY the rewritten prose file content (directives + optimized free text + the negative line), \
+    same structure, in the same language, with NO code fences and NO commentary.";
+
+/// `--analyze` FEASIBILITY CRITIC: judge how reliably a diffusion model can render the scene in ONE image and
+/// flag the specific failure modes learned the hard way (over-stuffing, coupled-object fusion, person+cargo
+/// fusion, rare object names, negation-in-positive, hard poses, count ambiguity, attribute-crossing). The
+/// polish-loop companion to the strategist — it tells the author what to fix BEFORE any tokens are generated.
+const CRITIC_SYSTEM: &str = "You are a FEASIBILITY CRITIC for the plakat text-to-image compiler. You are given \
+    a plakat prose scene (which MAY be non-English). Judge how RELIABLY a diffusion model (an SDXL draft handed \
+    to an SD3.5 finish) can render it in ONE image, and flag the SPECIFIC risks that make generation fail — so \
+    the author fixes them BEFORE spending tokens generating.\n\
+    Output a short report, nothing else:\n\
+    - FIRST line exactly: `Feasibility: N/10 — LOW|MODERATE|HIGH RISK`, where N is 1–10 (10 = a common, easy \
+    composition a model nails first try; 1 = many stacked hard problems). The RISK word is the INVERSE of the \
+    score: N of 8–10 → `LOW RISK`, N of 4–7 → `MODERATE RISK`, N of 1–3 → `HIGH RISK`. (So a 2/10 is HIGH RISK, \
+    an 8/10 is LOW RISK — do NOT invert this.)\n\
+    - Then a list, WORST FIRST, of the concrete risks THIS scene has. Each risk is two lines: `⚠ <RISK> — \
+    <the exact phrase / element in THIS scene that triggers it>` then `   → <specific, actionable fix>`.\n\
+    - Then `✓ <thing>` lines for what is already fine.\n\
+    Judge ONLY against these known failure modes, and flag ONLY the ones this scene actually has:\n\
+    - OVER-STUFFED: more than ~2 distinct described PEOPLE plus a complex OBJECT plus a detailed BACKGROUND all \
+    competing in one frame → the model drops or fuses elements. Fix: split into separate scenes, or demote \
+    extras to background / a crowd.\n\
+    - FUSION (coupled objects): a vehicle plus a SEPARATE towed trailer/cart, or any two hitched/coupled \
+    objects → the model renders ONE fused body, not two. Fix: a `control-preimage:` from a reference image — \
+    region placement will NOT reliably separate two coupled wheeled vehicles.\n\
+    - FUSION (person + cargo): a person carrying/holding a LARGE flat or bulky object → the cargo fuses INTO \
+    the body. Fix: make the carried item small and clearly in the hands ('a few books under one arm').\n\
+    - RARE / INVENTED OBJECT NAME: an obscure or made-up term (e.g. 'steam locomobile') → the model \
+    hallucinates. Fix: the closest WELL-KNOWN term (e.g. 'steam traction engine / road locomotive').\n\
+    - NEGATION-IN-POSITIVE: 'without X' / 'no X' / '(без X)' in a POSITIVE description → the model PAINTS X. \
+    Fix: describe what IS present; move the absence to the negative.\n\
+    - HARD POSE ON SDXL: seated / lying / kneeling / crouching figures → SDXL's OpenPose control is weak on \
+    non-standing poses. Fix: `--composition-model sd15` for the draft.\n\
+    - COUNT AMBIGUITY: vague plurals ('several', 'some people') → unpredictable counts. Fix: state exact \
+    numbers.\n\
+    - ATTRIBUTE-CROSSING: multiple distinct figures whose garments/colours could swap onto the wrong body. \
+    Fix: `control-generate-regional: true`.\n\
+    - TOKEN BLOAT: an extremely long, detail-stuffed prompt → the finish model drops details. Fix: cut \
+    secondary detail.\n\
+    Be specific — QUOTE the offending phrases from the scene. Be honest: if the scene stacks several hard \
+    problems, say so and grade it LOW. Output ONLY the report — no preamble, no code fences.";
+
+/// `plakat compile --analyze`: run the feasibility critic over the prose (any language) and return its report
+/// (a grade + specific risks + fixes). Pure analysis — no compile, no generation. The polish-loop companion to
+/// [`make_composition`]: iterate the prose until the grade is acceptable before spending a generation run.
+pub async fn analyze_prose(input: &str, opts: &CompileOpts) -> anyhow::Result<String> {
+    use anyhow::Context;
+    let eargs = crate::prompt::EnhanceArgs::default();
+    let report = crate::prompt::complete(&opts.provider, CRITIC_SYSTEM, input, &eargs)
+        .await
+        .context("compile --analyze: critic LLM call failed")?;
+    let report = strip_code_fences(&report);
+    anyhow::ensure!(!report.trim().is_empty(), "compile --analyze: critic returned nothing");
+    Ok(report)
+}
+
+/// `--analyze --fix` AUTO-FIXER: propose SAFE, high-confidence VERBATIM text edits that reduce the failure
+/// risks the critic finds, plus notes for the structural ones a machine must not touch. Emits JSON so the
+/// edits can be located in the exact source `@include` file and applied with a backup.
+const FIXER_SYSTEM: &str = "You are an AUTO-FIXER for the plakat text-to-image compiler. You are given a plakat \
+    prose scene (which MAY be non-English). Propose SAFE, high-confidence TEXT edits that reduce \
+    generation-failure risk, plus a list of STRUCTURAL changes only the author can make.\n\
+    Output ONLY a JSON object: {\"edits\":[{\"old\":\"…\",\"new\":\"…\",\"why\":\"…\"}],\"manual\":[\"…\"]}.\n\
+    RULES for each edit:\n\
+    - \"old\" MUST be an EXACT, VERBATIM substring copied from the scene (so it can be found and replaced). \
+    Keep it SHORT and UNIQUE — just the offending phrase, not a whole sentence.\n\
+    - \"new\" is the improved replacement in the EXACT SAME LANGUAGE as \"old\". The scene commonly MIXES \
+    languages (e.g. Russian component descriptions + English negative terms) — NEVER translate: fix a Russian \
+    phrase in Russian, an English phrase in English, matching the script/language of the text you replace.\n\
+    - Propose ONLY edits you are CONFIDENT improve reliability, of these kinds:\n\
+      * RARE/INVENTED object name → the closest well-known term.\n\
+      * NEGATION-in-positive ('without X'/'no X'/'(без X)') → describe what IS present instead.\n\
+      * person+cargo fusion → shrink a big carried item to small + hand-held.\n\
+      * COUNT ambiguity → an exact number.\n\
+      * TOKEN bloat → cut ONE secondary detail clause (set \"new\" to empty to delete it).\n\
+    - Do NOT edit component NAMES, `relate:`/`foreground:`/`objects:` directives, or any structural syntax — \
+    only human-readable descriptive text and negative terms.\n\
+    \"manual\" = short notes for what you CANNOT safely auto-apply (splitting the over-stuffed scene into \
+    separate images, using a control-preimage for two coupled wheeled vehicles, a conflicting control config). \
+    Output ONLY the JSON — no prose, no code fences.";
+
+#[derive(serde::Deserialize)]
+struct FixEdit {
+    old: String,
+    new: String,
+    #[serde(default)]
+    why: String,
+}
+#[derive(serde::Deserialize, Default)]
+struct FixPlan {
+    #[serde(default)]
+    edits: Vec<FixEdit>,
+    #[serde(default)]
+    manual: Vec<String>,
+}
+
+/// Next free versioned backup path `<file>.<N>` (1, 2, …).
+fn next_backup_path(f: &std::path::Path) -> std::path::PathBuf {
+    let mut n = 1u32;
+    loop {
+        let cand = std::path::PathBuf::from(format!("{}.{n}", f.display()));
+        if !cand.exists() {
+            return cand;
+        }
+        n += 1;
+    }
+}
+
+fn trunc(s: &str) -> String {
+    let s = s.trim().replace('\n', " ");
+    if s.chars().count() > 60 {
+        format!("{}…", s.chars().take(59).collect::<String>())
+    } else {
+        s
+    }
+}
+
+/// `plakat compile --analyze --fix`: run the auto-fixer, apply its SAFE text edits to the exact source
+/// `@include` file each phrase lives in (backing that file up to `<file>.<N>` FIRST), and return a report of
+/// what changed where — plus the structural items that still need the author. Never touches a file it can't
+/// locate the phrase in, and never edits the same phrase in two files (reports it instead).
+pub async fn apply_fixes(
+    input_path: &std::path::Path,
+    opts: &CompileOpts,
+    risks: &str,
+) -> anyhow::Result<String> {
+    use anyhow::Context;
+    let eargs = crate::prompt::EnhanceArgs::default();
+    // 1. Gather the source files + the expanded prose the fixer reasons over.
+    let files = parser::collect_source_files(input_path, 0)?;
+    let raw = std::fs::read_to_string(input_path)
+        .with_context(|| format!("--fix: reading {}", input_path.display()))?;
+    let base = input_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+    let expanded = if raw.contains("@include") { parser::expand_includes(&raw, &base, 0)? } else { raw };
+
+    // 2. Fixer LLM → plan. Feed it the critic's findings so it fixes exactly what `--analyze` flagged (not a
+    // second, possibly-disagreeing judgement). Extract the JSON object, tolerating any stray wrapping.
+    let user = format!(
+        "SCENE PROSE:\n{expanded}\n\nCRITIC FINDINGS (produce verbatim edits that fix the auto-fixable ones):\n{}",
+        risks.trim()
+    );
+    let out = crate::prompt::complete(&opts.provider, FIXER_SYSTEM, &user, &eargs)
+        .await
+        .context("--fix: fixer LLM call failed")?;
+    let out = strip_code_fences(&out);
+    let json = match (out.find('{'), out.rfind('}')) {
+        (Some(a), Some(b)) if b >= a => &out[a..=b],
+        _ => out.as_str(),
+    };
+    let plan: FixPlan = serde_json::from_str(json)
+        .with_context(|| format!("--fix: fixer returned invalid JSON:\n{out}"))?;
+
+    // 3. Apply each text edit to the ONE source file that contains it verbatim, backing it up first.
+    let mut backups: std::collections::HashMap<std::path::PathBuf, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    let mut report = String::new();
+    let mut applied = 0usize;
+    for e in &plan.edits {
+        if e.old.trim().is_empty() || e.old == e.new {
+            continue;
+        }
+        let hits: Vec<&std::path::PathBuf> = files
+            .iter()
+            .filter(|f| std::fs::read_to_string(f).map(|c| c.contains(&e.old)).unwrap_or(false))
+            .collect();
+        match hits.as_slice() {
+            [f] => {
+                let f = (*f).to_path_buf();
+                let bak = backups
+                    .entry(f.clone())
+                    .or_insert_with(|| {
+                        let b = next_backup_path(&f);
+                        let _ = std::fs::copy(&f, &b);
+                        b
+                    })
+                    .clone();
+                let text = std::fs::read_to_string(&f)?;
+                let new_text = text.replacen(&e.old, &e.new, 1);
+                std::fs::write(&f, &new_text)
+                    .with_context(|| format!("--fix: writing {}", f.display()))?;
+                report.push_str(&format!(
+                    "✓ {}  (backup → {})\n    {}: “{}” → “{}”\n",
+                    f.display(),
+                    bak.display(),
+                    if e.why.trim().is_empty() { "fix" } else { e.why.trim() },
+                    trunc(&e.old),
+                    if e.new.trim().is_empty() { "(removed)".into() } else { trunc(&e.new) },
+                ));
+                applied += 1;
+            }
+            [] => report.push_str(&format!("• skipped — phrase not found verbatim: “{}”\n", trunc(&e.old))),
+            _ => report.push_str(&format!(
+                "• skipped — “{}” appears in >1 file (edit by hand)\n",
+                trunc(&e.old)
+            )),
+        }
+    }
+    if applied == 0 {
+        report.push_str("(no auto-applicable text fixes)\n");
+    }
+    if !plan.manual.is_empty() {
+        report.push_str("\nNeeds your hand (not auto-fixable):\n");
+        for m in &plan.manual {
+            report.push_str(&format!("  ⚠ {}\n", m.trim()));
+        }
+    }
+    Ok(report)
+}
+
+/// Strip a leading/trailing Markdown code fence (```…```), which chat LLMs add despite instructions.
+fn strip_code_fences(s: &str) -> String {
+    let t = s.trim();
+    let t = t.strip_prefix("```").map(|r| r.splitn(2, '\n').nth(1).unwrap_or("")).unwrap_or(t);
+    let t = t.trim_end().strip_suffix("```").unwrap_or(t);
+    t.trim().to_string()
+}
+
+/// Strip surrounding quotes from directive VALUES (`key: "v"` → `key: v`) — the plakat prose format is
+/// UNQUOTED, so a quoted value would parse WITH the quotes. Leaves `#` comments and already-unquoted lines
+/// (including free-text prose) untouched; only removes a matched pair wrapping the whole value.
+fn unquote_directive_values(s: &str) -> String {
+    s.lines()
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                return line.to_string();
+            }
+            if let Some(colon) = line.find(':') {
+                let (key, rest) = line.split_at(colon + 1);
+                let val = rest.trim();
+                let inner = val
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .or_else(|| val.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+                if let Some(inner) = inner {
+                    return format!("{key} {inner}");
+                }
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Next free `composition_NNN.txt` index in `dir` (scans existing ones; starts at 1).
+fn next_composition_index(dir: &std::path::Path) -> u32 {
+    let mut max = 0u32;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if let Some(rest) = name.strip_prefix("composition_").and_then(|r| r.strip_suffix(".txt")) {
+                if let Ok(n) = rest.parse::<u32>() {
+                    max = max.max(n);
+                }
+            }
+        }
+    }
+    max + 1
+}
+
+/// `plakat compile --make-composition`: analyse a prose scene (any language) with two LLM passes and write
+/// (a) `composition_<NNN>.txt` — generation-strategy directives to `@include`, and (b) `<stem>_optimized.txt`
+/// — a cleaner, less hallucination-prone rewrite of the prose (SAME language, all relationships/figures kept,
+/// a tailored negative), whose FIRST line `@include`s the composition file. Advisory: the author reviews both.
+pub async fn make_composition(
+    input: &str,
+    input_path: &std::path::Path,
+    opts: &CompileOpts,
+    control_model: &str,
+) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+    use anyhow::Context;
+    let eargs = crate::prompt::EnhanceArgs::default();
+    let dir = input_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // 1) STRATEGIST → the composition-strategy directives. Pin the DRAFT MODEL (+ its native size) the
+    // strategist must use for any control-generate strategy, so it can't emit an SDXL/512 (or SD1.5/1024)
+    // mismatch. Default is sdxl (1024²); `--composition-model sd15` swaps to the strong-pose 512² draft.
+    let cg_size = if control_model.to_lowercase().contains("xl") { "1024x1024" } else { "512x512" };
+    let strategist_sys = format!(
+        "{STRATEGIST_SYSTEM}\n\
+         DRAFT MODEL (override): whenever you emit control-generate directives, use EXACTLY \
+         `control-generate: {control_model}` and `control-generate-size: {cg_size}` (that model's native \
+         resolution) — never a different draft model or a mismatched size."
+    );
+    let strategy = crate::prompt::complete(&opts.provider, &strategist_sys, input, &eargs)
+        .await
+        .context("make-composition: strategist LLM call failed")?;
+    let strategy = unquote_directive_values(&strip_code_fences(&strategy));
+    anyhow::ensure!(!strategy.trim().is_empty(), "make-composition: strategist returned nothing");
+    let n = next_composition_index(&dir);
+    let comp_name = format!("composition_{n:03}.txt");
+    let comp_path = dir.join(&comp_name);
+    let comp_body = format!(
+        "# plakat auto-strategy — generated by `compile --make-composition`\n# source: {}\n# review + tweak, then it is @included by the optimized prose.\n{}\n",
+        opts.input_name,
+        strategy.trim()
+    );
+    std::fs::write(&comp_path, &comp_body)
+        .with_context(|| format!("writing {}", comp_path.display()))?;
+
+    // 2) OPTIMIZER → cleaner prose in the original language; prepend the @include of the strategy.
+    let optimized = crate::prompt::complete(&opts.provider, OPTIMIZER_SYSTEM, input, &eargs)
+        .await
+        .context("make-composition: optimizer LLM call failed")?;
+    let optimized = unquote_directive_values(&strip_code_fences(&optimized));
+    anyhow::ensure!(!optimized.trim().is_empty(), "make-composition: optimizer returned nothing");
+    let stem = input_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "prompts".into());
+    let opt_path = dir.join(format!("{stem}_optimized.txt"));
+    let opt_body = format!("@include {comp_name}\n\n{}\n", optimized.trim());
+    std::fs::write(&opt_path, &opt_body)
+        .with_context(|| format!("writing {}", opt_path.display()))?;
+
+    Ok((comp_path, opt_path))
+}
+
 /// Compile a `prompts.txt` string into a scenario HJSML string. With
 /// `no_enhance && no_negative` the whole pass is deterministic (the corpus gate).
 /// Compile to the scenario HJSON plus any per-scene diligence warnings (6.26.2) — budget
@@ -1063,6 +1486,22 @@ pub fn classify_model(name: &str) -> ModelFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unquote_directive_values_strips_only_wrapping_quotes() {
+        let src = "# strategy: SKELETON — reason\ncontrol-generate: \"sd15\"\ncontrol-generate-size: \"512x512\"\n\
+                   control-generate-regional: false\nnaturalize: \"repaint=0.3 medium=oil\"\n\
+                   a free-text line: with a colon but no quotes\ncomponent.x: 'single quoted'";
+        let out = unquote_directive_values(src);
+        assert!(out.contains("control-generate: sd15"), "double quotes stripped");
+        assert!(out.contains("control-generate-size: 512x512"));
+        assert!(out.contains("naturalize: repaint=0.3 medium=oil"), "value with spaces unwrapped");
+        assert!(out.contains("component.x: single quoted"), "single quotes stripped too");
+        assert!(out.contains("# strategy: SKELETON — reason"), "comment untouched");
+        assert!(out.contains("control-generate-regional: false"), "bare value untouched");
+        assert!(out.contains("a free-text line: with a colon but no quotes"), "unquoted free text untouched");
+        assert!(!out.contains('"'), "no double quotes remain");
+    }
 
     #[test]
     fn lint_flags_duplicate_task_names_and_repeats() {

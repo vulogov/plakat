@@ -101,6 +101,33 @@ pub fn expand_includes(input: &str, base: &std::path::Path, depth: usize) -> Res
     Ok(out)
 }
 
+/// Collect every SOURCE file that feeds a prose compile: the top-level file plus every `@include`d file,
+/// recursively (globs expanded). Used by `compile --analyze --fix` to trace an offending phrase back to the
+/// exact file it lives in (so the fix edits the right `@include`, not the inlined copy). Depth-guarded.
+pub fn collect_source_files(path: &std::path::Path, depth: usize) -> Result<Vec<std::path::PathBuf>> {
+    if depth > 16 {
+        bail!("compile: @include nested too deeply (>16 — a cycle?)");
+    }
+    let mut files = vec![path.to_path_buf()];
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("compile: reading source {}", path.display()))?;
+    let base = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
+    for line in content.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("@include ").or_else(|| t.strip_prefix("@include\t")) {
+            let (p, _params) = parse_include_args(rest);
+            let joined = base.join(&p);
+            let matches = if p.contains('*') { glob_final_star(&joined)? } else { vec![joined] };
+            for full in matches {
+                if full.is_file() {
+                    files.extend(collect_source_files(&full, depth + 1)?);
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
 /// Split an `@include` argument tail into `(path, [key=value…])`. The path may be `"quoted"` (allowing
 /// spaces); everything after it is `key=value` params.
 fn parse_include_args(rest: &str) -> (String, Vec<(String, String)>) {
