@@ -90,6 +90,8 @@ pub mod preset;
 pub mod prompt;
 #[doc(hidden)]
 pub mod scripting;
+// 6.30.0: smysl provenance/budget layer (Phase 1: prose → smysl document foundation).
+pub mod smysl;
 #[doc(hidden)]
 pub mod style;
 #[doc(hidden)]
