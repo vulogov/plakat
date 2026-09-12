@@ -1027,6 +1027,76 @@ pub async fn analyze_prose(input: &str, opts: &CompileOpts) -> anyhow::Result<St
     Ok(report)
 }
 
+/// 6.30.0 Phase 2 `--smysl`: fold every non-skipped scene into one smysl document (authored
+/// claims/relations) and return the surface text — the opt-in reviewable sidecar written beside the
+/// compiled scenario. Weight-free; the HJSON output is unaffected.
+///
+/// `merge_with` = an existing corpus (e.g. the `--fix` findings/fixes already sitting at `<stem>.smysl`)
+/// to FOLD IN rather than clobber: this is where the corpus "grows at fix, finalizes at compile". smysl
+/// records are content-addressed, so the union dedups deterministically — no smysl-graph needed yet.
+pub fn compose_scene_smysl(
+    input: &str,
+    model: &str,
+    merge_with: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    let doc = parser::parse(input)?;
+    let resolved = resolver::resolve(&doc, model)?;
+    let (mut records, mut labels) = (Vec::new(), std::collections::BTreeMap::new());
+    for scene in resolved.scenes.iter().filter(|s| !s.skip) {
+        let (r, l) = crate::smysl::scene_records(scene)?;
+        records.extend(r);
+        labels.extend(l);
+    }
+    // Finalize onto any existing corpus (the fix decisions): keep every prior record, add the scene
+    // claims/relations. Union by content-hash for units, by (kind,from,to) for edges.
+    if let Some(p) = merge_with {
+        if p.exists() {
+            if let Ok(text) = std::fs::read_to_string(p) {
+                if let Ok(prev) = smysl_core::surface::parse_surface(&text) {
+                    crate::smysl::merge_records(&mut records, &mut labels, prev.records, prev.labels);
+                }
+            }
+        }
+    }
+    Ok(crate::smysl::records_to_surface(&records, &labels))
+}
+
+/// 6.30.0 Phase 2 `--trace "<phrase>"`: answer "why is this in the prompt?" without an LLM. Resolves
+/// the scene to its smysl claims/relations, folds in any `<stem>.smysl` fix-corpus sitting beside the
+/// input (so the analyze/fix decisions are traceable too), and reports every unit that mentions the
+/// phrase with its confidence + provenance (`grounds` chain + relations). `corpus` is the optional path
+/// to the on-disk fix-corpus (None → scene units only).
+pub fn trace_prose(
+    input: &str,
+    model: &str,
+    phrase: &str,
+    corpus: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    use anyhow::Context;
+    let doc = parser::parse(input)?;
+    let resolved = resolver::resolve(&doc, model)?;
+    // Fold every scene's authored claims/relations into one record set.
+    let (mut records, mut labels) = (Vec::new(), std::collections::BTreeMap::new());
+    for scene in resolved.scenes.iter().filter(|s| !s.skip) {
+        let (r, l) = crate::smysl::scene_records(scene)?;
+        records.extend(r);
+        labels.extend(l);
+    }
+    // Fold in the persisted fix-corpus (the analyze/fix decisions) if present, so `--trace` can also
+    // explain "this phrase changed because of this risk".
+    if let Some(p) = corpus {
+        if p.exists() {
+            let text = std::fs::read_to_string(p)
+                .with_context(|| format!("--trace: reading corpus {}", p.display()))?;
+            if let Ok(parsed) = smysl_core::surface::parse_surface(&text) {
+                records.extend(parsed.records);
+                labels.extend(parsed.labels);
+            }
+        }
+    }
+    Ok(crate::smysl::trace_report(&records, &labels, phrase))
+}
+
 /// `--analyze --fix` AUTO-FIXER: propose SAFE, high-confidence VERBATIM text edits that reduce the failure
 /// risks the critic finds, plus notes for the structural ones a machine must not touch. Emits JSON so the
 /// edits can be located in the exact source `@include` file and applied with a backup.
@@ -1128,6 +1198,9 @@ pub async fn apply_fixes(
         std::collections::HashMap::new();
     let mut report = String::new();
     let mut applied = 0usize;
+    // 6.30.0 Phase 2: collect the landed edits so the loop can be recorded as a smysl corpus
+    // (each fix `@claim` grounded in the risk `@finding` it addressed).
+    let mut applied_edits: Vec<(String, String, String)> = Vec::new();
     for e in &plan.edits {
         if e.old.trim().is_empty() || e.old == e.new {
             continue;
@@ -1160,6 +1233,7 @@ pub async fn apply_fixes(
                     if e.new.trim().is_empty() { "(removed)".into() } else { trunc(&e.new) },
                 ));
                 applied += 1;
+                applied_edits.push((e.old.clone(), e.new.clone(), e.why.clone()));
             }
             [] => report.push_str(&format!("• skipped — phrase not found verbatim: “{}”\n", trunc(&e.old))),
             _ => report.push_str(&format!(
@@ -1175,6 +1249,27 @@ pub async fn apply_fixes(
         report.push_str("\nNeeds your hand (not auto-fixable):\n");
         for m in &plan.manual {
             report.push_str(&format!("  ⚠ {}\n", m.trim()));
+        }
+    }
+
+    // 6.30.0 Phase 2: persist the loop's reasoning as a smysl corpus beside the prose — the
+    // finding→fix provenance the printed report + `.txt.N` backups throw away. Written as a snapshot
+    // of THIS run (cross-run accumulation via smysl-graph `merge` is Phase 3); best-effort, never fatal.
+    if !applied_edits.is_empty() || !plan.manual.is_empty() {
+        match crate::smysl::fixes_to_smysl(&applied_edits, &plan.manual) {
+            Ok(doc) => {
+                let corpus = input_path.with_extension("smysl");
+                match std::fs::write(&corpus, &doc) {
+                    Ok(()) => report.push_str(&format!(
+                        "\nsmysl corpus → {}  ({} fix→finding record(s), {} open finding(s))\n",
+                        corpus.display(),
+                        applied_edits.len(),
+                        plan.manual.len(),
+                    )),
+                    Err(e) => report.push_str(&format!("\n(smysl corpus not written: {e})\n")),
+                }
+            }
+            Err(e) => report.push_str(&format!("\n(smysl corpus skipped: {e})\n")),
         }
     }
     Ok(report)

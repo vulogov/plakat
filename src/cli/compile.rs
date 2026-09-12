@@ -119,6 +119,18 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, value_name = "PATH")]
     pub diff: Option<PathBuf>,
 
+    /// *(6.30 smysl)* Also write a `<stem>.smysl` provenance sidecar beside the compiled scenario: the
+    /// authored components + relations as smysl `@claim`/`@rel` units (the AI→AI→Human corpus). Opt-in;
+    /// the HJSON output is byte-identical. Reviewable, and the substrate `--trace` queries.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub smysl: bool,
+
+    /// *(6.30 smysl)* Answer "why is this phrase in the prompt?" — no LLM, no generation. Resolves the
+    /// scene to its smysl claims/relations (plus any `<stem>.smysl` fix-corpus beside the input) and
+    /// prints every unit that mentions PHRASE with its confidence + provenance (grounds chain, relations).
+    #[arg(help_heading = "Compile", long, value_name = "PHRASE")]
+    pub trace: Option<String>,
+
     // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
     /// Force the Tera template pre-pass regardless of file extension.
     #[arg(help_heading = "Templating", long, default_value_t = false)]
@@ -351,6 +363,15 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
+    // --trace "<phrase>": explain why a phrase is in the prompt (no LLM, no generation). Resolves the
+    // scene to smysl units + folds in any `<stem>.smysl` fix-corpus beside the input, then reports.
+    if let Some(phrase) = &args.trace {
+        let corpus = if stdin_input { None } else { Some(args.input.with_extension("smysl")) };
+        let report = compile::trace_prose(&input, &args.model, phrase, corpus.as_deref())?;
+        println!("{}", report.trim_end());
+        return Ok(());
+    }
+
     let system_override = match &args.system {
         Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
         None => None,
@@ -463,6 +484,21 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         Some(path) => {
             std::fs::write(&path, &hjson).with_context(|| format!("writing {}", path.display()))?;
             println!("{}  compiled → {}", style("✓").green(), path.display());
+            // --smysl: write the provenance sidecar beside the scenario (best-effort; opt-in).
+            if args.smysl {
+                let sidecar = path.with_extension("smysl");
+                // Finalize onto any corpus already born at `--fix` (input-side) or a prior compile.
+                let prior = if args.input.as_os_str() == "-" { None } else { Some(args.input.with_extension("smysl")) };
+                let merge_with = prior.as_deref().filter(|p| p.exists()).or(Some(sidecar.as_path()));
+                match compile::compose_scene_smysl(&input, &args.model, merge_with) {
+                    Ok(doc) => {
+                        std::fs::write(&sidecar, &doc)
+                            .with_context(|| format!("writing {}", sidecar.display()))?;
+                        println!("{}  smysl       → {}", style("✓").green(), sidecar.display());
+                    }
+                    Err(e) => eprintln!("{}  smysl sidecar skipped: {e:#}", style("⚠").yellow()),
+                }
+            }
             Ok(())
         }
     }
