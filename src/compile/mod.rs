@@ -468,6 +468,9 @@ async fn compile_one_scene(
     // fit-to-budget runs LAST (step 2e below), AFTER the prose reinforcement — otherwise the reinforcement
     // clauses append after a fit and push the prompt back over budget (the ~256→260 overflow bug).
     let mut fit_note: Option<String> = None;
+    // 6.30.0: the scene's budget-pack decision (what the model-free packer dropped to fit), recorded into
+    // the smysl corpus when `--smysl` is set — the "trace BUDGETS" half of the corpus.
+    let mut pack_prov: Option<crate::smysl::ScenePack> = None;
 
     // 2d) SD3/Flux prose reinforcement: these T5-driven families honour prose >> numeric weights, so a
     // heavily-weighted concept still loses to strong priors (a green sky, an orange sun). Restate the
@@ -499,10 +502,20 @@ async fn compile_one_scene(
     // the `lora-trigger:` that gets prepended below.
     let trigger = scene.lora_trigger.trim();
     let trigger_reserve = if trigger.is_empty() { 0 } else { assembler::estimate_tokens(trigger) + 2 };
-    if !opts.no_enhance && !assembled.is_empty() {
-        let (fitted, note) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs, trigger_reserve).await;
-        prompt = fitted;
-        fit_note = note;
+    if !assembled.is_empty() {
+        if opts.no_enhance {
+            // 6.30.0 Phase 3: even with no LLM (`--no-enhance`), a deterministic filler-trim keeps a
+            // verbatim over-budget prompt inside the model's range — model-free, and it records the cut.
+            let (packed, note, prov) = pack_to_budget(&prompt, scene.family, &scene.name, trigger_reserve);
+            prompt = packed;
+            fit_note = note;
+            pack_prov = prov;
+        } else {
+            let (fitted, note, prov) = fit_to_budget(&prompt, scene.family, &scene.name, &opts.provider, opts.cache, eargs, trigger_reserve).await;
+            prompt = fitted;
+            fit_note = note;
+            pack_prov = prov;
+        }
     }
     // 2f) PREPEND the LoRA trigger verbatim — after enhance/fit/reinforce, so a non-semantic activation token
     // can't be rewritten or dropped, and the budget already reserved its tokens (2e) so the total fits.
@@ -673,7 +686,7 @@ async fn compile_one_scene(
     }
     // A `foreground:` list sets the deliberate-figure count for the control-generate cap.
     let control_generate_max_figures = (!scene.foreground.is_empty()).then_some(scene.foreground.len());
-    emitter::CompiledScene { scene: out_scene, prompt, negative, structure_prompt, control_generate_max_figures, warnings, trace }
+    emitter::CompiledScene { scene: out_scene, prompt, negative, structure_prompt, control_generate_max_figures, warnings, trace, pack: pack_prov }
 }
 
 /// Deduplicate weight spans by (phrase, weight), preserving first-seen order — so a phrase repeated across
@@ -684,6 +697,45 @@ fn dedup_spans(spans: Vec<(String, f32)>) -> Vec<(String, f32)> {
         .into_iter()
         .filter(|(p, w)| seen.insert((p.to_lowercase(), w.to_bits())))
         .collect()
+}
+
+/// 6.30.0 Phase 3: the MODEL-FREE half of budget fitting — the deterministic smysl packer, usable with no
+/// LLM provider. Returns `(packed, Some(note))` ONLY when it reached budget by dropping generic filler
+/// alone (nothing essential lost); otherwise `(prompt unchanged, None)` so the caller decides (LLM reword
+/// on the enhance path, or just warn on `--no-enhance`). The note lists exactly what was cut — a budget
+/// trim that is auditable instead of silent.
+fn pack_to_budget(
+    prompt: &str,
+    family: ModelFamily,
+    scene_name: &str,
+    reserve: usize,
+) -> (String, Option<String>, Option<crate::smysl::ScenePack>) {
+    let budget = assembler::family_token_budget(family).saturating_sub(reserve).max(16);
+    let before = assembler::estimate_tokens(prompt);
+    if before <= budget {
+        return (prompt.to_string(), None, None);
+    }
+    let packed = crate::smysl::pack_prompt(prompt, budget, &assembler::estimate_tokens);
+    if packed.fit_on_filler_alone(budget) && !packed.dropped_spans.is_empty() {
+        let crate::smysl::PackResult { text, info, dropped_spans } = packed;
+        let note = format!(
+            "scene '{scene_name}': prompt was ~{before} tokens (over the {label} ~{budget}-token budget) — \
+             packed model-free to ~{}, {}",
+            info.used,
+            crate::smysl::pack_drop_summary(&dropped_spans),
+            label = family.label(),
+        );
+        let sp = crate::smysl::ScenePack {
+            scene: scene_name.to_string(),
+            budget: info.budget,
+            used: info.used,
+            family: family.label().to_string(),
+            dropped: dropped_spans,
+        };
+        (text, Some(note), Some(sp))
+    } else {
+        (prompt.to_string(), None, None)
+    }
 }
 
 /// Model-specific **fit-to-budget** (RFC step): when the finished prompt exceeds the family's effective
@@ -703,11 +755,19 @@ async fn fit_to_budget(
     // Tokens RESERVED for text prepended/appended outside the fit (e.g. a `lora-trigger:`), so the total
     // still fits the model's budget once that text is added back.
     reserve: usize,
-) -> (String, Option<String>) {
+) -> (String, Option<String>, Option<crate::smysl::ScenePack>) {
     let budget = assembler::family_token_budget(family).saturating_sub(reserve).max(16);
     let before = assembler::estimate_tokens(prompt);
     if before <= budget {
-        return (prompt.to_string(), None);
+        return (prompt.to_string(), None, None);
+    }
+    // 6.30.0 Phase 3: try the MODEL-FREE smysl packer first. If it reaches budget by dropping ONLY
+    // generic filler (nothing essential lost), take it — deterministic, reproducible, and it RECORDS
+    // what it cut (vs the LLM silently rewording). Only when essentials would have to go do we fall
+    // through to the LLM condense below, which rewords rather than drops.
+    let (packed, pack_note, pack_prov) = pack_to_budget(prompt, family, scene_name, reserve);
+    if pack_note.is_some() {
+        return (packed, pack_note, pack_prov);
     }
     let spans = dedup_spans(assembler::extract_weight_spans(prompt));
     // Two attempts: if the first condense still overshoots (LLMs are imprecise about token counts), retry
@@ -727,7 +787,7 @@ async fn fit_to_budget(
         );
         fitted = match cached_call(provider, &sys, &current, cache::POSITIVE, cache_on, eargs).await {
             Some(f) => assembler::clean(&f),
-            None if attempt == 0 => return (prompt.to_string(), None), // fit call failed — keep original
+            None if attempt == 0 => return (prompt.to_string(), None, None), // fit call failed — keep original
             None => break,                                             // retry failed — keep the first fit
         };
         if assembler::estimate_tokens(&fitted) <= budget {
@@ -749,11 +809,13 @@ async fn fit_to_budget(
             "scene '{scene_name}': prompt was ~{before} tokens (over the {label} ~{budget}-token budget) — condensed to ~{after} to fit, weights preserved",
             label = family.label()
         );
-        (out, Some(note))
+        // LLM reword (essentials at stake) → no structured pack provenance (nothing was dropped, it was
+        // rewritten). The note still records the budget event.
+        (out, Some(note), None)
     } else {
         // Smaller than the original but still over — hand back the condensed text; `scene_warnings` reports
         // the residual overflow (single message), which is honest.
-        (out, None)
+        (out, None, None)
     }
 }
 
@@ -1252,23 +1314,37 @@ pub async fn apply_fixes(
         }
     }
 
-    // 6.30.0 Phase 2: persist the loop's reasoning as a smysl corpus beside the prose — the
-    // finding→fix provenance the printed report + `.txt.N` backups throw away. Written as a snapshot
-    // of THIS run (cross-run accumulation via smysl-graph `merge` is Phase 3); best-effort, never fatal.
+    // 6.30.0 Phase 2/3: persist the loop's reasoning as a smysl corpus beside the prose — the
+    // finding→fix provenance the printed report + `.txt.N` backups throw away. The corpus ACCUMULATES:
+    // each `--fix` run MERGES its records onto the existing corpus (content-addressed, so an identical
+    // finding dedups and a new one is added) rather than clobbering — so the grade-progression reasoning
+    // survives across polish iterations. Best-effort, never fatal.
     if !applied_edits.is_empty() || !plan.manual.is_empty() {
-        match crate::smysl::fixes_to_smysl(&applied_edits, &plan.manual) {
-            Ok(doc) => {
-                let corpus = input_path.with_extension("smysl");
-                match std::fs::write(&corpus, &doc) {
-                    Ok(()) => report.push_str(&format!(
-                        "\nsmysl corpus → {}  ({} fix→finding record(s), {} open finding(s))\n",
-                        corpus.display(),
-                        applied_edits.len(),
-                        plan.manual.len(),
-                    )),
-                    Err(e) => report.push_str(&format!("\n(smysl corpus not written: {e})\n")),
+        let corpus = input_path.with_extension("smysl");
+        let existed = corpus.exists();
+        let build = (|| -> anyhow::Result<()> {
+            let (mut recs, mut labels) = if existed {
+                let text = std::fs::read_to_string(&corpus)?;
+                match smysl_core::surface::parse_surface(&text) {
+                    Ok(p) => (p.records, p.labels),
+                    Err(_) => (Vec::new(), std::collections::BTreeMap::new()),
                 }
-            }
+            } else {
+                (Vec::new(), std::collections::BTreeMap::new())
+            };
+            let (new_recs, new_labels) = crate::smysl::fixes_to_records(&applied_edits, &plan.manual)?;
+            crate::smysl::merge_records(&mut recs, &mut labels, new_recs, new_labels);
+            std::fs::write(&corpus, crate::smysl::records_to_surface(&recs, &labels))?;
+            Ok(())
+        })();
+        match build {
+            Ok(()) => report.push_str(&format!(
+                "\nsmysl corpus {} {}  ({} fix→finding record(s), {} open finding(s) this run)\n",
+                if existed { "accumulated →" } else { "→" },
+                corpus.display(),
+                applied_edits.len(),
+                plan.manual.len(),
+            )),
             Err(e) => report.push_str(&format!("\n(smysl corpus skipped: {e})\n")),
         }
     }
@@ -1392,7 +1468,7 @@ pub async fn make_composition(
 /// `no_enhance && no_negative` the whole pass is deterministic (the corpus gate).
 /// Compile to the scenario HJSON plus any per-scene diligence warnings (6.26.2) — budget
 /// overflow / dropped style — for the CLI to surface. The warnings never change the output.
-pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
+pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>, Vec<String>, String)> {
     let doc = parser::parse(input)?;
     let resolved = resolver::resolve(&doc, &opts.default_model)?;
     let eargs = crate::prompt::EnhanceArgs::default();
@@ -1478,8 +1554,22 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         }
     }
 
+    // 6.30.0: aggregate the per-scene budget-pack decisions into a smysl corpus fragment (the "trace
+    // BUDGETS" half). Empty when nothing was packed; the CLI folds it into `<stem>.smysl` under `--smysl`.
+    let pack_smysl = {
+        let packs: Vec<crate::smysl::ScenePack> = compiled.iter().filter_map(|c| c.pack.clone()).collect();
+        if packs.is_empty() {
+            String::new()
+        } else {
+            match crate::smysl::packs_to_records(&packs) {
+                Ok((r, l)) => crate::smysl::records_to_surface(&r, &l),
+                Err(_) => String::new(),
+            }
+        }
+    };
+
     let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);
-    Ok((hjson, warnings, trace))
+    Ok((hjson, warnings, trace, pack_smysl))
 }
 
 /// Lint a `prompts.txt` without calling the LLM (E-C2): unknown commands and
@@ -1563,6 +1653,16 @@ pub fn classify_model(name: &str) -> ModelFamily {
         ModelFamily::Flux
     } else if n.contains("cascade") || n.contains("wuerstchen") || n.contains("würstchen") {
         ModelFamily::Cascade
+    } else if n.contains("pony") {
+        // Pony is an SDXL finetune — dual-CLIP, ~150-token effective range, not the 77-token default it
+        // would fall to (its alias contains no "xl"). Budget/profile must match the real SDXL base.
+        ModelFamily::Sdxl
+    } else if n.contains("pixart") || n.contains("sana") {
+        // PixArt-Σ (T5-XXL) and Sana (Gemma-2) are large-context PROSE transformers, NOT 77-token CLIP.
+        // They carry no family keyword, so without this they mis-classify (and `sana-1.5` even trips the
+        // `1.5` rule below → SD15/77). Map to the SD3 profile: prose prompting + a T5-scale budget, so the
+        // packer doesn't over-trim their prompts to 77. Checked BEFORE the sd15 `1.5`/`2-1` heuristics.
+        ModelFamily::Sd3
     } else if n.contains("sdxl") || n.contains("xl") {
         ModelFamily::Sdxl
     } else if n.contains("sd35") || n.contains("sd3") {
@@ -1631,6 +1731,14 @@ mod tests {
         assert_eq!(classify_model("some-unknown-thing"), ModelFamily::Unknown);
         // flux wins over a stray "xl"-less name; xl wins over 1.5 substrings.
         assert_eq!(classify_model("flux-xl-weird"), ModelFamily::Flux);
+        // Registry aliases the substring heuristic used to mis-budget: pony is SDXL (was Unknown/77);
+        // PixArt/Sana are T5-XXL/Gemma prose models (was Unknown/77), and `sana-1.5` must NOT trip the
+        // `1.5`→SD15 rule. This is the "proper budget for the proper model" contract.
+        assert_eq!(classify_model("pony"), ModelFamily::Sdxl, "pony is an SDXL finetune → 150-tok budget");
+        assert_eq!(classify_model("pixart"), ModelFamily::Sd3, "PixArt T5-XXL → T5-scale budget, not 77");
+        assert_eq!(classify_model("pixart-512"), ModelFamily::Sd3);
+        assert_eq!(classify_model("sana"), ModelFamily::Sd3, "Sana Gemma-2 → large budget, not 77");
+        assert_eq!(classify_model("sana-1.5"), ModelFamily::Sd3, "must not fall to SD15 via the `1.5` rule");
     }
 
     #[tokio::test]

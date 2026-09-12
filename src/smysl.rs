@@ -11,7 +11,8 @@
 use crate::compile::resolver::ResolvedScene;
 use smysl_core::surface::{write_surface, WriteContext};
 use smysl_core::{
-    canonical_uid, KernelType, Label, RelKind, Record, Relation, Status, Uid, UnitCoreBuilder,
+    canonical_uid, hash_bytes, DropReason, KernelType, Label, PackInfo, RelKind, Record, Relation,
+    Status, Uid, UnitCoreBuilder,
 };
 use std::collections::BTreeMap;
 
@@ -116,6 +117,20 @@ pub fn records_to_surface(records: &[Record], labels: &BTreeMap<Label, Uid>) -> 
     write_surface(None, records, &WriteContext::from_labels(labels))
 }
 
+/// Merge two smysl surface documents into one (content-hash union, `base` labels win). Either side may be
+/// empty. Used to fold the compile's budget-pack corpus into the scene-claims sidecar under `--smysl`.
+pub fn merge_surface(base: &str, extra: &str) -> String {
+    let parse = |s: &str| {
+        smysl_core::surface::parse_surface(s)
+            .map(|p| (p.records, p.labels))
+            .unwrap_or_else(|_| (Vec::new(), BTreeMap::new()))
+    };
+    let (mut recs, mut labels) = parse(base);
+    let (er, el) = parse(extra);
+    merge_records(&mut recs, &mut labels, er, el);
+    records_to_surface(&recs, &labels)
+}
+
 /// Fold `extra` records/labels INTO `records`/`labels`, deduping (smysl units are content-addressed,
 /// so union by uid; relations by `(kind, from, to)`). Existing labels win, so already-bound names stay
 /// stable. Used by `--smysl` to FINALIZE the scene claims onto an existing fix-corpus without clobbering.
@@ -176,13 +191,29 @@ fn clip(s: &str) -> String {
     }
 }
 
-/// 6.30.0 Phase 2: record the `--analyze`/`--fix` decisions as a smysl document. Each APPLIED fix becomes a
-/// `@claim` GROUNDED in the `@finding` it addressed (the risk), so the corpus carries "this edit exists
-/// because of this risk" — the provenance the loop accumulates. Un-auto-fixable structural items become
-/// standalone `@finding`s (open risks for the author). Returns the surface text.
+/// A short, label-safe, CONTENT-ADDRESSED tag for a unit: the first 10 base32 chars of its uid. Same
+/// content ⇒ same tag (so repeated `--fix` runs DEDUP an identical finding), different content ⇒ different
+/// tag (so distinct findings never collide on a positional `-0`). This is what lets the corpus accumulate
+/// deterministically across polish iterations instead of clobbering.
+fn uid_tag(uid: &Uid) -> String {
+    uid.to_string()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .skip(1) // drop the leading `b` of the `b3:` prefix so the tag isn't always `b…`
+        .take(10)
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// 6.30.0 Phase 2: build the `--analyze`/`--fix` decision records. Each APPLIED fix → a `@claim` GROUNDED
+/// in the `@finding` it addressed (the risk); un-auto-fixable structural items → standalone `@finding`s.
+/// Labels are content-addressed (see [`uid_tag`]) so the record set MERGES cleanly across repeated runs.
 ///
 /// `applied` = `(old, new, why)` for each edit that landed; `manual` = the structural notes.
-pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -> anyhow::Result<String> {
+pub fn fixes_to_records(
+    applied: &[(String, String, String)],
+    manual: &[String],
+) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
     let mut records: Vec<Record> = Vec::new();
     let mut labels: BTreeMap<Label, Uid> = BTreeMap::new();
 
@@ -192,7 +223,7 @@ pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -
             .build()
             .map_err(|e| anyhow::anyhow!("smysl finding {i}: {e:?}"))?;
         let f_uid = canonical_uid(&finding);
-        labels.insert(Label::new(&format!("f/risk-{i}"))?, f_uid);
+        labels.insert(Label::new(&format!("f/risk-{}", uid_tag(&f_uid)))?, f_uid);
         records.push(Record::Unit(finding));
 
         // The applied fix → a claim DERIVED from (grounded in) that finding: the provenance edge.
@@ -202,17 +233,26 @@ pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -
             .grounds([f_uid])
             .build()
             .map_err(|e| anyhow::anyhow!("smysl fix {i}: {e:?}"))?;
-        labels.insert(Label::new(&format!("c/fix-{i}"))?, canonical_uid(&fix));
+        let fix_uid = canonical_uid(&fix);
+        labels.insert(Label::new(&format!("c/fix-{}", uid_tag(&fix_uid)))?, fix_uid);
         records.push(Record::Unit(fix));
     }
     for (i, m) in manual.iter().enumerate() {
         let f = UnitCoreBuilder::new(KernelType::Finding, m.trim(), Status::Speculative)
             .build()
             .map_err(|e| anyhow::anyhow!("smysl manual {i}: {e:?}"))?;
-        labels.insert(Label::new(&format!("f/manual-{i}"))?, canonical_uid(&f));
+        let uid = canonical_uid(&f);
+        labels.insert(Label::new(&format!("f/manual-{}", uid_tag(&uid)))?, uid);
         records.push(Record::Unit(f));
     }
-    Ok(write_surface(None, &records, &WriteContext::from_labels(&labels)))
+    Ok((records, labels))
+}
+
+/// Serialize [`fixes_to_records`] to surface text (a single snapshot; the accumulating corpus writer in
+/// `apply_fixes` merges these records onto the existing corpus instead).
+pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -> anyhow::Result<String> {
+    let (records, labels) = fixes_to_records(applied, manual)?;
+    Ok(records_to_surface(&records, &labels))
 }
 
 /// 6.30.0 Phase 2 `--trace`: over a record set (scene claims/relations plus any loaded fix-corpus
@@ -255,9 +295,11 @@ pub fn trace_report(records: &[Record], labels: &BTreeMap<Label, Uid>, phrase: &
             continue;
         }
         n += 1;
-        // Prefix tells the layer: c/ = authored claim / applied fix, f/ = finding (a risk).
+        // Prefix tells the layer: c/ = authored claim / applied fix, f/ = finding (a risk),
+        // o/ = observation (a budget-pack decision).
         let kind = match name(&uid).split('/').next() {
             Some("f") => "finding",
+            Some("o") => "observation",
             _ => "claim",
         };
         out.push_str(&format!("• {} [{kind}, {:?}]\n    {}\n", name(&uid), c.status, clip(&c.gist)));
@@ -295,6 +337,219 @@ pub fn trace_report(records: &[Record], labels: &BTreeMap<Label, Uid>, phrase: &
     }
 }
 
+// ---------------------------------------------------------------------------
+// 6.30.0 Phase 3 — model-free budget packing (smysl `pack` at the prompt seam)
+// ---------------------------------------------------------------------------
+
+/// Generic prompt-craft boilerplate — quality boosters that carry no scene content, so trimming them to
+/// fit a budget loses nothing. NOT scene attributes (those are derived from the prose, never hardcoded);
+/// these are the universal filler every prompt guide warns about. Compared against a normalized span.
+const FILLER_SPANS: &[&str] = &[
+    "masterpiece", "best quality", "high quality", "highly detailed", "very detailed",
+    "extremely detailed", "intricate details", "intricate detail", "ultra detailed",
+    "ultra-detailed", "hyperdetailed", "8k", "4k", "uhd", "hd", "sharp focus",
+    "trending on artstation", "artstation", "award winning", "award-winning", "stunning",
+    "beautiful", "gorgeous", "professional", "cinematic lighting", "dramatic lighting",
+];
+
+/// Outcome of [`pack_prompt`]: the packed prompt, the smysl `PackInfo` (auditable drop record), and the
+/// human-readable text of each dropped span (aligned with `info.dropped`, which only carries uids).
+pub struct PackResult {
+    pub text: String,
+    pub info: PackInfo,
+    pub dropped_spans: Vec<(String, DropReason)>,
+}
+
+impl PackResult {
+    /// True when the pack fit the budget by dropping ONLY generic filler (nothing essential lost) — the
+    /// condition under which the model-free result is preferred over an LLM reword.
+    pub fn fit_on_filler_alone(&self, budget: usize) -> bool {
+        self.info.used as usize <= budget
+            && self.dropped_spans.iter().all(|(_, r)| *r == DropReason::LowValue)
+    }
+}
+
+/// Strip a span down to the bare phrase for filler/weight detection: drop a leading `(`/`[`, a trailing
+/// `:weight)` / `)` / `]`, and lowercase. `"(intricate details:1.2)"` → `"intricate details"`.
+fn normalize_span(span: &str) -> (String, Option<f32>) {
+    let s = span.trim();
+    let inner = s.trim_start_matches(['(', '[']).trim_end_matches([')', ']']);
+    // A trailing `:number` is an attention weight, not part of the phrase.
+    if let Some(idx) = inner.rfind(':') {
+        if let Ok(w) = inner[idx + 1..].trim().parse::<f32>() {
+            return (inner[..idx].trim().to_lowercase(), Some(w));
+        }
+    }
+    (inner.trim().to_lowercase(), None)
+}
+
+/// Split a prompt into top-level comma spans, keeping any `(… , …:w)` weight group intact (commas inside
+/// parens/brackets are not separators).
+fn split_spans(prompt: &str) -> Vec<String> {
+    let mut spans = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in prompt.chars() {
+        match ch {
+            '(' | '[' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' | ']' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth <= 0 => {
+                if !cur.trim().is_empty() {
+                    spans.push(cur.trim().to_string());
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        spans.push(cur.trim().to_string());
+    }
+    spans
+}
+
+/// 6.30.0 Phase 3: a deterministic, MODEL-FREE prompt packer. Splits the prompt into top-level spans,
+/// scores each by salience (attention weight, then front-load position, minus a generic-filler penalty),
+/// and greedily keeps the highest-salience spans that fit `budget` tokens — NEVER dropping the leading
+/// subject span. Emits a smysl [`PackInfo`] recording exactly what was dropped and why (filler →
+/// `LowValue`, essential-for-space → `Budget`), so a budget trim is auditable, reproducible, and
+/// model-free — versus an LLM condense that silently rewords. `token_est` is the caller's estimator so the
+/// budget matches the rest of the pipeline (recorded in `PackInfo.estimator`).
+pub fn pack_prompt(prompt: &str, budget: usize, token_est: &dyn Fn(&str) -> usize) -> PackResult {
+    let spans = split_spans(prompt);
+    let n = spans.len().max(1);
+    // Score each span. The first span is the subject → mandatory (never dropped).
+    struct Scored {
+        idx: usize,
+        text: String,
+        salience: f32,
+        filler: bool,
+    }
+    let mut scored: Vec<Scored> = spans
+        .iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let (bare, weight) = normalize_span(text);
+            let filler = FILLER_SPANS.contains(&bare.as_str());
+            // weighted span → its weight; else 1.0. Front-load bonus for earlier spans. Filler penalty.
+            let mut salience = weight.unwrap_or(1.0);
+            salience += 0.4 * (1.0 - i as f32 / n as f32);
+            if filler {
+                salience -= 1.0;
+            }
+            if i == 0 {
+                salience = f32::INFINITY; // subject: keep at all costs
+            }
+            Scored { idx: i, text: text.clone(), salience, filler }
+        })
+        .collect();
+
+    // Admission order: highest salience first, ties by original position (stable, reproducible).
+    let mut order: Vec<usize> = (0..scored.len()).collect();
+    order.sort_by(|&a, &b| {
+        scored[b].salience
+            .partial_cmp(&scored[a].salience)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(scored[a].idx.cmp(&scored[b].idx))
+    });
+
+    // Greedily admit spans (in salience order) while the reassembled prompt stays within budget.
+    let mut keep = vec![false; scored.len()];
+    let join_kept = |keep: &[bool], scored: &[Scored]| -> String {
+        scored
+            .iter()
+            .filter(|s| keep[s.idx])
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for &oi in &order {
+        keep[oi] = true;
+        if token_est(&join_kept(&keep, &scored)) > budget && scored[oi].idx != 0 {
+            keep[oi] = false; // adding this span overflows — drop it (unless it's the subject)
+        }
+    }
+
+    let text = join_kept(&keep, &scored);
+    let used = token_est(&text) as u64;
+    let mut info = PackInfo::new(budget as u64, used, "plakat/estimate_tokens v1");
+    let mut dropped_spans = Vec::new();
+    for s in &mut scored {
+        if !keep[s.idx] {
+            let reason = if s.filler { DropReason::LowValue } else { DropReason::Budget };
+            let uid = Uid::from_bytes(hash_bytes(s.text.as_bytes()));
+            info.dropped.push((uid, reason));
+            dropped_spans.push((std::mem::take(&mut s.text), reason));
+        }
+    }
+    PackResult { text, info, dropped_spans }
+}
+
+/// One scene's budget-pack decision, carried up from the compile so it can be recorded in the corpus —
+/// this is the "trace BUDGETS" half of the smysl vision (the fix records are the "trace CHANGES" half).
+#[derive(Clone)]
+pub struct ScenePack {
+    pub scene: String,
+    pub budget: u64,
+    pub used: u64,
+    pub family: String,
+    pub dropped: Vec<(String, DropReason)>,
+}
+
+/// Build corpus records for a set of scene budget-pack decisions: each scene that dropped anything → one
+/// `@observation` recording the model budget, tokens used, and exactly what was cut (+reason). Labels are
+/// content-addressed so these merge/dedup across runs like the fix records.
+pub fn packs_to_records(packs: &[ScenePack]) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
+    let mut records: Vec<Record> = Vec::new();
+    let mut labels: BTreeMap<Label, Uid> = BTreeMap::new();
+    for p in packs {
+        if p.dropped.is_empty() {
+            continue;
+        }
+        let gist = format!(
+            "budget pack ‘{}’: dropped {} span(s) to fit {} in {} tokens",
+            p.scene,
+            p.dropped.len(),
+            p.family,
+            p.budget
+        );
+        let body = format!(
+            "used {}/{} tokens; dropped:\n{}",
+            p.used,
+            p.budget,
+            p.dropped.iter().map(|(t, r)| format!("- {} [{}]", clip(t), r.as_str())).collect::<Vec<_>>().join("\n")
+        );
+        let unit = UnitCoreBuilder::new(KernelType::Observation, gist, Status::Speculative)
+            .body(body)
+            .build()
+            .map_err(|e| anyhow::anyhow!("smysl pack observation: {e:?}"))?;
+        let uid = canonical_uid(&unit);
+        labels.insert(Label::new(&format!("o/pack-{}", uid_tag(&uid)))?, uid);
+        records.push(Record::Unit(unit));
+    }
+    Ok((records, labels))
+}
+
+/// Format the packer's drop record as a one-line user-facing audit ("dropped 3: 8k, masterpiece [filler];
+/// distant hills [budget]") — so a budget trim is visible, never silent.
+pub fn pack_drop_summary(dropped: &[(String, DropReason)]) -> String {
+    if dropped.is_empty() {
+        return "nothing dropped".to_string();
+    }
+    let list = dropped
+        .iter()
+        .map(|(t, r)| format!("{} [{}]", clip(t), r.as_str()))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("dropped {}: {list}", dropped.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,10 +585,33 @@ mod tests {
         )];
         let manual = vec!["split the over-stuffed scene into two images".to_string()];
         let out = fixes_to_smysl(&applied, &manual).expect("builds");
-        assert!(out.contains("@finding f/risk-0"), "the risk is a finding:\n{out}");
-        assert!(out.contains("@claim c/fix-0"), "the fix is a claim");
-        assert!(out.contains("grounds: [f/risk-0]"), "the fix is GROUNDED in its finding (provenance edge)");
-        assert!(out.contains("@finding f/manual-0"), "structural item is an open finding");
+        assert!(out.contains("@finding f/risk-"), "the risk is a finding:\n{out}");
+        assert!(out.contains("@claim c/fix-"), "the fix is a claim");
+        // The fix's `grounds:` must reference the SAME content-addressed finding label.
+        let f_label = out
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("@finding "))
+            .and_then(|s| s.split_whitespace().next())
+            .expect("a finding label");
+        assert!(out.contains(&format!("grounds: [{f_label}]")), "fix GROUNDED in its finding:\n{out}");
+        assert!(out.contains("@finding f/manual-"), "structural item is an open finding");
+    }
+
+    #[test]
+    fn fixes_corpus_accumulates_across_runs_without_collision() {
+        // Run 1: one fix. Run 2: a DIFFERENT fix. Merging run 2 onto run 1 must keep BOTH (distinct
+        // content-addressed labels), and re-merging run 1 must add nothing (dedup).
+        let run1 = vec![("локомобиль".to_string(), "тягач".to_string(), "rare name".to_string())];
+        let run2 = vec![("bundles".to_string(), "stacked books".to_string(), "cargo fusion".to_string())];
+        let (mut recs, mut labels) = fixes_to_records(&run1, &[]).unwrap();
+        let (r2, l2) = fixes_to_records(&run2, &[]).unwrap();
+        merge_records(&mut recs, &mut labels, r2, l2);
+        let out = records_to_surface(&recs, &labels);
+        assert!(out.contains("тягач") && out.contains("stacked books"), "both runs' fixes present:\n{out}");
+        let n_before = recs.len();
+        let (r1b, l1b) = fixes_to_records(&run1, &[]).unwrap();
+        merge_records(&mut recs, &mut labels, r1b, l1b);
+        assert_eq!(recs.len(), n_before, "re-merging run 1 dedups (content-addressed), adds nothing");
     }
 
     #[test]
@@ -347,8 +625,8 @@ mod tests {
         let text = fixes_to_smysl(&applied, &[]).expect("builds");
         let parsed = smysl_core::surface::parse_surface(&text).expect("re-reads");
         let out = trace_report(&parsed.records, &parsed.labels, "traction engine");
-        assert!(out.contains("c/fix-0"), "locates the fix claim that carries the phrase:\n{out}");
-        assert!(out.contains("grounded in f/risk-0"), "shows WHY — the risk it fixed:\n{out}");
+        assert!(out.contains("c/fix-"), "locates the fix claim that carries the phrase:\n{out}");
+        assert!(out.contains("← grounded in f/risk-"), "shows WHY — the risk it fixed:\n{out}");
         // A phrase in no unit → an honest empty answer.
         assert!(trace_report(&parsed.records, &parsed.labels, "unicorn").contains("no smysl unit"));
     }
@@ -388,5 +666,60 @@ mod tests {
         .unwrap();
         merge_records(&mut recs, &mut labels, extra, extra_l);
         assert_eq!(recs.len(), before, "identical unit is deduped, not doubled");
+    }
+
+    // A stand-in token estimator for the packer tests: ~1 token per 4 chars (same shape as plakat's).
+    fn est(s: &str) -> usize {
+        s.len().div_ceil(4)
+    }
+
+    #[test]
+    fn pack_prompt_trims_filler_to_fit_and_keeps_subject_and_weights() {
+        let prompt =
+            "a Victorian steam traction engine, (brass chimney:1.3), masterpiece, 8k, highly detailed, trending on artstation";
+        let full = est(prompt);
+        let budget = full - 6; // force a trim
+        let r = pack_prompt(prompt, budget, &est);
+        assert!(r.info.used as usize <= budget, "packed within budget");
+        assert!(r.text.contains("traction engine"), "subject kept: {}", r.text);
+        assert!(r.text.contains("(brass chimney:1.3)"), "weighted span kept: {}", r.text);
+        assert!(r.fit_on_filler_alone(budget), "only filler dropped → model-free path taken");
+        assert!(r.dropped_spans.iter().all(|(t, _)| {
+            let l = t.to_lowercase();
+            l.contains("8k") || l.contains("masterpiece") || l.contains("detailed") || l.contains("artstation")
+        }), "dropped set is filler: {:?}", r.dropped_spans);
+    }
+
+    #[test]
+    fn packs_to_records_records_budget_decision() {
+        let packs = vec![ScenePack {
+            scene: "lighthouse".into(),
+            budget: 77,
+            used: 75,
+            family: "SD15".into(),
+            dropped: vec![
+                ("dramatic lighting".into(), DropReason::LowValue),
+                ("intricate details".into(), DropReason::LowValue),
+            ],
+        }];
+        let (r, l) = packs_to_records(&packs).expect("builds");
+        let out = records_to_surface(&r, &l);
+        assert!(out.contains("@observation o/pack-"), "budget pack is an observation:\n{out}");
+        assert!(out.contains("77") && out.contains("SD15"), "records the model budget");
+        assert!(out.contains("dramatic lighting"), "records what was cut");
+        // A scene that dropped nothing produces no record.
+        let empty = ScenePack { scene: "x".into(), budget: 77, used: 40, family: "SD15".into(), dropped: vec![] };
+        assert!(packs_to_records(&[empty]).unwrap().0.is_empty(), "no drop → no observation");
+    }
+
+    #[test]
+    fn pack_prompt_flags_essential_drop_for_llm_fallback() {
+        // No filler — every span is content. Forcing a tight budget must drop ESSENTIALS (reason Budget),
+        // so `fit_on_filler_alone` is false and the caller falls back to the LLM reword.
+        let prompt = "a red barn, a tall oak tree, a winding river, a stone bridge, a flock of geese";
+        let r = pack_prompt(prompt, est("a red barn, a tall oak tree"), &est);
+        assert!(r.text.starts_with("a red barn"), "subject preserved");
+        assert!(!r.fit_on_filler_alone(est("a red barn, a tall oak tree")), "essential drops → not filler-only");
+        assert!(r.dropped_spans.iter().any(|(_, reason)| *reason == DropReason::Budget), "budget-reason drops recorded");
     }
 }

@@ -424,7 +424,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (hjson, warnings, trace) = compile::compile_to_string(
+    let (hjson, warnings, trace, pack_smysl) = compile::compile_to_string(
         &input,
         &CompileOpts {
             provider: args.provider.clone(),
@@ -492,6 +492,13 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
                 let merge_with = prior.as_deref().filter(|p| p.exists()).or(Some(sidecar.as_path()));
                 match compile::compose_scene_smysl(&input, &args.model, merge_with) {
                     Ok(doc) => {
+                        // Fold in the compile's budget-pack decisions (the "trace BUDGETS" half) alongside
+                        // the authored scene claims.
+                        let doc = if pack_smysl.trim().is_empty() {
+                            doc
+                        } else {
+                            crate::smysl::merge_surface(&doc, &pack_smysl)
+                        };
                         std::fs::write(&sidecar, &doc)
                             .with_context(|| format!("writing {}", sidecar.display()))?;
                         println!("{}  smysl       → {}", style("✓").green(), sidecar.display());

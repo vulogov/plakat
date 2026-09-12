@@ -22,6 +22,9 @@ pub struct CompiledScene {
     /// 6.27 informational trace — the pipeline steps taken for this scene (translate, compose,
     /// weights, enhance, negative, fit). Shown by the CLI so compilation isn't a black box.
     pub trace: Vec<String>,
+    /// 6.30.0 the scene's budget-pack decision (what the model-free packer dropped to fit the model's
+    /// token budget), aggregated into the `--smysl` corpus. `None` when nothing was packed.
+    pub pack: Option<crate::smysl::ScenePack>,
 }
 
 fn q(s: &str) -> String {
@@ -436,6 +439,7 @@ mod tests {
             control_generate_max_figures: None,
             warnings: Vec::new(),
             trace: Vec::new(),
+            pack: None,
         };
         (globals, vec![cs])
     }
