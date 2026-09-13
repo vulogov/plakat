@@ -42,6 +42,10 @@ exclude = [
     "bake/",
     "datasets/",
     "assets/filipok.md",
+    # The narrative book ("A Poster, Start to Finish") — Typst sources, ~32 MB of
+    # example renders, and the PDFs. Tracked in git (the web PDF ships on GitHub),
+    # but NOT part of the published crate: it's documentation, not code.
+    "Book/",
 ]
 
 # docs.rs builds the CPU path (no GPU backend). metal/cuda are mutually

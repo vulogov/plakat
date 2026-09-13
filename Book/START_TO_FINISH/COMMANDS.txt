@@ -1,0 +1,105 @@
+# ============================================================================
+#  A Poster, Start to Finish — illustration render commands
+# ============================================================================
+#
+#  Ten images that track the NIGHT MARKET example through the book, one per key
+#  visual beat. Run them from the REPOSITORY ROOT (the folder that contains
+#  `Book/`). Each writes into Book/START_TO_FINISH/assets/ and is then renamed to
+#  a stable, book-friendly filename the chapters reference.
+#
+#  Model: SDXL throughout (the book's model), rendered at native buckets
+#  (1024x1024 for scenes, 832x1216 for the portrait poster/cover). If SDXL is
+#  tight on your machine, swap `--model sdxl` for `--model sd15` and the sizes for
+#  `--size 512x512` / `--size 512x768` — the framing survives, the fidelity drops.
+#
+#  Images 7 and 8 are POST-PROCESSING passes that read images 4 and 7, so run the
+#  list top to bottom. Total time is roughly 5–12 min on Apple Silicon / a decent
+#  GPU; considerably longer on CPU (use sd15 there).
+#
+#  Filenames the book expects (in Book/START_TO_FINISH/assets/):
+#    01-empty-lane.png     06-ink-poster.png
+#    02-vendor-cart.png    07-naturalized.png
+#    03-overstuffed.png    08-upscaled.png
+#    04-two-figures.png    09-poster-portrait.png
+#    05-cart-object.png    10-cover-hero.png
+# ============================================================================
+
+mkdir -p Book/START_TO_FINISH/assets
+A=Book/START_TO_FINISH/assets
+
+
+# --- 01 · Ch. 1–2 — the first image: the empty lane -------------------------
+#     Proof of life. A backdrop with no people yet.
+plakat generate "a narrow cobbled market lane at night, wet stones catching lantern light, two iron lanterns on stone posts, warm amber glow, soft blue fog swallowing the far end, no people, quiet and atmospheric" \
+  --model sdxl --size 1024x1024 --seed 1001 --out $A
+mv $A/plakat-1001.png $A/01-empty-lane.png
+
+
+# --- 02 · Ch. 3 — the scene, one subject: a vendor at the cart --------------
+#     The single-figure market scene described in prose.
+plakat generate "a narrow cobbled market lane at night, a food vendor in a dark apron working a small wooden cart under a canopy strung with warm string lights, steam rising from a pot, two iron lanterns on stone posts, soft blue fog beyond, warm amber glow against the cold night, cinematic night lighting" \
+  --model sdxl --size 1024x1024 --seed 1002 --out $A
+mv $A/plakat-1002.png $A/02-vendor-cart.png
+
+
+# --- 03 · Ch. 4 — the OVER-STUFFED scene (what --analyze warns about) --------
+#     Deliberately too much: the HIGH-RISK failure the analyzer predicts.
+plakat generate "a chaotic overcrowded night market lane, a food vendor and a customer and two children running and a cat on a barrel and a musician, a bustling crowd beyond, string lights and lanterns and a chalkboard menu and steam and reflections, everything happening at once, cluttered" \
+  --model sdxl --size 1024x1024 --seed 1003 --out $A
+mv $A/plakat-1003.png $A/03-overstuffed.png
+
+
+# --- 04 · Ch. 9 — two figures: the vendor and the customer ------------------
+#     The trimmed, staged hero shot: vendor standing, customer leaning in.
+plakat generate "a cobbled market lane at night, a food vendor standing at a wooden cart hands a paper cup to a single customer in a wool coat leaning across the counter to order, warm string lights overhead, two iron lanterns, soft blue fog and a few distant figures beyond, warm amber glow, cinematic composition, two people" \
+  --model sdxl --size 1024x1024 --seed 1004 --out $A
+mv $A/plakat-1004.png $A/04-two-figures.png
+
+
+# --- 05 · Ch. 10 — the cart as its own object (not fused into the vendor) ----
+#     A closer three-quarter view emphasising the separate wooden cart.
+plakat generate "a wooden food cart with a canopy and a small chalkboard menu, standing on wet cobblestones beside a vendor in a dark apron, warm string lights, steam rising, a market lane at night, soft fog, warm amber glow, the cart clearly a separate object" \
+  --model sdxl --size 1024x1024 --seed 1005 --out $A
+mv $A/plakat-1005.png $A/05-cart-object.png
+
+
+# --- 06 · Ch. 11 — the ink-poster LOOK ---------------------------------------
+#     A hardened two-colour screen-print treatment of the scene.
+#     (For a real trained/discovered style, add:  --look "vintage screen-print poster" --smart-discovery )
+plakat generate "a night market lane with a vendor at a wooden cart and a customer, rendered as a bold vintage two-colour screen-print poster, high-contrast ink illustration, limited amber-and-teal palette, halftone shading, clean poster composition" \
+  --model sdxl --size 832x1216 --seed 1006 --out $A
+mv $A/plakat-1006.png $A/06-ink-poster.png
+
+
+# --- 07 · Ch. 13 — the naturalize finishing pass ----------------------------
+#     Reads image 04; the weight-free analog grade (grain / aberration /
+#     vignette / bloom / film grade). No model needed. For the model-backed
+#     figure-protecting repaint instead, add:  --repaint --repaint-protect figures
+plakat naturalize $A/04-two-figures.png --out $A/07-naturalized.png
+
+
+# --- 08 · Ch. 14 — the upscale pass -----------------------------------------
+#     Reads image 07 and enlarges it. Classical Lanczos (fast, reliable) shown;
+#     for a large print with invented detail swap in:  --diffusion --scale 4
+plakat upscale --in $A/07-naturalized.png --scale 2 --out $A/08-upscaled.png
+
+
+# --- 09 · Ch. 15 — the portrait poster (space at top for a title) -----------
+#     The near-final poster crop; the title itself is set in a layout step.
+plakat generate "a night market poster, portrait format, a food vendor at a wooden cart handing a cup to a customer leaning in, warm string lights overhead, foggy blue night, warm amber glow, dark empty sky at the top for a title, poster composition, cinematic" \
+  --model sdxl --size 832x1216 --seed 1009 --out $A
+mv $A/plakat-1009.png $A/09-poster-portrait.png
+
+
+# --- 10 · frontispiece / cover — a moody hero shot --------------------------
+#     A strong single-lantern establishing image for the opening pages.
+plakat generate "a single iron lantern glowing warm amber on a stone post at the mouth of a foggy cobbled market lane at night, string lights receding into blue fog, atmospheric, cinematic, painterly, poster art" \
+  --model sdxl --size 832x1216 --seed 1010 --out $A
+mv $A/plakat-1010.png $A/10-cover-hero.png
+
+
+# ============================================================================
+#  Done. Ten images in Book/START_TO_FINISH/assets/ (01–10). Tell me when they
+#  are in place and I will wire them into the chapters (#image figures with
+#  captions) and re-render the PDF.
+# ============================================================================

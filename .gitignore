@@ -46,3 +46,9 @@ datasets/bookart_training/*/
 
 # bookart LoRA training output (host on HF, never commit)
 bake/
+
+# The narrative book "A Poster, Start to Finish" is tracked on GitHub (sources,
+# example renders, and the web PDF) but excluded from `cargo publish` (Cargo.toml).
+# The 41 MB print master is a regenerable build artifact — track the web build instead.
+Book/START_TO_FINISH/START_TO_FINISH.pdf
+.DS_Store
