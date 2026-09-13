@@ -26,7 +26,7 @@ to say clearly *what is in the scene and what it feels like*, in sentences.
   amber glow against the cold night, quiet and inviting.
 ```]
 
-#figure_img("assets/02-vendor-cart.png", "Image 02 — the scene from a single prose paragraph: a vendor at his cart, warm light against cold fog. One subject, cleanly rendered.")
+#figure_img("assets/02-vendor-cart.png", "Image 02 — the scene this prose will compile and render to: a vendor at his cart, warm light against cold fog. You are writing the source; the poster comes later, out of the scenario (Chapter 7).")
 
 That reads like a sentence a person would say. It names a subject (the vendor and
 cart), places the light (lanterns, string lights), sets the palette (warm amber

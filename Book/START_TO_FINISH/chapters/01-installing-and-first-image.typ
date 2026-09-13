@@ -172,6 +172,14 @@ generic, but unmistakably the right scene. That roughness is expected: this is a
 one-line prompt on the smallest model. The whole rest of the book is about turning
 this proof of life into a poster.
 
+A word on what just happened, because it shapes everything after. `plakat generate` is
+the *scratchpad*: one sentence in, one throwaway image out, nothing kept. It is perfect
+for a first pulse-check like this one, and you will keep it nearby for quick scouting.
+But it is *not* how we will make the poster. From the next chapter on, the images we
+keep come out of a small, repeatable loop — write prose, compile it, run the scenario —
+and `generate` steps aside to be what it is best at: a place to try something fast
+before committing it to the source.
+
 #subsection("What plakat wrote beside the image")
 
 Look in `out/` and you will find more than a PNG.

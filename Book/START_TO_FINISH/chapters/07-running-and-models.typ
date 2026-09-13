@@ -11,17 +11,30 @@ runs the poster and then chooses, deliberately, the model it will wear to print.
 
 One command renders every task in a scenario.
 
-#screen(caption: "Render the poster")[```
+#screen(caption: "Render the poster from the scenario")[```
   $ plakat scenario scenario.hjson
     task 1/1 · market-lane
      INFO 30 steps ████████████████████ 30/30  22.4s
     ✓ ./out/market-lane-1000.png
 ```]
 
-If you only want to see what *would* run — how many tasks, at what size, which
-model — add `--dry-run`. And because each task carries a name and a seed, re-running
-the same scenario reproduces the same images, while bumping the global `seed`
-produces a fresh, reproducible set.
+#figure_img("assets/02-vendor-cart.png", "The market-lane poster — the output of `plakat scenario`, not a one-off `generate`. This is the same image you saw take shape from prose in Chapter 3: prose → compile → scenario produced it, and re-running the scenario reproduces it exactly.")
+
+That is the whole point of the workflow this book has been building. The image is not
+something you coaxed out of a prompt box and hope to find again — it is the
+*deterministic output* of a source file you own. The prose compiled to this scenario;
+the scenario rendered this poster; and both steps are repeatable. If you only want to
+see what *would* run — how many tasks, at what size, which model — add `--dry-run`.
+Because each task carries a name and a seed, re-running the same scenario reproduces
+the same images, while bumping the global `seed` produces a fresh, reproducible set.
+
+#callout(label: "The scenario is where images come from")[
+  From here on, every poster in this book is a *scenario render*. You will still meet
+  `plakat generate` as a quick scratchpad for scouting a seed or a style, but the
+  images you keep — the ones you tune, compose, and print — come out of `plakat
+  scenario`, driven by the prose you compiled. Generate explores; the scenario
+  produces.
+]
 
 #section("The model families")
 
