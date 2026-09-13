@@ -1238,11 +1238,23 @@ pub async fn apply_fixes(
     let base = input_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."));
     let expanded = if raw.contains("@include") { parser::expand_includes(&raw, &base, 0)? } else { raw };
 
+    // smysl-optimize Phase B: load the TABU list — the moves prior `--fix` passes already made — from the
+    // accumulated corpus, so this pass neither re-applies nor reverses them. This is what turns the corpus
+    // from a record into a memory that reduces the "death march" of re-suggesting the same edits.
+    let corpus_path = input_path.with_extension("smysl");
+    let prior_moves = std::fs::read_to_string(&corpus_path)
+        .ok()
+        .map(|t| crate::smysl::prior_fixes(&t))
+        .unwrap_or_default();
+    let tabu_hint = crate::smysl::tabu_hint(&prior_moves);
+
     // 2. Fixer LLM → plan. Feed it the critic's findings so it fixes exactly what `--analyze` flagged (not a
-    // second, possibly-disagreeing judgement). Extract the JSON object, tolerating any stray wrapping.
+    // second, possibly-disagreeing judgement), plus the tabu hint so it doesn't re-propose spent moves.
+    // Extract the JSON object, tolerating any stray wrapping.
     let user = format!(
-        "SCENE PROSE:\n{expanded}\n\nCRITIC FINDINGS (produce verbatim edits that fix the auto-fixable ones):\n{}",
-        risks.trim()
+        "SCENE PROSE:\n{expanded}\n\nCRITIC FINDINGS (produce verbatim edits that fix the auto-fixable ones):\n{}{}",
+        risks.trim(),
+        if tabu_hint.is_empty() { String::new() } else { format!("\n\n{tabu_hint}") },
     );
     let out = crate::prompt::complete(&opts.provider, FIXER_SYSTEM, &user, &eargs)
         .await
@@ -1263,8 +1275,21 @@ pub async fn apply_fixes(
     // 6.30.0 Phase 2: collect the landed edits so the loop can be recorded as a smysl corpus
     // (each fix `@claim` grounded in the risk `@finding` it addressed).
     let mut applied_edits: Vec<(String, String, String)> = Vec::new();
+    let mut tabu_skipped = 0usize;
     for e in &plan.edits {
         if e.old.trim().is_empty() || e.old == e.new {
+            continue;
+        }
+        // smysl-optimize Phase B: the deterministic tabu filter (the safety net behind the fixer's hint) —
+        // refuse a move a prior pass already made, or one that reverses a prior fix, even if the fixer
+        // proposed it anyway. This is the guarantee the loop cannot re-march over spent ground.
+        if let Some(reason) = crate::smysl::tabu_reason(&e.old, &e.new, &prior_moves) {
+            report.push_str(&format!(
+                "• tabu — {reason}: \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}\n",
+                trunc(&e.old),
+                trunc(&e.new),
+            ));
+            tabu_skipped += 1;
             continue;
         }
         let hits: Vec<&std::path::PathBuf> = files
@@ -1304,8 +1329,14 @@ pub async fn apply_fixes(
             )),
         }
     }
-    if applied == 0 {
+    if applied == 0 && tabu_skipped == 0 {
         report.push_str("(no auto-applicable text fixes)\n");
+    }
+    if tabu_skipped > 0 {
+        report.push_str(&format!(
+            "\n{tabu_skipped} edit(s) refused by the smysl tabu filter — already tried in a prior pass. \
+             The corpus is doing its job: the loop is not re-marching over spent ground.\n"
+        ));
     }
     if !plan.manual.is_empty() {
         report.push_str("\nNeeds your hand (not auto-fixable):\n");
@@ -1320,7 +1351,7 @@ pub async fn apply_fixes(
     // finding dedups and a new one is added) rather than clobbering — so the grade-progression reasoning
     // survives across polish iterations. Best-effort, never fatal.
     if !applied_edits.is_empty() || !plan.manual.is_empty() {
-        let corpus = input_path.with_extension("smysl");
+        let corpus = &corpus_path;
         let existed = corpus.exists();
         let build = (|| -> anyhow::Result<()> {
             let (mut recs, mut labels) = if existed {

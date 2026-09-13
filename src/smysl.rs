@@ -255,6 +255,90 @@ pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -
     Ok(records_to_surface(&records, &labels))
 }
 
+// ---------------------------------------------------------------------------
+// smysl-optimize Phase B — the corpus as a TABU LIST for the --fix loop.
+// The corpus already REMEMBERS every fix applied in prior passes; these read it
+// back so the next pass can refuse to re-apply or REVERSE a change it already
+// tried — the deterministic half of "consult changes, reduce the death march".
+// ---------------------------------------------------------------------------
+
+/// Normalize a phrase for tabu comparison: trimmed, lowercased, whitespace-collapsed.
+fn norm_phrase(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Read every fix ALREADY recorded in a corpus as `(old, new)` pairs — the moves prior `--fix` passes made.
+/// Parses the surface, finds the `c/fix-*` claims, and pulls `was:`/`now:` out of each body. Used to build
+/// the tabu set the next pass filters against.
+pub fn prior_fixes(corpus_text: &str) -> Vec<(String, String)> {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    let mut out = Vec::new();
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        // Only fix claims carry a was/now move.
+        let is_fix = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("c/fix-")).unwrap_or(false);
+        if !is_fix {
+            continue;
+        }
+        if let Some(body) = &c.body {
+            let (mut was, mut now) = (None, None);
+            for line in body.lines() {
+                if let Some(v) = line.trim().strip_prefix("was:") {
+                    was = Some(v.trim().to_string());
+                } else if let Some(v) = line.trim().strip_prefix("now:") {
+                    now = Some(v.trim().to_string());
+                }
+            }
+            if let (Some(w), Some(n)) = (was, now) {
+                out.push((w, n));
+            }
+        }
+    }
+    out
+}
+
+/// Decide whether a proposed edit `old → new` is TABU against the prior fixes — i.e. a move the loop already
+/// made and must not repeat. Returns the reason to skip, or `None` if the edit is fresh. Two deterministic
+/// cases (the death-march killers): an EXACT duplicate of a prior fix, and a REVERSAL of one (proposing to
+/// turn a prior fix's result back toward what it replaced — the oscillation that never converges).
+pub fn tabu_reason(old: &str, new: &str, prior: &[(String, String)]) -> Option<&'static str> {
+    let (no, nn) = (norm_phrase(old), norm_phrase(new));
+    if no == nn {
+        return None;
+    }
+    for (po, pn) in prior {
+        let (npo, npn) = (norm_phrase(po), norm_phrase(pn));
+        if npo == no && npn == nn {
+            return Some("already applied in a prior pass");
+        }
+        if npn == no && npo == nn {
+            return Some("reverses a prior fix (oscillation)");
+        }
+    }
+    None
+}
+
+/// A short, human-readable list of the moves already made — fed to the fixer as a "do NOT re-propose these"
+/// hint (the LLM-side half of the tabu; [`tabu_reason`] is the deterministic safety net). Empty string when
+/// there is no prior history.
+pub fn tabu_hint(prior: &[(String, String)]) -> String {
+    if prior.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = prior
+        .iter()
+        .map(|(o, n)| format!("- \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}", clip(o), clip(n)))
+        .collect();
+    format!(
+        "ALREADY APPLIED in prior passes — do NOT re-propose these edits, and do NOT reverse them:\n{}",
+        lines.join("\n")
+    )
+}
+
 /// 6.30.0 Phase 2 `--trace`: over a record set (scene claims/relations plus any loaded fix-corpus
 /// findings), report every unit whose gist/body mentions `phrase`, its confidence, and WHY it is
 /// there — its `grounds` chain (a fix ← the finding it fixed) and the relations that touch it.
@@ -612,6 +696,32 @@ mod tests {
         let (r1b, l1b) = fixes_to_records(&run1, &[]).unwrap();
         merge_records(&mut recs, &mut labels, r1b, l1b);
         assert_eq!(recs.len(), n_before, "re-merging run 1 dedups (content-addressed), adds nothing");
+    }
+
+    #[test]
+    fn tabu_recovers_prior_fixes_and_blocks_repeats() {
+        // A corpus with one applied fix (in Russian, to prove language-agnostic normalization).
+        let applied = vec![("локомобиль".to_string(), "тягач".to_string(), "rare name".to_string())];
+        let corpus = fixes_to_smysl(&applied, &[]).unwrap();
+        let prior = prior_fixes(&corpus);
+        assert_eq!(prior, vec![("локомобиль".to_string(), "тягач".to_string())], "recovers the was→now move");
+
+        // Exact duplicate of a prior fix → tabu.
+        assert_eq!(tabu_reason("локомобиль", "тягач", &prior), Some("already applied in a prior pass"));
+        // The death-march move — reversing a prior fix — → tabu.
+        assert_eq!(tabu_reason("тягач", "локомобиль", &prior), Some("reverses a prior fix (oscillation)"));
+        // Normalization: case + surrounding whitespace still caught.
+        assert!(tabu_reason("  Тягач ", "локомобиль", &prior).is_some());
+        // A genuinely fresh edit is allowed through.
+        assert_eq!(tabu_reason("bundles", "stacked books", &prior), None);
+        assert_eq!(tabu_reason("x", "x", &prior), None, "a no-op is not tabu, just ignored");
+    }
+
+    #[test]
+    fn tabu_hint_lists_moves_or_is_empty() {
+        assert!(tabu_hint(&[]).is_empty(), "no history → no hint");
+        let h = tabu_hint(&[("a rare name".into(), "a common one".into())]);
+        assert!(h.contains("do NOT re-propose") && h.contains("rare name") && h.contains("common one"));
     }
 
     #[test]
