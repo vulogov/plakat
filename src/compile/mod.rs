@@ -18,6 +18,10 @@ pub mod parser;
 pub mod resolver;
 pub mod assembler;
 pub mod emitter;
+/// smysl-optimize Phase D: the automatic improve-loop controller (generate→rank→regenerate with the
+/// corpus as tabu memory + a convergence guard). Pure over an injected step; the real step wires in at
+/// the CLI.
+pub mod improve;
 pub mod cache;
 
 /// Salt mixed into every compile LLM cache key. Bump on any change to how the LLM is called (system
