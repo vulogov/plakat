@@ -2576,7 +2576,8 @@ fn parse_wh(s: Option<&str>) -> Option<(u32, u32)> {
 /// Generate ONE structure draft on an already-loaded pipeline into `dest` (plain t2i, no controls). The
 /// pipeline writes seed-named PNGs, so we render into a temp dir and copy the single result out — keeping
 /// the draft model loaded ONCE across every draft/round/task instead of reloading per image.
-fn draft_generate(
+/// `pub(crate)` so `compile --improve` reuses it for its resident render loop (one model load, many renders).
+pub(crate) fn draft_generate(
     pipe: &Pipeline,
     prompt: &str,
     negative: &str,

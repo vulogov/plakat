@@ -616,6 +616,9 @@ struct LiveStep {
     provider: String,
     eargs: crate::prompt::EnhanceArgs,
     scorer: crate::pipelines::aesthetic::AestheticScorer,
+    /// The RENDER pipeline, loaded ONCE and reused for every render (SD-family). `None` → the one-shot
+    /// `api::Generate` fallback (reloads per render) for non-SD-family models (sd35/Flux).
+    pipe: Option<crate::pipelines::t2i::Pipeline>,
     tmp: std::path::PathBuf,
     last_rank: f32,
 }
@@ -657,20 +660,36 @@ impl crate::compile::improve::ImproveStep for LiveStep {
             // Corroboration: render + score EVERY seed, average — robust to per-seed noise.
             let mut scores = Vec::with_capacity(self.seeds.len());
             for (i, &seed) in self.seeds.iter().enumerate() {
-                let images = crate::api::Generate::new(self.model.as_str())
-                    .prompt(prompt)
-                    .negative(self.negative.as_str())
-                    .size(self.width, self.height)
-                    .seed(seed)
-                    .count(1)
-                    .run()
-                    .await?;
-                let img = images
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
                 let path = self.tmp.join(format!("improve-{i}.png"));
-                img.save(&path)?;
+                if let Some(pipe) = &self.pipe {
+                    // Resident SD-family pipeline — loaded ONCE (no per-render model reload).
+                    crate::cli::scenario::draft_generate(
+                        pipe,
+                        prompt,
+                        self.negative.as_str(),
+                        self.width,
+                        self.height,
+                        seed,
+                        &path,
+                        &[],
+                        &[],
+                    )?;
+                } else {
+                    // Fallback: one-shot render (reloads the model each call) for non-SD-family models.
+                    let images = crate::api::Generate::new(self.model.as_str())
+                        .prompt(prompt)
+                        .negative(self.negative.as_str())
+                        .size(self.width, self.height)
+                        .seed(seed)
+                        .count(1)
+                        .run()
+                        .await?;
+                    let img = images
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
+                    img.save(&path)?;
+                }
                 scores.push(self.scorer.score_path(&path)?);
             }
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
@@ -766,6 +785,29 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device)
         .await
         .context("--improve: loading the aesthetic scorer (CLIP ViT-L/14 + LAION predictor)")?;
+    // Load the RENDER model ONCE and keep it resident — reloading the SD core per render was the bug. SD
+    // family (sd15/sdxl/…) loads here; other families (sd35/Flux) fall back to the one-shot per-render path.
+    let pipe = match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+        model: model.clone(),
+        device: device.clone(),
+        loras: Vec::new(),
+        lora_scale: 1.0,
+        use_refiner: false,
+        embeddings: Vec::new(),
+        vae_cache: None,
+    })
+    .await
+    {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!(
+                "{}  {model} is not an SD-family model for the resident render loop ({e}) — falling back to \
+                 per-render loading (slow). Use --improve-model sdxl or sd15 for the fast path.",
+                style("⚠").yellow(),
+            );
+            None
+        }
+    };
     let tmp = std::env::temp_dir().join(format!("plakat-improve-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).with_context(|| format!("--improve: creating {}", tmp.display()))?;
     let n_seeds = args.improve_seeds.max(1) as u64;
@@ -796,6 +838,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         provider: args.provider.clone(),
         eargs: crate::prompt::EnhanceArgs::default(),
         scorer,
+        pipe,
         tmp: tmp.clone(),
         last_rank: 0.0,
     };
