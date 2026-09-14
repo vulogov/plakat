@@ -244,10 +244,14 @@ struct ScenarioFile {
     /// aspect would squash on downscale (a warning fires). Default: the finish size.
     #[serde(rename = "control-generate-size", default)]
     control_generate_size: Option<String>,
-    /// What the structure pass renders: `render` (default — a realistic composition base) or `wireframe` —
-    /// a clean line-art BLUEPRINT (bold outlines on white, every figure/object/building drawn with correct
-    /// proportions, anatomy and perspective, no colour/shading). A wireframe is a purer compositional target
-    /// (easier to vision-verify for correctness) and a strong img2img/control base for the finish model.
+    /// What the structure pass renders: `render` (default — a realistic composition base), `wireframe` — a
+    /// clean line-art BLUEPRINT (bold outlines on white, correct proportions/anatomy/perspective, no
+    /// colour/shading), or `blockin` — a flat tonal BLOCK-IN / notan (every element a solid mass of its local
+    /// colour, no lines, no detail, no shading). **`blockin` is the model-agnostic "what and where, not how"
+    /// pre-image**: masses live in the low-frequency band img2img PRESERVES, so ANY finish model (sd35, Flux,
+    /// Sana, …) paints finished art over them without tracing — where a wireframe's lines live in the
+    /// high-frequency band img2img erases (they ghost or get traced). block-in also raises the default finish
+    /// strength to 0.72 (no style to preserve). No ControlNet, no finish-family constraint.
     #[serde(rename = "control-generate-mode", default)]
     control_generate_mode: Option<String>,
     /// 6.28: `control-generate-opportunistic: true` — stop generating structure drafts as soon as ONE clears
@@ -2937,20 +2941,43 @@ async fn control_generate_prepass(
             ));
             continue;
         }
+        // Structure-pass mode: `render` (realistic, default) · `wireframe` (line-art blueprint) · `blockin`
+        // (flat tonal masses — a painter's notan). block-in is the model-AGNOSTIC "what/where, not how"
+        // pre-image: masses live in the LOW-frequency band img2img PRESERVES, so ANY finish model paints art
+        // over them at higher strength without tracing lines (lineart lives in the HIGH-freq band img2img
+        // ERASES — it ghosts or traces). No ControlNet, no finish-family constraint.
+        let mode = s.tasks[i].control_generate_mode.as_deref().or(g_mode.as_deref()).unwrap_or("render");
+        let blockin = mode.eq_ignore_ascii_case("blockin");
+        const BLOCKIN_STYLE: &str = "a flat colour block-in, notan underpainting: every element rendered as a \
+            solid simplified mass of its local colour with correct placement, proportion and silhouette, clean \
+            blocked shapes with soft mass boundaries, NO outlines, NO linework, NO fine detail, NO texture, NO \
+            shading gradients, flat poster-like colour";
+        const BLOCKIN_NEGATIVE: &str = "line art, lineart, outlines, ink, sketch, pencil, engraving, fine \
+            detail, intricate details, texture, photorealistic, sharp focus, 3d render, glossy, shading gradients";
+
         // Prefer the compile-emitted style-stripped structure prompt (composition, not soft-focus); fall
         // back to the styled task prompt for hand-written scenarios.
         let styled_prompt = s.tasks[i].prompt.clone();
-        let prompt = s.tasks[i]
+        let base_prompt = s.tasks[i]
             .structure_prompt
             .clone()
             .filter(|p| !p.trim().is_empty())
             .unwrap_or_else(|| styled_prompt.clone());
-        if prompt.trim().is_empty() {
+        if base_prompt.trim().is_empty() {
             continue;
         }
+        // block-in renders the structure as flat masses (no style, no lines) — the img2img seed the finish paints from.
+        let prompt = if blockin { format!("{BLOCKIN_STYLE}. {base_prompt}") } else { base_prompt };
         let has_structure_prompt = s.tasks[i].structure_prompt.as_deref().is_some_and(|p| !p.trim().is_empty());
-        let negative = s.tasks[i].negative.clone().unwrap_or_default();
-        let strength = s.tasks[i].control_generate_strength.or(g_strength).unwrap_or(0.55);
+        let mut negative = s.tasks[i].negative.clone().unwrap_or_default();
+        if blockin {
+            if !negative.trim().is_empty() {
+                negative.push_str(", ");
+            }
+            negative.push_str(BLOCKIN_NEGATIVE);
+        }
+        // block-in has no style to preserve, so the finish should repaint more freely — a higher default strength.
+        let strength = s.tasks[i].control_generate_strength.or(g_strength).unwrap_or(if blockin { 0.72 } else { 0.55 });
         let (w, h) = parse_wh(s.tasks[i].size.as_deref().or(g_size.as_deref())).unwrap_or((768, 768));
         // Draft resolution (SDXL composes better at native 1024²); the winner is downscaled to (w,h) for the
         // finish. Default = finish size. Warn on an aspect mismatch (downscale would squash the composition).
@@ -3073,7 +3100,7 @@ async fn control_generate_prepass(
         crate::ui::progress::println(&format!(
             "  {} {cg} {} pass · {n_draft} draft(s) @ {dw}×{dh} × up to {tries} round(s){}{} → {task_model} img2img @ {w}×{h} (strength {strength})",
             style("control-generate:").cyan(),
-            if wireframe { "WIREFRAME" } else { "structure" },
+            if wireframe { "WIREFRAME" } else if blockin { "BLOCK-IN" } else { "structure" },
             if has_structure_prompt { " · style-stripped composition prompt" } else { "" },
             if vision_ok { " · vision-ranked + coached" } else { " · no vision provider — unranked" },
         ));
