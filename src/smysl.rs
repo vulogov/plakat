@@ -620,6 +620,112 @@ pub fn packs_to_records(packs: &[ScenePack]) -> anyhow::Result<(Vec<Record>, BTr
     Ok((records, labels))
 }
 
+// ---------------------------------------------------------------------------
+// smysl-recompile — the prose → emitted-prompt transformation of `compile`.
+// A plain `compile` REWRITES the prompt (translate/compose/enhance/negative/fit);
+// these record that transformation so `--trace` covers enhancer-introduced
+// phrases and drift across recompilations is visible + versioned.
+// ---------------------------------------------------------------------------
+
+/// For each scene `(name, prose, emitted_prompt)`, build the compile transformation as two claims: the
+/// authored `c/prose-…` (Speculative) and the `c/prompt-…` emitted prompt DERIVED FROM it (grounded in the
+/// prose). Content-addressed, so an identical recompile dedups; a reworded emitted prompt is a new claim.
+pub fn recompile_records(
+    scenes: &[(String, String, String)],
+) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
+    let mut records: Vec<Record> = Vec::new();
+    let mut labels: BTreeMap<Label, Uid> = BTreeMap::new();
+    for (name, prose, emitted) in scenes {
+        if emitted.trim().is_empty() {
+            continue;
+        }
+        let prose_txt = if prose.trim().is_empty() { name.trim() } else { prose.trim() };
+        // The authored prose the emitted prompt derives from.
+        let prose_core = UnitCoreBuilder::new(KernelType::Claim, format!("prose \u{00B7} {name}"), Status::Speculative)
+            .body(prose_txt)
+            .build()
+            .map_err(|e| anyhow::anyhow!("smysl prose `{name}`: {e:?}"))?;
+        let prose_uid = canonical_uid(&prose_core);
+        let plabel = Label::new(&format!("c/prose-{}", uid_tag(&prose_uid)))?;
+        if labels.insert(plabel, prose_uid).is_none() {
+            records.push(Record::Unit(prose_core));
+        }
+        // The emitted prompt — DERIVED FROM the prose (the compile transformation, provenance edge).
+        let prompt_core = UnitCoreBuilder::new(KernelType::Claim, format!("emitted prompt \u{00B7} {name}"), Status::Derived)
+            .body(emitted.trim())
+            .grounds([prose_uid])
+            .build()
+            .map_err(|e| anyhow::anyhow!("smysl emitted `{name}`: {e:?}"))?;
+        let prompt_uid = canonical_uid(&prompt_core);
+        labels.insert(Label::new(&format!("c/prompt-{}", uid_tag(&prompt_uid)))?, prompt_uid);
+        records.push(Record::Unit(prompt_core));
+    }
+    Ok((records, labels))
+}
+
+/// The `(uid, grounds)` of every `c/prompt-*` emitted-prompt claim in a corpus.
+fn prompt_claims(text: &str) -> Vec<(Uid, Vec<Uid>)> {
+    let Ok(p) = smysl_core::surface::parse_surface(text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    p.records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Unit(c) => {
+                let uid = canonical_uid(c);
+                if uid_label.get(&uid).map(|l| l.starts_with("c/prompt-")).unwrap_or(false) {
+                    Some((uid, c.grounds.iter().copied().collect()))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// `Supersedes` relations linking each NEW emitted-prompt claim to the PRIOR one(s) for the same prose — the
+/// recompilation drift history. Two prompt claims are "the same scene" when they ground in a shared prose uid.
+pub fn supersedes_edges(new_text: &str, prior_text: &str) -> Vec<Record> {
+    let news = prompt_claims(new_text);
+    let priors = prompt_claims(prior_text);
+    let mut edges = Vec::new();
+    for (n_uid, n_g) in &news {
+        for (p_uid, p_g) in &priors {
+            if p_uid != n_uid && n_g.iter().any(|g| p_g.contains(g)) {
+                edges.push(Record::Relation(Relation::new(RelKind::Supersedes, *n_uid, *p_uid)));
+            }
+        }
+    }
+    edges
+}
+
+/// Fold extra relation records into a serialized corpus, reusing its labels (the relations' endpoints are
+/// already labeled units in `doc_text`). Dedups by `(kind, from, to)`.
+pub fn merge_relations(doc_text: &str, rels: Vec<Record>) -> String {
+    let Ok(p) = smysl_core::surface::parse_surface(doc_text) else {
+        return doc_text.to_string();
+    };
+    let (mut recs, labels) = (p.records, p.labels);
+    let mut have: std::collections::HashSet<(String, Uid, Uid)> = recs
+        .iter()
+        .filter_map(|r| match r {
+            Record::Relation(rl) => Some((rl.kind.as_str().to_string(), rl.from, rl.to)),
+            _ => None,
+        })
+        .collect();
+    for r in rels {
+        if let Record::Relation(rl) = &r {
+            if have.insert((rl.kind.as_str().to_string(), rl.from, rl.to)) {
+                recs.push(r);
+            }
+        }
+    }
+    records_to_surface(&recs, &labels)
+}
+
 /// Format the packer's drop record as a one-line user-facing audit ("dropped 3: 8k, masterpiece [filler];
 /// distant hills [budget]") — so a budget trim is visible, never silent.
 pub fn pack_drop_summary(dropped: &[(String, DropReason)]) -> String {
@@ -722,6 +828,39 @@ mod tests {
         assert!(tabu_hint(&[]).is_empty(), "no history → no hint");
         let h = tabu_hint(&[("a rare name".into(), "a common one".into())]);
         assert!(h.contains("do NOT re-propose") && h.contains("rare name") && h.contains("common one"));
+    }
+
+    #[test]
+    fn recompile_records_derives_emitted_from_prose() {
+        let scenes = vec![(
+            "lane".to_string(),
+            "a foggy lane".to_string(),
+            "a foggy lane, cinematic, volumetric light".to_string(),
+        )];
+        let (r, l) = recompile_records(&scenes).unwrap();
+        let out = records_to_surface(&r, &l);
+        assert!(out.contains("c/prose-"), "authored prose claim:\n{out}");
+        assert!(out.contains("c/prompt-"), "emitted-prompt claim");
+        assert!(out.contains("grounds:"), "the emitted prompt is DERIVED FROM the prose (grounds edge)");
+        assert!(out.contains("volumetric light"), "carries the emitted prompt body");
+        // Empty emitted → nothing recorded.
+        assert!(recompile_records(&[("x".into(), "x".into(), "".into())]).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn supersedes_links_recompile_drift() {
+        // Same prose, two DIFFERENT emitted prompts — the enhancer reworded across recompiles.
+        let prose = "a foggy lane".to_string();
+        let (r1, l1) =
+            recompile_records(&[("lane".into(), prose.clone(), "a foggy lane, v1".into())]).unwrap();
+        let (r2, l2) =
+            recompile_records(&[("lane".into(), prose.clone(), "a foggy lane, v2".into())]).unwrap();
+        let (prior, newer) = (records_to_surface(&r1, &l1), records_to_surface(&r2, &l2));
+        let edges = supersedes_edges(&newer, &prior);
+        assert_eq!(edges.len(), 1, "the v2 emitted prompt SUPERSEDES v1 (same prose):\n{newer}");
+        assert!(matches!(&edges[0], Record::Relation(rl) if rl.kind == RelKind::Supersedes));
+        // An identical recompile supersedes nothing (same content-hash).
+        assert!(supersedes_edges(&prior, &prior).is_empty(), "nothing supersedes itself");
     }
 
     #[test]

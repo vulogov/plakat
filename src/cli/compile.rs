@@ -468,7 +468,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (hjson, warnings, trace, pack_smysl) = compile::compile_to_string(
+    let (hjson, warnings, trace, provenance) = compile::compile_to_string(
         &input,
         &CompileOpts {
             provider: args.provider.clone(),
@@ -534,15 +534,21 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
                 // Finalize onto any corpus already born at `--fix` (input-side) or a prior compile.
                 let prior = if args.input.as_os_str() == "-" { None } else { Some(args.input.with_extension("smysl")) };
                 let merge_with = prior.as_deref().filter(|p| p.exists()).or(Some(sidecar.as_path()));
+                // The prior corpus (before this run) — for linking recompilation drift.
+                let prior_text = merge_with.and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
                 match compile::compose_scene_smysl(&input, &args.model, merge_with) {
                     Ok(doc) => {
-                        // Fold in the compile's budget-pack decisions (the "trace BUDGETS" half) alongside
-                        // the authored scene claims.
-                        let doc = if pack_smysl.trim().is_empty() {
+                        // Fold in the compile's provenance — budget-pack decisions AND the prose→emitted
+                        // transformation (the "trace BUDGETS" + "trace the ENHANCE step" halves).
+                        let doc = if provenance.trim().is_empty() {
                             doc
                         } else {
-                            crate::smysl::merge_surface(&doc, &pack_smysl)
+                            crate::smysl::merge_surface(&doc, &provenance)
                         };
+                        // Recompilation drift: Supersedes edges from this run's emitted-prompt claims to the
+                        // prior ones for the same prose — so the corpus versions the enhancer's rewrites.
+                        let sup = crate::smysl::supersedes_edges(&provenance, &prior_text);
+                        let doc = if sup.is_empty() { doc } else { crate::smysl::merge_relations(&doc, sup) };
                         std::fs::write(&sidecar, &doc)
                             .with_context(|| format!("writing {}", sidecar.display()))?;
                         println!("{}  smysl       → {}", style("✓").green(), sidecar.display());

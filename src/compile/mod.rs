@@ -1620,8 +1620,35 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         }
     };
 
+    // 6.30.0 recompile corpus: record each scene's prose → emitted-prompt transformation (the "trace the
+    // ENHANCE step" half), so `--trace` covers enhancer-introduced phrases and drift across recompiles is
+    // visible. Folded into the same provenance the `--smysl` sidecar accumulates.
+    let recompile_smysl = {
+        let scenes: Vec<(String, String, String)> = compiled
+            .iter()
+            .map(|c| {
+                let prose = if c.scene.free_text.trim().is_empty() {
+                    c.scene.composition_text.clone()
+                } else {
+                    c.scene.free_text.clone()
+                };
+                (c.scene.name.clone(), prose, c.prompt.clone())
+            })
+            .collect();
+        match crate::smysl::recompile_records(&scenes) {
+            Ok((r, l)) if !r.is_empty() => crate::smysl::records_to_surface(&r, &l),
+            _ => String::new(),
+        }
+    };
+    let provenance = match (pack_smysl.is_empty(), recompile_smysl.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => pack_smysl,
+        (true, false) => recompile_smysl,
+        (false, false) => crate::smysl::merge_surface(&pack_smysl, &recompile_smysl),
+    };
+
     let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);
-    Ok((hjson, warnings, trace, pack_smysl))
+    Ok((hjson, warnings, trace, provenance))
 }
 
 /// Lint a `prompts.txt` without calling the LLM (E-C2): unknown commands and
