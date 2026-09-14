@@ -1127,6 +1127,23 @@ pub fn compose_scene_smysl(
     Ok(crate::smysl::records_to_surface(&records, &labels))
 }
 
+/// smysl-optimize Phase D `--improve`: compile the FIRST non-skipped scene and return its emitted
+/// `(positive, negative)` prompt — the baseline the improve loop optimizes. Reuses the full compile path
+/// (translate / compose components / enhance / negative / fit-budget), so the loop starts from exactly what
+/// `plakat compile` would render.
+pub async fn first_prompt(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, String)> {
+    let doc = parser::parse(input)?;
+    let resolved = resolver::resolve(&doc, &opts.default_model)?;
+    let eargs = crate::prompt::EnhanceArgs::default();
+    let scene = resolved
+        .scenes
+        .iter()
+        .find(|s| !s.skip)
+        .ok_or_else(|| anyhow::anyhow!("--improve: every scene is skipped — nothing to optimize"))?;
+    let c = compile_one_scene(scene, opts, &eargs, false).await;
+    Ok((c.prompt, c.negative))
+}
+
 /// 6.30.0 Phase 2 `--trace "<phrase>"`: answer "why is this in the prompt?" without an LLM. Resolves
 /// the scene to its smysl claims/relations, folds in any `<stem>.smysl` fix-corpus sitting beside the
 /// input (so the analyze/fix decisions are traceable too), and reports every unit that mentions the

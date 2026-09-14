@@ -131,6 +131,28 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, value_name = "PHRASE")]
     pub trace: Option<String>,
 
+    /// *(6.30 smysl-optimize)* AUTOMATIC improve loop: compile the first scene, render + aesthetically score
+    /// it, then let an LLM regenerator propose one prompt edit at a time — keeping only edits that raise the
+    /// score, and using the `<stem>.smysl` corpus as a TABU list so it never re-tries a spent move. Stops on
+    /// a plateau / the pass budget / a dry proposer, always reporting the best prompt. Renders images (needs a
+    /// model); budget it with `--improve-passes`.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub improve: bool,
+
+    /// *(6.30)* `--improve` pass budget — the maximum number of edits to try. Each pass renders + scores.
+    #[arg(help_heading = "Compile", long = "improve-passes", value_name = "N", default_value_t = 6)]
+    pub improve_passes: usize,
+
+    /// *(6.30)* Model `--improve` renders with while scoring (defaults to `--model`). Use `sd15` for fast,
+    /// cheap passes; `sdxl` for a truer preview of the final look.
+    #[arg(help_heading = "Compile", long = "improve-model", value_name = "MODEL")]
+    pub improve_model: Option<String>,
+
+    /// *(6.30)* Fixed seed `--improve` renders at, so every pass scores the *same* composition and the rank
+    /// delta reflects the prompt edit, not a fresh roll.
+    #[arg(help_heading = "Compile", long = "improve-seed", value_name = "SEED", default_value_t = 1000)]
+    pub improve_seed: u64,
+
     // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
     /// Force the Tera template pre-pass regardless of file extension.
     #[arg(help_heading = "Templating", long, default_value_t = false)]
@@ -372,6 +394,12 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
+    // --improve: the automatic aesthetic improve loop (Phase D). Renders + scores, so it needs a model.
+    if args.improve {
+        anyhow::ensure!(!stdin_input, "--improve needs a file input (not stdin)");
+        return improve_cmd(&args, &input).await;
+    }
+
     let system_override = match &args.system {
         Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
         None => None,
@@ -509,4 +537,208 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ===========================================================================
+//  smysl-optimize Phase D — the `compile --improve` automatic aesthetic loop.
+//  The live ImproveStep: an LLM regenerator proposes one prompt edit, each
+//  candidate is rendered + aesthetically scored, and the tested controller
+//  (compile::improve) keeps only improvements while the smysl corpus is the
+//  tabu memory so no spent move is re-tried.
+// ===========================================================================
+
+/// System prompt for the regenerator — proposes ONE aesthetic edit as JSON.
+const REGEN_SYSTEM: &str = "You improve a text-to-image PROMPT for higher AESTHETIC quality. Propose ONE \
+    small, safe, VERBATIM edit — an existing substring of the prompt replaced by a better one — likely to \
+    make the rendered image more beautiful (better light, colour, composition, or detail) WITHOUT changing \
+    the subject or adding new subjects. Output ONLY a JSON object {\"old\":\"…\",\"new\":\"…\"}, where \
+    \"old\" is an EXACT substring of the prompt; output {} if you have no confident improvement. Do NOT \
+    propose any edit the message lists as already tried, and never reverse one.";
+
+/// The live improve step: render + aesthetic-score for `rank`, LLM regenerator for `propose`.
+struct LiveStep {
+    model: String,
+    negative: String,
+    width: u32,
+    height: u32,
+    seed: u64,
+    provider: String,
+    eargs: crate::prompt::EnhanceArgs,
+    scorer: crate::pipelines::aesthetic::AestheticScorer,
+    tmp: std::path::PathBuf,
+    last_rank: f32,
+}
+
+impl crate::compile::improve::ImproveStep for LiveStep {
+    fn propose<'a>(
+        &'a mut self,
+        prompt: &'a str,
+        tabu: &'a [(String, String)],
+    ) -> crate::compile::improve::StepFut<'a, Option<(String, String)>> {
+        Box::pin(async move {
+            eprintln!("    · asking the regenerator for one edit…");
+            let hint = crate::smysl::tabu_hint(tabu);
+            let user = format!(
+                "IMAGE PROMPT (current aesthetic score {:.2}):\n{prompt}\n\n{hint}\n\nPropose ONE small \
+                 verbatim edit to raise the aesthetic quality.",
+                self.last_rank,
+            );
+            let out = crate::prompt::complete(&self.provider, REGEN_SYSTEM, &user, &self.eargs).await.ok()?;
+            let delta = parse_delta(&out, prompt);
+            match &delta {
+                Some((o, n)) => eprintln!("    · proposed: \u{201C}{o}\u{201D} \u{2192} \u{201C}{n}\u{201D}"),
+                None => eprintln!("    · no confident edit proposed"),
+            }
+            delta
+        })
+    }
+
+    fn rank<'a>(&'a mut self, prompt: &'a str) -> crate::compile::improve::StepFut<'a, anyhow::Result<f32>> {
+        Box::pin(async move {
+            eprintln!("    · rendering + scoring ({}, {}\u{00D7}{})…", self.model, self.width, self.height);
+            let images = crate::api::Generate::new(self.model.as_str())
+                .prompt(prompt)
+                .negative(self.negative.as_str())
+                .size(self.width, self.height)
+                .seed(self.seed)
+                .count(1)
+                .run()
+                .await?;
+            let img = images
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
+            let path = self.tmp.join("improve-candidate.png");
+            img.save(&path)?;
+            let score = self.scorer.score_path(&path)?;
+            self.last_rank = score;
+            eprintln!("    · aesthetic {score:.2}");
+            Ok(score)
+        })
+    }
+}
+
+/// Extract a `{"old":…, "new":…}` delta from the regenerator's reply. Returns `None` (no fresh move) when
+/// the JSON is empty/absent, `old` is not a verbatim substring of the prompt, or the edit is a no-op.
+fn parse_delta(out: &str, prompt: &str) -> Option<(String, String)> {
+    let (a, b) = (out.find('{')?, out.rfind('}')?);
+    if b < a {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct D {
+        #[serde(default)]
+        old: String,
+        #[serde(default)]
+        new: String,
+    }
+    let d: D = serde_json::from_str(&out[a..=b]).ok()?;
+    let (old, new) = (d.old.trim(), d.new.trim());
+    if old.is_empty() || old == new || !prompt.contains(old) {
+        return None;
+    }
+    Some((old.to_string(), new.to_string()))
+}
+
+/// Merge the loop's tried deltas into the `<stem>.smysl` corpus as tabu moves (accumulate, content-hash
+/// dedup) so the next `--improve`/`--fix` run starts already knowing them.
+fn persist_improve_corpus(corpus: &std::path::Path, moves: &[(String, String, String)]) -> Result<()> {
+    let (mut recs, mut labels) = if corpus.exists() {
+        let text = std::fs::read_to_string(corpus)?;
+        match smysl_core::surface::parse_surface(&text) {
+            Ok(p) => (p.records, p.labels),
+            Err(_) => (Vec::new(), std::collections::BTreeMap::new()),
+        }
+    } else {
+        (Vec::new(), std::collections::BTreeMap::new())
+    };
+    let (nr, nl) = crate::smysl::fixes_to_records(moves, &[])?;
+    crate::smysl::merge_records(&mut recs, &mut labels, nr, nl);
+    std::fs::write(corpus, crate::smysl::records_to_surface(&recs, &labels))
+        .with_context(|| format!("--improve: writing corpus {}", corpus.display()))?;
+    Ok(())
+}
+
+/// `compile --improve`: run the automatic aesthetic improve loop and report the best prompt found.
+async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
+    let input_name = args.input.file_name().and_then(|n| n.to_str()).unwrap_or("prompts.txt").to_string();
+    let opts = CompileOpts {
+        provider: args.provider.clone(),
+        default_model: args.model.clone(),
+        no_enhance: args.no_enhance,
+        no_negative: args.no_negative,
+        system_override: None,
+        cache: args.compile_cache,
+        parallel: args.parallel,
+        input_name,
+    };
+
+    // 1. Baseline emitted prompt (what `plakat compile` would render for the first scene).
+    let (prompt0, negative) = compile::first_prompt(input, &opts).await?;
+
+    // 2. Load the aesthetic scorer + resolve the render model / size.
+    let model = args.improve_model.clone().unwrap_or_else(|| args.model.clone());
+    let res = crate::capability::native_res(&model);
+    let device = crate::device::select("auto")?;
+    let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device)
+        .await
+        .context("--improve: loading the aesthetic scorer (CLIP ViT-L/14 + LAION predictor)")?;
+    let tmp = std::env::temp_dir().join(format!("plakat-improve-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).with_context(|| format!("--improve: creating {}", tmp.display()))?;
+
+    // 3. Seed the tabu list from the corpus (Phase B): moves prior runs already made.
+    let corpus_path = args.input.with_extension("smysl");
+    let seed_tabu = std::fs::read_to_string(&corpus_path)
+        .ok()
+        .map(|t| crate::smysl::prior_fixes(&t))
+        .unwrap_or_default();
+
+    println!(
+        "{}  improving {} — up to {} pass(es) · model {model} · seed {} · scoring each render",
+        style("◆").cyan(),
+        args.input.display(),
+        args.improve_passes,
+        args.improve_seed,
+    );
+
+    // 4. Run the tested controller with the live step.
+    let mut step = LiveStep {
+        model,
+        negative,
+        width: res,
+        height: res,
+        seed: args.improve_seed,
+        provider: args.provider.clone(),
+        eargs: crate::prompt::EnhanceArgs::default(),
+        scorer,
+        tmp: tmp.clone(),
+        last_rank: 0.0,
+    };
+    let out = compile::improve::run_improve(
+        &mut step,
+        &prompt0,
+        seed_tabu,
+        args.improve_passes,
+        3,     // plateau_k
+        0.05,  // min_gain — the aesthetic-score noise floor
+    )
+    .await?;
+
+    // 5. Persist the tried deltas into the corpus (tabu memory for next time) + report.
+    let moves = out.corpus_moves();
+    if !moves.is_empty() {
+        if let Err(e) = persist_improve_corpus(&corpus_path, &moves) {
+            eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    print!("{}", compile::improve::format_report(&out));
+    println!(
+        "\n{}  best prompt (aesthetic {:.2}):\n{}",
+        style("✓").green(),
+        out.best_rank,
+        out.best_prompt,
+    );
+    Ok(())
 }

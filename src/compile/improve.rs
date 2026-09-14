@@ -1,16 +1,25 @@
 //! smysl-optimize **Phase D** — the automatic improve-loop CONTROLLER.
 //!
 //! `generate → rank → regenerate` with the smysl corpus as tabu memory (Phase B) and a convergence guard,
-//! so prompt search *converges* instead of death-marching. The controller is PURE over an injected
+//! so prompt search *converges* instead of death-marching. The controller is generic over an injected
 //! [`ImproveStep`] (propose a delta / rank a prompt), so the novel, error-prone part — the loop logic,
-//! the tabu integration, the stopping rules — is gate-tested offline. The real step (an LLM regenerator +
-//! compile + render + aesthetic rank) wires in at the CLI, where it needs live models.
+//! the tabu integration, the stopping rules — is gate-tested offline with a stub. The real step (an LLM
+//! regenerator + render + aesthetic rank, in `cli::compile`) plugs into the same tested loop.
 //!
 //! The loop guarantees, by construction, what the human death march cannot: it never re-tries a move it
 //! already tried (every tried delta joins the tabu list), and it always stops with a *reason* and the
 //! best-so-far — on budget, on a plateau, when the proposer runs dry, or when it insists on a spent move.
+//!
+//! The step methods are async (real rendering + LLM calls), so they return boxed `Send` futures — the
+//! hand-rolled equivalent of `#[async_trait]`, keeping the trait `dyn`-safe and `Send` under the
+//! multi-threaded runtime without pulling in a dependency.
 
 use crate::smysl::tabu_reason;
+use std::future::Future;
+use std::pin::Pin;
+
+/// A boxed, `Send` future — the return of the async step methods.
+pub type StepFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// One improve pass: the delta it tried, the rank that delta earned, and whether it was kept.
 #[derive(Debug, Clone)]
@@ -77,14 +86,19 @@ impl ImproveOutcome {
 }
 
 /// The work each pass injects. The controller owns the tabu list, the convergence guard, and the
-/// best-so-far; the step only proposes a delta and ranks a prompt.
+/// best-so-far; the step only proposes a delta and ranks a prompt (both async: real work renders + calls
+/// an LLM).
 pub trait ImproveStep {
     /// Propose one delta `(old, new)` to improve `prompt`, avoiding the `tabu` moves. `None` means the
     /// proposer has nothing fresh — the loop then stops with [`StopReason::NoMoves`].
-    fn propose(&mut self, prompt: &str, tabu: &[(String, String)]) -> Option<(String, String)>;
-    /// Render + rank a prompt; higher is better (e.g. the LAION aesthetic score). In production this
-    /// compiles the prompt, renders it, and scores the image; here it is injected so the loop is testable.
-    fn rank(&mut self, prompt: &str) -> f32;
+    fn propose<'a>(
+        &'a mut self,
+        prompt: &'a str,
+        tabu: &'a [(String, String)],
+    ) -> StepFut<'a, Option<(String, String)>>;
+    /// Render + rank a prompt; higher is better (e.g. the LAION aesthetic score). A render failure is an
+    /// error that aborts the loop (the infrastructure is broken, not the prompt).
+    fn rank<'a>(&'a mut self, prompt: &'a str) -> StepFut<'a, anyhow::Result<f32>>;
 }
 
 /// Apply a delta to a prompt: verbatim replace of the first `old` with `new` (empty `new` deletes).
@@ -99,39 +113,39 @@ fn apply_delta(prompt: &str, old: &str, new: &str) -> String {
 /// rank is noisy, so a hair of improvement is not improvement). Every tried delta joins the tabu list, so
 /// the loop physically cannot re-march. Stops on budget / plateau / dry proposer / oscillation, always with
 /// the best prompt found.
-pub fn run_improve(
+pub async fn run_improve(
     step: &mut dyn ImproveStep,
     initial_prompt: &str,
     seed_tabu: Vec<(String, String)>,
     max_passes: usize,
     plateau_k: usize,
     min_gain: f32,
-) -> ImproveOutcome {
+) -> anyhow::Result<ImproveOutcome> {
     let mut tabu = seed_tabu;
     let mut prompt = initial_prompt.to_string();
-    let base = step.rank(&prompt);
+    let base = step.rank(&prompt).await?;
     let mut best = (prompt.clone(), base);
     let mut passes = vec![Pass { n: 0, delta: None, rank: base, kept: true }];
     let mut stale = 0usize;
     let mut oscillated = 0usize;
 
     for n in 1..=max_passes {
-        let Some((old, new)) = step.propose(&prompt, &tabu) else {
-            return finish(best, passes, StopReason::NoMoves);
+        let Some((old, new)) = step.propose(&prompt, &tabu).await else {
+            return Ok(finish(best, passes, StopReason::NoMoves));
         };
         // The proposer should honour the tabu; the controller GUARANTEES it (the Phase B safety net). A
         // proposer that keeps handing back spent moves is stuck — stop rather than spin.
         if tabu_reason(&old, &new, &tabu).is_some() {
             oscillated += 1;
             if oscillated >= 2 {
-                return finish(best, passes, StopReason::Oscillation);
+                return Ok(finish(best, passes, StopReason::Oscillation));
             }
             continue;
         }
         oscillated = 0;
 
         let candidate = apply_delta(&prompt, &old, &new);
-        let r = step.rank(&candidate);
+        let r = step.rank(&candidate).await?;
         tabu.push((old.clone(), new.clone())); // tried once → never again
 
         let kept = r > best.1 + min_gain;
@@ -145,10 +159,10 @@ pub fn run_improve(
         passes.push(Pass { n, delta: Some((old, new)), rank: r, kept });
 
         if stale >= plateau_k {
-            return finish(best, passes, StopReason::Plateau);
+            return Ok(finish(best, passes, StopReason::Plateau));
         }
     }
-    finish(best, passes, StopReason::Budget)
+    Ok(finish(best, passes, StopReason::Budget))
 }
 
 fn finish(best: (String, f32), passes: Vec<Pass>, stop: StopReason) -> ImproveOutcome {
@@ -162,7 +176,7 @@ pub fn format_report(o: &ImproveOutcome) -> String {
         match &p.delta {
             None => s.push_str(&format!("  pass 0 · baseline · rank {:.2}\n", p.rank)),
             Some((old, new)) => s.push_str(&format!(
-                "  pass {} · rank {:.2} · {} · “{}” → “{}”\n",
+                "  pass {} · rank {:.2} · {} · \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}\n",
                 p.n,
                 p.rank,
                 if p.kept { "kept" } else { "reverted" },
@@ -172,7 +186,7 @@ pub fn format_report(o: &ImproveOutcome) -> String {
         }
     }
     s.push_str(&format!(
-        "  ↳ stopped: {} · best rank {:.2} after {} pass(es)\n",
+        "  \u{21B3} stopped: {} \u{00B7} best rank {:.2} after {} pass(es)\n",
         o.stop.as_str(),
         o.best_rank,
         o.passes.len().saturating_sub(1),
@@ -183,7 +197,7 @@ pub fn format_report(o: &ImproveOutcome) -> String {
 fn clip(s: &str) -> String {
     let s = s.trim().replace('\n', " ");
     if s.chars().count() > 32 {
-        format!("{}…", s.chars().take(31).collect::<String>())
+        format!("{}\u{2026}", s.chars().take(31).collect::<String>())
     } else if s.is_empty() {
         "(removed)".into()
     } else {
@@ -207,76 +221,88 @@ mod tests {
         }
     }
     impl ImproveStep for StubStep {
-        fn propose(&mut self, _prompt: &str, tabu: &[(String, String)]) -> Option<(String, String)> {
-            while self.idx < self.moves.len() {
-                let m = self.moves[self.idx].clone();
-                self.idx += 1;
-                if tabu_reason(&m.0, &m.1, tabu).is_none() {
-                    return Some(m);
+        fn propose<'a>(
+            &'a mut self,
+            _prompt: &'a str,
+            tabu: &'a [(String, String)],
+        ) -> StepFut<'a, Option<(String, String)>> {
+            Box::pin(async move {
+                while self.idx < self.moves.len() {
+                    let m = self.moves[self.idx].clone();
+                    self.idx += 1;
+                    if tabu_reason(&m.0, &m.1, tabu).is_none() {
+                        return Some(m);
+                    }
                 }
-            }
-            None
+                None
+            })
         }
-        fn rank(&mut self, prompt: &str) -> f32 {
-            prompt.matches('★').count() as f32
+        fn rank<'a>(&'a mut self, prompt: &'a str) -> StepFut<'a, anyhow::Result<f32>> {
+            let score = prompt.matches('\u{2605}').count() as f32;
+            Box::pin(async move { Ok(score) })
         }
     }
 
-    #[test]
-    fn climbs_to_the_best_and_keeps_only_improvements() {
+    #[tokio::test]
+    async fn climbs_to_the_best_and_keeps_only_improvements() {
         // Two deltas each add a ★ (rank climbs); one adds nothing (reverted).
-        let mut step = StubStep::new(&[("lane", "lane ★"), ("dawn", "dawn"), ("fog", "fog ★")]);
-        let out = run_improve(&mut step, "a lane at dawn in fog", vec![], 10, 3, 0.0);
+        let mut step = StubStep::new(&[("lane", "lane \u{2605}"), ("dawn", "dawn"), ("fog", "fog \u{2605}")]);
+        let out = run_improve(&mut step, "a lane at dawn in fog", vec![], 10, 3, 0.0).await.unwrap();
         assert_eq!(out.best_rank, 2.0, "kept both ★-adding deltas");
-        assert!(out.best_prompt.contains("lane ★") && out.best_prompt.contains("fog ★"));
-        // The neutral delta was tried but not kept.
+        assert!(out.best_prompt.contains("lane \u{2605}") && out.best_prompt.contains("fog \u{2605}"));
         assert!(out.passes.iter().any(|p| p.delta.as_ref().map(|(o, _)| o == "dawn").unwrap_or(false) && !p.kept));
     }
 
-    #[test]
-    fn stops_on_plateau_with_best_so_far() {
-        // Every move is neutral (no ★) → no gain → plateau after plateau_k passes.
+    #[tokio::test]
+    async fn stops_on_plateau_with_best_so_far() {
         let mut step = StubStep::new(&[("a", "a"), ("b", "b"), ("c", "c"), ("d", "d")]);
-        let out = run_improve(&mut step, "a b c d", vec![], 10, 2, 0.0);
+        let out = run_improve(&mut step, "a b c d", vec![], 10, 2, 0.0).await.unwrap();
         assert_eq!(out.stop, StopReason::Plateau);
         assert_eq!(out.best_rank, 0.0);
     }
 
-    #[test]
-    fn never_retries_a_tabu_move() {
+    #[tokio::test]
+    async fn never_retries_a_tabu_move() {
         // Seed the tabu with the only ★-move; the proposer offers it, the loop must skip it and run dry.
-        let mut step = StubStep::new(&[("lane", "lane ★")]);
-        let seed = vec![("lane".to_string(), "lane ★".to_string())];
-        let out = run_improve(&mut step, "a lane", seed, 10, 3, 0.0);
+        let mut step = StubStep::new(&[("lane", "lane \u{2605}")]);
+        let seed = vec![("lane".to_string(), "lane \u{2605}".to_string())];
+        let out = run_improve(&mut step, "a lane", seed, 10, 3, 0.0).await.unwrap();
         assert_eq!(out.stop, StopReason::NoMoves, "the only move was tabu → nothing fresh to try");
         assert_eq!(out.best_rank, 0.0, "never applied the spent move");
-        assert!(!out.best_prompt.contains('★'));
+        assert!(!out.best_prompt.contains('\u{2605}'));
     }
 
-    #[test]
-    fn tried_deltas_become_corpus_moves() {
-        let mut step = StubStep::new(&[("lane", "lane ★")]);
-        let out = run_improve(&mut step, "a lane", vec![], 10, 3, 0.0);
+    #[tokio::test]
+    async fn tried_deltas_become_corpus_moves() {
+        let mut step = StubStep::new(&[("lane", "lane \u{2605}")]);
+        let out = run_improve(&mut step, "a lane", vec![], 10, 3, 0.0).await.unwrap();
         let moves = out.corpus_moves();
         assert_eq!(moves.len(), 1);
-        assert_eq!((moves[0].0.as_str(), moves[0].1.as_str()), ("lane", "lane ★"));
+        assert_eq!((moves[0].0.as_str(), moves[0].1.as_str()), ("lane", "lane \u{2605}"));
         assert!(moves[0].2.contains("aesthetic pass 1") && moves[0].2.contains("kept"));
     }
 
-    #[test]
-    fn min_gain_rejects_noise() {
-        // A move that improves by exactly the noise floor is NOT kept (must beat it).
+    #[tokio::test]
+    async fn min_gain_rejects_noise() {
+        // A move that improves by less than the noise floor is NOT kept.
         struct Tiny;
         impl ImproveStep for Tiny {
-            fn propose(&mut self, _p: &str, tabu: &[(String, String)]) -> Option<(String, String)> {
-                let m = ("x".to_string(), "x+".to_string());
-                if tabu_reason(&m.0, &m.1, tabu).is_none() { Some(m) } else { None }
+            fn propose<'a>(
+                &'a mut self,
+                _p: &'a str,
+                tabu: &'a [(String, String)],
+            ) -> StepFut<'a, Option<(String, String)>> {
+                Box::pin(async move {
+                    let m = ("x".to_string(), "x+".to_string());
+                    if tabu_reason(&m.0, &m.1, tabu).is_none() { Some(m) } else { None }
+                })
             }
-            fn rank(&mut self, prompt: &str) -> f32 {
-                if prompt.contains("x+") { 5.1 } else { 5.0 }
+            fn rank<'a>(&'a mut self, prompt: &'a str) -> StepFut<'a, anyhow::Result<f32>> {
+                let s = if prompt.contains("x+") { 5.1 } else { 5.0 };
+                Box::pin(async move { Ok(s) })
             }
         }
-        let out = run_improve(&mut Tiny, "x", vec![], 5, 2, 0.2); // gain 0.1 < min_gain 0.2
+        let out = run_improve(&mut Tiny, "x", vec![], 5, 2, 0.2).await.unwrap(); // gain 0.1 < 0.2
         assert!(out.passes.iter().all(|p| p.n == 0 || !p.kept), "a sub-noise gain is not an improvement");
         assert_eq!(out.best_rank, 5.0);
     }
