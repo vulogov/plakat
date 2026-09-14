@@ -148,10 +148,26 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-model", value_name = "MODEL")]
     pub improve_model: Option<String>,
 
-    /// *(6.30)* Fixed seed `--improve` renders at, so every pass scores the *same* composition and the rank
-    /// delta reflects the prompt edit, not a fresh roll.
+    /// *(6.30)* Base seed `--improve` renders at, so every pass scores the *same* composition(s) and the rank
+    /// delta reflects the prompt edit, not a fresh roll. With `--improve-seeds > 1`, the seed set is
+    /// `SEED, SEED+1, …`.
     #[arg(help_heading = "Compile", long = "improve-seed", value_name = "SEED", default_value_t = 1000)]
     pub improve_seed: u64,
+
+    /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
+    /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
+    /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
+    #[arg(help_heading = "Compile", long = "improve-seeds", value_name = "N", default_value_t = 2)]
+    pub improve_seeds: u32,
+
+    /// *(6.30 polish)* The noise floor: a candidate is *kept* only if its (corroborated) rank beats the
+    /// best-so-far by more than this. Raise it if the loop keeps chasing insignificant wobble.
+    #[arg(help_heading = "Compile", long = "improve-min-gain", value_name = "F", default_value_t = 0.1)]
+    pub improve_min_gain: f32,
+
+    /// *(6.30 polish)* Stop after this many passes in a row with no gain above `--improve-min-gain`.
+    #[arg(help_heading = "Compile", long = "improve-plateau", value_name = "K", default_value_t = 3)]
+    pub improve_plateau: usize,
 
     // ---- COMPILE-2: Tera template pre-pass (needs `--features templates`) ----
     /// Force the Tera template pre-pass regardless of file extension.
@@ -547,13 +563,23 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
 //  tabu memory so no spent move is re-tried.
 // ===========================================================================
 
-/// System prompt for the regenerator — proposes ONE aesthetic edit as JSON.
-const REGEN_SYSTEM: &str = "You improve a text-to-image PROMPT for higher AESTHETIC quality. Propose ONE \
-    small, safe, VERBATIM edit — an existing substring of the prompt replaced by a better one — likely to \
-    make the rendered image more beautiful (better light, colour, composition, or detail) WITHOUT changing \
-    the subject or adding new subjects. Output ONLY a JSON object {\"old\":\"…\",\"new\":\"…\"}, where \
-    \"old\" is an EXACT substring of the prompt; output {} if you have no confident improvement. Do NOT \
-    propose any edit the message lists as already tried, and never reverse one.";
+/// System prompt for the regenerator — proposes ONE aesthetic edit as JSON. Steered toward concrete
+/// aesthetic *levers* (light, composition, depth, palette, mood) and explicitly away from meaningless
+/// synonym swaps, which a weak model otherwise loves and which never move the image.
+const REGEN_SYSTEM: &str = "You optimize a text-to-image PROMPT for higher AESTHETIC quality of the \
+    RENDERED IMAGE — lighting, composition, colour harmony, depth, mood, and focal clarity. Propose exactly \
+    ONE small VERBATIM edit: replace an existing substring with a better one, WITHOUT changing the subject \
+    or adding new subjects.\n\
+    PREFER an edit that adds a concrete aesthetic lever a photographer or painter would reach for, e.g.:\n\
+    - LIGHT: 'golden hour', 'soft volumetric light', 'rim lighting', 'warm key light with cool fill'\n\
+    - COMPOSITION: 'rule-of-thirds framing', 'strong leading lines', 'balanced negative space'\n\
+    - DEPTH: 'shallow depth of field, soft bokeh', 'atmospheric depth, layered fog'\n\
+    - PALETTE / MOOD: 'muted complementary palette', 'rich cinematic colour grade'\n\
+    AVOID trivial SYNONYM swaps that do not change the image (e.g. 'wet'->'damp', 'street'->'lane') — they \
+    waste a render. Make the edit MEAN something visually.\n\
+    Output ONLY a JSON object {\"old\":\"…\",\"new\":\"…\"} where \"old\" is an EXACT substring of the \
+    prompt; output {} if you have no confident improvement. NEVER propose an edit the message lists as \
+    already tried, and never reverse one.";
 
 /// The live improve step: render + aesthetic-score for `rank`, LLM regenerator for `propose`.
 struct LiveStep {
@@ -561,7 +587,9 @@ struct LiveStep {
     negative: String,
     width: u32,
     height: u32,
-    seed: u64,
+    /// The corroboration seed set — every candidate is rendered + scored on ALL of these and averaged, so a
+    /// kept/rejected verdict is robust to the aesthetic score's per-seed noise.
+    seeds: Vec<u64>,
     provider: String,
     eargs: crate::prompt::EnhanceArgs,
     scorer: crate::pipelines::aesthetic::AestheticScorer,
@@ -595,25 +623,43 @@ impl crate::compile::improve::ImproveStep for LiveStep {
 
     fn rank<'a>(&'a mut self, prompt: &'a str) -> crate::compile::improve::StepFut<'a, anyhow::Result<f32>> {
         Box::pin(async move {
-            eprintln!("    · rendering + scoring ({}, {}\u{00D7}{})…", self.model, self.width, self.height);
-            let images = crate::api::Generate::new(self.model.as_str())
-                .prompt(prompt)
-                .negative(self.negative.as_str())
-                .size(self.width, self.height)
-                .seed(self.seed)
-                .count(1)
-                .run()
-                .await?;
-            let img = images
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
-            let path = self.tmp.join("improve-candidate.png");
-            img.save(&path)?;
-            let score = self.scorer.score_path(&path)?;
-            self.last_rank = score;
-            eprintln!("    · aesthetic {score:.2}");
-            Ok(score)
+            eprintln!(
+                "    · rendering + scoring ({}, {}\u{00D7}{}, {} seed{})…",
+                self.model,
+                self.width,
+                self.height,
+                self.seeds.len(),
+                if self.seeds.len() == 1 { "" } else { "s" },
+            );
+            // Corroboration: render + score EVERY seed, average — robust to per-seed noise.
+            let mut scores = Vec::with_capacity(self.seeds.len());
+            for (i, &seed) in self.seeds.iter().enumerate() {
+                let images = crate::api::Generate::new(self.model.as_str())
+                    .prompt(prompt)
+                    .negative(self.negative.as_str())
+                    .size(self.width, self.height)
+                    .seed(seed)
+                    .count(1)
+                    .run()
+                    .await?;
+                let img = images
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
+                let path = self.tmp.join(format!("improve-{i}.png"));
+                img.save(&path)?;
+                scores.push(self.scorer.score_path(&path)?);
+            }
+            let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
+            self.last_rank = mean;
+            if scores.len() > 1 {
+                let spread = scores.iter().cloned().fold(f32::MIN, f32::max)
+                    - scores.iter().cloned().fold(f32::MAX, f32::min);
+                eprintln!("    · aesthetic {mean:.2} (mean of {}, spread {spread:.2})", scores.len());
+            } else {
+                eprintln!("    · aesthetic {mean:.2}");
+            }
+            Ok(mean)
         })
     }
 }
@@ -693,12 +739,19 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         .map(|t| crate::smysl::prior_fixes(&t))
         .unwrap_or_default();
 
+    // Corroboration seed set: base, base+1, … (≥1). Every candidate is judged on the same set.
+    let n_seeds = args.improve_seeds.max(1) as u64;
+    let seeds: Vec<u64> = (0..n_seeds).map(|i| args.improve_seed + i).collect();
+
     println!(
-        "{}  improving {} — up to {} pass(es) · model {model} · seed {} · scoring each render",
+        "{}  improving {} — up to {} pass(es) · model {model} · {} seed{} from {} · keep-gain {:.2}",
         style("◆").cyan(),
         args.input.display(),
         args.improve_passes,
+        seeds.len(),
+        if seeds.len() == 1 { "" } else { "s" },
         args.improve_seed,
+        args.improve_min_gain,
     );
 
     // 4. Run the tested controller with the live step.
@@ -707,7 +760,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         negative,
         width: res,
         height: res,
-        seed: args.improve_seed,
+        seeds,
         provider: args.provider.clone(),
         eargs: crate::prompt::EnhanceArgs::default(),
         scorer,
@@ -719,8 +772,8 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         &prompt0,
         seed_tabu,
         args.improve_passes,
-        3,     // plateau_k
-        0.05,  // min_gain — the aesthetic-score noise floor
+        args.improve_plateau.max(1),
+        args.improve_min_gain,
     )
     .await?;
 
