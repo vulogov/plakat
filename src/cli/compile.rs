@@ -154,6 +154,16 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-seed", value_name = "SEED", default_value_t = 1000)]
     pub improve_seed: u64,
 
+    /// *(6.30)* Improve EVERY non-skipped scene, not just the first. Each composition is optimized
+    /// independently (own prompt, negative, best, tabu). Budget-heavy — roughly scenes × (1+passes) × seeds
+    /// renders — so it prints the render count up front. Implies `--improve`.
+    #[arg(help_heading = "Compile", long = "improve-all", default_value_t = false)]
+    pub improve_all: bool,
+
+    /// *(6.30)* Improve only the named scene/composition instead of the first. Implies `--improve`.
+    #[arg(help_heading = "Compile", long = "improve-scene", value_name = "NAME")]
+    pub improve_scene: Option<String>,
+
     /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
     /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
     /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
@@ -410,8 +420,8 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
-    // --improve: the automatic aesthetic improve loop (Phase D). Renders + scores, so it needs a model.
-    if args.improve {
+    // --improve[-all|-scene]: the automatic aesthetic improve loop (Phase D). Renders + scores, needs a model.
+    if args.improve || args.improve_all || args.improve_scene.is_some() {
         anyhow::ensure!(!stdin_input, "--improve needs a file input (not stdin)");
         return improve_cmd(&args, &input).await;
     }
@@ -732,10 +742,24 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         input_name,
     };
 
-    // 1. Baseline emitted prompt (what `plakat compile` would render for the first scene).
-    let (prompt0, negative) = compile::first_prompt(input, &opts).await?;
+    // 1. Compile every scene, then SELECT the scope: a named scene, all scenes, or (default) the first.
+    let all = compile::all_prompts(input, &opts).await?;
+    anyhow::ensure!(!all.is_empty(), "--improve: no renderable scenes in {}", args.input.display());
+    let selected: Vec<(String, String, String)> = if let Some(name) = &args.improve_scene {
+        let hit: Vec<_> = all.iter().filter(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).cloned().collect();
+        anyhow::ensure!(
+            !hit.is_empty(),
+            "--improve-scene: no scene named {name:?} — scenes are: {}",
+            all.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+        );
+        hit
+    } else if args.improve_all {
+        all
+    } else {
+        all.into_iter().take(1).collect() // default: the first scene
+    };
 
-    // 2. Load the aesthetic scorer + resolve the render model / size.
+    // 2. Load the aesthetic scorer ONCE (the expensive load) + resolve the render model / size / seeds.
     let model = args.improve_model.clone().unwrap_or_else(|| args.model.clone());
     let res = crate::capability::native_res(&model);
     let device = crate::device::select("auto")?;
@@ -744,33 +768,28 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         .context("--improve: loading the aesthetic scorer (CLIP ViT-L/14 + LAION predictor)")?;
     let tmp = std::env::temp_dir().join(format!("plakat-improve-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).with_context(|| format!("--improve: creating {}", tmp.display()))?;
-
-    // 3. Seed the tabu list from the corpus (Phase B): moves prior runs already made.
-    let corpus_path = args.input.with_extension("smysl");
-    let seed_tabu = std::fs::read_to_string(&corpus_path)
-        .ok()
-        .map(|t| crate::smysl::prior_fixes(&t))
-        .unwrap_or_default();
-
-    // Corroboration seed set: base, base+1, … (≥1). Every candidate is judged on the same set.
     let n_seeds = args.improve_seeds.max(1) as u64;
     let seeds: Vec<u64> = (0..n_seeds).map(|i| args.improve_seed + i).collect();
+    let corpus_path = args.input.with_extension("smysl");
 
+    // Up-front cost, so a fan-out over many scenes is never a surprise.
+    let est_renders = selected.len() * (1 + args.improve_passes) * seeds.len();
     println!(
-        "{}  improving {} — up to {} pass(es) · model {model} · {} seed{} from {} · keep-gain {:.2}",
+        "{}  improving {} scene(s) — up to ~{} renders · model {model} · {} seed{} from {} · {} pass(es) · keep-gain {:.2}",
         style("◆").cyan(),
-        args.input.display(),
-        args.improve_passes,
+        selected.len(),
+        est_renders,
         seeds.len(),
         if seeds.len() == 1 { "" } else { "s" },
         args.improve_seed,
+        args.improve_passes,
         args.improve_min_gain,
     );
 
-    // 4. Run the tested controller with the live step.
+    // 3. One LiveStep, reused across scenes (scorer loaded once); negative + last_rank reset per scene.
     let mut step = LiveStep {
         model,
-        negative,
+        negative: String::new(),
         width: res,
         height: res,
         seeds,
@@ -780,31 +799,43 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         tmp: tmp.clone(),
         last_rank: 0.0,
     };
-    let out = compile::improve::run_improve(
-        &mut step,
-        &prompt0,
-        seed_tabu,
-        args.improve_passes,
-        args.improve_plateau.max(1),
-        args.improve_min_gain,
-    )
-    .await?;
 
-    // 5. Persist the tried deltas into the corpus (tabu memory for next time) + report.
-    let moves = out.corpus_moves();
-    if !moves.is_empty() {
-        if let Err(e) = persist_improve_corpus(&corpus_path, &moves) {
-            eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
+    let mut results: Vec<(String, compile::improve::ImproveOutcome)> = Vec::new();
+    for (name, prompt0, negative) in &selected {
+        println!("\n{} scene {name}", style("──").cyan());
+        // Each scene is an INDEPENDENT optimization: its own negative, its own baseline, its own tabu seeded
+        // from the (shared, content-addressed) corpus — a scene's edits never collide with another's.
+        step.negative = negative.clone();
+        step.last_rank = 0.0;
+        let seed_tabu = std::fs::read_to_string(&corpus_path)
+            .ok()
+            .map(|t| crate::smysl::prior_fixes(&t))
+            .unwrap_or_default();
+        let out = compile::improve::run_improve(
+            &mut step,
+            prompt0,
+            seed_tabu,
+            args.improve_passes,
+            args.improve_plateau.max(1),
+            args.improve_min_gain,
+        )
+        .await?;
+        // Persist this scene's tried deltas into the shared corpus (tabu memory for next time).
+        let moves = out.corpus_moves();
+        if !moves.is_empty() {
+            if let Err(e) = persist_improve_corpus(&corpus_path, &moves) {
+                eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
+            }
         }
+        results.push((name.clone(), out));
     }
     let _ = std::fs::remove_dir_all(&tmp);
 
-    print!("{}", compile::improve::format_report(&out));
-    println!(
-        "\n{}  best prompt (aesthetic {:.2}):\n{}",
-        style("✓").green(),
-        out.best_rank,
-        out.best_prompt,
-    );
+    // 4. Report per scene.
+    for (name, out) in &results {
+        println!("\n{} scene {name}", style("✓").green());
+        print!("{}", compile::improve::format_report(out));
+        println!("  best prompt (aesthetic {:.2}):\n{}", out.best_rank, out.best_prompt);
+    }
     Ok(())
 }

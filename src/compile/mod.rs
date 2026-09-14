@@ -1164,6 +1164,20 @@ pub async fn first_prompt(input: &str, opts: &CompileOpts) -> anyhow::Result<(St
     Ok((c.prompt, c.negative))
 }
 
+/// Like [`first_prompt`] but for EVERY non-skipped scene — `(name, positive, negative)` per scene. Drives
+/// `--improve-all` / `--improve-scene`, which optimize each composition independently.
+pub async fn all_prompts(input: &str, opts: &CompileOpts) -> anyhow::Result<Vec<(String, String, String)>> {
+    let doc = parser::parse(input)?;
+    let resolved = resolver::resolve(&doc, &opts.default_model)?;
+    let eargs = crate::prompt::EnhanceArgs::default();
+    let mut out = Vec::new();
+    for scene in resolved.scenes.iter().filter(|s| !s.skip) {
+        let c = compile_one_scene(scene, opts, &eargs, false).await;
+        out.push((c.scene.name.clone(), c.prompt, c.negative));
+    }
+    Ok(out)
+}
+
 /// 6.30.0 Phase 2 `--trace "<phrase>"`: answer "why is this in the prompt?" without an LLM. Resolves
 /// the scene to its smysl claims/relations, folds in any `<stem>.smysl` fix-corpus sitting beside the
 /// input (so the analyze/fix decisions are traceable too), and reports every unit that mentions the
