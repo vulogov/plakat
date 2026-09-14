@@ -2952,8 +2952,9 @@ async fn control_generate_prepass(
             solid simplified mass of its local colour with correct placement, proportion and silhouette, clean \
             blocked shapes with soft mass boundaries, NO outlines, NO linework, NO fine detail, NO texture, NO \
             shading gradients, flat poster-like colour";
-        const BLOCKIN_NEGATIVE: &str = "line art, lineart, outlines, ink, sketch, pencil, engraving, fine \
-            detail, intricate details, texture, photorealistic, sharp focus, 3d render, glossy, shading gradients";
+        const BLOCKIN_NEGATIVE: &str = "line art, lineart, outlines, black outlines, bold black lines, contour \
+            lines, cel shading, comic book style, coloring book, ink, sketch, pencil, engraving, fine detail, \
+            intricate details, texture, photorealistic, sharp focus, 3d render, glossy, shading gradients";
 
         // Prefer the compile-emitted style-stripped structure prompt (composition, not soft-focus); fall
         // back to the styled task prompt for hand-written scenarios.
@@ -3748,10 +3749,17 @@ async fn control_generate_prepass(
         // img2img init matches the finish dimensions exactly.
         let draft = task_out.join("structure-draft.png");
         match image::open(&best_path) {
-            Ok(img) if img.width() != w || img.height() != h => {
-                let _ = img.resize_exact(w, h, image::imageops::FilterType::Lanczos3).save(&draft);
-            }
-            Ok(img) => {
+            Ok(mut img) => {
+                if img.width() != w || img.height() != h {
+                    img = img.resize_exact(w, h, image::imageops::FilterType::Lanczos3);
+                }
+                // block-in: soften the draft so any hard outlines the draft model drew despite the negative
+                // become soft MASS boundaries — nothing for the finish to trace. This also forces the whole
+                // structure into the low-frequency band img2img preserves, which is the point of a block-in.
+                if blockin {
+                    let sigma = (w.min(h) as f32 / 220.0).clamp(1.2, 3.0); // ~2.3px at 512, scales with size
+                    img = img.blur(sigma);
+                }
                 let _ = img.save(&draft);
             }
             Err(_) => {
