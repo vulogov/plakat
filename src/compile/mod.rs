@@ -1077,15 +1077,35 @@ const CRITIC_SYSTEM: &str = "You are a FEASIBILITY CRITIC for the plakat text-to
     - TOKEN BLOAT: an extremely long, detail-stuffed prompt → the finish model drops details. Fix: cut \
     secondary detail.\n\
     Be specific — QUOTE the offending phrases from the scene. Be honest: if the scene stacks several hard \
-    problems, say so and grade it LOW. Output ONLY the report — no preamble, no code fences.";
+    problems, say so and grade it LOW.\n\
+    If the input ends with a `PRIOR POLISH HISTORY` section, treat it as memory of earlier passes: do NOT \
+    re-flag a risk listed as ALREADY ADDRESSED unless it CLEARLY RECURS in the current prose — the author \
+    already fixed it, and re-raising settled issues wastes their time. Focus on what is NEW or STILL OPEN.\n\
+    Output ONLY the report — no preamble, no code fences.";
 
 /// `plakat compile --analyze`: run the feasibility critic over the prose (any language) and return its report
 /// (a grade + specific risks + fixes). Pure analysis — no compile, no generation. The polish-loop companion to
 /// [`make_composition`]: iterate the prose until the grade is acceptable before spending a generation run.
-pub async fn analyze_prose(input: &str, opts: &CompileOpts) -> anyhow::Result<String> {
+pub async fn analyze_prose(
+    input: &str,
+    opts: &CompileOpts,
+    prior_corpus: Option<&str>,
+) -> anyhow::Result<String> {
     use anyhow::Context;
     let eargs = crate::prompt::EnhanceArgs::default();
-    let report = crate::prompt::complete(&opts.provider, CRITIC_SYSTEM, input, &eargs)
+    // smysl-optimize: feed the critic the prior findings so it doesn't re-flag risks earlier passes already
+    // fixed (the consult side of the death-march guard, at the critic level).
+    let hint = prior_corpus
+        .map(|c| {
+            let (resolved, open) = crate::smysl::resolved_open_findings(c);
+            crate::smysl::findings_hint(&resolved, &open)
+        })
+        .filter(|h| !h.is_empty());
+    let user = match &hint {
+        Some(h) => format!("{input}\n\n--- PRIOR POLISH HISTORY (smysl corpus) ---\n{h}"),
+        None => input.to_string(),
+    };
+    let report = crate::prompt::complete(&opts.provider, CRITIC_SYSTEM, &user, &eargs)
         .await
         .context("compile --analyze: critic LLM call failed")?;
     let report = strip_code_fences(&report);

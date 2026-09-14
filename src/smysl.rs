@@ -339,6 +339,62 @@ pub fn tabu_hint(prior: &[(String, String)]) -> String {
     )
 }
 
+/// Read the corpus's prior findings, split into RESOLVED (a `c/fix-*` claim grounds in them) and OPEN (no
+/// fix yet). Feeds the CRITIC so `--analyze` stops re-flagging risks earlier passes already fixed — the
+/// consult side of the death-march guard, at the critic level (the fixer already has [`tabu_hint`]).
+pub fn resolved_open_findings(corpus_text: &str) -> (Vec<String>, Vec<String>) {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return (Vec::new(), Vec::new());
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    let mut findings: Vec<(Uid, String)> = Vec::new();
+    let mut resolved_uids: std::collections::HashSet<Uid> = std::collections::HashSet::new();
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let uid = canonical_uid(c);
+        match uid_label.get(&uid).copied().unwrap_or("") {
+            l if l.starts_with("f/") => findings.push((uid, c.gist.clone())), // f/risk-* or f/manual-*
+            l if l.starts_with("c/fix-") => resolved_uids.extend(c.grounds.iter().copied()),
+            _ => {}
+        }
+    }
+    let (mut resolved, mut open) = (Vec::new(), Vec::new());
+    for (uid, gist) in findings {
+        if resolved_uids.contains(&uid) {
+            resolved.push(gist);
+        } else {
+            open.push(gist);
+        }
+    }
+    (resolved, open)
+}
+
+/// A critic-facing hint from prior findings: don't re-flag what earlier passes already FIXED (unless it
+/// clearly recurs); the STILL-OPEN ones remain fair game. Empty when there is no prior history.
+pub fn findings_hint(resolved: &[String], open: &[String]) -> String {
+    let mut s = String::new();
+    if !resolved.is_empty() {
+        s.push_str(
+            "PRIOR RISKS ALREADY ADDRESSED in earlier passes — do NOT flag these again unless they \
+             CLEARLY RECUR in the current prose:\n",
+        );
+        for g in resolved {
+            s.push_str(&format!("- {}\n", clip(g)));
+        }
+    }
+    if !open.is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str("PRIOR RISKS STILL OPEN — flag them only if still present:\n");
+        for g in open {
+            s.push_str(&format!("- {}\n", clip(g)));
+        }
+    }
+    s.trim_end().to_string()
+}
+
 /// 6.30.0 Phase 2 `--trace`: over a record set (scene claims/relations plus any loaded fix-corpus
 /// findings), report every unit whose gist/body mentions `phrase`, its confidence, and WHY it is
 /// there — its `grounds` chain (a fix ← the finding it fixed) and the relations that touch it.
@@ -861,6 +917,21 @@ mod tests {
         assert!(matches!(&edges[0], Record::Relation(rl) if rl.kind == RelKind::Supersedes));
         // An identical recompile supersedes nothing (same content-hash).
         assert!(supersedes_edges(&prior, &prior).is_empty(), "nothing supersedes itself");
+    }
+
+    #[test]
+    fn resolved_vs_open_findings_split() {
+        // Corpus: one applied fix (RESOLVES its risk finding) + one manual finding (OPEN, no fix).
+        let applied = vec![("locomobile".to_string(), "traction engine".to_string(), "rare name".to_string())];
+        let manual = vec!["split the over-stuffed scene".to_string()];
+        let corpus = fixes_to_smysl(&applied, &manual).unwrap();
+        let (resolved, open) = resolved_open_findings(&corpus);
+        assert_eq!(resolved, vec!["rare name".to_string()], "the risk a fix grounds in is resolved");
+        assert_eq!(open, vec!["split the over-stuffed scene".to_string()], "the manual finding stays open");
+        let hint = findings_hint(&resolved, &open);
+        assert!(hint.contains("ALREADY ADDRESSED") && hint.contains("rare name"));
+        assert!(hint.contains("STILL OPEN") && hint.contains("over-stuffed"));
+        assert!(findings_hint(&[], &[]).is_empty(), "no history → no hint");
     }
 
     #[test]

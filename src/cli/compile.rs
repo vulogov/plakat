@@ -434,7 +434,14 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             parallel: args.parallel,
             input_name: input_name.clone(),
         };
-        let report = compile::analyze_prose(&input, &opts).await?;
+        // Feed the critic the prior polish history (resolved/open findings) so it doesn't re-flag risks
+        // earlier passes already fixed.
+        let prior_corpus = if stdin_input {
+            None
+        } else {
+            std::fs::read_to_string(args.input.with_extension("smysl")).ok()
+        };
+        let report = compile::analyze_prose(&input, &opts, prior_corpus.as_deref()).await?;
         println!("{}", report.trim());
         if args.fix {
             anyhow::ensure!(!stdin_input, "--fix needs a file input (not stdin) so it can edit + back up the source");
