@@ -1554,7 +1554,79 @@ pub async fn make_composition(
 /// `no_enhance && no_negative` the whole pass is deterministic (the corpus gate).
 /// Compile to the scenario HJSON plus any per-scene diligence warnings (6.26.2) — budget
 /// overflow / dropped style — for the CLI to surface. The warnings never change the output.
+/// A fully compiled scenario, BEFORE serialization — the globals, the per-scene compiled prompts, and the
+/// diligence outputs. Kept separate from [`compile_to_string`] so callers that need to POST-PROCESS the
+/// compiled prompts before emitting (notably `--improve`, which replaces a scene's enhanced prompt with the
+/// aesthetic-optimized winner) can do so and then [`CompiledDoc::emit`] the final HJSON. `compile_to_string`
+/// is just `compile_doc(...).emit()`.
+pub struct CompiledDoc {
+    pub globals: resolver::ResolvedGlobals,
+    pub scenes: Vec<emitter::CompiledScene>,
+    pub warnings: Vec<String>,
+    pub trace: Vec<String>,
+    pub provenance: String,
+    input_name: String,
+    provider: String,
+}
+
+impl CompiledDoc {
+    /// Serialize to the final scenario HJSON. Re-reads `self.scenes`, so any override applied to a scene's
+    /// `.prompt` (e.g. the `--improve` winner) lands in the emitted positive.
+    pub fn emit(&self) -> String {
+        emitter::emit(&self.globals, &self.scenes, &self.input_name, &self.provider)
+    }
+
+    /// Recompute the prose→emitted-prompt provenance from the CURRENT scene prompts. Call after overriding
+    /// prompts (e.g. `--improve`) so the recompile corpus / `--smysl` sidecar tracks prose→WINNING-prompt,
+    /// not prose→pre-improve-prompt. Folds the (unchanged) budget-pack provenance back in.
+    pub fn recompute_provenance(&mut self) {
+        let pack = {
+            let packs: Vec<crate::smysl::ScenePack> =
+                self.scenes.iter().filter_map(|c| c.pack.clone()).collect();
+            if packs.is_empty() {
+                String::new()
+            } else {
+                crate::smysl::packs_to_records(&packs)
+                    .map(|(r, l)| crate::smysl::records_to_surface(&r, &l))
+                    .unwrap_or_default()
+            }
+        };
+        let recompile = {
+            let scenes: Vec<(String, String, String)> = self
+                .scenes
+                .iter()
+                .map(|c| {
+                    let prose = if c.scene.free_text.trim().is_empty() {
+                        c.scene.composition_text.clone()
+                    } else {
+                        c.scene.free_text.clone()
+                    };
+                    (c.scene.name.clone(), prose, c.prompt.clone())
+                })
+                .collect();
+            match crate::smysl::recompile_records(&scenes) {
+                Ok((r, l)) if !r.is_empty() => crate::smysl::records_to_surface(&r, &l),
+                _ => String::new(),
+            }
+        };
+        self.provenance = match (pack.is_empty(), recompile.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => pack,
+            (true, false) => recompile,
+            (false, false) => crate::smysl::merge_surface(&pack, &recompile),
+        };
+    }
+}
+
 pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>, Vec<String>, String)> {
+    let d = compile_doc(input, opts).await?;
+    let hjson = d.emit();
+    Ok((hjson, d.warnings, d.trace, d.provenance))
+}
+
+/// Compile the prose to a [`CompiledDoc`] (parse → resolve → enhance each scene → dedup names → diligence +
+/// provenance), WITHOUT emitting. See [`CompiledDoc`].
+pub async fn compile_doc(input: &str, opts: &CompileOpts) -> anyhow::Result<CompiledDoc> {
     let doc = parser::parse(input)?;
     let resolved = resolver::resolve(&doc, &opts.default_model)?;
     let eargs = crate::prompt::EnhanceArgs::default();
@@ -1681,8 +1753,15 @@ pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Resul
         (false, false) => crate::smysl::merge_surface(&pack_smysl, &recompile_smysl),
     };
 
-    let hjson = emitter::emit(&resolved.globals, &compiled, &opts.input_name, &opts.provider);
-    Ok((hjson, warnings, trace, provenance))
+    Ok(CompiledDoc {
+        globals: resolved.globals,
+        scenes: compiled,
+        warnings,
+        trace,
+        provenance,
+        input_name: opts.input_name.clone(),
+        provider: opts.provider.clone(),
+    })
 }
 
 /// Lint a `prompts.txt` without calling the LLM (E-C2): unknown commands and

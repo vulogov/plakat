@@ -812,29 +812,32 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         input_name,
     };
 
-    // 1. Compile every scene, then SELECT the scope: a named scene, all scenes, or (default) the first.
-    let all = compile::all_prompts(input, &opts).await?;
-    anyhow::ensure!(!all.is_empty(), "--improve: no renderable scenes in {}", args.input.display());
-    let selected: Vec<(String, String, String)> = if !args.improve_scene.is_empty() {
-        // One or more named scenes (repeatable / comma-separated). Every requested name must resolve; keep
-        // the file's scene order, and never duplicate a scene named twice.
+    // 1. ENHANCE — compile every scene to its prompt (the translation pass). Keep the WHOLE compiled doc, not
+    //    just the prompts: the winning prompt is written back into `doc.scenes[i].prompt` and the doc is
+    //    re-emitted, so `compile --improve` produces an improved HJSON (the improvement lands in the artifact,
+    //    not just the console). The smysl corpus drives the loop (tabu + skip gate) — it IS the process.
+    let mut doc = compile::compile_doc(input, &opts).await?;
+    anyhow::ensure!(!doc.scenes.is_empty(), "--improve: no renderable scenes in {}", args.input.display());
+    // SELECT the scope: named scene(s), all scenes, or (default) the first — as INDICES into doc.scenes.
+    let scene_names: Vec<String> = doc.scenes.iter().map(|c| c.scene.name.clone()).collect();
+    let selected: Vec<usize> = if !args.improve_scene.is_empty() {
+        // One or more named scenes (repeatable / comma-separated). Every requested name must resolve.
         let wanted: Vec<String> =
             args.improve_scene.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         for w in &wanted {
             anyhow::ensure!(
-                all.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(w)),
+                scene_names.iter().any(|n| n.eq_ignore_ascii_case(w)),
                 "--improve-scene: no scene named {w:?} — scenes are: {}",
-                all.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+                scene_names.join(", "),
             );
         }
-        all.iter()
-            .filter(|(n, _, _)| wanted.iter().any(|w| n.eq_ignore_ascii_case(w)))
-            .cloned()
+        (0..doc.scenes.len())
+            .filter(|&i| wanted.iter().any(|w| scene_names[i].eq_ignore_ascii_case(w)))
             .collect()
     } else if args.improve_all {
-        all
+        (0..doc.scenes.len()).collect()
     } else {
-        all.into_iter().take(1).collect() // default: the first scene
+        vec![0] // default: the first scene
     };
 
     // 2. Load the aesthetic scorer ONCE (the expensive load) + resolve the render model / size / seeds.
@@ -923,10 +926,13 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     };
 
     let mut results: Vec<(String, compile::improve::ImproveOutcome)> = Vec::new();
-    for (name, prompt0, negative) in &selected {
+    for &i in &selected {
+        let name = doc.scenes[i].scene.name.clone();
+        let prompt0 = doc.scenes[i].prompt.clone();
+        let negative = doc.scenes[i].negative.clone();
         println!("\n{} scene {name}", style("──").cyan());
-        // Each scene is an INDEPENDENT optimization: its own negative, its own baseline, its own tabu seeded
-        // from the (shared, content-addressed) corpus — a scene's edits never collide with another's.
+        // Each scene is an INDEPENDENT optimization: its own negative, its own baseline (its ENHANCED prompt),
+        // its own tabu seeded from the (shared, content-addressed) corpus — a scene's edits never collide.
         step.negative = negative.clone();
         step.last_rank = 0.0;
         step.scene_name = name.clone();
@@ -939,7 +945,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         // absolute floor; `--improve-skip-good` pulls a per-scene target from the corpus's prior best. With
         // both, the baseline must clear the HIGHER bar (max) — skip only if it satisfies both.
         let prior_best = if args.improve_skip_good {
-            corpus_text.as_deref().and_then(|t| crate::smysl::prior_scene_rank(t, name))
+            corpus_text.as_deref().and_then(|t| crate::smysl::prior_scene_rank(t, &name))
         } else {
             None
         };
@@ -966,7 +972,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         }
         let out = compile::improve::run_improve(
             &mut step,
-            prompt0,
+            &prompt0,
             seed_tabu,
             args.improve_passes,
             args.improve_plateau.max(1),
@@ -974,6 +980,9 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             target,
         )
         .await?;
+        // WRITE THE WINNER BACK into the compiled scene, so the emitted HJSON carries the improved prompt.
+        // (For a skipped/already-good scene, best_prompt IS the baseline — a harmless identity override.)
+        doc.scenes[i].prompt = out.best_prompt.clone();
         // Persist this scene's tried deltas into the shared corpus (tabu memory for next time).
         let moves = out.corpus_moves();
         if !moves.is_empty() {
@@ -982,7 +991,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             }
         }
         // Record this scene's best achieved rank so `--improve-skip-good` can gate it next run.
-        if let Err(e) = persist_scene_rank(&corpus_path, name, out.best_rank) {
+        if let Err(e) = persist_scene_rank(&corpus_path, &name, out.best_rank) {
             eprintln!("{}  smysl rank not recorded: {e:#}", style("⚠").yellow());
         }
         results.push((name.clone(), out));
@@ -1008,6 +1017,39 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             style("◆").cyan(),
             results.len(),
         );
+    }
+
+    // 5. EMIT — write the improved scenario. The winning prompts are already in `doc.scenes[*].prompt`, so
+    //    re-emitting produces an HJSON that carries the improvement into the artifact you render.
+    doc.recompute_provenance(); // provenance now tracks prose → WINNING prompt
+    let hjson = doc.emit();
+    crate::cli::scenario::validate_hjson(&hjson).context("improved scenario failed validation")?;
+    let out_path: PathBuf = match &args.out {
+        Some(p) if p.as_os_str() != "-" => p.clone(),
+        _ => args.input.with_extension("hjson"),
+    };
+    std::fs::write(&out_path, &hjson).with_context(|| format!("writing {}", out_path.display()))?;
+    println!("\n{}  compiled (improved) → {}", style("✓").green(), out_path.display());
+
+    // The smysl corpus is the PROCESS memory (tabu + per-scene rank) and already lives at <stem>.smysl. Under
+    // --smysl, also fold in the scene-claims + prose→winning-prompt provenance so the sidecar is complete.
+    if args.smysl {
+        let sidecar = args.input.with_extension("smysl");
+        match compile::compose_scene_smysl(input, &args.model, Some(sidecar.as_path())) {
+            Ok(base) => {
+                let doc_txt = if doc.provenance.trim().is_empty() {
+                    base
+                } else {
+                    crate::smysl::merge_surface(&base, &doc.provenance)
+                };
+                if let Err(e) = std::fs::write(&sidecar, &doc_txt) {
+                    eprintln!("{}  smysl sidecar not updated: {e:#}", style("⚠").yellow());
+                } else {
+                    println!("{}  smysl       → {}", style("✓").green(), sidecar.display());
+                }
+            }
+            Err(e) => eprintln!("{}  smysl sidecar skipped: {e:#}", style("⚠").yellow()),
+        }
     }
     Ok(())
 }
