@@ -164,6 +164,12 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-scene", value_name = "NAME")]
     pub improve_scene: Option<String>,
 
+    /// *(6.30)* Keep the candidate images `--improve` renders (normally scored then deleted) in a directory
+    /// so you can SEE the trajectory. Saved as `<stem>_improve/<scene>/call<NN>-seed<S>-rank<R>.png`.
+    /// Optionally give a directory; default is `<input-stem>_improve/` beside the input.
+    #[arg(help_heading = "Compile", long = "keep-compiled-images", value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    pub keep_compiled_images: Option<String>,
+
     /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
     /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
     /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
@@ -621,6 +627,12 @@ struct LiveStep {
     pipe: Option<crate::pipelines::t2i::Pipeline>,
     tmp: std::path::PathBuf,
     last_rank: f32,
+    /// `--keep-compiled-images`: archive every scored candidate under here (`None` → discard). Images land in
+    /// `<keep_dir>/<scene_name>/call<NN>-seed<S>-rank<R>.png` — the whole render trajectory, not just the best.
+    keep_dir: Option<std::path::PathBuf>,
+    /// Current scene (subdir under `keep_dir`) and a per-scene monotonic call counter (`0` = baseline render).
+    scene_name: String,
+    call_idx: usize,
 }
 
 impl crate::compile::improve::ImproveStep for LiveStep {
@@ -690,8 +702,23 @@ impl crate::compile::improve::ImproveStep for LiveStep {
                         .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
                     img.save(&path)?;
                 }
-                scores.push(self.scorer.score_path(&path)?);
+                let score = self.scorer.score_path(&path)?;
+                scores.push(score);
+                // `--keep-compiled-images`: archive this candidate (best-effort — never fail a render over it).
+                if let Some(kd) = &self.keep_dir {
+                    let safe: String = self
+                        .scene_name
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                        .collect();
+                    let dir = kd.join(if safe.is_empty() { "scene".to_string() } else { safe });
+                    let dest = dir.join(format!("call{:02}-seed{seed}-rank{score:.2}.png", self.call_idx));
+                    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&path, &dest).map(|_| ())) {
+                        eprintln!("    · keep-images: could not save {}: {e}", dest.display());
+                    }
+                }
             }
+            self.call_idx += 1;
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
             self.last_rank = mean;
             if scores.len() > 1 {
@@ -814,6 +841,23 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     let seeds: Vec<u64> = (0..n_seeds).map(|i| args.improve_seed + i).collect();
     let corpus_path = args.input.with_extension("smysl");
 
+    // `--keep-compiled-images [DIR]`: where to archive the candidates. Bare flag → `<input-stem>_improve/`
+    // beside the input; an explicit value is used verbatim. Created up front so a save can't be the first error.
+    let keep_dir: Option<std::path::PathBuf> = args.keep_compiled_images.as_ref().map(|d| {
+        if d.trim().is_empty() {
+            let stem = args.input.file_stem().and_then(|s| s.to_str()).unwrap_or("compile");
+            let parent = args.input.parent().filter(|p| !p.as_os_str().is_empty());
+            parent.unwrap_or_else(|| std::path::Path::new(".")).join(format!("{stem}_improve"))
+        } else {
+            std::path::PathBuf::from(d)
+        }
+    });
+    if let Some(kd) = &keep_dir {
+        std::fs::create_dir_all(kd)
+            .with_context(|| format!("--keep-compiled-images: creating {}", kd.display()))?;
+        println!("{}  keeping every scored candidate under {}/", style("◆").cyan(), kd.display());
+    }
+
     // Up-front cost, so a fan-out over many scenes is never a surprise.
     let est_renders = selected.len() * (1 + args.improve_passes) * seeds.len();
     println!(
@@ -841,6 +885,9 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         pipe,
         tmp: tmp.clone(),
         last_rank: 0.0,
+        keep_dir,
+        scene_name: String::new(),
+        call_idx: 0,
     };
 
     let mut results: Vec<(String, compile::improve::ImproveOutcome)> = Vec::new();
@@ -850,6 +897,8 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         // from the (shared, content-addressed) corpus — a scene's edits never collide with another's.
         step.negative = negative.clone();
         step.last_rank = 0.0;
+        step.scene_name = name.clone();
+        step.call_idx = 0;
         let seed_tabu = std::fs::read_to_string(&corpus_path)
             .ok()
             .map(|t| crate::smysl::prior_fixes(&t))
