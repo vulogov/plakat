@@ -12,7 +12,7 @@ use crate::compile::resolver::ResolvedScene;
 use smysl_core::surface::{write_surface, WriteContext};
 use smysl_core::{
     canonical_uid, hash_bytes, DropReason, KernelType, Label, PackInfo, RelKind, Record, Relation,
-    Status, Uid, UnitCoreBuilder,
+    SourceKind, SourceRef, Status, Uid, UnitCoreBuilder,
 };
 use std::collections::BTreeMap;
 
@@ -253,6 +253,66 @@ pub fn fixes_to_records(
 pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -> anyhow::Result<String> {
     let (records, labels) = fixes_to_records(applied, manual)?;
     Ok(records_to_surface(&records, &labels))
+}
+
+// ---------------------------------------------------------------------------
+// smysl-optimize — per-scene aesthetic rank memory (the `--improve-skip-good` gate).
+// A scene's best achieved aesthetic score is a MEASURED metric (an @evidence unit
+// with a Metric source), recorded into the corpus so the next `--improve` run can
+// SKIP scenes already at quality instead of re-marching them.
+// ---------------------------------------------------------------------------
+
+/// Build the records for a scene's best achieved aesthetic rank: one `@evidence` unit, `Measured` (it is a
+/// real metric, sourced from the LAION aesthetic scorer). Content-addressed like the fix records, so a
+/// re-recorded identical rank dedups and the corpus keeps the full per-scene rank history (the *best* is the
+/// max across a scene's records — see [`prior_scene_rank`]).
+pub fn scene_rank_records(scene: &str, rank: f32) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
+    let mut records: Vec<Record> = Vec::new();
+    let mut labels: BTreeMap<Label, Uid> = BTreeMap::new();
+    let gist = format!("scene \u{201C}{}\u{201D} reached aesthetic {rank:.2}", scene.trim());
+    let unit = UnitCoreBuilder::new(KernelType::Evidence, gist, Status::Measured)
+        .body(format!("scene: {}\nrank: {rank:.4}", scene.trim()))
+        .source(SourceRef::new(SourceKind::Metric, "plakat/aesthetic"))
+        .build()
+        .map_err(|e| anyhow::anyhow!("smysl scene-rank `{scene}`: {e:?}"))?;
+    let uid = canonical_uid(&unit);
+    labels.insert(Label::new(&format!("m/rank-{}", uid_tag(&uid)))?, uid);
+    records.push(Record::Unit(unit));
+    Ok((records, labels))
+}
+
+/// The best aesthetic rank ALREADY recorded for `scene` in a corpus, or `None` if the scene has no rank
+/// record yet. Parses the `m/rank-*` `@evidence` units, matches on the `scene:` body line (normalized), and
+/// returns the MAX `rank:` — the best a prior `--improve` run got that scene to. Used to seed the
+/// `--improve-skip-good` target per scene.
+pub fn prior_scene_rank(corpus_text: &str, scene: &str) -> Option<f32> {
+    let p = smysl_core::surface::parse_surface(corpus_text).ok()?;
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    let want = norm_phrase(scene);
+    let mut best: Option<f32> = None;
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let is_rank = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("m/rank-")).unwrap_or(false);
+        if !is_rank {
+            continue;
+        }
+        let Some(body) = &c.body else { continue };
+        let (mut sc, mut rk) = (None, None);
+        for line in body.lines() {
+            if let Some(v) = line.trim().strip_prefix("scene:") {
+                sc = Some(norm_phrase(v));
+            } else if let Some(v) = line.trim().strip_prefix("rank:") {
+                rk = v.trim().parse::<f32>().ok();
+            }
+        }
+        if sc.as_deref() == Some(want.as_str()) {
+            if let Some(r) = rk {
+                best = Some(best.map_or(r, |b: f32| b.max(r)));
+            }
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -917,6 +977,24 @@ mod tests {
         assert!(matches!(&edges[0], Record::Relation(rl) if rl.kind == RelKind::Supersedes));
         // An identical recompile supersedes nothing (same content-hash).
         assert!(supersedes_edges(&prior, &prior).is_empty(), "nothing supersedes itself");
+    }
+
+    #[test]
+    fn scene_rank_round_trips_and_takes_the_best() {
+        // Two runs record ranks for the same scene; the reader returns the MAX (best) and matches by name.
+        let (r1, l1) = scene_rank_records("man on bench", 6.30).unwrap();
+        let (r2, l2) = scene_rank_records("man on bench", 6.71).unwrap();
+        let mut corpus = merge_surface(&records_to_surface(&r1, &l1), &records_to_surface(&r2, &l2));
+        // A different scene must not leak into the query.
+        let (ro, lo) = scene_rank_records("empty street", 4.10).unwrap();
+        corpus = merge_surface(&corpus, &records_to_surface(&ro, &lo));
+        assert_eq!(prior_scene_rank(&corpus, "man on bench"), Some(6.71), "best of the two:\n{corpus}");
+        assert_eq!(prior_scene_rank(&corpus, "MAN ON BENCH"), Some(6.71), "case-insensitive match");
+        assert_eq!(prior_scene_rank(&corpus, "empty street"), Some(4.10), "scoped per scene");
+        assert_eq!(prior_scene_rank(&corpus, "never rendered"), None, "unknown scene → no prior");
+        // Identical re-record dedups (content-addressed) — no double entry.
+        let dup = merge_surface(&corpus, &records_to_surface(&r2, &l2));
+        assert_eq!(prior_scene_rank(&dup, "man on bench"), Some(6.71));
     }
 
     #[test]

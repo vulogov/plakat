@@ -160,9 +160,22 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-all", default_value_t = false)]
     pub improve_all: bool,
 
-    /// *(6.30)* Improve only the named scene/composition instead of the first. Implies `--improve`.
-    #[arg(help_heading = "Compile", long = "improve-scene", value_name = "NAME")]
-    pub improve_scene: Option<String>,
+    /// *(6.30)* Improve only the named scene(s)/composition(s) instead of the first. Repeatable and
+    /// comma-separated: `--improve-scene bench --improve-scene garden` or `--improve-scene bench,garden`.
+    /// Implies `--improve`.
+    #[arg(help_heading = "Compile", long = "improve-scene", value_name = "NAME", value_delimiter = ',')]
+    pub improve_scene: Vec<String>,
+
+    /// *(6.30)* Skip a scene whose baseline aesthetic rank already meets this target — no passes are spent on
+    /// it (the baseline still renders, so the gate is prose-aware). Applies to every improved scene.
+    #[arg(help_heading = "Compile", long = "improve-target", value_name = "SCORE")]
+    pub improve_target: Option<f32>,
+
+    /// *(6.30)* Consult the smysl corpus: skip any scene whose baseline already matches or beats the best rank
+    /// a prior `--improve` run recorded for it. Per-scene target from the corpus; scenes with no history are
+    /// improved normally. Combine with `--improve-target` to also apply an absolute floor.
+    #[arg(help_heading = "Compile", long = "improve-skip-good")]
+    pub improve_skip_good: bool,
 
     /// *(6.30)* Keep the candidate images `--improve` renders (normally scored then deleted) in a directory
     /// so you can SEE the trajectory. Saved as `<stem>_improve/<scene>/call<NN>-seed<S>-rank<R>.png`.
@@ -427,7 +440,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
     }
 
     // --improve[-all|-scene]: the automatic aesthetic improve loop (Phase D). Renders + scores, needs a model.
-    if args.improve || args.improve_all || args.improve_scene.is_some() {
+    if args.improve || args.improve_all || !args.improve_scene.is_empty() {
         anyhow::ensure!(!stdin_input, "--improve needs a file input (not stdin)");
         return improve_cmd(&args, &input).await;
     }
@@ -774,6 +787,17 @@ fn persist_improve_corpus(corpus: &std::path::Path, moves: &[(String, String, St
     Ok(())
 }
 
+/// Record a scene's best achieved aesthetic rank into the `.smysl` corpus (merge, content-hash dedup) so a
+/// later `--improve-skip-good` run can read it back via `smysl::prior_scene_rank` and skip an already-good scene.
+fn persist_scene_rank(corpus: &std::path::Path, scene: &str, rank: f32) -> Result<()> {
+    let (recs, labels) = crate::smysl::scene_rank_records(scene, rank)?;
+    let snapshot = crate::smysl::records_to_surface(&recs, &labels);
+    let base = std::fs::read_to_string(corpus).unwrap_or_default();
+    std::fs::write(corpus, crate::smysl::merge_surface(&base, &snapshot))
+        .with_context(|| format!("--improve: writing corpus {}", corpus.display()))?;
+    Ok(())
+}
+
 /// `compile --improve`: run the automatic aesthetic improve loop and report the best prompt found.
 async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     let input_name = args.input.file_name().and_then(|n| n.to_str()).unwrap_or("prompts.txt").to_string();
@@ -791,14 +815,22 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     // 1. Compile every scene, then SELECT the scope: a named scene, all scenes, or (default) the first.
     let all = compile::all_prompts(input, &opts).await?;
     anyhow::ensure!(!all.is_empty(), "--improve: no renderable scenes in {}", args.input.display());
-    let selected: Vec<(String, String, String)> = if let Some(name) = &args.improve_scene {
-        let hit: Vec<_> = all.iter().filter(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).cloned().collect();
-        anyhow::ensure!(
-            !hit.is_empty(),
-            "--improve-scene: no scene named {name:?} — scenes are: {}",
-            all.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>().join(", "),
-        );
-        hit
+    let selected: Vec<(String, String, String)> = if !args.improve_scene.is_empty() {
+        // One or more named scenes (repeatable / comma-separated). Every requested name must resolve; keep
+        // the file's scene order, and never duplicate a scene named twice.
+        let wanted: Vec<String> =
+            args.improve_scene.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        for w in &wanted {
+            anyhow::ensure!(
+                all.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(w)),
+                "--improve-scene: no scene named {w:?} — scenes are: {}",
+                all.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+            );
+        }
+        all.iter()
+            .filter(|(n, _, _)| wanted.iter().any(|w| n.eq_ignore_ascii_case(w)))
+            .cloned()
+            .collect()
     } else if args.improve_all {
         all
     } else {
@@ -899,10 +931,39 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         step.last_rank = 0.0;
         step.scene_name = name.clone();
         step.call_idx = 0;
-        let seed_tabu = std::fs::read_to_string(&corpus_path)
-            .ok()
-            .map(|t| crate::smysl::prior_fixes(&t))
-            .unwrap_or_default();
+        // Read the corpus ONCE for this scene: its prior fix-moves (tabu) AND its prior best rank (the gate).
+        let corpus_text = std::fs::read_to_string(&corpus_path).ok();
+        let seed_tabu =
+            corpus_text.as_deref().map(crate::smysl::prior_fixes).unwrap_or_default();
+        // The quality gate: skip passes if the baseline already meets the target. `--improve-target` is an
+        // absolute floor; `--improve-skip-good` pulls a per-scene target from the corpus's prior best. With
+        // both, the baseline must clear the HIGHER bar (max) — skip only if it satisfies both.
+        let prior_best = if args.improve_skip_good {
+            corpus_text.as_deref().and_then(|t| crate::smysl::prior_scene_rank(t, name))
+        } else {
+            None
+        };
+        // Fresh baselines are NOISY — Metal renders aren't bit-reproducible and the aesthetic score drifts
+        // ~0.2 run-to-run. So the `--improve-skip-good` bar (a noisy stored best vs a noisy fresh baseline)
+        // gets a tolerance band; without it, a scene we already optimized re-marches just because this run's
+        // baseline landed a hair lower. An explicit `--improve-target` stays an EXACT absolute bar (the user
+        // named a number). With both, the higher bar wins.
+        const SKIP_TOL: f32 = 0.25;
+        let target = match (args.improve_target, prior_best) {
+            (Some(a), Some(b)) => Some(a.max(b - SKIP_TOL)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b - SKIP_TOL),
+            (None, None) => None,
+        };
+        if let Some(t) = target {
+            let src = match (args.improve_target, prior_best) {
+                (Some(_), Some(b)) => format!("target / prior best {b:.2} \u{2212}{SKIP_TOL} tol"),
+                (Some(_), None) => "target".to_string(),
+                (None, Some(b)) => format!("prior best {b:.2} \u{2212}{SKIP_TOL} tol from smysl"),
+                (None, None) => String::new(),
+            };
+            println!("    · gate: skip if baseline \u{2265} {t:.2} ({src})");
+        }
         let out = compile::improve::run_improve(
             &mut step,
             prompt0,
@@ -910,6 +971,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             args.improve_passes,
             args.improve_plateau.max(1),
             args.improve_min_gain,
+            target,
         )
         .await?;
         // Persist this scene's tried deltas into the shared corpus (tabu memory for next time).
@@ -919,15 +981,33 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
                 eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
             }
         }
+        // Record this scene's best achieved rank so `--improve-skip-good` can gate it next run.
+        if let Err(e) = persist_scene_rank(&corpus_path, name, out.best_rank) {
+            eprintln!("{}  smysl rank not recorded: {e:#}", style("⚠").yellow());
+        }
         results.push((name.clone(), out));
     }
     let _ = std::fs::remove_dir_all(&tmp);
 
     // 4. Report per scene.
+    let mut skipped = 0usize;
     for (name, out) in &results {
+        let already_good = out.stop == compile::improve::StopReason::AlreadyGood;
+        if already_good {
+            skipped += 1;
+            println!("\n{} scene {name} — already good (aesthetic {:.2}), skipped", style("↷").dim(), out.best_rank);
+            continue;
+        }
         println!("\n{} scene {name}", style("✓").green());
         print!("{}", compile::improve::format_report(out));
         println!("  best prompt (aesthetic {:.2}):\n{}", out.best_rank, out.best_prompt);
+    }
+    if skipped > 0 {
+        println!(
+            "\n{}  {skipped} of {} scene(s) already met the target — passes skipped.",
+            style("◆").cyan(),
+            results.len(),
+        );
     }
     Ok(())
 }

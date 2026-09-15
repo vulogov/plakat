@@ -42,6 +42,9 @@ pub enum StopReason {
     NoMoves,
     /// The proposer kept insisting on a tabu move — a stuck oscillation.
     Oscillation,
+    /// The baseline already met the quality target (`--improve-target` / `--improve-skip-good`), so no
+    /// passes were spent — the smysl-consulted skip.
+    AlreadyGood,
 }
 
 impl StopReason {
@@ -51,6 +54,7 @@ impl StopReason {
             StopReason::Plateau => "rank plateaued",
             StopReason::NoMoves => "no fresh moves left",
             StopReason::Oscillation => "stuck (proposer kept repeating a spent move)",
+            StopReason::AlreadyGood => "baseline already at target — skipped",
         }
     }
 }
@@ -120,12 +124,18 @@ pub async fn run_improve(
     max_passes: usize,
     plateau_k: usize,
     min_gain: f32,
+    target: Option<f32>,
 ) -> anyhow::Result<ImproveOutcome> {
     let mut tabu = seed_tabu;
     let mut prompt = initial_prompt.to_string();
     let base = step.rank(&prompt).await?;
     let mut best = (prompt.clone(), base);
     let mut passes = vec![Pass { n: 0, delta: None, rank: base, kept: true }];
+    // The smysl-consulted skip: a scene whose baseline already meets the target is left alone — no passes,
+    // no proposer LLM calls. The baseline still rendered (so the gate is prose-aware, not a blind stored score).
+    if target.is_some_and(|t| base >= t) {
+        return Ok(finish(best, passes, StopReason::AlreadyGood));
+    }
     let mut stale = 0usize;
     let mut oscillated = 0usize;
 
@@ -247,7 +257,7 @@ mod tests {
     async fn climbs_to_the_best_and_keeps_only_improvements() {
         // Two deltas each add a ★ (rank climbs); one adds nothing (reverted).
         let mut step = StubStep::new(&[("lane", "lane \u{2605}"), ("dawn", "dawn"), ("fog", "fog \u{2605}")]);
-        let out = run_improve(&mut step, "a lane at dawn in fog", vec![], 10, 3, 0.0).await.unwrap();
+        let out = run_improve(&mut step, "a lane at dawn in fog", vec![], 10, 3, 0.0, None).await.unwrap();
         assert_eq!(out.best_rank, 2.0, "kept both ★-adding deltas");
         assert!(out.best_prompt.contains("lane \u{2605}") && out.best_prompt.contains("fog \u{2605}"));
         assert!(out.passes.iter().any(|p| p.delta.as_ref().map(|(o, _)| o == "dawn").unwrap_or(false) && !p.kept));
@@ -256,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn stops_on_plateau_with_best_so_far() {
         let mut step = StubStep::new(&[("a", "a"), ("b", "b"), ("c", "c"), ("d", "d")]);
-        let out = run_improve(&mut step, "a b c d", vec![], 10, 2, 0.0).await.unwrap();
+        let out = run_improve(&mut step, "a b c d", vec![], 10, 2, 0.0, None).await.unwrap();
         assert_eq!(out.stop, StopReason::Plateau);
         assert_eq!(out.best_rank, 0.0);
     }
@@ -266,7 +276,7 @@ mod tests {
         // Seed the tabu with the only ★-move; the proposer offers it, the loop must skip it and run dry.
         let mut step = StubStep::new(&[("lane", "lane \u{2605}")]);
         let seed = vec![("lane".to_string(), "lane \u{2605}".to_string())];
-        let out = run_improve(&mut step, "a lane", seed, 10, 3, 0.0).await.unwrap();
+        let out = run_improve(&mut step, "a lane", seed, 10, 3, 0.0, None).await.unwrap();
         assert_eq!(out.stop, StopReason::NoMoves, "the only move was tabu → nothing fresh to try");
         assert_eq!(out.best_rank, 0.0, "never applied the spent move");
         assert!(!out.best_prompt.contains('\u{2605}'));
@@ -275,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn tried_deltas_become_corpus_moves() {
         let mut step = StubStep::new(&[("lane", "lane \u{2605}")]);
-        let out = run_improve(&mut step, "a lane", vec![], 10, 3, 0.0).await.unwrap();
+        let out = run_improve(&mut step, "a lane", vec![], 10, 3, 0.0, None).await.unwrap();
         let moves = out.corpus_moves();
         assert_eq!(moves.len(), 1);
         assert_eq!((moves[0].0.as_str(), moves[0].1.as_str()), ("lane", "lane \u{2605}"));
@@ -302,8 +312,31 @@ mod tests {
                 Box::pin(async move { Ok(s) })
             }
         }
-        let out = run_improve(&mut Tiny, "x", vec![], 5, 2, 0.2).await.unwrap(); // gain 0.1 < 0.2
+        let out = run_improve(&mut Tiny, "x", vec![], 5, 2, 0.2, None).await.unwrap(); // gain 0.1 < 0.2
         assert!(out.passes.iter().all(|p| p.n == 0 || !p.kept), "a sub-noise gain is not an improvement");
         assert_eq!(out.best_rank, 5.0);
+    }
+
+    #[tokio::test]
+    async fn target_skips_an_already_good_baseline() {
+        // Baseline has 3 ★ (rank 3). Target 2 → already good: no passes, no proposer call, kept as-is.
+        let mut step = StubStep::new(&[("lane", "lane \u{2605}")]);
+        let out =
+            run_improve(&mut step, "a \u{2605} lane \u{2605} at \u{2605} dawn", vec![], 10, 3, 0.0, Some(2.0))
+                .await
+                .unwrap();
+        assert_eq!(out.stop, StopReason::AlreadyGood);
+        assert_eq!(out.best_rank, 3.0, "baseline kept, untouched");
+        assert_eq!(out.passes.len(), 1, "only the baseline render — no passes spent");
+        assert_eq!(step.idx, 0, "the proposer was never consulted");
+    }
+
+    #[tokio::test]
+    async fn target_below_baseline_still_optimizes() {
+        // Baseline 0 ★, target 2 → not yet good, so the loop runs and climbs normally.
+        let mut step = StubStep::new(&[("lane", "lane \u{2605}"), ("fog", "fog \u{2605}")]);
+        let out = run_improve(&mut step, "a lane in fog", vec![], 10, 3, 0.0, Some(2.0)).await.unwrap();
+        assert_ne!(out.stop, StopReason::AlreadyGood, "baseline was below target — must optimize");
+        assert_eq!(out.best_rank, 2.0);
     }
 }
