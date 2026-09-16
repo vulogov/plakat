@@ -2587,6 +2587,7 @@ pub(crate) fn draft_generate(
     dest: &std::path::Path,
     controls: &[crate::pipelines::controlnet::ControlRequest],
     regions: &[crate::pipelines::tiled::RegionSpec],
+    steps: usize,
 ) -> Result<()> {
     let tmp = dest.with_extension("tmpdir");
     std::fs::create_dir_all(&tmp)?;
@@ -2596,7 +2597,7 @@ pub(crate) fn draft_generate(
         width: w,
         height: h,
         count: 1,
-        steps: 30,
+        steps: steps.max(1),
         guidance: 7.5,
         seed: Some(seed),
         subseed: None,
@@ -3547,7 +3548,7 @@ async fn control_generate_prepass(
                 } else {
                     &cur_prompt
                 };
-                if let Err(e) = draft_generate(pipe, draft_base, &negative, dw, dh, seed, &path, &control_reqs, &regions) {
+                if let Err(e) = draft_generate(pipe, draft_base, &negative, dw, dh, seed, &path, &control_reqs, &regions, 30) {
                     crate::ui::progress::println(&format!(
                         "      {} r{round} draft {d} failed: {e}",
                         style("control-generate:").yellow()

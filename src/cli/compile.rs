@@ -202,6 +202,13 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-plain", default_value_t = false)]
     pub improve_plain: bool,
 
+    /// *(6.32 ③)* Fast-draft proxy: render each `--improve` candidate at this many steps for the SEARCH
+    /// (default 30 = full). Lower (e.g. 12–16) makes `--improve-all` much cheaper; the winning PROMPT is
+    /// written and `scenario` renders it at full quality. Validate a lower count still ranks candidates the
+    /// same for your model before trusting a deep cut.
+    #[arg(help_heading = "Compile", long = "improve-draft-steps", value_name = "N", default_value_t = 30)]
+    pub improve_draft_steps: usize,
+
     /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
     /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
     /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
@@ -687,6 +694,10 @@ struct LiveStep {
     /// The scenario's LoRA specs (raw `source[:scale]` strings) — so the fallback `api::Generate` path
     /// (non-SD-family) renders through the same LoRA stack the resident pipeline loaded. Empty = plain t2i.
     loras: Vec<String>,
+    /// *(6.32 ③)* Steps per improve render — a fast-draft proxy for the SEARCH (`--improve-draft-steps`).
+    /// Lower = faster candidate renders; the winning PROMPT is what's written, and `scenario` renders it at
+    /// full quality. Default 30 (full).
+    draft_steps: usize,
     /// `--keep-compiled-images`: archive every scored candidate under here (`None` → discard). Images land in
     /// `<keep_dir>/<scene_name>/call<NN>-seed<S>-rank<R>.png` — the whole render trajectory, not just the best.
     keep_dir: Option<std::path::PathBuf>,
@@ -745,6 +756,7 @@ impl crate::compile::improve::ImproveStep for LiveStep {
                         &path,
                         &[],
                         &[],
+                        self.draft_steps,
                     )?;
                 } else {
                     // Fallback: one-shot render (reloads the model each call) for non-SD-family models.
@@ -753,6 +765,7 @@ impl crate::compile::improve::ImproveStep for LiveStep {
                         .negative(self.negative.as_str())
                         .size(self.width, self.height)
                         .seed(seed)
+                        .steps(self.draft_steps)
                         .count(1);
                     // Same LoRA stack as the resident path — score the real finish, not plain t2i. Each raw
                     // spec re-parses in build_loras; passing its own scale keeps `source:scale` intact.
@@ -919,6 +932,13 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             lora_specs.join(", "),
         );
     }
+    if args.improve_draft_steps < 30 {
+        println!(
+            "{}  fast-draft search at {} steps (winner prompt renders at full quality in `scenario`)",
+            style("◆").cyan(),
+            args.improve_draft_steps.max(1),
+        );
+    }
     // Load the RENDER model ONCE and keep it resident — reloading the SD core per render was the bug. SD
     // family (sd15/sdxl/…) loads here; other families (sd35/Flux) fall back to the one-shot per-render path.
     let pipe = match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
@@ -993,6 +1013,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         tmp: tmp.clone(),
         last_rank: 0.0,
         loras: lora_specs,
+        draft_steps: args.improve_draft_steps.max(1),
         keep_dir,
         scene_name: String::new(),
         call_idx: 0,
