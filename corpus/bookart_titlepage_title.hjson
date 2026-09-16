@@ -1,0 +1,21 @@
+// The MAIN title page in the dense antique-letterpress treatment (the Buslaev-1858 grammar layout):
+// a full hierarchy — patronage series, a small lead-in, a big display title, subtitles, a part, a long
+// approbation note, the author — with a PICTORIAL EMBLEM (a `bookart illustrate` vignette, the printer's
+// device woven INTO the type) sitting above the imprint at the foot. Everything but the emblem is
+// weight-free; the emblem is the diffusion tier, auto-cropped to its ink and centred.
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "series",   text: "PUBLISHED FOR THE LORDS COMMISSIONERS\nOF THE ADMIRALTY" }
+    { role: "rule" }
+    { role: "subtitle", text: "AN ACCOUNT OF THE", size: 12 }
+    { role: "title",    text: "PRACTICE OF NAVIGATION", size: 21 }
+    { role: "subtitle", text: "UPON THE SOUTHERN OCEAN", size: 12 }
+    { role: "part",     text: "PART I · SEAMANSHIP", size: 12 }
+    { role: "note",     text: "Compiled, by command, from the journals of His Majesty's ships,\nand approved the 24th of December 1848," }
+    { role: "author",   text: "By Captain James Hawkins, R.N.", size: 13 }
+    { role: "image",    src: "corpus/images/bookart-titlepage/emblem.png", width: 24 }
+    { role: "imprint",  text: "LONDON\nPrinted at the Admiralty Press\nMDCCXLI" }
+  ]
+}

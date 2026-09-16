@@ -19,7 +19,7 @@
   set align(center)
 
   v(0.3em)
-  image("01_divider_crop.png", width: 60%)
+  image("01_divider_crop.png", width: 62%)
   v(0.3em)
   text(size: 15pt, weight: "bold", tracking: 0.04em)[#upper("CHAPTER II")]
   v(0.5em)

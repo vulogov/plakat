@@ -45,7 +45,8 @@ pub struct TitleLine {
     #[serde(default)]
     pub src: Option<String>,
     /// Size override: pt for text roles, em of blank space for `space`, or width-% for `image`.
-    #[serde(default)]
+    /// `width` is accepted as an alias (natural on `image`/`ornament` lines).
+    #[serde(default, alias = "width")]
     pub size: Option<f32>,
 }
 
@@ -279,5 +280,15 @@ mod tests {
         assert!(out.contains("smallcaps(\"Section the First\")"), "subchapter is small-caps:\n{out}");
         assert!(out.contains("tracking: 0.09em"), "subchapter is generously tracked");
         assert!(out.contains("size: 12pt"), "subchapter default size 12pt");
+    }
+
+    #[test]
+    fn width_aliases_size_for_images() {
+        // On image/ornament lines `width` is the natural key; it must feed the same `size` field
+        // (width-% for images) rather than being silently dropped to the 60% default.
+        let line: TitleLine = deser_hjson::from_str(r#"{ role: "image", src: "e.png", width: 24 }"#).unwrap();
+        assert_eq!(line.size, Some(24.0), "width populates size");
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &[line]);
+        assert!(out.contains(r#"image("e.png", width: 24%)"#), "image honours authored width:\n{out}");
     }
 }

@@ -257,7 +257,9 @@ The spec is a small HJSON — a `style`, an optional `border` image, and a verti
 `role` + its `text` (or `src` for an image). Roles: `series` · `title` · `subtitle` · `part` · `subchapter`
 (a subordinate section mark — small tracked small-caps, for section pages under a chapter) · `author` ·
 `note` · `epigraph` · `imprint` (placed at the foot) · `rule` · `ornament`/`image` (an emblem) · `space`.
-`\n` in a line's text splits it into stacked centred lines; `size` overrides a role's point size. With a
+`\n` in a line's text splits it into stacked centred lines; `size` overrides a role's point size (for an
+`image`/`ornament` line it is the width — a page-% for `image`, mm for `ornament` — and `width:` is an
+accepted alias). With a
 `border`, the type box is auto-fitted to the ornament's **measured clear window** (shared with `typst`), so
 text never overlaps the frame. An `image`/`ornament` line's `src` is **auto-cropped to its ink** — a
 `bookart render` ornament arrives on a full page canvas, so it's trimmed to the device before it's centred
