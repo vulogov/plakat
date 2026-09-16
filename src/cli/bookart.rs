@@ -65,6 +65,71 @@ pub enum BookartCmd {
     /// Export a set of small procedural ornaments (fleurons/dinkus) as an OpenType dingbat font (B4) —
     /// type a letter (`a`–`h`), get an ornament. For inline use in InDesign / LaTeX.
     Font(FontArgs),
+    /// Wrap a rendered **border** ornament into a self-contained Typst artifact — a bordered page plus a
+    /// placement API (`#framed[...]`, `#place-on-page(...)`) — and, with `--verify`, compile it to PDF.
+    Typst(TypstArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TypstArgs {
+    /// Full-page border ornament (a bookart-rendered `border` PNG; SVG works too). The text box is fitted to
+    /// the border's measured clear window. Use this OR `--corner`.
+    #[arg(long)]
+    pub border: Option<PathBuf>,
+    /// A small CORNER ornament (a bookart-rendered `corner` PNG). Builds a RESTRAINED frame — thin rules +
+    /// this ornament mirrored at all four corners — that never dominates the page. Use this OR `--border`.
+    #[arg(long)]
+    pub corner: Option<PathBuf>,
+    /// Size of each corner ornament, in mm (`--corner` mode).
+    #[arg(long, default_value_t = 18.0)]
+    pub corner_size: f32,
+    /// Frame rule thickness, in pt (`--corner` mode); 0 draws corners only, no connecting rules.
+    #[arg(long, default_value_t = 0.6)]
+    pub rule: f32,
+    /// Output Typst file (`.typ`). Referenced assets are copied beside it so it compiles anywhere.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Page size (`a4`/`a5`/`a6`/`b5`/`letter`/…). Ignored when `--spec` is given.
+    #[arg(long, default_value = "a5")]
+    pub page: String,
+    /// Read the page size from a bookart spec instead of `--page`.
+    #[arg(long)]
+    pub spec: Option<PathBuf>,
+    /// Uniform page margin, in mm — the gap between the page edge and the border. The border is sized to
+    /// the resulting margin box (`page − margins`). Per-side flags below override this default.
+    #[arg(long, default_value_t = 12.0)]
+    pub margin: f32,
+    /// Top page margin, mm (overrides `--margin`).
+    #[arg(long)]
+    pub margin_top: Option<f32>,
+    /// Bottom page margin, mm (overrides `--margin`).
+    #[arg(long)]
+    pub margin_bottom: Option<f32>,
+    /// Left page margin, mm (overrides `--margin`).
+    #[arg(long)]
+    pub margin_left: Option<f32>,
+    /// Right page margin, mm (overrides `--margin`).
+    #[arg(long)]
+    pub margin_right: Option<f32>,
+    /// Extra safety clearance in mm added inside the border's MEASURED clear window (the text box is fitted
+    /// to the ornament automatically; this is just breathing room on top).
+    #[arg(long, default_value_t = 2.0)]
+    pub safety: f32,
+    /// Optional title, placed centred at the top of the safe area.
+    #[arg(long)]
+    pub title: Option<String>,
+    /// Optional text file whose contents become the body (Typst markup allowed). Omit for a lorem stand-in.
+    #[arg(long)]
+    pub body: Option<PathBuf>,
+    /// Optional image placed centred under the body — copied beside the artifact.
+    #[arg(long)]
+    pub image: Option<PathBuf>,
+    /// Placed-image width, as a percentage of the content width.
+    #[arg(long, default_value_t = 60)]
+    pub image_width: u32,
+    /// After writing, compile the artifact to a PDF with `typst` to verify it renders.
+    #[arg(long, default_value_t = false)]
+    pub verify: bool,
 }
 
 #[derive(Args, Debug)]
@@ -317,6 +382,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Vectorize(a) => run_vectorize(a),
         BookartCmd::Origins(a) => run_origins(a),
         BookartCmd::Font(a) => run_font(a),
+        BookartCmd::Typst(a) => run_typst(a),
     }
 }
 
@@ -749,6 +815,245 @@ fn run_font(a: FontArgs) -> Result<()> {
         set.len(),
         glyphs,
         bytes.len() as f32 / 1024.0
+    );
+    Ok(())
+}
+
+/// `bookart typst` — wrap a border ornament into a self-contained, PDF-compilable Typst artifact:
+/// a page whose background IS the border, plus `#framed[...]` / `#place-on-page(...)` to put content on
+/// top. Copies the assets beside the `.typ` (Typst's root sandbox needs them local) and, with `--verify`,
+/// compiles it to a PDF to prove it renders.
+fn run_typst(a: TypstArgs) -> Result<()> {
+    use crate::bookart::spec::Page;
+    use crate::bookart::{geometry, typst as typ, BookArtSpec};
+
+    // 1. Resolve the physical page size — from a spec's page block, or the `--page` name.
+    let page_res = if let Some(spec_path) = &a.spec {
+        let spec = BookArtSpec::load(spec_path)?;
+        geometry::resolve_page(spec.page.as_ref())
+    } else {
+        geometry::resolve_page(Some(&Page { size: Some(a.page.clone()), ..Default::default() }))
+    };
+
+    // The artifact's directory — assets must sit beside the `.typ` so Typst's root sandbox resolves them.
+    let art_dir = a
+        .out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&art_dir).with_context(|| format!("creating {}", art_dir.display()))?;
+
+    // 2. Exactly one frame source, plus the shared content + margins.
+    anyhow::ensure!(
+        a.border.is_some() ^ a.corner.is_some(),
+        "give exactly one of --border (full ornament, text fitted to its clear window) or --corner \
+         (a small ornament framed at the four corners — a restrained frame that never dominates)",
+    );
+    let image_ref = match &a.image {
+        Some(img) => Some(copy_beside(img, &art_dir).context("copying the placed image")?),
+        None => None,
+    };
+    let body = match &a.body {
+        Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?),
+        None => None,
+    };
+    let place = typ::Placement { title: a.title.clone(), body, image_ref, image_width_pct: a.image_width };
+    // Per-side page margins fall back to the uniform --margin.
+    let m = a.margin.max(0.0);
+    let margin = typ::Margins {
+        top: a.margin_top.unwrap_or(m).max(0.0),
+        bottom: a.margin_bottom.unwrap_or(m).max(0.0),
+        left: a.margin_left.unwrap_or(m).max(0.0),
+        right: a.margin_right.unwrap_or(m).max(0.0),
+    };
+
+    // 3. Emit — a RESTRAINED corner frame, or a full border with the text fitted to its clear window.
+    if let Some(corner_path) = &a.corner {
+        // `bookart corner` renders all four corners on one page; crop a single tile so it can be mirrored
+        // into a matching frame at the chosen size.
+        let corner_ref = prepare_corner_tile(corner_path, &art_dir).context("preparing the corner tile")?;
+        let cs = a.corner_size.max(1.0);
+        let (tw, th) = (
+            page_res.w_mm - margin.left - margin.right - 2.0 * cs,
+            page_res.h_mm - margin.top - margin.bottom - 2.0 * cs,
+        );
+        anyhow::ensure!(
+            tw >= 20.0 && th >= 20.0,
+            "corners of {cs:.0} mm + margins leave only a {tw:.0}×{th:.0} mm text area — shrink --corner-size or --margin",
+        );
+        let frame = typ::CornerFrame {
+            w_mm: page_res.w_mm,
+            h_mm: page_res.h_mm,
+            corner_ref,
+            corner_mm: cs,
+            rule_pt: a.rule.max(0.0),
+            margin,
+        };
+        let src = typ::typst_corner_frame(&frame, &place);
+        std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+        println!(
+            "{} {}  ({} · page {}×{} mm · corner frame {:.0} mm · text {:.0}×{:.0} mm — text keeps the interior)",
+            style("wrote").green(),
+            a.out.display(),
+            page_res.size_name,
+            page_res.w_mm.round() as i32,
+            page_res.h_mm.round() as i32,
+            cs,
+            tw,
+            th,
+        );
+    } else {
+        let border_path = a.border.as_ref().expect("border present (xor validated above)");
+        let border_ref = copy_beside(border_path, &art_dir).context("copying the border image")?;
+        let (bw, bh) = (page_res.w_mm - margin.left - margin.right, page_res.h_mm - margin.top - margin.bottom);
+        anyhow::ensure!(
+            bw > 0.0 && bh > 0.0,
+            "margins ({:.0}/{:.0}/{:.0}/{:.0} mm) exceed the {} page ({:.0}×{:.0} mm) — the border would have no size",
+            margin.top, margin.bottom, margin.left, margin.right, page_res.size_name, page_res.w_mm, page_res.h_mm,
+        );
+        // TEXT is the subject: MEASURE the border's clear window and fit the text box to it, so a page is
+        // never generated with text over the ornament. A raster is measured; SVG/unreadable → a proportional
+        // 12% window (a safe estimate) with a warning.
+        let window = measure_clear_window(border_path);
+        let text_m = typ::text_margins_from_window(page_res.w_mm, page_res.h_mm, &margin, window, a.safety.max(0.0));
+        let (tw, th) = (page_res.w_mm - text_m.left - text_m.right, page_res.h_mm - text_m.top - text_m.bottom);
+        anyhow::ensure!(
+            tw >= 20.0 && th >= 20.0,
+            "the border leaves only a {tw:.0}×{th:.0} mm text area — use a lighter border (or --corner), a larger page, or smaller --margin",
+        );
+        let page = typ::TypstPage { w_mm: page_res.w_mm, h_mm: page_res.h_mm, border_ref, border: margin, text: text_m };
+        let src = typ::typst_artifact(&page, &place);
+        std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+        println!(
+            "{} {}  ({} · page {}×{} mm · border {:.0}×{:.0} mm · text {:.0}×{:.0} mm — fitted to the border)",
+            style("wrote").green(),
+            a.out.display(),
+            page_res.size_name,
+            page_res.w_mm.round() as i32,
+            page_res.h_mm.round() as i32,
+            bw,
+            bh,
+            tw,
+            th,
+        );
+    }
+
+    // 4. Verify: compile to PDF with Typst, proving the artifact renders.
+    if a.verify {
+        verify_typst(&a.out, &a.out.with_extension("pdf"))?;
+    } else {
+        println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
+    }
+    Ok(())
+}
+
+/// Crop a single corner tile from a `bookart corner` render (which lays all four corners on one page).
+/// Takes the ink bounding box of the TOP-LEFT quadrant — one matching corner ornament — trims it, and saves
+/// it beside the artifact. The emitter mirrors this one tile into all four corners, so they match exactly.
+fn prepare_corner_tile(src: &std::path::Path, dir: &std::path::Path) -> Result<String> {
+    let rgba = image::open(src).with_context(|| format!("opening {}", src.display()))?.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let (qw, qh) = (w / 2, h / 2);
+    let ink = |x: u32, y: u32| {
+        let p = rgba.get_pixel(x, y).0;
+        let luma = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+        p[3] > 32 && luma < 128.0
+    };
+    let (mut x0, mut y0, mut x1, mut y1, mut found) = (qw, qh, 0u32, 0u32, false);
+    for y in 0..qh {
+        for x in 0..qw {
+            if ink(x, y) {
+                found = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    anyhow::ensure!(found, "no ornament found in the top-left quadrant of {}", src.display());
+    // Square-pad the tile (ornament anchored at its top-left) so the emitter can place it at exact corner
+    // coordinates and mirror it in place — the fitted, no-overflow placement.
+    let (bw, bh) = (x1 - x0 + 1, y1 - y0 + 1);
+    let side = bw.max(bh);
+    let cropped = image::imageops::crop_imm(&rgba, x0, y0, bw, bh).to_image();
+    let mut tile = image::RgbaImage::from_pixel(side, side, image::Rgba([0, 0, 0, 0]));
+    image::imageops::overlay(&mut tile, &cropped, 0, 0);
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("corner");
+    let name = format!("{stem}_tile.png");
+    tile.save(dir.join(&name)).with_context(|| format!("writing the corner tile {name}"))?;
+    Ok(name)
+}
+
+/// Measure the border's inner clear window (fractions of its size) so the text box can be fitted to it.
+/// A raster border is loaded and its ink mask derived (a pixel is ink when it is not transparent AND dark).
+/// An SVG or an unreadable image can't be measured here → a proportional 12% window (a safe estimate),
+/// with a one-line warning so the result is never silently wrong.
+fn measure_clear_window(border: &std::path::Path) -> (f32, f32, f32, f32) {
+    match image::open(border) {
+        Ok(img) => {
+            let rgba = img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let ink = |x: u32, y: u32| {
+                let p = rgba.get_pixel(x, y).0;
+                let luma = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+                p[3] > 32 && luma < 128.0
+            };
+            crate::bookart::typst::clear_window(w, h, ink)
+        }
+        Err(e) => {
+            eprintln!(
+                "{}  couldn't measure {} ({e}) — fitting the text to a proportional 12% window; tune --margin/--safety if it overlaps",
+                style("⚠").yellow(),
+                border.display(),
+            );
+            (0.12, 0.12, 0.88, 0.88)
+        }
+    }
+}
+
+/// Copy `src` into `dir` (skipping when it is already there) and return its basename — how the artifact
+/// references it. Keeping assets local is what lets the emitted `.typ` compile anywhere Typst can reach.
+fn copy_beside(src: &std::path::Path, dir: &std::path::Path) -> Result<String> {
+    let name = src.file_name().ok_or_else(|| anyhow::anyhow!("{} has no filename", src.display()))?;
+    anyhow::ensure!(src.exists(), "{} does not exist", src.display());
+    let dest = dir.join(name);
+    let same = std::fs::canonicalize(src)
+        .ok()
+        .zip(std::fs::canonicalize(&dest).ok())
+        .map(|(a, b)| a == b)
+        .unwrap_or(false);
+    if !same {
+        std::fs::copy(src, &dest).with_context(|| format!("copying {} → {}", src.display(), dest.display()))?;
+    }
+    Ok(name.to_string_lossy().into_owned())
+}
+
+/// Compile the emitted artifact to a PDF with the `typst` CLI — the verification step. A missing `typst`
+/// is a clear, actionable error (the `.typ` is still written); a compile failure surfaces Typst's own stderr.
+fn verify_typst(typ_path: &std::path::Path, pdf: &std::path::Path) -> Result<()> {
+    let out = std::process::Command::new("typst").arg("compile").arg(typ_path).arg(pdf).output();
+    let out = match out {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            anyhow::bail!(
+                "typst not found on PATH — install Typst to --verify (the artifact {} was written)",
+                typ_path.display()
+            );
+        }
+        Err(e) => return Err(anyhow::Error::from(e).context("running `typst compile`")),
+    };
+    if !out.status.success() {
+        anyhow::bail!("typst could not compile the artifact:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let bytes = std::fs::metadata(pdf).map(|m| m.len()).unwrap_or(0);
+    anyhow::ensure!(bytes > 0, "typst reported success but wrote no PDF");
+    println!(
+        "{} {}  ({:.1} KB — compiled + verified)",
+        style("pdf").green(),
+        pdf.display(),
+        bytes as f32 / 1024.0
     );
     Ok(())
 }

@@ -29,6 +29,7 @@ pub mod render;
 pub mod scenario_task;
 pub mod scorecard;
 pub mod spec;
+pub mod typst;
 
 pub use compile::{resolve, RenderPlan};
 pub use finish::finish_ornament;
