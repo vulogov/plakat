@@ -16,7 +16,7 @@
 # them into one PDF. The kit / rosette / dinkus are weight-free (procedural); only `illustrate` uses a model.
 #
 # Usage:   corpus/bookart_titlepage.sh
-#          PLAKAT=./target/release/plakat STEPS=28 corpus/bookart_titlepage.sh   # faster + finer plate
+#          PLAKAT=./target/release/plakat STEPS=50 corpus/bookart_titlepage.sh   # release binary + finer plate
 #
 # Needs:  the plakat binary and `typst` on PATH. The `illustrate` step needs a model (auto-downloaded)
 #         and is slow on a debug build — use a RELEASE binary (`cargo build --release --features metal`)
@@ -24,7 +24,7 @@
 set -u
 
 PLAKAT="${PLAKAT:-./target/debug/plakat}"
-STEPS="${STEPS:-24}"
+STEPS="${STEPS:-40}"
 OUT="corpus/images/bookart-titlepage"
 KIT="corpus/bookart_titlepage_kit.hjson"
 FRONT="corpus/bookart_titlepage_frontispiece.hjson"
@@ -71,7 +71,7 @@ run "$PLAKAT" bookart new "$OUT/dinkus_spec.hjson" --type dinkus --origin generi
 run "$PLAKAT" bookart render "$OUT/dinkus_spec.hjson" --out "$OUT/dinkus.png" --seed 5
 
 # 3. A pictorial FRONTISPIECE plate from the diffusion tier (needs a model; slow on debug).
-run "$PLAKAT" bookart illustrate "a tall sailing ship on stormy seas, engraving, black and white" \
+run "$PLAKAT" bookart illustrate "a tall sailing ship on stormy seas, antique wood engraving, dense cross-hatching, bold black lines, high contrast, black and white" \
   --origin generic --type frontispiece --page a5 --steps "$STEPS" --out "$OUT/frontispiece.png"
 
 # 4. Each HJSON spec → a reusable Typst `title-page` (--verify compiles each on its own).
