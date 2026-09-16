@@ -31,6 +31,15 @@ care about in Chapter 8 — how the final prompt fit the model's token budget.
 If you leave off `--out`, compile writes `<stem>.hjson` beside the prose; pass `-`
 to print the scenario to your terminal instead.
 
+#callout(label: "Compile can also improve the prompt")[
+  Compile's job is prose → scenario, but it can go one step further. `compile --improve`
+  #emph[enhances, then automatically improves]: it renders, scores the result, rewrites
+  the prompt to raise its aesthetic quality, and writes the *winning* prompt into the
+  scenario. The smysl corpus is its memory, so it never re-tries a change it already
+  rejected. Chapter 8 covers the improve loop in full; here, just know that the same
+  `compile` you run to produce a scenario can also polish it.
+]
+
 #section("The enhancer, and choosing a provider")
 
 The *enhance* stage is where a scene's plain prose becomes a prompt tuned to the
@@ -172,4 +181,7 @@ recompiles whenever you save the prose, and `--diff`, which shows what a recompi
   [The `scenario.hjson` is *compiled output* — recognise it, but edit the prose and
   recompile; `--watch` rebuilds on save and `--diff` previews a recompile's
   changes.],
+  [The same `compile` can also *improve*: `--improve` enhances, then renders, scores,
+  and rewrites the prompt to raise its aesthetic quality, writing the winner into the
+  scenario (Chapter 8).],
 ))

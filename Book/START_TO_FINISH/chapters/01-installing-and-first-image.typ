@@ -15,10 +15,15 @@ they all land you at the same `plakat` command.
 #subsection("From crates.io (the Rust way)")
 
 If you have a Rust toolchain, one command builds and installs the current
-release. It compiles from source, so budget a few minutes the first time.
+release. It compiles from source, so budget a few minutes the first time. One
+thing to get right here: `cargo install` builds a *CPU-only* binary unless you ask
+for a GPU backend — so add `--features metal` on Apple Silicon (or `--features cuda`
+on NVIDIA). See the callout below for why this is a build choice, not a runtime one.
 
-#screen(caption: "Install from crates.io")[```
-  $ cargo install plakat --locked
+#screen(caption: "Install from crates.io — with a GPU backend")[```
+  $ cargo install plakat --locked --features metal    # Apple Silicon
+  # NVIDIA:  cargo install plakat --locked --features cuda
+  # plain `cargo install plakat` installs too — but renders on the CPU (slow)
       Updating crates.io index
      Compiling plakat v6.30.0
       Finished release [optimized] target(s)
@@ -27,8 +32,10 @@ release. It compiles from source, so budget a few minutes the first time.
 
 #subsection("A prebuilt binary (no toolchain)")
 
-Every release also publishes prebuilt archives on GitHub — one per platform. Grab
-the one for your machine, unpack it, and put the binary on your `PATH`.
+Every release also publishes prebuilt archives on GitHub — one per platform, each
+with the right GPU backend already baked in (Metal on the Apple-Silicon archive,
+CUDA on the `...-cuda` one). Grab the one for your machine, unpack it, and put the
+binary on your `PATH` — nothing else to select.
 
 #screen(caption: "Download a release binary")[```
   # macOS, Apple Silicon
@@ -46,22 +53,32 @@ beside them if you want to verify the download.
 #subsection("From source")
 
 To hack on plakat, or to pick your own feature set, clone and build. The default
-build includes the interactive UI, the photo manager, and the fractal engine; you
-can trim those with `--no-default-features` for a leaner binary.
+build includes the interactive UI, the photo manager, and the fractal engine — but
+*no GPU backend*, so add one for real speed: `--features metal` on Apple Silicon,
+`--features cuda` (or `cudnn`) on NVIDIA. Trim the defaults with
+`--no-default-features` for a leaner CLI binary.
 
-#screen(caption: "Build from source")[```
+#screen(caption: "Build from source — with the Metal backend")[```
   $ git clone https://github.com/vulogov/plakat
   $ cd plakat
-  $ cargo build --release
+  $ cargo build --release --features metal   # Apple Silicon; --features cuda on NVIDIA
   $ ./target/release/plakat --version
   plakat 6.30.0
 ```]
 
-#callout(label: "Which backend?")[
-  plakat auto-detects your hardware: Metal on Apple Silicon, CUDA on NVIDIA, and
-  CPU everywhere else. You never pick a backend to *install* — the same binary
-  runs on all three, and `--device` overrides the choice per command if you ever
-  need to.
+Leave the feature off and you get a working binary that renders on the *CPU* —
+correct, but minutes per image where the GPU is seconds. `plakat doctor` will report
+`built cpu` so you can catch it at a glance.
+
+#callout(label: "The backend is a build choice, not runtime magic")[
+  plakat does *not* conjure a GPU backend from bare hardware. The backend is chosen at
+  *build time*: a prebuilt release binary has the right one baked in for its platform,
+  but `cargo install plakat` and a plain `cargo build --release` are *CPU-only* — no
+  GPU backend is on by default. Add `--features metal` (Apple Silicon) or
+  `--features cuda`/`cudnn` (NVIDIA) to get one. What plakat *does* auto-detect is which
+  of the *compiled-in* backends to use at runtime; `--device` overrides that per
+  command. Skip the feature on a Metal Mac and you get a slow CPU binary — and `doctor`'s
+  "build vs runtime" line (below) is exactly what tells you so.
 ]
 
 #section("Checking the machine: `doctor`")
@@ -92,6 +109,13 @@ token's value, only whether one is set.
       HF_TOKEN        not set (only gated models need it)
       CIVITAI_TOKEN   not set
 ```]
+
+The *build vs runtime* block is the one to read first on a machine you built yourself.
+`built metal · runtime metal · aligned` means the Metal backend is compiled in and in
+use. If instead you see `built cpu` on an Apple-Silicon Mac, you installed without
+`--features metal` — the binary works but renders on the CPU. Rebuild with the feature
+and this line flips to `metal · aligned`. It is the definitive answer to "why is my
+Mac rendering so slowly?"
 
 Two follow-up questions are worth asking on a new machine. *Which models can this
 hardware actually run?* and *how fast will a render be?* plakat answers both
@@ -216,7 +240,11 @@ prevent.
 
 #recap((
   [Install plakat three ways — `cargo install plakat`, a prebuilt release binary,
-  or from source — and it auto-detects Metal, CUDA, or CPU with no extra setup.],
+  or from source. The GPU backend is a *build* choice: release binaries bake in the
+  right one per platform, while `cargo install`/from-source are *CPU-only* unless you
+  add `--features metal` (Apple Silicon) or `--features cuda` (NVIDIA). At runtime
+  plakat auto-selects among the backends compiled in; `doctor` shows `built …` so you
+  can confirm you got the fast one.],
   [`plakat doctor` health-checks the machine offline; `--capability` says which
   models *run / are tight / won't fit* here, and `--benchmark` estimates render
   time — all before any download.],
