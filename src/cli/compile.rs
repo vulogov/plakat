@@ -137,6 +137,12 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, value_name = "PHRASE")]
     pub trace: Option<String>,
 
+    /// *(6.32)* Print a human DIGEST of the prose's `<stem>.smysl` corpus — no LLM, no render: per-scene best
+    /// aesthetic rank, the measured wins, the rejected (tabu) moves, and resolved vs open findings. "The
+    /// corpus IS the process," made legible.
+    #[arg(help_heading = "Compile", long = "smysl-report", default_value_t = false)]
+    pub smysl_report: bool,
+
     /// *(6.30 smysl-optimize)* AUTOMATIC improve loop: compile the first scene, render + aesthetically score
     /// it, then let an LLM regenerator propose one prompt edit at a time — keeping only edits that raise the
     /// score, and using the `<stem>.smysl` corpus as a TABU list so it never re-tries a spent move. Stops on
@@ -456,6 +462,16 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         let corpus = if stdin_input { None } else { Some(args.input.with_extension("smysl")) };
         let report = compile::trace_prose(&input, &args.model, phrase, corpus.as_deref())?;
         println!("{}", report.trim_end());
+        return Ok(());
+    }
+
+    // --smysl-report: a human digest of the prose's corpus (no LLM, no render).
+    if args.smysl_report {
+        anyhow::ensure!(!stdin_input, "--smysl-report needs a file input (the corpus is <stem>.smysl beside it)");
+        let corpus_path = args.input.with_extension("smysl");
+        let text = std::fs::read_to_string(&corpus_path).unwrap_or_default();
+        println!("{}  smysl corpus for {}", style("◆").cyan(), corpus_path.display());
+        print!("{}", crate::smysl::corpus_report(&text));
         return Ok(());
     }
 

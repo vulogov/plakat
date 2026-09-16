@@ -461,6 +461,84 @@ pub fn prior_scene_rank(corpus_text: &str, scene: &str) -> Option<f32> {
     best
 }
 
+/// Every scene that has an aesthetic-rank record, with `(scene, best_rank, samples)` — the best rank and
+/// how many rank records it has. Sorted by scene name. Reads the `m/rank-*` `@evidence` units directly (no
+/// prose needed). Used by [`corpus_report`].
+pub fn scene_ranks(corpus_text: &str) -> Vec<(String, f32, usize)> {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    // scene (display, kept from first sighting) → (best, count), keyed by normalized name.
+    let mut acc: std::collections::BTreeMap<String, (String, f32, usize)> = std::collections::BTreeMap::new();
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let is_rank = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("m/rank-")).unwrap_or(false);
+        if !is_rank {
+            continue;
+        }
+        let Some(body) = &c.body else { continue };
+        let (mut sc, mut rk) = (None, None);
+        for line in body.lines() {
+            if let Some(v) = line.trim().strip_prefix("scene:") {
+                sc = Some(v.trim().to_string());
+            } else if let Some(v) = line.trim().strip_prefix("rank:") {
+                rk = v.trim().parse::<f32>().ok();
+            }
+        }
+        if let (Some(name), Some(r)) = (sc, rk) {
+            let e = acc.entry(norm_phrase(&name)).or_insert((name.clone(), f32::MIN, 0));
+            e.1 = e.1.max(r);
+            e.2 += 1;
+        }
+    }
+    acc.into_values().map(|(name, best, n)| (name, best, n)).collect()
+}
+
+/// A human digest of a prose's smysl corpus — the "the corpus IS the process" made legible. Pure (no LLM,
+/// no render): per-scene best aesthetic rank, the KEPT wins, the REJECTED moves (tabu), the resolved vs open
+/// findings, and the fix count. Reuses [`scene_ranks`], [`improve_wins`], [`prior_fixes`],
+/// [`rejected_phrasings`], [`resolved_open_findings`]. Empty corpus → a one-line note.
+pub fn corpus_report(corpus_text: &str) -> String {
+    let ranks = scene_ranks(corpus_text);
+    let wins = improve_wins(corpus_text);
+    let rejected = rejected_phrasings(corpus_text);
+    let (resolved, open) = resolved_open_findings(corpus_text);
+    let fixes = prior_fixes(corpus_text).len();
+
+    if ranks.is_empty() && wins.is_empty() && rejected.is_empty() && resolved.is_empty() && open.is_empty() {
+        return "smysl corpus: empty (no polish history yet — run --analyze --fix or --improve).\n".to_string();
+    }
+
+    let mut s = String::new();
+    if !ranks.is_empty() {
+        s.push_str("Aesthetic rank (best achieved):\n");
+        for (scene, best, n) in &ranks {
+            s.push_str(&format!("  {scene}: {best:.2}  ({n} record{})\n", if *n == 1 { "" } else { "s" }));
+        }
+    }
+    if !wins.is_empty() {
+        s.push_str(&format!("\nMeasured wins ({}) — edits that RAISED the score:\n", wins.len()));
+        for (was, now) in &wins {
+            s.push_str(&format!("  + \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}\n", clip(was), clip(now)));
+        }
+    }
+    if !rejected.is_empty() {
+        s.push_str(&format!("\nRejected ({}) — tabu, do not retry:\n", rejected.len()));
+        for r in &rejected {
+            s.push_str(&format!("  \u{2212} \u{201C}{}\u{201D}\n", clip(r)));
+        }
+    }
+    if !resolved.is_empty() || !open.is_empty() {
+        s.push_str(&format!("\nFindings: {} resolved, {} still open, {fixes} fix(es) applied.\n", resolved.len(), open.len()));
+        for o in &open {
+            s.push_str(&format!("  \u{25CB} OPEN: {}\n", clip(o)));
+        }
+    }
+    s
+}
+
 // ---------------------------------------------------------------------------
 // smysl-optimize Phase B — the corpus as a TABU LIST for the --fix loop.
 // The corpus already REMEMBERS every fix applied in prior passes; these read it
@@ -1185,6 +1263,33 @@ mod tests {
         // A plain --fix corpus (no aesthetic-pass findings) yields no wins.
         let plain = fixes_to_smysl(&[("locomobile".into(), "traction engine".into(), "rare name".into())], &[]).unwrap();
         assert!(improve_wins(&plain).is_empty(), "non-aesthetic fixes are not wins");
+    }
+
+    #[test]
+    fn corpus_report_digests_the_corpus() {
+        let (rr, rl) = scene_rank_records("lane", 6.62).unwrap();
+        let ranks = records_to_surface(&rr, &rl);
+        let applied = vec![
+            (
+                "cobblestone lane".to_string(),
+                "cobblestone lane framed by facades".to_string(),
+                "aesthetic pass 1: rank 6.59 (kept)".to_string(),
+            ),
+            (
+                "at dusk".to_string(),
+                "at dusk, warm glow".to_string(),
+                "aesthetic pass 2: rank 6.20 (reverted — do not retry)".to_string(),
+            ),
+        ];
+        let fixes = fixes_to_smysl(&applied, &["split the over-stuffed scene".to_string()]).unwrap();
+        let corpus = merge_surface(&ranks, &fixes);
+        let r = corpus_report(&corpus);
+        assert!(r.contains("lane: 6.62"), "per-scene best rank:\n{r}");
+        assert!(r.contains("Measured wins") && r.contains("framed by facades"), "kept win:\n{r}");
+        assert!(r.contains("Rejected") && r.contains("warm glow"), "rejected move:\n{r}");
+        assert!(r.contains("OPEN: split"), "open finding:\n{r}");
+        assert!(corpus_report("").contains("empty"), "empty corpus note");
+        assert_eq!(scene_ranks(&corpus), vec![("lane".to_string(), 6.62, 1)], "scene_ranks");
     }
 
     #[test]
