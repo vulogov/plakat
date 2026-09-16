@@ -1,0 +1,17 @@
+// plakat bookart title-page — a CHAPTER title page (no imprint; an epigraph instead).
+//   plakat bookart title-page corpus/bookart_titlepage_chapter.hjson --out chapter.typ --verify
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "space",    size: 1 }
+    { role: "part",     text: "CHAPTER I" }
+    { role: "rule" }
+    { role: "title",    text: "THE DEPARTURE" }
+    { role: "subtitle", text: "In which our narrative begins" }
+    { role: "space",    size: 1.5 }
+    { role: "epigraph", text: "The sea, once it casts its spell, holds one in its net of wonder for ever." }
+    { role: "space",    size: 1 }
+    { role: "note",     text: "Wherein the Author sets sail from Plymouth, describes his vessel\nand crew, and encounters the first of many perils." }
+  ]
+}

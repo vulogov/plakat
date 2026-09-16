@@ -38,6 +38,26 @@ corpus/bookart_origins.sh                 # all six origin LoRAs, side by side (
    `bookart font` → `dingbats.otf` — a real OpenType dingbat font (type `a`–`h`, get an ornament),
    weights-free. Run [`bookart_origins.sh`](bookart_origins.sh) for all six origin LoRAs side by side.
 
+## Title pages (6.32) — old-style letterpress, weight-free
+
+[`bookart_titlepage.sh`](bookart_titlepage.sh) generates a complete **two-page PDF** — a book title page
++ a chapter opener — in the historical letterpress hierarchy, entirely from HJSON, needing no GPU (the
+typography *is* the artefact). Each spec compiles to a reusable Typst `title-page`; a tiny `book.typ`
+`#import`s both and paginates them.
+
+```bash
+corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pdf (2 pages)
+```
+
+- [`bookart_titlepage_book.hjson`](bookart_titlepage_book.hjson) → the **book title page** (series /
+  stacked display title / subtitle / rule / note / author / imprint at the foot).
+- [`bookart_titlepage_chapter.hjson`](bookart_titlepage_chapter.hjson) → the **chapter page** (chapter
+  number / rule / title / subtitle / epigraph / note — no imprint).
+
+`bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
+the two `title-page`s into `book.pdf`. The roles, styles and border-fitting are in
+[`../Documentation/BOOKART.md`](../Documentation/BOOKART.md).
+
 ## The idea
 
 A book ornament is a **spec**, a **transparent print-sized image**, and a **measurement** — not a prompt
