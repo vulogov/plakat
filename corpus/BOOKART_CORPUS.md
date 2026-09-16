@@ -73,6 +73,18 @@ corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pd
 the seven `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in
 [`../Documentation/BOOKART.md`](../Documentation/BOOKART.md).
 
+### Style sampler
+
+[`bookart_titlepage_styles.sh`](bookart_titlepage_styles.sh) renders ONE neutral spec
+([`bookart_titlepage_sampler.hjson`](bookart_titlepage_sampler.hjson), authored in title-case) in every
+`--style` — **letterpress · engraved · modern · playbill** — and stitches them into a four-page
+`styles.pdf` so you can compare the hands. Weight-free (no border/emblem), so it needs no GPU; every page is
+`--fit` (shrunk to one sheet).
+
+```bash
+corpus/bookart_titlepage_styles.sh   # → corpus/images/bookart-titlepage/styles/styles.pdf (4 pages)
+```
+
 ## The idea
 
 A book ornament is a **spec**, a **transparent print-sized image**, and a **measurement** — not a prompt

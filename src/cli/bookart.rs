@@ -85,6 +85,9 @@ pub struct TitlePageArgs {
     /// Page size (`a5`/`a4`/`b5`/…). Overrides the spec's `page`.
     #[arg(long)]
     pub page: Option<String>,
+    /// Typographic style: `letterpress` (default) · `engraved` · `modern` · `playbill`. Overrides the spec's `style`.
+    #[arg(long)]
+    pub style: Option<String>,
     /// Type margin from the page edge, in mm (when there is no border). Default 22.
     #[arg(long, default_value_t = 22.0)]
     pub margin: f32,
@@ -1079,6 +1082,8 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
 
     let rule_pt = spec.rule.unwrap_or(0.0).max(0.0);
     let historical = a.historical || spec.historical.unwrap_or(false);
+    let style_name = a.style.clone().or_else(|| spec.style.clone()).unwrap_or_else(|| "letterpress".into());
+    let tp_style = crate::bookart::titlepage::Style::from_name(&style_name);
     let emit = |scale: f32| {
         crate::bookart::titlepage::title_page_typst(
             page_res.w_mm,
@@ -1088,7 +1093,7 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
             rule_pt,
             spec.font.as_deref(),
             &spec.lines,
-            crate::bookart::titlepage::Emit { scale, historical },
+            crate::bookart::titlepage::Emit { scale, historical, style: tp_style },
         )
     };
 
@@ -1111,7 +1116,7 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
         style("wrote").green(),
         a.out.display(),
         page_res.size_name,
-        spec.style.as_deref().unwrap_or("letterpress"),
+        style_name,
         page_res.w_mm.round() as i32,
         page_res.h_mm.round() as i32,
         tw,

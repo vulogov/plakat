@@ -60,7 +60,7 @@ plakat bookart blend      <a> <b> --out O                                       
 plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                        raster→SVG trace   (feature: bookart-trace)
 plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
-plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --margin 22 --fit --historical --verify]   an old-style (letterpress) title page → Typst
+plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -265,6 +265,14 @@ text never overlaps the frame. An `image`/`ornament` line's `src` is **auto-crop
 `bookart render` ornament arrives on a full page canvas, so it's trimmed to the device before it's centred
 inline. So a `border` (a rendered `border` ornament) and a chapter `ornament` (a rendered `fleuron`
 rosette) drop straight in — see [`corpus/bookart_titlepage.sh`](../corpus/bookart_titlepage.sh).
+
+**Styles.** The `style:` (or `--style`, which overrides it) picks the hand — same roles, different
+typography, all weight-free (no display fonts): **`letterpress`** (default — dense antique book type, bold
+upper display, small-caps series), **`engraved`** (copperplate/atlas — regular-weight wide-tracked caps,
+italic subtitle & author, airy), **`modern`** (minimal — regular weight, as-authored case, tiny
+wide-tracked labels), **`playbill`** (Victorian poster — everything heavy bold upper, big size jumps, thick
+rules). Author display lines in title-case and each style cases them as it likes. See the sampler:
+[`corpus/bookart_titlepage_styles.sh`](../corpus/bookart_titlepage_styles.sh).
 
 **Fit & typography.** A dense hierarchy can be taller than its page — which Typst silently spills onto a
 second sheet. `--fit` measures the layout with `typst` and shrinks the type (and any plates) just enough to

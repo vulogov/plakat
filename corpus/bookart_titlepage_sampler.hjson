@@ -1,0 +1,17 @@
+// One neutral title spec, authored in TITLE-CASE, rendered across every `bookart title-page` style via
+// `--style` (the styles that want caps `upper()` it; `modern` keeps the authored case). No `style:` field
+// here — the CLI supplies it. Weight-free: no border, no emblem, so the sampler needs no GPU.
+{
+  page: "a5"
+  lines: [
+    { role: "series",   text: "The Mariner's Library" }
+    { role: "rule" }
+    { role: "title",    text: "The Open Sea" }
+    { role: "subtitle", text: "A Voyage in Four Winds" }
+    { role: "part",     text: "Volume the First" }
+    { role: "author",   text: "By a Gentleman of Devon" }
+    { role: "space",    size: 0.5 }
+    { role: "epigraph", text: "They that go down to the sea in ships, that do business in great waters." }
+    { role: "imprint",  text: "London · MDCCC" }
+  ]
+}

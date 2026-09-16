@@ -62,11 +62,60 @@ pub struct Emit {
     pub scale: f32,
     /// Old-style figures + historical ligatures (weight-free antique feel).
     pub historical: bool,
+    /// The typographic style (role table + rule weight).
+    pub style: Style,
 }
 
 impl Default for Emit {
     fn default() -> Self {
-        Self { scale: 1.0, historical: false }
+        Self { scale: 1.0, historical: false, style: Style::Letterpress }
+    }
+}
+
+/// A typographic style — the same roles, a different hand. Weight-free: the look comes purely from size,
+/// case, weight, tracking, italic and spacing (no display fonts required).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// Dense antique book type — bold upper display, small-caps series, the default.
+    Letterpress,
+    /// Copperplate / engraved-atlas: regular-weight wide-tracked caps, italic subtitles & author, airy.
+    Engraved,
+    /// Minimal contemporary: regular weight, as-authored case, tiny wide-tracked labels, lots of air.
+    Modern,
+    /// Victorian playbill / poster: everything heavy bold upper, big size jumps, tight leading, thick rules.
+    Playbill,
+}
+
+impl Style {
+    /// Resolve a spec/CLI `style:` name (permissive; unknown → letterpress).
+    pub fn from_name(s: &str) -> Style {
+        match s.trim().to_lowercase().replace('_', "-").as_str() {
+            "engraved" | "engraved-atlas" | "copperplate" | "atlas" => Style::Engraved,
+            "modern" | "modern-minimal" | "minimal" | "contemporary" => Style::Modern,
+            "playbill" | "poster" | "victorian" | "broadside" => Style::Playbill,
+            _ => Style::Letterpress,
+        }
+    }
+
+    /// The role table: `(pt, transform, weight, italic, tracking_em, space_after_em)`.
+    /// `transform`: `'u'` upper, `'s'` small-caps, `'n'` none (as authored).
+    fn role(self, role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> {
+        match self {
+            Style::Letterpress => letterpress(role),
+            Style::Engraved => engraved(role),
+            Style::Modern => modern(role),
+            Style::Playbill => playbill(role),
+        }
+    }
+
+    /// Rule stroke weight (pt) for this style's `rule` lines.
+    fn rule_stroke(self) -> f32 {
+        match self {
+            Style::Letterpress => 0.5,
+            Style::Engraved => 0.3,
+            Style::Modern => 0.4,
+            Style::Playbill => 1.4,
+        }
     }
 }
 
@@ -84,6 +133,56 @@ fn letterpress(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> 
         "note" => (10.0, 's', "regular", false, 0.02, 0.6),
         "epigraph" => (11.0, 'n', "regular", true, 0.0, 0.6),
         "imprint" => (11.0, 's', "regular", false, 0.03, 0.25),
+        _ => return None,
+    })
+}
+
+/// Copperplate / engraved-atlas: regular weight, wide-tracked roman caps for the title, italic for the
+/// series / subtitle / author / notes — the elegant, airy engraved look.
+fn engraved(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> {
+    Some(match role {
+        "series" => (12.0, 's', "regular", true, 0.08, 0.8),
+        "title" => (26.0, 'u', "regular", false, 0.12, 0.7),
+        "subtitle" => (15.0, 'n', "regular", true, 0.02, 0.7),
+        "part" => (13.0, 's', "regular", false, 0.06, 0.6),
+        "subchapter" => (11.0, 's', "regular", true, 0.08, 0.5),
+        "author" => (14.0, 'n', "regular", true, 0.03, 0.7),
+        "note" => (10.0, 'n', "regular", true, 0.0, 0.6),
+        "epigraph" => (11.0, 'n', "regular", true, 0.0, 0.6),
+        "imprint" => (10.0, 's', "regular", false, 0.06, 0.3),
+        _ => return None,
+    })
+}
+
+/// Minimal contemporary: regular weight, as-authored case for the display line, tiny wide-tracked labels
+/// for the supporting lines, and generous spacing — quiet, lots of white.
+fn modern(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> {
+    Some(match role {
+        "series" => (10.0, 'u', "regular", false, 0.25, 1.0),
+        "title" => (28.0, 'n', "regular", false, 0.0, 0.8),
+        "subtitle" => (14.0, 'n', "regular", false, 0.0, 0.7),
+        "part" => (11.0, 'u', "regular", false, 0.2, 0.7),
+        "subchapter" => (10.0, 'u', "regular", false, 0.2, 0.5),
+        "author" => (13.0, 'n', "regular", false, 0.0, 0.8),
+        "note" => (10.0, 'n', "regular", false, 0.0, 0.7),
+        "epigraph" => (11.0, 'n', "regular", true, 0.0, 0.7),
+        "imprint" => (9.0, 'u', "regular", false, 0.2, 0.4),
+        _ => return None,
+    })
+}
+
+/// Victorian playbill / poster: everything heavy bold upper, big size jumps, tight leading — maximum ink.
+fn playbill(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> {
+    Some(match role {
+        "series" => (16.0, 'u', "bold", false, 0.02, 0.4),
+        "title" => (44.0, 'u', "bold", false, 0.0, 0.35),
+        "subtitle" => (22.0, 'u', "bold", false, 0.02, 0.4),
+        "part" => (18.0, 'u', "bold", false, 0.03, 0.4),
+        "subchapter" => (14.0, 'u', "bold", false, 0.05, 0.35),
+        "author" => (18.0, 'u', "bold", false, 0.03, 0.45),
+        "note" => (12.0, 'u', "regular", false, 0.02, 0.45),
+        "epigraph" => (13.0, 'n', "regular", true, 0.0, 0.5),
+        "imprint" => (14.0, 'u', "bold", false, 0.02, 0.3),
         _ => return None,
     })
 }
@@ -212,13 +311,19 @@ pub fn title_page_typst(
         let role = line.role.trim().to_lowercase();
         match role.as_str() {
             "imprint" => {
-                if let Some(t) = &line.text {
-                    push_text(&mut foot, &letterpress("imprint").unwrap(), t, line.size, scale);
+                if let Some(sty) = emit.style.role("imprint") {
+                    if let Some(t) = &line.text {
+                        push_text(&mut foot, &sty, t, line.size, scale);
+                    }
                 }
             }
             "rule" => {
                 let len = line.size.unwrap_or(26.0).clamp(5.0, 100.0);
-                s.push_str(&format!("  v(0.25em)\n  line(length: {}%, stroke: 0.5pt + black)\n  v(0.4em)\n", trim_pt(len)));
+                s.push_str(&format!(
+                    "  v(0.25em)\n  line(length: {}%, stroke: {}pt + black)\n  v(0.4em)\n",
+                    trim_pt(len),
+                    trim_pt(emit.style.rule_stroke()),
+                ));
             }
             "space" => {
                 s.push_str(&format!("  v({}em)\n", trim_pt(line.size.unwrap_or(1.0))));
@@ -236,8 +341,8 @@ pub fn title_page_typst(
                 }
             }
             other => {
-                if let (Some(style), Some(t)) = (letterpress(other), &line.text) {
-                    push_text(&mut s, &style, t, line.size, scale);
+                if let (Some(sty), Some(t)) = (emit.style.role(other), &line.text) {
+                    push_text(&mut s, &sty, t, line.size, scale);
                 }
                 // Unknown roles are silently skipped (permissive, like the rest of bookart).
             }
@@ -329,7 +434,7 @@ mod tests {
             TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() },
             TitleLine { role: "image".into(), src: Some("e.png".into()), size: Some(40.0), ..Default::default() },
         ];
-        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 0.5, historical: false });
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 0.5, historical: false, style: Style::Letterpress });
         assert!(out.contains("set text(size: 6pt"), "base size scaled 12→6:\n{out}");
         assert!(out.contains("size: 15pt"), "title 30pt scaled to 15pt");
         assert!(out.contains(r#"image("e.png", width: 20%)"#), "image 40% scaled to 20%");
@@ -338,10 +443,33 @@ mod tests {
     #[test]
     fn historical_adds_old_style_and_ligatures() {
         let lines = vec![TitleLine { role: "title".into(), text: Some("MDCCXLI".into()), ..Default::default() }];
-        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: true });
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: true, style: Style::Letterpress });
         assert!(out.contains(r#"number-type: "old-style""#), "old-style figures:\n{out}");
         assert!(out.contains("features: (hlig: 1)"), "historical ligatures");
         let plain = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit::default());
         assert!(!plain.contains("number-type"), "off by default");
+    }
+
+    #[test]
+    fn styles_change_the_hand() {
+        let lines = vec![
+            TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() },
+            TitleLine { role: "rule".into(), ..Default::default() },
+        ];
+        let emit = |style| title_page_typst(148.0, 210.0, &m(20.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: false, style });
+        // Letterpress: bold upper 30pt, 0.5pt rule.
+        let lp = emit(Style::Letterpress);
+        assert!(lp.contains("size: 30pt, weight: \"bold\"") && lp.contains(r#"upper("Navigation")"#), "letterpress:\n{lp}");
+        assert!(lp.contains("stroke: 0.5pt"), "letterpress rule");
+        // Engraved: regular weight, wide tracking.
+        let en = emit(Style::Engraved);
+        assert!(en.contains("size: 26pt, weight: \"regular\"") && en.contains("tracking: 0.12em"), "engraved:\n{en}");
+        // Modern: as-authored case (no upper()), regular.
+        let md = emit(Style::Modern);
+        assert!(md.contains("size: 28pt, weight: \"regular\"") && md.contains(r##"[#"Navigation"]"##), "modern keeps case:\n{md}");
+        // Playbill: huge bold, thick rule.
+        let pb = emit(Style::Playbill);
+        assert!(pb.contains("size: 44pt, weight: \"bold\"") && pb.contains("stroke: 1.4pt"), "playbill:\n{pb}");
+        assert!(Style::from_name("Poster") == Style::Playbill, "alias resolves");
     }
 }
