@@ -1306,6 +1306,7 @@ pub async fn apply_fixes(
     input_path: &std::path::Path,
     opts: &CompileOpts,
     risks: &str,
+    apply_wins: bool,
 ) -> anyhow::Result<String> {
     use anyhow::Context;
     let eargs = crate::prompt::EnhanceArgs::default();
@@ -1420,6 +1421,65 @@ pub async fn apply_fixes(
         report.push_str("\nNeeds your hand (not auto-fixable):\n");
         for m in &plan.manual {
             report.push_str(&format!("  ⚠ {}\n", m.trim()));
+        }
+    }
+
+    // Thread C (6.32): with `--fix-wins`, FOLD MEASURED AESTHETIC WINS into the prose — but ONLY a win whose
+    // original phrase is a verbatim substring of exactly one source file (an exact map). A win that doesn't
+    // map is a prompt-space edit the authored sentence can't express, so it stays a suggestion, never
+    // force-applied. Applied wins join `applied_edits`, so they're recorded + become tabu (no re-folding).
+    if apply_wins {
+        let wins = std::fs::read_to_string(&corpus_path)
+            .ok()
+            .map(|t| crate::smysl::improve_wins(&t))
+            .unwrap_or_default();
+        report.push_str(if wins.is_empty() {
+            "\n--fix-wins: no measured aesthetic wins in the corpus.\n"
+        } else {
+            "\nAesthetic wins (--fix-wins):\n"
+        });
+        for (old, new) in &wins {
+            if old.trim().is_empty() || old == new {
+                continue;
+            }
+            let hits: Vec<&std::path::PathBuf> = files
+                .iter()
+                .filter(|f| std::fs::read_to_string(f).map(|c| c.contains(old.as_str())).unwrap_or(false))
+                .collect();
+            match hits.as_slice() {
+                [f] => {
+                    let f = (*f).to_path_buf();
+                    let bak = backups
+                        .entry(f.clone())
+                        .or_insert_with(|| {
+                            let b = next_backup_path(&f);
+                            let _ = std::fs::copy(&f, &b);
+                            b
+                        })
+                        .clone();
+                    let text = std::fs::read_to_string(&f)?;
+                    let new_text = text.replacen(old.as_str(), new.as_str(), 1);
+                    std::fs::write(&f, &new_text)
+                        .with_context(|| format!("--fix-wins: writing {}", f.display()))?;
+                    report.push_str(&format!(
+                        "✓ folded win → {}  (backup → {})\n    \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}\n",
+                        f.display(),
+                        bak.display(),
+                        trunc(old),
+                        trunc(new),
+                    ));
+                    applied += 1;
+                    applied_edits.push((old.clone(), new.clone(), "aesthetic win folded into prose".to_string()));
+                }
+                [] => report.push_str(&format!(
+                    "• not folded — no exact prose match for \u{201C}{}\u{201D} (kept as a suggestion)\n",
+                    trunc(old)
+                )),
+                _ => report.push_str(&format!(
+                    "• not folded — \u{201C}{}\u{201D} appears in >1 file (fold by hand)\n",
+                    trunc(old)
+                )),
+            }
         }
     }
 

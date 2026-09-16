@@ -114,6 +114,12 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub fix: bool,
 
+    /// *(6.32, Thread C)* With `--fix`, also fold MEASURED AESTHETIC WINS from the smysl corpus into the
+    /// prose — but only a win whose original phrase appears VERBATIM in the source (an exact map). A prompt
+    /// win that doesn't map is left as a critic suggestion, never force-applied. Opt-in: the prose is yours.
+    #[arg(help_heading = "Compile", long = "fix-wins", default_value_t = false)]
+    pub fix_wins: bool,
+
     /// Compare the freshly-compiled scenario against an existing HJSON; print the
     /// per-task add/change/remove diff instead of writing output.
     #[arg(help_heading = "Compile", long, value_name = "PATH")]
@@ -490,7 +496,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         if args.fix {
             anyhow::ensure!(!stdin_input, "--fix needs a file input (not stdin) so it can edit + back up the source");
             println!("\n{}  applying safe auto-fixes to the source prose…", style("--fix").cyan());
-            let fixreport = compile::apply_fixes(&args.input, &opts, &report).await?;
+            let fixreport = compile::apply_fixes(&args.input, &opts, &report, args.fix_wins).await?;
             println!("{}", fixreport.trim());
             println!("\n{}  re-run `--analyze` to confirm the grade improved.", style("→").dim());
         }
