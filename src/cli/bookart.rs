@@ -77,6 +77,10 @@ pub enum BookartCmd {
     /// laid flat on one sheet, with the **spine width computed from the page count**, optional flaps, and
     /// fold guides. Reuses the title-page styles. A compilable Typst artifact; `--verify` compiles to PDF.
     Cover(CoverArgs),
+    /// Assemble a whole typeset **book** from a Markdown manuscript — a `#include`d title page, chapter
+    /// openers (headpiece · CHAPTER N · title), body prose with a raised initial, running heads + folios,
+    /// tailpieces, and a colophon → one compilable Typst file. `--verify` compiles to PDF.
+    Book(BookArgs),
 }
 
 #[derive(Args, Debug)]
@@ -132,6 +136,36 @@ pub struct CoverArgs {
     /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
     #[arg(long, default_value_t = false)]
     pub historical: bool,
+    /// After writing, compile to PDF with `typst` to verify it renders.
+    #[arg(long, default_value_t = false)]
+    pub verify: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct BookArgs {
+    /// The Markdown manuscript (a `#`/`##` line opens a chapter; blank lines separate paragraphs).
+    pub manuscript: PathBuf,
+    /// Output Typst file (`.typ`). Referenced assets (title page, ornaments) are copied beside it.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Page size (`a5`/`a4`/`b5`/…). Default a5.
+    #[arg(long)]
+    pub page: Option<String>,
+    /// A `bookart title-page` artifact (`.typ`) to render as the first leaf.
+    #[arg(long = "title-page")]
+    pub title_page: Option<PathBuf>,
+    /// Running-head text (usually the book title). Empty = no running head.
+    #[arg(long)]
+    pub running_head: Option<String>,
+    /// A headpiece image atop every chapter opener (a kit ornament / device PNG).
+    #[arg(long)]
+    pub headpiece: Option<PathBuf>,
+    /// A tailpiece image centred at the end of every chapter.
+    #[arg(long)]
+    pub tailpiece: Option<PathBuf>,
+    /// A colophon line, small-caps, centred on the final leaf.
+    #[arg(long)]
+    pub colophon: Option<String>,
     /// After writing, compile to PDF with `typst` to verify it renders.
     #[arg(long, default_value_t = false)]
     pub verify: bool,
@@ -452,6 +486,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Typst(a) => run_typst(a),
         BookartCmd::TitlePage(a) => run_title_page(a),
         BookartCmd::Cover(a) => run_cover(a),
+        BookartCmd::Book(a) => run_book(a),
     }
 }
 
@@ -1253,6 +1288,93 @@ fn run_cover(a: CoverArgs) -> Result<()> {
         layout.total_w().round() as i32,
         page_res.h_mm.round() as i32,
         if flap_w > 0.01 { format!(" · flaps {:.0} mm", flap_w) } else { String::new() },
+    );
+
+    if a.verify {
+        verify_typst(&a.out, &a.out.with_extension("pdf"))?;
+    } else {
+        println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
+    }
+    Ok(())
+}
+
+/// `bookart book` — assemble a whole typeset book from a Markdown manuscript → a compilable Typst file.
+fn run_book(a: BookArgs) -> Result<()> {
+    use crate::bookart::spec::Page;
+    use crate::bookart::book::{book_typ, parse_manuscript, BookOpts};
+    use crate::bookart::geometry;
+
+    let md = std::fs::read_to_string(&a.manuscript).with_context(|| format!("reading {}", a.manuscript.display()))?;
+    let (front, chapters) = parse_manuscript(&md);
+    anyhow::ensure!(!chapters.is_empty(), "no chapters found in {} (a chapter is a line beginning `#` or `##`)", a.manuscript.display());
+
+    let size_name = a.page.clone().unwrap_or_else(|| "a5".into());
+    let page_res = geometry::resolve_page(Some(&Page { size: Some(size_name), ..Default::default() }));
+
+    let art_dir = a
+        .out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&art_dir).with_context(|| format!("creating {}", art_dir.display()))?;
+
+    // The title page is `#include`d — Typst resolves ITS image paths relative to itself, so it must sit in
+    // the book's directory with its assets. Same-dir → reference by basename; else copy it beside and warn.
+    let same_dir = |p: &std::path::Path| -> bool {
+        match (p.parent().and_then(|d| std::fs::canonicalize(d).ok()), std::fs::canonicalize(&art_dir).ok()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    };
+    let title_ref = match &a.title_page {
+        Some(tp) => {
+            if same_dir(tp) {
+                Some(tp.file_name().unwrap().to_string_lossy().into_owned())
+            } else {
+                eprintln!(
+                    "{}  the title page {} isn't beside the book — copying it; make sure its images are alongside too",
+                    style("⚠").yellow(),
+                    tp.display(),
+                );
+                Some(copy_beside(tp, &art_dir).context("copying the title page")?)
+            }
+        }
+        None => None,
+    };
+    let headpiece = match &a.headpiece {
+        Some(p) => Some(crop_to_ink(p, &art_dir).context("cropping the headpiece")?),
+        None => None,
+    };
+    let tailpiece = match &a.tailpiece {
+        Some(p) => Some(crop_to_ink(p, &art_dir).context("cropping the tailpiece")?),
+        None => None,
+    };
+
+    let opts = BookOpts {
+        w_mm: page_res.w_mm,
+        h_mm: page_res.h_mm,
+        running_head: a.running_head.as_deref().unwrap_or(""),
+        title_page: title_ref.as_deref(),
+        headpiece: headpiece.as_deref(),
+        tailpiece: tailpiece.as_deref(),
+        colophon: a.colophon.as_deref().unwrap_or(""),
+    };
+    let src = book_typ(&front, &chapters, &opts);
+    std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+
+    let words: usize = chapters.iter().flat_map(|c| c.paragraphs.iter()).map(|p| p.split_whitespace().count()).sum();
+    println!(
+        "{} {}  ({} · {}×{} mm · {} chapter(s) · ~{} words{}{})",
+        style("wrote").green(),
+        a.out.display(),
+        page_res.size_name,
+        page_res.w_mm.round() as i32,
+        page_res.h_mm.round() as i32,
+        chapters.len(),
+        words,
+        if title_ref.is_some() { " · title page" } else { "" },
+        if headpiece.is_some() { " · headpieces" } else { "" },
     );
 
     if a.verify {

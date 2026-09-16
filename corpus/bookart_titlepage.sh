@@ -16,8 +16,9 @@
 #
 # Each page compiles to a reusable Typst `title-page`; a tiny book.typ #imports all seven and paginates
 # them into one PDF. The kit / rosette / dinkus are weight-free (procedural); `illustrate` (the frontispiece
-# plate and the title emblem) uses a model. Finally a `bookart cover` lays out the book's DUST JACKET
-# (back · spine · front on one sheet; the spine width computed from the page count).
+# plate and the title emblem) uses a model. Then a `bookart cover` lays out the book's DUST JACKET
+# (back · spine · front on one sheet; the spine width computed from the page count), and finally
+# `bookart book` assembles a whole typeset BOOK from a Markdown manuscript (the capstone) → thebook.pdf.
 #
 # Usage:   corpus/bookart_titlepage.sh
 #          PLAKAT=./target/release/plakat STEPS=50 corpus/bookart_titlepage.sh   # release binary + finer plate
@@ -39,6 +40,7 @@ SUB1="corpus/bookart_titlepage_sub1.hjson"
 SUB2="corpus/bookart_titlepage_sub2.hjson"
 CHAP2="corpus/bookart_titlepage_chapter2.hjson"
 COVER="corpus/bookart_titlepage_cover.hjson"
+MANUSCRIPT="corpus/bookart_book_manuscript.md"
 export PLAKAT_OOM_GUARD_GB="${PLAKAT_OOM_GUARD_GB:-0}"
 
 command -v typst >/dev/null || {
@@ -131,8 +133,17 @@ pages=$(pdfinfo "$OUT/book.pdf" 2>/dev/null | awk '/Pages/{print $2}' || echo "?
 #    from the page count. Reuses the maritime hand and the illustrate emblem as the front device.
 run "$PLAKAT" bookart cover "$COVER" --out "$OUT/cover.typ" --verify
 
+# 8. THE CAPSTONE — assemble the whole typeset book from a Markdown manuscript (bookart book): the emblem
+#    title page as the first leaf, chapter openers (rosette headpiece · CHAPTER N · title), raised initials,
+#    running heads + folios, a dinkus tailpiece per chapter, and a colophon.
+run "$PLAKAT" bookart book "$MANUSCRIPT" --out "$OUT/thebook.typ" --page a5 \
+  --title-page "$OUT/01-title.typ" --running-head "The Open Sea" \
+  --headpiece "$OUT/rosette-1.png" --tailpiece "$OUT/dinkus.png" \
+  --colophon "Set in Libertinus · Printed at the Admiralty Press · MDCCXLI" --verify
+
 echo
 echo "✓ done — $OUT/book.pdf ($pages pages: frontispiece · emblem title · framed title · chapter I · §I · §II · chapter II)"
-echo "         $OUT/cover.pdf (dust jacket: back · spine · front)"
+echo "         $OUT/cover.pdf   (dust jacket: back · spine · front)"
+echo "         $OUT/thebook.pdf (the assembled typeset book: title · chapters · folios · colophon)"
 echo "   kit set + contact sheet → $OUT/kit/    rosette → rosette-1.png    subchapter mark → dinkus.png"
 ls -lh "$OUT"/book.pdf "$OUT"/frontispiece.png "$OUT"/emblem.png "$OUT"/rosette-1.png "$OUT"/dinkus.png 2>/dev/null | awk '{print "   "$5"\t"$9}'

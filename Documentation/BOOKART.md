@@ -62,6 +62,7 @@ plakat bookart font       --out dingbats.otf [--family NAME]                    
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
 plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
 plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --verify]   a cover / dust jacket (back·spine·front) → Typst
+plakat bookart book       <manuscript.md> --out book.typ [--page a5 --title-page T.typ --running-head "…" --headpiece H --tailpiece T --colophon "…" --verify]   a whole typeset book → Typst
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -313,6 +314,25 @@ CLI (`--page`/`--style`/`--pages`/`--paper`/`--flap`).
   back:  [ { role: "note", text: "An account of divers discoveries…" },
            { role: "imprint", text: "London · The Admiralty Press" } ] }
 ```
+
+### `book` — assemble a whole typeset book (the capstone)
+
+```
+plakat bookart book manuscript.md --out book.typ --title-page 01-title.typ --headpiece rosette.png --verify
+```
+
+The capstone that makes every other piece add up. From a plain **Markdown** manuscript (a `#`/`##` line
+opens a chapter; blank lines separate paragraphs; text before the first heading is front matter) it
+assembles one compilable Typst book: an `#include`d **title page** (a `bookart title-page` artifact),
+**chapter openers** (an optional headpiece ornament · `CHAPTER N` · the title), body prose with a **raised
+decorated initial + small-caps opening** on each chapter's first paragraph, **running heads + page folios**,
+an optional **tailpiece** per chapter, and a **colophon**. Weight-free typography; the only images are the
+title page and the head/tailpiece ornaments you pass. Because the title page is `#include`d, it must sit in
+the book's directory with its own assets (the tool references it by basename when it already does).
+
+The natural pipeline: render a `kit` → build a `title-page` (and `cover`) → `bookart book` lays the
+manuscript into them. See the full demo [`corpus/bookart_titlepage.sh`](../corpus/bookart_titlepage.sh),
+which ends by assembling `thebook.pdf`.
 
 ## The ornament vocabulary
 

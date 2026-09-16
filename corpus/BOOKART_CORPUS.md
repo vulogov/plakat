@@ -71,6 +71,10 @@ corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pd
 - [`bookart_titlepage_cover.hjson`](bookart_titlepage_cover.hjson) → the book's **cover / dust jacket**
   (`bookart cover`) — back · spine · front on one sheet, the spine width computed from `pages`, the
   `illustrate` emblem as the front device (→ `cover.pdf`).
+- [`bookart_book_manuscript.md`](bookart_book_manuscript.md) → a Markdown manuscript the **capstone**
+  `bookart book` assembles into a whole typeset book (→ `thebook.pdf`): the emblem title page, chapter
+  openers (rosette headpiece · CHAPTER N · title), raised initials, running heads + folios, dinkus
+  tailpieces, and a colophon.
 
 `bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
 the seven `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in

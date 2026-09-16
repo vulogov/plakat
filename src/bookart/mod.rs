@@ -11,6 +11,7 @@
 //!
 //! Fully additive; nothing here changes existing behaviour.
 
+pub mod book;
 pub mod compile;
 pub mod cover;
 pub mod edit;
