@@ -283,6 +283,10 @@ pub struct CompileOpts {
     pub parallel: usize,
     /// Name shown in the output's header comment (kept deterministic).
     pub input_name: String,
+    /// *(6.32, Thread B)* The `<stem>.smysl` corpus text, if present. When set, the positive enhancer is
+    /// steered AWAY from phrasings a prior `--improve` pass rejected (folded into the enhancer system
+    /// prompt, so the compile cache key tracks it). `None` → today's behaviour exactly.
+    pub corpus_text: Option<String>,
 }
 
 /// Resolve the concurrency: an explicit value wins; `0` auto-picks per provider
@@ -409,7 +413,13 @@ async fn compile_one_scene(
     let mut prompt = if opts.no_enhance || prepared.is_empty() {
         assembled.clone()
     } else {
-        let sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
+        let mut sys = assembler::positive_system(scene, opts.system_override.as_deref(), &persona_fragments);
+        // Thread B (6.32): steer the enhancer AWAY from phrasings a prior `--improve` pass rejected. Folded
+        // into the SYSTEM prompt, so the compile cache key (which hashes `system`) tracks the corpus — a
+        // stale cached prompt can't hide the avoidance. `corpus_text: None` → this is a no-op.
+        if let Some(corpus) = &opts.corpus_text {
+            sys.push_str(&crate::smysl::enhance_avoid_hint(&crate::smysl::rejected_phrasings(corpus)));
+        }
         match cached_call(&opts.provider, &sys, &prepared, cache::POSITIVE, opts.cache, eargs).await {
             Some(p) => assembler::clean(&p),
             None => {
@@ -1945,6 +1955,7 @@ mod tests {
             cache: false,
             parallel: 0,
             input_name: "t.txt".into(),
+            corpus_text: None,
         };
         let a = compile_to_string(input, &opts).await.unwrap().0;
         let b = compile_to_string(input, &opts).await.unwrap().0;
@@ -1970,6 +1981,7 @@ mod tests {
             cache: false,
             parallel: 0,
             input_name: "t.txt".into(),
+            corpus_text: None,
         };
         let out = compile_to_string(input, &opts).await.unwrap().0;
         assert!(out.contains("{ name: \"morning\", prompt: \"soft dawn\" }"), "scene axis: {out}");

@@ -281,6 +281,82 @@ pub fn scene_rank_records(scene: &str, rank: f32) -> anyhow::Result<(Vec<Record>
     Ok((records, labels))
 }
 
+// ---------------------------------------------------------------------------
+// smysl-optimize 6.32 Thread B — steer the ENHANCER away from rejected phrasings.
+// The improve loop records every tried move; the REVERTED ones lost on aesthetic
+// score. These read them back so a recompile's enhancer doesn't re-introduce a
+// phrasing the loop already proved worse (which the loop would just re-reject).
+// ---------------------------------------------------------------------------
+
+/// The phrasings a prior `--improve` pass tried and REVERTED (measured worse) — the `new` side of each
+/// reverted move. Reads the `c/fix-*` claims, links each to its grounding `@finding` (whose gist carries
+/// the pass outcome), and keeps only those whose finding says `reverted`. Deduped. The enhancer is steered
+/// to avoid these; the KEPT moves are the wins (see [`improve_wins`]).
+pub fn rejected_phrasings(corpus_text: &str) -> Vec<String> {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    // Finding uid → its (lowercased) gist, which carries "kept" / "reverted — do not retry".
+    let finding_gist: std::collections::HashMap<Uid, String> = p
+        .records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Unit(c) => {
+                let uid = canonical_uid(c);
+                let is_finding = uid_label.get(&uid).map(|l| l.starts_with("f/")).unwrap_or(false);
+                is_finding.then(|| (uid, c.gist.to_lowercase()))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let is_fix = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("c/fix-")).unwrap_or(false);
+        if !is_fix {
+            continue;
+        }
+        let reverted = c
+            .grounds
+            .iter()
+            .any(|g| finding_gist.get(g).map(|gist| gist.contains("reverted")).unwrap_or(false));
+        if !reverted {
+            continue;
+        }
+        if let Some(body) = &c.body {
+            for line in body.lines() {
+                if let Some(v) = line.trim().strip_prefix("now:") {
+                    let phrase = v.trim();
+                    if !phrase.is_empty() {
+                        out.push(phrase.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// An enhancer-facing instruction to avoid the given rejected phrasings, appended to the positive system
+/// prompt. Empty when there is nothing to avoid (so plain compiles are unchanged).
+pub fn enhance_avoid_hint(rejected: &[String]) -> String {
+    if rejected.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n\nAVOID these phrasings — a prior aesthetic pass measured each of them WORSE; do NOT introduce \
+         them into the prompt:\n",
+    );
+    for r in rejected {
+        s.push_str(&format!("- \u{201C}{}\u{201D}\n", r.trim()));
+    }
+    s
+}
+
 /// The best aesthetic rank ALREADY recorded for `scene` in a corpus, or `None` if the scene has no rank
 /// record yet. Parses the `m/rank-*` `@evidence` units, matches on the `scene:` body line (normalized), and
 /// returns the MAX `rank:` — the best a prior `--improve` run got that scene to. Used to seed the
@@ -995,6 +1071,25 @@ mod tests {
         // Identical re-record dedups (content-addressed) — no double entry.
         let dup = merge_surface(&corpus, &records_to_surface(&r2, &l2));
         assert_eq!(prior_scene_rank(&dup, "man on bench"), Some(6.71));
+    }
+
+    #[test]
+    fn rejected_phrasings_reads_only_reverted_moves() {
+        // A kept move and a reverted move, recorded the way the improve loop writes them.
+        let applied = vec![
+            ("soft light".to_string(), "golden hour light".to_string(), "aesthetic pass 1: rank 6.90 (kept)".to_string()),
+            (
+                "wet stones".to_string(),
+                "shimmering puddles".to_string(),
+                "aesthetic pass 2: rank 6.20 (reverted — do not retry)".to_string(),
+            ),
+        ];
+        let corpus = fixes_to_smysl(&applied, &[]).unwrap();
+        let rej = rejected_phrasings(&corpus);
+        assert_eq!(rej, vec!["shimmering puddles".to_string()], "only the reverted move's NEW side:\n{corpus}");
+        let hint = enhance_avoid_hint(&rej);
+        assert!(hint.contains("AVOID") && hint.contains("shimmering puddles"), "hint: {hint}");
+        assert!(enhance_avoid_hint(&[]).is_empty(), "no rejects → no hint");
     }
 
     #[test]

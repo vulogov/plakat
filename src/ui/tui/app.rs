@@ -1369,6 +1369,7 @@ impl App {
             cache: !structural,
             parallel: 0,
             input_name: name.to_string(),
+            corpus_text: None,
         }
     }
 

@@ -183,6 +183,13 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "keep-compiled-images", value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
     pub keep_compiled_images: Option<String>,
 
+    /// *(6.32)* Score PLAIN t2i during `--improve` instead of through the scenario's LoRA stack. By default
+    /// the improve loop renders with the scene's LoRAs (the finish `scenario` ships), so the aesthetic
+    /// verdict matches what you'll print; `--improve-plain` isolates prompt effects from the LoRA look
+    /// (faster, no LoRA load).
+    #[arg(help_heading = "Compile", long = "improve-plain", default_value_t = false)]
+    pub improve_plain: bool,
+
     /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
     /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
     /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
@@ -379,10 +386,17 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
             None => None,
         };
+        // Thread B: show the same corpus-derived "avoid rejected phrasings" tail the real enhance appends.
+        let explain_corpus =
+            if stdin_input { None } else { std::fs::read_to_string(args.input.with_extension("smysl")).ok() };
+        let avoid_hint = explain_corpus
+            .as_deref()
+            .map(|c| crate::smysl::enhance_avoid_hint(&crate::smysl::rejected_phrasings(c)))
+            .unwrap_or_default();
         for s in resolved.scenes.iter().filter(|s| !s.skip) {
             println!("{} scene {:?} · family {:?}", style("──").cyan(), s.name, s.family);
             println!("{}", style("[positive system]").dim());
-            println!("{}\n", compile::assembler::positive_system(s, sys_override.as_deref(), &[]));
+            println!("{}{}\n", compile::assembler::positive_system(s, sys_override.as_deref(), &[]), avoid_hint);
             // Show the DETERMINISTIC negative (seeds + curated quality set, deduped/capped) — no model call,
             // no hallucinated content exclusions.
             println!("{}", style("[negative (deterministic)]").dim());
@@ -462,6 +476,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             cache: args.compile_cache,
             parallel: args.parallel,
             input_name: input_name.clone(),
+            corpus_text: None,
         };
         // Feed the critic the prior polish history (resolved/open findings) so it doesn't re-flag risks
         // earlier passes already fixed.
@@ -495,6 +510,7 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             cache: args.compile_cache,
             parallel: args.parallel,
             input_name: input_name.clone(),
+            corpus_text: None,
         };
         let (comp, opt) = compile::make_composition(&input, &args.input, &opts, &args.composition_model).await?;
         println!("{}  strategy    → {}", style("✓").green(), comp.display());
@@ -515,6 +531,12 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             cache: args.compile_cache,
             parallel: args.parallel,
             input_name,
+            // Thread B: consult the corpus so the enhancer avoids prior rejected phrasings.
+            corpus_text: if stdin_input {
+                None
+            } else {
+                std::fs::read_to_string(args.input.with_extension("smysl")).ok()
+            },
         },
     )
     .await?;
@@ -640,6 +662,9 @@ struct LiveStep {
     pipe: Option<crate::pipelines::t2i::Pipeline>,
     tmp: std::path::PathBuf,
     last_rank: f32,
+    /// The scenario's LoRA specs (raw `source[:scale]` strings) — so the fallback `api::Generate` path
+    /// (non-SD-family) renders through the same LoRA stack the resident pipeline loaded. Empty = plain t2i.
+    loras: Vec<String>,
     /// `--keep-compiled-images`: archive every scored candidate under here (`None` → discard). Images land in
     /// `<keep_dir>/<scene_name>/call<NN>-seed<S>-rank<R>.png` — the whole render trajectory, not just the best.
     keep_dir: Option<std::path::PathBuf>,
@@ -701,14 +726,19 @@ impl crate::compile::improve::ImproveStep for LiveStep {
                     )?;
                 } else {
                     // Fallback: one-shot render (reloads the model each call) for non-SD-family models.
-                    let images = crate::api::Generate::new(self.model.as_str())
+                    let mut req = crate::api::Generate::new(self.model.as_str())
                         .prompt(prompt)
                         .negative(self.negative.as_str())
                         .size(self.width, self.height)
                         .seed(seed)
-                        .count(1)
-                        .run()
-                        .await?;
+                        .count(1);
+                    // Same LoRA stack as the resident path — score the real finish, not plain t2i. Each raw
+                    // spec re-parses in build_loras; passing its own scale keeps `source:scale` intact.
+                    for spec in &self.loras {
+                        let scale = spec.parse::<crate::pipelines::lora::LoraSpec>().map(|l| l.scale).unwrap_or(1.0);
+                        req = req.lora(spec.as_str(), scale);
+                    }
+                    let images = req.run().await?;
                     let img = images
                         .into_iter()
                         .next()
@@ -810,6 +840,8 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         cache: args.compile_cache,
         parallel: args.parallel,
         input_name,
+        // Thread B: the baseline enhance consults the corpus (avoid re-introducing rejected phrasings).
+        corpus_text: std::fs::read_to_string(args.input.with_extension("smysl")).ok(),
     };
 
     // 1. ENHANCE — compile every scene to its prompt (the translation pass). Keep the WHOLE compiled doc, not
@@ -847,12 +879,30 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device)
         .await
         .context("--improve: loading the aesthetic scorer (CLIP ViT-L/14 + LAION predictor)")?;
+    // Thread A (6.32): score the REAL finish — load the scenario's LoRA stack into the improve pipeline
+    // (unless --improve-plain), so the aesthetic verdict matches what `scenario` will render. Compile LoRAs
+    // are scenario-global (`doc.globals.loras`); the activation token is already prepended into each compiled
+    // prompt, so nothing else in the render path changes.
+    let lora_specs: Vec<String> = if args.improve_plain { Vec::new() } else { doc.globals.loras.clone() };
+    let lora_stack: Vec<crate::pipelines::lora::LoraSpec> = lora_specs
+        .iter()
+        .map(|x| x.parse())
+        .collect::<Result<Vec<_>>>()
+        .context("--improve: parsing the scenario LoRA specs")?;
+    if !lora_stack.is_empty() {
+        println!(
+            "{}  improve renders through {} LoRA(s): {} (use --improve-plain for bare t2i)",
+            style("◆").cyan(),
+            lora_stack.len(),
+            lora_specs.join(", "),
+        );
+    }
     // Load the RENDER model ONCE and keep it resident — reloading the SD core per render was the bug. SD
     // family (sd15/sdxl/…) loads here; other families (sd35/Flux) fall back to the one-shot per-render path.
     let pipe = match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
         model: model.clone(),
         device: device.clone(),
-        loras: Vec::new(),
+        loras: lora_stack.clone(),
         lora_scale: 1.0,
         use_refiner: false,
         embeddings: Vec::new(),
@@ -920,6 +970,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         pipe,
         tmp: tmp.clone(),
         last_rank: 0.0,
+        loras: lora_specs,
         keep_dir,
         scene_name: String::new(),
         call_idx: 0,
