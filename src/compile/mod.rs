@@ -1468,7 +1468,6 @@ pub async fn apply_fixes(
                         trunc(old),
                         trunc(new),
                     ));
-                    applied += 1;
                     applied_edits.push((old.clone(), new.clone(), "aesthetic win folded into prose".to_string()));
                 }
                 [] => report.push_str(&format!(
