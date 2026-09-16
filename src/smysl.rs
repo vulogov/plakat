@@ -357,6 +357,76 @@ pub fn enhance_avoid_hint(rejected: &[String]) -> String {
     s
 }
 
+/// The prompt edits a prior `--improve` pass KEPT — the moves that measurably RAISED the aesthetic score,
+/// as `(was, now)` pairs. The mirror of [`rejected_phrasings`]: `c/fix-*` claims whose grounding `@finding`
+/// gist says `kept`. These are the wins the critic can suggest folding back into the prose (Thread C).
+pub fn improve_wins(corpus_text: &str) -> Vec<(String, String)> {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    let finding_gist: std::collections::HashMap<Uid, String> = p
+        .records
+        .iter()
+        .filter_map(|r| match r {
+            Record::Unit(c) => {
+                let uid = canonical_uid(c);
+                let is_finding = uid_label.get(&uid).map(|l| l.starts_with("f/")).unwrap_or(false);
+                is_finding.then(|| (uid, c.gist.to_lowercase()))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let is_fix = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("c/fix-")).unwrap_or(false);
+        if !is_fix {
+            continue;
+        }
+        // A win: a grounding finding says "kept" (and none says "reverted"), from an aesthetic pass.
+        let grounds: Vec<&String> = c.grounds.iter().filter_map(|g| finding_gist.get(g)).collect();
+        let kept = grounds.iter().any(|g| g.contains("aesthetic pass") && g.contains("kept"))
+            && !grounds.iter().any(|g| g.contains("reverted"));
+        if !kept {
+            continue;
+        }
+        if let Some(body) = &c.body {
+            let (mut was, mut now) = (None, None);
+            for line in body.lines() {
+                if let Some(v) = line.trim().strip_prefix("was:") {
+                    was = Some(v.trim().to_string());
+                } else if let Some(v) = line.trim().strip_prefix("now:") {
+                    now = Some(v.trim().to_string());
+                }
+            }
+            if let (Some(w), Some(n)) = (was, now) {
+                out.push((w, n));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A critic-facing note listing the measured aesthetic wins, for the analyze `PRIOR POLISH HISTORY`. Empty
+/// when there are none. The critic may suggest folding a win into the prose (advisory — see Thread C).
+pub fn wins_hint(wins: &[(String, String)]) -> String {
+    if wins.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "MEASURED AESTHETIC WINS — a prior `--improve` pass proved these prompt edits RAISED the render's \
+         quality. If a change fits the scene, SUGGEST folding it into the prose:\n",
+    );
+    for (was, now) in wins {
+        s.push_str(&format!("- \u{201C}{}\u{201D} \u{2192} \u{201C}{}\u{201D}\n", was.trim(), now.trim()));
+    }
+    s
+}
+
 /// The best aesthetic rank ALREADY recorded for `scene` in a corpus, or `None` if the scene has no rank
 /// record yet. Parses the `m/rank-*` `@evidence` units, matches on the `scene:` body line (normalized), and
 /// returns the MAX `rank:` — the best a prior `--improve` run got that scene to. Used to seed the
@@ -1090,6 +1160,31 @@ mod tests {
         let hint = enhance_avoid_hint(&rej);
         assert!(hint.contains("AVOID") && hint.contains("shimmering puddles"), "hint: {hint}");
         assert!(enhance_avoid_hint(&[]).is_empty(), "no rejects → no hint");
+    }
+
+    #[test]
+    fn improve_wins_reads_only_kept_moves() {
+        let applied = vec![
+            ("soft light".to_string(), "golden hour light".to_string(), "aesthetic pass 1: rank 6.90 (kept)".to_string()),
+            (
+                "wet stones".to_string(),
+                "shimmering puddles".to_string(),
+                "aesthetic pass 2: rank 6.20 (reverted — do not retry)".to_string(),
+            ),
+        ];
+        let corpus = fixes_to_smysl(&applied, &[]).unwrap();
+        let wins = improve_wins(&corpus);
+        assert_eq!(
+            wins,
+            vec![("soft light".to_string(), "golden hour light".to_string())],
+            "only the KEPT move, as (was, now):\n{corpus}"
+        );
+        let hint = wins_hint(&wins);
+        assert!(hint.contains("MEASURED AESTHETIC WINS") && hint.contains("golden hour light"), "hint: {hint}");
+        assert!(wins_hint(&[]).is_empty(), "no wins → no hint");
+        // A plain --fix corpus (no aesthetic-pass findings) yields no wins.
+        let plain = fixes_to_smysl(&[("locomobile".into(), "traction engine".into(), "rare name".into())], &[]).unwrap();
+        assert!(improve_wins(&plain).is_empty(), "non-aesthetic fixes are not wins");
     }
 
     #[test]

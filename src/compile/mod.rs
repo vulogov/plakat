@@ -1091,6 +1091,9 @@ const CRITIC_SYSTEM: &str = "You are a FEASIBILITY CRITIC for the plakat text-to
     If the input ends with a `PRIOR POLISH HISTORY` section, treat it as memory of earlier passes: do NOT \
     re-flag a risk listed as ALREADY ADDRESSED unless it CLEARLY RECURS in the current prose — the author \
     already fixed it, and re-raising settled issues wastes their time. Focus on what is NEW or STILL OPEN.\n\
+    If it lists MEASURED AESTHETIC WINS (edits a prior render pass proved improved the image), and a win \
+    fits this scene AND is not already present in the prose, add a short `Suggestions:` line recommending \
+    the author fold it in — framed as an opportunity, never a risk, and never invent one that isn't listed.\n\
     Output ONLY the report — no preamble, no code fences.";
 
 /// `plakat compile --analyze`: run the feasibility critic over the prose (any language) and return its report
@@ -1108,7 +1111,17 @@ pub async fn analyze_prose(
     let hint = prior_corpus
         .map(|c| {
             let (resolved, open) = crate::smysl::resolved_open_findings(c);
-            crate::smysl::findings_hint(&resolved, &open)
+            let mut h = crate::smysl::findings_hint(&resolved, &open);
+            // Thread C (6.32): also feed the critic the MEASURED aesthetic wins from `--improve`, so it can
+            // suggest folding a proven improvement back into the prose (closing the loop to the author).
+            let wins = crate::smysl::wins_hint(&crate::smysl::improve_wins(c));
+            if !wins.is_empty() {
+                if !h.is_empty() {
+                    h.push_str("\n\n");
+                }
+                h.push_str(&wins);
+            }
+            h
         })
         .filter(|h| !h.is_empty());
     let user = match &hint {
