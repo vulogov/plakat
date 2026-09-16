@@ -1042,8 +1042,14 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
     };
     for line in &mut spec.lines {
         if let Some(src) = &line.src {
-            let rel = copy_beside(std::path::Path::new(src), &art_dir)
-                .with_context(|| format!("copying ornament {src}"))?;
+            // `image`/`ornament` lines are CROPPED to their ink — a `bookart render` ornament comes on a
+            // full page canvas, so tight-crop it to the device before placing it inline.
+            let role = line.role.trim().to_lowercase();
+            let rel = if role == "image" || role == "ornament" {
+                crop_to_ink(std::path::Path::new(src), &art_dir).with_context(|| format!("cropping ornament {src}"))?
+            } else {
+                copy_beside(std::path::Path::new(src), &art_dir).with_context(|| format!("copying {src}"))?
+            };
             line.src = Some(rel);
         }
     }
@@ -1094,6 +1100,43 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
         println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
     }
     Ok(())
+}
+
+/// Tight-crop an ornament to its ink (its non-transparent bounding box) and save it beside the artifact,
+/// returning the basename. A `bookart render` ornament arrives on a full page canvas; this reduces it to
+/// the device so it places inline in a title page. A fully-opaque/blank image is copied as-is.
+fn crop_to_ink(src: &std::path::Path, dir: &std::path::Path) -> Result<String> {
+    let rgba = image::open(src).with_context(|| format!("opening {}", src.display()))?.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let (mut x0, mut y0, mut x1, mut y1, mut found) = (w, h, 0u32, 0u32, false);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y).0;
+            // Content = a non-transparent pixel that isn't near-white (the ornament ink / mass).
+            let luma = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+            if p[3] > 24 && luma < 240.0 {
+                found = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    let name = format!("{}_crop.png", src.file_stem().and_then(|s| s.to_str()).unwrap_or("ornament"));
+    let dest = dir.join(&name);
+    if found && x1 >= x0 && y1 >= y0 {
+        // A small transparent margin so the ink doesn't touch the box edge.
+        let pad = ((x1 - x0).max(y1 - y0) / 40).max(2);
+        let cx0 = x0.saturating_sub(pad);
+        let cy0 = y0.saturating_sub(pad);
+        let cw = (x1 - cx0 + 1 + pad).min(w - cx0);
+        let ch = (y1 - cy0 + 1 + pad).min(h - cy0);
+        image::imageops::crop_imm(&rgba, cx0, cy0, cw, ch).to_image().save(&dest)?;
+    } else {
+        rgba.save(&dest)?;
+    }
+    Ok(name)
 }
 
 /// Measure the border's inner clear window (fractions of its size) so the text box can be fitted to it.

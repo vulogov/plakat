@@ -18,7 +18,9 @@
   set par(leading: 0.7em, justify: false)
   set align(center)
 
-  v(1em)
+  v(0.3em)
+  image("device_crop.png", width: 24mm)
+  v(0.3em)
   text(size: 15pt, weight: "bold", tracking: 0.04em)[#upper("CHAPTER I")]
   v(0.5em)
   v(0.25em)
@@ -28,10 +30,10 @@
   v(0.5em)
   text(size: 17pt, weight: "regular", tracking: 0.03em)[#upper("In which our narrative begins")]
   v(0.6em)
-  v(1.5em)
+  v(1em)
   text(size: 11pt, weight: "regular", style: "italic")[#"The sea, once it casts its spell, holds one in its net of wonder for ever."]
   v(0.6em)
-  v(1em)
+  v(0.5em)
   text(size: 10pt, weight: "regular", tracking: 0.02em)[#smallcaps("Wherein the Author sets sail from Plymouth, describes his vessel")]
   v(0.15em)
   text(size: 10pt, weight: "regular", tracking: 0.02em)[#smallcaps("and crew, and encounters the first of many perils.")]

@@ -41,9 +41,12 @@ corpus/bookart_origins.sh                 # all six origin LoRAs, side by side (
 ## Title pages (6.32) — old-style letterpress, weight-free
 
 [`bookart_titlepage.sh`](bookart_titlepage.sh) generates a complete **two-page PDF** — a book title page
-+ a chapter opener — in the historical letterpress hierarchy, entirely from HJSON, needing no GPU (the
-typography *is* the artefact). Each spec compiles to a reusable Typst `title-page`; a tiny `book.typ`
-`#import`s both and paginates them.
+**framed by a bookart ornament** + a chapter opener **led by a bookart device** — in the historical
+letterpress hierarchy, entirely from HJSON, needing no GPU (both the ornaments and the typography are
+weight-free). The driver first renders two **procedural** ornaments — a `border` frame and a `fleuron`
+rosette — then each spec compiles to a reusable Typst `title-page` (the title page fitted inside the
+frame's clear window, the chapter's rosette auto-cropped to a device); a tiny `book.typ` `#import`s both
+and paginates them.
 
 ```bash
 corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pdf (2 pages)

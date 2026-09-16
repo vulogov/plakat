@@ -1,17 +1,17 @@
-// plakat bookart title-page — a BOOK title page, in the old letterpress hierarchy.
-// Type-only (no image assets): the typography is the whole artefact.
+// plakat bookart title-page — a BOOK title page, framed by a bookart ornament.
+// `border` is a procedural bookart FRAME (rendered by bookart_titlepage.sh); the type box is auto-fitted
+// to the frame's clear window, so the content is compact — as on a real ornamented title page.
 //   plakat bookart title-page corpus/bookart_titlepage_book.hjson --out title.typ --verify
 {
   style: "letterpress"
   page: "a5"
+  border: "corpus/images/bookart-titlepage/frame.png"
   lines: [
-    { role: "series",   text: "THE" }
-    { role: "title",    text: "VOYAGES\n&\nTRAVELS" }
-    { role: "subtitle", text: "OF THE CELEBRATED MARINERS" }
+    { role: "title",    text: "VOYAGES",   size: 18 }
+    { role: "title",    text: "& TRAVELS", size: 18 }
     { role: "rule" }
-    { role: "note",     text: "Containing a full and particular Account of divers\nDiscoveries, Shipwrecks, and Adventures upon the\nHigh Seas and in Foreign Lands." }
-    { role: "space",    size: 0.5 }
+    { role: "note",     text: "An Account of divers Discoveries and Adventures upon the High Seas." }
     { role: "author",   text: "By Captain James Hawkins" }
-    { role: "imprint",  text: "LONDON\nPrinted for J. Fletcher, at the Sign of the Anchor\nMDCCXLI" }
+    { role: "imprint",  text: "LONDON · MDCCXLI" }
   ]
 }

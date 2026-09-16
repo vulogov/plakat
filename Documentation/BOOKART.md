@@ -258,7 +258,10 @@ The spec is a small HJSON — a `style`, an optional `border` image, and a verti
 `note` · `epigraph` · `imprint` (placed at the foot) · `rule` · `ornament`/`image` (an emblem) · `space`.
 `\n` in a line's text splits it into stacked centred lines; `size` overrides a role's point size. With a
 `border`, the type box is auto-fitted to the ornament's **measured clear window** (shared with `typst`), so
-text never overlaps the frame.
+text never overlaps the frame. An `image`/`ornament` line's `src` is **auto-cropped to its ink** — a
+`bookart render` ornament arrives on a full page canvas, so it's trimmed to the device before it's centred
+inline. So a `border` (a rendered `border` ornament) and a chapter `ornament` (a rendered `fleuron`
+rosette) drop straight in — see [`corpus/bookart_titlepage.sh`](../corpus/bookart_titlepage.sh).
 
 ```hjson
 { style: "letterpress", page: "a5", border: "frame.png", lines: [
