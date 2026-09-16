@@ -1,0 +1,19 @@
+// A coherent bookart KIT — one matched set of ornaments (border / divider / fleuron), sharing origin,
+// technique and a seed lineage, for the whole book. `bookart_titlepage.sh` renders it, then uses the
+// border as the title-page frame and the divider on a chapter page.
+//   plakat bookart kit corpus/bookart_titlepage_kit.hjson --out corpus/images/bookart-titlepage/kit --no-coherence
+{
+  schema: "bookart/1"
+  origin: "generic"
+  technique: "line"
+  page: { size: "a5", dpi: 300 }
+  ink: { transparency: "luminance" }
+  kit: {
+    seed: 7
+    ornaments: [
+      { type: "border" }                          // → the title-page frame
+      { type: "divider", symmetry: "radial:6" }   // → a chapter ornament
+      { type: "fleuron", symmetry: "radial:12" }  // → the matched rosette (shown in the contact sheet)
+    ]
+  }
+}

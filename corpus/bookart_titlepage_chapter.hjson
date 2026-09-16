@@ -1,12 +1,10 @@
-// plakat bookart title-page — a CHAPTER page, opened by a bookart DEVICE (no full border).
-// `ornament` is a procedural bookart rosette (rendered by bookart_titlepage.sh); the title-page tool
-// auto-crops it to its ink and centres it as a chapter device.
-//   plakat bookart title-page corpus/bookart_titlepage_chapter.hjson --out chapter.typ --verify
+// CHAPTER I — opened by a bookart rosette DEVICE (a seed-varied fleuron; see chapter II for a DIFFERENT
+// rosette from the same fleuron at another seed). The device is auto-cropped to its ink and centred.
 {
   style: "letterpress"
   page: "a5"
   lines: [
-    { role: "ornament", src: "corpus/images/bookart-titlepage/device.png", size: 24 }
+    { role: "ornament", src: "corpus/images/bookart-titlepage/rosette-1.png", size: 24 }
     { role: "part",     text: "CHAPTER I" }
     { role: "rule" }
     { role: "title",    text: "THE DEPARTURE" }

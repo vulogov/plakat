@@ -1,23 +1,39 @@
 #!/usr/bin/env bash
 #
-# plakat bookart title-page — demo driver.
+# plakat bookart title-page — full demo driver.
 #
-# Generates a complete TWO-PAGE PDF — a BOOK title page (framed by a bookart ornament) + a
-# CHAPTER page (opened by a bookart device) — in the old letterpress style, from HJSON. The
-# ornaments are PROCEDURAL bookart (weight-free, no GPU): a `border` frame and a `fleuron`
-# rosette. Each spec compiles to a reusable Typst `title-page`; a tiny book.typ #imports both
-# and paginates them, so the whole thing renders in one Typst compile.
+# Generates a complete SIX-PAGE PDF that exercises a broad subset of `plakat bookart`:
+#
+#   1. FRONTISPIECE       — a pictorial B/W plate from `bookart illustrate` (the DIFFUSION tier).
+#   2. TITLE PAGE         — framed by a `bookart kit`'s border ornament (a matched procedural set).
+#   3. CHAPTER I          — opened by a `fleuron` rosette DEVICE.
+#   4. · SECTION I        — a SUBCHAPTER title page under chapter I, opened by a minimal `dinkus` mark.
+#   5. · SECTION II       — a second SUBCHAPTER title page, same subordinate style.
+#   6. CHAPTER II         — opened by the kit's `divider` band — a DIFFERENT ornament TYPE (procedural
+#                           rosettes are one geometric family; real variety comes from another type).
+#
+# Each page compiles to a reusable Typst `title-page`; a tiny book.typ #imports all six and paginates
+# them into one PDF. The kit / rosette / dinkus are weight-free (procedural); only `illustrate` uses a model.
 #
 # Usage:   corpus/bookart_titlepage.sh
-#          PLAKAT=./target/release/plakat corpus/bookart_titlepage.sh
+#          PLAKAT=./target/release/plakat STEPS=28 corpus/bookart_titlepage.sh   # faster + finer plate
 #
-# Needs:  the plakat binary (no GPU — everything here is weight-free) and `typst` on PATH.
+# Needs:  the plakat binary and `typst` on PATH. The `illustrate` step needs a model (auto-downloaded)
+#         and is slow on a debug build — use a RELEASE binary (`cargo build --release --features metal`)
+#         for the pictorial plate.
 set -u
 
 PLAKAT="${PLAKAT:-./target/debug/plakat}"
+STEPS="${STEPS:-24}"
 OUT="corpus/images/bookart-titlepage"
+KIT="corpus/bookart_titlepage_kit.hjson"
+FRONT="corpus/bookart_titlepage_frontispiece.hjson"
 BOOK="corpus/bookart_titlepage_book.hjson"
-CHAP="corpus/bookart_titlepage_chapter.hjson"
+CHAP1="corpus/bookart_titlepage_chapter.hjson"
+SUB1="corpus/bookart_titlepage_sub1.hjson"
+SUB2="corpus/bookart_titlepage_sub2.hjson"
+CHAP2="corpus/bookart_titlepage_chapter2.hjson"
+export PLAKAT_OOM_GUARD_GB="${PLAKAT_OOM_GUARD_GB:-0}"
 
 command -v typst >/dev/null || {
   echo "error: typst not found on PATH (needed to compile the pages)"
@@ -38,35 +54,58 @@ run() {
   echo
 }
 
-echo "================ plakat bookart title-page — 2-page demo ================"
+echo "============ plakat bookart title-page — 6-page demo (kit · illustrate · subchapters) ============"
 echo "binary : $PLAKAT"
-echo "out    : $OUT/"
+echo "steps  : $STEPS   out: $OUT/"
 echo
 
-# 1. Render the bookart ORNAMENTS (procedural = weight-free, deterministic): a frame + a rosette device.
-rm -f "$OUT/frame_spec.hjson" "$OUT/device_spec.hjson"
-run "$PLAKAT" bookart new "$OUT/frame_spec.hjson"  --type border  --origin generic --technique line --page a5
-run "$PLAKAT" bookart render "$OUT/frame_spec.hjson"  --out "$OUT/frame.png"
-run "$PLAKAT" bookart new "$OUT/device_spec.hjson" --type fleuron --origin generic --technique line --page a5
-run "$PLAKAT" bookart render "$OUT/device_spec.hjson" --out "$OUT/device.png"
+# 1. A coherent bookart KIT — a matched set (border / divider / fleuron), one hand.
+rm -f "$OUT/rosette_spec.hjson" "$OUT/dinkus_spec.hjson"
+run "$PLAKAT" bookart kit "$KIT" --out "$OUT/kit" --no-coherence
 
-# 2. Each HJSON spec → a reusable Typst `title-page` (compile it directly with --verify to prove it renders).
-#    The book page is FITTED inside the frame's clear window; the chapter page crops the rosette to a device.
-run "$PLAKAT" bookart title-page "$BOOK" --out "$OUT/title.typ"   --verify
-run "$PLAKAT" bookart title-page "$CHAP" --out "$OUT/chapter.typ" --verify
+# 2. A fleuron ROSETTE device for chapter I (chapter II uses the kit's divider band — a different type),
+#    and a minimal DINKUS mark for the two subchapter (section) pages — three distinct ornament families.
+run "$PLAKAT" bookart new "$OUT/rosette_spec.hjson" --type fleuron --origin generic --technique line --page a5
+run "$PLAKAT" bookart render "$OUT/rosette_spec.hjson" --out "$OUT/rosette-1.png" --seed 11
+run "$PLAKAT" bookart new "$OUT/dinkus_spec.hjson" --type dinkus --origin generic --technique line --page a5
+run "$PLAKAT" bookart render "$OUT/dinkus_spec.hjson" --out "$OUT/dinkus.png" --seed 5
 
-# 3. A tiny book that pulls in both pages and paginates them (title on p.1, chapter on p.2).
+# 3. A pictorial FRONTISPIECE plate from the diffusion tier (needs a model; slow on debug).
+run "$PLAKAT" bookart illustrate "a tall sailing ship on stormy seas, engraving, black and white" \
+  --origin generic --type frontispiece --page a5 --steps "$STEPS" --out "$OUT/frontispiece.png"
+
+# 4. Each HJSON spec → a reusable Typst `title-page` (--verify compiles each on its own).
+run "$PLAKAT" bookart title-page "$FRONT" --out "$OUT/00-frontispiece.typ" --verify
+run "$PLAKAT" bookart title-page "$BOOK"  --out "$OUT/01-title.typ"        --verify
+run "$PLAKAT" bookart title-page "$CHAP1" --out "$OUT/02-chapter1.typ"     --verify
+run "$PLAKAT" bookart title-page "$SUB1"  --out "$OUT/03-section1.typ"     --verify
+run "$PLAKAT" bookart title-page "$SUB2"  --out "$OUT/04-section2.typ"     --verify
+run "$PLAKAT" bookart title-page "$CHAP2" --out "$OUT/05-chapter2.typ"     --verify
+
+# 5. Stitch the four pages into one book.
 cat >"$OUT/book.typ" <<'TYP'
 // The finished book: import each page's `title-page` and render them in order.
-#import "title.typ": title-page
-#import "chapter.typ": title-page as chapter-page
+#import "00-frontispiece.typ": title-page as frontispiece
+#import "01-title.typ": title-page as title-page-main
+#import "02-chapter1.typ": title-page as chapter-one
+#import "03-section1.typ": title-page as section-one
+#import "04-section2.typ": title-page as section-two
+#import "05-chapter2.typ": title-page as chapter-two
 
-#title-page
+#frontispiece
 #pagebreak()
-#chapter-page
+#title-page-main
+#pagebreak()
+#chapter-one
+#pagebreak()
+#section-one
+#pagebreak()
+#section-two
+#pagebreak()
+#chapter-two
 TYP
 
-# 4. Compile the complete two-page PDF.
+# 6. Compile the complete PDF.
 echo "+ typst compile $OUT/book.typ $OUT/book.pdf"
 typst compile "$OUT/book.typ" "$OUT/book.pdf" || {
   echo "  ! typst compile failed"
@@ -75,5 +114,6 @@ typst compile "$OUT/book.typ" "$OUT/book.pdf" || {
 
 pages=$(pdfinfo "$OUT/book.pdf" 2>/dev/null | awk '/Pages/{print $2}' || echo "?")
 echo
-echo "✓ done — $OUT/book.pdf ($pages page(s): a framed book title + a chapter opener, with bookart ornaments)"
-ls -lh "$OUT"/book.pdf "$OUT"/frame.png "$OUT"/device.png 2>/dev/null | awk '{print "   "$5"\t"$9}'
+echo "✓ done — $OUT/book.pdf ($pages pages: frontispiece · framed title · chapter I · §I · §II · chapter II)"
+echo "   kit set + contact sheet → $OUT/kit/    rosette → rosette-1.png    subchapter mark → dinkus.png"
+ls -lh "$OUT"/book.pdf "$OUT"/frontispiece.png "$OUT"/rosette-1.png "$OUT"/dinkus.png 2>/dev/null | awk '{print "   "$5"\t"$9}'

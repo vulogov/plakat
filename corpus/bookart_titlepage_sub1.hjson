@@ -1,0 +1,16 @@
+// CHAPTER I · SECTION I — a SUBCHAPTER title page: subordinate to the chapter opener. A small `dinkus`
+// mark (a different, minimal ornament type), a tracked small-caps SECTION line, and a modest title — the
+// whole page reads quieter than the chapter page, as a section head should.
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "ornament",   src: "corpus/images/bookart-titlepage/dinkus.png", size: 12 }
+    { role: "subchapter", text: "Chapter I · Section the First" }
+    { role: "title",      text: "THE HARBOUR AT DAWN", size: 20 }
+    { role: "rule" }
+    { role: "subtitle",   text: "The vessel is provisioned", size: 13 }
+    { role: "space",      size: 0.6 }
+    { role: "note",       text: "Wherein the stores are laid in, the charts examined,\nand the tide awaited." }
+  ]
+}

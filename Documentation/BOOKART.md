@@ -254,7 +254,8 @@ previews it, so it compiles standalone (`--verify`) and `#import`s into a book (
 title-page` then `#title-page`).
 
 The spec is a small HJSON — a `style`, an optional `border` image, and a vertical stack of `lines`, each a
-`role` + its `text` (or `src` for an image). Roles: `series` · `title` · `subtitle` · `part` · `author` ·
+`role` + its `text` (or `src` for an image). Roles: `series` · `title` · `subtitle` · `part` · `subchapter`
+(a subordinate section mark — small tracked small-caps, for section pages under a chapter) · `author` ·
 `note` · `epigraph` · `imprint` (placed at the foot) · `rule` · `ornament`/`image` (an emblem) · `space`.
 `\n` in a line's text splits it into stacked centred lines; `size` overrides a role's point size. With a
 `border`, the type box is auto-fitted to the ornament's **measured clear window** (shared with `typst`), so

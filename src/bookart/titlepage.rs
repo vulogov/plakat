@@ -36,7 +36,7 @@ pub struct TitlePageSpec {
 /// One line/block of the title page.
 #[derive(Deserialize, Default, Clone)]
 pub struct TitleLine {
-    /// `series | title | subtitle | part | author | note | epigraph | imprint | rule | ornament | image | space`.
+    /// `series | title | subtitle | part | subchapter | author | note | epigraph | imprint | rule | ornament | image | space`.
     pub role: String,
     /// The text (text roles); `\n` splits it into stacked centred lines.
     #[serde(default)]
@@ -57,6 +57,8 @@ fn letterpress(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> 
         "title" => (30.0, 'u', "bold", false, 0.02, 0.5),
         "subtitle" => (17.0, 'u', "regular", false, 0.03, 0.6),
         "part" => (15.0, 'u', "bold", false, 0.04, 0.5),
+        // A SUBCHAPTER / section mark — subordinate to `part`: smaller, small-caps, generously tracked.
+        "subchapter" => (12.0, 's', "regular", false, 0.09, 0.45),
         "author" => (15.0, 'n', "regular", false, 0.05, 0.6),
         "note" => (10.0, 's', "regular", false, 0.02, 0.6),
         "epigraph" => (11.0, 'n', "regular", true, 0.0, 0.6),
@@ -264,5 +266,18 @@ mod tests {
         assert!(out.contains("image(\"fleuron.png\", width: 20mm)"), "ornament image");
         assert!(out.contains("size: 26pt"), "title size override");
         assert!(out.contains("line(length: 26%"), "default rule");
+    }
+
+    #[test]
+    fn subchapter_is_subordinate_smallcaps() {
+        let lines = vec![
+            TitleLine { role: "subchapter".into(), text: Some("Section the First".into()), ..Default::default() },
+            TitleLine { role: "title".into(), text: Some("The Harbour".into()), size: Some(20.0), ..Default::default() },
+        ];
+        let out = title_page_typst(148.0, 210.0, &m(24.0), None, 0.0, None, &lines);
+        // Small-caps, generously tracked, and smaller than a `part` (which is 15pt bold) — a subordinate mark.
+        assert!(out.contains("smallcaps(\"Section the First\")"), "subchapter is small-caps:\n{out}");
+        assert!(out.contains("tracking: 0.09em"), "subchapter is generously tracked");
+        assert!(out.contains("size: 12pt"), "subchapter default size 12pt");
     }
 }

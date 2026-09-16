@@ -1,11 +1,9 @@
-// plakat bookart title-page — a BOOK title page, framed by a bookart ornament.
-// `border` is a procedural bookart FRAME (rendered by bookart_titlepage.sh); the type box is auto-fitted
-// to the frame's clear window, so the content is compact — as on a real ornamented title page.
-//   plakat bookart title-page corpus/bookart_titlepage_book.hjson --out title.typ --verify
+// The BOOK title page, framed by the KIT's border ornament. The type box is auto-fitted to the frame's
+// clear window, so the content is compact — as on a real ornamented title page.
 {
   style: "letterpress"
   page: "a5"
-  border: "corpus/images/bookart-titlepage/frame.png"
+  border: "corpus/images/bookart-titlepage/kit/00_border.png"
   lines: [
     { role: "title",    text: "VOYAGES",   size: 18 }
     { role: "title",    text: "& TRAVELS", size: 18 }

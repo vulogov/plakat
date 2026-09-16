@@ -1,0 +1,25 @@
+{
+  "coherence": null,
+  "motif": null,
+  "origin": "generic",
+  "ornaments": [
+    {
+      "file": "00_border.png",
+      "seed": 7191089600892374487,
+      "type": "border"
+    },
+    {
+      "file": "01_divider.png",
+      "seed": 309689372594955804,
+      "type": "divider"
+    },
+    {
+      "file": "02_fleuron.png",
+      "seed": 16616101746815609346,
+      "type": "fleuron"
+    }
+  ],
+  "schema": "bookart-kit/1",
+  "seed": 7,
+  "technique": "line"
+}

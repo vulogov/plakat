@@ -1,0 +1,15 @@
+// CHAPTER I · SECTION II — the second SUBCHAPTER title page, in the same subordinate style as section I:
+// the same `dinkus` mark, a tracked small-caps SECTION line, a modest title.
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "ornament",   src: "corpus/images/bookart-titlepage/dinkus.png", size: 12 }
+    { role: "subchapter", text: "Chapter I · Section the Second" }
+    { role: "title",      text: "THE FIRST WATCH", size: 20 }
+    { role: "rule" }
+    { role: "subtitle",   text: "The crew is assembled", size: 13 }
+    { role: "space",      size: 0.6 }
+    { role: "note",       text: "Wherein the hands are mustered, the watches set,\nand the Author keeps the middle watch alone." }
+  ]
+}

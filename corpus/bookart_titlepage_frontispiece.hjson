@@ -1,0 +1,11 @@
+// A FRONTISPIECE page — a pictorial B/W plate from `bookart illustrate` (the DIFFUSION tier), facing the
+// title page. The plate is auto-cropped to its ink and centred; a caption sits beneath.
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "image",    src: "corpus/images/bookart-titlepage/frontispiece.png", width: 82 }
+    { role: "space",    size: 0.5 }
+    { role: "epigraph", text: "A tall ship, and a star to steer her by." }
+  ]
+}

@@ -1,0 +1,18 @@
+// CHAPTER II — a DIFFERENT kind of bookart ornament from chapter I: the KIT's DIVIDER band (a horizontal
+// guilloché device) instead of a round rosette. Procedural rosettes (fleuron) are one geometric family —
+// seed/symmetry vary them only subtly — so genuine variety comes from a different ornament TYPE.
+{
+  style: "letterpress"
+  page: "a5"
+  lines: [
+    { role: "image",    src: "corpus/images/bookart-titlepage/kit/01_divider.png", width: 62 }
+    { role: "part",     text: "CHAPTER II" }
+    { role: "rule" }
+    { role: "title",    text: "THE STORM" }
+    { role: "subtitle", text: "Wherein the vessel meets its first peril" }
+    { role: "space",    size: 1 }
+    { role: "epigraph", text: "The wind blew hard, and the sea ran mountains high." }
+    { role: "space",    size: 0.6 }
+    { role: "note",     text: "The Author is nearly lost overboard, the mainmast is sprung,\nand the crew despair of their lives." }
+  ]
+}

@@ -19,7 +19,7 @@
   set align(center)
 
   v(0.3em)
-  image("device_crop.png", width: 24mm)
+  image("rosette-1_crop.png", width: 24mm)
   v(0.3em)
   text(size: 15pt, weight: "bold", tracking: 0.04em)[#upper("CHAPTER I")]
   v(0.5em)

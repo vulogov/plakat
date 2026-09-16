@@ -8,33 +8,33 @@
 
 #let page-width  = 148mm
 #let page-height = 210mm
-#let border-image = "frame.png"
 
 #let title-page = {
   set page(
     width: page-width, height: page-height,
-    margin: (top: 61.58mm, bottom: 63.23mm, left: 41.84mm, right: 39.28mm),
-    background: place(top + left, dx: 12mm, dy: 12mm, image(border-image, width: page-width - 12mm - 12mm, height: page-height - 12mm - 12mm, fit: "stretch")),
+    margin: (top: 22mm, bottom: 22mm, left: 22mm, right: 22mm),
   )
   set text(size: 12pt)
   set par(leading: 0.7em, justify: false)
   set align(center)
 
-  text(size: 18pt, weight: "bold", tracking: 0.02em)[#upper("VOYAGES")]
-  v(0.5em)
-  text(size: 18pt, weight: "bold", tracking: 0.02em)[#upper("& TRAVELS")]
+  v(0.3em)
+  image("dinkus_crop.png", width: 12mm)
+  v(0.3em)
+  text(size: 12pt, weight: "regular", tracking: 0.09em)[#smallcaps("Chapter I · Section the Second")]
+  v(0.45em)
+  text(size: 20pt, weight: "bold", tracking: 0.02em)[#upper("THE FIRST WATCH")]
   v(0.5em)
   v(0.25em)
   line(length: 26%, stroke: 0.5pt + black)
   v(0.4em)
-  text(size: 10pt, weight: "regular", tracking: 0.02em)[#smallcaps("An Account of divers Discoveries and Adventures upon the High Seas.")]
+  text(size: 13pt, weight: "regular", tracking: 0.03em)[#upper("The crew is assembled")]
   v(0.6em)
-  text(size: 15pt, weight: "regular", tracking: 0.05em)[#"By Captain James Hawkins"]
   v(0.6em)
-
-  v(1fr)
-  text(size: 11pt, weight: "regular", tracking: 0.03em)[#smallcaps("LONDON · MDCCXLI")]
-  v(0.25em)
+  text(size: 10pt, weight: "regular", tracking: 0.02em)[#smallcaps("Wherein the hands are mustered, the watches set,")]
+  v(0.15em)
+  text(size: 10pt, weight: "regular", tracking: 0.02em)[#smallcaps("and the Author keeps the middle watch alone.")]
+  v(0.6em)
 }
 
 // Preview — compile this file directly; #import takes only `title-page`.

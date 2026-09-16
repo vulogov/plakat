@@ -40,25 +40,32 @@ corpus/bookart_origins.sh                 # all six origin LoRAs, side by side (
 
 ## Title pages (6.32) — old-style letterpress, weight-free
 
-[`bookart_titlepage.sh`](bookart_titlepage.sh) generates a complete **two-page PDF** — a book title page
-**framed by a bookart ornament** + a chapter opener **led by a bookart device** — in the historical
-letterpress hierarchy, entirely from HJSON, needing no GPU (both the ornaments and the typography are
-weight-free). The driver first renders two **procedural** ornaments — a `border` frame and a `fleuron`
-rosette — then each spec compiles to a reusable Typst `title-page` (the title page fitted inside the
-frame's clear window, the chapter's rosette auto-cropped to a device); a tiny `book.typ` `#import`s both
-and paginates them.
+[`bookart_titlepage.sh`](bookart_titlepage.sh) generates a complete **six-page PDF** that exercises a
+broad subset of `bookart` — a pictorial **frontispiece** (`illustrate`, the diffusion tier), a book title
+page **framed by a `kit` ornament**, a chapter opener **led by a `fleuron` rosette**, two **subchapter
+(section) pages** **led by a minimal `dinkus` mark**, and a second chapter opener **led by the kit's
+`divider` band** (a different ornament *type* — procedural rosettes are one geometric family, so genuine
+variety comes from another type or a diffusion plate). Everything but the frontispiece is weight-free;
+each spec compiles to a reusable Typst `title-page` (border/device auto-cropped and fitted), and a tiny
+`book.typ` `#import`s all six and paginates them.
 
 ```bash
-corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pdf (2 pages)
+corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pdf (6 pages)
 ```
 
-- [`bookart_titlepage_book.hjson`](bookart_titlepage_book.hjson) → the **book title page** (series /
-  stacked display title / subtitle / rule / note / author / imprint at the foot).
-- [`bookart_titlepage_chapter.hjson`](bookart_titlepage_chapter.hjson) → the **chapter page** (chapter
-  number / rule / title / subtitle / epigraph / note — no imprint).
+- [`bookart_titlepage_frontispiece.hjson`](bookart_titlepage_frontispiece.hjson) → the pictorial **plate** + caption.
+- [`bookart_titlepage_book.hjson`](bookart_titlepage_book.hjson) → the **book title page** (framed;
+  stacked display title / rule / note / author / imprint at the foot).
+- [`bookart_titlepage_chapter.hjson`](bookart_titlepage_chapter.hjson) → the **chapter page** (rosette /
+  chapter number / rule / title / subtitle / epigraph / note).
+- [`bookart_titlepage_sub1.hjson`](bookart_titlepage_sub1.hjson) / [`_sub2`](bookart_titlepage_sub2.hjson)
+  → the two **subchapter (section) pages** — subordinate style: a small `dinkus`, a tracked small-caps
+  `subchapter` line, a modest title.
+- [`bookart_titlepage_chapter2.hjson`](bookart_titlepage_chapter2.hjson) → a second **chapter page**,
+  opened by the kit's `divider` band.
 
 `bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
-the two `title-page`s into `book.pdf`. The roles, styles and border-fitting are in
+the six `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in
 [`../Documentation/BOOKART.md`](../Documentation/BOOKART.md).
 
 ## The idea
