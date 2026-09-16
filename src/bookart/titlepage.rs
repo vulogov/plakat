@@ -28,6 +28,9 @@ pub struct TitlePageSpec {
     /// Body serif font family (a Typst font name). Absent = the document default serif.
     #[serde(default)]
     pub font: Option<String>,
+    /// Historical typography (old-style figures + historical ligatures). CLI `--historical` also sets it.
+    #[serde(default)]
+    pub historical: Option<bool>,
     /// The vertical stack of lines, top to bottom.
     #[serde(default)]
     pub lines: Vec<TitleLine>,
@@ -50,6 +53,23 @@ pub struct TitleLine {
     pub size: Option<f32>,
 }
 
+/// Emit-time options: a global size `scale` (1.0 = as authored; `--fit` lowers it to fit one page) and
+/// `historical` typography (old-style figures + historical ligatures). Kept as a struct so future style
+/// work can extend it without churning every call site.
+#[derive(Clone, Copy)]
+pub struct Emit {
+    /// Multiplies every type size and image width (1.0 = as authored).
+    pub scale: f32,
+    /// Old-style figures + historical ligatures (weight-free antique feel).
+    pub historical: bool,
+}
+
+impl Default for Emit {
+    fn default() -> Self {
+        Self { scale: 1.0, historical: false }
+    }
+}
+
 /// The `letterpress` role table: `(pt, transform, weight, italic, tracking_em, space_after_em)`.
 /// `transform`: `'u'` upper, `'s'` small-caps, `'n'` none.
 fn letterpress(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> {
@@ -69,9 +89,9 @@ fn letterpress(role: &str) -> Option<(f32, char, &'static str, bool, f32, f32)> 
 }
 
 /// Emit one styled text block (possibly multi-line on `\n`) into `s`.
-fn push_text(s: &mut String, style: &(f32, char, &str, bool, f32, f32), text: &str, size_override: Option<f32>) {
+fn push_text(s: &mut String, style: &(f32, char, &str, bool, f32, f32), text: &str, size_override: Option<f32>, scale: f32) {
     let (dpt, transform, weight, italic, tracking, space) = *style;
-    let pt = size_override.unwrap_or(dpt);
+    let pt = size_override.unwrap_or(dpt) * scale;
     for (i, raw) in text.split('\n').enumerate() {
         let line = raw.trim();
         if line.is_empty() {
@@ -122,7 +142,9 @@ pub fn title_page_typst(
     rule_pt: f32,
     font: Option<&str>,
     lines: &[TitleLine],
+    emit: Emit,
 ) -> String {
+    let scale = if emit.scale.is_finite() && emit.scale > 0.05 { emit.scale } else { 1.0 };
     let mut s = String::new();
     s.push_str("// ─────────────────────────────────────────────────────────────────────\n");
     s.push_str("// plakat bookart — an old-style (letterpress) TITLE PAGE, compilable to PDF.\n");
@@ -173,9 +195,13 @@ pub fn title_page_typst(
         ));
     }
     s.push_str("  )\n");
+    // Base size scales with `--fit` so em-based spacers/rules shrink with the type. Historical typography
+    // (old-style figures + historical ligatures) is weight-free and font-driven — harmless where unsupported.
+    let base_pt = trim_pt(12.0 * scale);
+    let hist = if emit.historical { ", number-type: \"old-style\", features: (hlig: 1)" } else { "" };
     match font {
-        Some(f) => s.push_str(&format!("  set text(font: \"{}\", size: 12pt)\n", esc(f))),
-        None => s.push_str("  set text(size: 12pt)\n"),
+        Some(f) => s.push_str(&format!("  set text(font: \"{}\", size: {base_pt}pt{hist})\n", esc(f))),
+        None => s.push_str(&format!("  set text(size: {base_pt}pt{hist})\n")),
     }
     s.push_str("  set par(leading: 0.7em, justify: false)\n");
     s.push_str("  set align(center)\n\n");
@@ -187,7 +213,7 @@ pub fn title_page_typst(
         match role.as_str() {
             "imprint" => {
                 if let Some(t) = &line.text {
-                    push_text(&mut foot, &letterpress("imprint").unwrap(), t, line.size);
+                    push_text(&mut foot, &letterpress("imprint").unwrap(), t, line.size, scale);
                 }
             }
             "rule" => {
@@ -200,13 +226,18 @@ pub fn title_page_typst(
             "ornament" | "image" => {
                 if let Some(src) = &line.src {
                     let w = line.size.unwrap_or(if role == "ornament" { 18.0 } else { 60.0 }).clamp(1.0, 100.0);
-                    let unit = if role == "ornament" { format!("{}mm", trim_pt(line.size.unwrap_or(18.0))) } else { format!("{}%", trim_pt(w)) };
+                    // Images scale with `--fit` too (a plate's height is what overflows a page).
+                    let unit = if role == "ornament" {
+                        format!("{}mm", trim_pt(line.size.unwrap_or(18.0) * scale))
+                    } else {
+                        format!("{}%", trim_pt((w * scale).clamp(1.0, 100.0)))
+                    };
                     s.push_str(&format!("  v(0.3em)\n  image(\"{}\", width: {})\n  v(0.3em)\n", esc(src), unit));
                 }
             }
             other => {
                 if let (Some(style), Some(t)) = (letterpress(other), &line.text) {
-                    push_text(&mut s, &style, t, line.size);
+                    push_text(&mut s, &style, t, line.size, scale);
                 }
                 // Unknown roles are silently skipped (permissive, like the rest of bookart).
             }
@@ -241,7 +272,7 @@ mod tests {
             TitleLine { role: "author".into(), text: Some("F. Buslaev".into()), ..Default::default() },
             TitleLine { role: "imprint".into(), text: Some("Moscow.\n1858".into()), ..Default::default() },
         ];
-        let out = title_page_typst(148.0, 210.0, &m(24.0), None, 0.0, None, &lines);
+        let out = title_page_typst(148.0, 210.0, &m(24.0), None, 0.0, None, &lines, Emit::default());
         assert!(out.contains("#let title-page = {"), "reusable function:\n{out}");
         assert!(out.contains("#title-page"), "preview call");
         assert!(out.contains("upper(\"Historical Grammar\")"), "title uppercased");
@@ -260,7 +291,7 @@ mod tests {
             TitleLine { role: "title".into(), text: Some("Bibliotheca".into()), size: Some(26.0), ..Default::default() },
             TitleLine { role: "rule".into(), ..Default::default() },
         ];
-        let out = title_page_typst(148.0, 210.0, &m(30.0), Some(("frame.png", &m(12.0))), 0.0, Some("Libertinus Serif"), &lines);
+        let out = title_page_typst(148.0, 210.0, &m(30.0), Some(("frame.png", &m(12.0))), 0.0, Some("Libertinus Serif"), &lines, Emit::default());
         assert!(out.contains("#let border-image = \"frame.png\""), "border ref:\n{out}");
         assert!(out.contains("background: place(top + left, dx: 12mm"), "border placed at its margin");
         assert!(out.contains("set text(font: \"Libertinus Serif\""), "font applied");
@@ -275,7 +306,7 @@ mod tests {
             TitleLine { role: "subchapter".into(), text: Some("Section the First".into()), ..Default::default() },
             TitleLine { role: "title".into(), text: Some("The Harbour".into()), size: Some(20.0), ..Default::default() },
         ];
-        let out = title_page_typst(148.0, 210.0, &m(24.0), None, 0.0, None, &lines);
+        let out = title_page_typst(148.0, 210.0, &m(24.0), None, 0.0, None, &lines, Emit::default());
         // Small-caps, generously tracked, and smaller than a `part` (which is 15pt bold) — a subordinate mark.
         assert!(out.contains("smallcaps(\"Section the First\")"), "subchapter is small-caps:\n{out}");
         assert!(out.contains("tracking: 0.09em"), "subchapter is generously tracked");
@@ -288,7 +319,29 @@ mod tests {
         // (width-% for images) rather than being silently dropped to the 60% default.
         let line: TitleLine = deser_hjson::from_str(r#"{ role: "image", src: "e.png", width: 24 }"#).unwrap();
         assert_eq!(line.size, Some(24.0), "width populates size");
-        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &[line]);
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &[line], Emit::default());
         assert!(out.contains(r#"image("e.png", width: 24%)"#), "image honours authored width:\n{out}");
+    }
+
+    #[test]
+    fn scale_shrinks_type_and_images() {
+        let lines = vec![
+            TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() },
+            TitleLine { role: "image".into(), src: Some("e.png".into()), size: Some(40.0), ..Default::default() },
+        ];
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 0.5, historical: false });
+        assert!(out.contains("set text(size: 6pt"), "base size scaled 12→6:\n{out}");
+        assert!(out.contains("size: 15pt"), "title 30pt scaled to 15pt");
+        assert!(out.contains(r#"image("e.png", width: 20%)"#), "image 40% scaled to 20%");
+    }
+
+    #[test]
+    fn historical_adds_old_style_and_ligatures() {
+        let lines = vec![TitleLine { role: "title".into(), text: Some("MDCCXLI".into()), ..Default::default() }];
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: true });
+        assert!(out.contains(r#"number-type: "old-style""#), "old-style figures:\n{out}");
+        assert!(out.contains("features: (hlig: 1)"), "historical ligatures");
+        let plain = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit::default());
+        assert!(!plain.contains("number-type"), "off by default");
     }
 }

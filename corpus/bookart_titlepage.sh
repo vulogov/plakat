@@ -83,7 +83,7 @@ run "$PLAKAT" bookart illustrate "a naval trophy emblem, crossed anchors and sig
 
 # 4. Each HJSON spec → a reusable Typst `title-page` (--verify compiles each on its own).
 run "$PLAKAT" bookart title-page "$FRONT" --out "$OUT/00-frontispiece.typ" --verify
-run "$PLAKAT" bookart title-page "$TITLE" --out "$OUT/01-title.typ" --margin 15 --verify   # dense hierarchy — a wider type box
+run "$PLAKAT" bookart title-page "$TITLE" --out "$OUT/01-title.typ" --margin 15 --fit --historical --verify   # dense hierarchy: wider box, auto-fit to one page, antique figures
 run "$PLAKAT" bookart title-page "$BOOK"  --out "$OUT/02-book.typ"         --verify
 run "$PLAKAT" bookart title-page "$CHAP1" --out "$OUT/03-chapter1.typ"     --verify
 run "$PLAKAT" bookart title-page "$SUB1"  --out "$OUT/04-section1.typ"     --verify

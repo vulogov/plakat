@@ -88,6 +88,13 @@ pub struct TitlePageArgs {
     /// Type margin from the page edge, in mm (when there is no border). Default 22.
     #[arg(long, default_value_t = 22.0)]
     pub margin: f32,
+    /// Shrink the type (and any plates) just enough to fit ONE page — measured with `typst`. Kills the
+    /// silent 2-page overflow when a spec is too tall for its page.
+    #[arg(long, default_value_t = false)]
+    pub fit: bool,
+    /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
+    #[arg(long, default_value_t = false)]
+    pub historical: bool,
     /// After writing, compile to PDF with `typst` to verify it renders.
     #[arg(long, default_value_t = false)]
     pub verify: bool,
@@ -1070,19 +1077,37 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
         text_margin = uniform(a.margin.max(0.0));
     }
 
-    let src = crate::bookart::titlepage::title_page_typst(
-        page_res.w_mm,
-        page_res.h_mm,
-        &text_margin,
-        border,
-        spec.rule.unwrap_or(0.0).max(0.0),
-        spec.font.as_deref(),
-        &spec.lines,
-    );
-    std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+    let rule_pt = spec.rule.unwrap_or(0.0).max(0.0);
+    let historical = a.historical || spec.historical.unwrap_or(false);
+    let emit = |scale: f32| {
+        crate::bookart::titlepage::title_page_typst(
+            page_res.w_mm,
+            page_res.h_mm,
+            &text_margin,
+            border,
+            rule_pt,
+            spec.font.as_deref(),
+            &spec.lines,
+            crate::bookart::titlepage::Emit { scale, historical },
+        )
+    };
+
+    // Emit — with `--fit`, shrink the type just enough to fit one page (measured by `typst`).
+    let mut scale = 1.0f32;
+    if a.fit {
+        scale = fit_to_one_page(&a.out, &emit)?;
+    } else {
+        std::fs::write(&a.out, emit(1.0)).with_context(|| format!("writing {}", a.out.display()))?;
+    }
+
     let (tw, th) = (page_res.w_mm - text_margin.left - text_margin.right, page_res.h_mm - text_margin.top - text_margin.bottom);
+    let extras = format!(
+        "{}{}",
+        if scale < 0.999 { format!(" · fitted {:.0}%", scale * 100.0) } else { String::new() },
+        if historical { " · historical" } else { "" },
+    );
     println!(
-        "{} {}  ({} · {} · page {}×{} mm · type {:.0}×{:.0} mm · {} line(s))",
+        "{} {}  ({} · {} · page {}×{} mm · type {:.0}×{:.0} mm · {} line(s){})",
         style("wrote").green(),
         a.out.display(),
         page_res.size_name,
@@ -1092,14 +1117,90 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
         tw,
         th,
         spec.lines.len(),
+        extras,
     );
 
     if a.verify {
         verify_typst(&a.out, &a.out.with_extension("pdf"))?;
+        // Even when it compiles, a too-tall page silently spills onto a second sheet. Warn (unless --fit
+        // already guaranteed one page) so the overflow is never invisible.
+        if !a.fit {
+            if let Ok(n) = typst_pages(&a.out) {
+                if n > 1 {
+                    eprintln!(
+                        "{}  {} rendered {} pages — the type overflows one sheet; re-run with --fit (auto-shrink) or reduce sizes",
+                        style("⚠").yellow(),
+                        a.out.display(),
+                        n,
+                    );
+                }
+            }
+        }
     } else {
         println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
     }
     Ok(())
+}
+
+/// Count the pages a Typst file lays out, by rendering to a throwaway low-DPI PNG set and counting them.
+/// Uses the real Typst layout (exact), reading the file's assets relative to the `.typ` as usual.
+fn typst_pages(typ_path: &std::path::Path) -> Result<usize> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("plakat-fit-{}-{}", std::process::id(), stamp));
+    std::fs::create_dir_all(&dir)?;
+    let tmpl = dir.join("p-{p}.png");
+    let out = std::process::Command::new("typst")
+        .arg("compile").arg(typ_path).arg(&tmpl).arg("--ppi").arg("10")
+        .output();
+    let result = (|| -> Result<usize> {
+        let out = match out {
+            Ok(o) => o,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!("typst not found on PATH");
+            }
+            Err(e) => return Err(anyhow::Error::from(e).context("running `typst compile`")),
+        };
+        anyhow::ensure!(out.status.success(), "typst could not compile:\n{}", String::from_utf8_lossy(&out.stderr).trim());
+        let n = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .count();
+        Ok(n.max(1))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+/// Emit at successively smaller scales until the page lays out as ONE sheet (measured by `typst`), writing
+/// the final artifact and returning the scale used. Falls back to 1.0 with a warning if `typst` is absent.
+fn fit_to_one_page(out: &std::path::Path, emit: &dyn Fn(f32) -> String) -> Result<f32> {
+    const FLOOR: f32 = 0.55;
+    const STEP: f32 = 0.94;
+    let mut scale = 1.0f32;
+    loop {
+        std::fs::write(out, emit(scale)).with_context(|| format!("writing {}", out.display()))?;
+        match typst_pages(out) {
+            Ok(1) => return Ok(scale),
+            Ok(n) => {
+                if scale > FLOOR {
+                    scale *= STEP;
+                    continue;
+                }
+                eprintln!(
+                    "{}  still {} pages at the {:.0}% floor — the spec has more than one page of content; trim it",
+                    style("⚠").yellow(),
+                    n,
+                    FLOOR * 100.0,
+                );
+                return Ok(scale);
+            }
+            Err(e) => {
+                eprintln!("{}  --fit needs typst to measure pages ({e}); wrote at full size", style("⚠").yellow());
+                std::fs::write(out, emit(1.0))?;
+                return Ok(1.0);
+            }
+        }
+    }
 }
 
 /// Tight-crop an ornament to its ink (its non-transparent bounding box) and save it beside the artifact,

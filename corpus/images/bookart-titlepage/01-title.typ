@@ -14,7 +14,7 @@
     width: page-width, height: page-height,
     margin: (top: 15mm, bottom: 15mm, left: 15mm, right: 15mm),
   )
-  set text(size: 12pt)
+  set text(size: 12pt, number-type: "old-style", features: (hlig: 1))
   set par(leading: 0.7em, justify: false)
   set align(center)
 
