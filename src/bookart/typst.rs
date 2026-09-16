@@ -144,12 +144,12 @@ pub fn text_margins_from_window(
 }
 
 /// Escape a string for a Typst `"..."` string literal (backslash + double-quote).
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Format a length in mm without trailing zeros: `148.0 → "148"`, `138.5 → "138.5"`.
-fn mm(v: f32) -> String {
+pub(crate) fn mm(v: f32) -> String {
     let r = (v * 100.0).round() / 100.0;
     let mut s = format!("{r}");
     if s.contains('.') {

@@ -227,6 +227,19 @@ book and let Typst paginate, with no page-by-page setup:
 absolute spot. Per-side `--margin-top/-bottom/-left/-right`, `--corner-size`, `--rule`, `--image`, and
 `--spec` (read the page size from a spec) round out the control.
 
+For an **old-style title page**, `bookart title-page` takes a small HJSON — a `style` (default
+`letterpress`), an optional ornamental `border`, and a stack of `lines` (each a `role` + `text`) — and
+emits the historical hierarchy (tracked small-caps series, a bold display title, subtitle, part, author,
+and an imprint at the foot) as a compilable, `#import`-able Typst `title-page`:
+
+```sh
+plakat bookart title-page title.hjson --out title.typ --verify
+```
+
+Roles are `series` / `title` / `subtitle` / `part` / `author` / `note` / `imprint` / `rule` /
+`ornament` / `space`; `\n` in a line stacks it into centred lines. With a `border` the type box is fitted
+to the ornament's clear window (as in the page above), so text never overlaps the frame.
+
 ## 9. Edit and blend (mostly no weights)
 
 Before you spend compute, ask what a change *costs*:

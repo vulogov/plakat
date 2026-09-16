@@ -60,6 +60,7 @@ plakat bookart blend      <a> <b> --out O                                       
 plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                        raster→SVG trace   (feature: bookart-trace)
 plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
+plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --margin 22 --verify]   an old-style (letterpress) title page → Typst
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -238,6 +239,37 @@ overlay). Per-side `--margin[-top/-bottom/-left/-right]`, `--safety`, `--corner-
 reads the page size from a spec; **`--verify`** compiles the artifact to a PDF via the `typst` CLI to prove
 it renders. Referenced assets are copied beside the `.typ` so it compiles anywhere.
 
+### `title-page` — an old-style title page from HJSON
+
+```sh
+plakat bookart title-page title.hjson --out title.typ --verify
+```
+
+Generates a **book / chapter title page** in the historical **letterpress** hierarchy — tracked small-caps
+series lines, a big bold display title, subtitle, part, an author line, and an imprint at the foot, with an
+optional ornamental **border** or emblem — as a compilable **Typst** artifact usable in a Typst book.
+Weight-free (the typography *is* the artefact — no diffusion). Generic over a `style:` (default
+`letterpress`; more styles can be added). The output is reusable: it defines `#let title-page = { … }` and
+previews it, so it compiles standalone (`--verify`) and `#import`s into a book (`#import "title.typ":
+title-page` then `#title-page`).
+
+The spec is a small HJSON — a `style`, an optional `border` image, and a vertical stack of `lines`, each a
+`role` + its `text` (or `src` for an image). Roles: `series` · `title` · `subtitle` · `part` · `author` ·
+`note` · `epigraph` · `imprint` (placed at the foot) · `rule` · `ornament`/`image` (an emblem) · `space`.
+`\n` in a line's text splits it into stacked centred lines; `size` overrides a role's point size. With a
+`border`, the type box is auto-fitted to the ornament's **measured clear window** (shared with `typst`), so
+text never overlaps the frame.
+
+```hjson
+{ style: "letterpress", page: "a5", border: "frame.png", lines: [
+  { role: "series", text: "УЧЕБНЫЯ РУКОВОДСТВА\nдля ВОЕННО-УЧЕБНЫХЪ ЗАВЕДЕНІЙ" }
+  { role: "rule" }
+  { role: "title",  text: "ИСТОРИЧЕСКОЙ ГРАММАТИКИ" }
+  { role: "part",   text: "ЧАСТЬ I. ЭТИМОЛОГІЯ" }
+  { role: "author", text: "Ѳ. Буслаевымъ." }
+  { role: "imprint", text: "МОСКВА.\nВъ университетской типографіи.\n1858." } ] }
+```
+
 ## The ornament vocabulary
 
 The `ornament.type` key (the RFC's named vocabulary, §4). Each type carries a default tier and default
@@ -380,9 +412,9 @@ probes are wired at the render layer as a fast-follow; verify today reports the 
 - **photos** — `render|illustrate --import <album>` lands an ornament in a `plakat photos` album,
   curated with its recipe.
 - **Typst** — `bookart typst` wraps an ornament into a `book-page` Typst *template* (the frame repeats on
-  every page) plus `text-box` / `place-on-page` helpers, so a bordered book paginates itself; `--verify`
-  compiles the PDF. The text is fitted to the ornament's clear window — the art frames the text, never
-  covers it.
+  every page) plus `text-box` / `place-on-page` helpers, so a bordered book paginates itself; `bookart
+  title-page` generates an old-style letterpress title page from HJSON. Both emit compilable Typst usable in
+  a Typst book, fit text to the ornament's clear window, and `--verify` to PDF.
 
 ## Honest scope
 

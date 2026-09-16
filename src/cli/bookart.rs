@@ -68,6 +68,29 @@ pub enum BookartCmd {
     /// Wrap a rendered **border** ornament into a self-contained Typst artifact — a bordered page plus a
     /// placement API (`#framed[...]`, `#place-on-page(...)`) — and, with `--verify`, compile it to PDF.
     Typst(TypstArgs),
+    /// Generate an old-style (letterpress) book / chapter **title page** from an HJSON spec — hierarchical
+    /// centred type, an imprint at the foot, an optional ornamental border/emblem — as a compilable Typst
+    /// artifact usable in a Typst book. `--verify` compiles it to PDF.
+    #[command(name = "title-page")]
+    TitlePage(TitlePageArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct TitlePageArgs {
+    /// The title-page HJSON spec (`style`, `border`, `lines: [{role, text|src}]`). See BOOKART docs.
+    pub spec: PathBuf,
+    /// Output Typst file (`.typ`). Referenced assets (border, ornaments) are copied beside it.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Page size (`a5`/`a4`/`b5`/…). Overrides the spec's `page`.
+    #[arg(long)]
+    pub page: Option<String>,
+    /// Type margin from the page edge, in mm (when there is no border). Default 22.
+    #[arg(long, default_value_t = 22.0)]
+    pub margin: f32,
+    /// After writing, compile to PDF with `typst` to verify it renders.
+    #[arg(long, default_value_t = false)]
+    pub verify: bool,
 }
 
 #[derive(Args, Debug)]
@@ -383,6 +406,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Origins(a) => run_origins(a),
         BookartCmd::Font(a) => run_font(a),
         BookartCmd::Typst(a) => run_typst(a),
+        BookartCmd::TitlePage(a) => run_title_page(a),
     }
 }
 
@@ -984,6 +1008,92 @@ fn prepare_corner_tile(src: &std::path::Path, dir: &std::path::Path) -> Result<S
     let name = format!("{stem}_tile.png");
     tile.save(dir.join(&name)).with_context(|| format!("writing the corner tile {name}"))?;
     Ok(name)
+}
+
+/// `bookart title-page` — an old-style letterpress title page from an HJSON spec → a compilable Typst
+/// artifact. Resolves the page, copies any border/ornament assets beside the `.typ`, fits the type inside a
+/// border's measured clear window (reusing the `typst` geometry), emits, and (with `--verify`) compiles.
+fn run_title_page(a: TitlePageArgs) -> Result<()> {
+    use crate::bookart::spec::Page;
+    use crate::bookart::titlepage::TitlePageSpec;
+    use crate::bookart::typst::{self as typ, Margins};
+    use crate::bookart::geometry;
+
+    // 1. Load the spec (permissive HJSON).
+    let text = std::fs::read_to_string(&a.spec).with_context(|| format!("reading {}", a.spec.display()))?;
+    let mut spec: TitlePageSpec =
+        deser_hjson::from_str(&text).map_err(|e| anyhow::anyhow!("parsing title-page spec {}: {e}", a.spec.display()))?;
+
+    // 2. Resolve the page size — CLI --page wins, else the spec's `page`, else a5.
+    let size_name = a.page.clone().or_else(|| spec.page.clone()).unwrap_or_else(|| "a5".into());
+    let page_res = geometry::resolve_page(Some(&Page { size: Some(size_name), ..Default::default() }));
+
+    // 3. Assets beside the artifact: the border + every line's image src (copied, referenced by basename).
+    let art_dir = a
+        .out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&art_dir).with_context(|| format!("creating {}", art_dir.display()))?;
+    let border_ref = match &spec.border {
+        Some(b) => Some(copy_beside(std::path::Path::new(b), &art_dir).context("copying the border image")?),
+        None => None,
+    };
+    for line in &mut spec.lines {
+        if let Some(src) = &line.src {
+            let rel = copy_beside(std::path::Path::new(src), &art_dir)
+                .with_context(|| format!("copying ornament {src}"))?;
+            line.src = Some(rel);
+        }
+    }
+
+    // 4. Type box: fitted to the border's measured clear window, else a plain margin.
+    let uniform = |v: f32| Margins { top: v, bottom: v, left: v, right: v };
+    let (border, text_margin);
+    let bmargin;
+    if let (Some(bref), Some(bpath)) = (&border_ref, &spec.border) {
+        let bm = uniform(12.0);
+        let window = measure_clear_window(std::path::Path::new(bpath));
+        let tm = typ::text_margins_from_window(page_res.w_mm, page_res.h_mm, &bm, window, 6.0);
+        bmargin = bm;
+        text_margin = tm;
+        border = Some((bref.as_str(), &bmargin));
+    } else {
+        border = None;
+        text_margin = uniform(a.margin.max(0.0));
+    }
+
+    let src = crate::bookart::titlepage::title_page_typst(
+        page_res.w_mm,
+        page_res.h_mm,
+        &text_margin,
+        border,
+        spec.rule.unwrap_or(0.0).max(0.0),
+        spec.font.as_deref(),
+        &spec.lines,
+    );
+    std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+    let (tw, th) = (page_res.w_mm - text_margin.left - text_margin.right, page_res.h_mm - text_margin.top - text_margin.bottom);
+    println!(
+        "{} {}  ({} · {} · page {}×{} mm · type {:.0}×{:.0} mm · {} line(s))",
+        style("wrote").green(),
+        a.out.display(),
+        page_res.size_name,
+        spec.style.as_deref().unwrap_or("letterpress"),
+        page_res.w_mm.round() as i32,
+        page_res.h_mm.round() as i32,
+        tw,
+        th,
+        spec.lines.len(),
+    );
+
+    if a.verify {
+        verify_typst(&a.out, &a.out.with_extension("pdf"))?;
+    } else {
+        println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
+    }
+    Ok(())
 }
 
 /// Measure the border's inner clear window (fractions of its size) so the text box can be fitted to it.
