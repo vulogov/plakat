@@ -59,6 +59,7 @@ plakat bookart edit       <png> --out O [--tint T] [--symmetry S] [--ink-weight 
 plakat bookart blend      <a> <b> --out O                                             lineage: origin(A) × technique(B)
 plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                        raster→SVG trace   (feature: bookart-trace)
 plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
+plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -210,6 +211,33 @@ as a real **OpenType dingbat font** for inline use in InDesign / LaTeX — type 
 Self-contained (a from-scratch TrueType writer, no font-toolkit dependency); the file loads + renders in
 any font-aware application.
 
+### `typst` — bordered book pages as Typst templates
+
+```sh
+plakat bookart typst --corner corner.png --page a5 --margin 16 --corner-size 15 \
+  --title "Chapter One" --body chapter.txt --out page.typ --verify
+```
+
+Wraps an ornament into a self-contained, PDF-compilable **Typst** artifact where the *text* is the
+subject and the frame never dominates the page. Two styles:
+
+- **`--border <ornament>`** — a full border, sized to the margin box (`page − per-side margins`). The
+  text box is **fitted to the border's *measured* clear window** (the largest ink-free rectangle inside
+  the ornament, corner motifs included), so text can never overlap the art — and it **refuses to emit**
+  if nothing usable fits ("do not generate what doesn't fit").
+- **`--corner <ornament>`** — a restrained **thin-rule frame + the corner ornament mirrored to match at
+  all four corners** (a `bookart corner` render is cropped to one square tile, flipped in place). Text
+  keeps the whole interior.
+
+The output is a **reusable template**: it defines `book-page`, whose `set page(background: …)` repeats the
+frame on *every* page, so you apply it to a whole book with `#show: book-page` and Typst paginates your
+text across as many pages as it needs — no per-page setup. Compiling the file directly renders a preview;
+`#import "page.typ": book-page` takes only the helpers. Also emitted: **`text-box(body, width:, inset:,
+fill:, alignment:…)`** (put a run of text in a sizeable box) and **`place-on-page(dx, dy, …)`** (absolute
+overlay). Per-side `--margin[-top/-bottom/-left/-right]`, `--safety`, `--corner-size`, `--rule`; `--spec`
+reads the page size from a spec; **`--verify`** compiles the artifact to a PDF via the `typst` CLI to prove
+it renders. Referenced assets are copied beside the `.typ` so it compiles anywhere.
+
 ## The ornament vocabulary
 
 The `ornament.type` key (the RFC's named vocabulary, §4). Each type carries a default tier and default
@@ -351,6 +379,10 @@ probes are wired at the render layer as a fast-follow; verify today reports the 
   · `run` → an in-memory `Rendered`), mirroring `Generate` / `Portrait`.
 - **photos** — `render|illustrate --import <album>` lands an ornament in a `plakat photos` album,
   curated with its recipe.
+- **Typst** — `bookart typst` wraps an ornament into a `book-page` Typst *template* (the frame repeats on
+  every page) plus `text-box` / `place-on-page` helpers, so a bordered book paginates itself; `--verify`
+  compiles the PDF. The text is fitted to the ornament's clear window — the art frames the text, never
+  covers it.
 
 ## Honest scope
 

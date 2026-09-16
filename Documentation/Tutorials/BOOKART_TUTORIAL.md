@@ -2,8 +2,9 @@
 
 A hands-on pass through the whole pipeline: scaffold a spec, see what it resolves to, render a
 zero-weight procedural border and a diffusion vignette, ask for SVG, then build a coherent **kit**, a
-**manuscript** set for a whole book, and finish with edit/lineage. `bookart` composes *reusable,
-print-ready, transparent* black-and-white book ornaments — the reference is
+**manuscript** set for a whole book, lay an ornament into a bordered **Typst** book page, and finish with
+edit/lineage. `bookart` composes *reusable, print-ready, transparent* black-and-white book ornaments —
+the reference is
 [`../BOOKART.md`](../BOOKART.md); the counter-intuitive transparency core is
 [`../BOOKART_TRANSPARENCY.md`](../BOOKART_TRANSPARENCY.md).
 
@@ -181,7 +182,52 @@ Preview any ornament directory as a sheet at any time:
 plakat bookart proof ornaments/ --out proof.png
 ```
 
-## 8. Edit and blend (mostly no weights)
+## 8. Set a book page with a border (Typst)
+
+The ornaments you just rendered are *transparent, page-sized art* — `bookart typst` composes one into a
+self-contained **Typst** page you can compile to PDF, where the *text* is the subject and the frame never
+dominates. Feed it the border from §3:
+
+```sh
+plakat bookart typst --border border.png --page a5 --margin 12 \
+  --title "Chapter One" --body chapter.txt --out page.typ --verify
+```
+
+`--verify` compiles it with the `typst` CLI and prints the PDF path. The text box is **fitted to the
+border's measured clear window** — the largest ink-free rectangle inside the ornament, corner rosettes
+included — so text physically *cannot* overlap the art. If a heavy border would leave too little room,
+`typst` says so and refuses rather than emit an overlapping page.
+
+For a **restrained** page — thin rules with a small ornament at each corner — render a `corner` and pass
+`--corner` instead. The corner render lays all four corners on one page, so it's cropped to a single tile
+and mirrored, and the four corners match exactly:
+
+```sh
+plakat bookart new corner.hjson --type corner --origin english --technique engraving --page a5
+plakat bookart render corner.hjson --out corner.png
+plakat bookart typst --corner corner.png --page a5 --margin 16 --corner-size 15 --out frame.typ --verify
+```
+
+The real payoff: the output is a **reusable template**, not a one-off page. It defines a `book-page`
+function whose `set page(background: …)` repeats the frame on *every* page — so you drop it into your own
+book and let Typst paginate, with no page-by-page setup:
+
+```typst
+#import "frame.typ": book-page, text-box, place-on-page
+#show: book-page                 // the frame is now on every page
+
+= Chapter One
+#lorem(400)                      // flows across as many pages as it needs, each bordered
+
+// put a caption in a box and drop it anywhere over the page:
+#place-on-page(dx: 20mm, dy: 250mm, text-box(width: 60mm, fill: luma(240), inset: 6pt)[A placed caption])
+```
+
+`text-box` puts a run of text in a sizeable, paddable box; `place-on-page` drops any element at an
+absolute spot. Per-side `--margin-top/-bottom/-left/-right`, `--corner-size`, `--rule`, `--image`, and
+`--spec` (read the page size from a spec) round out the control.
+
+## 9. Edit and blend (mostly no weights)
 
 Before you spend compute, ask what a change *costs*:
 
@@ -215,7 +261,7 @@ plakat bookart blend firebird-kit.hjson wolf-japanese.hjson --out crossed.hjson
 # → a russian × japanese-line spec with both motif sets
 ```
 
-## 9. The rest of the toolbox (6.1)
+## 10. The rest of the toolbox (6.1)
 
 ```sh
 plakat bookart origins --details              # the six origins × techniques × ornaments + LoRA hosting
