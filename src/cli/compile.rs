@@ -209,6 +209,17 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-draft-steps", value_name = "N", default_value_t = 30)]
     pub improve_draft_steps: usize,
 
+    /// *(6.32 ②)* Improve the REAL finish: img2img each candidate from this init image (a structure draft /
+    /// reference frame) instead of a fresh t2i, so the aesthetic verdict scores your composition's *finish*,
+    /// not a random layout. Rendered on a resident pipeline (no per-candidate reload). SD-family only.
+    #[arg(help_heading = "Compile", long = "improve-init", value_name = "IMAGE")]
+    pub improve_init: Option<PathBuf>,
+
+    /// *(6.32 ②)* img2img strength for `--improve-init` — how hard the finish repaints the init. Lower keeps
+    /// more of the composition; `0.5`–`0.7` is the usual finish range.
+    #[arg(help_heading = "Compile", long = "improve-init-strength", value_name = "F", default_value_t = 0.6)]
+    pub improve_init_strength: f32,
+
     /// *(6.30 polish)* CORROBORATION — how many seeds to render + score per candidate, averaged into its
     /// rank. Aesthetic score is noisy, so `1` seed can teach the tabu list garbage; `2`–`3` makes a
     /// kept/rejected verdict robust, at N× the render cost. Every candidate is judged on the SAME seed set.
@@ -698,12 +709,25 @@ struct LiveStep {
     /// Lower = faster candidate renders; the winning PROMPT is what's written, and `scenario` renders it at
     /// full quality. Default 30 (full).
     draft_steps: usize,
+    /// *(6.32 ②)* `--improve-init`: when set, each candidate is img2img'd from `init` at `strength` on the
+    /// RESIDENT `portrait` pipeline (scores the real finish, not a fresh t2i). Takes precedence over `pipe`.
+    img2img: Option<Img2imgMode>,
     /// `--keep-compiled-images`: archive every scored candidate under here (`None` → discard). Images land in
     /// `<keep_dir>/<scene_name>/call<NN>-seed<S>-rank<R>.png` — the whole render trajectory, not just the best.
     keep_dir: Option<std::path::PathBuf>,
     /// Current scene (subdir under `keep_dir`) and a per-scene monotonic call counter (`0` = baseline render).
     scene_name: String,
     call_idx: usize,
+}
+
+/// The resident img2img mode for `--improve-init` — a loaded `portrait::Pipeline` + the fixed init + strength.
+struct Img2imgMode {
+    pipe: crate::pipelines::portrait::Pipeline,
+    init: std::path::PathBuf,
+    strength: f32,
+    model: String,
+    device: candle_core::Device,
+    loras: Vec<crate::pipelines::lora::LoraSpec>,
 }
 
 impl crate::compile::improve::ImproveStep for LiveStep {
@@ -744,7 +768,42 @@ impl crate::compile::improve::ImproveStep for LiveStep {
             let mut scores = Vec::with_capacity(self.seeds.len());
             for (i, &seed) in self.seeds.iter().enumerate() {
                 let path = self.tmp.join(format!("improve-{i}.png"));
-                if let Some(pipe) = &self.pipe {
+                if let Some(m) = &self.img2img {
+                    // ② --improve-init: img2img each candidate from the FIXED init on the resident portrait
+                    // pipeline — scores the real finish over your composition, not a fresh t2i layout.
+                    let out_dir = self.tmp.join(format!("i2i-{i}"));
+                    let _ = std::fs::remove_dir_all(&out_dir);
+                    std::fs::create_dir_all(&out_dir)?;
+                    let req = crate::pipelines::img2img::Request {
+                        prompt: prompt.to_string(),
+                        negative: self.negative.clone(),
+                        model: m.model.clone(),
+                        device: m.device.clone(),
+                        loras: m.loras.clone(),
+                        lora_scale: 1.0,
+                        input: m.init.clone(),
+                        mask: None,
+                        mask_feather: 0,
+                        mask_invert: false,
+                        width: self.width,
+                        height: self.height,
+                        count: 1,
+                        steps: self.draft_steps,
+                        guidance: 7.5,
+                        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+                        strength: m.strength,
+                        seed: Some(seed),
+                        out_dir: out_dir.clone(),
+                        controls: Vec::new(),
+                    };
+                    crate::pipelines::img2img::run_with_pipeline(&m.pipe, &req).await?;
+                    let produced = std::fs::read_dir(&out_dir)?
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .find(|p| p.extension().map(|x| x == "png").unwrap_or(false))
+                        .ok_or_else(|| anyhow::anyhow!("--improve-init: img2img produced no image"))?;
+                    std::fs::copy(&produced, &path)?;
+                } else if let Some(pipe) = &self.pipe {
                     // Resident SD-family pipeline — loaded ONCE (no per-render model reload).
                     crate::cli::scenario::draft_generate(
                         pipe,
@@ -939,9 +998,44 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             args.improve_draft_steps.max(1),
         );
     }
+    // ② --improve-init: load the RESIDENT portrait pipeline (img2img-capable) once; each candidate is
+    // img2img'd from the fixed init. When set, the plain-t2i pipe is not loaded (the finish is what we score).
+    let img2img: Option<Img2imgMode> = if let Some(init) = &args.improve_init {
+        anyhow::ensure!(init.exists(), "--improve-init: image {} not found", init.display());
+        let strength = args.improve_init_strength.clamp(0.05, 1.0);
+        println!(
+            "{}  improve scores the FINISH: img2img from {} at strength {strength:.2} (resident, no reload)",
+            style("◆").cyan(),
+            init.display(),
+        );
+        let p = crate::pipelines::portrait::Pipeline::load(crate::pipelines::portrait::LoadRequest {
+            model: model.clone(),
+            device: device.clone(),
+            loras: lora_stack.clone(),
+            lora_scale: 1.0,
+            identity: None,
+            shared_clip_h: None,
+        })
+        .await
+        .with_context(|| format!("--improve-init: loading the img2img pipeline for {model}"))?;
+        Some(Img2imgMode {
+            pipe: p,
+            init: init.clone(),
+            strength,
+            model: model.clone(),
+            device: device.clone(),
+            loras: lora_stack.clone(),
+        })
+    } else {
+        None
+    };
     // Load the RENDER model ONCE and keep it resident — reloading the SD core per render was the bug. SD
     // family (sd15/sdxl/…) loads here; other families (sd35/Flux) fall back to the one-shot per-render path.
-    let pipe = match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
+    // Skipped in --improve-init mode (the portrait pipeline above is the renderer).
+    let pipe = if img2img.is_some() {
+        None
+    } else {
+        match crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
         model: model.clone(),
         device: device.clone(),
         loras: lora_stack.clone(),
@@ -960,6 +1054,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
                 style("⚠").yellow(),
             );
             None
+        }
         }
     };
     let tmp = std::env::temp_dir().join(format!("plakat-improve-{}", std::process::id()));
@@ -1014,6 +1109,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         last_rank: 0.0,
         loras: lora_specs,
         draft_steps: args.improve_draft_steps.max(1),
+        img2img,
         keep_dir,
         scene_name: String::new(),
         call_idx: 0,
