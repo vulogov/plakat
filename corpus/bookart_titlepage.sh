@@ -16,7 +16,8 @@
 #
 # Each page compiles to a reusable Typst `title-page`; a tiny book.typ #imports all seven and paginates
 # them into one PDF. The kit / rosette / dinkus are weight-free (procedural); `illustrate` (the frontispiece
-# plate and the title emblem) uses a model.
+# plate and the title emblem) uses a model. Finally a `bookart cover` lays out the book's DUST JACKET
+# (back · spine · front on one sheet; the spine width computed from the page count).
 #
 # Usage:   corpus/bookart_titlepage.sh
 #          PLAKAT=./target/release/plakat STEPS=50 corpus/bookart_titlepage.sh   # release binary + finer plate
@@ -37,6 +38,7 @@ CHAP1="corpus/bookart_titlepage_chapter.hjson"
 SUB1="corpus/bookart_titlepage_sub1.hjson"
 SUB2="corpus/bookart_titlepage_sub2.hjson"
 CHAP2="corpus/bookart_titlepage_chapter2.hjson"
+COVER="corpus/bookart_titlepage_cover.hjson"
 export PLAKAT_OOM_GUARD_GB="${PLAKAT_OOM_GUARD_GB:-0}"
 
 command -v typst >/dev/null || {
@@ -124,7 +126,13 @@ typst compile "$OUT/book.typ" "$OUT/book.pdf" || {
 }
 
 pages=$(pdfinfo "$OUT/book.pdf" 2>/dev/null | awk '/Pages/{print $2}' || echo "?")
+
+# 7. The book's COVER / dust jacket — back · spine · front on one wide sheet; the spine width is computed
+#    from the page count. Reuses the maritime hand and the illustrate emblem as the front device.
+run "$PLAKAT" bookart cover "$COVER" --out "$OUT/cover.typ" --verify
+
 echo
 echo "✓ done — $OUT/book.pdf ($pages pages: frontispiece · emblem title · framed title · chapter I · §I · §II · chapter II)"
+echo "         $OUT/cover.pdf (dust jacket: back · spine · front)"
 echo "   kit set + contact sheet → $OUT/kit/    rosette → rosette-1.png    subchapter mark → dinkus.png"
 ls -lh "$OUT"/book.pdf "$OUT"/frontispiece.png "$OUT"/emblem.png "$OUT"/rosette-1.png "$OUT"/dinkus.png 2>/dev/null | awk '{print "   "$5"\t"$9}'

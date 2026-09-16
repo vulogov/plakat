@@ -12,6 +12,7 @@
 //! Fully additive; nothing here changes existing behaviour.
 
 pub mod compile;
+pub mod cover;
 pub mod edit;
 #[cfg(feature = "epub")]
 pub mod epub;

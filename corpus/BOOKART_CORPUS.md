@@ -68,6 +68,9 @@ corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pd
   `subchapter` line, a modest title.
 - [`bookart_titlepage_chapter2.hjson`](bookart_titlepage_chapter2.hjson) → a second **chapter page**,
   opened by the kit's `divider` band.
+- [`bookart_titlepage_cover.hjson`](bookart_titlepage_cover.hjson) → the book's **cover / dust jacket**
+  (`bookart cover`) — back · spine · front on one sheet, the spine width computed from `pages`, the
+  `illustrate` emblem as the front device (→ `cover.pdf`).
 
 `bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
 the seven `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in

@@ -228,6 +228,64 @@ fn trim_pt(v: f32) -> String {
     s
 }
 
+/// Render a vertical stack of styled lines (roles → typography) as Typst content — the shared body of a
+/// title page or a cover panel. Emits with a 2-space indent; `imprint` lines are pushed to the FOOT with a
+/// flexible `v(1fr)` spacer. Callers supply the surrounding `set page`/box and `set text`/`set align`.
+pub(crate) fn render_stack(lines: &[TitleLine], emit: Emit) -> String {
+    let scale = if emit.scale.is_finite() && emit.scale > 0.05 { emit.scale } else { 1.0 };
+    let mut s = String::new();
+    // The imprint block is collected and placed at the FOOT; everything else flows from the top.
+    let mut foot = String::new();
+    for line in lines {
+        let role = line.role.trim().to_lowercase();
+        match role.as_str() {
+            "imprint" => {
+                if let Some(sty) = emit.style.role("imprint") {
+                    if let Some(t) = &line.text {
+                        push_text(&mut foot, &sty, t, line.size, scale);
+                    }
+                }
+            }
+            "rule" => {
+                let len = line.size.unwrap_or(26.0).clamp(5.0, 100.0);
+                s.push_str(&format!(
+                    "  v(0.25em)\n  line(length: {}%, stroke: {}pt + black)\n  v(0.4em)\n",
+                    trim_pt(len),
+                    trim_pt(emit.style.rule_stroke()),
+                ));
+            }
+            "space" => {
+                s.push_str(&format!("  v({}em)\n", trim_pt(line.size.unwrap_or(1.0))));
+            }
+            "ornament" | "image" => {
+                if let Some(src) = &line.src {
+                    let w = line.size.unwrap_or(if role == "ornament" { 18.0 } else { 60.0 }).clamp(1.0, 100.0);
+                    // Images scale with `--fit` too (a plate's height is what overflows a page).
+                    let unit = if role == "ornament" {
+                        format!("{}mm", trim_pt(line.size.unwrap_or(18.0) * scale))
+                    } else {
+                        format!("{}%", trim_pt((w * scale).clamp(1.0, 100.0)))
+                    };
+                    s.push_str(&format!("  v(0.3em)\n  image(\"{}\", width: {})\n  v(0.3em)\n", esc(src), unit));
+                }
+            }
+            other => {
+                if let (Some(sty), Some(t)) = (emit.style.role(other), &line.text) {
+                    push_text(&mut s, &sty, t, line.size, scale);
+                }
+                // Unknown roles are silently skipped (permissive, like the rest of bookart).
+            }
+        }
+    }
+    if !foot.trim().is_empty() {
+        // A flexible spacer pushes the imprint to the FOOT within the flow — so it never overlaps the
+        // content (an absolute `place(bottom)` collides when the type box is short).
+        s.push_str("\n  v(1fr)\n");
+        s.push_str(&foot);
+    }
+    s
+}
+
 /// Build the full Typst source for a title page.
 ///
 /// `text_margin` is the type box (already fitted to the border's clear window when a border is present);
@@ -305,55 +363,7 @@ pub fn title_page_typst(
     s.push_str("  set par(leading: 0.7em, justify: false)\n");
     s.push_str("  set align(center)\n\n");
 
-    // The imprint block is collected and placed at the FOOT of the page; everything else flows from the top.
-    let mut foot = String::new();
-    for line in lines {
-        let role = line.role.trim().to_lowercase();
-        match role.as_str() {
-            "imprint" => {
-                if let Some(sty) = emit.style.role("imprint") {
-                    if let Some(t) = &line.text {
-                        push_text(&mut foot, &sty, t, line.size, scale);
-                    }
-                }
-            }
-            "rule" => {
-                let len = line.size.unwrap_or(26.0).clamp(5.0, 100.0);
-                s.push_str(&format!(
-                    "  v(0.25em)\n  line(length: {}%, stroke: {}pt + black)\n  v(0.4em)\n",
-                    trim_pt(len),
-                    trim_pt(emit.style.rule_stroke()),
-                ));
-            }
-            "space" => {
-                s.push_str(&format!("  v({}em)\n", trim_pt(line.size.unwrap_or(1.0))));
-            }
-            "ornament" | "image" => {
-                if let Some(src) = &line.src {
-                    let w = line.size.unwrap_or(if role == "ornament" { 18.0 } else { 60.0 }).clamp(1.0, 100.0);
-                    // Images scale with `--fit` too (a plate's height is what overflows a page).
-                    let unit = if role == "ornament" {
-                        format!("{}mm", trim_pt(line.size.unwrap_or(18.0) * scale))
-                    } else {
-                        format!("{}%", trim_pt((w * scale).clamp(1.0, 100.0)))
-                    };
-                    s.push_str(&format!("  v(0.3em)\n  image(\"{}\", width: {})\n  v(0.3em)\n", esc(src), unit));
-                }
-            }
-            other => {
-                if let (Some(sty), Some(t)) = (emit.style.role(other), &line.text) {
-                    push_text(&mut s, &sty, t, line.size, scale);
-                }
-                // Unknown roles are silently skipped (permissive, like the rest of bookart).
-            }
-        }
-    }
-    if !foot.trim().is_empty() {
-        // A flexible spacer pushes the imprint to the FOOT within the flow — so it never overlaps the
-        // content (an absolute `place(bottom)` collides when the type box is short).
-        s.push_str("\n  v(1fr)\n");
-        s.push_str(&foot);
-    }
+    s.push_str(&render_stack(lines, emit));
     s.push_str("}\n\n");
     s.push_str("// Preview — compile this file directly; #import takes only `title-page`.\n");
     s.push_str("#title-page\n");

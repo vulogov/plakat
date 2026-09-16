@@ -1,0 +1,29 @@
+// A book COVER / dust jacket for the demo book — the three panels (back · spine · front) on one wide sheet.
+// The spine width is computed from `pages` (× the default paper caliper). Reuses the title-page styles and
+// the same maritime hand; the front carries the `illustrate` emblem as its device.
+{
+  style: "letterpress"
+  page: "a5"
+  pages: 320
+  front: [
+    { role: "series",   text: "The Mariner's Library" }
+    { role: "rule" }
+    { role: "title",    text: "The Open Sea" }
+    { role: "subtitle", text: "A Voyage in Four Winds" }
+    { role: "space",    size: 0.8 }
+    { role: "ornament", src: "corpus/images/bookart-titlepage/emblem.png", size: 34 }
+    { role: "space",    size: 0.8 }
+    { role: "author",   text: "By Captain James Hawkins, R.N." }
+  ]
+  spine: [
+    { role: "title",  text: "The Open Sea", size: 13 }
+    { role: "space",  size: 0.5 }
+    { role: "author", text: "Hawkins", size: 10 }
+  ]
+  back: [
+    { role: "note",     text: "An account of divers discoveries and adventures upon the high seas,\nwherein the Author sets sail from Plymouth, describes his vessel and\ncrew, and encounters the first of many perils." }
+    { role: "space",    size: 1.2 }
+    { role: "epigraph", text: "A tall ship, and a star to steer her by." }
+    { role: "imprint",  text: "London · The Admiralty Press · MDCCXLI" }
+  ]
+}

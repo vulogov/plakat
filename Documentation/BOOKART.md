@@ -61,6 +61,7 @@ plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                 
 plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
 plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
+plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --verify]   a cover / dust jacket (back·spine·front) → Typst
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -288,6 +289,29 @@ an antique feel — weight-free, and harmless where the font lacks them.
   { role: "part",   text: "ЧАСТЬ I. ЭТИМОЛОГІЯ" }
   { role: "author", text: "Ѳ. Буслаевымъ." }
   { role: "imprint", text: "МОСКВА.\nВъ университетской типографіи.\n1858." } ] }
+```
+
+### `cover` — a book cover / dust jacket from HJSON
+
+```
+plakat bookart cover cover.hjson --out cover.typ --verify
+```
+
+Lays the three panels of a wrap — **back · spine · front** — flat on one wide sheet, with the **spine width
+computed from the page count** (`pages × paper` mm/page `+ board`, or an explicit `spine_mm`), optional
+`flap`s, and dashed fold guides so the `.typ` is a usable printer's layout. Each panel is authored with the
+same roles as a title page (`title`/`subtitle`/`author`/`imprint`/`ornament`/`image`/…) and shares the
+`style` hand, so the cover matches the book. The spine's type is set small and rotated to read top-to-bottom;
+`border` places a full-bleed image behind the front type. Page/style/pages/paper/flap are overridable on the
+CLI (`--page`/`--style`/`--pages`/`--paper`/`--flap`).
+
+```hjson
+{ style: "letterpress", page: "a5", pages: 320,
+  front: [ { role: "title", text: "The Open Sea" }, { role: "author", text: "By J. Hawkins" },
+           { role: "ornament", src: "emblem.png", size: 34 } ],
+  spine: [ { role: "title", text: "The Open Sea", size: 13 }, { role: "author", text: "Hawkins", size: 10 } ],
+  back:  [ { role: "note", text: "An account of divers discoveries…" },
+           { role: "imprint", text: "London · The Admiralty Press" } ] }
 ```
 
 ## The ornament vocabulary

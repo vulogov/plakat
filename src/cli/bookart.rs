@@ -73,6 +73,10 @@ pub enum BookartCmd {
     /// artifact usable in a Typst book. `--verify` compiles it to PDF.
     #[command(name = "title-page")]
     TitlePage(TitlePageArgs),
+    /// Generate a book **cover / dust jacket** from an HJSON spec — the three panels (back · spine · front)
+    /// laid flat on one sheet, with the **spine width computed from the page count**, optional flaps, and
+    /// fold guides. Reuses the title-page styles. A compilable Typst artifact; `--verify` compiles to PDF.
+    Cover(CoverArgs),
 }
 
 #[derive(Args, Debug)]
@@ -95,6 +99,36 @@ pub struct TitlePageArgs {
     /// silent 2-page overflow when a spec is too tall for its page.
     #[arg(long, default_value_t = false)]
     pub fit: bool,
+    /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
+    #[arg(long, default_value_t = false)]
+    pub historical: bool,
+    /// After writing, compile to PDF with `typst` to verify it renders.
+    #[arg(long, default_value_t = false)]
+    pub verify: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct CoverArgs {
+    /// The cover HJSON spec (`style`, `page`, `pages`, `front`/`spine`/`back: [{role,text|src}]`). See BOOKART docs.
+    pub spec: PathBuf,
+    /// Output Typst file (`.typ`). Referenced assets (front image) are copied beside it.
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Trim (page) size (`a5`/`b5`/…). Overrides the spec's `page`.
+    #[arg(long)]
+    pub page: Option<String>,
+    /// Typographic style: `letterpress` (default) · `engraved` · `modern` · `playbill`. Overrides the spec's `style`.
+    #[arg(long)]
+    pub style: Option<String>,
+    /// Page count — the spine width is `pages × paper (+ board)`. Overrides the spec's `pages`.
+    #[arg(long)]
+    pub pages: Option<u32>,
+    /// Paper caliper in mm per page (default 0.06 ≈ 80–90 gsm text). Overrides the spec's `paper`.
+    #[arg(long)]
+    pub paper: Option<f32>,
+    /// Flap width in mm (0 = a plain paperback cover; a positive value adds jacket flaps). Overrides the spec's `flap`.
+    #[arg(long)]
+    pub flap: Option<f32>,
     /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
     #[arg(long, default_value_t = false)]
     pub historical: bool,
@@ -417,6 +451,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::Font(a) => run_font(a),
         BookartCmd::Typst(a) => run_typst(a),
         BookartCmd::TitlePage(a) => run_title_page(a),
+        BookartCmd::Cover(a) => run_cover(a),
     }
 }
 
@@ -1141,6 +1176,87 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
                 }
             }
         }
+    } else {
+        println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
+    }
+    Ok(())
+}
+
+/// `bookart cover` — a book cover / dust jacket from an HJSON spec → a compilable Typst artifact. Resolves
+/// the trim size, computes the spine width from the page count, copies any front image beside the `.typ`,
+/// emits the three-panel layout, and (with `--verify`) compiles it.
+fn run_cover(a: CoverArgs) -> Result<()> {
+    use crate::bookart::spec::Page;
+    use crate::bookart::cover::{cover_typst, spine_width_mm, CoverLayout, CoverSpec};
+    use crate::bookart::geometry;
+
+    let text = std::fs::read_to_string(&a.spec).with_context(|| format!("reading {}", a.spec.display()))?;
+    let mut spec: CoverSpec =
+        deser_hjson::from_str(&text).map_err(|e| anyhow::anyhow!("parsing cover spec {}: {e}", a.spec.display()))?;
+
+    // Trim size.
+    let size_name = a.page.clone().or_else(|| spec.page.clone()).unwrap_or_else(|| "a5".into());
+    let page_res = geometry::resolve_page(Some(&Page { size: Some(size_name), ..Default::default() }));
+
+    // Spine width: explicit override, else pages × caliper (+ board).
+    let pages = a.pages.or(spec.pages).unwrap_or(200);
+    let paper = a.paper.or(spec.paper).unwrap_or(0.06);
+    let board = spec.board.unwrap_or(0.0);
+    let spine_w = spec.spine_mm.unwrap_or_else(|| spine_width_mm(pages, paper, board));
+    let flap_w = a.flap.or(spec.flap).unwrap_or(0.0).max(0.0);
+
+    // Assets beside the artifact: the front image + every panel line's image src (cropped/copied).
+    let art_dir = a
+        .out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    std::fs::create_dir_all(&art_dir).with_context(|| format!("creating {}", art_dir.display()))?;
+    let front_bg = match &spec.border {
+        Some(b) => Some(copy_beside(std::path::Path::new(b), &art_dir).context("copying the front image")?),
+        None => None,
+    };
+    for panel in [&mut spec.front, &mut spec.spine, &mut spec.back] {
+        for line in panel.iter_mut() {
+            if let Some(src) = &line.src {
+                let role = line.role.trim().to_lowercase();
+                let rel = if role == "image" || role == "ornament" {
+                    crop_to_ink(std::path::Path::new(src), &art_dir).with_context(|| format!("cropping ornament {src}"))?
+                } else {
+                    copy_beside(std::path::Path::new(src), &art_dir).with_context(|| format!("copying {src}"))?
+                };
+                line.src = Some(rel);
+            }
+        }
+    }
+
+    let style_name = a.style.clone().or_else(|| spec.style.clone()).unwrap_or_else(|| "letterpress".into());
+    let tp_style = crate::bookart::titlepage::Style::from_name(&style_name);
+    let historical = a.historical || spec.historical.unwrap_or(false);
+    let emit = crate::bookart::titlepage::Emit { scale: 1.0, historical, style: tp_style };
+
+    let layout = CoverLayout { trim_w: page_res.w_mm, trim_h: page_res.h_mm, spine_w, flap_w };
+    let src = cover_typst(&layout, &spec.front, &spec.spine, &spec.back, front_bg.as_deref(), emit);
+    std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
+
+    println!(
+        "{} {}  ({} · {} · trim {:.0}×{:.0} mm · spine {:.1} mm ({} pp) · total {:.0}×{:.0} mm{})",
+        style("wrote").green(),
+        a.out.display(),
+        page_res.size_name,
+        style_name,
+        page_res.w_mm.round() as i32,
+        page_res.h_mm.round() as i32,
+        spine_w,
+        pages,
+        layout.total_w().round() as i32,
+        page_res.h_mm.round() as i32,
+        if flap_w > 0.01 { format!(" · flaps {:.0} mm", flap_w) } else { String::new() },
+    );
+
+    if a.verify {
+        verify_typst(&a.out, &a.out.with_extension("pdf"))?;
     } else {
         println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
     }
