@@ -539,6 +539,102 @@ pub fn corpus_report(corpus_text: &str) -> String {
     s
 }
 
+/// Escape a string for HTML text/attribute context.
+fn esc_html(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '&' => o.push_str("&amp;"),
+            '<' => o.push_str("&lt;"),
+            '>' => o.push_str("&gt;"),
+            '"' => o.push_str("&quot;"),
+            _ => o.push(c),
+        }
+    }
+    o
+}
+
+/// The same corpus digest as [`corpus_report`], rendered as a self-contained, styled HTML page — a
+/// shareable provenance report. Sections: per-scene best rank, measured wins, tabu (rejected), findings.
+pub fn corpus_report_html(corpus_text: &str, title: &str) -> String {
+    let ranks = scene_ranks(corpus_text);
+    let wins = improve_wins(corpus_text);
+    let rejected = rejected_phrasings(corpus_text);
+    let (resolved, open) = resolved_open_findings(corpus_text);
+    let fixes = prior_fixes(corpus_text).len();
+
+    let mut b = String::new();
+    b.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
+    b.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+    b.push_str(&format!("<title>smysl · {}</title>", esc_html(title)));
+    b.push_str("<style>\
+:root{color-scheme:light dark}\
+body{margin:0;font:15px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#faf8f4;color:#222}\
+@media(prefers-color-scheme:dark){body{background:#16150f;color:#e6e2d8}.card{background:#1f1d15!important;border-color:#332f22!important}code{background:#2a2718!important}}\
+main{max-width:820px;margin:0 auto;padding:32px 20px 64px}\
+h1{font-size:22px;margin:0 0 4px}.sub{color:#8a8375;margin:0 0 28px;font-size:13px}\
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:#8a8375;margin:32px 0 10px}\
+.card{background:#fff;border:1px solid #e7e1d5;border-radius:10px;padding:4px 0;overflow:hidden}\
+.row{display:flex;gap:12px;align-items:baseline;padding:9px 16px;border-top:1px solid #f0ebe0}\
+.row:first-child{border-top:none}\
+.k{flex:1;min-width:0}.v{font-variant-numeric:tabular-nums;font-weight:600}\
+code{background:#f3efe6;border-radius:4px;padding:1px 5px;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-word}\
+.win .mark{color:#2e7d32}.tabu .mark{color:#b3261e}.open .mark{color:#b26a00}\
+.mark{font-weight:700;margin-right:6px}.arrow{color:#8a8375;margin:0 6px}\
+.empty{color:#8a8375;font-style:italic;padding:16px}\
+.badge{display:inline-block;background:#eef3ee;color:#2e7d32;border-radius:20px;padding:2px 10px;font-size:12px;font-weight:600}\
+</style></head><body><main>");
+    b.push_str(&format!("<h1>smysl corpus</h1><p class=\"sub\">{}</p>", esc_html(title)));
+
+    let empty = ranks.is_empty() && wins.is_empty() && rejected.is_empty() && resolved.is_empty() && open.is_empty();
+    if empty {
+        b.push_str("<div class=\"card\"><p class=\"empty\">Empty — no polish history yet (run <code>--analyze --fix</code> or <code>--improve</code>).</p></div>");
+    } else {
+        if !ranks.is_empty() {
+            b.push_str("<h2>Aesthetic rank — best achieved</h2><div class=\"card\">");
+            for (scene, best, n) in &ranks {
+                b.push_str(&format!(
+                    "<div class=\"row\"><span class=\"k\">{}</span><span class=\"v\">{:.2}</span><span class=\"sub\">{} rec</span></div>",
+                    esc_html(scene), best, n
+                ));
+            }
+            b.push_str("</div>");
+        }
+        if !wins.is_empty() {
+            b.push_str(&format!("<h2>Measured wins ({}) — edits that raised the score</h2><div class=\"card\">", wins.len()));
+            for (was, now) in &wins {
+                b.push_str(&format!(
+                    "<div class=\"row win\"><span class=\"k\"><span class=\"mark\">+</span><code>{}</code><span class=\"arrow\">\u{2192}</span><code>{}</code></span></div>",
+                    esc_html(was), esc_html(now)
+                ));
+            }
+            b.push_str("</div>");
+        }
+        if !rejected.is_empty() {
+            b.push_str(&format!("<h2>Tabu ({}) — rejected, do not retry</h2><div class=\"card\">", rejected.len()));
+            for r in &rejected {
+                b.push_str(&format!("<div class=\"row tabu\"><span class=\"k\"><span class=\"mark\">\u{2212}</span><code>{}</code></span></div>", esc_html(r)));
+            }
+            b.push_str("</div>");
+        }
+        if !resolved.is_empty() || !open.is_empty() {
+            b.push_str(&format!(
+                "<h2>Findings</h2><p class=\"sub\"><span class=\"badge\">{} resolved</span> &middot; {} open &middot; {} fix(es) applied</p><div class=\"card\">",
+                resolved.len(), open.len(), fixes
+            ));
+            if open.is_empty() {
+                b.push_str("<p class=\"empty\">No open findings.</p>");
+            }
+            for o in &open {
+                b.push_str(&format!("<div class=\"row open\"><span class=\"k\"><span class=\"mark\">\u{25CB}</span>{}</span></div>", esc_html(o)));
+            }
+            b.push_str("</div>");
+        }
+    }
+    b.push_str("</main></body></html>\n");
+    b
+}
+
 // ---------------------------------------------------------------------------
 // smysl-optimize Phase B — the corpus as a TABU LIST for the --fix loop.
 // The corpus already REMEMBERS every fix applied in prior passes; these read it
@@ -1083,6 +1179,18 @@ pub fn pack_drop_summary(dropped: &[(String, DropReason)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corpus_report_html_skeleton_and_escaping() {
+        // Empty corpus → a valid page with the empty-state note.
+        let empty = corpus_report_html("", "demo.smysl");
+        assert!(empty.starts_with("<!doctype html>") && empty.trim_end().ends_with("</html>"), "valid page");
+        assert!(empty.contains("<title>smysl · demo.smysl</title>"), "title escaped/set");
+        assert!(empty.contains("Empty"), "empty-state note");
+        // The title argument is HTML-escaped (no raw angle brackets injected).
+        let esc = corpus_report_html("", "a<b>&\"c");
+        assert!(esc.contains("a&lt;b&gt;&amp;&quot;c"), "title HTML-escaped:\n{esc}");
+    }
 
     #[test]
     fn scene_to_smysl_emits_claims_and_relations() {

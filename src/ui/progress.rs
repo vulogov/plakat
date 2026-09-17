@@ -152,7 +152,9 @@ pub fn println(msg: &str) {
             eprintln!("{msg}");
         });
     } else {
-        println!("{msg}");
+        // Progress/status is NEVER data: keep it on stderr even when stderr isn't a terminal, so a piped
+        // stdout data channel (e.g. `compile --out -`) stays clean.
+        eprintln!("{msg}");
     }
 }
 

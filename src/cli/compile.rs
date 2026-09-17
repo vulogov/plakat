@@ -143,6 +143,17 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "smysl-report", default_value_t = false)]
     pub smysl_report: bool,
 
+    /// *(6.32)* Write the smysl corpus digest as a self-contained, styled HTML page to this path (shareable
+    /// provenance report). Same data as `--smysl-report`; no LLM, no render.
+    #[arg(help_heading = "Compile", long = "smysl-html")]
+    pub smysl_html: Option<PathBuf>,
+
+    /// *(6.32)* PREFLIGHT: compile (no render) and run deterministic feasibility checks — LoRA trigger present
+    /// in the prompt, budget fit, sane steps/guidance, non-empty prompt, region sanity. Prints PASS/WARN/FAIL
+    /// per scene and exits non-zero on any FAIL, so it gates a render run in CI. No LLM.
+    #[arg(help_heading = "Compile", long = "preflight", default_value_t = false)]
+    pub preflight: bool,
+
     /// *(6.30 smysl-optimize)* AUTOMATIC improve loop: compile the first scene, render + aesthetically score
     /// it, then let an LLM regenerator propose one prompt edit at a time — keeping only edits that raise the
     /// score, and using the `<stem>.smysl` corpus as a TABU list so it never re-tries a spent move. Stops on
@@ -491,6 +502,39 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         println!("{}  smysl corpus for {}", style("◆").cyan(), corpus_path.display());
         print!("{}", crate::smysl::corpus_report(&text));
         return Ok(());
+    }
+
+    // --smysl-html: the same corpus digest as a self-contained HTML page (shareable provenance report).
+    if let Some(out) = &args.smysl_html {
+        anyhow::ensure!(!stdin_input, "--smysl-html needs a file input (the corpus is <stem>.smysl beside it)");
+        let corpus_path = args.input.with_extension("smysl");
+        let text = std::fs::read_to_string(&corpus_path).unwrap_or_default();
+        let html = crate::smysl::corpus_report_html(&text, &corpus_path.display().to_string());
+        std::fs::write(out, &html).with_context(|| format!("writing {}", out.display()))?;
+        println!("{} {}  (smysl corpus \u{2192} HTML)", style("wrote").green(), out.display());
+        return Ok(());
+    }
+
+    // --preflight: compile (no render) and run deterministic feasibility checks that gate a render run.
+    if args.preflight {
+        anyhow::ensure!(!stdin_input, "--preflight needs a file input (not stdin)");
+        let sys = match &args.system {
+            Some(p) => Some(std::fs::read_to_string(p).with_context(|| format!("reading --compile-system {}", p.display()))?),
+            None => None,
+        };
+        let opts = CompileOpts {
+            provider: args.provider.clone(),
+            default_model: args.model.clone(),
+            no_enhance: args.no_enhance,
+            no_negative: args.no_negative,
+            system_override: sys,
+            cache: args.compile_cache,
+            parallel: args.parallel,
+            input_name: input_name.clone(),
+            corpus_text: std::fs::read_to_string(args.input.with_extension("smysl")).ok(),
+        };
+        let doc = compile::compile_doc(&input, &opts).await?;
+        return preflight_report(&doc, &args.input.display().to_string());
     }
 
     // --improve[-all|-scene]: the automatic aesthetic improve loop (Phase D). Renders + scores, needs a model.
@@ -868,6 +912,88 @@ impl crate::compile::improve::ImproveStep for LiveStep {
             Ok(mean)
         })
     }
+}
+
+/// Run deterministic preflight checks over a compiled doc and print a PASS/WARN/FAIL report. Returns an
+/// error (non-zero exit) when any scene has a hard FAIL — so it gates a render run in CI. No LLM, no render.
+fn preflight_report(doc: &crate::compile::CompiledDoc, input: &str) -> Result<()> {
+    let (mut warns, mut fails) = (0usize, 0usize);
+    println!("{}  preflight — {} ({} scene(s))", style("◆").cyan(), input, doc.scenes.len());
+    let pass = style("✓").green();
+    let warn = style("⚠").yellow();
+    let fail = style("✗").red();
+
+    for c in &doc.scenes {
+        let s = &c.scene;
+        println!("  {}:", style(format!("\"{}\"", s.name)).bold());
+        let mut line = |ok: i8, msg: String| match ok {
+            1 => println!("    {pass} {msg}"),
+            0 => {
+                warns += 1;
+                println!("    {warn} {msg}");
+            }
+            _ => {
+                fails += 1;
+                println!("    {fail} {msg}");
+            }
+        };
+
+        if s.skip {
+            line(1, "scene is marked skip — not rendered".into());
+            continue;
+        }
+        // Prompt present.
+        if c.prompt.trim().is_empty() {
+            line(-1, "prompt is EMPTY — nothing to render".into());
+        } else {
+            line(1, format!("prompt present ({} chars)", c.prompt.chars().count()));
+        }
+        // LoRA trigger must appear in the prompt or the LoRA never activates.
+        let trig = s.lora_trigger.trim();
+        if !trig.is_empty() {
+            if c.prompt.to_lowercase().contains(&trig.to_lowercase()) {
+                line(1, format!("LoRA trigger {trig:?} present in the prompt"));
+            } else {
+                line(-1, format!("LoRA trigger {trig:?} ABSENT from the prompt — the LoRA won't activate"));
+            }
+        }
+        // Sane steps / guidance.
+        if let Some(st) = s.steps {
+            if !(1..=150).contains(&st) {
+                line(0, format!("steps = {st} is outside the usual 1–150"));
+            }
+        }
+        if let Some(g) = s.guidance {
+            if !(0.0..=30.0).contains(&g) {
+                line(0, format!("guidance = {g} is outside the usual 0–30"));
+            }
+        }
+        // Budget / style-drop diligence warnings surfaced by the compiler.
+        for w in &c.warnings {
+            line(0, format!("compile: {w}"));
+        }
+        // Region sanity: a `w=<num>` weight should be in [0,1].
+        for r in &s.regions {
+            for tok in r.split_whitespace() {
+                if let Some(v) = tok.trim_matches(|c| c == ',' || c == ';').strip_prefix("w=").and_then(|n| n.parse::<f32>().ok()) {
+                    if !(0.0..=1.0).contains(&v) {
+                        line(0, format!("region weight {v} outside 0–1 ({r:?})"));
+                    }
+                }
+            }
+        }
+    }
+
+    let verdict = if fails > 0 {
+        style(format!("FAIL — {fails} failure(s), {warns} warning(s)")).red().bold()
+    } else if warns > 0 {
+        style(format!("PASS with {warns} warning(s)")).yellow()
+    } else {
+        style("PASS — all checks green".into()).green().bold()
+    };
+    println!("\n{}  {}", style("→").dim(), verdict);
+    anyhow::ensure!(fails == 0, "preflight failed: {fails} hard check(s) — fix before rendering");
+    Ok(())
 }
 
 /// Extract a `{"old":…, "new":…}` delta from the regenerator's reply. Returns `None` (no fresh move) when

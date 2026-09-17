@@ -62,6 +62,11 @@ else
   TERA="(COMPILE-2 skipped — binary built without --features templates)"
 fi
 
+# 7) PREFLIGHT (6.32): deterministic feasibility gate — compile (no render) + check LoRA triggers, budgets,
+#    steps/guidance, prompts, regions. Exits non-zero on any hard FAIL, so it gates a render run in CI.
+"$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-negative --preflight >/dev/null
+
 echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"
 echo "  + MAP-4: maps.txt -> maps.hjson (2 map tasks (type: map), byte-stable, scenario-validated)"
+echo "  + PREFLIGHT: basic.txt passes the deterministic feasibility gate (--preflight)"
 echo "  $TERA"
