@@ -49,6 +49,22 @@ pub trait StepHook: Send {
     fn is_cancelled(&self) -> bool {
         false
     }
+
+    /// LAYERED-1 §S3: called after the sampler has produced the latent for the next
+    /// level, giving the hook a chance to STEER it (e.g. low-frequency substitution
+    /// toward a guide latent). `space` is the family's [`NoiseSpace`] so the hook can
+    /// forward-noise its guide to the current level. Return `Some(latent)` to replace
+    /// the running latent; the default returns `None` (no change), so every existing
+    /// hook is unaffected and layered-off output is byte-identical.
+    fn refine_latent(
+        &mut self,
+        _step: usize,
+        _total: usize,
+        _space: &dyn crate::pipelines::noise_space::NoiseSpace,
+        _latent: &candle_core::Tensor,
+    ) -> candle_core::Result<Option<candle_core::Tensor>> {
+        Ok(None)
+    }
 }
 
 /// A hook that does nothing and never cancels — a stand-in where a `StepHook` is
@@ -82,6 +98,25 @@ pub(crate) fn preview(hook: &mut Option<&mut dyn StepHook>, step: usize, image: 
 
 pub(crate) fn is_cancelled(hook: &Option<&mut dyn StepHook>) -> bool {
     matches!(hook, Some(h) if h.is_cancelled())
+}
+
+/// LAYERED-1: apply the hook's optional latent refinement at a denoise step, returning the (possibly
+/// replaced) latent. Mirrors [`step`] — tolerant of the `None` (CLI) case, in which the latent is returned
+/// unchanged, so every existing call site stays byte-identical until a `refine_latent` override is present.
+// Wired into each family's denoise loop by the P0 call-site commit; kept `pub(crate)` and covered by a
+// Tier-0 no-op test until then.
+#[allow(dead_code)]
+pub(crate) fn refine(
+    hook: &mut Option<&mut dyn StepHook>,
+    step: usize,
+    total: usize,
+    space: &dyn crate::pipelines::noise_space::NoiseSpace,
+    latent: candle_core::Tensor,
+) -> candle_core::Result<candle_core::Tensor> {
+    match hook {
+        Some(h) => Ok(h.refine_latent(step, total, space, &latent)?.unwrap_or(latent)),
+        None => Ok(latent),
+    }
 }
 
 #[cfg(test)]
@@ -167,5 +202,26 @@ mod tests {
         assert_eq!(step(&mut none, 0, 1), StepControl::Continue);
         assert!(!wants_preview(&none, 0, 1));
         preview(&mut none, 0, image::RgbImage::new(1, 1)); // no panic
+    }
+
+    /// LAYERED-1 Tier-0: with no `refine_latent` override, the `refine` helper returns the latent
+    /// UNCHANGED — the guarantee that layered-off denoise loops are byte-identical.
+    #[test]
+    fn refine_is_a_noop_without_override() {
+        use crate::pipelines::noise_space::{FlowSpace, LatentGeometry};
+        let d = candle_core::Device::Cpu;
+        let space = FlowSpace::new(vec![0.0], LatentGeometry { v: 8, u: 8, pool_levels: 2 });
+        let latent = candle_core::Tensor::randn(0f32, 1f32, (1, 4, 8, 8), &d).unwrap();
+        // None hook (CLI path).
+        let mut none: Option<&mut dyn StepHook> = None;
+        let out = refine(&mut none, 0, 10, &space, latent.clone()).unwrap();
+        let d0 = (&out - &latent).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert_eq!(d0, 0.0, "None hook leaves the latent unchanged");
+        // A hook that overrides only on_step (default refine_latent) also leaves it unchanged.
+        let mut r = Recorder::new();
+        let mut some: Option<&mut dyn StepHook> = Some(&mut r);
+        let out2 = refine(&mut some, 0, 10, &space, latent.clone()).unwrap();
+        let d1 = (&out2 - &latent).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert_eq!(d1, 0.0, "default refine_latent leaves the latent unchanged");
     }
 }

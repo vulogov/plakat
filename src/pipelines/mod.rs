@@ -68,6 +68,8 @@ pub mod sam;
 pub mod gen_channel;
 pub mod gen_queue;
 pub mod scheduler;
+pub mod lowpass;
+pub mod noise_space;
 pub mod step_hook;
 pub mod seeds;
 pub mod scrfd;
