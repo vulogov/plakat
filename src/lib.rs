@@ -69,6 +69,8 @@ pub mod fractals;
 /// The deterministic compiler half (spec/lexicon/resolver/emitters) is pure and weight-free.
 pub mod persona;
 pub mod bookart;
+/// 6.33 flagship (RFC LAYERED-1): `plakat layers` — plan-guided layered generation.
+pub mod layered;
 /// v6.3 flagship: `plakat texture` — seamless PBR material synthesis (RFC TEXTURE-1). Always compiled
 /// (the deterministic front half + derivation are weight-free).
 pub mod texture;
