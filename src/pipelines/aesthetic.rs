@@ -70,4 +70,19 @@ impl AestheticScorer {
         }
         Ok(x.flatten_all()?.to_vec1::<f32>()?[0])
     }
+
+    /// The L2-normalised CLIP joint IMAGE embedding `(1, 768)` for an image file — the same projected space
+    /// as the CLIP TEXT embedding, so `image · text` is the contrastive text-image adherence (see
+    /// [`crate::pipelines::clip_adherence`]). Reuses the already-loaded vision tower + visual projection.
+    pub fn image_embedding(&self, path: &Path) -> Result<Tensor> {
+        let pixels = crate::imaging::preprocess::clip_image_tensor(path, 224, &self.device, DType::F32)?;
+        let emb = self.encoder.encode(&pixels)?; // (1, 768) projected
+        let norm = emb.sqr()?.sum_keepdim(D::Minus1)?.sqrt()?;
+        Ok(emb.broadcast_div(&norm)?.to_dtype(DType::F32)?)
+    }
+
+    /// Borrow the scorer's device (to co-locate the adherence text tower).
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
 }

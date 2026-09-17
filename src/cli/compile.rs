@@ -233,6 +233,12 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "improve-draft-steps", value_name = "N", default_value_t = 30)]
     pub improve_draft_steps: usize,
 
+    /// *(6.32)* MULTI-OBJECTIVE improve: weight for CLIP text↔image ADHERENCE added to each candidate's rank
+    /// (`aesthetic + weight × adherence × 10`), so a winning edit must stay FAITHFUL to the prompt, not just
+    /// look prettier. 0 (default) = aesthetic-only. Try 0.3–0.6. Loads the CLIP text tower once.
+    #[arg(help_heading = "Compile", long = "improve-adherence", value_name = "W", default_value_t = 0.0)]
+    pub improve_adherence: f32,
+
     /// *(6.32 ②)* Improve the REAL finish: img2img each candidate from this init image (a structure draft /
     /// reference frame) instead of a fresh t2i, so the aesthetic verdict scores your composition's *finish*,
     /// not a random layout. Rendered on a resident pipeline (no per-candidate reload). SD-family only.
@@ -801,6 +807,11 @@ struct LiveStep {
     /// Current scene (subdir under `keep_dir`) and a per-scene monotonic call counter (`0` = baseline render).
     scene_name: String,
     call_idx: usize,
+    /// *(6.32)* Multi-objective: when set, each candidate's rank ADDS `adherence_weight × (CLIP text↔image
+    /// adherence × 10)` to the aesthetic score, so a winning edit must stay FAITHFUL to the prompt, not just
+    /// look prettier. `None` = aesthetic-only (the default).
+    adherence: Option<crate::pipelines::clip_adherence::ClipAdherence>,
+    adherence_weight: f32,
 }
 
 /// The resident img2img mode for `--improve-init` — a loaded `portrait::Pipeline` + the fixed init + strength.
@@ -922,7 +933,15 @@ impl crate::compile::improve::ImproveStep for LiveStep {
                         .ok_or_else(|| anyhow::anyhow!("--improve: render produced no image"))?;
                     img.save(&path)?;
                 }
-                let score = self.scorer.score_path(&path)?;
+                let aesthetic = self.scorer.score_path(&path)?;
+                // Multi-objective: fold in CLIP text↔image adherence so wins stay faithful, not just pretty.
+                let score = if let Some(adh) = &self.adherence {
+                    let emb = self.scorer.image_embedding(&path)?;
+                    let a = adh.adherence(&emb, prompt)?;
+                    aesthetic + self.adherence_weight * a * 10.0
+                } else {
+                    aesthetic
+                };
                 scores.push(score);
                 // `--keep-compiled-images`: archive this candidate (best-effort — never fail a render over it).
                 if let Some(kd) = &self.keep_dir {
@@ -941,12 +960,13 @@ impl crate::compile::improve::ImproveStep for LiveStep {
             self.call_idx += 1;
             let mean = scores.iter().sum::<f32>() / scores.len().max(1) as f32;
             self.last_rank = mean;
+            let label = if self.adherence.is_some() { "objective (aesthetic+adherence)" } else { "aesthetic" };
             if scores.len() > 1 {
                 let spread = scores.iter().cloned().fold(f32::MIN, f32::max)
                     - scores.iter().cloned().fold(f32::MAX, f32::min);
-                eprintln!("    · aesthetic {mean:.2} (mean of {}, spread {spread:.2})", scores.len());
+                eprintln!("    · {label} {mean:.2} (mean of {}, spread {spread:.2})", scores.len());
             } else {
-                eprintln!("    · aesthetic {mean:.2}");
+                eprintln!("    · {label} {mean:.2}");
             }
             Ok(mean)
         })
@@ -1260,6 +1280,16 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device)
         .await
         .context("--improve: loading the aesthetic scorer (CLIP ViT-L/14 + LAION predictor)")?;
+    // Multi-objective (6.32): load the CLIP text tower for prompt-adherence when --improve-adherence > 0.
+    let adherence = if args.improve_adherence > 0.0 {
+        let a = crate::pipelines::clip_adherence::ClipAdherence::load(&device)
+            .await
+            .context("--improve-adherence: loading the CLIP text tower")?;
+        eprintln!("{} multi-objective: aesthetic + {:.2} × adherence", style("◆").cyan(), args.improve_adherence);
+        Some(a)
+    } else {
+        None
+    };
     // Thread A (6.32): score the REAL finish — load the scenario's LoRA stack into the improve pipeline
     // (unless --improve-plain), so the aesthetic verdict matches what `scenario` will render. Compile LoRAs
     // are scenario-global (`doc.globals.loras`); the activation token is already prepended into each compiled
@@ -1400,6 +1430,8 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         keep_dir,
         scene_name: String::new(),
         call_idx: 0,
+        adherence,
+        adherence_weight: args.improve_adherence,
     };
 
     let mut results: Vec<(String, compile::improve::ImproveOutcome)> = Vec::new();
