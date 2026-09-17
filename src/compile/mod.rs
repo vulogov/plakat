@@ -247,6 +247,12 @@ pub enum ModelFamily {
     /// A1111 `(term:N)` attention weights (plakat's Cascade pipeline has no weight parser).
     Cascade,
     Flux,
+    /// PixArt-Σ — T5-XXL prose transformer (large token budget, descriptive prompting, no A1111 weights).
+    /// Budget/emission behave like SD3; kept a distinct family so it's labelled correctly and can be tuned.
+    PixArt,
+    /// Sana — Gemma-2 prose transformer (large token budget, descriptive prompting, no A1111 weights).
+    /// Budget/emission behave like SD3; kept a distinct family for labelling / future tuning.
+    Sana,
     #[default]
     Unknown,
 }
@@ -260,6 +266,8 @@ impl ModelFamily {
             ModelFamily::Sd3 => "SD3",
             ModelFamily::Cascade => "Cascade",
             ModelFamily::Flux => "Flux",
+            ModelFamily::PixArt => "PixArt",
+            ModelFamily::Sana => "Sana",
             ModelFamily::Unknown => "Unknown",
         }
     }
@@ -1931,12 +1939,15 @@ pub fn classify_model(name: &str) -> ModelFamily {
         // Pony is an SDXL finetune — dual-CLIP, ~150-token effective range, not the 77-token default it
         // would fall to (its alias contains no "xl"). Budget/profile must match the real SDXL base.
         ModelFamily::Sdxl
-    } else if n.contains("pixart") || n.contains("sana") {
-        // PixArt-Σ (T5-XXL) and Sana (Gemma-2) are large-context PROSE transformers, NOT 77-token CLIP.
-        // They carry no family keyword, so without this they mis-classify (and `sana-1.5` even trips the
-        // `1.5` rule below → SD15/77). Map to the SD3 profile: prose prompting + a T5-scale budget, so the
-        // packer doesn't over-trim their prompts to 77. Checked BEFORE the sd15 `1.5`/`2-1` heuristics.
-        ModelFamily::Sd3
+    } else if n.contains("pixart") {
+        // PixArt-Σ (T5-XXL) is a large-context PROSE transformer, NOT 77-token CLIP. Its own family; the
+        // budget/emission tables give it the SD3 profile (prose + T5-scale budget). Checked BEFORE the sd15
+        // `1.5`/`2-1` heuristics.
+        ModelFamily::PixArt
+    } else if n.contains("sana") {
+        // Sana (Gemma-2) is likewise a large-context prose transformer (and `sana-1.5` would otherwise trip
+        // the `1.5` rule below → SD15/77). Its own family with the SD3 budget/emission profile.
+        ModelFamily::Sana
     } else if n.contains("sdxl") || n.contains("xl") {
         ModelFamily::Sdxl
     } else if n.contains("sd35") || n.contains("sd3") {
@@ -2009,10 +2020,14 @@ mod tests {
         // PixArt/Sana are T5-XXL/Gemma prose models (was Unknown/77), and `sana-1.5` must NOT trip the
         // `1.5`→SD15 rule. This is the "proper budget for the proper model" contract.
         assert_eq!(classify_model("pony"), ModelFamily::Sdxl, "pony is an SDXL finetune → 150-tok budget");
-        assert_eq!(classify_model("pixart"), ModelFamily::Sd3, "PixArt T5-XXL → T5-scale budget, not 77");
-        assert_eq!(classify_model("pixart-512"), ModelFamily::Sd3);
-        assert_eq!(classify_model("sana"), ModelFamily::Sd3, "Sana Gemma-2 → large budget, not 77");
-        assert_eq!(classify_model("sana-1.5"), ModelFamily::Sd3, "must not fall to SD15 via the `1.5` rule");
+        // PixArt/Sana are their OWN families now (6.33 LAYERED-1), but keep the SD3-scale budget/section.
+        assert_eq!(classify_model("pixart"), ModelFamily::PixArt, "PixArt T5-XXL → its own family");
+        assert_eq!(classify_model("pixart-512"), ModelFamily::PixArt);
+        assert_eq!(classify_model("sana"), ModelFamily::Sana, "Sana Gemma-2 → its own family");
+        assert_eq!(classify_model("sana-1.5"), ModelFamily::Sana, "must not fall to SD15 via the `1.5` rule");
+        // The distinct families still carry the SD3-scale budget (the "proper budget" contract holds).
+        assert_eq!(super::assembler::family_token_budget(ModelFamily::PixArt), 256);
+        assert_eq!(super::assembler::family_token_budget(ModelFamily::Sana), 256);
     }
 
     #[tokio::test]

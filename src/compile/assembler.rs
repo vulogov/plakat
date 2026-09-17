@@ -120,7 +120,8 @@ fn family_section(f: ModelFamily) -> &'static str {
     match f {
         ModelFamily::Sd15 | ModelFamily::Unknown => FAMILY_SD15,
         ModelFamily::Sdxl => FAMILY_SDXL,
-        ModelFamily::Sd3 => FAMILY_SD3,
+        // PixArt-Σ / Sana are T5/Gemma prose transformers — the SD3 (prose, large-context) section fits.
+        ModelFamily::Sd3 | ModelFamily::PixArt | ModelFamily::Sana => FAMILY_SD3,
         ModelFamily::Cascade => FAMILY_CASCADE,
         ModelFamily::Flux => FAMILY_FLUX,
     }
@@ -136,7 +137,8 @@ pub fn family_token_budget(f: ModelFamily) -> usize {
         // Cascade's CLIP text encoders take a moderate prompt — more forgiving than SD15's hard 77.
         ModelFamily::Cascade => 120,
         // SD3/3.5 route the full prompt through T5-XXL (256-token context) alongside the CLIP pair.
-        ModelFamily::Sd3 => 256,
+        // PixArt-Σ (T5-XXL) and Sana (Gemma-2) carry a comparable large-context budget.
+        ModelFamily::Sd3 | ModelFamily::PixArt | ModelFamily::Sana => 256,
         ModelFamily::Flux => 300,
     }
 }
@@ -256,7 +258,7 @@ fn join_and(items: &[String]) -> String {
 pub fn prose_reinforcement(prompt: &str, family: ModelFamily) -> Option<String> {
     // SD3/Flux honour prose >> weights; Cascade honours NO numeric weights at all — so all three get the
     // prose restatement (for Cascade it's the ONLY way to emphasise, since `(term:N)` does nothing there).
-    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade) {
+    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana) {
         return None;
     }
     let (mut strong, mut moderate, mut faint) = (Vec::new(), Vec::new(), Vec::new());
@@ -525,7 +527,7 @@ pub fn has_relationships(positive: &str) -> bool {
 pub fn relationship_reinforcement(family: ModelFamily) -> Option<&'static str> {
     // Purely AFFIRMATIVE — no "not floating" negation (models mishandle negation in a positive prompt,
     // and it would collide with the strip-terms-in-positive guard). The violations live in the negative.
-    matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade).then_some(
+    matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana).then_some(
         "The described objects sit in clear, physically coherent spatial relationships — touching, \
          resting on, and connected exactly as stated, each correctly placed and firmly grounded.",
     )

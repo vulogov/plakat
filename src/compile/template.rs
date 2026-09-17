@@ -189,6 +189,8 @@ fn register_functions(tera: &mut Tera, input_path: Option<&Path>) {
             super::ModelFamily::Sd3 => "sd3",
             super::ModelFamily::Cascade => "cascade",
             super::ModelFamily::Flux => "flux",
+            super::ModelFamily::PixArt => "pixart",
+            super::ModelFamily::Sana => "sana",
             super::ModelFamily::Unknown => "unknown",
         };
         Ok(Value::String(fam.into()))
