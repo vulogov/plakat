@@ -206,6 +206,43 @@ impl CascadeScheduler {
     }
 }
 
+/// LAYERED-1 `NoiseSpace` for Stable Cascade's stage-C prior (ε at the stage-C grid). Wraps the
+/// `CascadeScheduler` + its ratio timesteps; the level AFTER step k is `timesteps[k+1]`, forward-noised
+/// via `add_noise`. Identity `to_spatial` (the 16-channel stage-C latent is already `(B,16,h,w)`); pool
+/// depth 0 — the stage-C grid is so coarse it IS the low band, so the anchor substitutes the whole guide.
+pub struct CascadeSpace<'a> {
+    scheduler: &'a CascadeScheduler,
+    timesteps: &'a [f64],
+    geom: crate::pipelines::noise_space::LatentGeometry,
+}
+
+impl<'a> CascadeSpace<'a> {
+    pub fn new(scheduler: &'a CascadeScheduler, timesteps: &'a [f64], geom: crate::pipelines::noise_space::LatentGeometry) -> Self {
+        Self { scheduler, timesteps, geom }
+    }
+}
+
+impl crate::pipelines::noise_space::NoiseSpace for CascadeSpace<'_> {
+    fn noise_to(&self, clean: &Tensor, noise: &Tensor, step: usize) -> candle_core::Result<Tensor> {
+        match self.timesteps.get(step + 1) {
+            Some(&t) => self.scheduler.add_noise(clean, noise, t).map_err(|e| candle_core::Error::Msg(e.to_string())),
+            None => Ok(clean.clone()),
+        }
+    }
+
+    fn to_spatial(&self, latent: &Tensor) -> candle_core::Result<Tensor> {
+        Ok(latent.clone())
+    }
+
+    fn from_spatial(&self, spatial: &Tensor) -> candle_core::Result<Tensor> {
+        Ok(spatial.clone())
+    }
+
+    fn geometry(&self) -> crate::pipelines::noise_space::LatentGeometry {
+        self.geom
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

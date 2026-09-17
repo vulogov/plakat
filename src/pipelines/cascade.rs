@@ -744,6 +744,13 @@ impl Pipeline {
         // cosine α-cumprod, init_noise_sigma=1.0, no input scaling.
         let c_scheduler = CascadeScheduler::new(stage_c_steps);
         let c_timesteps: Vec<f64> = c_scheduler.timesteps().to_vec();
+        // LAYERED-1: stage-C NoiseSpace. `c_scheduler.step` is `&self`, so this immutable borrow coexists
+        // with the loop. Pool depth 0 — the 24×24 stage-C grid is already the low band.
+        let layered_space = crate::pipelines::cascade_scheduler::CascadeSpace::new(
+            &c_scheduler,
+            &c_timesteps,
+            crate::pipelines::noise_space::LatentGeometry { v: 42, u: 42, pool_levels: 0 },
+        );
         // Verify Tier 2 (env-gated): deterministic LCG init for a reproducible end-to-end.
         let noise_c = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
             crate::verify::deterministic_latent(16, 24, 24, &self.device, self.dtype)?
@@ -825,6 +832,9 @@ impl Pipeline {
             let pos = &chunks[1];
             let guided = (neg + ((pos - neg)? * guidance)?)?;
             latent_c = c_scheduler.step(&guided, t, &latent_c)?;
+            // LAYERED-1 §S3: optional guide-anchor refinement after the stage-C step. No-op unless a
+            // LayeredHook overrides `refine_latent` (hook=None ⇒ byte-identical). Stage B is untouched.
+            latent_c = crate::pipelines::step_hook::refine(hook, step_idx, c_timesteps.len(), &layered_space, latent_c)?;
             bar.inc(1);
             bar.set_message(format!("t={t:.3}"));
             // RFC TUI-1 §0-R0-3: per-step hook on Stage C (progress + cancel).
