@@ -10,5 +10,6 @@
 //! core (plan / lint / classifier / draft / guide / hook / render with hand-written plans); verify/repair
 //! (S4) and lift (S5) land in P3.
 
+pub mod hook;
 pub mod lint;
 pub mod plan;
