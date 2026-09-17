@@ -66,7 +66,14 @@ fi
 #    steps/guidance, prompts, regions. Exits non-zero on any hard FAIL, so it gates a render run in CI.
 "$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-negative --preflight >/dev/null
 
+# 8) MATRIX (6.32): expand every scene along an axis into the cartesian product → an N-task scenario.
+#    basic.txt (2 scenes) × weather{clear,storm,fog} = 6 cells; the compiled matrix dry-runs.
+"$PLAKAT" compile "$ROOT/corpus/compile/basic.txt" --no-enhance --no-negative \
+  --matrix "weather=clear,storm,fog" --out "$ROOT/corpus/compile/matrix.hjson"
+"$PLAKAT" scenario "$ROOT/corpus/compile/matrix.hjson" --dry-run >/dev/null
+
 echo "✓ compile: basic.txt → basic.hjson (2 tasks; --dry-run + pipe + no-op --diff + --decompile round-trip)"
 echo "  + MAP-4: maps.txt -> maps.hjson (2 map tasks (type: map), byte-stable, scenario-validated)"
 echo "  + PREFLIGHT: basic.txt passes the deterministic feasibility gate (--preflight)"
+echo "  + MATRIX: basic.txt × weather{clear,storm,fog} → matrix.hjson (6 cells, scenario-validated)"
 echo "  $TERA"

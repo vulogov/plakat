@@ -6,6 +6,7 @@
 use super::resolver::{ResolvedGlobals, ResolvedScene};
 
 /// A scene with its final compiled prompt + negative (post-LLM or verbatim).
+#[derive(Clone)]
 pub struct CompiledScene {
     pub scene: ResolvedScene,
     pub prompt: String,

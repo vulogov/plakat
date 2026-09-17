@@ -154,6 +154,13 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "preflight", default_value_t = false)]
     pub preflight: bool,
 
+    /// *(6.32)* MATRIX: expand every scene along one or more axes into the cartesian product of variations
+    /// → an N-task scenario. `--matrix "weather=clear,storm,fog"` appends each value to the prompt;
+    /// `--matrix "set.model=sdxl,sd35"` sets a per-scene directive. Repeatable. Cells are named
+    /// `<scene>__<axis>-<value>…`. Run the result with `plakat scenario` (a grid/contact of all cells).
+    #[arg(help_heading = "Compile", long = "matrix")]
+    pub matrix: Vec<String>,
+
     /// *(6.30 smysl-optimize)* AUTOMATIC improve loop: compile the first scene, render + aesthetically score
     /// it, then let an LLM regenerator propose one prompt edit at a time — keeping only edits that raise the
     /// score, and using the `<stem>.smysl` corpus as a TABU list so it never re-tries a spent move. Stops on
@@ -604,26 +611,39 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         return Ok(());
     }
 
-    let (hjson, warnings, trace, provenance) = compile::compile_to_string(
-        &input,
-        &CompileOpts {
-            provider: args.provider.clone(),
-            default_model: args.model.clone(),
-            no_enhance: args.no_enhance,
-            no_negative: args.no_negative,
-            system_override,
-            cache: args.compile_cache,
-            parallel: args.parallel,
-            input_name,
-            // Thread B: consult the corpus so the enhancer avoids prior rejected phrasings.
-            corpus_text: if stdin_input {
-                None
-            } else {
-                std::fs::read_to_string(args.input.with_extension("smysl")).ok()
-            },
+    let opts = CompileOpts {
+        provider: args.provider.clone(),
+        default_model: args.model.clone(),
+        no_enhance: args.no_enhance,
+        no_negative: args.no_negative,
+        system_override,
+        cache: args.compile_cache,
+        parallel: args.parallel,
+        input_name,
+        // Thread B: consult the corpus so the enhancer avoids prior rejected phrasings.
+        corpus_text: if stdin_input {
+            None
+        } else {
+            std::fs::read_to_string(args.input.with_extension("smysl")).ok()
         },
-    )
-    .await?;
+    };
+
+    let (hjson, warnings, trace, provenance) = if args.matrix.is_empty() {
+        compile::compile_to_string(&input, &opts).await?
+    } else {
+        // --matrix: compile once, then expand every scene along the axes into the cartesian product.
+        let mut doc = compile::compile_doc(&input, &opts).await?;
+        let axes = parse_matrix(&args.matrix)?;
+        let cells = expand_matrix(&mut doc, &axes)?;
+        eprintln!(
+            "{} matrix: {} axis(es) → {} cell(s)",
+            style("◆").cyan(),
+            axes.len(),
+            cells,
+        );
+        doc.recompute_provenance();
+        (doc.emit(), doc.warnings.clone(), doc.trace.clone(), doc.provenance.clone())
+    };
 
     // 6.27: show WHAT the pipeline did per scene (translate, compose, weights, enhance, negative, fit) —
     // to stderr so piping the HJSON is unaffected. Header lines (no indent) are cyan, steps dim.
@@ -912,6 +932,91 @@ impl crate::compile::improve::ImproveStep for LiveStep {
             Ok(mean)
         })
     }
+}
+
+/// Parse `--matrix KEY=v1,v2,…` flags into ordered axes.
+fn parse_matrix(flags: &[String]) -> Result<Vec<(String, Vec<String>)>> {
+    let mut axes = Vec::new();
+    for f in flags {
+        let (k, v) = f.split_once('=').ok_or_else(|| anyhow::anyhow!("--matrix expects KEY=v1,v2,… (got {f:?})"))?;
+        let key = k.trim().to_string();
+        anyhow::ensure!(!key.is_empty(), "--matrix: empty axis name in {f:?}");
+        let vals: Vec<String> = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        anyhow::ensure!(!vals.is_empty(), "--matrix axis {key:?} has no values");
+        axes.push((key, vals));
+    }
+    Ok(axes)
+}
+
+/// Lowercase kebab slug for a cell name segment.
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for c in s.trim().to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// Apply one axis value to a cloned scene: `set.KEY` sets a per-scene directive (model is a typed field),
+/// anything else appends to the prompt.
+fn apply_axis(c: &mut crate::compile::emitter::CompiledScene, key: &str, val: &str) {
+    if let Some(k) = key.strip_prefix("set.") {
+        if k.eq_ignore_ascii_case("model") {
+            c.scene.model_for_family = Some(val.to_string());
+        } else {
+            c.scene.passthrough.retain(|(pk, _)| !pk.eq_ignore_ascii_case(k));
+            c.scene.passthrough.push((k.to_string(), val.to_string()));
+        }
+    } else if !c.prompt.to_lowercase().contains(&val.to_lowercase()) {
+        if !c.prompt.trim().is_empty() && !c.prompt.trim_end().ends_with(',') {
+            c.prompt.push_str(", ");
+        }
+        c.prompt.push_str(val);
+    }
+}
+
+/// Expand every scene in `doc` along the axes into the cartesian product of cells; returns the cell count.
+fn expand_matrix(doc: &mut crate::compile::CompiledDoc, axes: &[(String, Vec<String>)]) -> Result<usize> {
+    let mut combos: Vec<Vec<(&str, &str)>> = vec![vec![]];
+    for (k, vals) in axes {
+        let mut next = Vec::new();
+        for c in &combos {
+            for v in vals {
+                let mut cc = c.clone();
+                cc.push((k.as_str(), v.as_str()));
+                next.push(cc);
+            }
+        }
+        combos = next;
+    }
+    let cells = combos.len();
+    anyhow::ensure!(cells <= 128, "matrix has {cells} cells (> 128) — narrow the axes");
+
+    let base = std::mem::take(&mut doc.scenes);
+    let mut out = Vec::with_capacity(base.len().saturating_mul(cells));
+    for scene in &base {
+        for combo in &combos {
+            let mut c = scene.clone();
+            let mut suffix = String::new();
+            for (key, val) in combo {
+                apply_axis(&mut c, key, val);
+                suffix.push_str(&format!("__{}-{}", slug(key.trim_start_matches("set.")), slug(val)));
+            }
+            let bn = if c.scene.name.trim().is_empty() { "scene".to_string() } else { c.scene.name.clone() };
+            c.scene.name = format!("{bn}{suffix}");
+            c.scene.name_auto = false;
+            out.push(c);
+        }
+    }
+    doc.scenes = out;
+    Ok(cells)
 }
 
 /// Run deterministic preflight checks over a compiled doc and print a PASS/WARN/FAIL report. Returns an
@@ -1368,4 +1473,27 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod matrix_tests {
+    use super::{parse_matrix, slug};
+
+    #[test]
+    fn parse_matrix_axes() {
+        let axes = parse_matrix(&["weather=clear, storm ,fog".into(), "set.steps=20,40".into()]).unwrap();
+        assert_eq!(axes[0].0, "weather");
+        assert_eq!(axes[0].1, vec!["clear", "storm", "fog"]);
+        assert_eq!(axes[1].0, "set.steps");
+        assert_eq!(axes[1].1, vec!["20", "40"]);
+        assert!(parse_matrix(&["noequals".into()]).is_err(), "missing = is an error");
+        assert!(parse_matrix(&["k=".into()]).is_err(), "no values is an error");
+    }
+
+    #[test]
+    fn slug_kebabs() {
+        assert_eq!(slug("Golden Hour!"), "golden-hour");
+        assert_eq!(slug("sd3.5"), "sd3-5");
+        assert_eq!(slug("  storm  "), "storm");
+    }
 }
