@@ -1237,6 +1237,12 @@ impl Pipeline {
             let mut cache_pred: Option<Tensor> = None;
             let mut cache_accum = 0.0f32;
             let mut prev_x: Option<Tensor> = None;
+            // LAYERED-1: the SD3 flow NoiseSpace — the level AFTER step k is the window's second boundary
+            // `timesteps[k+1]`, so `sigmas[k] = timesteps[k+1]`. Identity `to_spatial` (the latent stays 2D).
+            let layered_space = crate::pipelines::noise_space::FlowSpace::new(
+                timesteps.iter().skip(1).map(|&t| t as f32).collect(),
+                crate::pipelines::noise_space::LatentGeometry { v: 8, u: 16, pool_levels: 2 },
+            );
             for (step_i, window) in timesteps.windows(2).enumerate() {
                 let (t_curr, t_prev) = match window {
                     [a, b] => (*a, *b),
@@ -1328,6 +1334,17 @@ impl Pipeline {
                     let edited = x.broadcast_mul(mask_lat)?;
                     x = (edited + kept)?;
                 }
+
+                // LAYERED-1 §S3: optional guide-anchor refinement after the flow-match step (and any
+                // RePaint blend). No-op unless a LayeredHook overrides `refine_latent` (hook=None ⇒
+                // byte-identical).
+                x = crate::pipelines::step_hook::refine(
+                    &mut hook,
+                    step_i,
+                    timesteps.len().saturating_sub(1),
+                    &layered_space,
+                    x,
+                )?;
 
                 bar.set_position(step_i as u64);
                 // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
