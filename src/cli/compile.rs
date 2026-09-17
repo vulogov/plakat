@@ -161,6 +161,12 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long = "matrix")]
     pub matrix: Vec<String>,
 
+    /// *(6.32)* Seed a fresh compile from the SETTINGS that scored best in the `<stem>.smysl` corpus — the
+    /// model/steps/guidance/scheduler of the highest-ranked `--improve` render — applied per scene where the
+    /// scene doesn't already set them. "The corpus configures the compile," the knobs as well as the words.
+    #[arg(help_heading = "Compile", long = "smysl-defaults", default_value_t = false)]
+    pub smysl_defaults: bool,
+
     /// *(6.30 smysl-optimize)* AUTOMATIC improve loop: compile the first scene, render + aesthetically score
     /// it, then let an LLM regenerator propose one prompt edit at a time — keeping only edits that raise the
     /// score, and using the `<stem>.smysl` corpus as a TABU list so it never re-tries a spent move. Stops on
@@ -628,19 +634,32 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         },
     };
 
-    let (hjson, warnings, trace, provenance) = if args.matrix.is_empty() {
+    let needs_doc = !args.matrix.is_empty() || args.smysl_defaults;
+    let (hjson, warnings, trace, provenance) = if !needs_doc {
         compile::compile_to_string(&input, &opts).await?
     } else {
-        // --matrix: compile once, then expand every scene along the axes into the cartesian product.
+        // Doc-level post-processing: apply corpus-learned defaults, then expand the matrix.
         let mut doc = compile::compile_doc(&input, &opts).await?;
-        let axes = parse_matrix(&args.matrix)?;
-        let cells = expand_matrix(&mut doc, &axes)?;
-        eprintln!(
-            "{} matrix: {} axis(es) → {} cell(s)",
-            style("◆").cyan(),
-            axes.len(),
-            cells,
-        );
+        if args.smysl_defaults {
+            let corpus = if stdin_input {
+                String::new()
+            } else {
+                std::fs::read_to_string(args.input.with_extension("smysl")).unwrap_or_default()
+            };
+            let defaults = crate::smysl::learned_defaults(&corpus);
+            if defaults.is_empty() {
+                eprintln!("{}  --smysl-defaults: no ranked settings in the corpus yet (run --improve first)", style("⚠").yellow());
+            } else {
+                apply_learned_defaults(&mut doc.scenes, &defaults);
+                let shown: Vec<String> = defaults.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                eprintln!("{} smysl-defaults: applied {}", style("◆").cyan(), shown.join(" · "));
+            }
+        }
+        if !args.matrix.is_empty() {
+            let axes = parse_matrix(&args.matrix)?;
+            let cells = expand_matrix(&mut doc, &axes)?;
+            eprintln!("{} matrix: {} axis(es) → {} cell(s)", style("◆").cyan(), axes.len(), cells);
+        }
         doc.recompute_provenance();
         (doc.emit(), doc.warnings.clone(), doc.trace.clone(), doc.provenance.clone())
     };
@@ -1019,6 +1038,43 @@ fn expand_matrix(doc: &mut crate::compile::CompiledDoc, axes: &[(String, Vec<Str
     Ok(cells)
 }
 
+/// Apply corpus-learned settings to each scene that doesn't already set them. Typed knobs (model / steps /
+/// guidance / scheduler) go to their fields; anything else becomes a per-scene passthrough directive.
+fn apply_learned_defaults(scenes: &mut [crate::compile::emitter::CompiledScene], defaults: &[(String, String)]) {
+    for c in scenes.iter_mut() {
+        let sc = &mut c.scene;
+        for (k, v) in defaults {
+            match k.as_str() {
+                "model" => {
+                    if sc.model_for_family.is_none() {
+                        sc.model_for_family = Some(v.clone());
+                    }
+                }
+                "steps" => {
+                    if sc.steps.is_none() {
+                        sc.steps = v.parse().ok();
+                    }
+                }
+                "guidance" => {
+                    if sc.guidance.is_none() {
+                        sc.guidance = v.parse().ok();
+                    }
+                }
+                "scheduler" => {
+                    if sc.scheduler.as_deref().unwrap_or("").trim().is_empty() {
+                        sc.scheduler = Some(v.clone());
+                    }
+                }
+                _ => {
+                    if !sc.passthrough.iter().any(|(pk, _)| pk.eq_ignore_ascii_case(k)) {
+                        sc.passthrough.push((k.clone(), v.clone()));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Run deterministic preflight checks over a compiled doc and print a PASS/WARN/FAIL report. Returns an
 /// error (non-zero exit) when any scene has a hard FAIL — so it gates a render run in CI. No LLM, no render.
 fn preflight_report(doc: &crate::compile::CompiledDoc, input: &str) -> Result<()> {
@@ -1144,8 +1200,8 @@ fn persist_improve_corpus(corpus: &std::path::Path, moves: &[(String, String, St
 
 /// Record a scene's best achieved aesthetic rank into the `.smysl` corpus (merge, content-hash dedup) so a
 /// later `--improve-skip-good` run can read it back via `smysl::prior_scene_rank` and skip an already-good scene.
-fn persist_scene_rank(corpus: &std::path::Path, scene: &str, rank: f32) -> Result<()> {
-    let (recs, labels) = crate::smysl::scene_rank_records(scene, rank)?;
+fn persist_scene_rank(corpus: &std::path::Path, scene: &str, rank: f32, settings: &[(String, String)]) -> Result<()> {
+    let (recs, labels) = crate::smysl::scene_rank_records(scene, rank, settings)?;
     let snapshot = crate::smysl::records_to_surface(&recs, &labels);
     let base = std::fs::read_to_string(corpus).unwrap_or_default();
     std::fs::write(corpus, crate::smysl::merge_surface(&base, &snapshot))
@@ -1411,8 +1467,31 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
                 eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
             }
         }
-        // Record this scene's best achieved rank so `--improve-skip-good` can gate it next run.
-        if let Err(e) = persist_scene_rank(&corpus_path, &name, out.best_rank) {
+        // Record this scene's best rank AND the settings that achieved it — so `--improve-skip-good` can
+        // gate it, and `--smysl-defaults` can later learn the best-scoring knobs (not just the words).
+        let settings = {
+            let sc = &doc.scenes[i].scene;
+            let mut v: Vec<(String, String)> = Vec::new();
+            let model = args
+                .improve_model
+                .clone()
+                .or_else(|| sc.model_for_family.clone())
+                .unwrap_or_else(|| format!("{:?}", sc.family).to_lowercase());
+            v.push(("model".into(), model));
+            if let Some(st) = sc.steps {
+                v.push(("steps".into(), st.to_string()));
+            }
+            if let Some(g) = sc.guidance {
+                v.push(("guidance".into(), format!("{g}")));
+            }
+            if let Some(s) = &sc.scheduler {
+                if !s.trim().is_empty() {
+                    v.push(("scheduler".into(), s.trim().to_string()));
+                }
+            }
+            v
+        };
+        if let Err(e) = persist_scene_rank(&corpus_path, &name, out.best_rank, &settings) {
             eprintln!("{}  smysl rank not recorded: {e:#}", style("⚠").yellow());
         }
         results.push((name.clone(), out));
@@ -1495,5 +1574,29 @@ mod matrix_tests {
         assert_eq!(slug("Golden Hour!"), "golden-hour");
         assert_eq!(slug("sd3.5"), "sd3-5");
         assert_eq!(slug("  storm  "), "storm");
+    }
+
+    #[test]
+    fn learned_defaults_apply_to_typed_fields_and_respect_overrides() {
+        use crate::compile::emitter::CompiledScene;
+        use crate::compile::resolver::ResolvedScene;
+        let scene = |steps: Option<usize>| CompiledScene {
+            scene: ResolvedScene { steps, ..Default::default() },
+            prompt: "a cat".into(),
+            negative: String::new(),
+            structure_prompt: None,
+            control_generate_max_figures: None,
+            warnings: vec![],
+            trace: vec![],
+            pack: None,
+        };
+        let mut scenes = vec![scene(None), scene(Some(50))];
+        let defaults = vec![("model".into(), "sd35".into()), ("steps".into(), "40".into()), ("guidance".into(), "5.5".into())];
+        super::apply_learned_defaults(&mut scenes, &defaults);
+        // Scene 0 had no steps → learns 40; scene 1 already set 50 → kept.
+        assert_eq!(scenes[0].scene.model_for_family.as_deref(), Some("sd35"));
+        assert_eq!(scenes[0].scene.steps, Some(40));
+        assert_eq!(scenes[0].scene.guidance, Some(5.5));
+        assert_eq!(scenes[1].scene.steps, Some(50), "explicit scene setting is not overridden");
     }
 }

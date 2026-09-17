@@ -266,12 +266,21 @@ pub fn fixes_to_smysl(applied: &[(String, String, String)], manual: &[String]) -
 /// real metric, sourced from the LAION aesthetic scorer). Content-addressed like the fix records, so a
 /// re-recorded identical rank dedups and the corpus keeps the full per-scene rank history (the *best* is the
 /// max across a scene's records — see [`prior_scene_rank`]).
-pub fn scene_rank_records(scene: &str, rank: f32) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
+pub fn scene_rank_records(scene: &str, rank: f32, settings: &[(String, String)]) -> anyhow::Result<(Vec<Record>, BTreeMap<Label, Uid>)> {
     let mut records: Vec<Record> = Vec::new();
     let mut labels: BTreeMap<Label, Uid> = BTreeMap::new();
     let gist = format!("scene \u{201C}{}\u{201D} reached aesthetic {rank:.2}", scene.trim());
+    // The body carries the scene, the rank, and the SETTINGS that achieved it (`cfg.<key>: <val>`), so the
+    // corpus can later learn which knobs produced the best-scoring renders (see [`learned_defaults`]).
+    let mut body = format!("scene: {}\nrank: {rank:.4}", scene.trim());
+    for (k, v) in settings {
+        let (k, v) = (k.trim(), v.trim());
+        if !k.is_empty() && !v.is_empty() {
+            body.push_str(&format!("\ncfg.{k}: {v}"));
+        }
+    }
     let unit = UnitCoreBuilder::new(KernelType::Evidence, gist, Status::Measured)
-        .body(format!("scene: {}\nrank: {rank:.4}", scene.trim()))
+        .body(body)
         .source(SourceRef::new(SourceKind::Metric, "plakat/aesthetic"))
         .build()
         .map_err(|e| anyhow::anyhow!("smysl scene-rank `{scene}`: {e:?}"))?;
@@ -279,6 +288,44 @@ pub fn scene_rank_records(scene: &str, rank: f32) -> anyhow::Result<(Vec<Record>
     labels.insert(Label::new(&format!("m/rank-{}", uid_tag(&uid)))?, uid);
     records.push(Record::Unit(unit));
     Ok((records, labels))
+}
+
+/// Learn the render SETTINGS that achieved the best aesthetic rank in a corpus — the `cfg.<key>` lines of
+/// the highest-ranked `m/rank-*` record. Returns `(key, value)` pairs (prefix stripped), or empty when no
+/// ranked record carries settings. "The corpus configures the compile" — the knobs, not just the words.
+pub fn learned_defaults(corpus_text: &str) -> Vec<(String, String)> {
+    let Ok(p) = smysl_core::surface::parse_surface(corpus_text) else {
+        return Vec::new();
+    };
+    let uid_label: std::collections::HashMap<Uid, &str> =
+        p.labels.iter().map(|(l, u)| (*u, l.as_str())).collect();
+    let mut best: Option<(f32, Vec<(String, String)>)> = None;
+    for r in &p.records {
+        let Record::Unit(c) = r else { continue };
+        let is_rank = uid_label.get(&canonical_uid(c)).map(|l| l.starts_with("m/rank-")).unwrap_or(false);
+        if !is_rank {
+            continue;
+        }
+        let Some(body) = &c.body else { continue };
+        let mut rank = None;
+        let mut cfg = Vec::new();
+        for line in body.lines() {
+            let line = line.trim();
+            if let Some(v) = line.strip_prefix("rank:") {
+                rank = v.trim().parse::<f32>().ok();
+            } else if let Some(kv) = line.strip_prefix("cfg.") {
+                if let Some((k, v)) = kv.split_once(':') {
+                    cfg.push((k.trim().to_string(), v.trim().to_string()));
+                }
+            }
+        }
+        if let Some(rk) = rank {
+            if !cfg.is_empty() && best.as_ref().map(|(b, _)| rk > *b).unwrap_or(true) {
+                best = Some((rk, cfg));
+            }
+        }
+    }
+    best.map(|(_, cfg)| cfg).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -1181,6 +1228,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn learned_defaults_picks_best_ranked_settings() {
+        // Two ranked renders with settings; the higher-ranked one's knobs are learned.
+        let (r1, l1) = scene_rank_records("hero", 6.20, &[("model".into(), "sdxl".into()), ("steps".into(), "30".into())]).unwrap();
+        let (r2, l2) = scene_rank_records("hero", 6.85, &[("model".into(), "sd35".into()), ("steps".into(), "40".into())]).unwrap();
+        let s1 = records_to_surface(&r1, &l1);
+        let s2 = records_to_surface(&r2, &l2);
+        let corpus = merge_surface(&s1, &s2);
+        let learned = learned_defaults(&corpus);
+        assert!(learned.contains(&("model".to_string(), "sd35".to_string())), "best model learned: {learned:?}");
+        assert!(learned.contains(&("steps".to_string(), "40".to_string())), "best steps learned");
+        // A corpus with ranks but no settings yields nothing to learn.
+        let (r0, l0) = scene_rank_records("hero", 7.0, &[]).unwrap();
+        assert!(learned_defaults(&records_to_surface(&r0, &l0)).is_empty(), "no cfg → nothing learned");
+    }
+
+    #[test]
     fn corpus_report_html_skeleton_and_escaping() {
         // Empty corpus → a valid page with the empty-state note.
         let empty = corpus_report_html("", "demo.smysl");
@@ -1314,11 +1377,11 @@ mod tests {
     #[test]
     fn scene_rank_round_trips_and_takes_the_best() {
         // Two runs record ranks for the same scene; the reader returns the MAX (best) and matches by name.
-        let (r1, l1) = scene_rank_records("man on bench", 6.30).unwrap();
-        let (r2, l2) = scene_rank_records("man on bench", 6.71).unwrap();
+        let (r1, l1) = scene_rank_records("man on bench", 6.30, &[]).unwrap();
+        let (r2, l2) = scene_rank_records("man on bench", 6.71, &[]).unwrap();
         let mut corpus = merge_surface(&records_to_surface(&r1, &l1), &records_to_surface(&r2, &l2));
         // A different scene must not leak into the query.
-        let (ro, lo) = scene_rank_records("empty street", 4.10).unwrap();
+        let (ro, lo) = scene_rank_records("empty street", 4.10, &[]).unwrap();
         corpus = merge_surface(&corpus, &records_to_surface(&ro, &lo));
         assert_eq!(prior_scene_rank(&corpus, "man on bench"), Some(6.71), "best of the two:\n{corpus}");
         assert_eq!(prior_scene_rank(&corpus, "MAN ON BENCH"), Some(6.71), "case-insensitive match");
@@ -1375,7 +1438,7 @@ mod tests {
 
     #[test]
     fn corpus_report_digests_the_corpus() {
-        let (rr, rl) = scene_rank_records("lane", 6.62).unwrap();
+        let (rr, rl) = scene_rank_records("lane", 6.62, &[]).unwrap();
         let ranks = records_to_surface(&rr, &rl);
         let applied = vec![
             (
