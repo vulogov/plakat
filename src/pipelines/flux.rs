@@ -1707,6 +1707,8 @@ impl Pipeline {
                     kontext_ref_packed.as_ref(),
                     &bar,
                     &mut hook,
+                    h,
+                    w,
                 )?;
                 sampling::unpack(&denoised, h, w)?
             };
@@ -1940,6 +1942,8 @@ impl Pipeline {
             None,  // no Kontext reference
             &bar,
             &mut nohook,
+            h,
+            w,
         )?;
         bar.set_position(timesteps.len().saturating_sub(1) as u64);
         bar.finish_with_message("✓ frame denoised");
@@ -2117,6 +2121,9 @@ impl Pipeline {
         kontext_ref: Option<&(Tensor, Tensor)>,
         bar: &indicatif::ProgressBar,
         hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
+        // Pixel dims of the target — LAYERED-1 needs them to unpack the token latent to spatial.
+        h: usize,
+        w: usize,
     ) -> Result<Tensor> {
         let b_sz = state.img.dim(0)?;
         let dev = state.img.device();
@@ -2280,6 +2287,13 @@ impl Pipeline {
                 pred_full
             };
             img = (img + pred * (t_prev - t_curr))?;
+            // LAYERED-1 §S3: optional guide-anchor refinement on the packed token latent after the
+            // flow-match step. No-op unless a LayeredHook overrides `refine_latent` (hook=None ⇒
+            // byte-identical). `FluxSpace::to_spatial` unpacks the tokens for the low-pass filter.
+            {
+                let space = FluxSpace::new(timesteps.to_vec(), h, w);
+                img = crate::pipelines::step_hook::refine(hook, step_i, num_steps, &space, img)?;
+            }
             bar.set_position(step_i as u64);
             // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
             // On Cancel, return the partial latent — `generate_hooked` checks
@@ -2949,6 +2963,42 @@ fn kontext_tile_budget_check(
     Ok(())
 }
 
+/// LAYERED-1 flow-matching `NoiseSpace` for Flux. The denoise latent is the PACKED 2×2-patch token
+/// sequence, so `to_spatial` unpacks it (`sampling::unpack`) for the low-pass filter and `from_spatial`
+/// re-packs it (`pack_latent_to_tokens`). Forward-noising is the rectified-flow interpolation
+/// `(1−t)·clean + t·noise`, where `t` is the schedule level AFTER the step (`timesteps[step+1]`, → 0 at end).
+struct FluxSpace {
+    timesteps: Vec<f64>,
+    h: usize,
+    w: usize,
+}
+
+impl FluxSpace {
+    fn new(timesteps: Vec<f64>, h: usize, w: usize) -> Self {
+        Self { timesteps, h, w }
+    }
+}
+
+impl crate::pipelines::noise_space::NoiseSpace for FluxSpace {
+    fn noise_to(&self, clean: &Tensor, noise: &Tensor, step: usize) -> candle_core::Result<Tensor> {
+        let t = self.timesteps.get(step + 1).copied().unwrap_or(0.0);
+        (clean * (1.0 - t))? + (noise * t)?
+    }
+
+    fn to_spatial(&self, latent: &Tensor) -> candle_core::Result<Tensor> {
+        sampling::unpack(latent, self.h, self.w)
+    }
+
+    fn from_spatial(&self, spatial: &Tensor) -> candle_core::Result<Tensor> {
+        pack_latent_to_tokens(spatial).map_err(|e| candle_core::Error::Msg(e.to_string()))
+    }
+
+    fn geometry(&self) -> crate::pipelines::noise_space::LatentGeometry {
+        // 8× VAE, 2×2-patchified DiT token (u = 16), pool depth 2.
+        crate::pipelines::noise_space::LatentGeometry { v: 8, u: 16, pool_levels: 2 }
+    }
+}
+
 fn pack_latent_to_tokens(z: &Tensor) -> Result<Tensor> {
     let (b, c, lh, lw) = z.dims4()?;
     if lh % 2 != 0 || lw % 2 != 0 {
@@ -3206,6 +3256,24 @@ mod tests {
             Tensor::zeros((1, 16, 64, 64), DType::F32, &Device::Cpu).unwrap();
         let packed = pack_latent_to_tokens(&z).unwrap();
         assert_eq!(packed.dims(), &[1, 32 * 32, 64]);
+    }
+
+    /// LAYERED-1 Tier-0: `FluxSpace::to_spatial ∘ from_spatial` is exact — pack then unpack returns the
+    /// original latent, so the low-pass filter can round-trip Flux's token latent through spatial space.
+    #[test]
+    fn flux_space_spatial_round_trip_is_exact() {
+        use crate::pipelines::noise_space::NoiseSpace;
+        // A 16-channel latent at 32×32 (= 256×256 px) → pack → unpack → back to the same latent.
+        let z = Tensor::randn(0f32, 1f32, (1, 16, 32, 32), &Device::Cpu).unwrap();
+        let space = FluxSpace::new(vec![1.0, 0.0], 256, 256);
+        let tokens = space.from_spatial(&z).unwrap();
+        let back = space.to_spatial(&tokens).unwrap();
+        assert_eq!(back.dims(), z.dims(), "shape preserved");
+        let diff = (&back - &z).unwrap().abs().unwrap().max_all().unwrap().to_scalar::<f32>().unwrap();
+        assert!(diff < 1e-5, "pack/unpack round-trip exact (max abs diff {diff})");
+        // Geometry: 8× VAE, u=16 (2×2 DiT token), pool depth 2.
+        let g = space.geometry();
+        assert_eq!((g.v, g.u, g.pool_levels), (8, 16, 2));
     }
 
     // v0.19 — Kontext + ControlNet residual-padding helper.
