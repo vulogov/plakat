@@ -103,9 +103,6 @@ pub(crate) fn is_cancelled(hook: &Option<&mut dyn StepHook>) -> bool {
 /// LAYERED-1: apply the hook's optional latent refinement at a denoise step, returning the (possibly
 /// replaced) latent. Mirrors [`step`] — tolerant of the `None` (CLI) case, in which the latent is returned
 /// unchanged, so every existing call site stays byte-identical until a `refine_latent` override is present.
-// Wired into each family's denoise loop by the P0 call-site commit; kept `pub(crate)` and covered by a
-// Tier-0 no-op test until then.
-#[allow(dead_code)]
 pub(crate) fn refine(
     hook: &mut Option<&mut dyn StepHook>,
     step: usize,

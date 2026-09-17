@@ -1652,6 +1652,18 @@ impl Pipeline {
                     do_cfg,
                     &active_controls,
                 )?;
+                // LAYERED-1 §S3: optional guide-anchor refinement after the step produces the next latent.
+                // A no-op unless a `LayeredHook` overrides `refine_latent`, so the CLI path (`hook = None`)
+                // is byte-identical. The scheduler's `&mut` borrow ended with `denoise_step`, so borrowing it
+                // immutably here for the ε-family `NoiseSpace` is safe.
+                {
+                    let space = crate::pipelines::noise_space::SchedulerSpace::new(
+                        scheduler.as_ref(),
+                        &timesteps,
+                        crate::pipelines::noise_space::LatentGeometry { v: 8, u: 8, pool_levels: 2 },
+                    );
+                    latents = crate::pipelines::step_hook::refine(&mut hook, step_i, total_steps, &space, latents)?;
+                }
                 bar.inc(1);
                 bar.set_message(format!("{tag} t={timestep} seed={seed}"));
                 // RFC TUI-1 §0-R0-3: per-step hook (no-op when `hook` is None — the

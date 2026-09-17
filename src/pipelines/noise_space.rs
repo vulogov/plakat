@@ -14,6 +14,9 @@
 
 use candle_core::{Result, Tensor};
 
+/// The candle-transformers scheduler trait the SD-family / PixArt / Cascade pipelines drive.
+type SdScheduler = dyn candle_transformers::models::stable_diffusion::schedulers::Scheduler;
+
 /// Latent geometry of a finish family (RFC §Size classes): `v` = VAE/latent pixel size (8 for the 8× VAE
 /// families, 32 for Sana), `u` = denoised-unit size (8 UNet cell, 16 for a 2×2-patchified DiT token, 32 for
 /// Sana), `pool_levels` = the low-pass pyramid depth `L`.
@@ -66,6 +69,45 @@ impl NoiseSpace for FlowSpace {
         let s = self.sigma_after(step) as f64;
         // (1 − s)·clean + s·noise
         (clean * (1.0 - s))? + (noise * s)?
+    }
+
+    fn to_spatial(&self, latent: &Tensor) -> Result<Tensor> {
+        Ok(latent.clone())
+    }
+
+    fn from_spatial(&self, spatial: &Tensor) -> Result<Tensor> {
+        Ok(spatial.clone())
+    }
+
+    fn geometry(&self) -> LatentGeometry {
+        self.geom
+    }
+}
+
+/// ε-prediction / v-prediction noise space (SD 1.5, SDXL, SD 2.1, PixArt, Cascade stage C): forward-noising
+/// is the family scheduler's own `add_noise`. Borrows the scheduler (immutably) and its timestep schedule.
+/// The level AFTER sampler step `k` is `timesteps[k+1]` (the next, lower-noise timestep); past the last step
+/// the latent is fully denoised, so `noise_to` returns the clean latent. `to_spatial` is the identity (the
+/// UNet/DiT families already work in `(B,C,H,W)` latent space).
+pub struct SchedulerSpace<'a> {
+    scheduler: &'a SdScheduler,
+    timesteps: &'a [usize],
+    geom: LatentGeometry,
+}
+
+impl<'a> SchedulerSpace<'a> {
+    pub fn new(scheduler: &'a SdScheduler, timesteps: &'a [usize], geom: LatentGeometry) -> Self {
+        Self { scheduler, timesteps, geom }
+    }
+}
+
+impl NoiseSpace for SchedulerSpace<'_> {
+    fn noise_to(&self, clean: &Tensor, noise: &Tensor, step: usize) -> Result<Tensor> {
+        match self.timesteps.get(step + 1) {
+            Some(&ts) => self.scheduler.add_noise(clean, noise.clone(), ts),
+            // After the final step the latent is at t≈0 — the clean latent itself.
+            None => Ok(clean.clone()),
+        }
     }
 
     fn to_spatial(&self, latent: &Tensor) -> Result<Tensor> {
