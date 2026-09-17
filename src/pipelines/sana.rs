@@ -408,7 +408,8 @@ impl Pipeline {
     /// `scheduler` picks DPM++ 2M flow (default) vs FlowMatchEuler. With `init = Some((z0, strength))`
     /// this is **img2img**: start from a partially-noised init over a strength-trimmed schedule.
     #[allow(clippy::too_many_arguments)]
-    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>, mask_lat: Option<&Tensor>, control: Option<(&Tensor, f32)>) -> Result<Tensor> {
+    #[allow(clippy::too_many_arguments)]
+    fn denoise(&self, caption: &Tensor, mask: &Tensor, w: u32, h: u32, steps: usize, guidance: f64, scheduler: SchedulerKind, init: Option<(&Tensor, f32)>, mask_lat: Option<&Tensor>, control: Option<(&Tensor, f32)>, hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>) -> Result<Tensor> {
         let (lw, lh) = (w as usize / 32, h as usize / 32);
         let dit = self.dit.as_ref().context("Sana DiT already freed")?;
         // ControlNet residuals (if any) need the control latent doubled for the CFG pass.
@@ -434,6 +435,14 @@ impl Pipeline {
             }
         };
         let mut sched = sched;
+
+        // LAYERED-1: Sana flow NoiseSpace. The level AFTER step `i` is `sched.sigma(i+1)`; index the run's
+        // steps 0-based (`i - start`), so `sigmas[i-start] = sched.sigma(i+1)`. Identity `to_spatial` (the
+        // 32× DC-AE latent stays 2D), pool depth 1 per the RFC filter table.
+        let layered_space = crate::pipelines::noise_space::FlowSpace::new(
+            (start..steps).map(|i| sched.sigma(i + 1) as f32).collect(),
+            crate::pipelines::noise_space::LatentGeometry { v: 32, u: 32, pool_levels: 1 },
+        );
 
         let pb = indicatif::ProgressBar::new((steps - start) as u64);
         pb.set_style(
@@ -467,6 +476,9 @@ impl Pipeline {
                 let one_minus = m.affine(-1.0, 1.0)?; // 1 - mask
                 latent = (latent.broadcast_mul(m)? + known.broadcast_mul(&one_minus)?)?;
             }
+            // LAYERED-1 §S3: optional guide-anchor refinement after the flow-match step (and RePaint
+            // blend). No-op unless a LayeredHook overrides `refine_latent` (hook=None ⇒ byte-identical).
+            latent = crate::pipelines::step_hook::refine(hook, i - start, steps - start, &layered_space, latent)?;
             pb.set_position((i - start + 1) as u64);
         }
         pb.finish_and_clear();
@@ -570,7 +582,9 @@ fn generate_all(pipeline: &mut Pipeline, req: &RunRequest, steps: usize, guidanc
         crate::ui::progress::println(&format!("  sana {} of {} (seed={seed})", idx + 1, count));
         let init = init_z.as_ref().map(|z| (z, strength));
         let control = control_z.as_ref().map(|z| (z, control_strength));
-        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init, mask_lat.as_ref(), control)?));
+        // Sana has no TUI hook path yet; the LAYERED-1 hook param exists so the layered engine can drive it.
+        let mut nohook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
+        latents.push((seed, pipeline.denoise(&caption, &mask, w, h, steps, guidance, req.scheduler, init, mask_lat.as_ref(), control, &mut nohook)?));
     }
     // Free the DiT (~3.3 GB) before the memory-heavy F32 DC-AE decode (avoids Metal buffer OOM).
     pipeline.free_dit();
