@@ -81,6 +81,9 @@ pub enum BookartCmd {
     /// openers (headpiece · CHAPTER N · title), body prose with a raised initial, running heads + folios,
     /// tailpieces, and a colophon → one compilable Typst file. `--verify` compiles to PDF.
     Book(BookArgs),
+    /// Tile a motif into a seamless **endpaper** / decorative diaper (grid · half-drop · diamond) across a
+    /// page → a print-sized PNG. Weight-free (pure compositing); motifs clip at the trim.
+    Endpaper(EndpaperArgs),
 }
 
 #[derive(Args, Debug)]
@@ -172,6 +175,31 @@ pub struct BookArgs {
     /// After writing, compile to PDF with `typst` to verify it renders.
     #[arg(long, default_value_t = false)]
     pub verify: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EndpaperArgs {
+    /// The motif image (a transparent B/W ornament — a `bookart render`/`kit` fleuron, dinkus, …).
+    #[arg(long)]
+    pub motif: PathBuf,
+    /// Output PNG (the print-sized endpaper).
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Page size (`a5`/`a4`/`b5`/…). Default a5.
+    #[arg(long)]
+    pub page: Option<String>,
+    /// Repeat lattice: `grid` (default) · `half-drop` · `diamond`.
+    #[arg(long, default_value = "grid")]
+    pub layout: String,
+    /// Motif width in mm. Default 22.
+    #[arg(long, default_value_t = 22.0)]
+    pub tile: f32,
+    /// Gap between motif cells in mm. Default 10.
+    #[arg(long, default_value_t = 10.0)]
+    pub gap: f32,
+    /// Background fill as `#rrggbb` (else transparent). E.g. `#f4efe6` for a warm laid paper.
+    #[arg(long)]
+    pub bg: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -490,6 +518,7 @@ pub async fn run(args: BookartArgs) -> Result<()> {
         BookartCmd::TitlePage(a) => run_title_page(a),
         BookartCmd::Cover(a) => run_cover(a),
         BookartCmd::Book(a) => run_book(a),
+        BookartCmd::Endpaper(a) => run_endpaper(a),
     }
 }
 
@@ -1399,6 +1428,94 @@ fn run_book(a: BookArgs) -> Result<()> {
         println!("   {} typst compile {}", style("verify:").dim(), a.out.display());
     }
     Ok(())
+}
+
+/// `bookart endpaper` — tile a motif into a seamless decorative diaper across a page → a print-sized PNG.
+fn run_endpaper(a: EndpaperArgs) -> Result<()> {
+    use crate::bookart::spec::Page;
+    use crate::bookart::endpaper::{render_endpaper, EndpaperOpts, Layout};
+    use crate::bookart::geometry;
+
+    const DPI: f32 = 300.0;
+    let mm_to_px = |mm: f32| (mm / 25.4 * DPI).round().max(1.0) as u32;
+
+    let raw = image::open(&a.motif).with_context(|| format!("opening motif {}", a.motif.display()))?.to_rgba8();
+    // Crop the motif to its ink so the tile is the device, not a mostly-empty canvas.
+    let motif = crop_rgba_to_ink(&raw);
+
+    let size_name = a.page.clone().unwrap_or_else(|| "a5".into());
+    let page_res = geometry::resolve_page(Some(&Page { size: Some(size_name), ..Default::default() }));
+
+    let bg = match &a.bg {
+        Some(hex) => Some(parse_hex_rgba(hex).with_context(|| format!("parsing --bg {hex}"))?),
+        None => None,
+    };
+    let layout = Layout::from_name(&a.layout);
+    let opts = EndpaperOpts {
+        w: mm_to_px(page_res.w_mm),
+        h: mm_to_px(page_res.h_mm),
+        tile: mm_to_px(a.tile.max(1.0)),
+        gap: mm_to_px(a.gap.max(0.0)),
+        layout,
+        bg,
+    };
+    let out = render_endpaper(&motif, &opts);
+    if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+
+    println!(
+        "{} {}  ({} · {}×{} px @ {:.0} DPI · {} · tile {:.0} mm gap {:.0} mm{})",
+        style("wrote").green(),
+        a.out.display(),
+        page_res.size_name,
+        opts.w,
+        opts.h,
+        DPI,
+        a.layout,
+        a.tile,
+        a.gap,
+        if bg.is_some() { " · tinted" } else { " · transparent" },
+    );
+    Ok(())
+}
+
+/// Crop an in-memory RGBA image to its ink bounding box (non-transparent, non-near-white), with a small
+/// transparent pad. A blank image is returned unchanged.
+fn crop_rgba_to_ink(rgba: &image::RgbaImage) -> image::RgbaImage {
+    let (w, h) = rgba.dimensions();
+    let (mut x0, mut y0, mut x1, mut y1, mut found) = (w, h, 0u32, 0u32, false);
+    for y in 0..h {
+        for x in 0..w {
+            let p = rgba.get_pixel(x, y).0;
+            let luma = 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+            if p[3] > 24 && luma < 240.0 {
+                found = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if !found || x1 < x0 || y1 < y0 {
+        return rgba.clone();
+    }
+    let pad = ((x1 - x0).max(y1 - y0) / 40).max(2);
+    let cx0 = x0.saturating_sub(pad);
+    let cy0 = y0.saturating_sub(pad);
+    let cw = (x1 - cx0 + 1 + pad).min(w - cx0);
+    let ch = (y1 - cy0 + 1 + pad).min(h - cy0);
+    image::imageops::crop_imm(rgba, cx0, cy0, cw, ch).to_image()
+}
+
+/// Parse a `#rrggbb` (or `rrggbb`) colour into an opaque RGBA.
+fn parse_hex_rgba(hex: &str) -> Result<[u8; 4]> {
+    let h = hex.trim().trim_start_matches('#');
+    anyhow::ensure!(h.len() == 6 && h.chars().all(|c| c.is_ascii_hexdigit()), "expected #rrggbb, got `{hex}`");
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).unwrap();
+    Ok([byte(0), byte(2), byte(4), 255])
 }
 
 /// Count the pages a Typst file lays out, by rendering to a throwaway low-DPI PNG set and counting them.

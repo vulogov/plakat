@@ -63,6 +63,7 @@ plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --marg
 plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
 plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --verify]   a cover / dust jacket (back·spine·front) → Typst
 plakat bookart book       <manuscript.md> --out book.typ [--page a5 --title-page T.typ --running-head "…" --headpiece H --tailpiece T --divider D --colophon "…" --verify]   a whole typeset book → Typst
+plakat bookart endpaper   --motif ORN.png --out endpaper.png [--page a5 --layout grid|half-drop|diamond --tile 22 --gap 10 --bg '#f4efe6']   a seamless patterned endpaper (PNG)
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -336,6 +337,18 @@ the book's directory with its own assets (the tool references it by basename whe
 The natural pipeline: render a `kit` → build a `title-page` (and `cover`) → `bookart book` lays the
 manuscript into them. See the full demo [`corpus/bookart_titlepage.sh`](../corpus/bookart_titlepage.sh),
 which ends by assembling `thebook.pdf`.
+
+### `endpaper` — a seamless patterned diaper from a motif
+
+```
+plakat bookart endpaper --motif fleuron.png --out endpaper.png --layout diamond --bg "#f4efe6"
+```
+
+Tiles one motif (a transparent B/W ornament — auto-cropped to its ink) into a **seamless repeating pattern**
+across a print-sized page → a PNG endpaper. Three lattices — a straight **`grid`**, a **`half-drop`**, and a
+diagonal **`diamond`** diaper — with `--tile`/`--gap` (mm) setting the repeat and motifs **clipped at the
+trim** so the pattern reads as continuing past the page. Transparent by default (overprintable); `--bg
+#rrggbb` lays it on a tint (e.g. a warm laid paper). Weight-free — pure compositing, no model.
 
 ## The ornament vocabulary
 

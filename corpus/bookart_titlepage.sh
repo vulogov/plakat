@@ -17,8 +17,9 @@
 # Each page compiles to a reusable Typst `title-page`; a tiny book.typ #imports all seven and paginates
 # them into one PDF. The kit / rosette / dinkus are weight-free (procedural); `illustrate` (the frontispiece
 # plate and the title emblem) uses a model. Then a `bookart cover` lays out the book's DUST JACKET
-# (back · spine · front on one sheet; the spine width computed from the page count), and finally
-# `bookart book` assembles a whole typeset BOOK from a Markdown manuscript (the capstone) → thebook.pdf.
+# (back · spine · front on one sheet; the spine width computed from the page count), `bookart book`
+# assembles a whole typeset BOOK from a Markdown manuscript (the capstone) → thebook.pdf, and `bookart
+# endpaper` tiles the rosette into a patterned ENDPAPER.
 #
 # Usage:   corpus/bookart_titlepage.sh
 #          PLAKAT=./target/release/plakat STEPS=50 corpus/bookart_titlepage.sh   # release binary + finer plate
@@ -138,12 +139,17 @@ run "$PLAKAT" bookart cover "$COVER" --out "$OUT/cover.typ" --verify
 #    running heads + folios, a dinkus tailpiece per chapter, and a colophon.
 run "$PLAKAT" bookart book "$MANUSCRIPT" --out "$OUT/thebook.typ" --page a5 \
   --title-page "$OUT/01-title.typ" --running-head "The Open Sea" \
-  --headpiece "$OUT/rosette-1.png" --tailpiece "$OUT/dinkus.png" \
+  --headpiece "$OUT/rosette-1.png" --tailpiece "$OUT/dinkus.png" --divider "$OUT/dinkus.png" \
   --colophon "Set in Libertinus · Printed at the Admiralty Press · MDCCXLI" --verify
+
+# 9. A patterned ENDPAPER — the fleuron rosette tiled into a diagonal diaper on a warm laid-paper tint.
+run "$PLAKAT" bookart endpaper --motif "$OUT/rosette-1.png" --out "$OUT/endpaper.png" \
+  --page a5 --layout diamond --tile 24 --gap 12 --bg "#f4efe6"
 
 echo
 echo "✓ done — $OUT/book.pdf ($pages pages: frontispiece · emblem title · framed title · chapter I · §I · §II · chapter II)"
-echo "         $OUT/cover.pdf   (dust jacket: back · spine · front)"
-echo "         $OUT/thebook.pdf (the assembled typeset book: title · chapters · folios · colophon)"
+echo "         $OUT/cover.pdf     (dust jacket: back · spine · front)"
+echo "         $OUT/thebook.pdf   (the assembled typeset book: title · chapters · folios · colophon)"
+echo "         $OUT/endpaper.png  (a diamond-diaper endpaper tiled from the rosette)"
 echo "   kit set + contact sheet → $OUT/kit/    rosette → rosette-1.png    subchapter mark → dinkus.png"
 ls -lh "$OUT"/book.pdf "$OUT"/frontispiece.png "$OUT"/emblem.png "$OUT"/rosette-1.png "$OUT"/dinkus.png 2>/dev/null | awk '{print "   "$5"\t"$9}'

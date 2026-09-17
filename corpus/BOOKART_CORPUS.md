@@ -74,7 +74,9 @@ corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pd
 - [`bookart_book_manuscript.md`](bookart_book_manuscript.md) → a Markdown manuscript the **capstone**
   `bookart book` assembles into a whole typeset book (→ `thebook.pdf`): the emblem title page, chapter
   openers (rosette headpiece · CHAPTER N · title), raised initials, running heads + folios, dinkus
-  tailpieces, and a colophon.
+  tailpieces, section heads, blockquotes, `***` scene breaks, italic/bold, and a colophon.
+- **endpaper** (`bookart endpaper`) → the rosette tiled into a diagonal **diamond diaper** on a warm
+  laid-paper tint (→ `endpaper.png`).
 
 `bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
 the seven `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in

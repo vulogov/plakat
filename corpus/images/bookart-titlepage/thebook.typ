@@ -51,9 +51,9 @@
 #v(0.5em)
 #par[By the first dog-watch the sky to windward had gone the colour of a bruise.]
 
-#v(0.7em)
-#align(center, text(size: 11pt, tracking: 0.5em)[\*\*\*])
-#v(0.7em)
+#v(0.6em)
+#align(center, image("dinkus_crop.png", width: 13%))
+#v(0.6em)
 #par[We shortened sail while there was yet light to see the work, and I confess I have never been gladder of a well-drilled crew.]
 
 #v(1.2em)

@@ -15,6 +15,7 @@ pub mod book;
 pub mod compile;
 pub mod cover;
 pub mod edit;
+pub mod endpaper;
 #[cfg(feature = "epub")]
 pub mod epub;
 pub mod finish;
