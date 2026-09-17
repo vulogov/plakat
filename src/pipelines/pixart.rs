@@ -639,6 +639,18 @@ impl Pipeline {
                 cfg_guided
             };
             latents = scheduler.step(&guided, t, &latents)?;
+            // LAYERED-1 §S3: optional guide-anchor refinement after the step produces the next latent.
+            // No-op unless a LayeredHook overrides `refine_latent` (hook=None ⇒ byte-identical). The
+            // scheduler's `&mut` borrow ended with `step`, so borrowing it immutably here is safe.
+            {
+                let space = crate::pipelines::noise_space::SchedulerSpace::new(
+                    scheduler.as_ref(),
+                    &timesteps,
+                    // PixArt-Σ: 8× VAE, 2×2-patchified DiT token (u = 16), pool depth 2.
+                    crate::pipelines::noise_space::LatentGeometry { v: 8, u: 16, pool_levels: 2 },
+                );
+                latents = crate::pipelines::step_hook::refine(hook, step_i, n_steps, &space, latents)?;
+            }
             bar.inc(1);
             bar.set_message(format!("t={t}"));
             // RFC TUI-1 §0-R0-3: per-step hook (progress + cancel; no-op on None).
