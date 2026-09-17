@@ -77,6 +77,8 @@ corpus/bookart_titlepage.sh        # → corpus/images/bookart-titlepage/book.pd
   tailpieces, section heads, blockquotes, `***` scene breaks, italic/bold, and a colophon.
 - **endpaper** (`bookart endpaper`) → the rosette tiled into a diagonal **diamond diaper** on a warm
   laid-paper tint (→ `endpaper.png`).
+- **press-ready cover** (`bookart cover --print`) → the jacket with 3 mm bleed + crop/fold marks
+  (→ `cover_print.pdf`).
 
 `bookart title-page <spec> --out X.typ --verify` compiles each page to PDF on its own; the driver stitches
 the seven `title-page`s into `book.pdf`. The roles (incl. `subchapter`), styles and border-fitting are in

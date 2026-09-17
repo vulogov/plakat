@@ -83,9 +83,9 @@ impl CoverLayout {
 
 /// A front/back panel: a fixed box with the styled stack centred vertically (a `v(1fr)` above and below).
 /// `bg` optionally places a full-bleed image behind the type (the front-cover ornament).
-fn panel(dx: f32, w: f32, h: f32, inset: f32, base_pt: &str, hist: &str, bg: Option<&str>, body: &str) -> String {
+fn panel(dx: f32, dy: f32, w: f32, h: f32, inset: f32, base_pt: &str, hist: &str, bg: Option<&str>, body: &str) -> String {
     let mut s = String::new();
-    s.push_str(&format!("  place(top + left, dx: {}mm, dy: 0mm, box(width: {}mm, height: {}mm)[\n", mm(dx), mm(w), mm(h)));
+    s.push_str(&format!("  place(top + left, dx: {}mm, dy: {}mm, box(width: {}mm, height: {}mm)[\n", mm(dx), mm(dy), mm(w), mm(h)));
     if let Some(img) = bg {
         // A full-panel background image (behind the type), stretched to the panel.
         s.push_str(&format!(
@@ -114,12 +114,13 @@ fn panel(dx: f32, w: f32, h: f32, inset: f32, base_pt: &str, hist: &str, bg: Opt
     s
 }
 
-/// A dashed vertical fold/edge guide at `x` (mm), full page height.
-fn fold(x: f32, h: f32) -> String {
+/// A dashed vertical fold/edge guide at `x` (mm), spanning the trim height from `dy`.
+fn fold(x: f32, dy: f32, h: f32) -> String {
     format!(
-        "  place(top + left, dx: {}mm, dy: 0mm, line(length: {}mm, angle: 90deg, \
+        "  place(top + left, dx: {}mm, dy: {}mm, line(length: {}mm, angle: 90deg, \
          stroke: (paint: luma(60%), thickness: 0.3pt, dash: \"dashed\")))\n",
         mm(x),
+        mm(dy),
         mm(h),
     )
 }
@@ -148,27 +149,44 @@ pub fn cover_typst(layout: &CoverLayout, front: &[TitleLine], spine: &[TitleLine
     s.push_str("//   `cover` is reusable: compile this file directly, or #import it.\n");
     s.push_str("// ─────────────────────────────────────────────────────────────────────\n\n");
 
+    // Print bleed: grow the sheet by `b` on every side and offset all placements into the trim by `b`.
+    let b = emit.bleed_mm();
+
     s.push_str("#let cover = {\n");
-    s.push_str(&format!("  set page(width: {}mm, height: {}mm, margin: 0mm)\n", mm(total_w), mm(h)));
+    if b > 0.0 {
+        let folds = if has_flaps {
+            vec![layout.flap_w, layout.x_spine(), layout.x_front(), total_w - layout.flap_w]
+        } else {
+            vec![layout.x_spine(), layout.x_front()]
+        };
+        s.push_str(&format!(
+            "  set page(width: {}mm, height: {}mm, margin: 0mm{})\n",
+            mm(total_w + 2.0 * b),
+            mm(h + 2.0 * b),
+            if emit.crop { format!(", foreground: {}", crate::bookart::titlepage::crop_marks(total_w, h, b, &folds)) } else { String::new() },
+        ));
+    } else {
+        s.push_str(&format!("  set page(width: {}mm, height: {}mm, margin: 0mm)\n", mm(total_w), mm(h)));
+    }
 
     // Fold / edge guides (dashed) at every panel boundary.
     if has_flaps {
-        s.push_str(&fold(layout.flap_w, h));
-        s.push_str(&fold(layout.total_w() - layout.flap_w, h));
+        s.push_str(&fold(layout.flap_w + b, b, h));
+        s.push_str(&fold(layout.total_w() - layout.flap_w + b, b, h));
     }
-    s.push_str(&fold(layout.x_spine(), h));
-    s.push_str(&fold(layout.x_front(), h));
+    s.push_str(&fold(layout.x_spine() + b, b, h));
+    s.push_str(&fold(layout.x_front() + b, b, h));
 
     // Back panel.
-    s.push_str(&panel(layout.x_back(), layout.trim_w, h, 14.0, &base, hist, None, &render_stack(back, emit)));
+    s.push_str(&panel(layout.x_back() + b, b, layout.trim_w, h, 14.0, &base, hist, None, &render_stack(back, emit)));
 
     // Front panel (with optional background ornament).
-    s.push_str(&panel(layout.x_front(), layout.trim_w, h, 14.0, &base, hist, front_bg, &render_stack(front, emit)));
+    s.push_str(&panel(layout.x_front() + b, b, layout.trim_w, h, 14.0, &base, hist, front_bg, &render_stack(front, emit)));
 
     // Spine panel — type rotated to read top-to-bottom, centred along the spine height.
     if !spine.is_empty() {
         let spine_body = render_stack(spine, emit);
-        s.push_str(&format!("  place(top + left, dx: {}mm, dy: 0mm, box(width: {}mm, height: {}mm)[\n", mm(layout.x_spine()), mm(layout.spine_w), mm(h)));
+        s.push_str(&format!("  place(top + left, dx: {}mm, dy: {}mm, box(width: {}mm, height: {}mm)[\n", mm(layout.x_spine() + b), mm(b), mm(layout.spine_w), mm(h)));
         s.push_str("    #set align(center + horizon)\n");
         s.push_str(&format!("    #rotate(90deg, reflow: true, box(width: {}mm)[#{{\n", mm(h - 24.0)));
         s.push_str(&format!("      set text(size: {base}pt{hist})\n"));

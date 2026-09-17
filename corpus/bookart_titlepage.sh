@@ -131,8 +131,10 @@ typst compile "$OUT/book.typ" "$OUT/book.pdf" || {
 pages=$(pdfinfo "$OUT/book.pdf" 2>/dev/null | awk '/Pages/{print $2}' || echo "?")
 
 # 7. The book's COVER / dust jacket — back · spine · front on one wide sheet; the spine width is computed
-#    from the page count. Reuses the maritime hand and the illustrate emblem as the front device.
+#    from the page count. Reuses the maritime hand and the illustrate emblem as the front device. A second
+#    PRESS-READY pass adds 3 mm bleed + crop marks + spine fold ticks (--print).
 run "$PLAKAT" bookart cover "$COVER" --out "$OUT/cover.typ" --verify
+run "$PLAKAT" bookart cover "$COVER" --out "$OUT/cover_print.typ" --print --verify
 
 # 8. THE CAPSTONE — assemble the whole typeset book from a Markdown manuscript (bookart book): the emblem
 #    title page as the first leaf, chapter openers (rosette headpiece · CHAPTER N · title), raised initials,
@@ -149,6 +151,7 @@ run "$PLAKAT" bookart endpaper --motif "$OUT/rosette-1.png" --out "$OUT/endpaper
 echo
 echo "✓ done — $OUT/book.pdf ($pages pages: frontispiece · emblem title · framed title · chapter I · §I · §II · chapter II)"
 echo "         $OUT/cover.pdf     (dust jacket: back · spine · front)"
+echo "         $OUT/cover_print.pdf (press-ready: 3 mm bleed + crop/fold marks)"
 echo "         $OUT/thebook.pdf   (the assembled typeset book: title · chapters · folios · colophon)"
 echo "         $OUT/endpaper.png  (a diamond-diaper endpaper tiled from the rosette)"
 echo "   kit set + contact sheet → $OUT/kit/    rosette → rosette-1.png    subchapter mark → dinkus.png"

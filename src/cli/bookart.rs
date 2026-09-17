@@ -109,6 +109,15 @@ pub struct TitlePageArgs {
     /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
     #[arg(long, default_value_t = false)]
     pub historical: bool,
+    /// Print bleed in mm added around the trim (0 = none).
+    #[arg(long, default_value_t = 0.0)]
+    pub bleed: f32,
+    /// Draw crop/trim marks in the bleed margin.
+    #[arg(long, default_value_t = false)]
+    pub crop_marks: bool,
+    /// Press-ready shorthand: 3 mm bleed + crop marks.
+    #[arg(long, default_value_t = false)]
+    pub print: bool,
     /// After writing, compile to PDF with `typst` to verify it renders.
     #[arg(long, default_value_t = false)]
     pub verify: bool,
@@ -139,6 +148,15 @@ pub struct CoverArgs {
     /// Historical typography: old-style figures + historical ligatures (also settable as `historical` in the spec).
     #[arg(long, default_value_t = false)]
     pub historical: bool,
+    /// Print bleed in mm added around the whole flat sheet (0 = none).
+    #[arg(long, default_value_t = 0.0)]
+    pub bleed: f32,
+    /// Draw crop/trim marks + spine fold ticks in the bleed margin.
+    #[arg(long, default_value_t = false)]
+    pub crop_marks: bool,
+    /// Press-ready shorthand: 3 mm bleed + crop marks.
+    #[arg(long, default_value_t = false)]
+    pub print: bool,
     /// After writing, compile to PDF with `typst` to verify it renders.
     #[arg(long, default_value_t = false)]
     pub verify: bool,
@@ -1184,6 +1202,8 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
 
     let rule_pt = spec.rule.unwrap_or(0.0).max(0.0);
     let historical = a.historical || spec.historical.unwrap_or(false);
+    let crop = a.crop_marks || a.print;
+    let bleed = a.bleed.max(0.0);
     let style_name = a.style.clone().or_else(|| spec.style.clone()).unwrap_or_else(|| "letterpress".into());
     let tp_style = crate::bookart::titlepage::Style::from_name(&style_name);
     let emit = |scale: f32| {
@@ -1195,7 +1215,7 @@ fn run_title_page(a: TitlePageArgs) -> Result<()> {
             rule_pt,
             spec.font.as_deref(),
             &spec.lines,
-            crate::bookart::titlepage::Emit { scale, historical, style: tp_style },
+            crate::bookart::titlepage::Emit { scale, historical, style: tp_style, bleed, crop },
         )
     };
 
@@ -1301,7 +1321,9 @@ fn run_cover(a: CoverArgs) -> Result<()> {
     let style_name = a.style.clone().or_else(|| spec.style.clone()).unwrap_or_else(|| "letterpress".into());
     let tp_style = crate::bookart::titlepage::Style::from_name(&style_name);
     let historical = a.historical || spec.historical.unwrap_or(false);
-    let emit = crate::bookart::titlepage::Emit { scale: 1.0, historical, style: tp_style };
+    let crop = a.crop_marks || a.print;
+    let bleed = a.bleed.max(0.0);
+    let emit = crate::bookart::titlepage::Emit { scale: 1.0, historical, style: tp_style, bleed, crop };
 
     let layout = CoverLayout { trim_w: page_res.w_mm, trim_h: page_res.h_mm, spine_w, flap_w };
     let src = cover_typst(&layout, &spec.front, &spec.spine, &spec.back, front_bg.as_deref(), emit);

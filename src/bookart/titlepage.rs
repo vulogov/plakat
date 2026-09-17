@@ -64,12 +64,59 @@ pub struct Emit {
     pub historical: bool,
     /// The typographic style (role table + rule weight).
     pub style: Style,
+    /// Print bleed in mm added around the trim (0 = none). `crop` forces a small bleed if this is 0.
+    pub bleed: f32,
+    /// Draw crop/trim marks in the bleed margin (a press-ready sheet).
+    pub crop: bool,
 }
 
 impl Default for Emit {
     fn default() -> Self {
-        Self { scale: 1.0, historical: false, style: Style::Letterpress }
+        Self { scale: 1.0, historical: false, style: Style::Letterpress, bleed: 0.0, crop: false }
     }
+}
+
+impl Emit {
+    /// Effective bleed in mm — crop marks force at least 3 mm so they have room in the margin.
+    pub fn bleed_mm(&self) -> f32 {
+        if self.crop {
+            self.bleed.max(3.0)
+        } else {
+            self.bleed.max(0.0)
+        }
+    }
+}
+
+/// Emit crop/trim marks (and optional cover fold ticks) as Typst `place(...)` content for a page
+/// `foreground`. The trim rectangle sits at `(b, b)` on a page grown by `b` on every side; `folds` are
+/// trim-relative x positions (mm) that also get top/bottom fold ticks.
+pub(crate) fn crop_marks(trim_w: f32, trim_h: f32, b: f32, folds: &[f32]) -> String {
+    if b <= 0.0 {
+        return String::new();
+    }
+    let gap = (b * 0.25).clamp(0.5, 2.0);
+    let len = (b - gap).max(1.5);
+    let mut s = String::from("{\n");
+    let hline = |x: f32, y: f32| format!("    place(top + left, dx: {}mm, dy: {}mm, line(length: {}mm, stroke: 0.3pt + black))\n", mm(x), mm(y), mm(len));
+    let vline = |x: f32, y: f32| format!("    place(top + left, dx: {}mm, dy: {}mm, line(length: {}mm, angle: 90deg, stroke: 0.3pt + black))\n", mm(x), mm(y), mm(len));
+    let (l, t, r, bo) = (b, b, b + trim_w, b + trim_h);
+    // Four corners: a horizontal and a vertical mark pointing outward from each.
+    s.push_str(&hline(l - gap - len, t));
+    s.push_str(&vline(l, t - gap - len));
+    s.push_str(&hline(r + gap, t));
+    s.push_str(&vline(r, t - gap - len));
+    s.push_str(&hline(l - gap - len, bo));
+    s.push_str(&vline(l, bo + gap));
+    s.push_str(&hline(r + gap, bo));
+    s.push_str(&vline(r, bo + gap));
+    // Fold ticks (cover): short verticals in the top and bottom bleed at each fold.
+    for &fx in folds {
+        let x = b + fx;
+        s.push_str(&format!("    place(top + left, dx: {}mm, dy: 0mm, line(length: {}mm, angle: 90deg, stroke: (paint: luma(50%), thickness: 0.3pt, dash: \"dotted\")))\n", mm(x), mm(b * 0.7)));
+        s.push_str(&format!("    place(top + left, dx: {}mm, dy: {}mm, line(length: {}mm, angle: 90deg, stroke: (paint: luma(50%), thickness: 0.3pt, dash: \"dotted\")))\n", mm(x), mm(bo + b * 0.3), mm(b * 0.7)));
+    }
+    s.push_str("  }");
+    s
 }
 
 /// A typographic style — the same roles, a different hand. Weight-free: the look comes purely from size,
@@ -318,19 +365,26 @@ pub fn title_page_typst(
     }
     s.push('\n');
 
+    // Print bleed: grow the page by `b` on every side, shift the content and any full-bleed background
+    // into the trim by `b`, and draw crop marks in the bleed margin. `page-width`/`page-height` stay TRIM.
+    let b = emit.bleed_mm();
     s.push_str("#let title-page = {\n");
     s.push_str("  set page(\n");
-    s.push_str("    width: page-width, height: page-height,\n");
+    if b > 0.0 {
+        s.push_str(&format!("    width: page-width + {}mm, height: page-height + {}mm,\n", mm(2.0 * b), mm(2.0 * b)));
+    } else {
+        s.push_str("    width: page-width, height: page-height,\n");
+    }
     s.push_str(&format!(
         "    margin: (top: {}mm, bottom: {}mm, left: {}mm, right: {}mm),\n",
-        mm(text_margin.top),
-        mm(text_margin.bottom),
-        mm(text_margin.left),
-        mm(text_margin.right),
+        mm(text_margin.top + b),
+        mm(text_margin.bottom + b),
+        mm(text_margin.left + b),
+        mm(text_margin.right + b),
     ));
     if let Some((_, bm)) = border {
         s.push_str("    background: place(top + left, dx: ");
-        s.push_str(&format!("{}mm, dy: {}mm, image(border-image, ", mm(bm.left), mm(bm.top)));
+        s.push_str(&format!("{}mm, dy: {}mm, image(border-image, ", mm(bm.left + b), mm(bm.top + b)));
         s.push_str(&format!(
             "width: page-width - {}mm - {}mm, height: page-height - {}mm - {}mm, fit: \"stretch\")),\n",
             mm(bm.left),
@@ -342,14 +396,17 @@ pub fn title_page_typst(
         s.push_str(&format!(
             "    background: place(top + left, dx: {}mm, dy: {}mm, rect(width: page-width - {}mm - {}mm, \
              height: page-height - {}mm - {}mm, stroke: {}pt + black)),\n",
-            mm((text_margin.left - 6.0).max(2.0)),
-            mm((text_margin.top - 6.0).max(2.0)),
+            mm((text_margin.left - 6.0).max(2.0) + b),
+            mm((text_margin.top - 6.0).max(2.0) + b),
             mm((text_margin.left - 6.0).max(2.0)),
             mm((text_margin.right - 6.0).max(2.0)),
             mm((text_margin.top - 6.0).max(2.0)),
             mm((text_margin.bottom - 6.0).max(2.0)),
             trim_pt(rule_pt),
         ));
+    }
+    if emit.crop && b > 0.0 {
+        s.push_str(&format!("    foreground: {},\n", crop_marks(w_mm, h_mm, b, &[])));
     }
     s.push_str("  )\n");
     // Base size scales with `--fit` so em-based spacers/rules shrink with the type. Historical typography
@@ -444,7 +501,7 @@ mod tests {
             TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() },
             TitleLine { role: "image".into(), src: Some("e.png".into()), size: Some(40.0), ..Default::default() },
         ];
-        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 0.5, historical: false, style: Style::Letterpress });
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 0.5, historical: false, style: Style::Letterpress, ..Default::default() });
         assert!(out.contains("set text(size: 6pt"), "base size scaled 12→6:\n{out}");
         assert!(out.contains("size: 15pt"), "title 30pt scaled to 15pt");
         assert!(out.contains(r#"image("e.png", width: 20%)"#), "image 40% scaled to 20%");
@@ -453,11 +510,25 @@ mod tests {
     #[test]
     fn historical_adds_old_style_and_ligatures() {
         let lines = vec![TitleLine { role: "title".into(), text: Some("MDCCXLI".into()), ..Default::default() }];
-        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: true, style: Style::Letterpress });
+        let out = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: true, style: Style::Letterpress, ..Default::default() });
         assert!(out.contains(r#"number-type: "old-style""#), "old-style figures:\n{out}");
         assert!(out.contains("features: (hlig: 1)"), "historical ligatures");
         let plain = title_page_typst(148.0, 210.0, &m(15.0), None, 0.0, None, &lines, Emit::default());
         assert!(!plain.contains("number-type"), "off by default");
+    }
+
+    #[test]
+    fn print_bleed_grows_page_and_draws_marks() {
+        let lines = vec![TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() }];
+        // a5 148×210 + 3mm bleed each side → 154×216; foreground crop marks present.
+        let out = title_page_typst(148.0, 210.0, &m(20.0), None, 0.0, None, &lines, Emit { crop: true, ..Default::default() });
+        assert!(out.contains("width: page-width + 6mm, height: page-height + 6mm"), "page grown by 2×bleed:\n{out}");
+        assert!(out.contains("margin: (top: 23mm"), "margins absorb the bleed");
+        assert!(out.contains("foreground:"), "crop marks in the foreground");
+        assert!(out.contains("angle: 90deg"), "vertical marks");
+        // Off by default.
+        let plain = title_page_typst(148.0, 210.0, &m(20.0), None, 0.0, None, &lines, Emit::default());
+        assert!(!plain.contains("foreground:") && plain.contains("width: page-width, height: page-height"), "no bleed by default");
     }
 
     #[test]
@@ -466,7 +537,7 @@ mod tests {
             TitleLine { role: "title".into(), text: Some("Navigation".into()), ..Default::default() },
             TitleLine { role: "rule".into(), ..Default::default() },
         ];
-        let emit = |style| title_page_typst(148.0, 210.0, &m(20.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: false, style });
+        let emit = |style| title_page_typst(148.0, 210.0, &m(20.0), None, 0.0, None, &lines, Emit { scale: 1.0, historical: false, style, ..Default::default() });
         // Letterpress: bold upper 30pt, 0.5pt rule.
         let lp = emit(Style::Letterpress);
         assert!(lp.contains("size: 30pt, weight: \"bold\"") && lp.contains(r#"upper("Navigation")"#), "letterpress:\n{lp}");

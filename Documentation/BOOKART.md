@@ -60,8 +60,8 @@ plakat bookart blend      <a> <b> --out O                                       
 plakat bookart vectorize  <raster> --out svg [--tint T --dpi N]                        raster→SVG trace   (feature: bookart-trace)
 plakat bookart font       --out dingbats.otf [--family NAME]                           export ornaments as an OpenType dingbat font
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
-plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
-plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --verify]   a cover / dust jacket (back·spine·front) → Typst
+plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --print|--bleed 3 --crop-marks --verify]   a title page → Typst
+plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --print|--bleed 3 --crop-marks --verify]   a cover / dust jacket (back·spine·front) → Typst
 plakat bookart book       <manuscript.md> --out book.typ [--page a5 --title-page T.typ --running-head "…" --headpiece H --tailpiece T --divider D --colophon "…" --verify]   a whole typeset book → Typst
 plakat bookart endpaper   --motif ORN.png --out endpaper.png [--page a5 --layout grid|half-drop|diamond --tile 22 --gap 10 --bg '#f4efe6']   a seamless patterned endpaper (PNG)
 ```
@@ -292,6 +292,12 @@ an antique feel — weight-free, and harmless where the font lacks them.
   { role: "author", text: "Ѳ. Буслаевымъ." }
   { role: "imprint", text: "МОСКВА.\nВъ университетской типографіи.\n1858." } ] }
 ```
+
+**Press-ready output.** `title-page` and `cover` take `--bleed <mm>` (grow the sheet past the trim so ink
+runs off the cut edge) and `--crop-marks` (hairline trim marks in the bleed margin — plus **spine fold
+ticks** on a cover); `--print` is the shorthand for **3 mm bleed + crop marks**. The page grows by the
+bleed on every side, the content and any full-bleed background shift into the trim, and the marks sit in the
+new margin — a sheet you can hand to a press.
 
 ### `cover` — a book cover / dust jacket from HJSON
 
