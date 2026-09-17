@@ -62,7 +62,7 @@ plakat bookart font       --out dingbats.otf [--family NAME]                    
 plakat bookart typst      --border|--corner ORN --out page.typ [--page a5 --margin 12 --corner-size 18 --rule 0.6 --title T --body F --image IMG --spec S --verify]   a bordered Typst book page (reusable template)
 plakat bookart title-page <spec.hjson> --out title.typ [--page a5 --style letterpress|engraved|modern|playbill --margin 22 --fit --historical --verify]   a title page → Typst
 plakat bookart cover      <spec.hjson> --out cover.typ [--page a5 --style S --pages N --paper 0.06 --flap 0 --historical --verify]   a cover / dust jacket (back·spine·front) → Typst
-plakat bookart book       <manuscript.md> --out book.typ [--page a5 --title-page T.typ --running-head "…" --headpiece H --tailpiece T --colophon "…" --verify]   a whole typeset book → Typst
+plakat bookart book       <manuscript.md> --out book.typ [--page a5 --title-page T.typ --running-head "…" --headpiece H --tailpiece T --divider D --colophon "…" --verify]   a whole typeset book → Typst
 ```
 
 > **Opt-in features.** A few of the above need a Cargo feature the prebuilt release binaries don't
@@ -321,9 +321,12 @@ CLI (`--page`/`--style`/`--pages`/`--paper`/`--flap`).
 plakat bookart book manuscript.md --out book.typ --title-page 01-title.typ --headpiece rosette.png --verify
 ```
 
-The capstone that makes every other piece add up. From a plain **Markdown** manuscript (a `#`/`##` line
-opens a chapter; blank lines separate paragraphs; text before the first heading is front matter) it
-assembles one compilable Typst book: an `#include`d **title page** (a `bookart title-page` artifact),
+The capstone that makes every other piece add up. From a **Markdown** manuscript it assembles one
+compilable Typst book. The manuscript is real Markdown: `# Title` opens a **chapter** (text before the
+first is front matter), `## Head` is an in-chapter **section head**, `> …` lines are a **blockquote**, a
+`***` line is a **scene break** (a typographic asterism, or a `--divider` ornament), blank lines separate
+paragraphs, and `*italic*` / `**bold**` (also `_`/`__`) are honoured inline. From it comes: an `#include`d
+**title page** (a `bookart title-page` artifact),
 **chapter openers** (an optional headpiece ornament · `CHAPTER N` · the title), body prose with a **raised
 decorated initial + small-caps opening** on each chapter's first paragraph, **running heads + page folios**,
 an optional **tailpiece** per chapter, and a **colophon**. Weight-free typography; the only images are the

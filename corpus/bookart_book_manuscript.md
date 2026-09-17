@@ -6,7 +6,19 @@ The wind rose over Plymouth Sound that morning, and the Amaranth swung to her an
 
 At the turn of the tide we made sail. The town fell away, grey and small, and the Eddystone light stood up alone against the paling sky. The master set a course south by west, and the great business of the voyage was begun.
 
-For three days we ran before a soldier's wind, and the people found their sea-legs and their spirits. On the fourth the glass began to fall.
+For three days we ran before a *soldier's wind*, and the people found their sea-legs and their spirits. On the fourth the glass began to fall.
+
+## The Falling Glass
+
+I noted the change in my journal that evening, in the cramped hand of a man **braced against the roll**:
+
+> Wind backing to the south-east, and a long swell from the same quarter. The mercury has dropped a full half-inch since the forenoon watch. I like it not.
+
+By the first dog-watch the sky to windward had gone the colour of a bruise.
+
+***
+
+We shortened sail while there was yet light to see the work, and I confess I have never been gladder of a well-drilled crew.
 
 # The Storm
 

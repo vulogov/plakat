@@ -163,6 +163,9 @@ pub struct BookArgs {
     /// A tailpiece image centred at the end of every chapter.
     #[arg(long)]
     pub tailpiece: Option<PathBuf>,
+    /// A divider image for scene breaks (`***`); absent = a typographic asterism.
+    #[arg(long)]
+    pub divider: Option<PathBuf>,
     /// A colophon line, small-caps, centred on the final leaf.
     #[arg(long)]
     pub colophon: Option<String>,
@@ -1301,7 +1304,7 @@ fn run_cover(a: CoverArgs) -> Result<()> {
 /// `bookart book` — assemble a whole typeset book from a Markdown manuscript → a compilable Typst file.
 fn run_book(a: BookArgs) -> Result<()> {
     use crate::bookart::spec::Page;
-    use crate::bookart::book::{book_typ, parse_manuscript, BookOpts};
+    use crate::bookart::book::{book_typ, parse_manuscript, Block, BookOpts};
     use crate::bookart::geometry;
 
     let md = std::fs::read_to_string(&a.manuscript).with_context(|| format!("reading {}", a.manuscript.display()))?;
@@ -1350,6 +1353,10 @@ fn run_book(a: BookArgs) -> Result<()> {
         Some(p) => Some(crop_to_ink(p, &art_dir).context("cropping the tailpiece")?),
         None => None,
     };
+    let divider = match &a.divider {
+        Some(p) => Some(crop_to_ink(p, &art_dir).context("cropping the divider")?),
+        None => None,
+    };
 
     let opts = BookOpts {
         w_mm: page_res.w_mm,
@@ -1358,12 +1365,21 @@ fn run_book(a: BookArgs) -> Result<()> {
         title_page: title_ref.as_deref(),
         headpiece: headpiece.as_deref(),
         tailpiece: tailpiece.as_deref(),
+        divider: divider.as_deref(),
         colophon: a.colophon.as_deref().unwrap_or(""),
     };
     let src = book_typ(&front, &chapters, &opts);
     std::fs::write(&a.out, &src).with_context(|| format!("writing {}", a.out.display()))?;
 
-    let words: usize = chapters.iter().flat_map(|c| c.paragraphs.iter()).map(|p| p.split_whitespace().count()).sum();
+    let words: usize = chapters
+        .iter()
+        .flat_map(|c| c.blocks.iter())
+        .map(|b| match b {
+            Block::Para(t) | Block::Section(t) => t.split_whitespace().count(),
+            Block::Quote(ps) => ps.iter().map(|p| p.split_whitespace().count()).sum(),
+            Block::SceneBreak => 0,
+        })
+        .sum();
     println!(
         "{} {}  ({} · {}×{} mm · {} chapter(s) · ~{} words{}{})",
         style("wrote").green(),

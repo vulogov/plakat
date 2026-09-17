@@ -34,7 +34,27 @@
 #set par(first-line-indent: 1.4em)
 #par[At the turn of the tide we made sail. The town fell away, grey and small, and the Eddystone light stood up alone against the paling sky. The master set a course south by west, and the great business of the voyage was begun.]
 
-#par[For three days we ran before a soldier's wind, and the people found their sea-legs and their spirits. On the fourth the glass began to fall.]
+#par[For three days we ran before a #emph[soldier's wind], and the people found their sea-legs and their spirits. On the fourth the glass began to fall.]
+
+#v(1.2em)
+#align(center, text(size: 11pt, tracking: 0.12em)[#smallcaps("The Falling Glass")])
+#v(0.6em)
+#set par(first-line-indent: 0pt)
+#par[I noted the change in my journal that evening, in the cramped hand of a man #strong[braced against the roll]:]
+
+#v(0.5em)
+#pad(left: 2.5em, right: 2.5em)[#{
+  set text(size: 10.5pt, style: "italic")
+  set par(first-line-indent: 0pt)
+  [Wind backing to the south-east, and a long swell from the same quarter. The mercury has dropped a full half-inch since the forenoon watch. I like it not.]
+}]
+#v(0.5em)
+#par[By the first dog-watch the sky to windward had gone the colour of a bruise.]
+
+#v(0.7em)
+#align(center, text(size: 11pt, tracking: 0.5em)[\*\*\*])
+#v(0.7em)
+#par[We shortened sail while there was yet light to see the work, and I confess I have never been gladder of a well-drilled crew.]
 
 #v(1.2em)
 #align(center, image("dinkus_crop.png", width: 16%))
