@@ -488,6 +488,10 @@ impl Pipeline {
         guidance: f64,
         seed: u64,
         scheduler_kind: SchedulerKind,
+        // LAYERED-1 / img2img: a VAE-encoded init latent `(1,4,lh,lw)` + strength `[0,1]`. `Some` starts the
+        // denoise from a strength-trimmed point on the init's trajectory instead of pure noise (S4 repair /
+        // S5 lift need it). `None` = txt2img from noise (unchanged).
+        init: Option<(&Tensor, f32)>,
         hook: &mut Option<&mut dyn crate::pipelines::step_hook::StepHook>,
     ) -> Result<(Vec<u8>, u32, u32)> {
         anyhow::ensure!(
@@ -525,7 +529,19 @@ impl Pipeline {
         } else {
             Tensor::randn(0f32, 1f32, (1, 4, lh, lw), &self.device)?.to_dtype(self.dtype)?
         };
-        let mut latents = (noise * init_sigma)?;
+        // txt2img: start from scaled noise at step 0. img2img: skip the first `init_skip` steps and start
+        // from the init latent forward-noised to that step's timestep (the SD-family img2img pattern; the
+        // scheduler is ε, so `add_noise` handles the sigma scaling).
+        let (start_step, mut latents) = match init {
+            None => (0usize, (&noise * init_sigma)?),
+            Some((init_lat, strength)) => {
+                let s = strength.clamp(0.0, 1.0);
+                let init_skip = ((steps as f32) * (1.0 - s)).round() as usize;
+                let start = init_skip.min(steps.saturating_sub(1)).min(timesteps.len().saturating_sub(1));
+                let start_t = timesteps[start];
+                (start, scheduler.add_noise(init_lat, noise.clone(), start_t)?)
+            }
+        };
 
         // ---- Resolution + aspect conditioning (Σ-specific). ----
         // diffusers passes raw pixel dims for `resolution`; aspect is
@@ -564,7 +580,8 @@ impl Pipeline {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);
-        for (step_i, &t) in timesteps.iter().enumerate() {
+        // img2img skips the first `start_step` steps (the latent already starts at that noise level).
+        for (step_i, &t) in timesteps.iter().enumerate().skip(start_step) {
             let scaled = scheduler.scale_model_input(latents.clone(), t)?;
             // Reuse the cached DiT output while the accumulated input change is under threshold.
             // Always recompute step 0 (no cache) and the final step (quality tail).
@@ -779,6 +796,7 @@ pub async fn run_hooked(
             req.guidance,
             seed,
             req.scheduler,
+            None, // txt2img (no init); the layered engine passes an init for S4 repair / S5 lift.
             &mut hook,
         )?;
 

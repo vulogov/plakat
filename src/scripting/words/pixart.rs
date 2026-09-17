@@ -121,6 +121,7 @@ fn do_plakat_pixart(vm: &mut VM) -> anyhow::Result<&mut VM> {
                 guidance,
                 seed,
                 scheduler,
+                None,
                 &mut nohook,
             )?
         };

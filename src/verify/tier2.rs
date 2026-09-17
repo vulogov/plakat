@@ -181,7 +181,7 @@ async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>
             let mut no_hook: Option<&mut dyn crate::pipelines::step_hook::StepHook> = None;
             let rendered = pipe.generate(
                 fx.prompt, fx.negative, spec.size, spec.size, spec.steps, spec.guidance, 0,
-                crate::pipelines::scheduler::SchedulerKind::Ddim, &mut no_hook,
+                crate::pipelines::scheduler::SchedulerKind::Ddim, None, &mut no_hook,
             );
             unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
             rendered // (Vec<u8> RGB, w, h)

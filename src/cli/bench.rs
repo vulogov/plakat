@@ -229,7 +229,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
                 let mut opt: Option<&mut dyn StepHook> = Some(hook);
                 pipeline
                     .generate(prompt, "blurry", width, height, args.steps, args.guidance, 42,
-                        SchedulerKind::default(), &mut opt)
+                        SchedulerKind::default(), None, &mut opt)
                     .map(|_| ())
             })?
         }

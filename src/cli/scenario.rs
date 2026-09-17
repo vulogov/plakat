@@ -7087,6 +7087,7 @@ pub async fn run_with_events(
                         eff_guidance,
                         img_seed,
                         eff_scheduler,
+                        None,
                         &mut nohook,
                     )?;
                     // Build sidecar metadata. Same field set
