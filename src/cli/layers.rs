@@ -1,0 +1,274 @@
+//! `plakat layers` — plan-guided layered generation (RFC LAYERED-1). P1 offline subcommands: `new`
+//! (scaffold a plan), `lint` (validate + size-class report), `show` (resolve + optionally draw the boxes).
+//! The GPU stages (`draft`/`guide`/`render`) land in later P1 slices.
+
+use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
+use console::style;
+use image::{Rgb, RgbImage};
+use std::path::PathBuf;
+
+use crate::layered::lint::{self, Class, Severity};
+use crate::layered::plan::{self, Layer, LayerPlan};
+
+#[derive(Args, Debug)]
+pub struct LayersArgs {
+    #[command(subcommand)]
+    pub cmd: LayersCmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LayersCmd {
+    /// Scaffold a new layer plan (a partial `LayerPlan` HJSON to edit). A PROMPT seeds the finish prompt.
+    New(NewArgs),
+    /// Validate a plan — schema, lint rules, and the size-class report for the finish model. Exits non-zero
+    /// on any error so it can gate a render run.
+    Lint(LintArgs),
+    /// Print what a plan resolves to (per-layer box, depth, class). `--boxes out.png` draws the boxes,
+    /// coloured by class, on a blank canvas.
+    Show(ShowArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct NewArgs {
+    /// Optional finish prompt to seed the scaffold.
+    pub prompt: Option<String>,
+    /// Output plan file (`.hjson`).
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Output size `WxH`. Default 1216x832.
+    #[arg(long, default_value = "1216x832")]
+    pub size: String,
+}
+
+#[derive(Args, Debug)]
+pub struct LintArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// Finish model (drives the size-class report + geometry). Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ShowArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    #[arg(long)]
+    pub size: Option<String>,
+    /// Draw the layer boxes (coloured by class, laid back-to-front by depth) → this PNG.
+    #[arg(long)]
+    pub boxes: Option<PathBuf>,
+}
+
+pub async fn run(args: LayersArgs) -> Result<()> {
+    match args.cmd {
+        LayersCmd::New(a) => run_new(a),
+        LayersCmd::Lint(a) => run_lint(a),
+        LayersCmd::Show(a) => run_show(a),
+    }
+}
+
+/// Build a scaffold plan (valid HJSON) for the given size + finish prompt.
+fn scaffold(size: &str, prompt: &str) -> String {
+    let prompt = prompt.replace('"', "'");
+    format!(
+        "{{\n  \
+         version: 1\n  \
+         size: \"{size}\"\n  \
+         global: {{\n    \
+         palette: \"TODO: colour palette (anchored into the drafts)\"\n    \
+         light:   \"TODO: lighting (anchored into the drafts)\"\n    \
+         medium:  \"TODO: oil painting / photo / engraving — FINISH only\"\n  }}\n  \
+         // The FINISH prompt (the model renders this): keep the STYLE, drop per-object attribute detail.\n  \
+         prompt: \"{prompt}\"\n  \
+         backdrop: {{ prompt: \"TODO: the environment\", weight: 0.6, window: 0.25 }}\n  \
+         layers: [\n    \
+         // One INDEPENDENT subject per layer (interacting subjects stay in ONE layer). Give a box\n    \
+         // [x0,y0,x1,y1] in [0,1], OR `place: \"center-left mid front\"`.\n    \
+         {{ id: \"subject\", prompt: \"TODO: one subject, full detail\", box: [0.25, 0.2, 0.75, 0.9], depth: 0.3 }}\n  \
+         ]\n  \
+         draft: {{ model: \"sdxl-lightning\", seed: 7 }}\n}}\n",
+        size = size,
+        prompt = prompt,
+    )
+}
+
+fn run_new(a: NewArgs) -> Result<()> {
+    let prompt = a.prompt.unwrap_or_else(|| "a scene with a subject and a backdrop".into());
+    let template = scaffold(&a.size, &prompt);
+    if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&a.out, &template).with_context(|| format!("writing {}", a.out.display()))?;
+    println!("{} {}  — edit the TODOs, then: {} {}", style("wrote").green(), a.out.display(), style("plakat layers lint").dim(), a.out.display());
+    Ok(())
+}
+
+/// Resolve (plan, geometry, output size) shared by lint + show.
+fn load(planned: &PathBuf, model: &str, size_override: &Option<String>) -> Result<(LayerPlan, crate::pipelines::noise_space::LatentGeometry, u32, u32)> {
+    let text = std::fs::read_to_string(planned).with_context(|| format!("reading {}", planned.display()))?;
+    let p = plan::parse(&text)?;
+    let geom = lint::geometry_for_model(model);
+    let size = size_override.clone().or_else(|| p.size.clone());
+    let (w, h) = plan::parse_size(size.as_deref(), (1216, 832));
+    Ok((p, geom, w, h))
+}
+
+fn run_lint(a: LintArgs) -> Result<()> {
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    println!("{}  lint {} ({} · {}×{} px · {} layer(s))", style("◆").cyan(), a.plan.display(), a.model, w, h, p.layers.len());
+    let issues = lint::lint(&p, &geom, w, h);
+    let (mut errs, mut warns) = (0usize, 0usize);
+    for i in &issues {
+        match i.severity {
+            Severity::Error => {
+                errs += 1;
+                println!("    {} {}", style("✗").red(), i.message);
+            }
+            Severity::Warn => {
+                warns += 1;
+                println!("    {} {}", style("⚠").yellow(), i.message);
+            }
+            Severity::Info => println!("    {} {}", style("·").dim(), style(&i.message).dim()),
+        }
+    }
+    let verdict = if errs > 0 {
+        style(format!("FAIL — {errs} error(s), {warns} warning(s)")).red().bold()
+    } else if warns > 0 {
+        style(format!("PASS with {warns} warning(s)")).yellow()
+    } else {
+        style("PASS — clean".into()).green().bold()
+    };
+    println!("\n{}  {}", style("→").dim(), verdict);
+    anyhow::ensure!(lint::is_clean(&issues), "layers lint failed: {errs} error(s)");
+    Ok(())
+}
+
+fn run_show(a: ShowArgs) -> Result<()> {
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    println!("{}  {} · finish model {} · {}×{} px", style("◆").cyan(), a.plan.display(), a.model, w, h);
+    if let Some(pr) = &p.prompt {
+        println!("  {} {}", style("finish:").dim(), pr);
+    }
+    if let Some(b) = &p.backdrop {
+        println!(
+            "  {} {}  (weight {:.2}, window {:.2})",
+            style("backdrop:").dim(),
+            b.prompt.as_deref().unwrap_or("—"),
+            b.weight.unwrap_or(0.6),
+            b.window.unwrap_or(0.25),
+        );
+    }
+    // Layers back-to-front by depth.
+    let mut order: Vec<&Layer> = p.layers.iter().collect();
+    order.sort_by(|x, y| plan::layer_depth(y).partial_cmp(&plan::layer_depth(x)).unwrap_or(std::cmp::Ordering::Equal));
+    for l in &order {
+        let bx = plan::layer_box(l);
+        let c = lint::layer_class(l, &geom, w, h);
+        let window = l.window.map(|v| format!("{v:.2}")).unwrap_or_else(|| if c == Class::Anchored { "0.40".into() } else { "—".into() });
+        println!(
+            "  {:<14} {} depth {:.2}  weight {:.2}  window {}  box [{:.2},{:.2},{:.2},{:.2}]",
+            style(&l.id).bold(),
+            class_tag(c),
+            plan::layer_depth(l),
+            l.weight.unwrap_or(1.0),
+            window,
+            bx[0], bx[1], bx[2], bx[3],
+        );
+    }
+    if let Some(out) = &a.boxes {
+        draw_boxes(&p, &geom, w, h, out)?;
+        println!("\n{} {}  (boxes, coloured by class)", style("wrote").green(), out.display());
+    }
+    Ok(())
+}
+
+fn class_tag(c: Class) -> console::StyledObject<&'static str> {
+    match c {
+        Class::Anchored => style("anchored").green(),
+        Class::Hinted => style("hinted  ").yellow(),
+        Class::Lifted => style("lifted  ").red(),
+    }
+}
+
+fn class_color(c: Class) -> Rgb<u8> {
+    match c {
+        Class::Anchored => Rgb([46, 125, 50]),
+        Class::Hinted => Rgb([230, 140, 0]),
+        Class::Lifted => Rgb([200, 40, 40]),
+    }
+}
+
+/// Draw each layer's box (coloured by class, back-to-front by depth) on a half-scale blank canvas.
+fn draw_boxes(p: &LayerPlan, geom: &crate::pipelines::noise_space::LatentGeometry, w: u32, h: u32, out: &PathBuf) -> Result<()> {
+    let cw = (w / 2).clamp(64, 2048);
+    let ch = (h / 2).clamp(64, 2048);
+    let mut img = RgbImage::from_pixel(cw, ch, Rgb([248, 248, 246]));
+
+    let mut order: Vec<&Layer> = p.layers.iter().collect();
+    order.sort_by(|x, y| plan::layer_depth(y).partial_cmp(&plan::layer_depth(x)).unwrap_or(std::cmp::Ordering::Equal));
+    for l in &order {
+        let b = plan::layer_box(l);
+        let color = class_color(lint::layer_class(l, geom, w, h));
+        let x0 = (b[0] * cw as f32).round() as i64;
+        let y0 = (b[1] * ch as f32).round() as i64;
+        let x1 = (b[2] * cw as f32).round() as i64;
+        let y1 = (b[3] * ch as f32).round() as i64;
+        rect_outline(&mut img, x0, y0, x1, y1, color, 2);
+        // A filled class tag at the top-left corner of the box.
+        fill_rect(&mut img, x0, y0, x0 + 10, y0 + 10, color);
+    }
+    img.save(out).with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
+fn put(img: &mut RgbImage, x: i64, y: i64, c: Rgb<u8>) {
+    if x >= 0 && y >= 0 && (x as u32) < img.width() && (y as u32) < img.height() {
+        img.put_pixel(x as u32, y as u32, c);
+    }
+}
+
+fn fill_rect(img: &mut RgbImage, x0: i64, y0: i64, x1: i64, y1: i64, c: Rgb<u8>) {
+    for y in y0..y1 {
+        for x in x0..x1 {
+            put(img, x, y, c);
+        }
+    }
+}
+
+fn rect_outline(img: &mut RgbImage, x0: i64, y0: i64, x1: i64, y1: i64, c: Rgb<u8>, t: i64) {
+    for k in 0..t {
+        for x in x0..=x1 {
+            put(img, x, y0 + k, c);
+            put(img, x, y1 - k, c);
+        }
+        for y in y0..=y1 {
+            put(img, x0 + k, y, c);
+            put(img, x1 - k, y, c);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaffold_is_valid_lintable_hjson() {
+        let s = scaffold("1216x832", "a rainy market \"square\"");
+        let p = plan::parse(&s).expect("scaffold parses");
+        assert_eq!(p.layers.len(), 1);
+        assert_eq!(plan::parse_size(p.size.as_deref(), (0, 0)), (1216, 832));
+        // A quote in the prompt was sanitised so the HJSON stays valid.
+        assert!(p.prompt.as_deref().unwrap().contains("'square'"));
+        // It lints without an Error (the scaffold's single box is valid).
+        let g = lint::geometry_for_model("sdxl");
+        assert!(lint::is_clean(&lint::lint(&p, &g, 1216, 832)), "scaffold lints clean");
+    }
+}

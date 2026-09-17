@@ -29,6 +29,7 @@ pub mod motion_adapter;
 pub mod outpaint;
 pub mod persona;
 pub mod bookart;
+pub mod layers;
 pub mod texture;
 pub mod comic;
 pub mod product;
@@ -183,6 +184,11 @@ pub enum Command {
     /// HJSON → transparent, print-sized ornament. `new` scaffolds, `lint` validates,
     /// `show` resolves (render tiers land across later phases).
     Bookart(bookart::BookartArgs),
+    /// Plan-guided layered generation (RFC LAYERED-1). Split a complex prompt into a backdrop + independent
+    /// subject layers → drafts → a low-frequency guide → ONE anchored denoising trajectory of your model.
+    /// `new` scaffolds a plan, `lint` validates + reports the size classes, `show` resolves it (GPU stages
+    /// land in later phases).
+    Layers(layers::LayersArgs),
     /// Seamless PBR material synthesis (RFC TEXTURE-1). A `TextureSpec` HJSON → a
     /// tileable albedo/normal/roughness/metallic/height/AO set. `new` scaffolds,
     /// `lint` validates, `show` resolves (generation + derivation land across later phases).
@@ -456,6 +462,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Inspect(args) => inspect::run(args).await,
         Command::Persona(args) => persona::run(args).await,
         Command::Bookart(args) => bookart::run(args).await,
+        Command::Layers(args) => layers::run(args).await,
         Command::Texture(args) => texture::run(args).await,
         Command::Comic(args) => comic::run(args).await,
         Command::Product(args) => product::run(args).await,
