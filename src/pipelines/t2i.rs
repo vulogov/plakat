@@ -1756,6 +1756,17 @@ impl Pipeline {
                                 do_cfg,
                                 &active_controls,
                             )?;
+                            // LAYERED-1 §S3: guide-anchor refinement on the hires-polish pass. The
+                            // NoiseSpace indexes the polish sub-schedule (`active`); no-op unless a
+                            // LayeredHook overrides `refine_latent` (hook=None ⇒ byte-identical).
+                            {
+                                let space = crate::pipelines::noise_space::SchedulerSpace::new(
+                                    polish.as_ref(),
+                                    active,
+                                    crate::pipelines::noise_space::LatentGeometry { v: 8, u: 8, pool_levels: 2 },
+                                );
+                                latents = crate::pipelines::step_hook::refine(&mut hook, step_idx, total_polish, &space, latents)?;
+                            }
                             rbar.inc(1);
                             rbar.set_message(format!("polish t={timestep}"));
                         }
@@ -1952,7 +1963,7 @@ impl Pipeline {
                 base_ts.len() as u64,
                 &format!("tiled base {}/{} ({}²)", idx + 1, req.count, cfg.tile_size),
             );
-            for &timestep in &base_ts {
+            for (step_i, &timestep) in base_ts.iter().enumerate() {
                 base_latents = self.denoise_step(
                     &self.core.unet,
                     &base_latents,
@@ -1965,6 +1976,16 @@ impl Pipeline {
                     do_cfg,
                     &[],
                 )?;
+                // LAYERED-1 §S3: guide-anchor refinement on the coarse base pre-pass (where the coherent
+                // low-res structure forms). No-op unless a LayeredHook overrides `refine_latent`.
+                {
+                    let space = crate::pipelines::noise_space::SchedulerSpace::new(
+                        base_sched.as_ref(),
+                        &base_ts,
+                        crate::pipelines::noise_space::LatentGeometry { v: 8, u: 8, pool_levels: 2 },
+                    );
+                    base_latents = crate::pipelines::step_hook::refine(&mut hook, step_i, base_ts.len(), &space, base_latents)?;
+                }
                 base_bar.inc(1);
             }
             base_bar.finish_and_clear();
@@ -2109,6 +2130,16 @@ impl Pipeline {
                     !self.variant.is_v_prediction(),
                 )?;
                 latents = scheduler.step(&noise_pred, timestep, &latents)?;
+                // LAYERED-1 §S3: guide-anchor refinement on the tiled-refine stage (indexing the `active`
+                // sub-schedule). No-op unless a LayeredHook overrides `refine_latent` (byte-identical).
+                {
+                    let space = crate::pipelines::noise_space::SchedulerSpace::new(
+                        scheduler.as_ref(),
+                        &active,
+                        crate::pipelines::noise_space::LatentGeometry { v: 8, u: 8, pool_levels: 2 },
+                    );
+                    latents = crate::pipelines::step_hook::refine(&mut hook, step_i, active.len(), &space, latents)?;
+                }
 
                 bar.inc(1);
                 bar.set_message(format!("t={timestep} seed={seed}"));
