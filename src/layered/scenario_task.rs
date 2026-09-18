@@ -1,0 +1,98 @@
+//! Scenario `type: layered` task (RFC LAYERED-1 P5). Runs the layered pipeline — plan-or-prose → drafts →
+//! guide → one anchored finish trajectory — as one step of a scenario, writing `<out>/layered.png`. Reuses
+//! [`crate::layered::render`]; a prose task runs the P4 planner first.
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use candle_core::Device;
+use serde::Deserialize;
+
+use crate::layered::{lint, plan, planner, render};
+
+/// A `type: layered` task body: render from an existing `plan:` HJSON, or decompose `prompt:` prose into a
+/// plan first (the P4 planner). Everything else has a sensible default.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LayeredTaskCfg {
+    /// A plan HJSON path.
+    pub plan: Option<String>,
+    /// OR prose to decompose into a plan (planner).
+    pub prompt: Option<String>,
+    /// Finish model (SD family / Flux). Default sdxl.
+    pub model: Option<String>,
+    pub draft_model: Option<String>,
+    pub draft_steps: Option<usize>,
+    pub steps: Option<usize>,
+    pub guidance: Option<f64>,
+    pub seed: Option<u64>,
+    pub ramp: Option<f32>,
+    pub size: Option<String>,
+    /// The planner LLM alias (prose only).
+    pub provider: Option<String>,
+}
+
+/// Validate up front (before any model load): a `plan:` path (which must exist) or a non-empty `prompt:`.
+pub fn validate(cfg: &LayeredTaskCfg) -> Result<()> {
+    let has_plan = cfg.plan.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_prompt = cfg.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    anyhow::ensure!(has_plan || has_prompt, "layered task needs a `plan:` path or a `prompt:` (prose)");
+    if let Some(p) = cfg.plan.as_deref().filter(|s| !s.trim().is_empty()) {
+        anyhow::ensure!(Path::new(p).exists(), "layered task: plan {p} not found");
+    }
+    Ok(())
+}
+
+/// Run the layered pipeline → `<out_dir>/layered.png`. `seed` is the scenario-assigned task seed (a `seed:`
+/// on the task cfg overrides it).
+pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Path, seed: u64, dry_run: bool) -> Result<()> {
+    validate(cfg)?;
+    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
+    let out = out_dir.join("layered.png");
+    if dry_run {
+        return Ok(());
+    }
+
+    let model = cfg.model.clone().unwrap_or_else(|| "sdxl".into());
+    let seed = cfg.seed.unwrap_or(seed);
+
+    // Resolve the plan: parse a file, or run the planner over prose.
+    let layer_plan = if let Some(path) = cfg.plan.as_deref().filter(|s| !s.trim().is_empty()) {
+        plan::parse(&std::fs::read_to_string(path).with_context(|| format!("reading plan {path}"))?)?
+    } else {
+        let (w, h) = plan::parse_size(cfg.size.as_deref(), (1216, 832));
+        let draft = cfg.draft_model.clone().unwrap_or_else(|| "sdxl-lightning".into());
+        let provider = cfg.provider.clone().unwrap_or_else(|| crate::llm::DEFAULT_ALIAS.to_string());
+        let prose = cfg.prompt.clone().unwrap_or_default();
+        let hjson = planner::plan_prose(&prose, w, h, &draft, &provider, &device, seed).await?;
+        plan::parse(&hjson)?
+    };
+
+    let (w, h) = plan::parse_size(cfg.size.as_deref().or(layer_plan.size.as_deref()), (1216, 832));
+    let geom = lint::geometry_for_model(&model);
+    let draft_model = cfg.draft_model.clone().or_else(|| layer_plan.draft.model.clone()).unwrap_or_else(|| "sdxl".into());
+    let opts = render::RenderOpts {
+        model,
+        out,
+        draft_model,
+        draft_steps: cfg.draft_steps.unwrap_or(8),
+        steps: cfg.steps.unwrap_or(30),
+        guidance: cfg.guidance.unwrap_or(7.0),
+        seed,
+        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+        ramp: cfg.ramp.unwrap_or(0.1),
+        keep: None,
+    };
+    render::render(&layer_plan, &geom, w, h, device, &opts).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_needs_a_plan_or_a_prompt() {
+        assert!(validate(&LayeredTaskCfg::default()).is_err(), "empty cfg is an error");
+        assert!(validate(&LayeredTaskCfg { prompt: Some("a busy market square".into()), ..Default::default() }).is_ok(), "prose is enough");
+        assert!(validate(&LayeredTaskCfg { plan: Some("/no/such/plan.hjson".into()), ..Default::default() }).is_err(), "a missing plan file is an error");
+    }
+}

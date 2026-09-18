@@ -21,4 +21,5 @@ pub mod plan;
 pub mod planner;
 pub mod render;
 pub mod repair;
+pub mod scenario_task;
 pub mod verify;

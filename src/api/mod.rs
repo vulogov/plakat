@@ -420,6 +420,153 @@ impl Img2img {
     }
 }
 
+/// Where a [`Layered`] render gets its plan.
+enum LayeredSource {
+    /// An existing plan HJSON file.
+    Plan(PathBuf),
+    /// Prose, decomposed into a plan by the P4 planner LLM.
+    Prose(String),
+}
+
+/// Plan-guided **layered** generation (RFC LAYERED-1): a complex prompt is split into a backdrop + subject
+/// layers, drafted, turned into a low-frequency guide, and finished as ONE anchored trajectory of `model`.
+/// Start from an existing plan ([`Layered::from_plan`]) or from prose ([`Layered::from_prose`], which runs
+/// the planner first), chain options, then [`run`](Layered::run). Bring-up families: SD 1.5 / SDXL / Flux.
+///
+/// Writes the finished image to `out` (the whole pipeline is file-based); `run` returns once it's written.
+pub struct Layered {
+    model: String,
+    source: LayeredSource,
+    out: PathBuf,
+    size: Option<String>,
+    draft_model: Option<String>,
+    draft_steps: usize,
+    steps: usize,
+    guidance: f64,
+    seed: u64,
+    ramp: f32,
+    provider: Option<String>,
+    keep: Option<PathBuf>,
+    device: Option<Device>,
+}
+
+impl Layered {
+    fn base(model: impl Into<String>, source: LayeredSource, out: impl Into<PathBuf>) -> Self {
+        Self {
+            model: model.into(),
+            source,
+            out: out.into(),
+            size: None,
+            draft_model: None,
+            draft_steps: 8,
+            steps: 30,
+            guidance: 7.0,
+            seed: 0,
+            ramp: 0.1,
+            provider: None,
+            keep: None,
+            device: None,
+        }
+    }
+
+    /// Render an existing plan HJSON with `model`, writing to `out`.
+    pub fn from_plan(model: impl Into<String>, plan: impl Into<PathBuf>, out: impl Into<PathBuf>) -> Self {
+        Self::base(model, LayeredSource::Plan(plan.into()), out)
+    }
+
+    /// Decompose `prose` into a plan (P4 planner), then render it with `model`, writing to `out`.
+    pub fn from_prose(model: impl Into<String>, prose: impl Into<String>, out: impl Into<PathBuf>) -> Self {
+        Self::base(model, LayeredSource::Prose(prose.into()), out)
+    }
+
+    /// Output size `WxH` (overrides the plan's size; drives the planner when starting from prose).
+    pub fn size(mut self, size: impl Into<String>) -> Self {
+        self.size = Some(size.into());
+        self
+    }
+    /// Draft model (else the plan's `draft.model`, else sdxl).
+    pub fn draft_model(mut self, model: impl Into<String>) -> Self {
+        self.draft_model = Some(model.into());
+        self
+    }
+    pub fn draft_steps(mut self, steps: usize) -> Self {
+        self.draft_steps = steps;
+        self
+    }
+    pub fn steps(mut self, steps: usize) -> Self {
+        self.steps = steps;
+        self
+    }
+    pub fn guidance(mut self, guidance: f64) -> Self {
+        self.guidance = guidance;
+        self
+    }
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+    /// The per-pixel window-close ramp `r` (default 0.1).
+    pub fn ramp(mut self, ramp: f32) -> Self {
+        self.ramp = ramp;
+        self
+    }
+    /// The planner LLM alias (prose only; default: the enhance default).
+    pub fn provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
+    }
+    /// Also write the intermediate drafts + guide + anchor maps into this directory.
+    pub fn keep(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.keep = Some(dir.into());
+        self
+    }
+    pub fn device(mut self, spec: &str) -> Self {
+        self.device = device(spec).ok();
+        self
+    }
+
+    /// Run the layered pipeline and write the finished image to `out`.
+    pub async fn run(self) -> Result<()> {
+        use crate::layered::{lint, plan, planner, render};
+        let device = match self.device {
+            Some(d) => d,
+            None => device("auto")?,
+        };
+
+        // Resolve the plan: parse a file, or run the planner over prose.
+        let layer_plan = match &self.source {
+            LayeredSource::Plan(path) => {
+                let text = std::fs::read_to_string(path).with_context(|| format!("reading plan {}", path.display()))?;
+                plan::parse(&text)?
+            }
+            LayeredSource::Prose(prose) => {
+                let (w, h) = plan::parse_size(self.size.as_deref(), (1216, 832));
+                let draft = self.draft_model.clone().unwrap_or_else(|| "sdxl-lightning".into());
+                let provider = self.provider.clone().unwrap_or_else(|| crate::llm::DEFAULT_ALIAS.to_string());
+                let hjson = planner::plan_prose(prose, w, h, &draft, &provider, &device, self.seed).await?;
+                plan::parse(&hjson)?
+            }
+        };
+
+        let (w, h) = plan::parse_size(self.size.as_deref().or(layer_plan.size.as_deref()), (1216, 832));
+        let geom = lint::geometry_for_model(&self.model);
+        let draft_model = self.draft_model.clone().or_else(|| layer_plan.draft.model.clone()).unwrap_or_else(|| "sdxl".into());
+        let opts = render::RenderOpts {
+            model: self.model.clone(),
+            out: self.out.clone(),
+            draft_model,
+            draft_steps: self.draft_steps,
+            steps: self.steps,
+            guidance: self.guidance,
+            seed: self.seed,
+            scheduler: SchedulerKind::default(),
+            ramp: self.ramp,
+            keep: self.keep.clone(),
+        };
+        render::render(&layer_plan, &geom, w, h, device, &opts).await
+    }
+}
+
 /// Upscale an image — classical (Lanczos/Bicubic/…) or ML (Real-ESRGAN). Real-ESRGAN methods
 /// have a fixed factor (×2 / ×4) and run on the device; classical methods honor [`scale`](Upscale::scale).
 pub struct Upscale {
