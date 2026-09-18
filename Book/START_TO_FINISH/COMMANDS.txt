@@ -17,11 +17,14 @@
 #  GPU; considerably longer on CPU (use sd15 there).
 #
 #  Filenames the book expects (in Book/START_TO_FINISH/assets/):
-#    01-empty-lane.png     06-ink-poster.png
-#    02-vendor-cart.png    07-naturalized.png
+#    01-empty-lane.png     06-ink-poster.png       11-layered-plan.png
+#    02-vendor-cart.png    07-naturalized.png      12-layered-poster.png
 #    03-overstuffed.png    08-upscaled.png
 #    04-two-figures.png    09-poster-portrait.png
 #    05-cart-object.png    10-cover-hero.png
+#
+#  Images 11–12 belong to the Layered Generation chapter. Image 11 is OFFLINE
+#  (a plan diagram — no GPU); image 12 is the full layered render.
 # ============================================================================
 
 mkdir -p Book/START_TO_FINISH/assets
@@ -98,8 +101,26 @@ plakat generate "a single iron lantern glowing warm amber on a stone post at the
 mv $A/plakat-1010.png $A/10-cover-hero.png
 
 
+# --- 11 · Ch. 16 — the layered PLAN diagram (offline, no GPU) ---------------
+#     The night-market plan's three subject boxes, coloured by size class, on a
+#     blank canvas. Pure geometry — draws instantly, no model, no network.
+plakat layers show corpus/layered/night-market.hjson --model sdxl \
+  --boxes $A/11-layered-plan.png
+
+
+# --- 12 · Ch. 16 — the finished LAYERED render ------------------------------
+#     The full pipeline: each subject drafted alone -> composed into a low-freq
+#     guide -> ONE anchored finish trajectory of SDXL. A real diffusion job
+#     (drafts + finish); `--keep` also writes the drafts, the guide, and the
+#     anchor maps into a `stages/` folder next to the output for inspection.
+plakat layers render corpus/layered/night-market.hjson \
+  --model sdxl --draft-model sdxl-lightning --draft-steps 8 --steps 30 --seed 7 \
+  --keep $A/12-stages --out $A/12-layered-poster.png
+
+
 # ============================================================================
-#  Done. Ten images in Book/START_TO_FINISH/assets/ (01–10). Tell me when they
-#  are in place and I will wire them into the chapters (#image figures with
-#  captions) and re-render the PDF.
+#  Done. Twelve images in Book/START_TO_FINISH/assets/ (01–12). Images 11–12
+#  are the Layered Generation chapter's figures (11 is offline; 12 renders).
+#  Tell me when they are in place and I will wire them into the chapters
+#  (#image figures with captions) and re-render the PDF.
 # ============================================================================

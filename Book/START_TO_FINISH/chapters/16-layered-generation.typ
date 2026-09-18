@@ -1,0 +1,214 @@
+#import "../design.typ": *
+#chapter(number: 16, title: "Layered Generation")
+
+#dropcap("Y") ou have taken one poster from a blank project to a signed print, and along
+the way you met the composition tools the compile path gives you: `foreground` to name
+the figures, `objects:` to keep a cart from melting into its vendor, `relate:` to make
+two people face each other. Those staged NIGHT MARKET beautifully — two figures, one
+prop, one interaction. This chapter is about the scene those tools *can't* quite hold,
+and a second engine built for it.
+
+The ceiling is always the same one: *fusion*. A diffusion model paints the whole canvas
+at once, so the more independent subjects you ask for, the more it blends them — three
+distinct people become a two-and-a-half-person smear, each prompt bleeding into its
+neighbour. `objects:` and `relate:` push that ceiling up a little. Layered generation
+moves it somewhere else entirely: instead of asking the model to keep several subjects
+apart *while* painting them, it draws each subject *alone*, then paints the final image
+once with those solo drafts holding everyone in place.
+
+#section("The idea: constraints, not pixels")
+
+A layered render runs in three moves.
+
+First it splits your scene into a *plan*: a backdrop (the environment) plus a small set
+of independent *subject layers*, each with its own full-detail prompt and a box on the
+canvas. Second, it *drafts* each layer alone — one subject per image, where binding is
+trivial because there is nothing to fuse with — and composes those drafts into a single
+low-resolution *guide*. Third, it runs *one ordinary denoising trajectory* of your
+finish model, gently steered toward the guide's low frequencies inside each subject's box
+during the early steps, then left free to paint its own detail.
+
+#callout(label: "The one rule that makes it safe")[
+  Layers are *constraints on layout*, never pixels copied to the output. Not one pixel of
+  a draft survives into the final image — only the coarse, low-frequency answer to
+  "roughly what goes where" is borrowed, and only early, and only inside each box. The
+  finish is still a single, coherent render in your model's own hand. That is why a
+  layered image looks painted, not pasted.
+]
+
+#section("The plan")
+
+A plan is a small HJSON file. `plakat layers new` scaffolds one to edit; here is the one
+this chapter renders, a busier NIGHT MARKET than the poster dared — a vendor, a customer,
+and a glowing lantern, three subjects that plain prose would fuse.
+
+#screen(caption: "corpus/layered/night-market.hjson")[```
+  size: "1216x832"
+  global: {
+    palette: "warm amber and deep teal, lantern glow"
+    light:   "night, soft fog, warm string lights"
+    medium:  "cinematic poster illustration"   # FINISH only
+  }
+  prompt: "a lively night market lane, two figures at a food cart, soft fog"
+  backdrop: { prompt: "a night market lane, stalls and lanterns into fog" }
+  layers: [
+    { id: "vendor",   prompt: "a food vendor in a dark apron leaning over a cart", box: [0.08, 0.30, 0.46, 0.95], depth: 0.30 }
+    { id: "customer", prompt: "a customer in a red coat reaching for a paper cup", box: [0.54, 0.32, 0.90, 0.96], depth: 0.35 }
+    { id: "lantern",  prompt: "a large round red paper lantern, glowing",          box: [0.66, 0.06, 0.86, 0.30], depth: 0.60 }
+  ]
+  draft: { model: "sdxl-lightning", seed: 7 }
+```]
+
+Three fields carry the composition. Each layer's `box` is `[x0, y0, x1, y1]` in fractions
+of the canvas (a `place:` phrase like `"center-left mid"` works too, if you would rather
+describe than measure). `depth` orders the layers front-to-back — `0` is nearest, `1`
+farthest — so a nearer subject wins where boxes overlap. And the `global` look is anchored
+into every draft *except* `medium`: technique is the finish's job, so only palette and
+light travel down to the solo drafts.
+
+#term("box / place / depth")[
+  A layer's place in the frame. `box: [x0,y0,x1,y1]` gives an explicit rectangle in
+  `[0,1]`; `place: "center-right mid"` resolves the same from words. `depth` (0 near … 1
+  far) sets the front-to-back order the drafts are composed in. Together they are the
+  *layout* the guide will hold — the constraint, not the content.
+]
+
+#section("Size classes: what the anchor can hold")
+
+Not every box is big enough to steer. `plakat layers lint` validates the plan and reports,
+for your finish model, which class each layer falls in.
+
+#screen(caption: "Lint the plan for SDXL")[```
+  $ plakat layers lint corpus/layered/night-market.hjson --model sdxl
+  ◆  lint … (sdxl · 1216×832 px · 3 layer(s))
+      · layer "vendor":   anchored (462px shorter side)
+      · layer "customer": anchored (438px shorter side)
+      · layer "lantern":  anchored (200px shorter side)
+  →  PASS — clean
+```]
+
+An #emph[anchored] layer is large enough to get the full treatment: a guide anchor, plus
+the verify-and-repair pass later. A #emph[hinted] layer is smaller — named in the finish
+prompt and checked, but not anchored. A #emph[lifted] layer is tiny — too small to steer,
+so its structure comes from a dedicated crop-and-regenerate pass. All three subjects here
+are comfortably anchored. `layers show` prints the same resolution and draws the boxes,
+coloured by class, so you can *see* the layout before spending a single GPU-second:
+
+#screen(caption: "Draw the plan (offline — no model)")[```
+  $ plakat layers show corpus/layered/night-market.hjson \
+      --model sdxl --boxes plan.png
+```]
+
+#figure_img("assets/11-layered-plan.png", "Image 11 — the plan, drawn: three anchored subject boxes on the canvas (vendor lower-left, customer lower-right, lantern upper-right). This is pure geometry — no diffusion — so it is the cheapest way to check a composition before you render it.")
+
+#section("Rendering")
+
+With the plan lint-clean, one command runs the whole pipeline — drafts, guide, and the
+anchored finish.
+
+#screen(caption: "The full layered render")[```
+  $ plakat layers render corpus/layered/night-market.hjson \
+      --model sdxl --draft-model sdxl-lightning --draft-steps 8 \
+      --steps 30 --seed 7 --keep stages/ --out poster.png
+```]
+
+The finish model is SDXL — the book's model. `--draft-model` picks a fast few-step model
+for the solo drafts (the drafts only need to be *roughly* right; their high-frequency
+detail is thrown away). `--keep stages/` writes the intermediate drafts, the composed
+guide, and the weight/window anchor maps next to the output, which is worth doing the
+first few times so you can watch the machine think.
+
+#figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: vendor, customer, and lantern each in their planned place, painted together in one coherent SDXL pass. Three independent subjects that plain prose would have fused into a smear.")
+
+#callout(label: "Flux works too")[
+  Layered generation is wired for the SD family (SD 1.5 / SDXL) and Flux. Point `--model`
+  at a Flux alias and the guide is encoded in Flux's own latent space — the anchor is
+  the same, only the finish family changes. (SD3, Sana, PixArt and Cascade finishes are
+  on the roadmap.)
+]
+
+#section("Did it land? Verify, repair, lift")
+
+The layered pipeline can *check its own work*. `plakat layers verify` asks an open-vocabulary
+detector (OWL-ViT) whether each anchored subject actually rendered inside its box, and
+exits non-zero if any missed — so it can gate a repair.
+
+#screen(caption: "Verify each subject is where the plan put it")[```
+  $ plakat layers verify corpus/layered/night-market.hjson \
+      --image poster.png --model sdxl
+      ✓ vendor    anchored score 0.14  iou 0.71  "a food vendor …"
+      ✓ customer  anchored score 0.12  iou 0.68  "a customer …"
+      ✗ lantern   anchored score 0.00  iou 0.00  "a large red paper lantern"
+  →  FAIL — 1 missing: lantern
+```]
+
+When a subject misses, `plakat layers repair --auto` verifies first and then re-asserts
+just the layers that failed, with a masked img2img pass over each one's box — the rest of
+the image is preserved. And for a subject too small to anchor in the first place, `plakat
+layers lift` crops its box, regenerates it at a workable resolution, and composites it
+back with a feathered seam. Both are targeted touch-ups, not a full re-render.
+
+#subsection("Diff: reading the anchor")
+
+`plakat layers diff` compares two images at the plan's low-frequency band — the band the
+anchor actually constrains — and reports, whole-canvas and per box, how closely they
+agree. Point it at the guide and the finish to *measure* whether the anchor took:
+
+#screen(caption: "How well did the finish track the guide?")[```
+  $ plakat layers diff corpus/layered/night-market.hjson \
+      --a stages/__guide.png --b poster.png --model sdxl -o heat.png
+```]
+
+It is model-free and instant, and the heatmap it writes shows exactly where the finish
+drifted from the plan — a fast, honest read on a render you are not sure about.
+
+#section("Skipping the hand-written plan: the planner")
+
+You do not have to author the HJSON yourself. `plakat layers plan` hands a prose
+description to an LLM and gets a plan back — global look, backdrop, and separated subject
+layers with placements — ready to lint, edit, and render.
+
+#screen(caption: "Prose → plan, via a local model")[```
+  $ plakat layers plan \
+      "a night market: a vendor at a cart, a customer ordering, a lantern above" \
+      -o market.hjson --model sdxl --provider ollama:qwen2.5-coder:14b
+```]
+
+`--provider` chooses the LLM: omit it for the small in-process model, or point it at a
+model you have pulled with Ollama (`ollama:qwen2.5-coder:14b`) for sharper decompositions —
+a bigger model places the subjects on opposite sides of a "face-off" instead of stacking
+them. Whatever you get is an ordinary plan file: read it, nudge a box, and render.
+
+#section("Which road? Layered vs. the compile path")
+
+Two engines now stage a scene, and they are not rivals — they are for different scenes.
+
+#warn(label: "Pick the tool for the number of subjects")[
+  For one to three figures with a clear interaction — the whole of NIGHT MARKET — the
+  compile path (`foreground`, `objects:`, `relate:`, `control-generate`) is the right
+  road: it is simpler, it is what the rest of this book uses, and it renders in one pass.
+  Reach for *layered* when a scene has *several independent subjects that each need full
+  detail* and keep fusing no matter how you phrase them — a market of distinct stalls, a
+  group portrait where every face matters, a poster with a cast. When `compile --analyze`
+  flags fusion you cannot phrase your way out of, layers are the next rung.
+]
+
+That is the last engine in the book. You have every tool a poster needs — from a single
+prose line to a self-checking, layer-by-layer composition — each for the job it does best.
+
+#recap((
+  [Diffusion *fuses* independent subjects; layered generation avoids it by drafting each
+  subject *alone*, then painting the final image once with those drafts as a guide.],
+  [Layers are *constraints on layout, never pixels* — only the coarse low frequencies of
+  the drafts steer the finish, early and inside each box, so the result is painted not
+  pasted.],
+  [A *plan* is a small HJSON: a `global` look, a `backdrop`, and subject `layers` with a
+  `box`/`place` and `depth`; `layers lint` reports each layer's size class
+  (anchored / hinted / lifted) and `layers show` draws the boxes offline.],
+  [`layers render` runs drafts → guide → one anchored finish (SD family / Flux);
+  `--keep` saves the stages. `verify` (OWL-ViT) checks each subject landed, `repair
+  --auto` fixes the misses, `lift` rebuilds tiny subjects, `diff` measures the anchor.],
+  [`layers plan "<prose>"` decomposes a description into a plan via an LLM
+  (`--provider ollama:<model>` for a bigger local model). Reach for layered generation
+  when *many* independent subjects keep fusing — otherwise the compile path is simpler.],
+))

@@ -42,6 +42,7 @@
   include "chapters/13-making-it-look-real.typ",
   include "chapters/14-upscale-and-sharpen.typ",
   include "chapters/15-provenance-and-export.typ",
+  include "chapters/16-layered-generation.typ",
 
   part(number: "VI", title: "Reference"),
   include "chapters/A-prose-directive-reference.typ",

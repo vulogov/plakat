@@ -84,6 +84,7 @@ Small shells whose outputs write into `images/` alongside the scenarios.
 | `inpaint.sh` | **Inpaint** (`img2img --mask`) — repaint a masked region (the sky of a committed landscape) while preserving the rest. Self-contained (input + `assets/inpaint-sky-mask.png` committed). SD 1.5. |
 | `outpaint.sh` | **Outpaint** (`plakat outpaint`) — extend an image's canvas sideways + paint the new region in-context (auto-mask, `sdxl-inpaint`). Clean: the masked region is conditioned on mid-gray with a binary mask (no dark bands, no feather seams). |
 | `stylize.sh` | **Stylize** (`plakat stylize`) — apply a reference's *look* to a subject via IP-Adapter (no prompt, no training) on SD 1.5 or **SDXL** (`--model sdxl`). The IP-Adapter transfers content/appearance/palette, NOT painterly texture → a ref-*variation* tool (for true painterly style use `style_train.sh` / `--look`). `--ref-blur` suppresses ref content. |
+| `layered.sh` | **Layered generation** (`plakat layers`, RFC LAYERED-1) — a multi-subject scene from a PLAN (`corpus/layered/night-market.hjson`): backdrop + independent subject layers, each drafted alone → a low-freq guide → ONE anchored finish trajectory (layers are constraints on layout, never pixels). Default run is **offline** (`lint` + `show --boxes` → the plan diagram); the planner LLM (`LAYERED_PLAN=1`, `LAYERED_PROVIDER=ollama:<model>`) and the full render + `verify`/`diff` (`LAYERED_RENDER=1`) are env-gated. SD family / Flux. |
 
 See [`COVERAGE.md`](COVERAGE.md) for the full capability matrix and which
 drivers are still to be added.
