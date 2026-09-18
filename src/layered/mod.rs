@@ -18,6 +18,7 @@ pub mod hook;
 pub mod lift;
 pub mod lint;
 pub mod plan;
+pub mod planner;
 pub mod render;
 pub mod repair;
 pub mod verify;

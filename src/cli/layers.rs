@@ -54,6 +54,9 @@ pub enum LayersCmd {
     /// Regenerate every lifted-class (tiny) subject at a workable resolution and composite it back (S5).
     /// Renders.
     Lift(LiftArgs),
+    /// Decompose a prose description into a layer plan HJSON via an LLM (P4): global look + backdrop +
+    /// independent subject layers with placements. Edit + lint before rendering.
+    Plan(PlanArgs),
 }
 
 #[derive(Args, Debug)]
@@ -325,6 +328,30 @@ pub struct LiftArgs {
     pub feather: u32,
 }
 
+#[derive(Args, Debug)]
+pub struct PlanArgs {
+    /// The prose description to decompose into a plan.
+    pub prose: String,
+    /// Output plan file (`.hjson`).
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Finish model whose geometry drives the size-class report. Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output size `WxH`. Default 1216x832.
+    #[arg(long, default_value = "1216x832")]
+    pub size: String,
+    /// The layout LLM alias (enhance provider stack). Default: the enhance default.
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// The draft model written into the plan. Default sdxl-lightning.
+    #[arg(long, default_value = "sdxl-lightning")]
+    pub draft_model: String,
+    /// Seed for the LLM decode. Default 0.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+}
+
 pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
@@ -339,7 +366,36 @@ pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
         LayersCmd::Verify(a) => run_verify(a, device).await,
         LayersCmd::Repair(a) => run_repair(a, device).await,
         LayersCmd::Lift(a) => run_lift(a, device).await,
+        LayersCmd::Plan(a) => run_plan(a, device).await,
     }
+}
+
+async fn run_plan(a: PlanArgs, device: candle_core::Device) -> Result<()> {
+    let (w, h) = plan::parse_size(Some(&a.size), (1216, 832));
+    let provider = a.provider.clone().unwrap_or_else(|| crate::llm::DEFAULT_ALIAS.to_string());
+    println!("{}  planning \"{}\" ({} · {}×{} px)…", style("◆").cyan(), a.prose.chars().take(60).collect::<String>(), provider, w, h);
+    let hjson = crate::layered::planner::plan_prose(&a.prose, w, h, &a.draft_model, &provider, &device, a.seed).await?;
+
+    // Lint the produced plan (report, but always write — the author edits before rendering).
+    let p = plan::parse(&hjson)?;
+    let geom = lint::geometry_for_model(&a.model);
+    let issues = lint::lint(&p, &geom, w, h);
+    let (errs, warns) = (issues.iter().filter(|i| i.severity == Severity::Error).count(), issues.iter().filter(|i| i.severity == Severity::Warn).count());
+
+    if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&a.out, &hjson).with_context(|| format!("writing {}", a.out.display()))?;
+
+    println!("{} {}  ({} layer(s))", style("wrote").green(), a.out.display(), p.layers.len());
+    for l in &p.layers {
+        println!("    {} {:<14} {:<8} \"{}\"", style("·").dim(), l.id, lint::layer_class(l, &geom, w, h).label(), l.prompt.as_deref().unwrap_or(""));
+    }
+    if errs > 0 || warns > 0 {
+        println!("  {} {} error(s), {} warning(s) — run {} {}", style("lint:").dim(), errs, warns, style("plakat layers lint").dim(), a.out.display());
+    }
+    println!("\n{}  edit if needed, then: {} {} -o out.png", style("→").dim(), style("plakat layers render").dim(), a.out.display());
+    Ok(())
 }
 
 /// Load OWL-ViT and verify a plan against an image; returns the report (used by `verify` + `repair --auto`).
