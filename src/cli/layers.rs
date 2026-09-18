@@ -27,6 +27,9 @@ pub enum LayersCmd {
     /// Print what a plan resolves to (per-layer box, depth, class). `--boxes out.png` draws the boxes,
     /// coloured by class, on a blank canvas.
     Show(ShowArgs),
+    /// Render (or refresh from cache) the per-layer drafts + the backdrop → PNGs in a directory (S1).
+    /// Each layer is rendered ALONE; drafts are content-cached, so `--only` re-renders just those.
+    Draft(DraftArgs),
 }
 
 #[derive(Args, Debug)]
@@ -66,12 +69,72 @@ pub struct ShowArgs {
     pub boxes: Option<PathBuf>,
 }
 
+#[derive(Args, Debug)]
+pub struct DraftArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// Directory to write the drafts into (`__backdrop.png` + `<id>.png`).
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Draft model (overrides the plan's `draft.model`; default sdxl).
+    #[arg(long)]
+    pub draft_model: Option<String>,
+    /// Draft steps (a fast preset welcome). Default 8.
+    #[arg(long, default_value_t = 8)]
+    pub steps: usize,
+    /// Only (re)render these layer ids (comma-separated), plus the backdrop.
+    #[arg(long)]
+    pub only: Option<String>,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
 pub async fn run(args: LayersArgs) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
         LayersCmd::Lint(a) => run_lint(a),
         LayersCmd::Show(a) => run_show(a),
+        LayersCmd::Draft(a) => run_draft(a).await,
     }
+}
+
+async fn run_draft(a: DraftArgs) -> Result<()> {
+    use crate::layered::draft::{render_all, DraftOpts};
+    let (p, _geom, w, h) = load(&a.plan, "sdxl", &a.size)?;
+    let model = a.draft_model.clone().or_else(|| p.draft.model.clone()).unwrap_or_else(|| "sdxl".into());
+    // The draft family's native side (area target for layer drafts).
+    let native_side = match crate::compile::classify_model(&model) {
+        crate::compile::ModelFamily::Sd15 => 512,
+        _ => 1024,
+    };
+    let only = a.only.as_ref().map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>());
+    let opts = DraftOpts {
+        out_w: w,
+        out_h: h,
+        model: model.clone(),
+        steps: a.steps,
+        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+        native_side,
+        only,
+    };
+    println!("{}  drafting {} on {} ({}×{} canvas, {} steps)…", style("◆").cyan(), a.plan.display(), model, w, h, a.steps);
+    let set = render_all(&p, &opts).await?;
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    let bpath = a.out.join("__backdrop.png");
+    set.backdrop.save(&bpath).with_context(|| format!("saving {}", bpath.display()))?;
+    println!("  {} {}  ({}×{})", style("✓").green(), bpath.display(), set.backdrop.width(), set.backdrop.height());
+    for (id, img) in &set.layers {
+        let path = a.out.join(format!("{}.png", sanitize(id)));
+        img.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        println!("  {} {}  ({}×{})", style("✓").green(), path.display(), img.width(), img.height());
+    }
+    println!("\n{}  {} draft(s) + backdrop → {}", style("→").dim(), set.layers.len(), a.out.display());
+    Ok(())
+}
+
+fn sanitize(id: &str) -> String {
+    id.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
 /// Build a scaffold plan (valid HJSON) for the given size + finish prompt.
