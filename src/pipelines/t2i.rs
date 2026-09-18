@@ -3337,6 +3337,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             kontext_bucket: req.kontext_bucket,
             // v0.20: Flux now honours --format webp end-to-end.
             output_format: req.output_format,
+            // LAYERED-1 S3: the guide anchor (family-agnostic; Flux encodes G with its own AE).
+            layered: req.layered.clone(),
         })
         .await?;
         // Tempdir survives until here so the auto-annotated PNGs are

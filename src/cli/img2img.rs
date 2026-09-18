@@ -841,6 +841,7 @@ async fn run_flux_fill(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // Defaults to PNG; pipeline-level filename construction
         // honours this field.
         output_format: crate::imaging::io::OutputFormat::Png,
+        layered: None,
     })
     .await?;
     // Tempdir held until after the awaited generate completes —
@@ -985,6 +986,7 @@ async fn run_flux_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         // Defaults to PNG; pipeline-level filename construction
         // honours this field.
         output_format: crate::imaging::io::OutputFormat::Png,
+        layered: None,
     })
     .await?;
 
@@ -1112,6 +1114,7 @@ async fn run_flux_kontext(mut args: Img2ImgArgs, device: Device) -> Result<()> {
         kontext_bucket,
         // v0.20: WebP isn't surfaced at the img2img CLI yet.
         output_format: crate::imaging::io::OutputFormat::Png,
+        layered: None,
     })
     .await?;
 

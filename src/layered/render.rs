@@ -88,11 +88,11 @@ fn first_png(dir: &std::path::Path) -> Result<PathBuf> {
 
 /// Run the full layered pipeline (S1 → S2 → S3) and write the finished image to `o.out`.
 pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: u32, device: Device, o: &RenderOpts) -> Result<()> {
-    // Bring-up gate: the finish injection lives in the SD path of `t2i::run`.
+    // Bring-up gate: the finish injection lives in the SD path (`t2i::run`) and the Flux path (`flux::run`).
     let v = t2i::Variant::detect(&o.model);
     anyhow::ensure!(
-        !(v.is_flux() || v.is_sd3() || v.is_sana() || v.is_cascade()),
-        "layered render bring-up is the SD family (SD 1.5 / SDXL); {} lands next — Flux / SD3 / Sana / PixArt / Cascade need their own encode+hook injection",
+        !(v.is_sd3() || v.is_sana() || v.is_pixart() || v.is_cascade()),
+        "layered render bring-up is the SD family (SD 1.5 / SDXL) + Flux; {} lands next — SD3 / Sana / PixArt / Cascade need their own encode+hook injection",
         o.model
     );
 

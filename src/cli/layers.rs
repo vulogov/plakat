@@ -36,6 +36,9 @@ pub enum LayersCmd {
     /// The full layered render (S1→S2→S3): draft → guide → one anchored finish trajectory → an image.
     /// Bring-up is the SD family (SD 1.5 / SDXL).
     Render(RenderArgs),
+    /// Compare two images (e.g. the guide vs the finish) at the plan's low-frequency band — whole-canvas and
+    /// per-layer-box agreement (MAE + correlation), with an optional difference heatmap.
+    Diff(DiffArgs),
 }
 
 #[derive(Args, Debug)]
@@ -150,6 +153,27 @@ pub struct RenderArgs {
     pub size: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct DiffArgs {
+    /// The layer plan HJSON (drives the low-frequency band + the layer boxes).
+    pub plan: PathBuf,
+    /// First image (e.g. the guide `__guide.png`).
+    #[arg(long)]
+    pub a: PathBuf,
+    /// Second image (e.g. the finish output).
+    #[arg(long)]
+    pub b: PathBuf,
+    /// Model whose geometry sets the low-frequency band. Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Write a difference heatmap (layer boxes drawn) to this PNG.
+    #[arg(long, short = 'o')]
+    pub out: Option<PathBuf>,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
 pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
@@ -158,6 +182,62 @@ pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
         LayersCmd::Draft(a) => run_draft(a, device).await,
         LayersCmd::Guide(a) => run_guide(a, device).await,
         LayersCmd::Render(a) => run_render(a, device).await,
+        LayersCmd::Diff(a) => run_diff(a),
+    }
+}
+
+fn run_diff(a: DiffArgs) -> Result<()> {
+    use crate::layered::diff;
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    let (ia, ib) = (diff::load_rgb(&a.a)?, diff::load_rgb(&a.b)?);
+    let report = diff::compare(&p, &ia, &ib, &geom, w, h)?;
+    println!(
+        "{}  diff {} vs {} ({} · {}×{} px · low-pass {}px)",
+        style("◆").cyan(),
+        a.a.display(),
+        a.b.display(),
+        a.model,
+        w,
+        h,
+        diff::lowpass_radius(&geom)
+    );
+    let o = &report.overall;
+    println!("  {}  overall   MAE {:.4}  corr {:+.3}", style("·").dim(), o.mae, o.corr);
+    for (id, s) in &report.layers {
+        // Flag layers whose region drifted more than the canvas as a whole.
+        let mark = if s.corr < 0.5 || s.mae > o.mae * 1.5 { style("⚠").yellow() } else { style("·").dim() };
+        println!("  {}  layer {:<12} MAE {:.4}  corr {:+.3}", mark, id, s.mae, s.corr);
+    }
+    if let Some(out) = &a.out {
+        // Colourise the heatmap boxes: draw each layer box over the grayscale diff.
+        let mut rgb = image::RgbImage::new(w, h);
+        for (x, y, p) in rgb.enumerate_pixels_mut() {
+            let g = report.heatmap.get_pixel(x, y).0[0];
+            *p = image::Rgb([g, g, g]);
+        }
+        for l in &p.layers {
+            let bb = plan::layer_box(l);
+            diff_box_outline(&mut rgb, bb, w, h, image::Rgb([255, 80, 80]));
+        }
+        rgb.save(out).with_context(|| format!("saving {}", out.display()))?;
+        println!("  {} {}  (difference heatmap)", style("✓").green(), out.display());
+    }
+    Ok(())
+}
+
+/// Draw a 1px rectangle outline for a normalised box on an RGB image.
+fn diff_box_outline(img: &mut image::RgbImage, b: [f32; 4], w: u32, h: u32, colour: image::Rgb<u8>) {
+    let x0 = (b[0] * w as f32).round().clamp(0.0, w as f32 - 1.0) as u32;
+    let y0 = (b[1] * h as f32).round().clamp(0.0, h as f32 - 1.0) as u32;
+    let x1 = (b[2] * w as f32).round().clamp(0.0, w as f32 - 1.0) as u32;
+    let y1 = (b[3] * h as f32).round().clamp(0.0, h as f32 - 1.0) as u32;
+    for x in x0..=x1 {
+        img.put_pixel(x, y0, colour);
+        img.put_pixel(x, y1, colour);
+    }
+    for y in y0..=y1 {
+        img.put_pixel(x0, y, colour);
+        img.put_pixel(x1, y, colour);
     }
 }
 

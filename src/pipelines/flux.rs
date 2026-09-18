@@ -274,6 +274,9 @@ pub struct Request {
     /// the v0.17 Auto1111 `parameters` tEXt chunk; WebP skips the
     /// chunk for ~30% smaller files (the JSON sidecar still works).
     pub output_format: crate::imaging::io::OutputFormat,
+    /// LAYERED-1 (S3): when set, the Flux generate is steered toward a low-frequency guide (RFC LAYERED-1).
+    /// `None` (the default) is byte-identical to the ordinary txt2img path.
+    pub layered: Option<crate::pipelines::t2i::LayeredGuide>,
 }
 
 // =====================================================================
@@ -654,6 +657,17 @@ impl Pipeline {
     /// build padded LoRA-B tensors.
     pub fn device(&self) -> &candle_core::Device {
         &self.device
+    }
+
+    /// LAYERED-1 S3: VAE-encode the guide image into Flux's NORMALIZED spatial latent `G` `(1,16,H/8,W/8)`
+    /// — the same space `FluxSpace::to_spatial` unpacks the running token latent into, so the low-frequency
+    /// anchor lines up. Mirrors the img2img init encode (`(z − shift) · scale`).
+    pub fn encode_layered_guide(&self, path: &std::path::Path, w: u32, h: u32) -> Result<Tensor> {
+        let ae_cfg = self.variant.ae_config();
+        let px = crate::imaging::preprocess::sd_image_tensor(path, w, h, &self.device, self.dtype)
+            .with_context(|| format!("loading the layered guide image {}", path.display()))?;
+        let z = self.ae_model.encode(&px)?;
+        Ok(((z - ae_cfg.shift_factor)? * ae_cfg.scale_factor)?)
     }
 
     /// v0.13 phase 11: swap a loaded ControlNet's conditioning image
@@ -3032,7 +3046,9 @@ fn merge_residuals(acc: Option<Vec<Tensor>>, new: Vec<Tensor>) -> Result<Vec<Ten
 // Public single-shot entry — preserves the existing API used by t2i::run.
 // =====================================================================
 
-pub async fn run(req: Request) -> Result<()> {
+pub async fn run(mut req: Request) -> Result<()> {
+    let layered = req.layered.take();
+    let (lw, lh) = (req.width, req.height);
     let mut p = Pipeline::load(LoadRequest {
         variant: req.variant,
         repo: req.repo,
@@ -3046,7 +3062,7 @@ pub async fn run(req: Request) -> Result<()> {
         redux: req.redux,
     })
     .await?;
-    p.generate(&GenRequest {
+    let gen_req = GenRequest {
         prompt: req.prompt,
         width: req.width,
         height: req.height,
@@ -3064,7 +3080,36 @@ pub async fn run(req: Request) -> Result<()> {
         redux_images: req.redux_images,
         kontext_bucket: req.kontext_bucket,
         output_format: req.output_format,
-    })
+    };
+
+    // LAYERED-1 S3: steer this ONE flow trajectory toward the low-frequency guide. G is Flux's normalized
+    // spatial latent; the running latent is a 2×2-patch token sequence, which `FluxSpace::to_spatial`
+    // unpacks for the low-pass filter (the `refine_latent` seam is already wired in the denoise loop).
+    if let Some(lg) = layered {
+        anyhow::ensure!(
+            gen_req.init_image.is_none() && gen_req.mask.is_none() && gen_req.tiled.is_none() && gen_req.conditioning.is_none() && gen_req.concept_conditioning.is_none() && gen_req.redux_images.is_empty(),
+            "layered finish doesn't compose with img2img / inpaint / tiled / ControlNet / concept / redux yet"
+        );
+        let g = p.encode_layered_guide(&lg.guide_path, lw, lh).context("VAE-encoding the layered guide")?;
+        let (b, c, gh, gw) = g.dims4()?;
+        let (_, _, mh, mw) = lg.weight.dims4()?;
+        anyhow::ensure!(
+            (mh, mw) == (gh, gw),
+            "layered anchor maps are {mh}×{mw} but the guide latent is {gh}×{gw} — rebuild the maps at the finish latent resolution"
+        );
+        // Guide noise: a reproducible spatial noise from the task seed (the running latent is in token space,
+        // so an independent spatial noise is used for the guide's forward-noising).
+        let dev = p.device().clone();
+        let prepared = crate::pipelines::seeds::prepare_seed(lg.guide_seed, &dev);
+        let _ = dev.set_seed(prepared);
+        let noise = Tensor::randn(0f32, 1f32, (b, c, gh, gw), &dev)?.to_dtype(p.dtype())?;
+        let weight = lg.weight.to_device(&dev)?;
+        let window = lg.window_end.to_device(&dev)?;
+        let mut hook = crate::layered::hook::LayeredHook::new(g, noise, weight, window, lg.ramp, None)
+            .context("building the layered hook")?;
+        return p.generate_hooked(&gen_req, Some(&mut hook));
+    }
+    p.generate(&gen_req)
 }
 
 #[cfg(test)]
