@@ -12,6 +12,7 @@
 
 pub mod diff;
 pub mod draft;
+pub mod eval;
 pub mod guide;
 pub mod hook;
 pub mod lint;

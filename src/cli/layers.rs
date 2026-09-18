@@ -39,6 +39,12 @@ pub enum LayersCmd {
     /// Compare two images (e.g. the guide vs the finish) at the plan's low-frequency band — whole-canvas and
     /// per-layer-box agreement (MAE + correlation), with an optional difference heatmap.
     Diff(DiffArgs),
+    /// Score a PLAIN vs a LAYERED render of a plan (layout / placement / semantic) and report the delta +
+    /// a go/no-go verdict (P2). Measurement only — the renders are produced separately.
+    Eval(EvalArgs),
+    /// Aggregate `eval` over a directory of cases (each a subdir with `plan.hjson` + `guide.png` +
+    /// `plain.png` + `layered.png`) into one corpus go/no-go (P2).
+    Sweep(SweepArgs),
 }
 
 #[derive(Args, Debug)]
@@ -174,6 +180,53 @@ pub struct DiffArgs {
     pub size: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct EvalArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// The guide image (the intended layout — both renders are scored against it).
+    #[arg(long)]
+    pub guide: PathBuf,
+    /// The PLAIN (single-prompt) render.
+    #[arg(long)]
+    pub plain: PathBuf,
+    /// The LAYERED render.
+    #[arg(long)]
+    pub layered: PathBuf,
+    /// Model whose geometry drives the classes + low-frequency band. Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+    /// The overall-delta margin for the single-case verdict. Default 0.02.
+    #[arg(long, default_value_t = 0.02)]
+    pub margin: f32,
+    /// Skip the CLIP semantic metric.
+    #[arg(long)]
+    pub no_clip: bool,
+    /// Skip the U2Net placement metric.
+    #[arg(long)]
+    pub no_saliency: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SweepArgs {
+    /// A directory of cases: each subdir has `plan.hjson` + `guide.png` + `plain.png` + `layered.png`.
+    pub dir: PathBuf,
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    #[arg(long)]
+    pub size: Option<String>,
+    /// The mean-overall-delta margin for the corpus go/no-go. Default 0.02.
+    #[arg(long, default_value_t = 0.02)]
+    pub margin: f32,
+    #[arg(long)]
+    pub no_clip: bool,
+    #[arg(long)]
+    pub no_saliency: bool,
+}
+
 pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
@@ -183,7 +236,127 @@ pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
         LayersCmd::Guide(a) => run_guide(a, device).await,
         LayersCmd::Render(a) => run_render(a, device).await,
         LayersCmd::Diff(a) => run_diff(a),
+        LayersCmd::Eval(a) => run_eval(a, device).await,
+        LayersCmd::Sweep(a) => run_sweep(a, device).await,
     }
+}
+
+/// The metric models (loaded once; each optional). No diffusion — safe to run offline.
+struct Scorers {
+    matter: Option<crate::pipelines::matting::Matter>,
+    clip: Option<(crate::pipelines::aesthetic::AestheticScorer, crate::pipelines::clip_adherence::ClipAdherence)>,
+}
+
+impl Scorers {
+    async fn load(device: &candle_core::Device, saliency: bool, clip: bool) -> Result<Self> {
+        let matter = if saliency { Some(crate::pipelines::matting::Matter::load(device).await.context("loading U2Net")?) } else { None };
+        let clip = if clip {
+            let aes = crate::pipelines::aesthetic::AestheticScorer::load(device).await.context("loading the CLIP image tower")?;
+            let txt = crate::pipelines::clip_adherence::ClipAdherence::load(device).await.context("loading the CLIP text tower")?;
+            Some((aes, txt))
+        } else {
+            None
+        };
+        Ok(Self { matter, clip })
+    }
+
+    fn score(&self, plan: &LayerPlan, geom: &crate::pipelines::noise_space::LatentGeometry, w: u32, h: u32, img: &RgbImage, guide: &RgbImage) -> Result<crate::layered::eval::Score> {
+        use crate::layered::eval;
+        let layout = eval::layout_adherence(plan, img, guide, geom, w, h)?;
+        let placement = match &self.matter {
+            Some(m) => Some(eval::placement(plan, &m.matte(img)?, geom, w, h)),
+            None => None,
+        };
+        let semantic = match &self.clip {
+            Some((aes, cl)) => {
+                let scorer = |crop: &RgbImage, text: &str| -> Result<f32> {
+                    let tmp = tempfile::Builder::new().prefix("plakat-eval-").suffix(".png").tempfile().context("crop temp file")?;
+                    crop.save(tmp.path()).context("saving crop")?;
+                    let emb = aes.image_embedding(tmp.path())?;
+                    cl.adherence(&emb, text)
+                };
+                Some(eval::semantic(plan, img, geom, w, h, &scorer)?)
+            }
+            None => None,
+        };
+        Ok(eval::combine(Some(layout), placement, semantic))
+    }
+}
+
+fn fopt(o: Option<f32>) -> String {
+    o.map(|v| format!("{v:.3}")).unwrap_or_else(|| "  –  ".into())
+}
+fn fdelta(o: Option<f32>) -> String {
+    o.map(|v| format!("{v:+.3}")).unwrap_or_else(|| "  –  ".into())
+}
+
+async fn run_eval(a: EvalArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::eval;
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    let guide = crate::layered::diff::load_rgb(&a.guide)?;
+    let plain = crate::layered::diff::load_rgb(&a.plain)?;
+    let layered = crate::layered::diff::load_rgb(&a.layered)?;
+    let scorers = Scorers::load(&device, !a.no_saliency, !a.no_clip).await?;
+
+    let sp = scorers.score(&p, &geom, w, h, &plain, &guide).context("scoring the plain render")?;
+    let sl = scorers.score(&p, &geom, w, h, &layered, &guide).context("scoring the layered render")?;
+    let d = eval::delta(&sp, &sl);
+
+    println!("{}  eval {} ({} · {}×{} px)", style("◆").cyan(), a.plan.display(), a.model, w, h);
+    println!("  {:<9} layout {}  placement {}  semantic {}  → overall {}", "plain", fopt(sp.layout), fopt(sp.placement), fopt(sp.semantic), style(fopt(Some(sp.overall))).bold());
+    println!("  {:<9} layout {}  placement {}  semantic {}  → overall {}", "layered", fopt(sl.layout), fopt(sl.placement), fopt(sl.semantic), style(fopt(Some(sl.overall))).bold());
+    println!("  {:<9} layout {}  placement {}  semantic {}  → overall {}", "Δ", fdelta(d.layout), fdelta(d.placement), fdelta(d.semantic), style(fdelta(Some(d.overall))).bold());
+
+    let (verdict, _, _) = eval::decide(&[d.overall], a.margin);
+    let vstyle = match verdict {
+        eval::Verdict::Go => style(verdict.label()).green().bold(),
+        eval::Verdict::NoGo => style(verdict.label()).red().bold(),
+        eval::Verdict::Inconclusive => style(verdict.label()).yellow().bold(),
+    };
+    println!("\n{}  {}  (overall Δ {:+.3}, margin {:.3})", style("→").dim(), vstyle, d.overall, a.margin);
+    Ok(())
+}
+
+async fn run_sweep(a: SweepArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::eval;
+    let scorers = Scorers::load(&device, !a.no_saliency, !a.no_clip).await?;
+    let mut cases: Vec<std::path::PathBuf> = std::fs::read_dir(&a.dir)
+        .with_context(|| format!("reading {}", a.dir.display()))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    cases.sort();
+    anyhow::ensure!(!cases.is_empty(), "no case subdirectories in {}", a.dir.display());
+
+    println!("{}  sweep {} ({} case(s) · {} · margin {:.3})", style("◆").cyan(), a.dir.display(), cases.len(), a.model, a.margin);
+    let mut deltas = Vec::new();
+    for case in &cases {
+        let name = case.file_name().and_then(|s| s.to_str()).unwrap_or("?").to_string();
+        let plan_path = case.join("plan.hjson");
+        let guide_path = ["guide.png", "__guide.png"].iter().map(|f| case.join(f)).find(|p| p.exists());
+        let (plain_path, layered_path) = (case.join("plain.png"), case.join("layered.png"));
+        let (Some(guide_path), true, true) = (guide_path, plain_path.exists() && plan_path.exists(), layered_path.exists()) else {
+            println!("  {} {:<16} skipped (needs plan.hjson + guide.png + plain.png + layered.png)", style("·").dim(), name);
+            continue;
+        };
+        let (p, geom, w, h) = load(&plan_path, &a.model, &a.size)?;
+        let guide = crate::layered::diff::load_rgb(&guide_path)?;
+        let sp = scorers.score(&p, &geom, w, h, &crate::layered::diff::load_rgb(&plain_path)?, &guide)?;
+        let sl = scorers.score(&p, &geom, w, h, &crate::layered::diff::load_rgb(&layered_path)?, &guide)?;
+        let d = eval::delta(&sp, &sl).overall;
+        deltas.push(d);
+        let mark = if d > 0.0 { style("✓").green() } else { style("✗").red() };
+        println!("  {} {:<16} plain {:.3}  layered {:.3}  Δ {:+.3}", mark, name, sp.overall, sl.overall, d);
+    }
+
+    let (verdict, mean, win) = eval::decide(&deltas, a.margin);
+    let vstyle = match verdict {
+        eval::Verdict::Go => style(verdict.label()).green().bold(),
+        eval::Verdict::NoGo => style(verdict.label()).red().bold(),
+        eval::Verdict::Inconclusive => style(verdict.label()).yellow().bold(),
+    };
+    println!("\n{}  corpus: mean Δ {:+.3} · win-rate {:.0}% ({} case(s)) → {}", style("→").dim(), mean, win * 100.0, deltas.len(), vstyle);
+    Ok(())
 }
 
 fn run_diff(a: DiffArgs) -> Result<()> {
