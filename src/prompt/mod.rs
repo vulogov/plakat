@@ -5,6 +5,7 @@ pub mod a1111;
 pub mod break_chunks;
 pub mod deepseek;
 pub mod gemini;
+pub mod ollama;
 pub mod vision;
 pub mod wireframe;
 pub mod lora_tags;
@@ -52,6 +53,8 @@ pub async fn enhance_with_args(
     match provider.to_lowercase().as_str() {
         "deepseek" => deepseek::enhance(prompt).await,
         "gemini" => gemini::enhance(prompt).await,
+        "ollama" => ollama::enhance_with_system_model(ollama::DEFAULT_MODEL, &system, prompt).await,
+        other if other.starts_with("ollama:") => ollama::enhance_with_system_model(&provider["ollama:".len()..], &system, prompt).await,
         // v0.18: local LLM-based enhance (Qwen2.5-1.5B by default).
         // Forms accepted:
         //   "local"             — default alias (qwen2.5-1.5b)
@@ -66,7 +69,7 @@ pub async fn enhance_with_args(
         }
         other if other == "auto" => enhance_auto(prompt, &system, args).await,
         other => Err(anyhow!(
-            "unknown prompt enhancer: {other} (supported: deepseek, gemini, local, \
+            "unknown prompt enhancer: {other} (supported: deepseek, gemini, ollama, ollama:<model>, local, \
              local:<alias>, auto)"
         )),
     }
@@ -84,6 +87,8 @@ pub async fn complete(
     match provider.to_lowercase().as_str() {
         "deepseek" => deepseek::enhance_with_system(system, user).await,
         "gemini" => gemini::enhance_with_system(system, user).await,
+        "ollama" => ollama::enhance_with_system_model(ollama::DEFAULT_MODEL, system, user).await,
+        other if other.starts_with("ollama:") => ollama::enhance_with_system_model(&provider["ollama:".len()..], system, user).await,
         "local" => enhance_local(crate::llm::DEFAULT_ALIAS, user, system, args).await,
         other if other.starts_with("local:") => {
             let alias = other["local:".len()..].to_string();
@@ -91,7 +96,7 @@ pub async fn complete(
         }
         "auto" => enhance_auto(user, system, args).await,
         other => Err(anyhow!(
-            "unknown provider: {other} (supported: deepseek, gemini, local, local:<alias>, auto)"
+            "unknown provider: {other} (supported: deepseek, gemini, ollama, ollama:<model>, local, local:<alias>, auto)"
         )),
     }
 }

@@ -148,8 +148,16 @@ fn extract_json_object(s: &str) -> String {
 /// [`plan::parse`]); the caller lints + writes it.
 pub async fn plan_prose(prose: &str, w: u32, h: u32, draft_model: &str, provider: &str, device: &Device, seed: u64) -> Result<String> {
     let user = format!("Description: {prose}\nTarget size: {w}x{h}\nReturn the JSON object.");
-    let opts = crate::llm::EnhanceOpts { seed, temperature: 0.0, max_new_tokens: 768 };
-    let raw = crate::llm::enhance(provider, device.clone(), SYSTEM, &user, opts).await.map_err(|e| anyhow::anyhow!("planner LLM: {e}"))?;
+    // `ollama` / `ollama:<model>` route to a local Ollama server (a bigger model than the in-process GGUF
+    // aliases); any other provider is a local GGUF alias run in-process on `device`.
+    let pl = provider.to_lowercase();
+    let raw = if pl == "ollama" || pl.starts_with("ollama:") {
+        let model = if pl.starts_with("ollama:") { &provider["ollama:".len()..] } else { crate::prompt::ollama::DEFAULT_MODEL };
+        crate::prompt::ollama::enhance_with_system_model(model, SYSTEM, &user).await.context("planner via Ollama")?
+    } else {
+        let opts = crate::llm::EnhanceOpts { seed, temperature: 0.0, max_new_tokens: 768 };
+        crate::llm::enhance(provider, device.clone(), SYSTEM, &user, opts).await.map_err(|e| anyhow::anyhow!("planner LLM: {e}"))?
+    };
     let json = extract_json_object(&raw);
     let pj: PlanJson = serde_json::from_str(&json).with_context(|| format!("parsing the planner JSON (raw: {})", raw.chars().take(240).collect::<String>()))?;
     anyhow::ensure!(!pj.layers.is_empty(), "the planner produced no subject layers — rephrase the description, or write the plan by hand");
