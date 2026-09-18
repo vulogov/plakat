@@ -11,6 +11,7 @@
 //! (S4) and lift (S5) land in P3.
 
 pub mod draft;
+pub mod guide;
 pub mod hook;
 pub mod lint;
 pub mod plan;

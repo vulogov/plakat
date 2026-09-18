@@ -462,7 +462,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Inspect(args) => inspect::run(args).await,
         Command::Persona(args) => persona::run(args).await,
         Command::Bookart(args) => bookart::run(args).await,
-        Command::Layers(args) => layers::run(args).await,
+        Command::Layers(args) => {
+            let device = crate::device::select(&cli.device)?;
+            layers::run(args, device).await
+        }
         Command::Texture(args) => texture::run(args).await,
         Command::Comic(args) => comic::run(args).await,
         Command::Product(args) => product::run(args).await,

@@ -346,6 +346,34 @@ pub async fn matte(in_path: &Path, device: &Device) -> Result<(image::RgbImage, 
     Ok((img, alpha))
 }
 
+/// A loaded U2Net matter — load the network ONCE, then matte many in-memory images. Used where a batch of
+/// images share a device (e.g. LAYERED-1 draft silhouettes), avoiding the per-image weight reload [`matte`]
+/// does.
+pub struct Matter {
+    net: U2Net,
+    device: Device,
+}
+
+impl Matter {
+    /// Load U2Net onto `device` (resolves/downloads the weights the same way [`matte`] does).
+    pub async fn load(device: &Device) -> Result<Self> {
+        let weights = matte_weights_path().await?;
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(&[&weights], DType::F32, device).context("loading U2Net safetensors")?
+        };
+        Ok(Self { net: U2Net::load(vb)?, device: device.clone() })
+    }
+
+    /// Predict the salient-object alpha matte for an in-memory RGB image (255 = foreground), at the image's
+    /// native resolution. Synchronous (the network is already loaded).
+    pub fn matte(&self, img: &RgbImage) -> Result<image::GrayImage> {
+        let (w, h) = (img.width(), img.height());
+        let x = preprocess(img, &self.device)?;
+        let d0 = self.net.forward(&x)?;
+        matte_alpha(&d0, w, h)
+    }
+}
+
 pub async fn cutout(in_path: &Path, out_path: &Path, crop: bool, device: &Device) -> Result<()> {
     if let Some(ext) = out_path
         .extension()

@@ -30,6 +30,9 @@ pub enum LayersCmd {
     /// Render (or refresh from cache) the per-layer drafts + the backdrop → PNGs in a directory (S1).
     /// Each layer is rendered ALONE; drafts are content-cached, so `--only` re-renders just those.
     Draft(DraftArgs),
+    /// Compose the guide from a draft directory (S2): matte each anchored subject, luma-normalise, lay
+    /// back-to-front → `__guide.png`, and build the anchor maps → `__weight.png` / `__window.png`.
+    Guide(GuideArgs),
 }
 
 #[derive(Args, Debug)]
@@ -90,13 +93,78 @@ pub struct DraftArgs {
     pub size: Option<String>,
 }
 
-pub async fn run(args: LayersArgs) -> Result<()> {
+#[derive(Args, Debug)]
+pub struct GuideArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// The draft directory produced by `plakat layers draft` (`__backdrop.png` + `<id>.png`).
+    #[arg(long)]
+    pub drafts: PathBuf,
+    /// Directory to write the guide + maps into (`__guide.png`, `__weight.png`, `__window.png`).
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Finish model (drives the size classes + latent geometry). Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
+pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
         LayersCmd::Lint(a) => run_lint(a),
         LayersCmd::Show(a) => run_show(a),
         LayersCmd::Draft(a) => run_draft(a).await,
+        LayersCmd::Guide(a) => run_guide(a, device).await,
     }
+}
+
+/// Load a draft set (`__backdrop.png` + one `<id>.png` per plan layer) from a directory.
+fn load_draft_set(dir: &std::path::Path, p: &LayerPlan) -> Result<crate::layered::draft::DraftSet> {
+    let bpath = dir.join("__backdrop.png");
+    let backdrop = image::open(&bpath).with_context(|| format!("loading backdrop draft {}", bpath.display()))?.to_rgb8();
+    let mut layers = Vec::new();
+    for l in &p.layers {
+        let path = dir.join(format!("{}.png", sanitize(&l.id)));
+        if path.exists() {
+            let img = image::open(&path).with_context(|| format!("loading layer draft {}", path.display()))?.to_rgb8();
+            layers.push((l.id.clone(), img));
+        }
+    }
+    Ok(crate::layered::draft::DraftSet { backdrop, layers })
+}
+
+async fn run_guide(a: GuideArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::guide;
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    let drafts = load_draft_set(&a.drafts, &p)?;
+    if drafts.layers.is_empty() {
+        println!("{}  no layer drafts found in {} — run `plakat layers draft` first", style("⚠").yellow(), a.drafts.display());
+    }
+    println!("{}  composing guide for {} ({} · {}×{} px · {} draft layer(s))…", style("◆").cyan(), a.plan.display(), a.model, w, h, drafts.layers.len());
+
+    // Load U2Net once; matte each anchored subject off its draft.
+    let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading the U2Net matter")?;
+    let g = guide::build(&p, &drafts, &geom, w, h, &device, |img| matter.matte(img))?;
+
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    let gpath = a.out.join("__guide.png");
+    g.canvas.save(&gpath).with_context(|| format!("saving {}", gpath.display()))?;
+    println!("  {} {}  (composed guide, {} anchored subject(s))", style("✓").green(), gpath.display(), g.placed.len());
+
+    // Map visualisations, upscaled from latent res to the canvas for viewing.
+    for (name, map) in [("__weight.png", &g.weight), ("__window.png", &g.window_end)] {
+        let gray = guide::map_to_gray(map)?;
+        let up = image::imageops::resize(&gray, w, h, image::imageops::FilterType::Nearest);
+        let path = a.out.join(name);
+        up.save(&path).with_context(|| format!("saving {}", path.display()))?;
+        println!("  {} {}", style("✓").green(), path.display());
+    }
+
+    println!("\n{}  guide + anchor maps → {}", style("→").dim(), a.out.display());
+    Ok(())
 }
 
 async fn run_draft(a: DraftArgs) -> Result<()> {
