@@ -209,6 +209,22 @@ pub struct Request {
     /// loads the CN and honours the first entry in `controls`
     /// (multi-CN deferred). `None` → no CN attached.
     pub cascade_controlnet_weights: Option<std::path::PathBuf>,
+    /// LAYERED-1 (S3): when set, the SD-family generate is steered toward a low-frequency guide (RFC
+    /// LAYERED-1). `None` (the default) is byte-identical to the ordinary txt2img path.
+    pub layered: Option<LayeredGuide>,
+}
+
+/// LAYERED-1 (S3) guide attached to an SD-family [`Request`]: the composed guide image (VAE-encoded to `G`
+/// at generate time, in the finish family's own latent space), the per-pixel anchor maps at latent
+/// resolution (`weight` `W`, `window_end` `E`), the window-close ramp, and the guide-noise seed (usually the
+/// task seed, so `G`'s forward noise matches the trajectory's own init noise).
+#[derive(Clone)]
+pub struct LayeredGuide {
+    pub guide_path: PathBuf,
+    pub weight: Tensor,
+    pub window_end: Tensor,
+    pub ramp: f32,
+    pub guide_seed: u64,
 }
 
 impl Request {
@@ -275,6 +291,7 @@ impl Request {
             cascade_stage_b_steps: None,
             cascade_image_prompt: None,
             cascade_controlnet_weights: None,
+            layered: None,
         }
     }
 }
@@ -1010,6 +1027,14 @@ impl Pipeline {
     /// a second model load. Phase 7d.
     pub fn core(&self) -> std::sync::Arc<crate::pipelines::sd_core::SdCore> {
         std::sync::Arc::clone(&self.core)
+    }
+
+    /// LAYERED-1 S3: VAE-encode a `[-1,1]` pixel tensor `(1,3,H,W)` into this model's scaled latent space
+    /// (spatial, `(1,C,H/8,W/8)`) — the guide latent `G`. Mirrors the img2img init encode (sample × scale).
+    pub fn vae_encode_pixels(&self, pixels: &Tensor) -> Result<Tensor> {
+        let vae_scale: f64 = self.core.variant.vae_scale();
+        let dist = self.core.vae.encode(pixels)?;
+        Ok((dist.sample()? * vae_scale)?)
     }
 
     /// Encode `prompt` (and optionally `negative` for CFG) into the
@@ -3515,6 +3540,37 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
         preview_size,
         output_format: req.output_format,
     };
+    // LAYERED-1 S3: steer this ONE txt2img trajectory toward the low-frequency guide. The guide image is
+    // VAE-encoded into G with THIS model's own VAE (so G is in-space), forward-noised with the trajectory's
+    // own init noise (same seed), and substituted in the low frequencies inside each anchored pixel's window
+    // via `LayeredHook` (the `refine_latent` seam wired across every family in P0).
+    if let Some(lg) = &req.layered {
+        anyhow::ensure!(
+            req.regions.is_empty() && req.tiled.is_none() && control_reqs.is_empty() && !req.use_refiner,
+            "layered finish doesn't compose with --region / --tiled / --control / --refiner yet"
+        );
+        let core = pipeline.core();
+        let idev = core.device().clone();
+        let px = crate::imaging::preprocess::sd_image_tensor(&lg.guide_path, req.width, req.height, &idev, dtype)
+            .context("loading the layered guide image")?;
+        let g = pipeline.vae_encode_pixels(&px).context("VAE-encoding the layered guide")?;
+        let (b, c, gh, gw) = g.dims4()?;
+        let (_, _, mh, mw) = lg.weight.dims4()?;
+        anyhow::ensure!(
+            (mh, mw) == (gh, gw),
+            "layered anchor maps are {mh}×{mw} but the guide latent is {gh}×{gw} — rebuild the maps at the finish latent resolution"
+        );
+        // Guide noise = the trajectory's own init noise (same seed / shape) so the low-freq anchor aligns.
+        let prepared = crate::pipelines::seeds::prepare_seed(lg.guide_seed, &idev);
+        let _ = idev.set_seed(prepared);
+        let noise = Tensor::randn(0f32, 1f32, (b, c, gh, gw), &idev)?.to_dtype(dtype)?;
+        let weight = lg.weight.to_device(&idev)?;
+        let window = lg.window_end.to_device(&idev)?;
+        let mut hook = crate::layered::hook::LayeredHook::new(g, noise, weight, window, lg.ramp, None)
+            .context("building the layered hook")?;
+        pipeline.generate_hooked(&gen_req, &control_reqs, Some(&mut hook))?;
+        return Ok(Some(pipeline.core()));
+    }
     if !req.regions.is_empty() {
         crate::pipelines::tiled::check_regional_combo(req.tiled.is_some(), !control_reqs.is_empty())?;
         pipeline.generate_regional(&gen_req, &req.regions, &[])?;

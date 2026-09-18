@@ -33,6 +33,9 @@ pub enum LayersCmd {
     /// Compose the guide from a draft directory (S2): matte each anchored subject, luma-normalise, lay
     /// back-to-front → `__guide.png`, and build the anchor maps → `__weight.png` / `__window.png`.
     Guide(GuideArgs),
+    /// The full layered render (S1→S2→S3): draft → guide → one anchored finish trajectory → an image.
+    /// Bring-up is the SD family (SD 1.5 / SDXL).
+    Render(RenderArgs),
 }
 
 #[derive(Args, Debug)]
@@ -111,14 +114,83 @@ pub struct GuideArgs {
     pub size: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct RenderArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// Output image path.
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Finish model (SD family for bring-up). Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Draft model (overrides the plan's `draft.model`; default sdxl).
+    #[arg(long)]
+    pub draft_model: Option<String>,
+    /// Draft steps (a fast preset welcome). Default 8.
+    #[arg(long, default_value_t = 8)]
+    pub draft_steps: usize,
+    /// Finish steps. Default 30.
+    #[arg(long, default_value_t = 30)]
+    pub steps: usize,
+    /// Finish CFG guidance. Default 7.0.
+    #[arg(long, default_value_t = 7.0)]
+    pub guidance: f64,
+    /// Seed (used for the finish trajectory AND the guide noise). Default 0.
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Window-close ramp `r`. Default 0.1.
+    #[arg(long, default_value_t = 0.1)]
+    pub ramp: f32,
+    /// Also write the intermediate drafts + guide + anchor maps into this directory.
+    #[arg(long)]
+    pub keep: Option<PathBuf>,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
 pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
         LayersCmd::Lint(a) => run_lint(a),
         LayersCmd::Show(a) => run_show(a),
-        LayersCmd::Draft(a) => run_draft(a).await,
+        LayersCmd::Draft(a) => run_draft(a, device).await,
         LayersCmd::Guide(a) => run_guide(a, device).await,
+        LayersCmd::Render(a) => run_render(a, device).await,
     }
+}
+
+async fn run_render(a: RenderArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::render::{render, RenderOpts};
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    let draft_model = a.draft_model.clone().or_else(|| p.draft.model.clone()).unwrap_or_else(|| "sdxl".into());
+    let opts = RenderOpts {
+        model: a.model.clone(),
+        out: a.out.clone(),
+        draft_model,
+        draft_steps: a.draft_steps,
+        steps: a.steps,
+        guidance: a.guidance,
+        seed: a.seed,
+        scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
+        ramp: a.ramp,
+        keep: a.keep.clone(),
+    };
+    println!(
+        "{}  layered render {} → {}  ({} finish · {} draft · {}×{} px · seed {})",
+        style("◆").cyan(),
+        a.plan.display(),
+        a.out.display(),
+        a.model,
+        opts.draft_model,
+        w,
+        h,
+        a.seed
+    );
+    render(&p, &geom, w, h, device, &opts).await?;
+    println!("{}  {}", style("✓ finished").green(), a.out.display());
+    Ok(())
 }
 
 /// Load a draft set (`__backdrop.png` + one `<id>.png` per plan layer) from a directory.
@@ -167,7 +239,7 @@ async fn run_guide(a: GuideArgs, device: candle_core::Device) -> Result<()> {
     Ok(())
 }
 
-async fn run_draft(a: DraftArgs) -> Result<()> {
+async fn run_draft(a: DraftArgs, device: candle_core::Device) -> Result<()> {
     use crate::layered::draft::{render_all, DraftOpts};
     let (p, _geom, w, h) = load(&a.plan, "sdxl", &a.size)?;
     let model = a.draft_model.clone().or_else(|| p.draft.model.clone()).unwrap_or_else(|| "sdxl".into());
@@ -185,6 +257,7 @@ async fn run_draft(a: DraftArgs) -> Result<()> {
         scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
         native_side,
         only,
+        device: crate::device::spec_of(&device).to_string(),
     };
     println!("{}  drafting {} on {} ({}×{} canvas, {} steps)…", style("◆").cyan(), a.plan.display(), model, w, h, a.steps);
     let set = render_all(&p, &opts).await?;
@@ -201,7 +274,7 @@ async fn run_draft(a: DraftArgs) -> Result<()> {
     Ok(())
 }
 
-fn sanitize(id: &str) -> String {
+pub(crate) fn sanitize(id: &str) -> String {
     id.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 

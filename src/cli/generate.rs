@@ -1583,6 +1583,7 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         cascade_image_prompt: args.image_variation.clone(),
         // v0.38 phase 5: Cascade ControlNet weights path.
         cascade_controlnet_weights: args.cascade_control_weights,
+        layered: None,
     })
     .await
     .map_err(|e| {

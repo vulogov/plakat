@@ -15,3 +15,4 @@ pub mod guide;
 pub mod hook;
 pub mod lint;
 pub mod plan;
+pub mod render;

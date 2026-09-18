@@ -44,7 +44,12 @@ impl<'a> LayeredHook<'a> {
         ramp: f32,
         inner: Option<&'a mut dyn StepHook>,
     ) -> Result<Self> {
-        let max_window = window_end.max_all()?.to_dtype(candle_core::DType::F32)?.to_scalar::<f32>()?;
+        // The anchor math runs in F32 (see `refine_latent`); normalise the inputs here so `noise_to` and the
+        // mask operate on matching dtypes regardless of the sampler's latent dtype.
+        let f32 = candle_core::DType::F32;
+        let (guide, noise) = (guide.to_dtype(f32)?, noise.to_dtype(f32)?);
+        let (weight, window_end) = (weight.to_dtype(f32)?, window_end.to_dtype(f32)?);
+        let max_window = window_end.max_all()?.to_scalar::<f32>()?;
         Ok(Self { guide, noise, weight, window_end, ramp: ramp.max(1e-4), max_window, inner })
     }
 
@@ -83,25 +88,30 @@ impl StepHook for LayeredHook<'_> {
     }
 
     fn refine_latent(&mut self, step: usize, total: usize, space: &dyn NoiseSpace, latent: &Tensor) -> Result<Option<Tensor>> {
+        use candle_core::DType;
         let f = step as f32 / total.max(1) as f32;
         // Past every window → the model runs free (no anchoring).
         if f >= self.max_window {
             return Ok(None);
         }
         let levels = space.geometry().pool_levels;
+        let ld = latent.dtype();
 
+        // All anchor math runs in F32: the running latent is often F16 (Metal), and the low-pass pyramid
+        // (avg-pool + bilinear) is only reliable in F32 there. `guide`/`noise`/`weight`/`window_end` are
+        // already F32 (built by the guide stage). The result is cast back to the sampler's own dtype.
         // Work in spatial latent space (identity for most families; Flux unpacks its token sequence).
-        let xs = space.to_spatial(latent)?;
+        let xs = space.to_spatial(latent)?.to_dtype(DType::F32)?;
         // ŷ = the guide forward-noised to the current level (linear/`add_noise`, so spatial G/noise are fine).
-        let ys = space.noise_to(&self.guide, &self.noise, step)?;
+        let ys = space.noise_to(&self.guide, &self.noise, step)?.to_dtype(DType::F32)?;
 
         // Substitute LOW frequencies only: correction = LP(ŷ) − LP(x).
         let corr = (lowpass(&ys, levels)? - lowpass(&xs, levels)?)?;
         // Apply masked by W ⊙ ramp(f;E), broadcasting the (1,1,H,W) mask over the channels.
-        let m = self.mask(f)?;
+        let m = self.mask(f)?.to_dtype(DType::F32)?;
         let xs2 = (xs + corr.broadcast_mul(&m)?)?;
 
-        Ok(Some(space.from_spatial(&xs2)?))
+        Ok(Some(space.from_spatial(&xs2.to_dtype(ld)?)?))
     }
 }
 

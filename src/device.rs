@@ -51,6 +51,16 @@ pub fn label(d: &Device) -> &'static str {
     }
 }
 
+/// The `--device` spec that re-selects a resolved device — so a sub-render (e.g. the LAYERED-1 draft stage,
+/// which goes through the `api` builder's string device setter) runs on the SAME device as its caller.
+pub fn spec_of(d: &Device) -> &'static str {
+    match d {
+        Device::Cpu => "cpu",
+        Device::Cuda(_) => "cuda",
+        Device::Metal(_) => "metal",
+    }
+}
+
 fn auto() -> Device {
     #[cfg(feature = "cuda")]
     if let Ok(d) = Device::new_cuda(0) {

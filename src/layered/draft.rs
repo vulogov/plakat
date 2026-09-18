@@ -99,9 +99,10 @@ pub fn cache_path(spec: &DraftSpec) -> PathBuf {
     drafts_dir().join(format!("{}.png", spec.cache_key()))
 }
 
-/// Render (or load from cache) ONE draft. Loads the cached PNG when present; otherwise renders via the
-/// resident generate path, caches it, and returns it.
-pub async fn render_draft(spec: &DraftSpec) -> Result<RgbImage> {
+/// Render (or load from cache) ONE draft on `device` (a `--device` spec, e.g. `"cpu"`/`"metal"`/`"auto"`).
+/// Loads the cached PNG when present; otherwise renders via the resident generate path, caches it, and
+/// returns it.
+pub async fn render_draft(spec: &DraftSpec, device: &str) -> Result<RgbImage> {
     let path = cache_path(spec);
     if path.exists() {
         return Ok(image::open(&path).with_context(|| format!("loading cached draft {}", path.display()))?.to_rgb8());
@@ -113,6 +114,7 @@ pub async fn render_draft(spec: &DraftSpec) -> Result<RgbImage> {
         .seed(spec.seed)
         .steps(spec.steps)
         .scheduler(spec.scheduler)
+        .device(device)
         .run()
         .await
         .with_context(|| format!("rendering draft on {}", spec.model))?;
@@ -134,6 +136,8 @@ pub struct DraftOpts {
     pub native_side: u32,
     /// Render/refresh only these layer ids (plus the backdrop). `None` = all.
     pub only: Option<Vec<String>>,
+    /// The `--device` spec the drafts render on (so they match the finish device). Default `"auto"`.
+    pub device: String,
 }
 
 /// The rendered draft set: the full-canvas backdrop + a draft per (rendered) layer.
@@ -156,7 +160,7 @@ pub async fn render_all(plan: &LayerPlan, o: &DraftOpts) -> Result<DraftSet> {
     let bd = plan.backdrop.clone().unwrap_or_default();
     let (bw, bh) = backdrop_size(o.out_w, o.out_h);
     let bspec = spec_for(backdrop_prompt(&bd, g), derive_seed(base_seed, "__backdrop__"), bw, bh, o);
-    let backdrop = render_draft(&bspec).await.context("rendering the backdrop draft")?;
+    let backdrop = render_draft(&bspec, &o.device).await.context("rendering the backdrop draft")?;
 
     // Layers — each alone, at its box aspect.
     let mut layers = Vec::new();
@@ -170,7 +174,7 @@ pub async fn render_all(plan: &LayerPlan, o: &DraftOpts) -> Result<DraftSet> {
         let (w, h) = box_to_draft_size(&bbox, o.out_w, o.out_h, o.native_side);
         let seed = l.seed.unwrap_or_else(|| derive_seed(base_seed, &l.id));
         let spec = spec_for(draft_prompt(l.prompt.as_deref().unwrap_or(""), g), seed, w, h, o);
-        let img = render_draft(&spec).await.with_context(|| format!("rendering layer {:?}", l.id))?;
+        let img = render_draft(&spec, &o.device).await.with_context(|| format!("rendering layer {:?}", l.id))?;
         layers.push((l.id.clone(), img));
     }
     Ok(DraftSet { backdrop, layers })
