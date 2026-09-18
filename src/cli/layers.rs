@@ -45,6 +45,15 @@ pub enum LayersCmd {
     /// Aggregate `eval` over a directory of cases (each a subdir with `plan.hjson` + `guide.png` +
     /// `plain.png` + `layered.png`) into one corpus go/no-go (P2).
     Sweep(SweepArgs),
+    /// Check (OWL-ViT) that each anchored/hinted layer's subject is present in its box (S4). Exits non-zero
+    /// on any miss, so it can gate a repair. Detection only — no diffusion.
+    Verify(VerifyArgs),
+    /// Re-assert failing layers with a masked img2img pass (S4). `--layers` names the targets, or `--auto`
+    /// verifies first and repairs whatever missed. Renders.
+    Repair(RepairArgs),
+    /// Regenerate every lifted-class (tiny) subject at a workable resolution and composite it back (S5).
+    /// Renders.
+    Lift(LiftArgs),
 }
 
 #[derive(Args, Debug)]
@@ -227,6 +236,95 @@ pub struct SweepArgs {
     pub no_saliency: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// The finished image to check.
+    #[arg(long)]
+    pub image: PathBuf,
+    /// Model whose geometry drives the size classes. Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    /// Output size override `WxH` (default: the plan's `size`).
+    #[arg(long)]
+    pub size: Option<String>,
+    /// OWL-ViT detection score threshold. Default 0.1.
+    #[arg(long, default_value_t = 0.1)]
+    pub threshold: f32,
+    /// Max detections per query. Default 8.
+    #[arg(long, default_value_t = 8)]
+    pub max_dets: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct RepairArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// The finished image to repair.
+    #[arg(long)]
+    pub image: PathBuf,
+    /// Output image path.
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Model (SD family). Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    #[arg(long)]
+    pub size: Option<String>,
+    /// Comma-separated layer ids to repair. Omit with `--auto` to repair whatever verify flags.
+    #[arg(long)]
+    pub layers: Option<String>,
+    /// Verify first (OWL-ViT) and repair the layers that missed.
+    #[arg(long)]
+    pub auto: bool,
+    /// Inpaint strength `[0,1]`. Default 0.6.
+    #[arg(long, default_value_t = 0.6)]
+    pub strength: f32,
+    #[arg(long, default_value_t = 24)]
+    pub steps: usize,
+    #[arg(long, default_value_t = 7.0)]
+    pub guidance: f64,
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    #[arg(long, default_value_t = 8)]
+    pub feather: u32,
+    /// OWL-ViT threshold for `--auto`. Default 0.1.
+    #[arg(long, default_value_t = 0.1)]
+    pub threshold: f32,
+}
+
+#[derive(Args, Debug)]
+pub struct LiftArgs {
+    /// The layer plan HJSON.
+    pub plan: PathBuf,
+    /// The finished image to lift small subjects into.
+    #[arg(long)]
+    pub image: PathBuf,
+    /// Output image path.
+    #[arg(long, short = 'o')]
+    pub out: PathBuf,
+    /// Model (SD family). Default sdxl.
+    #[arg(long, default_value = "sdxl")]
+    pub model: String,
+    #[arg(long)]
+    pub size: Option<String>,
+    /// img2img strength for the regenerate. Default 0.7.
+    #[arg(long, default_value_t = 0.7)]
+    pub strength: f32,
+    #[arg(long, default_value_t = 24)]
+    pub steps: usize,
+    #[arg(long, default_value_t = 7.0)]
+    pub guidance: f64,
+    #[arg(long, default_value_t = 0)]
+    pub seed: u64,
+    /// Short-side working resolution the crop is upscaled to. Default 384.
+    #[arg(long, default_value_t = 384)]
+    pub work: u32,
+    #[arg(long, default_value_t = 6)]
+    pub feather: u32,
+}
+
 pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
     match args.cmd {
         LayersCmd::New(a) => run_new(a),
@@ -238,7 +336,102 @@ pub async fn run(args: LayersArgs, device: candle_core::Device) -> Result<()> {
         LayersCmd::Diff(a) => run_diff(a),
         LayersCmd::Eval(a) => run_eval(a, device).await,
         LayersCmd::Sweep(a) => run_sweep(a, device).await,
+        LayersCmd::Verify(a) => run_verify(a, device).await,
+        LayersCmd::Repair(a) => run_repair(a, device).await,
+        LayersCmd::Lift(a) => run_lift(a, device).await,
     }
+}
+
+/// Load OWL-ViT and verify a plan against an image; returns the report (used by `verify` + `repair --auto`).
+async fn verify_image(plan: &LayerPlan, geom: &crate::pipelines::noise_space::LatentGeometry, w: u32, h: u32, image: &std::path::Path, threshold: f32, max_dets: usize, device: &candle_core::Device) -> Result<crate::layered::verify::Report> {
+    use crate::layered::verify::{self, Det};
+    let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(device).await.context("loading OWL-ViT")?;
+    let detect = |query: &str| -> Result<Vec<Det>> {
+        let dets = owl.detect_all(image, query, threshold, max_dets)?;
+        Ok(dets.into_iter().map(|d| Det { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, score: d.score }).collect())
+    };
+    verify::verify(plan, geom, w, h, &detect)
+}
+
+async fn run_verify(a: VerifyArgs, device: candle_core::Device) -> Result<()> {
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    println!("{}  verify {} against {} ({} · {}×{} px)", style("◆").cyan(), a.plan.display(), a.image.display(), a.model, w, h);
+    let report = verify_image(&p, &geom, w, h, &a.image, a.threshold, a.max_dets, &device).await?;
+    for v in &report.layers {
+        if v.class == Class::Lifted || v.query.is_empty() {
+            println!("    {} {:<14} {} (skipped)", style("·").dim(), v.id, style(v.class.label()).dim());
+            continue;
+        }
+        let mark = if v.found { style("✓").green() } else { style("✗").red() };
+        println!("    {} {:<14} {:<8} score {:.3}  iou {:.2}  \"{}\"", mark, v.id, v.class.label(), v.score, v.iou, v.query);
+    }
+    let verdict = if report.pass() {
+        style(format!("PASS — {}/{} checked layer(s) present", report.checked, report.checked)).green().bold()
+    } else {
+        style(format!("FAIL — {} missing: {}", report.failures.len(), report.failures.join(", "))).red().bold()
+    };
+    println!("\n{}  {}", style("→").dim(), verdict);
+    if !report.pass() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_repair(a: RepairArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::repair::{repair, RepairOpts};
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    // Resolve the targets: explicit --layers, else --auto verify, else all anchored/hinted.
+    let targets: Vec<String> = if let Some(list) = &a.layers {
+        list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    } else if a.auto {
+        let report = verify_image(&p, &geom, w, h, &a.image, a.threshold, 8, &device).await?;
+        println!("{}  auto-repair: verify flagged {} layer(s): {}", style("◆").cyan(), report.failures.len(), report.failures.join(", "));
+        report.failures
+    } else {
+        anyhow::bail!("name the layers to repair with --layers <id,..>, or use --auto to repair whatever verify flags");
+    };
+    if targets.is_empty() {
+        println!("{}  nothing to repair — copying through", style("·").dim());
+    }
+    let opts = RepairOpts {
+        model: a.model.clone(),
+        out: a.out.clone(),
+        strength: a.strength,
+        steps: a.steps,
+        guidance: a.guidance,
+        seed: a.seed,
+        mask_feather: a.feather,
+        device: crate::device::spec_of(&device).to_string(),
+    };
+    println!("{}  repairing {} layer(s) in {} → {}", style("◆").cyan(), targets.len(), a.image.display(), a.out.display());
+    repair(&a.image, &p, &targets, &opts).await?;
+    println!("{}  {}", style("✓ repaired").green(), a.out.display());
+    Ok(())
+}
+
+async fn run_lift(a: LiftArgs, device: candle_core::Device) -> Result<()> {
+    use crate::layered::lift::{lift, LiftOpts};
+    let (p, geom, w, h) = load(&a.plan, &a.model, &a.size)?;
+    let n_lifted = p
+        .layers
+        .iter()
+        .filter(|l| crate::layered::lint::layer_class(l, &geom, w, h) == Class::Lifted && !l.prompt.as_deref().map(str::trim).unwrap_or("").is_empty())
+        .count();
+    let opts = LiftOpts {
+        model: a.model.clone(),
+        out: a.out.clone(),
+        strength: a.strength,
+        steps: a.steps,
+        guidance: a.guidance,
+        seed: a.seed,
+        work: a.work,
+        feather: a.feather,
+        device: crate::device::spec_of(&device).to_string(),
+    };
+    println!("{}  lifting {} lifted-class subject(s) in {} → {}", style("◆").cyan(), n_lifted, a.image.display(), a.out.display());
+    lift(&a.image, &p, &geom, &opts).await?;
+    println!("{}  {}", style("✓ lifted").green(), a.out.display());
+    Ok(())
 }
 
 /// The metric models (loaded once; each optional). No diffusion — safe to run offline.
