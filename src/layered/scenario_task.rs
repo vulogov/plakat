@@ -60,7 +60,7 @@ pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Pa
         plan::parse(&std::fs::read_to_string(path).with_context(|| format!("reading plan {path}"))?)?
     } else {
         let (w, h) = plan::parse_size(cfg.size.as_deref(), (1216, 832));
-        let draft = cfg.draft_model.clone().unwrap_or_else(|| "sdxl-lightning".into());
+        let draft = cfg.draft_model.clone().unwrap_or_else(|| "sdxl".into());
         let provider = cfg.provider.clone().unwrap_or_else(|| crate::llm::DEFAULT_ALIAS.to_string());
         let prose = cfg.prompt.clone().unwrap_or_default();
         let hjson = planner::plan_prose(&prose, w, h, &draft, &provider, &device, seed).await?;

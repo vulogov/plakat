@@ -541,7 +541,7 @@ impl Layered {
             }
             LayeredSource::Prose(prose) => {
                 let (w, h) = plan::parse_size(self.size.as_deref(), (1216, 832));
-                let draft = self.draft_model.clone().unwrap_or_else(|| "sdxl-lightning".into());
+                let draft = self.draft_model.clone().unwrap_or_else(|| "sdxl".into());
                 let provider = self.provider.clone().unwrap_or_else(|| crate::llm::DEFAULT_ALIAS.to_string());
                 let hjson = planner::plan_prose(prose, w, h, &draft, &provider, &device, self.seed).await?;
                 plan::parse(&hjson)?

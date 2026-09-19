@@ -49,7 +49,7 @@ fi
 #    and the weight/window anchor maps for inspection.
 if [ "${LAYERED_RENDER:-0}" = 1 ]; then
   "$PLAKAT" layers render "$PLAN" -o "$OUT/night-market.png" --model sdxl \
-    --draft-model sdxl-lightning --draft-steps 8 --steps 30 --seed 7 --keep "$OUT/stages"
+    --draft-model sdxl --draft-steps 8 --steps 30 --seed 7 --keep "$OUT/stages"
 
   # S4 verify: did each anchored subject render inside its box? (OWL-ViT; no diffusion.)
   "$PLAKAT" layers verify "$PLAN" --image "$OUT/night-market.png" --model sdxl || true

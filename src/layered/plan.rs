@@ -214,7 +214,7 @@ mod tests {
             { id: "stall", prompt: "a fruit stall", box: [0.05, 0.35, 0.45, 0.90], depth: 0.6 }
             { id: "boy", prompt: "a boy", place: "center-left mid front", depth: 0.35 }
           ]
-          draft: { model: "sdxl-lightning", seed: 7 }
+          draft: { model: "sdxl", seed: 7 }
         }"#;
         let plan = parse(text).unwrap();
         assert_eq!(plan.version, Some(1));
@@ -229,7 +229,7 @@ mod tests {
         assert!(b[0] < b[2] && b[1] < b[3], "valid box: {b:?}");
         assert!((b[0] + b[2]) / 2.0 < 0.5, "center-left → centroid left of centre");
         assert_eq!(layer_depth(&plan.layers[1]), 0.35);
-        assert_eq!(plan.draft.model.as_deref(), Some("sdxl-lightning"));
+        assert_eq!(plan.draft.model.as_deref(), Some("sdxl"));
     }
 
     #[test]

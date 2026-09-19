@@ -34,5 +34,5 @@
   ]
 
   // The draft tier: a fast few-step model draws each layer alone.
-  draft: { model: "sdxl-lightning", seed: 7 }
+  draft: { model: "sdxl", seed: 7 }
 }

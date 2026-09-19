@@ -344,8 +344,8 @@ pub struct PlanArgs {
     /// The layout LLM alias (enhance provider stack). Default: the enhance default.
     #[arg(long)]
     pub provider: Option<String>,
-    /// The draft model written into the plan. Default sdxl-lightning.
-    #[arg(long, default_value = "sdxl-lightning")]
+    /// The draft model written into the plan. Default sdxl.
+    #[arg(long, default_value = "sdxl")]
     pub draft_model: String,
     /// Seed for the LLM decode. Default 0.
     #[arg(long, default_value_t = 0)]
@@ -799,7 +799,7 @@ fn scaffold(size: &str, prompt: &str) -> String {
          // [x0,y0,x1,y1] in [0,1], OR `place: \"center-left mid front\"`.\n    \
          {{ id: \"subject\", prompt: \"TODO: one subject, full detail\", box: [0.25, 0.2, 0.75, 0.9], depth: 0.3 }}\n  \
          ]\n  \
-         draft: {{ model: \"sdxl-lightning\", seed: 7 }}\n}}\n",
+         draft: {{ model: \"sdxl\", seed: 7 }}\n}}\n",
         size = size,
         prompt = prompt,
     )

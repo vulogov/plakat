@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn to_hjson_is_a_valid_lintable_plan() {
-        let hjson = to_hjson(pj(), 1216, 832, "sdxl-lightning");
+        let hjson = to_hjson(pj(), 1216, 832, "sdxl");
         let plan = plan::parse(&hjson).expect("parses");
         assert_eq!(plan.layers.len(), 2);
         assert_eq!(plan.global.medium.as_deref(), Some("oil painting"));

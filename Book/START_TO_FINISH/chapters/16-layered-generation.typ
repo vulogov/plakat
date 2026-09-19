@@ -56,7 +56,7 @@ and a glowing lantern, three subjects that plain prose would fuse.
     { id: "customer", prompt: "a customer in a red coat reaching for a paper cup", box: [0.54, 0.32, 0.90, 0.96], depth: 0.35 }
     { id: "lantern",  prompt: "a large round red paper lantern, glowing",          box: [0.66, 0.06, 0.86, 0.30], depth: 0.60 }
   ]
-  draft: { model: "sdxl-lightning", seed: 7 }
+  draft: { model: "sdxl", seed: 7 }
 ```]
 
 Three fields carry the composition. Each layer's `box` is `[x0, y0, x1, y1]` in fractions
@@ -108,15 +108,15 @@ anchored finish.
 
 #screen(caption: "The full layered render")[```
   $ plakat layers render corpus/layered/night-market.hjson \
-      --model sdxl --draft-model sdxl-lightning --draft-steps 8 \
+      --model sdxl --draft-model sdxl --draft-steps 8 \
       --steps 30 --seed 7 --keep stages/ --out poster.png
 ```]
 
-The finish model is SDXL — the book's model. `--draft-model` picks a fast few-step model
-for the solo drafts (the drafts only need to be *roughly* right; their high-frequency
-detail is thrown away). `--keep stages/` writes the intermediate drafts, the composed
-guide, and the weight/window anchor maps next to the output, which is worth doing the
-first few times so you can watch the machine think.
+The finish model is SDXL — the book's model. `--draft-model` picks the model that draws
+the solo drafts; the drafts only need to be *roughly* right — their high-frequency detail
+is thrown away — so a few steps of SDXL are plenty (`--draft-steps 8`). `--keep stages/`
+writes the intermediate drafts, the composed guide, and the weight/window anchor maps next
+to the output, which is worth doing the first few times so you can watch the machine think.
 
 #figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: vendor, customer, and lantern each in their planned place, painted together in one coherent SDXL pass. Three independent subjects that plain prose would have fused into a smear.")
 
