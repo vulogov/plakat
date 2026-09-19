@@ -114,8 +114,8 @@ plakat layers show corpus/layered/night-market.hjson --model sdxl \
 #     (drafts + finish). Add `--keep stages/` to also write the drafts, the
 #     guide, and the anchor maps into a folder for inspection (see Ch. 16).
 plakat layers render corpus/layered/night-market.hjson \
-  --model sdxl --draft-model sdxl --draft-steps 8 --steps 30 --seed 7 \
-  --out $A/12-layered-poster.png
+  --model sdxl --draft-model sdxl --draft-steps 8 --steps 36 \
+  --guidance 6.5 --ramp 0.2 --seed 11 --out $A/12-layered-poster.png
 
 
 # ============================================================================

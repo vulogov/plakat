@@ -1,38 +1,17 @@
 {
-  // A LAYERED-1 plan (RFC LAYERED-1). A complex, multi-subject scene split into a
-  // backdrop + independent subject layers. Each layer is drafted ALONE, the drafts
-  // become a low-frequency GUIDE, and the finish is ONE anchored trajectory of the
-  // finish model. Layers are constraints on layout — never pixels copied to output.
-  //
-  //   plakat layers lint  corpus/layered/night-market.hjson
-  //   plakat layers show  corpus/layered/night-market.hjson --boxes out.png
-  //   plakat layers render corpus/layered/night-market.hjson -o poster.png --model sdxl
   version: 1
   size: "1216x832"
-
-  // The global look is anchored into every draft (palette + light) and carried to the
-  // finish (all three). `medium` reaches the FINISH ONLY — only low frequencies of the
-  // drafts survive into the guide, so technique is the finish's business.
   global: {
-    palette: "warm amber and deep teal, lantern glow"
-    light:   "night, soft fog, warm string lights"
-    medium:  "cinematic poster illustration"
+    palette: "warm amber and honey lantern glow, soft teal night shadows"
+    light:   "warm lantern light filling the lane, soft glow on wet stones, gentle fog"
+    medium:  "cinematic poster illustration, warm and atmospheric, painterly"
   }
-
-  // The finish prompt (the model renders this): keep the STYLE, drop per-object detail.
-  prompt: "a lively night market lane, two figures at a food cart under warm string lights, soft fog"
-
-  // The backdrop is the ENVIRONMENT only — no subjects. Anchored weakly, fades early.
-  backdrop: { prompt: "a narrow night market lane, stalls and hanging lanterns receding into fog", weight: 0.6, window: 0.25 }
-
-  // One INDEPENDENT subject per layer. A box is [x0,y0,x1,y1] in [0,1]; `place:` words
-  // (e.g. "center-left mid") work too. `depth` 0 = nearest, 1 = farthest.
+  prompt: "a lively night market lane glowing with warm lantern light, wet cobblestones reflecting the glow, a food vendor at a cart serving a customer, rows of stalls and paper lanterns receding into soft fog, warm inviting cohesive night scene"
+  backdrop: { prompt: "a lively night market lane, wet cobblestones catching warm lantern light, rows of glowing food stalls and hanging paper lanterns receding into soft fog, warm inviting glow, atmospheric depth", weight: 0.55, window: 0.30 }
   layers: [
-    { id: "vendor",   prompt: "a food vendor in a dark apron leaning over a steaming cart", box: [0.08, 0.30, 0.46, 0.95], depth: 0.30 }
-    { id: "customer", prompt: "a customer in a red coat reaching for a paper cup",          box: [0.54, 0.32, 0.90, 0.96], depth: 0.35 }
-    { id: "lantern",  prompt: "a large round red paper lantern, glowing",                   box: [0.66, 0.06, 0.86, 0.30], depth: 0.60 }
+    { id: "vendor",   prompt: "a food vendor in a dark apron leaning over a steaming cart", box: [0.08, 0.34, 0.46, 0.95], depth: 0.30, weight: 0.78, window: 0.40 }
+    { id: "customer", prompt: "a customer in a warm coat reaching for a paper cup",         box: [0.52, 0.36, 0.88, 0.96], depth: 0.35, weight: 0.78, window: 0.40 }
+    { id: "lantern",  prompt: "a large round red paper lantern, glowing warmly",            box: [0.66, 0.10, 0.86, 0.34], depth: 0.60, weight: 0.70, window: 0.34 }
   ]
-
-  // The draft tier: a fast few-step model draws each layer alone.
-  draft: { model: "sdxl", seed: 7 }
+  draft: { model: "sdxl", seed: 11 }
 }

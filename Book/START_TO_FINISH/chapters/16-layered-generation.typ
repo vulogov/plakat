@@ -45,26 +45,33 @@ and a glowing lantern, three subjects that plain prose would fuse.
 #screen(caption: "corpus/layered/night-market.hjson")[```
   size: "1216x832"
   global: {
-    palette: "warm amber and deep teal, lantern glow"
-    light:   "night, soft fog, warm string lights"
-    medium:  "cinematic poster illustration"   # FINISH only
+    palette: "warm amber and honey lantern glow, soft teal night shadows"
+    light:   "warm lantern light filling the lane, soft glow on wet stones, gentle fog"
+    medium:  "cinematic poster illustration, warm and atmospheric"   # FINISH only
   }
-  prompt: "a lively night market lane, two figures at a food cart, soft fog"
-  backdrop: { prompt: "a night market lane, stalls and lanterns into fog" }
+  prompt: "a lively night market lane glowing with warm lantern light, a vendor
+           serving a customer, stalls and paper lanterns receding into soft fog"
+  backdrop: { prompt: "a lively night market lane, wet cobblestones catching warm
+                       lantern light, rows of glowing stalls and lanterns into fog",
+              weight: 0.55, window: 0.30 }
   layers: [
-    { id: "vendor",   prompt: "a food vendor in a dark apron leaning over a cart", box: [0.08, 0.30, 0.46, 0.95], depth: 0.30 }
-    { id: "customer", prompt: "a customer in a red coat reaching for a paper cup", box: [0.54, 0.32, 0.90, 0.96], depth: 0.35 }
-    { id: "lantern",  prompt: "a large round red paper lantern, glowing",          box: [0.66, 0.06, 0.86, 0.30], depth: 0.60 }
+    { id: "vendor",   prompt: "a food vendor in a dark apron leaning over a cart", box: [0.08, 0.34, 0.46, 0.95], depth: 0.30, weight: 0.78, window: 0.40 }
+    { id: "customer", prompt: "a customer in a warm coat reaching for a paper cup", box: [0.52, 0.36, 0.88, 0.96], depth: 0.35, weight: 0.78, window: 0.40 }
+    { id: "lantern",  prompt: "a large round red paper lantern, glowing",          box: [0.66, 0.10, 0.86, 0.34], depth: 0.60, weight: 0.70, window: 0.34 }
   ]
-  draft: { model: "sdxl", seed: 7 }
+  draft: { model: "sdxl", seed: 11 }
 ```]
 
-Three fields carry the composition. Each layer's `box` is `[x0, y0, x1, y1]` in fractions
-of the canvas (a `place:` phrase like `"center-left mid"` works too, if you would rather
-describe than measure). `depth` orders the layers front-to-back — `0` is nearest, `1`
-farthest — so a nearer subject wins where boxes overlap. And the `global` look is anchored
-into every draft *except* `medium`: technique is the finish's job, so only palette and
-light travel down to the solo drafts.
+Each layer's `box` is `[x0, y0, x1, y1]` in fractions of the canvas (a `place:` phrase like
+`"center-left mid"` works too, if you would rather describe than measure). `depth` orders
+the layers front-to-back — `0` is nearest, `1` farthest — so a nearer subject wins where
+boxes overlap. The `global` look is anchored into every draft *except* `medium`: technique
+is the finish's job, so only palette and light travel down to the solo drafts.
+
+The `weight` and `window` on each layer are the *anchor strength* — how hard, and for how
+long, the finish is pulled toward that subject's place in the guide. We will come back to
+them at the end of the chapter; they are the dial between "follow the plan exactly" and
+"blend into one cohesive scene."
 
 #term("box / place / depth")[
   A layer's place in the frame. `box: [x0,y0,x1,y1]` gives an explicit rectangle in
@@ -108,23 +115,56 @@ anchored finish.
 
 #screen(caption: "The full layered render")[```
   $ plakat layers render corpus/layered/night-market.hjson \
-      --model sdxl --draft-model sdxl --draft-steps 8 \
-      --steps 30 --seed 7 --keep stages/ --out poster.png
+      --model sdxl --draft-model sdxl --draft-steps 8 --steps 36 \
+      --guidance 6.5 --ramp 0.2 --seed 11 --keep stages/ --out poster.png
 ```]
 
 The finish model is SDXL — the book's model. `--draft-model` picks the model that draws
 the solo drafts; the drafts only need to be *roughly* right — their high-frequency detail
-is thrown away — so a few steps of SDXL are plenty (`--draft-steps 8`). `--keep stages/`
-writes the intermediate drafts, the composed guide, and the weight/window anchor maps next
-to the output, which is worth doing the first few times so you can watch the machine think.
+is thrown away — so a few steps of SDXL are plenty (`--draft-steps 8`). `--ramp` softens
+how the anchor lets go (more on that below). `--keep stages/` writes the intermediate
+drafts, the composed guide, and the weight/window anchor maps next to the output, which is
+worth doing the first few times so you can watch the machine think.
 
-#figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: vendor, customer, and lantern each in their planned place, painted together in one coherent SDXL pass. Three independent subjects that plain prose would have fused into a smear.")
+#figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: a cohesive night-market lane, its stalls, wet cobblestones and strung lanterns tying the vendor, the customer and the crowd into one atmospheric scene — painted together in a single SDXL pass. Three planned subjects that plain prose would have fused into a smear, woven into a place instead of pasted onto a void.")
 
 #callout(label: "Flux works too")[
   Layered generation is wired for the SD family (SD 1.5 / SDXL) and Flux. Point `--model`
   at a Flux alias and the guide is encoded in Flux's own latent space — the anchor is
   the same, only the finish family changes. (SD3, Sana, PixArt and Cascade finishes are
   on the roadmap.)
+]
+
+#section("Cohesion: the anchor is a dial")
+
+Look again at that render. The vendor, the customer and the lantern are where the plan put
+them — but they are not pasted onto a black void; they sit in a real lane, with stalls,
+wet cobblestones and strung lanterns tying the scene together. That cohesion is not
+automatic, and the naive version of this plan gives you the opposite: three well-drawn
+subjects floating in the dark. Two things produce the difference.
+
+The first is the *backdrop*. Each subject is drafted ALONE on a plain surround (so it mattes
+cleanly), which means the only thing joining the subjects in the guide is the backdrop
+draft. A thin, dark "night lane" backdrop makes the guide islands-in-black, and the finish
+faithfully paints islands in black. Give the backdrop a real, lit environment — "wet
+cobblestones catching warm lantern light, rows of glowing stalls" — and the finish has
+something to weave the subjects into.
+
+The second is *anchor strength* — each layer's `weight` (how hard) and `window` (how long),
+plus the `--ramp` that softens the hand-off. Turn them up and the finish reproduces the
+guide's layout exactly, subjects crisp but disconnected. Turn them down and the finish
+treats the guide as a loose suggestion, blending the subjects into a scene of its own
+painting. The plan above uses `weight: 0.78, window: 0.40` on the figures — down from the
+firm default — and renders with `--ramp 0.2`: enough to keep the vendor at his cart on the
+left and the lantern up-right, loose enough to let SDXL fill the lane between them.
+
+#callout(label: "The trade you are making")[
+  Anchor strength is the dial between *layout fidelity* and *cohesion*. High weight / long
+  window = subjects land exactly where planned, at the cost of looking composited; low
+  weight / short window = one seamless scene, at the cost of the plan being a suggestion. If
+  a render looks like a collage, lower the weights and enrich the backdrop; if a subject
+  drifts out of its box, raise them. There is no universally right setting — only the one
+  that suits the image you are making.
 ]
 
 #section("Did it land? Verify, repair, lift")
@@ -208,6 +248,10 @@ prose line to a self-checking, layer-by-layer composition — each for the job i
   [`layers render` runs drafts → guide → one anchored finish (SD family / Flux);
   `--keep` saves the stages. `verify` (OWL-ViT) checks each subject landed, `repair
   --auto` fixes the misses, `lift` rebuilds tiny subjects, `diff` measures the anchor.],
+  [*Cohesion is a dial*: a rich, lit `backdrop` gives the finish an environment to weave
+  the subjects into, and each layer's `weight` / `window` (with `--ramp`) trades layout
+  fidelity for a seamless scene — lower them and enrich the backdrop if a render reads as
+  a collage.],
   [`layers plan "<prose>"` decomposes a description into a plan via an LLM
   (`--provider ollama:<model>` for a bigger local model). Reach for layered generation
   when *many* independent subjects keep fusing — otherwise the compile path is simpler.],
