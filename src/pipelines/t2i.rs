@@ -376,6 +376,46 @@ pub struct GenRequest {
     pub output_format: crate::imaging::io::OutputFormat,
 }
 
+impl GenRequest {
+    /// Minimal single-image request — everything but the essentials defaulted (count 1, guidance 7.5, no
+    /// refiner / subseed / metadata / preview, clip-skip 1, PNG). For callers that render many prompts
+    /// through ONE loaded [`Pipeline`] (e.g. the LAYERED-1 resident draft loop), so the model loads once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn simple(
+        prompt: impl Into<String>,
+        negative: impl Into<String>,
+        width: u32,
+        height: u32,
+        steps: usize,
+        seed: Option<u64>,
+        scheduler: SchedulerKind,
+        out_dir: PathBuf,
+    ) -> Self {
+        GenRequest {
+            prompt: prompt.into(),
+            negative: negative.into(),
+            width,
+            height,
+            count: 1,
+            steps,
+            guidance: 7.5,
+            seed,
+            subseed: None,
+            subseed_strength: 0.0,
+            out_dir,
+            scheduler,
+            refine: None,
+            refine_strength: 0.3,
+            refiner_frac: None,
+            clip_skip: 1,
+            metadata: None,
+            preview_every: None,
+            preview_size: None,
+            output_format: crate::imaging::io::OutputFormat::default(),
+        }
+    }
+}
+
 // =====================================================================
 // Variant detection.
 // =====================================================================

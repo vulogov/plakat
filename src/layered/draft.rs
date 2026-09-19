@@ -151,19 +151,77 @@ fn spec_for(prompt: String, seed: u64, w: u32, h: u32, o: &DraftOpts) -> DraftSp
     DraftSpec { model: o.model.clone(), prompt, negative: DRAFT_NEGATIVE.to_string(), seed, width: w, height: h, steps: o.steps, scheduler: o.scheduler }
 }
 
-/// S1: render (or load) the backdrop + every selected layer draft.
+/// The `"__backdrop__"` key marks the full-canvas backdrop spec in the ordered draft list.
+const BACKDROP_KEY: &str = "__backdrop__";
+
+/// Is this draft model an SD-family model a single resident [`t2i::Pipeline`](crate::pipelines::t2i::Pipeline)
+/// can load once and render many prompts through? (Flux / SD3 / Sana / PixArt / Cascade use their own
+/// pipelines and fall back to the per-call path.)
+fn is_sd_family_draft(model: &str) -> bool {
+    let v = crate::pipelines::t2i::Variant::detect(model);
+    !(v.is_flux() || v.is_sd3() || v.is_sana() || v.is_cascade() || v.is_pixart())
+}
+
+/// Render every (uncached) spec through ONE resident SD pipeline — the model loads a single time for the
+/// whole draft set instead of once per draft. Cached specs are read straight from disk. Returns the images
+/// keyed as the specs were, in order.
+async fn render_specs_resident(specs: Vec<(String, DraftSpec)>, device_spec: &str) -> Result<Vec<(String, RgbImage)>> {
+    use crate::pipelines::t2i::{GenRequest, LoadRequest, Pipeline};
+    let device = crate::device::select(device_spec).context("selecting the draft device")?;
+    let need_render = specs.iter().any(|(_, s)| !cache_path(s).exists());
+    // Load the model ONCE — only if at least one draft actually needs rendering.
+    let pipeline = if need_render {
+        Some(
+            Pipeline::load(LoadRequest {
+                model: specs[0].1.model.clone(),
+                device: device.clone(),
+                loras: Vec::new(),
+                lora_scale: 1.0,
+                use_refiner: false,
+                embeddings: Vec::new(),
+                vae_cache: None,
+            })
+            .await
+            .with_context(|| format!("loading the draft model {}", specs[0].1.model))?,
+        )
+    } else {
+        None
+    };
+
+    let tmp = tempfile::Builder::new().prefix("plakat-layered-draft-").tempdir().context("draft scratch dir")?;
+    std::fs::create_dir_all(drafts_dir()).context("creating the drafts cache dir")?;
+    let mut out = Vec::with_capacity(specs.len());
+    for (i, (key, spec)) in specs.into_iter().enumerate() {
+        let path = cache_path(&spec);
+        if !path.exists() {
+            let pipeline = pipeline.as_ref().expect("pipeline is loaded whenever a render is needed");
+            let step_dir = tmp.path().join(i.to_string());
+            std::fs::create_dir_all(&step_dir)?;
+            let gen_req = GenRequest::simple(spec.prompt.clone(), spec.negative.clone(), spec.width, spec.height, spec.steps, Some(spec.seed), spec.scheduler, step_dir.clone());
+            pipeline.generate(&gen_req, &[]).with_context(|| format!("rendering draft {key:?}"))?;
+            let produced = std::fs::read_dir(&step_dir)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .find(|p| p.extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("png")).unwrap_or(false))
+                .ok_or_else(|| anyhow::anyhow!("draft {key:?} produced no PNG"))?;
+            std::fs::copy(&produced, &path).with_context(|| format!("caching draft {}", path.display()))?;
+        }
+        let img = image::open(&path).with_context(|| format!("loading draft {}", path.display()))?.to_rgb8();
+        out.push((key, img));
+    }
+    Ok(out)
+}
+
+/// S1: render (or load) the backdrop + every selected layer draft. When the draft model is SD-family the
+/// model loads ONCE for the whole set; otherwise each draft goes through the per-call generate path.
 pub async fn render_all(plan: &LayerPlan, o: &DraftOpts) -> Result<DraftSet> {
     let g = &plan.global;
     let base_seed = plan.draft.seed.unwrap_or(0);
 
-    // Backdrop — full canvas.
+    // Build the ordered spec list: the full-canvas backdrop, then each selected layer at its box aspect.
+    let mut specs: Vec<(String, DraftSpec)> = Vec::new();
     let bd = plan.backdrop.clone().unwrap_or_default();
     let (bw, bh) = backdrop_size(o.out_w, o.out_h);
-    let bspec = spec_for(backdrop_prompt(&bd, g), derive_seed(base_seed, "__backdrop__"), bw, bh, o);
-    let backdrop = render_draft(&bspec, &o.device).await.context("rendering the backdrop draft")?;
-
-    // Layers — each alone, at its box aspect.
-    let mut layers = Vec::new();
+    specs.push((BACKDROP_KEY.to_string(), spec_for(backdrop_prompt(&bd, g), derive_seed(base_seed, BACKDROP_KEY), bw, bh, o)));
     for l in &plan.layers {
         if let Some(only) = &o.only {
             if !only.iter().any(|id| id.eq_ignore_ascii_case(&l.id)) {
@@ -173,11 +231,31 @@ pub async fn render_all(plan: &LayerPlan, o: &DraftOpts) -> Result<DraftSet> {
         let bbox = plan::layer_box(l);
         let (w, h) = box_to_draft_size(&bbox, o.out_w, o.out_h, o.native_side);
         let seed = l.seed.unwrap_or_else(|| derive_seed(base_seed, &l.id));
-        let spec = spec_for(draft_prompt(l.prompt.as_deref().unwrap_or(""), g), seed, w, h, o);
-        let img = render_draft(&spec, &o.device).await.with_context(|| format!("rendering layer {:?}", l.id))?;
-        layers.push((l.id.clone(), img));
+        specs.push((l.id.clone(), spec_for(draft_prompt(l.prompt.as_deref().unwrap_or(""), g), seed, w, h, o)));
     }
-    Ok(DraftSet { backdrop, layers })
+
+    // Render: one resident SD pipeline for the whole set, or the per-call path for non-SD draft models.
+    let rendered: Vec<(String, RgbImage)> = if is_sd_family_draft(&o.model) {
+        render_specs_resident(specs, &o.device).await?
+    } else {
+        let mut v = Vec::with_capacity(specs.len());
+        for (key, spec) in &specs {
+            v.push((key.clone(), render_draft(spec, &o.device).await.with_context(|| format!("rendering draft {key:?}"))?));
+        }
+        v
+    };
+
+    // Split the backdrop out; the rest are the layer drafts, in plan order.
+    let mut backdrop = None;
+    let mut layers = Vec::new();
+    for (key, img) in rendered {
+        if key == BACKDROP_KEY {
+            backdrop = Some(img);
+        } else {
+            layers.push((key, img));
+        }
+    }
+    Ok(DraftSet { backdrop: backdrop.ok_or_else(|| anyhow::anyhow!("no backdrop draft was produced"))?, layers })
 }
 
 #[cfg(test)]
