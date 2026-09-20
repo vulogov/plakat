@@ -44,6 +44,15 @@ pub struct RenderOpts {
     pub guide: crate::layered::guide::GuideOpts,
     /// After the finish, verify each anchored/hinted subject actually landed (OWL-ViT, no diffusion).
     pub verify: bool,
+    /// B1 — adaptive anchor: when verify flags a subject missing, RAISE that layer's anchor weight/window and
+    /// RE-RENDER the finish (same seed, so the subjects that landed stay put), before falling to masked repair.
+    /// Implies verify. A cleaner fix than repair for a subject that merely drifted under a weak anchor.
+    pub adapt: bool,
+    /// Max adaptive re-render rounds. Default 1.
+    pub adapt_rounds: usize,
+    /// How much to raise a failed layer's `weight` each adaptive round (its `window` rises by 1.25× this).
+    /// Default 0.12.
+    pub adapt_boost: f32,
     /// Auto-repair the layers verify flags as missing (implies verify) — a masked pass per failing layer.
     pub repair: bool,
     /// Max repair rounds. Default 1.
@@ -89,6 +98,15 @@ fn native_side(model: &str) -> u32 {
     }
 }
 
+/// Copy the finished image to the requested output path (creating the parent dir).
+fn finish_copy(produced: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::copy(produced, out).with_context(|| format!("writing {}", out.display()))?;
+    Ok(())
+}
+
 /// The single PNG a finish run wrote into `dir`.
 fn first_png(dir: &std::path::Path) -> Result<PathBuf> {
     std::fs::read_dir(dir)
@@ -121,92 +139,141 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
     };
     let drafts = draft::render_all(plan, &dopts).await.context("S1 draft stage")?;
 
-    // S2 — guide (matte + compose + anchor maps).
-    let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading the U2Net matter")?;
-    let g = guide::build(plan, &drafts, geom, out_w, out_h, &device, &o.guide, |img| matter.matte(img)).context("S2 guide stage")?;
-
-    // The finish VAE reads the guide from a file (shared img2img preprocess path); keep it alive over run().
-    let tmp = tempfile::Builder::new().prefix("plakat-layered-").tempdir().context("layered scratch dir")?;
-    let guide_png = tmp.path().join("guide.png");
-    g.canvas.save(&guide_png).with_context(|| format!("saving the guide image {}", guide_png.display()))?;
-
+    // Save the drafts once (they don't change across adaptive re-renders).
     if let Some(dir) = &o.keep {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         drafts.backdrop.save(dir.join("__backdrop.png")).ok();
         for (id, img) in &drafts.layers {
             img.save(dir.join(format!("{}.png", crate::cli::layers::sanitize(id)))).ok();
         }
-        g.canvas.save(dir.join("__guide.png")).ok();
-        if let Ok(w) = guide::map_to_gray(&g.weight) {
-            image::imageops::resize(&w, out_w, out_h, image::imageops::FilterType::Nearest).save(dir.join("__weight.png")).ok();
-        }
-        if let Ok(e) = guide::map_to_gray(&g.window_end) {
-            image::imageops::resize(&e, out_w, out_h, image::imageops::FilterType::Nearest).save(dir.join("__window.png")).ok();
-        }
     }
 
-    // S3 — the anchored finish trajectory.
-    let vdevice = if o.verify || o.repair { Some(device.clone()) } else { None };
-    let out_dir = tempfile::Builder::new().prefix("plakat-layered-out-").tempdir().context("layered output dir")?;
-    let mut req = t2i::Request::simple(finish_prompt(plan), o.model.clone(), out_w, out_h, o.steps, Some(o.seed), device, out_dir.path().to_path_buf());
-    req.negative = FINISH_NEGATIVE.to_string();
-    req.guidance = o.guidance;
-    req.scheduler = o.scheduler;
-    req.count = 1;
-    req.layered = Some(LayeredGuide {
-        guide_path: guide_png.clone(),
-        weight: g.weight,
-        window_end: g.window_end,
-        ramp: o.ramp,
-        guide_seed: o.seed,
-    });
-    t2i::run(req).await.context("S3 finish stage")?;
-    let mut produced = first_png(out_dir.path())?;
+    // Models the finish/verify loop needs, loaded once. The U2Net matter rebuilds the guide each adaptive
+    // round; OWL-ViT is only loaded when something consumes a verdict (verify / repair / adapt).
+    let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading the U2Net matter")?;
+    let want_verdict = o.verify || o.repair || o.adapt;
+    let owl = if want_verdict {
+        Some(crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT for verify")?)
+    } else {
+        None
+    };
+    // Run verify against a produced image, mapping OWL-ViT detections into the verify types.
+    let run_verify = |work: &LayerPlan, img: &std::path::Path| -> Result<Option<crate::layered::verify::Report>> {
+        let Some(owl) = &owl else { return Ok(None) };
+        let detect = |q: &str| -> Result<Vec<crate::layered::verify::Det>> {
+            let dets = owl.detect_all(img, q, o.verify_threshold, 8)?;
+            Ok(dets.into_iter().map(|d| crate::layered::verify::Det { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, score: d.score }).collect())
+        };
+        Ok(Some(crate::layered::verify::verify(work, geom, out_w, out_h, &detect)?))
+    };
 
-    // S4 — verify each anchored/hinted subject landed (OWL-ViT), and optionally auto-repair the misses with
-    // a masked pass, re-verifying until clean or the round budget is spent.
-    if let Some(vdev) = vdevice {
-        let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&vdev).await.context("loading OWL-ViT for verify")?;
-        let rounds = if o.repair { o.repair_rounds.max(1) } else { 0 };
-        for round in 0..=rounds {
-            let report = {
-                let img = produced.clone();
-                let detect = |q: &str| -> Result<Vec<crate::layered::verify::Det>> {
-                    let dets = owl.detect_all(&img, q, o.verify_threshold, 8)?;
-                    Ok(dets.into_iter().map(|d| crate::layered::verify::Det { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, score: d.score }).collect())
-                };
-                crate::layered::verify::verify(plan, geom, out_w, out_h, &detect)?
-            };
-            if report.pass() {
-                tracing::info!(target: "plakat", "layered verify: all {} checked subject(s) present", report.checked);
+    // The finish VAE reads the guide from a file (shared img2img preprocess path); keep it alive over run().
+    let tmp = tempfile::Builder::new().prefix("plakat-layered-").tempdir().context("layered scratch dir")?;
+    let guide_png = tmp.path().join("guide.png");
+
+    // B1 — adaptive-anchor loop. Build the guide → run the anchored finish → verify. On a miss, RAISE the
+    // failed layers' anchor (weight + window) in a working copy of the plan and RE-RENDER at the SAME seed, so
+    // the subjects that landed stay put while the drifted ones are pulled in harder — before any masked repair.
+    let mut work = plan.clone();
+    let adapt_rounds = if o.adapt { o.adapt_rounds.max(1) } else { 0 };
+    let mut produced;
+    let mut report: Option<crate::layered::verify::Report> = None;
+    let mut round = 0usize;
+    loop {
+        // S2 — guide (matte + compose + anchor maps) from the current (possibly boosted) plan.
+        let g = guide::build(&work, &drafts, geom, out_w, out_h, &device, &o.guide, |img| matter.matte(img)).context("S2 guide stage")?;
+        g.canvas.save(&guide_png).with_context(|| format!("saving the guide image {}", guide_png.display()))?;
+        if let Some(dir) = &o.keep {
+            g.canvas.save(dir.join("__guide.png")).ok();
+            if let Ok(w) = guide::map_to_gray(&g.weight) {
+                image::imageops::resize(&w, out_w, out_h, image::imageops::FilterType::Nearest).save(dir.join("__weight.png")).ok();
+            }
+            if let Ok(e) = guide::map_to_gray(&g.window_end) {
+                image::imageops::resize(&e, out_w, out_h, image::imageops::FilterType::Nearest).save(dir.join("__window.png")).ok();
+            }
+        }
+
+        // S3 — the anchored finish trajectory (its own output subdir per round).
+        let out_sub = tmp.path().join(format!("finish-{round}"));
+        std::fs::create_dir_all(&out_sub).with_context(|| format!("creating {}", out_sub.display()))?;
+        let mut req = t2i::Request::simple(finish_prompt(&work), o.model.clone(), out_w, out_h, o.steps, Some(o.seed), device.clone(), out_sub.clone());
+        req.negative = FINISH_NEGATIVE.to_string();
+        req.guidance = o.guidance;
+        req.scheduler = o.scheduler;
+        req.count = 1;
+        req.layered = Some(LayeredGuide {
+            guide_path: guide_png.clone(),
+            weight: g.weight,
+            window_end: g.window_end,
+            ramp: o.ramp,
+            guide_seed: o.seed,
+        });
+        t2i::run(req).await.context("S3 finish stage")?;
+        produced = first_png(&out_sub)?;
+
+        // S4a — verify (drives the adaptive decision). No verdict wanted → single pass, done.
+        let rep = match run_verify(&work, &produced)? {
+            Some(r) => r,
+            None => break,
+        };
+        if rep.pass() {
+            tracing::info!(target: "plakat", "layered verify: all {} checked subject(s) present", rep.checked);
+            report = Some(rep);
+            break;
+        }
+        tracing::info!(target: "plakat", "layered verify: {} missing ({})", rep.failures.len(), rep.failures.join(", "));
+        if round >= adapt_rounds {
+            report = Some(rep);
+            break; // out of adaptive budget → hand off to repair (if enabled)
+        }
+        // Raise the anchor on each failed layer and re-render.
+        for id in &rep.failures {
+            if let Some(l) = work.layers.iter_mut().find(|l| &l.id == id) {
+                let w = l.weight.unwrap_or(0.85);
+                let e = l.window.unwrap_or(0.60);
+                l.weight = Some((w + o.adapt_boost).min(0.98));
+                l.window = Some((e + o.adapt_boost * 1.25).min(0.85));
+            }
+        }
+        tracing::info!(target: "plakat", "layered adapt: raising anchor on {} and re-rendering (round {})", rep.failures.join(", "), round + 1);
+        round += 1;
+    }
+
+    // S4b — masked repair for whatever verify still flags (a targeted pass per failing layer), re-verifying
+    // until clean or the round budget is spent. Runs after the adaptive re-renders have done what they can.
+    if o.repair {
+        let out_dir = tmp.path().join("repair");
+        std::fs::create_dir_all(&out_dir).ok();
+        let mut rep = match report.take() {
+            Some(r) => r,
+            None => match run_verify(&work, &produced)? {
+                Some(r) => r,
+                None => return finish_copy(&produced, &o.out),
+            },
+        };
+        for r in 0..o.repair_rounds.max(1) {
+            if rep.pass() {
                 break;
             }
-            tracing::info!(target: "plakat", "layered verify: {} missing ({})", report.failures.len(), report.failures.join(", "));
-            if round >= rounds {
-                break; // out of repair rounds (or verify-only)
-            }
-            let repaired = out_dir.path().join(format!("repaired-{round}.png"));
+            let repaired = out_dir.join(format!("repaired-{r}.png"));
             let ropts = crate::layered::repair::RepairOpts {
                 model: o.model.clone(),
                 out: repaired.clone(),
                 strength: o.repair_strength,
                 steps: o.steps,
                 guidance: o.guidance,
-                seed: o.seed.wrapping_add(round as u64 + 1),
+                seed: o.seed.wrapping_add(r as u64 + 1),
                 mask_feather: 8,
-                device: crate::device::spec_of(&vdev).to_string(),
+                device: crate::device::spec_of(&device).to_string(),
             };
-            crate::layered::repair::repair(&produced, plan, &report.failures, &ropts).await.context("S4 repair")?;
+            crate::layered::repair::repair(&produced, &work, &rep.failures, &ropts).await.context("S4 repair")?;
             produced = repaired;
+            rep = run_verify(&work, &produced)?.unwrap_or(rep);
         }
     }
 
     // Move the finished image to the requested path.
-    if let Some(parent) = o.out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).ok();
-    }
-    std::fs::copy(&produced, &o.out).with_context(|| format!("writing {}", o.out.display()))?;
-    Ok(())
+    finish_copy(&produced, &o.out)
 }
 
 #[cfg(test)]

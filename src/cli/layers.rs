@@ -199,6 +199,17 @@ pub struct RenderArgs {
     /// After the finish, verify each subject landed (OWL-ViT).
     #[arg(long)]
     pub verify: bool,
+    /// Adaptive anchor: when verify flags a subject missing, RAISE that layer's anchor and RE-RENDER the
+    /// finish (same seed) before falling to masked repair (implies `--verify`). A cleaner fix for a subject
+    /// that merely drifted under a weak anchor.
+    #[arg(long)]
+    pub adapt: bool,
+    /// Max adaptive re-render rounds. Default 1.
+    #[arg(long, default_value_t = 1)]
+    pub adapt_rounds: usize,
+    /// How much to raise a failed layer's weight each adaptive round (window rises 1.25×). Default 0.12.
+    #[arg(long, default_value_t = 0.12)]
+    pub adapt_boost: f32,
     /// Auto-repair the subjects that verify flags as missing (implies `--verify`).
     #[arg(long)]
     pub repair: bool,
@@ -728,7 +739,10 @@ async fn run_render(a: RenderArgs, device: candle_core::Device) -> Result<()> {
         scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
         ramp: a.ramp,
         guide: a.cohesion.to_opts(),
-        verify: a.verify || a.repair,
+        verify: a.verify || a.repair || a.adapt,
+        adapt: a.adapt,
+        adapt_rounds: a.adapt_rounds,
+        adapt_boost: a.adapt_boost,
         repair: a.repair,
         repair_rounds: a.repair_rounds,
         verify_threshold: a.verify_threshold,
