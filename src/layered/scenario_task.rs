@@ -31,21 +31,29 @@ pub struct LayeredTaskCfg {
     pub provider: Option<String>,
 }
 
-/// Validate up front (before any model load): a `plan:` path (which must exist) or a non-empty `prompt:`.
-pub fn validate(cfg: &LayeredTaskCfg) -> Result<()> {
+/// Resolve a `plan:` path relative to the scenario file's directory (so a compile-emitted sidecar next to the
+/// scenario is found no matter the CWD). Absolute paths pass through.
+fn resolve_plan(plan: &str, base_dir: &Path) -> std::path::PathBuf {
+    base_dir.join(plan)
+}
+
+/// Validate up front (before any model load): a `plan:` path (which must exist, resolved against the scenario
+/// dir) or a non-empty `prompt:`.
+pub fn validate(cfg: &LayeredTaskCfg, base_dir: &Path) -> Result<()> {
     let has_plan = cfg.plan.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
     let has_prompt = cfg.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
     anyhow::ensure!(has_plan || has_prompt, "layered task needs a `plan:` path or a `prompt:` (prose)");
     if let Some(p) = cfg.plan.as_deref().filter(|s| !s.trim().is_empty()) {
-        anyhow::ensure!(Path::new(p).exists(), "layered task: plan {p} not found");
+        let resolved = resolve_plan(p, base_dir);
+        anyhow::ensure!(resolved.exists(), "layered task: plan {} not found", resolved.display());
     }
     Ok(())
 }
 
 /// Run the layered pipeline → `<out_dir>/layered.png`. `seed` is the scenario-assigned task seed (a `seed:`
 /// on the task cfg overrides it).
-pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Path, seed: u64, dry_run: bool) -> Result<()> {
-    validate(cfg)?;
+pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Path, seed: u64, dry_run: bool, base_dir: &Path) -> Result<()> {
+    validate(cfg, base_dir)?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
     let out = out_dir.join("layered.png");
     if dry_run {
@@ -55,9 +63,10 @@ pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Pa
     let model = cfg.model.clone().unwrap_or_else(|| "sdxl".into());
     let seed = cfg.seed.unwrap_or(seed);
 
-    // Resolve the plan: parse a file, or run the planner over prose.
+    // Resolve the plan: parse a file (relative to the scenario dir), or run the planner over prose.
     let layer_plan = if let Some(path) = cfg.plan.as_deref().filter(|s| !s.trim().is_empty()) {
-        plan::parse(&std::fs::read_to_string(path).with_context(|| format!("reading plan {path}"))?)?
+        let resolved = resolve_plan(path, base_dir);
+        plan::parse(&std::fs::read_to_string(&resolved).with_context(|| format!("reading plan {}", resolved.display()))?)?
     } else {
         let (w, h) = plan::parse_size(cfg.size.as_deref(), (1216, 832));
         let draft = cfg.draft_model.clone().unwrap_or_else(|| "sdxl".into());
@@ -97,8 +106,9 @@ mod tests {
 
     #[test]
     fn validate_needs_a_plan_or_a_prompt() {
-        assert!(validate(&LayeredTaskCfg::default()).is_err(), "empty cfg is an error");
-        assert!(validate(&LayeredTaskCfg { prompt: Some("a busy market square".into()), ..Default::default() }).is_ok(), "prose is enough");
-        assert!(validate(&LayeredTaskCfg { plan: Some("/no/such/plan.hjson".into()), ..Default::default() }).is_err(), "a missing plan file is an error");
+        let base = Path::new(".");
+        assert!(validate(&LayeredTaskCfg::default(), base).is_err(), "empty cfg is an error");
+        assert!(validate(&LayeredTaskCfg { prompt: Some("a busy market square".into()), ..Default::default() }, base).is_ok(), "prose is enough");
+        assert!(validate(&LayeredTaskCfg { plan: Some("/no/such/plan.hjson".into()), ..Default::default() }, base).is_err(), "a missing plan file is an error");
     }
 }

@@ -22,6 +22,7 @@ pub mod emitter;
 /// corpus as tabu memory + a convergence guard). Pure over an injected step; the real step wires in at
 /// the CLI.
 pub mod improve;
+pub mod layered;
 pub mod cache;
 
 /// Salt mixed into every compile LLM cache key. Bump on any change to how the LLM is called (system
@@ -1661,9 +1662,20 @@ pub struct CompiledDoc {
 
 impl CompiledDoc {
     /// Serialize to the final scenario HJSON. Re-reads `self.scenes`, so any override applied to a scene's
-    /// `.prompt` (e.g. the `--improve` winner) lands in the emitted positive.
-    pub fn emit(&self) -> String {
-        emitter::emit(&self.globals, &self.scenes, &self.input_name, &self.provider)
+    /// `.prompt` (e.g. the `--improve` winner) lands in the emitted positive. `layered` (from
+    /// `compile --layered`) routes fusion-prone multi-subject scenes to `type: layered` tasks.
+    pub fn emit(&self, layered: bool) -> String {
+        emitter::emit(&self.globals, &self.scenes, &self.input_name, &self.provider, layered)
+    }
+
+    /// The auto-derived layered plan sidecars — `(filename, hjson)` per scene that routes to layered. Written
+    /// next to the scenario by the CLI when `--layered` is on; the emitted tasks reference them by `plan:`.
+    pub fn layered_plans(&self) -> Vec<(String, String)> {
+        self.scenes
+            .iter()
+            .filter(|cs| layered::should_layer(&cs.scene))
+            .map(|cs| (layered::sidecar_name(&cs.scene), layered::build_plan_hjson(&self.globals, cs)))
+            .collect()
     }
 
     /// Recompute the prose→emitted-prompt provenance from the CURRENT scene prompts. Call after overriding
@@ -1710,7 +1722,7 @@ impl CompiledDoc {
 
 pub async fn compile_to_string(input: &str, opts: &CompileOpts) -> anyhow::Result<(String, Vec<String>, Vec<String>, String)> {
     let d = compile_doc(input, opts).await?;
-    let hjson = d.emit();
+    let hjson = d.emit(false);
     Ok((hjson, d.warnings, d.trace, d.provenance))
 }
 

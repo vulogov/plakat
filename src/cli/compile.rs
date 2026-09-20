@@ -106,6 +106,14 @@ pub struct CompileArgs {
     #[arg(help_heading = "Compile", long, default_value_t = false)]
     pub analyze: bool,
 
+    /// *(6.34)* LAYERED-aware compilation. A scene with several INDEPENDENT foreground subjects (≥2 hero
+    /// figures that don't physically interact — the fusion-prone case) is auto-decomposed into a LAYERED-1
+    /// plan: a backdrop plus one subject layer per figure, each geometrically placed. compile emits a
+    /// `type: layered` task and writes the derived plan as a `<scene>.layered.hjson` sidecar next to the
+    /// scenario. Deterministic (no LLM); needs a file output (`--out`), not stdout. Off by default.
+    #[arg(help_heading = "Compile", long, default_value_t = false)]
+    pub layered: bool,
+
     /// *(6.29)* With `--analyze`: also AUTO-APPLY the safe text fixes. Traces each offending phrase to the
     /// exact source `@include` file it lives in, backs that file up to `<file>.<N>` first, edits it in place
     /// (preserving each phrase's language — Russian stays Russian, English stays English), and reports what
@@ -640,9 +648,10 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
         },
     };
 
-    let needs_doc = !args.matrix.is_empty() || args.smysl_defaults;
-    let (hjson, warnings, trace, provenance) = if !needs_doc {
-        compile::compile_to_string(&input, &opts).await?
+    let needs_doc = !args.matrix.is_empty() || args.smysl_defaults || args.layered;
+    let (hjson, layered_plans, warnings, trace, provenance): (String, Vec<(String, String)>, Vec<String>, Vec<String>, String) = if !needs_doc {
+        let (h, w, t, p) = compile::compile_to_string(&input, &opts).await?;
+        (h, Vec::new(), w, t, p)
     } else {
         // Doc-level post-processing: apply corpus-learned defaults, then expand the matrix.
         let mut doc = compile::compile_doc(&input, &opts).await?;
@@ -667,7 +676,8 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
             eprintln!("{} matrix: {} axis(es) → {} cell(s)", style("◆").cyan(), axes.len(), cells);
         }
         doc.recompute_provenance();
-        (doc.emit(), doc.warnings.clone(), doc.trace.clone(), doc.provenance.clone())
+        let plans = if args.layered { doc.layered_plans() } else { Vec::new() };
+        (doc.emit(args.layered), plans, doc.warnings.clone(), doc.trace.clone(), doc.provenance.clone())
     };
 
     // 6.27: show WHAT the pipeline did per scene (translate, compose, weights, enhance, negative, fit) —
@@ -709,12 +719,24 @@ async fn run_inner(args: CompileArgs) -> Result<()> {
 
     match out {
         None => {
+            anyhow::ensure!(
+                layered_plans.is_empty(),
+                "--layered writes plan sidecars next to the scenario, so it needs a file output — pass --out <file> instead of stdout"
+            );
             print!("{hjson}");
             Ok(())
         }
         Some(path) => {
             std::fs::write(&path, &hjson).with_context(|| format!("writing {}", path.display()))?;
             println!("{}  compiled → {}", style("✓").green(), path.display());
+            // --layered: write each auto-derived plan sidecar next to the scenario (the tasks reference
+            // them by `layered: { plan: <name> }`).
+            let plan_dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+            for (name, content) in &layered_plans {
+                let p = plan_dir.join(name);
+                std::fs::write(&p, content).with_context(|| format!("writing layered plan {}", p.display()))?;
+                println!("{}  layered plan → {}", style("✓").green(), p.display());
+            }
             // --smysl: write the provenance sidecar beside the scenario (best-effort; opt-in).
             if args.smysl {
                 let sidecar = path.with_extension("smysl");
@@ -1554,7 +1576,7 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     // 5. EMIT — write the improved scenario. The winning prompts are already in `doc.scenes[*].prompt`, so
     //    re-emitting produces an HJSON that carries the improvement into the artifact you render.
     doc.recompute_provenance(); // provenance now tracks prose → WINNING prompt
-    let hjson = doc.emit();
+    let hjson = doc.emit(args.layered);
     crate::cli::scenario::validate_hjson(&hjson).context("improved scenario failed validation")?;
     let out_path: PathBuf = match &args.out {
         Some(p) if p.as_os_str() != "-" => p.clone(),
@@ -1562,6 +1584,14 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     };
     std::fs::write(&out_path, &hjson).with_context(|| format!("writing {}", out_path.display()))?;
     println!("\n{}  compiled (improved) → {}", style("✓").green(), out_path.display());
+    if args.layered {
+        let plan_dir = out_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        for (name, content) in doc.layered_plans() {
+            let p = plan_dir.join(&name);
+            std::fs::write(&p, &content).with_context(|| format!("writing layered plan {}", p.display()))?;
+            println!("{}  layered plan → {}", style("✓").green(), p.display());
+        }
+    }
 
     // The smysl corpus is the PROCESS memory (tabu + per-scene rank) and already lives at <stem>.smysl. Under
     // --smysl, also fold in the scene-claims + prose→winning-prompt provenance so the sidecar is complete.

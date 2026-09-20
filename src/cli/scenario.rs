@@ -3978,7 +3978,8 @@ pub async fn run_with_events(
             }
             TaskKind::Layered => {
                 let cfg = t.layered.clone().unwrap_or_default();
-                crate::layered::scenario_task::validate(&cfg).with_context(|| format!("task {:?} (layered)", t.name))?;
+                let base_dir = args.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+                crate::layered::scenario_task::validate(&cfg, base_dir).with_context(|| format!("task {:?} (layered)", t.name))?;
             }
         }
     }
@@ -5681,7 +5682,8 @@ pub async fn run_with_events(
             let task_out = out_root.join(safe_name(&task.name));
             let layered_result: Result<()> = async {
                 let cfg = task.layered.clone().unwrap_or_default();
-                crate::layered::scenario_task::run_layered_task(&cfg, device.clone(), &task_out, task_seed, args.dry_run).await
+                let base_dir = args.file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+                crate::layered::scenario_task::run_layered_task(&cfg, device.clone(), &task_out, task_seed, args.dry_run, &base_dir).await
             }
             .await;
             let rec_kind = "layered".to_string();
