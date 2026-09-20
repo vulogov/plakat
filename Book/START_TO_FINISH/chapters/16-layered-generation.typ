@@ -158,6 +158,11 @@ painting. The plan above uses `weight: 0.78, window: 0.40` on the figures — do
 firm default — and renders with `--ramp 0.2`: enough to keep the vendor at his cart on the
 left and the lantern up-right, loose enough to let SDXL fill the lane between them.
 
+The guide also helps the seam automatically, so subjects sit *in* the scene rather than on
+it: each matted subject is colour-harmonised toward the backdrop's palette (`--harmonize`),
+and a soft contact shadow is laid under it (`--no-ground` turns this off) — which is why the
+figures in Image 12 cast shadows onto the wet cobblestones instead of hovering above them.
+
 #callout(label: "The trade you are making")[
   Anchor strength is the dial between *layout fidelity* and *cohesion*. High weight / long
   window = subjects land exactly where planned, at the cost of looking composited; low
