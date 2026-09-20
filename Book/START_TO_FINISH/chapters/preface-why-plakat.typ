@@ -13,9 +13,15 @@ compute is spent, the reasoning is gone, and nothing you learned survives to the
 attempt. It is a slot machine with a progress bar.
 
 plakat is built on a different bet: that making a good image is *work you can reason
-about*, not luck you wait on. It is a local, pure-Rust studio — it runs on your own
-machine, keeps your prompts and pictures private, phones nothing home, and asks for no
-subscription. But its real idea is smaller and more useful than any feature list. You
+about*, not luck you wait on. It is a local, pure-Rust studio — every image is rendered
+on your own machine, it phones nothing home, and it asks for no subscription. Its
+optional steps that *reason about* your prose — enhancing a prompt, judging a render,
+improving a scene — run on a small on-device model by default, so nothing need ever
+leave your computer. The one time anything does is if *you* choose to route those steps
+through a hosted language model; even then you can stay fully local with a model run
+under Ollama. That choice is always yours, and Chapter 6 spells out exactly when text
+leaves the machine and how to keep it from doing so. But its real idea is smaller and
+more useful than any feature list. You
 write your scene in *prose*, in a plain file you own. Before you spend a single render,
 plakat reads that prose and tells you what will probably fail — and why. You fix the
 prose, cheaply, and it remembers the reason for every change. Only when the scene is

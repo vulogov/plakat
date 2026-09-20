@@ -97,8 +97,11 @@ A computer that can run a diffusion model. plakat is pure Rust and runs on Apple
 Silicon (Metal), NVIDIA (CUDA), or CPU — slowly, but it *will* finish on CPU. The
 opening chapter checks your machine and downloads the one small model our first
 image needs. You do not need an API key to begin: the default prompt enhancer is
-a small model that runs on your own machine. If you have a key for a hosted model
-later, the book shows where it slots in.
+a small model that runs on your own machine, and every image is generated locally.
+If you later opt to route the optional prompt-reasoning steps through a hosted model,
+that text leaves your machine for the provider you name — Chapter 6 is explicit about
+when that happens and how to keep it fully local (including a larger local model under
+Ollama).
 
 #recap((
   [This book follows *one poster*, "NIGHT MARKET", from `plakat init` to a

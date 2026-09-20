@@ -45,19 +45,51 @@ to print the scenario to your terminal instead.
 The *enhance* stage is where a scene's plain prose becomes a prompt tuned to the
 model family. That stage runs through a language model — the "provider." plakat
 defaults to a small model that runs on your own machine (no key, a one-time
-download), and you can point it at a hosted model if you have a key.
+download); you can run a larger local model under Ollama, or point it at a hosted
+model if you have a key.
 
 #screen(caption: "Picking the enhancement provider")[```
-  # on-device, no key (default)
+  # on-device, no key, nothing leaves the machine (default)
   $ plakat compile prompts.txt --compile-provider local
 
-  # a hosted model, if you have a key in the environment
+  # a larger LOCAL model via Ollama — still nothing leaves the machine
+  $ plakat compile prompts.txt --compile-provider ollama:qwen2.5-coder:14b
+
+  # a HOSTED model, if you have a key in the environment
+  # (your prose is sent to that provider — see the note below)
   $ plakat compile prompts.txt --compile-provider deepseek
   $ plakat compile prompts.txt --compile-provider gemini
 
   # let plakat choose what's configured
   $ plakat compile prompts.txt --compile-provider auto
 ```]
+
+#warn(label: "What leaves your machine — and what doesn't")[
+  *Image generation is always local.* Every render runs on your own GPU or CPU and
+  never touches a provider. The only thing that can leave your machine is the *text*
+  of the optional prose-reasoning steps — enhancement here, and later `--analyze`,
+  `--improve`, and the layered planner — and only if you point one at a *hosted*
+  provider. Be clear-eyed about what that means:
+
+  #list(
+    [If you choose a hosted provider (`deepseek`, `gemini`, or `auto` when a key is
+     configured), the request — your prose and the prompt being enhanced or judged —
+     *is sent over the network to that provider.* With `local` or `ollama:<model>`,
+     nothing leaves the machine.],
+    [Hosted models are usually *metered*: those calls can *cost money*. The account,
+     the API key, the token usage, and the bill are yours to set up, watch, and pay —
+     plakat neither meters nor caps them for you.],
+    [Any such request is governed by *that provider's* terms of service and privacy
+     policy, and is subject to their handling and retention — not plakat's. plakat
+     neither sees nor controls what a provider does with what you send.],
+    [To keep everything on your machine while still using a capable LLM, run one under
+     *Ollama* and select it with `--compile-provider ollama:<model>`.],
+    [These reasoning arcs are *entirely optional*. plakat compiles and renders without
+     any of them — `--no-enhance --no-negative` (below) skips the model altogether, and
+     `--analyze` / `--improve` only run when you ask. Whether to use an external
+     provider, and for what, is your call and your responsibility.],
+  )
+]
 
 #callout(label: "Deterministic compiles")[
   If you want a compile with *no* language model at all — byte-for-byte

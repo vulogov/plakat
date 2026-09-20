@@ -63,8 +63,11 @@ designed as a #emph[for sale] project. It is a work of love made for the people 
 can least afford to pay for software — the designer on a battered laptop, the student
 making a poster for a club with no budget, the artist who simply wants a tool that
 runs on their own machine and answers to no one. It carries no analytics, no
-telemetry, no upsell; the binary will never phone home, and your prompts and pictures
-never leave your computer.
+telemetry, no upsell; the binary will never phone home. Your images are rendered
+entirely on your own machine, and nothing leaves it unless you deliberately choose to
+route the optional prompt-reasoning steps through a hosted language model — a choice you
+control, one plakat never makes for you, and one you can decline entirely by keeping
+those steps on-device or on a local Ollama model.
 
 #section("A note on cooperation")
 
