@@ -305,6 +305,18 @@ pub fn parse(input: &str) -> Result<Document> {
     // a map block (or any block when the global declares `type: map`) needs none.
     let global_spec_task = doc.global.as_ref().is_some_and(|g| declares_map_task(g) || declares_bookart_task(g) || declares_texture_task(g) || declares_comic_task(g) || declares_product_task(g) || declares_faceswap_task(g) || declares_fractal_task(g));
     for (i, s) in doc.scenes.iter().enumerate() {
+        // A `foreground:`/`background:` list with no scene prose above it is the classic blank-line trap: the
+        // figures were meant for the scene in the previous block but a blank line split them into their own.
+        // Name it precisely — silently dropping them (and, e.g., never layering the scene) is the worst case.
+        if declares_scene_figures(s) && !s.has_free_text() && !declares_composition(s) && !declares_relations(s) {
+            bail!(
+                "compile: block #{} (line {}) has `foreground:`/`background:` but no scene description — \
+                 these figure lists belong to a scene. Remove the blank line before them so they share the \
+                 scene's block (a `foreground:` in its own block is not a scene).",
+                i + 1,
+                s.line_start
+            );
+        }
         // A `composition:` also gives the block content (its prompt comes from components), so a
         // composition-only block is valid — free text is optional (compose, then prose).
         if !s.has_free_text() && !declares_composition(s) && !declares_relations(s) && !global_spec_task && !declares_map_task(s) && !declares_bookart_task(s) && !declares_texture_task(s) && !declares_comic_task(s) && !declares_product_task(s) && !declares_faceswap_task(s) && !declares_fractal_task(s) {
@@ -337,13 +349,22 @@ fn is_global_fragment(b: &Block) -> bool {
     !b.has_free_text()
         && !declares_composition(b)
         && !declares_relations(b)
+        && !declares_scene_figures(b)
         && !declares_map_task(b)
         && !declares_bookart_task(b)
         && !declares_texture_task(b)
         && !declares_comic_task(b)
         && !declares_product_task(b)
-        && !declares_faceswap_task(b)
         && !declares_fractal_task(b)
+        && !declares_faceswap_task(b)
+}
+
+/// Does this block declare `foreground:`/`background:` — per-scene figure lists? Such a block belongs to a
+/// scene; standing alone (a blank line split it off) it is NOT global config, so it must NOT be silently
+/// merged into the global block (which would drop the figures and, e.g., stop `compile --layered` from ever
+/// seeing them). Kept out of `is_global_fragment` so it routes to the scene path and gets a clear error.
+fn declares_scene_figures(b: &Block) -> bool {
+    b.values("foreground").next().is_some() || b.values("background").next().is_some()
 }
 
 /// Does this block declare a `map` task (so it may omit a prose description)?
@@ -467,6 +488,20 @@ mod tests {
         assert_eq!(doc.scenes.len(), 1);
         assert!(doc.scenes[0].free_text.is_empty());
         assert_eq!(doc.scenes[0].values("type").collect::<Vec<_>>(), vec!["faceswap"]);
+    }
+
+    #[test]
+    fn standalone_foreground_block_is_a_clear_error_not_silently_dropped() {
+        // The blank-line trap: `foreground:` split off from its scene by a blank line. It must NOT be swallowed
+        // into the global block (dropping the figures) — it errors with a message naming the fix.
+        let err = parse(
+            "component.vendor: a vendor\ncomponent.customer: a customer\n\n\
+             a night market lane\n\n\
+             foreground: vendor, customer\nstyle: warm\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("foreground") && err.contains("blank line"), "names the trap: {err}");
     }
 
     #[test]

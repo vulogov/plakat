@@ -73,11 +73,27 @@ fn mean_rgb(img: &RgbImage) -> [f32; 3] {
     [s[0] / n, s[1] / n, s[2] / n]
 }
 
-/// Shift `img`'s per-channel mean a fraction `strength` toward `target` (colour harmonisation). Subsumes luma
-/// matching: brightness AND colour move toward the backdrop, while the subject keeps its own variation.
+/// How much of the colour-CAST difference `harmonize_toward` applies, relative to the brightness match. The
+/// luminance (exposure) shift is applied at full `strength` — that is what integrates a subject into the
+/// scene's light — but the CHROMA shift (the per-channel colour cast) is applied only at this fraction of it,
+/// so a subject with a deliberately contrasting colour (a red coat on a blue night) picks up a little ambient
+/// warmth without being washed toward the backdrop's grey. 1.0 = the old behaviour (full colour wash).
+const HARMONIZE_CHROMA_FRAC: f32 = 0.5;
+
+/// Shift `img`'s mean toward `target` (colour harmonisation), decomposed so brightness and colour move
+/// independently: the LUMINANCE difference is matched at `strength` (exposure integration), the residual
+/// per-channel COLOUR CAST only at `strength × HARMONIZE_CHROMA_FRAC` — so the subject keeps its own hue and a
+/// deliberate contrast survives, while still sitting in the scene's light. Subsumes plain luma matching.
 fn harmonize_toward(img: &mut RgbImage, target: [f32; 3], strength: f32) {
     let cur = mean_rgb(img);
-    let shift = [(target[0] - cur[0]) * strength, (target[1] - cur[1]) * strength, (target[2] - cur[2]) * strength];
+    // The luminance component of the mean difference (applied equally to every channel).
+    let dl = (0.299 * (target[0] - cur[0]) + 0.587 * (target[1] - cur[1]) + 0.114 * (target[2] - cur[2])) * strength;
+    // The residual per-channel colour cast (the part of the shift beyond the shared luma move), applied gently.
+    let shift = [
+        dl + ((target[0] - cur[0]) * strength - dl) * HARMONIZE_CHROMA_FRAC,
+        dl + ((target[1] - cur[1]) * strength - dl) * HARMONIZE_CHROMA_FRAC,
+        dl + ((target[2] - cur[2]) * strength - dl) * HARMONIZE_CHROMA_FRAC,
+    ];
     for p in img.pixels_mut() {
         for c in 0..3 {
             p.0[c] = (p.0[c] as f32 + shift[c]).round().clamp(0.0, 255.0) as u8;
@@ -489,13 +505,16 @@ mod tests {
     }
 
     #[test]
-    fn harmonize_shifts_subject_toward_backdrop() {
-        // A pure-red subject harmonised toward a blue backdrop: red falls, blue rises, mean moves toward blue.
+    fn harmonize_preserves_contrast_while_shifting() {
+        // A pure-red subject harmonised toward a blue backdrop: it moves toward the backdrop (red falls, blue
+        // rises), but contrast-preserving harmonisation does NOT wash it to grey — the subject stays clearly
+        // red (red still well above blue), instead of the old per-channel "halfway to blue" flatten.
         let mut sub = solid(16, 16, [220, 20, 20]);
         harmonize_toward(&mut sub, [20.0, 20.0, 220.0], 0.5);
         let m = mean_rgb(&sub);
         assert!(m[0] < 220.0 && m[2] > 20.0, "moved toward backdrop colour: {m:?}");
-        assert!((m[0] - 120.0).abs() < 2.0 && (m[2] - 120.0).abs() < 2.0, "≈ halfway at strength 0.5: {m:?}");
+        assert!(m[0] > m[2] + 60.0, "deliberate red contrast survives (red ≫ blue): {m:?}");
+        assert!(m[0] > 140.0, "not washed to the naive halfway grey (~120): {m:?}");
     }
 
     #[test]

@@ -61,13 +61,18 @@ fn round8(v: f32) -> u32 {
     (((v / 8.0).round() as i64 * 8).clamp(256, 1536)) as u32
 }
 
-/// Snap a layer box to a draft render size: keep the box aspect, target the draft family's native AREA
-/// (`native_side²`), round each side to a multiple of 8, clamp to `[256, 1536]`.
+/// Snap a layer box to a draft render size: keep the box aspect, and target an AREA scaled to the box —
+/// capped at the draft family's native area (`native_side²`, so a large box never over-renders) and floored
+/// at a quarter of it (`(native_side/2)²`, so a small box still has enough resolution to draft + matte). A
+/// tiny subject box (a lantern, a sign) no longer pays a full native-resolution render. Each side is rounded
+/// to a multiple of 8 and clamped to `[256, 1536]`.
 pub fn box_to_draft_size(bbox: &[f32; 4], out_w: u32, out_h: u32, native_side: u32) -> (u32, u32) {
     let bw = ((bbox[2] - bbox[0]).max(0.02) * out_w as f32).max(1.0);
     let bh = ((bbox[3] - bbox[1]).max(0.02) * out_h as f32).max(1.0);
     let aspect = bw / bh;
-    let area = (native_side as f32) * (native_side as f32);
+    let native_area = (native_side as f32) * (native_side as f32);
+    let floor_area = native_area * 0.25; // (native_side/2)²
+    let area = (bw * bh).clamp(floor_area, native_area);
     (round8((area * aspect).sqrt()), round8((area / aspect).sqrt()))
 }
 
@@ -285,16 +290,29 @@ mod tests {
     }
 
     #[test]
-    fn box_size_keeps_aspect_area_and_multiple_of_8() {
-        // A wide box (2:1) on a 1024-native family → ~1024² area at 2:1.
+    fn box_size_keeps_aspect_and_multiple_of_8() {
+        // A wide box (2:1) at 800×400 px sits inside the [512², 1024²] band → renders at ~its own area, 2:1.
         let (w, h) = box_to_draft_size(&[0.0, 0.0, 0.8, 0.4], 1000, 1000, 1024);
         assert_eq!(w % 8, 0);
         assert_eq!(h % 8, 0);
         assert!(w > h, "wider than tall");
         let aspect = w as f32 / h as f32;
         assert!((aspect - 2.0).abs() < 0.15, "aspect ≈ 2:1 (got {aspect})");
-        let area = (w * h) as f32;
-        assert!((area.sqrt() - 1024.0).abs() < 120.0, "area ≈ native (side {})", area.sqrt());
+        let side = ((w * h) as f32).sqrt();
+        assert!((side - 566.0).abs() < 40.0, "area ≈ the box (800×400), not native (side {side})");
+    }
+
+    #[test]
+    fn box_size_floors_a_tiny_box_and_caps_a_huge_one() {
+        // A tiny subject box (a lantern) floors at (native/2)² = 512², not native — but no lower.
+        let tiny = box_to_draft_size(&[0.66, 0.10, 0.86, 0.34], 1216, 832, 1024);
+        let tiny_side = ((tiny.0 * tiny.1) as f32).sqrt();
+        assert!((tiny_side - 512.0).abs() < 40.0, "tiny box floors at ~512² (side {tiny_side})");
+        assert!(tiny.0 < 1024 && tiny.1 < 1024, "tiny box never renders at native ({}×{})", tiny.0, tiny.1);
+        // A box larger than native area is capped at native², never over-rendered.
+        let huge = box_to_draft_size(&[0.0, 0.0, 1.0, 1.0], 2048, 2048, 1024);
+        let huge_side = ((huge.0 * huge.1) as f32).sqrt();
+        assert!((huge_side - 1024.0).abs() < 40.0, "huge box caps at ~native² (side {huge_side})");
     }
 
     #[test]
