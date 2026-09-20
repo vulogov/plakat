@@ -2,7 +2,7 @@
 name = "plakat"
 version = "6.34.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
 description = "Local text-to-image CLI on candle: 7 model families, LoRA, ControlNet, style transfer (InstantStyle), img2img/inpaint/outpaint, upscale, smart background removal, AnimateDiff"
 license = "Unlicense"
