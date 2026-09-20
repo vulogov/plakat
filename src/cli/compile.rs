@@ -1419,12 +1419,22 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         println!("{}  keeping every scored candidate under {}/", style("◆").cyan(), kd.display());
     }
 
-    // Up-front cost, so a fan-out over many scenes is never a surprise.
-    let est_renders = selected.len() * (1 + args.improve_passes) * seeds.len();
+    // Up-front cost, so a fan-out over many scenes is never a surprise. A LAYERED scene (under --layered)
+    // improves each of its layer prompts SEPARATELY, so it counts as one target per layer, not one per scene.
+    let target_count = |i: usize| -> usize {
+        if args.layered && crate::compile::layered::should_layer(&doc.scenes[i].scene) {
+            doc.scenes[i].scene.foreground.len().max(1)
+        } else {
+            1
+        }
+    };
+    let n_targets: usize = selected.iter().map(|&i| target_count(i)).sum();
+    let est_renders = n_targets * (1 + args.improve_passes) * seeds.len();
     println!(
-        "{}  improving {} scene(s) — up to ~{} renders · model {model} · {} seed{} from {} · {} pass(es) · keep-gain {:.2}",
+        "{}  improving {} scene(s) ({} prompt target(s)) — up to ~{} renders · model {model} · {} seed{} from {} · {} pass(es) · keep-gain {:.2}",
         style("◆").cyan(),
         selected.len(),
+        n_targets,
         est_renders,
         seeds.len(),
         if seeds.len() == 1 { "" } else { "s" },
@@ -1457,35 +1467,21 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
     };
 
     let mut results: Vec<(String, compile::improve::ImproveOutcome)> = Vec::new();
-    for &i in &selected {
-        let name = doc.scenes[i].scene.name.clone();
-        let prompt0 = doc.scenes[i].prompt.clone();
-        let negative = doc.scenes[i].negative.clone();
-        println!("\n{} scene {name}", style("──").cyan());
-        // Each scene is an INDEPENDENT optimization: its own negative, its own baseline (its ENHANCED prompt),
-        // its own tabu seeded from the (shared, content-addressed) corpus — a scene's edits never collide.
-        step.negative = negative.clone();
-        step.last_rank = 0.0;
-        step.scene_name = name.clone();
-        step.call_idx = 0;
-        // Read the corpus ONCE for this scene: its prior fix-moves (tabu) AND its prior best rank (the gate).
+
+    // The per-target quality gate: read the (shared, content-addressed) corpus for this LABEL's prior fix-moves
+    // (tabu — the loop physically can't re-march a spent move) and its prior best rank (the skip gate). A LABEL
+    // is a scene name, or a `scene::layer-id` when improving a layered scene's separate layer prompts. Fresh
+    // baselines are NOISY (Metal isn't bit-reproducible, aesthetic drifts ~0.2 run-to-run) so the skip bar gets
+    // a tolerance band; an explicit `--improve-target` stays an EXACT absolute floor. With both, the higher wins.
+    const SKIP_TOL: f32 = 0.25;
+    let gate = |label: &str| -> (Vec<(String, String)>, Option<f32>) {
         let corpus_text = std::fs::read_to_string(&corpus_path).ok();
-        let seed_tabu =
-            corpus_text.as_deref().map(crate::smysl::prior_fixes).unwrap_or_default();
-        // The quality gate: skip passes if the baseline already meets the target. `--improve-target` is an
-        // absolute floor; `--improve-skip-good` pulls a per-scene target from the corpus's prior best. With
-        // both, the baseline must clear the HIGHER bar (max) — skip only if it satisfies both.
+        let seed_tabu = corpus_text.as_deref().map(crate::smysl::prior_fixes).unwrap_or_default();
         let prior_best = if args.improve_skip_good {
-            corpus_text.as_deref().and_then(|t| crate::smysl::prior_scene_rank(t, &name))
+            corpus_text.as_deref().and_then(|t| crate::smysl::prior_scene_rank(t, label))
         } else {
             None
         };
-        // Fresh baselines are NOISY — Metal renders aren't bit-reproducible and the aesthetic score drifts
-        // ~0.2 run-to-run. So the `--improve-skip-good` bar (a noisy stored best vs a noisy fresh baseline)
-        // gets a tolerance band; without it, a scene we already optimized re-marches just because this run's
-        // baseline landed a hair lower. An explicit `--improve-target` stays an EXACT absolute bar (the user
-        // named a number). With both, the higher bar wins.
-        const SKIP_TOL: f32 = 0.25;
         let target = match (args.improve_target, prior_best) {
             (Some(a), Some(b)) => Some(a.max(b - SKIP_TOL)),
             (Some(a), None) => Some(a),
@@ -1501,6 +1497,89 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
             };
             println!("    · gate: skip if baseline \u{2265} {t:.2} ({src})");
         }
+        (seed_tabu, target)
+    };
+    // The render settings that achieved a rank — recorded so `--improve-skip-good` can gate and
+    // `--smysl-defaults` can later learn the best-scoring knobs. Takes the scene by ref (no doc capture).
+    let scene_settings = |sc: &crate::compile::resolver::ResolvedScene| -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = Vec::new();
+        let model = args
+            .improve_model
+            .clone()
+            .or_else(|| sc.model_for_family.clone())
+            .unwrap_or_else(|| format!("{:?}", sc.family).to_lowercase());
+        v.push(("model".into(), model));
+        if let Some(st) = sc.steps {
+            v.push(("steps".into(), st.to_string()));
+        }
+        if let Some(g) = sc.guidance {
+            v.push(("guidance".into(), format!("{g}")));
+        }
+        if let Some(s) = &sc.scheduler {
+            if !s.trim().is_empty() {
+                v.push(("scheduler".into(), s.trim().to_string()));
+            }
+        }
+        v
+    };
+    // Persist a target's tried deltas (tabu) + best rank into the shared corpus.
+    let persist = |label: &str, out: &compile::improve::ImproveOutcome, settings: &[(String, String)]| {
+        let moves = out.corpus_moves();
+        if !moves.is_empty() {
+            if let Err(e) = persist_improve_corpus(&corpus_path, &moves) {
+                eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
+            }
+        }
+        if let Err(e) = persist_scene_rank(&corpus_path, label, out.best_rank, settings) {
+            eprintln!("{}  smysl rank not recorded: {e:#}", style("⚠").yellow());
+        }
+    };
+
+    for &i in &selected {
+        let name = doc.scenes[i].scene.name.clone();
+        let negative = doc.scenes[i].negative.clone();
+        // A LAYERED scene (under --layered) improves each LAYER PROMPT separately — the artifact the finish
+        // renders is the sidecar plan's per-layer prompts, so that is what --improve must sharpen. Each layer
+        // is its own independent optimization (own tabu/gate, keyed `scene::layer-id`); the winner is written
+        // straight back into the scene's foreground description, which flows into the re-emitted sidecar plan.
+        if args.layered && crate::compile::layered::should_layer(&doc.scenes[i].scene) {
+            let n = doc.scenes[i].scene.foreground.len();
+            println!("\n{} scene {name} \u{00b7} layered \u{2014} improving {n} layer prompt(s) separately", style("\u{2500}\u{2500}").cyan());
+            let settings = scene_settings(&doc.scenes[i].scene);
+            for j in 0..n {
+                let (lid, ldesc) = doc.scenes[i].scene.foreground[j].clone();
+                let label = format!("{name}::{lid}");
+                println!("\n{}  layer {lid}", style("\u{00b7}").cyan());
+                step.negative = negative.clone();
+                step.last_rank = 0.0;
+                step.scene_name = label.clone();
+                step.call_idx = 0;
+                let (seed_tabu, target) = gate(&label);
+                let out = compile::improve::run_improve(
+                    &mut step,
+                    &ldesc,
+                    seed_tabu,
+                    args.improve_passes,
+                    args.improve_plateau.max(1),
+                    args.improve_min_gain,
+                    target,
+                )
+                .await?;
+                doc.scenes[i].scene.foreground[j].1 = out.best_prompt.clone();
+                persist(&label, &out, &settings);
+                results.push((label, out));
+            }
+            continue;
+        }
+
+        // Non-layered scene: improve the merged scene prompt (unchanged behaviour).
+        let prompt0 = doc.scenes[i].prompt.clone();
+        println!("\n{} scene {name}", style("\u{2500}\u{2500}").cyan());
+        step.negative = negative.clone();
+        step.last_rank = 0.0;
+        step.scene_name = name.clone();
+        step.call_idx = 0;
+        let (seed_tabu, target) = gate(&name);
         let out = compile::improve::run_improve(
             &mut step,
             &prompt0,
@@ -1514,40 +1593,8 @@ async fn improve_cmd(args: &CompileArgs, input: &str) -> Result<()> {
         // WRITE THE WINNER BACK into the compiled scene, so the emitted HJSON carries the improved prompt.
         // (For a skipped/already-good scene, best_prompt IS the baseline — a harmless identity override.)
         doc.scenes[i].prompt = out.best_prompt.clone();
-        // Persist this scene's tried deltas into the shared corpus (tabu memory for next time).
-        let moves = out.corpus_moves();
-        if !moves.is_empty() {
-            if let Err(e) = persist_improve_corpus(&corpus_path, &moves) {
-                eprintln!("{}  smysl corpus not updated: {e:#}", style("⚠").yellow());
-            }
-        }
-        // Record this scene's best rank AND the settings that achieved it — so `--improve-skip-good` can
-        // gate it, and `--smysl-defaults` can later learn the best-scoring knobs (not just the words).
-        let settings = {
-            let sc = &doc.scenes[i].scene;
-            let mut v: Vec<(String, String)> = Vec::new();
-            let model = args
-                .improve_model
-                .clone()
-                .or_else(|| sc.model_for_family.clone())
-                .unwrap_or_else(|| format!("{:?}", sc.family).to_lowercase());
-            v.push(("model".into(), model));
-            if let Some(st) = sc.steps {
-                v.push(("steps".into(), st.to_string()));
-            }
-            if let Some(g) = sc.guidance {
-                v.push(("guidance".into(), format!("{g}")));
-            }
-            if let Some(s) = &sc.scheduler {
-                if !s.trim().is_empty() {
-                    v.push(("scheduler".into(), s.trim().to_string()));
-                }
-            }
-            v
-        };
-        if let Err(e) = persist_scene_rank(&corpus_path, &name, out.best_rank, &settings) {
-            eprintln!("{}  smysl rank not recorded: {e:#}", style("⚠").yellow());
-        }
+        let settings = scene_settings(&doc.scenes[i].scene);
+        persist(&name, &out, &settings);
         results.push((name.clone(), out));
     }
     let _ = std::fs::remove_dir_all(&tmp);
