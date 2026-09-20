@@ -166,11 +166,17 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
     } else {
         None
     };
+    // Verify threshold, auto-relaxed for a painterly/non-photo medium — OWL-ViT (photo-trained) scores stylized
+    // subjects low, so verifying a painting at the photo threshold produces phantom misses.
+    let vthresh = crate::layered::verify::style_threshold(o.verify_threshold, plan.global.medium.as_deref());
+    if want_verdict && (vthresh - o.verify_threshold).abs() > f32::EPSILON {
+        tracing::info!(target: "plakat", "layered verify: stylized medium → relaxing detection threshold {:.3} → {:.3}", o.verify_threshold, vthresh);
+    }
     // Run verify against a produced image, mapping OWL-ViT detections into the verify types.
     let run_verify = |work: &LayerPlan, img: &std::path::Path| -> Result<Option<crate::layered::verify::Report>> {
         let Some(owl) = &owl else { return Ok(None) };
         let detect = |q: &str| -> Result<Vec<crate::layered::verify::Det>> {
-            let dets = owl.detect_all(img, q, o.verify_threshold, 8)?;
+            let dets = owl.detect_all(img, q, vthresh, 8)?;
             Ok(dets.into_iter().map(|d| crate::layered::verify::Det { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, score: d.score }).collect())
         };
         Ok(Some(crate::layered::verify::verify(work, geom, out_w, out_h, &detect)?))

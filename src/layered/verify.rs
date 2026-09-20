@@ -60,6 +60,28 @@ pub fn layer_query(l: &Layer) -> String {
     l.query.clone().or_else(|| l.prompt.clone()).unwrap_or_default().trim().to_string()
 }
 
+/// Medium/style words that mean the render is NON-photographic. OWL-ViT is photo-trained, so it scores real
+/// subjects far lower on a painting/illustration than on a photo — verifying a painterly scene at the photo
+/// threshold produces phantom misses (subjects that ARE there read as absent), churning `--adapt`/`--repair`.
+const STYLIZED_MEDIA: &[&str] = &[
+    "painting", "painted", "illustration", "illustrated", "drawing", "drawn", "sketch", "engraving", "etching",
+    "woodcut", "linocut", "watercolor", "watercolour", "gouache", "oil", "acrylic", "ink", "anime", "manga",
+    "cartoon", "comic", "concept art", "digital art", "poster", "fresco", "pastel", "charcoal", "cel-shad",
+    "stylized", "stylised", "storybook", "art nouveau", "ukiyo",
+];
+
+/// The verify detection threshold to actually use, given the plan's `medium`: for a NON-photographic medium the
+/// base threshold is halved (floored at 0.02), since OWL-ViT scores stylized subjects low. Photographic (or
+/// unknown) media keep the base unchanged.
+pub fn style_threshold(base: f32, medium: Option<&str>) -> f32 {
+    let stylized = medium.map(|m| m.to_ascii_lowercase()).is_some_and(|m| STYLIZED_MEDIA.iter().any(|w| m.contains(w)));
+    if stylized {
+        (base * 0.5).max(0.02)
+    } else {
+        base
+    }
+}
+
 fn iou(a: [f32; 4], b: [f32; 4]) -> f32 {
     let (ix0, iy0) = (a[0].max(b[0]), a[1].max(b[1]));
     let (ix1, iy1) = (a[2].min(b[2]), a[3].min(b[3]));
@@ -201,6 +223,15 @@ mod tests {
         let r = verify(&plan, &geom(), 128, 128, &detect).unwrap();
         assert_eq!(r.failures, vec!["bowl".to_string()]);
         assert_eq!(r.layers[0].score, 0.0);
+    }
+
+    #[test]
+    fn style_threshold_relaxes_for_painterly_media() {
+        assert_eq!(style_threshold(0.1, Some("oil painting, warm")), 0.05, "painterly → halved");
+        assert_eq!(style_threshold(0.1, Some("a cinematic illustration")), 0.05, "illustration → halved");
+        assert_eq!(style_threshold(0.1, Some("photorealistic, 35mm photo")), 0.1, "photo → unchanged");
+        assert_eq!(style_threshold(0.1, None), 0.1, "unknown medium → unchanged");
+        assert_eq!(style_threshold(0.03, Some("engraving")), 0.02, "floored at 0.02");
     }
 
     #[test]
