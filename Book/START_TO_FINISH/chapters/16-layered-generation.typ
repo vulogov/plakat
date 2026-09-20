@@ -224,6 +224,54 @@ model you have pulled with Ollama (`ollama:qwen2.5-coder:14b`) for sharper decom
 a bigger model places the subjects on opposite sides of a "face-off" instead of stacking
 them. Whatever you get is an ordinary plan file: read it, nudge a box, and render.
 
+#section("Layering from prose: compile --layered")
+
+Everything in this chapter so far has started from a *plan* — hand-written, or from
+`layers plan`. But you have spent the whole book in the *compile* path: prose in a `.txt`,
+`plakat compile` out to a scenario. That path can reach layered generation on its own.
+
+Add `--layered` to any compile and it inspects each scene it resolves. When a scene has
+*two or more independent foreground figures that do not interact* — exactly the fusion-prone
+case — compile decomposes it into a layered plan automatically and points the scenario at it.
+There is nothing new to write in the prose: you already name the heroes with `foreground:`
+(Chapter 9), and `--layered` simply turns that figure list into subject layers.
+
+#screen(caption: "Compile prose straight to a layered scenario")[```
+  $ plakat compile market.txt --layered --out market.hjson
+  ✓  compiled → market.hjson
+  ✓  layered plan → a_bustling_night_market_lane_glowing.layered.hjson
+```]
+
+The scene that qualified becomes a `type: layered` task, pointing at a sidecar plan written
+next to the scenario:
+
+#screen(caption: "market.hjson — the layered task")[```
+  tasks:
+  [
+    {
+      name: a_bustling_night_market_lane_glowing
+      type: layered
+      layered: { plan: "a_bustling_night_market_lane_glowing.layered.hjson" }
+    }
+  ]
+```]
+
+That sidecar is an ordinary plan — the same HJSON you met at the top of this chapter, built
+for you: the backdrop from the scene's prose, one placed subject layer per `foreground`
+figure, the finish look from your `style:`. Read it, nudge a box, and render it with `plakat
+scenario market.hjson` like any other file. A scene with a single hero — or two figures the
+prose says are interacting, a `relate:` contact — is left on the one-pass compile path
+untouched; `--layered` only reroutes the scenes that actually need it.
+
+#callout(label: "--improve sharpens each layer on its own")[
+  The polish loop understands layers too. Run `compile --layered --improve` and, for a
+  layered scene, `--improve` optimises *each layer's prompt separately* — rendering and
+  aesthetically scoring one subject at a time, keeping the best wording per layer — rather
+  than scoring the whole crowd at once. Each layer keeps its own history in the smysl corpus,
+  so `--improve-skip-good` gates them one by one, and the winning prompts are written straight
+  back into the sidecar plan.
+]
+
 #section("Which road? Layered vs. the compile path")
 
 Two engines now stage a scene, and they are not rivals — they are for different scenes.
@@ -235,7 +283,8 @@ Two engines now stage a scene, and they are not rivals — they are for differen
   Reach for *layered* when a scene has *several independent subjects that each need full
   detail* and keep fusing no matter how you phrase them — a market of distinct stalls, a
   group portrait where every face matters, a poster with a cast. When `compile --analyze`
-  flags fusion you cannot phrase your way out of, layers are the next rung.
+  flags fusion you cannot phrase your way out of, layers are the next rung — and `compile
+  --layered` is the bridge that climbs it without ever leaving the prose path.
 ]
 
 That is the last engine in the book. You have every tool a poster needs — from a single
@@ -260,4 +309,8 @@ prose line to a self-checking, layer-by-layer composition — each for the job i
   [`layers plan "<prose>"` decomposes a description into a plan via an LLM
   (`--provider ollama:<model>` for a bigger local model). Reach for layered generation
   when *many* independent subjects keep fusing — otherwise the compile path is simpler.],
+  [The *compile path reaches layered on its own*: `compile --layered` decomposes any
+  fusion-prone scene (two or more independent `foreground` figures, no interaction) into a
+  `type: layered` task plus an auto-built sidecar plan, and `compile --layered --improve`
+  then sharpens *each layer's prompt separately*.],
 ))
