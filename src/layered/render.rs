@@ -42,6 +42,15 @@ pub struct RenderOpts {
     pub ramp: f32,
     /// Guide-cohesion controls (grounding / colour-harmonisation / relight).
     pub guide: crate::layered::guide::GuideOpts,
+    /// A2 — drive a ControlNet-Depth pass off the composed guide, so the finish also gets HIGH-frequency
+    /// STRUCTURE (subject shapes) instead of only the low-frequency layout the anchor supplies. Depth is a
+    /// constraint, not pixels. SD-family finishes only for now.
+    pub depth_control: bool,
+    /// ControlNet-Depth conditioning strength. Default 0.5.
+    pub depth_strength: f32,
+    /// The trajectory fraction the depth control stays active for (early/mid, like the anchor's window, then
+    /// the finish is left free to paint detail). Default 0.7.
+    pub depth_end: f32,
     /// After the finish, verify each anchored/hinted subject actually landed (OWL-ViT, no diffusion).
     pub verify: bool,
     /// B1 — adaptive anchor: when verify flags a subject missing, RAISE that layer's anchor weight/window and
@@ -171,6 +180,16 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
     let tmp = tempfile::Builder::new().prefix("plakat-layered-").tempdir().context("layered scratch dir")?;
     let guide_png = tmp.path().join("guide.png");
 
+    // A2 — depth control from the guide. SD-family finishes only for now (the SD path forwards ControlNet
+    // residuals into the anchored `generate_hooked` loop); a Flux/other finish ignores it with a note.
+    let depth_on = o.depth_control && {
+        let sd = matches!(classify_model(&o.model), ModelFamily::Sd15 | ModelFamily::Sdxl);
+        if !sd {
+            tracing::warn!(target: "plakat", "layered depth-control is SD-family only for now — ignored for {}", o.model);
+        }
+        sd
+    };
+
     // B1 — adaptive-anchor loop. Build the guide → run the anchored finish → verify. On a miss, RAISE the
     // failed layers' anchor (weight + window) in a working copy of the plan and RE-RENDER at the SAME seed, so
     // the subjects that landed stay put while the drifted ones are pulled in harder — before any masked repair.
@@ -201,6 +220,19 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
         req.guidance = o.guidance;
         req.scheduler = o.scheduler;
         req.count = 1;
+        if depth_on {
+            // Depth-Anything annotates the composed guide (via `from=`) → ControlNet-Depth; applied early/mid
+            // (start 0, end `depth_end`) so it supplies structure without over-constraining the finish's detail.
+            req.controls = vec![crate::pipelines::controlnet::ControlSpec {
+                kind: crate::pipelines::controlnet::ControlKind::Depth,
+                image: None,
+                from: Some(guide_png.clone()),
+                video: None,
+                strength: o.depth_strength,
+                start: 0.0,
+                end: o.depth_end,
+            }];
+        }
         req.layered = Some(LayeredGuide {
             guide_path: guide_png.clone(),
             weight: g.weight,

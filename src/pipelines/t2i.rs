@@ -3587,9 +3587,12 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
     // own init noise (same seed), and substituted in the low frequencies inside each anchored pixel's window
     // via `LayeredHook` (the `refine_latent` seam wired across every family in P0).
     if let Some(lg) = &req.layered {
+        // A ControlNet stack (e.g. LAYERED-1 A2's depth-from-guide) DOES compose with the anchor now:
+        // `generate_hooked` applies the control residuals per step alongside the low-freq hook. Regions /
+        // tiled / refiner still don't.
         anyhow::ensure!(
-            req.regions.is_empty() && req.tiled.is_none() && control_reqs.is_empty() && !req.use_refiner,
-            "layered finish doesn't compose with --region / --tiled / --control / --refiner yet"
+            req.regions.is_empty() && req.tiled.is_none() && !req.use_refiner,
+            "layered finish doesn't compose with --region / --tiled / --refiner yet"
         );
         let core = pipeline.core();
         let idev = core.device().clone();

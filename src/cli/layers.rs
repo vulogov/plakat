@@ -199,6 +199,17 @@ pub struct RenderArgs {
     /// After the finish, verify each subject landed (OWL-ViT).
     #[arg(long)]
     pub verify: bool,
+    /// Depth control: drive a ControlNet-Depth pass off the composed guide, giving the finish high-frequency
+    /// subject STRUCTURE on top of the low-frequency anchor (SD-family finishes only). Depth is a constraint,
+    /// not pixels.
+    #[arg(long)]
+    pub depth_control: bool,
+    /// ControlNet-Depth conditioning strength. Default 0.5.
+    #[arg(long, default_value_t = 0.5)]
+    pub depth_strength: f32,
+    /// Trajectory fraction the depth control stays active for (then the finish is left free). Default 0.7.
+    #[arg(long, default_value_t = 0.7)]
+    pub depth_end: f32,
     /// Adaptive anchor: when verify flags a subject missing, RAISE that layer's anchor and RE-RENDER the
     /// finish (same seed) before falling to masked repair (implies `--verify`). A cleaner fix for a subject
     /// that merely drifted under a weak anchor.
@@ -739,6 +750,9 @@ async fn run_render(a: RenderArgs, device: candle_core::Device) -> Result<()> {
         scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
         ramp: a.ramp,
         guide: a.cohesion.to_opts(),
+        depth_control: a.depth_control,
+        depth_strength: a.depth_strength,
+        depth_end: a.depth_end,
         verify: a.verify || a.repair || a.adapt,
         adapt: a.adapt,
         adapt_rounds: a.adapt_rounds,
