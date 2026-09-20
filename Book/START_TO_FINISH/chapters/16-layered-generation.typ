@@ -126,7 +126,7 @@ how the anchor lets go (more on that below). `--keep stages/` writes the interme
 drafts, the composed guide, and the weight/window anchor maps next to the output, which is
 worth doing the first few times so you can watch the machine think.
 
-#figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: a cohesive night-market lane, its stalls, wet cobblestones and strung lanterns tying the vendor, the customer and the crowd into one atmospheric scene — painted together in a single SDXL pass. Three planned subjects that plain prose would have fused into a smear, woven into a place instead of pasted onto a void.")
+#figure_img("assets/12-layered-poster.png", "Image 12 — the finished layered render: a cohesive night-market lane, its lantern-strung eaves receding into real perspective, the vendor at her cart on the left and the crowd browsing the stalls on the right, all painted together in a single SDXL pass. Three planned subjects that plain prose would have fused into a smear, woven into a place with genuine depth — not pasted onto a void. (Rendered with the structure and self-correction controls below.)")
 
 #callout(label: "Flux works too")[
   Layered generation is wired for the SD family (SD 1.5 / SDXL) and Flux. Point `--model`
@@ -170,6 +170,42 @@ figures in Image 12 cast shadows onto the wet cobblestones instead of hovering a
   a render looks like a collage, lower the weights and enrich the backdrop; if a subject
   drifts out of its box, raise them. There is no universally right setting — only the one
   that suits the image you are making.
+]
+
+#section("Structure and self-correction: --depth-control and --adapt")
+
+The anchor holds *layout* — where each subject sits — but only in the low frequencies, so it
+says little about a subject's *structure*: the shape of the cart, the fall of a coat, the
+architecture receding down the lane. Two opt-in controls sharpen the finish beyond the layout.
+
+`--depth-control` runs a depth estimator over the composed guide and drives a ControlNet-Depth
+pass on the finish alongside the anchor. The guide already knows where everything is; depth
+turns that into real geometry — the subjects gain form and the scene gains perspective,
+*without copying a single pixel* (a depth map is a constraint, exactly like the anchor). It is
+SD-family only for now, and applied early-to-mid (`--depth-end`), so it shapes the composition
+and then lets the finish paint its own detail.
+
+`--adapt` closes the loop. After the finish, it verifies each subject (the detector below) and,
+for any that drifted, *raises that layer's anchor and re-renders at the same seed* — so the
+subjects that landed stay exactly put while the strays are pulled in harder. It is a cleaner
+fix than the masked repair below, because the subject is re-painted *in context* rather than
+patched in afterward; the two compose, `--adapt` first.
+
+#screen(caption: "The full render, with structure + self-correction (produced Image 12)")[```
+  $ plakat layers render corpus/layered/night-market.hjson \
+      --model sdxl --draft-model sdxl --draft-steps 8 --steps 36 \
+      --guidance 6.5 --ramp 0.2 --seed 11 \
+      --depth-control --adapt \
+      --keep stages/ --out poster.png
+```]
+
+#callout(label: "A note on verifying painted subjects")[
+  The detector that drives `--adapt` (and `--repair`) is trained on *photographs*, so it scores
+  a painted or illustrated figure far lower than a photographic one. Layered renders relax the
+  detection threshold automatically for a non-photographic `medium`, but a stylized scene can
+  still read as a phantom miss — a subject that is plainly *there* going undetected. When that
+  happens, `--adapt` simply spends its rounds and stops; the image is unharmed. Trust your eyes
+  over the verdict on painterly work.
 ]
 
 #section("Did it land? Verify, repair, lift")
@@ -306,6 +342,10 @@ prose line to a self-checking, layer-by-layer composition — each for the job i
   the subjects into, and each layer's `weight` / `window` (with `--ramp`) trades layout
   fidelity for a seamless scene — lower them and enrich the backdrop if a render reads as
   a collage.],
+  [*Structure + self-correction*: `--depth-control` drives a ControlNet-Depth pass off the
+  guide so subjects gain form and the scene gains perspective (a depth map is a constraint,
+  not pixels); `--adapt` re-renders a drifted subject at a stronger anchor before any masked
+  repair. On painterly work, trust your eyes over the photo-trained detector's verdict.],
   [`layers plan "<prose>"` decomposes a description into a plan via an LLM
   (`--provider ollama:<model>` for a bigger local model). Reach for layered generation
   when *many* independent subjects keep fusing — otherwise the compile path is simpler.],
