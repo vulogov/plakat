@@ -117,6 +117,37 @@ pub struct DraftArgs {
     pub size: Option<String>,
 }
 
+/// Guide-cohesion knobs, shared by `guide` and `render` (RFC LAYERED-1 quality). Make each matted subject
+/// sit IN the scene, not on it: contact-shadow grounding, colour-harmonisation, and a light directional
+/// relight — all pure image ops.
+#[derive(Args, Debug, Clone)]
+pub struct CohesionArgs {
+    /// Disable the soft contact shadow laid under each subject (grounding is on by default).
+    #[arg(long)]
+    pub no_ground: bool,
+    /// Colour-harmonise each subject toward the backdrop, `0..1` (0 = off; default 0.4).
+    #[arg(long, default_value_t = 0.4)]
+    pub harmonize: f32,
+    /// Directional relight amplitude `0..~0.4` — a coarse light-direction gradient (0 = off; default 0).
+    #[arg(long, default_value_t = 0.0)]
+    pub relight: f32,
+    /// Key-light direction in degrees: 90 = overhead, 0 = from the right, 180 = from the left. Default 90.
+    #[arg(long, default_value_t = 90.0)]
+    pub light_angle: f32,
+}
+
+impl CohesionArgs {
+    pub(crate) fn to_opts(&self) -> crate::layered::guide::GuideOpts {
+        crate::layered::guide::GuideOpts {
+            ground: !self.no_ground,
+            ground_softness: 1.0,
+            harmonize: self.harmonize,
+            relight_amp: self.relight,
+            light_angle: self.light_angle,
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct GuideArgs {
     /// The layer plan HJSON.
@@ -133,6 +164,8 @@ pub struct GuideArgs {
     /// Output size override `WxH` (default: the plan's `size`).
     #[arg(long)]
     pub size: Option<String>,
+    #[command(flatten)]
+    pub cohesion: CohesionArgs,
 }
 
 #[derive(Args, Debug)]
@@ -163,12 +196,29 @@ pub struct RenderArgs {
     /// Window-close ramp `r`. Default 0.1.
     #[arg(long, default_value_t = 0.1)]
     pub ramp: f32,
+    /// After the finish, verify each subject landed (OWL-ViT).
+    #[arg(long)]
+    pub verify: bool,
+    /// Auto-repair the subjects that verify flags as missing (implies `--verify`).
+    #[arg(long)]
+    pub repair: bool,
+    /// Max auto-repair rounds. Default 1.
+    #[arg(long, default_value_t = 1)]
+    pub repair_rounds: usize,
+    /// OWL-ViT detection threshold for verify. Default 0.1.
+    #[arg(long, default_value_t = 0.1)]
+    pub verify_threshold: f32,
+    /// Inpaint strength for auto-repair. Default 0.6.
+    #[arg(long, default_value_t = 0.6)]
+    pub repair_strength: f32,
     /// Also write the intermediate drafts + guide + anchor maps into this directory.
     #[arg(long)]
     pub keep: Option<PathBuf>,
     /// Output size override `WxH` (default: the plan's `size`).
     #[arg(long)]
     pub size: Option<String>,
+    #[command(flatten)]
+    pub cohesion: CohesionArgs,
 }
 
 #[derive(Args, Debug)]
@@ -677,6 +727,12 @@ async fn run_render(a: RenderArgs, device: candle_core::Device) -> Result<()> {
         seed: a.seed,
         scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
         ramp: a.ramp,
+        guide: a.cohesion.to_opts(),
+        verify: a.verify || a.repair,
+        repair: a.repair,
+        repair_rounds: a.repair_rounds,
+        verify_threshold: a.verify_threshold,
+        repair_strength: a.repair_strength,
         keep: a.keep.clone(),
     };
     println!(
@@ -721,7 +777,7 @@ async fn run_guide(a: GuideArgs, device: candle_core::Device) -> Result<()> {
 
     // Load U2Net once; matte each anchored subject off its draft.
     let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading the U2Net matter")?;
-    let g = guide::build(&p, &drafts, &geom, w, h, &device, |img| matter.matte(img))?;
+    let g = guide::build(&p, &drafts, &geom, w, h, &device, &a.cohesion.to_opts(), |img| matter.matte(img))?;
 
     std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
     let gpath = a.out.join("__guide.png");

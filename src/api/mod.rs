@@ -561,6 +561,12 @@ impl Layered {
             seed: self.seed,
             scheduler: SchedulerKind::default(),
             ramp: self.ramp,
+            guide: crate::layered::guide::GuideOpts::default(),
+            verify: false,
+            repair: false,
+            repair_rounds: 1,
+            verify_threshold: 0.1,
+            repair_strength: 0.6,
             keep: self.keep.clone(),
         };
         render::render(&layer_plan, &geom, w, h, device, &opts).await

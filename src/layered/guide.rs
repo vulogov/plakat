@@ -32,6 +32,97 @@ const LAYER_WINDOW: f32 = 0.6;
 /// Luma-normalisation gain is clamped so a mis-lit draft can't blow out or crush the composite.
 const GAIN_LO: f32 = 0.6;
 const GAIN_HI: f32 = 1.6;
+/// How dark a contact shadow gets at full strength (multiplies the canvas underneath).
+const SHADOW_DARK: f32 = 0.5;
+
+/// Cohesion controls for [`compose`] / [`build`] — how each subject is blended into the scene so the guide
+/// reads as one place, not a collage. All are pure image ops (no GPU); anchoring only sees low frequencies,
+/// so coarse grounding + colour agreement is exactly the right level of effort here.
+#[derive(Clone, Copy, Debug)]
+pub struct GuideOpts {
+    /// Lay a soft contact shadow under each subject (grounds floating cut-outs). Default on.
+    pub ground: bool,
+    /// Contact-shadow softness (penumbra scale). Default 1.0.
+    pub ground_softness: f32,
+    /// Colour-harmonise each subject toward the backdrop's mean colour, `0..1` (0 = off, replaces the old
+    /// luma-only gain with a per-channel shift so palettes agree). Default 0.4.
+    pub harmonize: f32,
+    /// Directional relight amplitude `0..~0.4` — a coarse luminance gradient across each subject matching the
+    /// key-light direction (0 = off; the finish does the real lighting). Default 0 (off).
+    pub relight_amp: f32,
+    /// Key-light direction in degrees for relight + shadow offset: `90` = overhead, `0` = from the right,
+    /// `180` = from the left. Default 90 (overhead — soft symmetric shadow).
+    pub light_angle: f32,
+}
+
+impl Default for GuideOpts {
+    fn default() -> Self {
+        Self { ground: true, ground_softness: 1.0, harmonize: 0.4, relight_amp: 0.0, light_angle: 90.0 }
+    }
+}
+
+/// Mean per-channel colour of an image, `[r,g,b]` in `[0,255]`.
+fn mean_rgb(img: &RgbImage) -> [f32; 3] {
+    let n = (img.width() * img.height()).max(1) as f32;
+    let mut s = [0f32; 3];
+    for p in img.pixels() {
+        for c in 0..3 {
+            s[c] += p.0[c] as f32;
+        }
+    }
+    [s[0] / n, s[1] / n, s[2] / n]
+}
+
+/// Shift `img`'s per-channel mean a fraction `strength` toward `target` (colour harmonisation). Subsumes luma
+/// matching: brightness AND colour move toward the backdrop, while the subject keeps its own variation.
+fn harmonize_toward(img: &mut RgbImage, target: [f32; 3], strength: f32) {
+    let cur = mean_rgb(img);
+    let shift = [(target[0] - cur[0]) * strength, (target[1] - cur[1]) * strength, (target[2] - cur[2]) * strength];
+    for p in img.pixels_mut() {
+        for c in 0..3 {
+            p.0[c] = (p.0[c] as f32 + shift[c]).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// Multiply a coarse luminance gradient across `img` matching a key-light `angle` (deg): the side toward the
+/// light gets brighter by up to `amp`, the far side darker. Only the low frequencies survive into the guide,
+/// so this conveys light DIRECTION without touching detail.
+fn directional_shade(img: &mut RgbImage, angle_deg: f32, amp: f32) {
+    if amp.abs() < 1e-4 {
+        return;
+    }
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let rad = angle_deg.to_radians();
+    // Screen coords: +x right, +y DOWN. A light at `angle` (90=top) points toward (cos, -sin).
+    let (lx, ly) = (rad.cos(), -rad.sin());
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        // Offset from centre in [-1,1].
+        let (ox, oy) = ((x as f32 / w) * 2.0 - 1.0, (y as f32 / h) * 2.0 - 1.0);
+        let d = (ox * lx + oy * ly).clamp(-1.0, 1.0); // +1 toward light, -1 away
+        let k = 1.0 + amp * d;
+        for c in 0..3 {
+            p.0[c] = (p.0[c] as f32 * k).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// The foot line: the lowest row of `alpha` (box-sized) that still has appreciable coverage — where a subject
+/// meets the ground, so the contact shadow pools there.
+fn foot_line(alpha: &GrayImage, w: u32, h: u32) -> usize {
+    for y in (0..h).rev() {
+        let covered = (0..w).any(|x| alpha.get_pixel(x, y).0[0] > 76);
+        if covered {
+            return y as usize;
+        }
+    }
+    (h.saturating_sub(1)) as usize
+}
+
+/// The horizontal shadow key `[-1,1]` from a light `angle` (deg): light from the left throws the shadow right.
+fn shadow_key(angle_deg: f32) -> f32 {
+    (-angle_deg.to_radians().cos()).clamp(-1.0, 1.0)
+}
 
 /// A composed guide: the guide image + the per-pixel anchor maps at latent resolution.
 pub struct Guide {
@@ -88,10 +179,13 @@ pub fn compose(
     geom: &LatentGeometry,
     out_w: u32,
     out_h: u32,
+    opts: &GuideOpts,
     matte: impl Fn(&RgbImage) -> Result<GrayImage>,
 ) -> Result<(RgbImage, Vec<(String, GrayImage)>)> {
     let mut canvas = image::imageops::resize(&drafts.backdrop, out_w, out_h, FilterType::Triangle);
     let backdrop_mean = luma_mean(&canvas).max(1.0);
+    let backdrop_rgb = mean_rgb(&canvas);
+    let key = shadow_key(opts.light_angle);
 
     // Anchored layers that have a draft, laid back-to-front (largest depth first, so nearer wins overlaps).
     let mut items: Vec<(&Layer, &RgbImage)> = plan
@@ -107,14 +201,39 @@ pub fn compose(
         let Some((x0, y0, x1, y1)) = box_px(layer, out_w, out_h) else { continue };
         let (bw, bh) = (x1 - x0, y1 - y0);
 
-        // Subject RGB, resized to its box and luma-normalised to the backdrop (gentle, clamped).
+        // Subject RGB, resized to its box, then matched to the scene: colour-harmonise toward the backdrop
+        // (subsumes luma matching), else fall back to the clamped luma gain; optionally directional-relight.
         let mut sub = image::imageops::resize(draft, bw, bh, FilterType::Triangle);
-        let gain = (backdrop_mean / luma_mean(&sub).max(1.0)).clamp(GAIN_LO, GAIN_HI);
-        apply_gain(&mut sub, gain);
+        if opts.harmonize > 0.0 {
+            harmonize_toward(&mut sub, backdrop_rgb, opts.harmonize.clamp(0.0, 1.0));
+        } else {
+            let gain = (backdrop_mean / luma_mean(&sub).max(1.0)).clamp(GAIN_LO, GAIN_HI);
+            apply_gain(&mut sub, gain);
+        }
+        directional_shade(&mut sub, opts.light_angle, opts.relight_amp);
 
         // Silhouette from the *native* draft, resized to the box and edge-crisped.
         let alpha = matte(draft)?;
         let alpha = matting::refine_matte(&image::imageops::resize(&alpha, bw, bh, FilterType::Triangle));
+
+        // Grounding: lay a soft contact shadow onto the canvas UNDER the subject (before compositing it),
+        // pooled at the foot line — so the subject sits in the scene instead of floating on it.
+        if opts.ground {
+            let alpha_f: Vec<f32> = alpha.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+            let gy = foot_line(&alpha, bw, bh);
+            let shadow = crate::product::ground::contact_shadow(&alpha_f, bw as usize, bh as usize, gy, crate::product::ground::ShadowKind::Soft, key, opts.ground_softness.max(0.2));
+            for yy in 0..bh {
+                for xx in 0..bw {
+                    let s = shadow[(yy * bw + xx) as usize];
+                    if s > 1e-3 {
+                        let (cx, cy) = (x0 + xx, y0 + yy);
+                        let p = canvas.get_pixel(cx, cy).0;
+                        let k = 1.0 - s * SHADOW_DARK;
+                        canvas.put_pixel(cx, cy, Rgb([(p[0] as f32 * k) as u8, (p[1] as f32 * k) as u8, (p[2] as f32 * k) as u8]));
+                    }
+                }
+            }
+        }
 
         let mut full = GrayImage::new(out_w, out_h);
         for yy in 0..bh {
@@ -238,9 +357,10 @@ pub fn build(
     out_w: u32,
     out_h: u32,
     device: &Device,
+    opts: &GuideOpts,
     matte: impl Fn(&RgbImage) -> Result<GrayImage>,
 ) -> Result<Guide> {
-    let (canvas, placed) = compose(plan, drafts, geom, out_w, out_h, matte)?;
+    let (canvas, placed) = compose(plan, drafts, geom, out_w, out_h, opts, matte)?;
     let (weight, window_end) = build_maps(plan, &placed, geom, out_w, out_h, device)?;
     Ok(Guide { canvas, weight, window_end, placed })
 }
@@ -266,6 +386,11 @@ mod tests {
         LatentGeometry { v: 8, u: 8, pool_levels: 2 }
     }
 
+    /// Cohesion fully OFF — exercises the base composite (the pre-cohesion behaviour these tests assert).
+    fn bare() -> GuideOpts {
+        GuideOpts { ground: false, ground_softness: 1.0, harmonize: 0.0, relight_amp: 0.0, light_angle: 90.0 }
+    }
+
     fn solid(w: u32, h: u32, rgb: [u8; 3]) -> RgbImage {
         RgbImage::from_pixel(w, h, Rgb(rgb))
     }
@@ -284,7 +409,7 @@ mod tests {
         // 128×128, box short side 64px → anchored (threshold 2·2^2·8 = 64).
         let plan = LayerPlan { layers: vec![anchored_layer("s", [0.25, 0.25, 0.75, 0.75], 0.3)], ..Default::default() };
         let drafts = DraftSet { backdrop: solid(128, 128, [0, 0, 255]), layers: vec![("s".into(), solid(64, 64, [255, 0, 0]))] };
-        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, full_matte).unwrap();
+        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, &bare(), full_matte).unwrap();
         assert_eq!(placed.len(), 1, "one anchored subject placed");
         // Centre is inside the box → the red subject (full matte; luma-normalised, so red-dominant not
         // necessarily 255), corner stays backdrop blue.
@@ -299,7 +424,7 @@ mod tests {
         // A tiny box (short side < u = 8px) → Lifted, so it must NOT be composed.
         let plan = LayerPlan { layers: vec![anchored_layer("tiny", [0.4, 0.4, 0.44, 0.44], 0.3)], ..Default::default() };
         let drafts = DraftSet { backdrop: solid(128, 128, [10, 20, 30]), layers: vec![("tiny".into(), solid(8, 8, [255, 0, 0]))] };
-        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, full_matte).unwrap();
+        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, &bare(), full_matte).unwrap();
         assert!(placed.is_empty(), "lifted layer is not painted into the guide");
         // Every pixel is still the backdrop.
         assert!(canvas.pixels().all(|p| p.0 == [10, 20, 30]));
@@ -310,7 +435,7 @@ mod tests {
         // Bright backdrop, very dark subject → the composited subject is lifted (gain > 1).
         let plan = LayerPlan { layers: vec![anchored_layer("s", [0.25, 0.25, 0.75, 0.75], 0.3)], ..Default::default() };
         let drafts = DraftSet { backdrop: solid(128, 128, [200, 200, 200]), layers: vec![("s".into(), solid(64, 64, [40, 40, 40]))] };
-        let (canvas, _) = compose(&plan, &drafts, &geom(), 128, 128, full_matte).unwrap();
+        let (canvas, _) = compose(&plan, &drafts, &geom(), 128, 128, &bare(), full_matte).unwrap();
         let centre = canvas.get_pixel(64, 64).0[0];
         assert!(centre > 40, "dark subject brightened toward the backdrop (got {centre})");
     }
@@ -325,7 +450,7 @@ mod tests {
             backdrop: solid(128, 128, [0, 0, 0]),
             layers: vec![("far".into(), solid(76, 76, [0, 255, 0])), ("near".into(), solid(64, 64, [255, 0, 0]))],
         };
-        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, full_matte).unwrap();
+        let (canvas, placed) = compose(&plan, &drafts, &geom(), 128, 128, &bare(), full_matte).unwrap();
         assert_eq!(placed.len(), 2);
         assert_eq!(placed[0].0, "far", "far painted first");
         let centre = canvas.get_pixel(64, 64).0;
@@ -361,5 +486,53 @@ mod tests {
         // A corner cell (outside) → the backdrop weight/window.
         assert!((wc[0] - 0.5).abs() < 0.05, "outside → backdrop weight 0.5 (got {})", wc[0]);
         assert!((ec[0] - 0.2).abs() < 0.05, "outside → backdrop window 0.2 (got {})", ec[0]);
+    }
+
+    #[test]
+    fn harmonize_shifts_subject_toward_backdrop() {
+        // A pure-red subject harmonised toward a blue backdrop: red falls, blue rises, mean moves toward blue.
+        let mut sub = solid(16, 16, [220, 20, 20]);
+        harmonize_toward(&mut sub, [20.0, 20.0, 220.0], 0.5);
+        let m = mean_rgb(&sub);
+        assert!(m[0] < 220.0 && m[2] > 20.0, "moved toward backdrop colour: {m:?}");
+        assert!((m[0] - 120.0).abs() < 2.0 && (m[2] - 120.0).abs() < 2.0, "≈ halfway at strength 0.5: {m:?}");
+    }
+
+    #[test]
+    fn directional_shade_brightens_toward_the_light() {
+        // Light at 90° = overhead → the top of the subject is brighter than the bottom.
+        let mut sub = solid(16, 16, [120, 120, 120]);
+        directional_shade(&mut sub, 90.0, 0.3);
+        let top = sub.get_pixel(8, 1).0[0];
+        let bot = sub.get_pixel(8, 14).0[0];
+        assert!(top > bot, "top (toward the overhead light) brighter than bottom ({top} vs {bot})");
+    }
+
+    #[test]
+    fn grounding_darkens_beneath_the_subject() {
+        // A subject occupying the UPPER part of its box (feet mid-box), so there is ground below it for the
+        // contact shadow to pool onto. With grounding on, that ground is darker than with grounding off.
+        let plan = LayerPlan { layers: vec![anchored_layer("s", [0.25, 0.2, 0.75, 0.8], 0.3)], ..Default::default() };
+        let drafts = DraftSet { backdrop: solid(128, 128, [180, 180, 180]), layers: vec![("s".into(), solid(64, 76, [180, 180, 180]))] };
+        // Matte: subject in the top ~55% of its box; the rest is ground.
+        let upper_matte = |img: &RgbImage| -> Result<GrayImage> {
+            let (w, h) = (img.width(), img.height());
+            let mut a = GrayImage::new(w, h);
+            for y in 0..h {
+                for x in 0..w {
+                    a.put_pixel(x, y, Luma([if y < h * 55 / 100 { 255 } else { 0 }]));
+                }
+            }
+            Ok(a)
+        };
+        let grounded = GuideOpts { ground: true, harmonize: 0.0, relight_amp: 0.0, light_angle: 90.0, ground_softness: 1.0 };
+        let (c_on, _) = compose(&plan, &drafts, &geom(), 128, 128, &grounded, upper_matte).unwrap();
+        let (c_off, _) = compose(&plan, &drafts, &geom(), 128, 128, &bare(), upper_matte).unwrap();
+        // Box is y∈[0.2,0.8]·128 = [26,102]; feet ≈ row 41 (canvas y≈67). The soft shadow pools just below —
+        // take the darkest ground pixel in the band right under the feet.
+        let x = 64u32;
+        let on = (68u32..76).map(|y| c_on.get_pixel(x, y).0[0] as i32).min().unwrap();
+        let off = c_off.get_pixel(x, 70).0[0] as i32;
+        assert!(on < off, "grounding darkens the ground below the subject ({on} < {off})");
     }
 }

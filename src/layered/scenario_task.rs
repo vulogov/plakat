@@ -80,6 +80,12 @@ pub async fn run_layered_task(cfg: &LayeredTaskCfg, device: Device, out_dir: &Pa
         seed,
         scheduler: crate::pipelines::scheduler::SchedulerKind::default(),
         ramp: cfg.ramp.unwrap_or(0.1),
+        guide: crate::layered::guide::GuideOpts::default(),
+        verify: false,
+        repair: false,
+        repair_rounds: 1,
+        verify_threshold: 0.1,
+        repair_strength: 0.6,
         keep: None,
     };
     render::render(&layer_plan, &geom, w, h, device, &opts).await

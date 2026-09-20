@@ -40,6 +40,18 @@ pub struct RenderOpts {
     pub scheduler: SchedulerKind,
     /// The per-pixel window-close ramp `r` (default 0.1).
     pub ramp: f32,
+    /// Guide-cohesion controls (grounding / colour-harmonisation / relight).
+    pub guide: crate::layered::guide::GuideOpts,
+    /// After the finish, verify each anchored/hinted subject actually landed (OWL-ViT, no diffusion).
+    pub verify: bool,
+    /// Auto-repair the layers verify flags as missing (implies verify) — a masked pass per failing layer.
+    pub repair: bool,
+    /// Max repair rounds. Default 1.
+    pub repair_rounds: usize,
+    /// OWL-ViT detection threshold for verify. Default 0.1.
+    pub verify_threshold: f32,
+    /// Inpaint strength for auto-repair. Default 0.6.
+    pub repair_strength: f32,
     /// Also write the intermediate drafts + guide + anchor maps into this directory.
     pub keep: Option<PathBuf>,
 }
@@ -111,7 +123,7 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
 
     // S2 — guide (matte + compose + anchor maps).
     let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading the U2Net matter")?;
-    let g = guide::build(plan, &drafts, geom, out_w, out_h, &device, |img| matter.matte(img)).context("S2 guide stage")?;
+    let g = guide::build(plan, &drafts, geom, out_w, out_h, &device, &o.guide, |img| matter.matte(img)).context("S2 guide stage")?;
 
     // The finish VAE reads the guide from a file (shared img2img preprocess path); keep it alive over run().
     let tmp = tempfile::Builder::new().prefix("plakat-layered-").tempdir().context("layered scratch dir")?;
@@ -134,6 +146,7 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
     }
 
     // S3 — the anchored finish trajectory.
+    let vdevice = if o.verify || o.repair { Some(device.clone()) } else { None };
     let out_dir = tempfile::Builder::new().prefix("plakat-layered-out-").tempdir().context("layered output dir")?;
     let mut req = t2i::Request::simple(finish_prompt(plan), o.model.clone(), out_w, out_h, o.steps, Some(o.seed), device, out_dir.path().to_path_buf());
     req.negative = FINISH_NEGATIVE.to_string();
@@ -148,9 +161,47 @@ pub async fn render(plan: &LayerPlan, geom: &LatentGeometry, out_w: u32, out_h: 
         guide_seed: o.seed,
     });
     t2i::run(req).await.context("S3 finish stage")?;
+    let mut produced = first_png(out_dir.path())?;
+
+    // S4 — verify each anchored/hinted subject landed (OWL-ViT), and optionally auto-repair the misses with
+    // a masked pass, re-verifying until clean or the round budget is spent.
+    if let Some(vdev) = vdevice {
+        let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&vdev).await.context("loading OWL-ViT for verify")?;
+        let rounds = if o.repair { o.repair_rounds.max(1) } else { 0 };
+        for round in 0..=rounds {
+            let report = {
+                let img = produced.clone();
+                let detect = |q: &str| -> Result<Vec<crate::layered::verify::Det>> {
+                    let dets = owl.detect_all(&img, q, o.verify_threshold, 8)?;
+                    Ok(dets.into_iter().map(|d| crate::layered::verify::Det { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, score: d.score }).collect())
+                };
+                crate::layered::verify::verify(plan, geom, out_w, out_h, &detect)?
+            };
+            if report.pass() {
+                tracing::info!(target: "plakat", "layered verify: all {} checked subject(s) present", report.checked);
+                break;
+            }
+            tracing::info!(target: "plakat", "layered verify: {} missing ({})", report.failures.len(), report.failures.join(", "));
+            if round >= rounds {
+                break; // out of repair rounds (or verify-only)
+            }
+            let repaired = out_dir.path().join(format!("repaired-{round}.png"));
+            let ropts = crate::layered::repair::RepairOpts {
+                model: o.model.clone(),
+                out: repaired.clone(),
+                strength: o.repair_strength,
+                steps: o.steps,
+                guidance: o.guidance,
+                seed: o.seed.wrapping_add(round as u64 + 1),
+                mask_feather: 8,
+                device: crate::device::spec_of(&vdev).to_string(),
+            };
+            crate::layered::repair::repair(&produced, plan, &report.failures, &ropts).await.context("S4 repair")?;
+            produced = repaired;
+        }
+    }
 
     // Move the finished image to the requested path.
-    let produced = first_png(out_dir.path())?;
     if let Some(parent) = o.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
