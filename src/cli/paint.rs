@@ -211,6 +211,12 @@ fn run_spec(a: SpecArgs) -> Result<()> {
     params.medium = plan.medium.name.to_string();
     params.seed = plan.seed;
     params.brush.k_pickup = plan.medium.pickup; // the medium's pickup drives the dirty brush
+    // Surface-white media reserve their whites (paper shows through); density media build value by hatch marks.
+    use crate::paint::medium::{MarkModel, WhiteSource};
+    if plan.medium.white_source == WhiteSource::Surface {
+        params.reserve = Some(0.72);
+    }
+    params.density = plan.medium.mark_model == MarkModel::Density;
 
     // The reference is resized to the plan's output size so the score's geometry is at output scale.
     let reference = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };

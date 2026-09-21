@@ -136,6 +136,14 @@ pub fn lightest_pigment(palette: &Palette) -> usize {
         .unwrap_or(0)
 }
 
+/// The index of the darkest pigment in a palette (lowest CIELAB L*) — the ink for a density medium.
+pub fn darkest_pigment(palette: &Palette) -> usize {
+    use crate::paint::color::srgb_to_lab;
+    (0..palette.pigments.len())
+        .min_by(|&a, &b| srgb_to_lab(palette.pigments[a].masstone).l.partial_cmp(&srgb_to_lab(palette.pigments[b].masstone).l).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

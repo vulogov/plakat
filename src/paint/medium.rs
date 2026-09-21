@@ -186,8 +186,10 @@ pub const TEMPERA: MediumProfile = MediumProfile {
 /// Every declared medium.
 pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA];
 
-/// The media P1 can actually execute.
+/// The media P1 can execute (opaque continuous).
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
+/// The media executable through P2 — adds watercolour (reservation) and pen-ink (density).
+pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).
@@ -197,6 +199,10 @@ impl MediumProfile {
     /// Whether P1 can render this medium.
     pub fn is_p1_executable(&self) -> bool {
         P1_EXECUTABLE.contains(&self.name)
+    }
+    /// Whether the engine (through P2) can render this medium.
+    pub fn is_executable(&self) -> bool {
+        P2_EXECUTABLE.contains(&self.name)
     }
 }
 

@@ -44,6 +44,12 @@ pub struct PaintParams {
     pub charge: f32,
     /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
     pub medium: String,
+    /// RESERVE (surface-white media): a luma threshold in `[0,1]` — cells brighter than this get NO stroke, so
+    /// the paper/ground shows through (watercolour whites, §6.3). `None` → paint everywhere.
+    pub reserve: Option<f32>,
+    /// DENSITY mark model (§8.6): build value by black hatch marks whose count scales with darkness, instead
+    /// of loaded continuous strokes (pen-ink). Uses the palette's darkest pigment.
+    pub density: bool,
     pub seed: u64,
     pub brush: BrushConfig,
 }
@@ -51,7 +57,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -226,8 +232,21 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                 }
                 let (ix, iy) = (cx as u32, cy as u32);
                 let target = reference.get_pixel(ix, iy).0;
+                let tluma = color::linear_luma(color::srgb_to_linear(target));
+                // RESERVE the whites for a surface-white medium: bright cells keep the paper (no stroke enters).
+                if let Some(rt) = p.reserve {
+                    if tluma > rt {
+                        continue;
+                    }
+                }
                 // Later layers only restate where the canvas is still notably wrong; the block-in covers all.
-                if !block_in && rgb_dist(canvas.color_at(ix, iy), target) < 0.06 {
+                if !block_in && !p.density && rgb_dist(canvas.color_at(ix, iy), target) < 0.06 {
+                    continue;
+                }
+                // DENSITY mark model: build value with black hatch marks whose count scales with darkness.
+                if p.density {
+                    let n = density_marks(&mut canvas, &mut score, &mut placed, &mut in_pass, pass.budget, p.budget, cx, cy, radius, tluma, &gx, &gy, p, &pass.stage);
+                    k = k.wrapping_add(n as u64);
                     continue;
                 }
                 let load = mixture_for(target, &p.palette, p.charge);
@@ -254,6 +273,74 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
         }
     }
     PaintResult { canvas, strokes: placed, score }
+}
+
+/// The density mark model (§8.6): at a cell, lay black hatch marks whose count scales with the target
+/// darkness — value is built by mark DENSITY, not pigment concentration. Darker cells add a crosshatch. No
+/// pickup, single bristle. Records each mark into the score; respects the budget. Returns the count laid.
+#[allow(clippy::too_many_arguments)]
+fn density_marks(
+    canvas: &mut Canvas,
+    score: &mut StrokeScore,
+    placed: &mut usize,
+    in_pass: &mut usize,
+    pass_budget: usize,
+    total_budget: usize,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    tluma: f32,
+    gx: &[f32],
+    gy: &[f32],
+    p: &PaintParams,
+    stage: &str,
+) -> usize {
+    let darkness = (1.0 - tluma).clamp(0.0, 1.0);
+    let n = (darkness * 6.0).round() as usize;
+    if n == 0 {
+        return 0;
+    }
+    let (w, h) = (canvas.w, canvas.h);
+    let ci = (cy.round().clamp(0.0, h as f32 - 1.0) as usize) * w as usize + (cx.round().clamp(0.0, w as f32 - 1.0) as usize);
+    let dir = stroke_dir(gx[ci], gy[ci]);
+    let perp = [-dir[1], dir[0]];
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let mut load = vec![0f32; p.palette.pigments.len()];
+    load[ink] = p.charge;
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.bristles = 1;
+    let half = radius * 0.5;
+    let mut laid = 0usize;
+    for m in 0..n {
+        if *placed >= total_budget || *in_pass >= pass_budget {
+            break;
+        }
+        let off = ((m as f32 + 0.5) / n as f32 - 0.5) * radius;
+        // Crosshatch the darkest cells: alternate marks run perpendicular.
+        let (d, spread) = if m % 2 == 1 && darkness >= 0.6 { (perp, dir) } else { (dir, perp) };
+        let (mx, my) = (cx + spread[0] * off, cy + spread[1] * off);
+        let a = [mx - d[0] * half, my - d[1] * half];
+        let b = [mx + d[0] * half, my + d[1] * half];
+        let s = Stroke { path: vec![a, b], width0: 1.5, width1: 1.5, load: load.clone(), pressure: 1.0, wetness: 0.0 };
+        s.rasterize(canvas, &brush);
+        *placed += 1;
+        *in_pass += 1;
+        laid += 1;
+        score.strokes.push(StrokeRecord {
+            id: *placed as u32,
+            wipe: false,
+            stage: stage.to_string(),
+            spline: s.path,
+            w0: 1.5,
+            w1: 1.5,
+            taper: 0.0,
+            mix: vec![(p.palette.pigments[ink].name.to_string(), p.charge)],
+            wet: 0.0,
+            press: 1.0,
+        });
+    }
+    laid
 }
 
 /// Traceability (RFC PAINT-1 §12.1): the mean linear-luma correlation between a painted image and its
@@ -303,6 +390,45 @@ mod tests {
         assert!(a.strokes > 0, "some strokes laid");
         let b = paint_from_image(&img, &p);
         assert_eq!(a.canvas.to_image().into_raw(), b.canvas.to_image().into_raw(), "deterministic");
+    }
+
+    #[test]
+    fn reserve_keeps_bright_cells_as_paper() {
+        // A gradient dark→light; reserving above luma 0.6 leaves the bright right side unpainted (near white).
+        let img = gradient_img(80, 30);
+        let mut p = PaintParams::new(palette::SUMI, 400);
+        p.brush_sizes = vec![10.0];
+        p.reserve = Some(0.55);
+        let out = paint_from_image(&img, &p).canvas.to_image();
+        // The brightest column stays near the paper white (reserved); the dark left gets painted.
+        let right = out.get_pixel(78, 15).0;
+        assert!(right[0] > 235 && right[1] > 235, "bright side reserved (paper): {right:?}");
+    }
+
+    #[test]
+    fn density_marks_build_value_by_count() {
+        // Pen-ink density over a dark→light gradient: the dark side accumulates more black marks (lower luma)
+        // than the light side.
+        let img = gradient_img(80, 40);
+        let mut p = PaintParams::new(palette::SUMI, 4000);
+        p.brush_sizes = vec![8.0];
+        p.density = true;
+        let out = paint_from_image(&img, &p).canvas.to_image();
+        // Density is statistical — average over a patch on each side rather than sampling one pixel.
+        let patch_mean = |x0: u32, x1: u32| -> f32 {
+            let mut s = 0.0;
+            let mut n = 0.0;
+            for y in 8..32 {
+                for x in x0..x1 {
+                    s += out.get_pixel(x, y).0[0] as f32;
+                    n += 1.0;
+                }
+            }
+            s / n
+        };
+        let dark = patch_mean(2, 18);
+        let light = patch_mean(62, 78);
+        assert!(dark < light - 15.0, "hatch density darkens the dark side more ({dark:.0} vs {light:.0})");
     }
 
     #[test]
