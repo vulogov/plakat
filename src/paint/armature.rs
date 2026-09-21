@@ -198,6 +198,29 @@ fn revalue(c: Srgb, target: f32) -> Srgb {
     color::linear_to_srgb([lin[0] * g, lin[1] * g, lin[2] * g])
 }
 
+/// VALUE RE-KEY (§5.5.2): expand a colour field's tonal range so the picture reads with real lights and darks
+/// instead of collapsing toward a mid grey. The 5th/95th luma percentiles are stretched to `[out_low,
+/// out_high]` and each pixel re-valued to its new luma (hue kept). Robust to outliers; deterministic.
+pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32) -> Vec<Srgb> {
+    if colour.is_empty() {
+        return Vec::new();
+    }
+    let vals = value_from_colour(colour);
+    let mut sorted = vals.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p = |q: f32| sorted[((q * (sorted.len() - 1) as f32).round() as usize).min(sorted.len() - 1)];
+    let (lo, hi) = (p(0.05), p(0.95));
+    let span = (hi - lo).max(1e-3);
+    colour
+        .iter()
+        .zip(vals.iter())
+        .map(|(&c, &v)| {
+            let t = ((v - lo) / span).clamp(0.0, 1.0);
+            revalue(c, out_low + t * (out_high - out_low))
+        })
+        .collect()
+}
+
 /// A crude, GPU-free monocular depth PROXY for bring-up: nearer = more central and lower in the frame (a
 /// standing-subject / ground-plane prior). The real armature uses a depth estimator; this lets the merge run
 /// on CPU. Returns `[0,1]`, larger = closer.
@@ -296,6 +319,17 @@ mod tests {
         let far_range = (val[1] - val[0]).abs();
         let near_range = (val[5] - val[4]).abs();
         assert!(far_range < near_range, "recession compresses the far plane ({far_range} < {near_range})");
+    }
+
+    #[test]
+    fn value_key_expands_a_flat_range() {
+        // A low-contrast field (all mid-grey-ish) → value-key stretches its tonal range wide.
+        let colour: Vec<Srgb> = (0..20).map(|i| { let v = (120 + i) as u8; [v, v, v] }).collect();
+        let keyed = value_key(&colour, 0.05, 0.95);
+        let vin = value_from_colour(&colour);
+        let vout = value_from_colour(&keyed);
+        let range = |v: &[f32]| v.iter().cloned().fold(0.0_f32, f32::max) - v.iter().cloned().fold(1.0_f32, f32::min);
+        assert!(range(&vout) > range(&vin) * 3.0, "tonal range expanded ({} → {})", range(&vin), range(&vout));
     }
 
     #[test]

@@ -303,6 +303,19 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         println!("{}  working at {}×{} (budget density) → replay to {}×{}", style("·").dim(), work.0, work.1, plan.size.0, plan.size.1);
     }
 
+    // VALUE RE-KEY (§5.5.2): expand the reference's tonal range so the painting reads with real lights and
+    // darks rather than collapsing toward the mid ground.
+    {
+        let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
+        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96);
+        for (i, p) in reference.pixels_mut().enumerate() {
+            p.0 = keyed[i];
+        }
+    }
+    // Damp the dirty-brush pickup a touch so the expanded value range survives painting (pickup pulls loads
+    // toward the mid ground; too much flattens the picture).
+    params.brush.k_pickup *= 0.6;
+
     // Opaque media work on a TONED ground (imprimatura) so light passages show — keyed to the reference's own
     // mean tone (derived, not scene-specific), darkened toward a mid imprimatura.
     if plan.medium.opacity == crate::paint::medium::Opacity::Opaque {
