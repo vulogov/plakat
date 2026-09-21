@@ -19,10 +19,23 @@ pub struct PaintArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PaintCmd {
-    /// Repaint an existing image in stroke space (P0 — the filter-gate).
+    /// Repaint an existing image in stroke space (P0 — the filter-gate). Writes the image + its stroke score.
     From(FromArgs),
+    /// Re-render a stroke score to an image at any size (no GPU).
+    Replay(ReplayArgs),
     /// Inspect a built-in palette's pigments.
     Palette(PaletteArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ReplayArgs {
+    /// The `.strokes` score to render.
+    pub score: PathBuf,
+    #[arg(short, long, default_value = "replay.png")]
+    pub out: PathBuf,
+    /// Render size `WxH` (default: the score's native size).
+    #[arg(long)]
+    pub size: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -60,8 +73,39 @@ pub struct PaletteArgs {
 pub async fn run(args: PaintArgs) -> Result<()> {
     match args.cmd {
         PaintCmd::From(a) => run_from(a),
+        PaintCmd::Replay(a) => run_replay(a),
         PaintCmd::Palette(a) => run_palette(a),
     }
+}
+
+fn run_replay(a: ReplayArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&a.score).with_context(|| format!("reading {}", a.score.display()))?;
+    let score = crate::paint::score::StrokeScore::parse(&text).context("parsing the stroke score")?;
+    let (w, h) = match a.size.as_deref() {
+        Some(s) => {
+            let (ws, hs) = s.split_once(['x', 'X']).context("--size must be WxH")?;
+            (ws.trim().parse().context("bad width")?, hs.trim().parse().context("bad height")?)
+        }
+        None => (score.header.width, score.header.height),
+    };
+    println!(
+        "{}  replay {} → {}  ({}×{} · {} strokes · palette {} · medium {})",
+        style("◆").cyan(),
+        a.score.display(),
+        a.out.display(),
+        w,
+        h,
+        score.strokes.len(),
+        score.header.palette,
+        score.header.medium,
+    );
+    let canvas = score.replay(w, h).context("replaying the score")?;
+    if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).ok();
+    }
+    canvas.to_image().save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    println!("{}  rendered → {}", style("✓").green(), a.out.display());
+    Ok(())
 }
 
 fn run_from(a: FromArgs) -> Result<()> {
@@ -100,7 +144,11 @@ fn run_from(a: FromArgs) -> Result<()> {
     }
     out.save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
 
-    println!("{}  {} strokes laid → {}", style("✓").green(), result.strokes, a.out.display());
+    // The canonical artifact: the replayable stroke score, next to the image.
+    let score_path = a.out.with_extension("strokes");
+    std::fs::write(&score_path, result.score.to_text()).with_context(|| format!("writing {}", score_path.display()))?;
+
+    println!("{}  {} strokes laid → {}  ·  score → {}", style("✓").green(), result.strokes, a.out.display(), score_path.display());
     if a.report {
         let tr = painter::traceability(&out, &img);
         println!("{}  traceability {:.3} (→1 = traced/filter; a painting keeps structure but invents surface)", style("·").dim(), tr);

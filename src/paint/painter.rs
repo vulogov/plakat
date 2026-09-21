@@ -16,6 +16,7 @@ use crate::paint::canvas::Canvas;
 use crate::paint::color::{self, Srgb};
 use crate::paint::mixer;
 use crate::paint::palette::Palette;
+use crate::paint::score::{ScoreHeader, StrokeRecord, StrokeScore};
 use crate::paint::stroke::{BrushConfig, Stroke};
 
 /// Parameters for a paint-from-image run.
@@ -30,6 +31,8 @@ pub struct PaintParams {
     pub min_brush: f32,
     /// Charge multiplier for a stroke's load (how much paint the brush holds vs its footprint).
     pub charge: f32,
+    /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
+    pub medium: String,
     pub seed: u64,
     pub brush: BrushConfig,
 }
@@ -37,7 +40,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -46,6 +49,8 @@ pub struct PaintResult {
     pub canvas: Canvas,
     /// How many strokes were actually laid (≤ budget).
     pub strokes: usize,
+    /// The replayable stroke score — the canonical artifact.
+    pub score: StrokeScore,
 }
 
 fn luma_map(img: &RgbImage) -> Vec<f32> {
@@ -165,6 +170,11 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
         base.iter().map(|c| c * charge).collect()
     };
 
+    let mut score = StrokeScore {
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, brush: p.brush },
+        strokes: Vec::new(),
+    };
+
     let mut placed = 0usize;
     let mut k = 0u64;
     let sizes: Vec<f32> = p.brush_sizes.iter().copied().filter(|&r| r >= p.min_brush).collect();
@@ -206,11 +216,25 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                 let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target);
                 let s = Stroke { path, width0: radius, width1: (radius * 0.6).max(p.min_brush * 0.6), load, pressure: 1.0, wetness: 1.0 };
                 s.rasterize(&mut canvas, &p.brush);
+                // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
+                let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 placed += 1;
+                score.strokes.push(StrokeRecord {
+                    id: placed as u32,
+                    wipe: false,
+                    stage: if block_in { "block-in".into() } else { "restate".into() },
+                    spline: s.path,
+                    w0: s.width0,
+                    w1: s.width1,
+                    taper: 0.4,
+                    mix,
+                    wet: s.wetness,
+                    press: s.pressure,
+                });
             }
         }
     }
-    PaintResult { canvas, strokes: placed }
+    PaintResult { canvas, strokes: placed, score }
 }
 
 /// Traceability (RFC PAINT-1 §12.1): the mean linear-luma correlation between a painted image and its
@@ -260,6 +284,20 @@ mod tests {
         assert!(a.strokes > 0, "some strokes laid");
         let b = paint_from_image(&img, &p);
         assert_eq!(a.canvas.to_image().into_raw(), b.canvas.to_image().into_raw(), "deterministic");
+    }
+
+    #[test]
+    fn the_score_faithfully_records_the_paint() {
+        // Replaying a paint's own score at native size reproduces the canvas byte-for-byte — the score IS the
+        // painting (A4).
+        let img = gradient_img(64, 48);
+        let mut p = PaintParams::new(palette::EARTH, 150);
+        p.brush_sizes = vec![16.0, 8.0];
+        let result = paint_from_image(&img, &p);
+        let painted = result.canvas.to_image().into_raw();
+        let replayed = result.score.replay(64, 48).unwrap().to_image().into_raw();
+        assert_eq!(painted, replayed, "score replay == the original paint at native size");
+        assert_eq!(result.score.strokes.len(), result.strokes, "one record per stroke laid");
     }
 
     #[test]
