@@ -249,7 +249,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
             plan.size
         }
     };
-    params.armature_side = Some((work.0.max(work.1) / 6).clamp(56, 160));
+    // No extra pre-coarsening: the working-size downscale below already reduces the reference (like the proven
+    // P0 from-image path), and the per-layer blur removes finer detail. Pre-coarsening ON TOP double-smoothed
+    // into mush.
+    params.armature_side = None;
     // Surface-white media reserve their whites (paper shows through); density media build value by hatch marks.
     use crate::paint::medium::{MarkModel, WhiteSource};
     if plan.medium.white_source == WhiteSource::Surface {
@@ -339,19 +342,11 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // toward the mid ground; too much flattens the picture).
     params.brush.k_pickup *= 0.6;
 
-    // Opaque media work on a TONED ground (imprimatura) so light passages show — keyed to the reference's own
-    // mean tone (derived, not scene-specific), darkened toward a mid imprimatura.
+    // Ground: the proven path paints on a WHITE ground (like the coherent P0 portrait) — a mean-keyed toned
+    // ground made every mid-tone stroke blend into it (flat grey). Opaque media get a faint warm imprimatura
+    // (near-white) so light passages read as painted, not stark paper, without flattening the mid-tones.
     if plan.medium.opacity == crate::paint::medium::Opacity::Opaque {
-        let n = (reference.width() * reference.height()).max(1) as u64;
-        let mut s = [0u64; 3];
-        for px in reference.pixels() {
-            for c in 0..3 {
-                s[c] += px.0[c] as u64;
-            }
-        }
-        let mean = [(s[0] / n) as u8, (s[1] / n) as u8, (s[2] / n) as u8];
-        // Pull toward a mid value so it's a working ground, not the final key.
-        params.ground = Some([(mean[0] as u16 * 6 / 10 + 40) as u8, (mean[1] as u16 * 6 / 10 + 40) as u8, (mean[2] as u16 * 6 / 10 + 40) as u8]);
+        params.ground = Some([236, 230, 220]);
     }
 
     let result = if a.critic {

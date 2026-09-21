@@ -275,8 +275,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let mut in_pass = 0usize;
         // Critic: snapshot the canvas + score BEFORE the pass, so a pass that hurts can be rolled back.
         let snapshot = critic.map(|c| (canvas.clone(), score.strokes.len(), placed, c(&canvas.to_image())));
-        // The reference this pass paints from is blurred ∝ the brush — a coarse brush has no detail to trace.
-        let reference = imageops::blur(input, radius * 0.7);
+        // The reference this pass paints from is blurred ∝ the brush — a coarse brush has no detail to trace
+        // (the proven P0 amount).
+        let reference = imageops::blur(input, (radius * 0.5).max(0.6));
         let luma = luma_map(&reference);
         let (gx, gy) = sobel(&luma, w, h);
         let grid = (radius * 0.9).max(1.5);
