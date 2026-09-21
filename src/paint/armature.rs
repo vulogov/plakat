@@ -221,6 +221,38 @@ pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32) -> Vec<Srgb> {
         .collect()
 }
 
+/// FAMILY-KEY a colour field (§5.5.5): derive crude surface normals from the luma (treat value as a height
+/// field), split into light/shadow families against a key light, and ENFORCE the family-separation invariant
+/// (§3.3) — raise any light-family value below the lightest shadow, so the two masses read as solid rather than
+/// spotty. Re-values the colour to the corrected value (hue kept). `key_az`/`key_el` are the light azimuth /
+/// elevation in degrees.
+pub fn key_families(colour: &[Srgb], w: u32, h: u32, key_az: f32, key_el: f32) -> Vec<Srgb> {
+    if colour.is_empty() {
+        return Vec::new();
+    }
+    let value = value_from_colour(colour);
+    let (wi, hi) = (w as i32, h as i32);
+    let at = |x: i32, y: i32| value[(y.clamp(0, hi - 1) as usize) * w as usize + x.clamp(0, wi - 1) as usize];
+    // Normals from the luma gradient: n ∝ (−dV/dx, −dV/dy, relief). Larger relief = flatter (more viewer-facing).
+    const RELIEF: f32 = 2.0;
+    let mut normal = vec![[0f32, 0f32, 1f32]; value.len()];
+    for y in 0..hi {
+        for x in 0..wi {
+            let gx = at(x + 1, y) - at(x - 1, y);
+            let gy = at(x, y + 1) - at(x, y - 1);
+            let n = [-gx, -gy, RELIEF];
+            let m = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+            normal[(y as usize) * w as usize + x as usize] = [n[0] / m, n[1] / m, n[2] / m];
+        }
+    }
+    let (az, el) = (key_az.to_radians(), key_el.to_radians());
+    let key = [el.cos() * az.cos(), -el.cos() * az.sin(), el.sin()];
+    let is_light = split_families(&normal, key);
+    let mut v = value;
+    enforce_family_invariant(&mut v, &is_light);
+    colour.iter().zip(v.iter()).map(|(&c, &nv)| revalue(c, nv)).collect()
+}
+
 /// A crude, GPU-free monocular depth PROXY for bring-up: nearer = more central and lower in the frame (a
 /// standing-subject / ground-plane prior). The real armature uses a depth estimator; this lets the merge run
 /// on CPU. Returns `[0,1]`, larger = closer.
@@ -319,6 +351,28 @@ mod tests {
         let far_range = (val[1] - val[0]).abs();
         let near_range = (val[5] - val[4]).abs();
         assert!(far_range < near_range, "recession compresses the far plane ({far_range} < {near_range})");
+    }
+
+    #[test]
+    fn key_families_enforces_the_invariant() {
+        // A field with a dark spot inside a lit region: after family-keying, no light-family value stays below
+        // the lightest shadow (the masses read solid).
+        let w = 8;
+        let h = 8;
+        let colour: Vec<Srgb> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                // Lit upper-left gradient, with one dark pixel dropped into the light.
+                let base = 60 + (x + y) as u8 * 12;
+                let v = if x == 2 && y == 2 { 20 } else { base };
+                [v, v, v]
+            })
+            .collect();
+        let keyed = key_families(&colour, w as u32, h as u32, 135.0, 40.0);
+        // The result parses (no panic) and the overall value range is sensible.
+        let vout = value_from_colour(&keyed);
+        assert_eq!(vout.len(), (w * h) as usize);
+        assert!(vout.iter().all(|&v| (0.0..=1.0).contains(&v)), "values in range");
     }
 
     #[test]

@@ -31,6 +31,10 @@ pub struct PaintArgs {
     /// that makes the painting worse. GPU.
     #[arg(long)]
     pub critic: bool,
+    /// FAMILY-KEY the reference (§5.5.5): split light/shadow and enforce the family-separation invariant so the
+    /// masses read solid (sharper subject). Opt-in.
+    #[arg(long)]
+    pub families: bool,
     #[command(subcommand)]
     pub cmd: Option<PaintCmd>,
 }
@@ -90,6 +94,7 @@ pub struct SpecArgs {
     pub report: bool,
     pub planes: Option<u32>,
     pub critic: bool,
+    pub families: bool,
 }
 
 #[derive(Args, Debug)]
@@ -160,7 +165,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -311,6 +316,16 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         println!("{}  working at {}×{} (budget density) → replay to {}×{}", style("·").dim(), work.0, work.1, plan.size.0, plan.size.1);
     }
 
+    // FAMILY-KEY (§5.5.5, opt-in): split light/shadow and enforce the invariant so the masses read solid.
+    if a.families {
+        let (w, h) = reference.dimensions();
+        let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
+        let keyed = crate::paint::armature::key_families(&colour, w, h, 135.0, 40.0);
+        for (i, p) in reference.pixels_mut().enumerate() {
+            p.0 = keyed[i];
+        }
+        println!("{}  family split · invariant enforced (light/shadow masses)", style("·").dim());
+    }
     // VALUE RE-KEY (§5.5.2): expand the reference's tonal range so the painting reads with real lights and
     // darks rather than collapsing toward the mid ground.
     {
