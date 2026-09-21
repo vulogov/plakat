@@ -95,6 +95,23 @@ impl Canvas {
         self.height[p] += height.max(0.0);
     }
 
+    /// WIPE / scrape back at a pixel (RFC PAINT-1 §8.7): remove a `strength` fraction of the accumulated
+    /// pigment and height, exposing the ground/earlier work beneath (Sargent scraping a head, Turner wiping,
+    /// watercolour lifting). A structural move, not error correction.
+    pub fn wipe(&mut self, x: u32, y: u32, strength: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        let i = self.idx(x, y);
+        for c in 0..self.n {
+            self.conc[i + c] *= 1.0 - s;
+        }
+        // Restore the primer (white ground) proportionally, so wiping EXPOSES the ground rather than just
+        // scaling the same mixture down (which, being a ratio, wouldn't change the colour).
+        let white = lightest_pigment(&self.palette);
+        self.conc[i + white] += GROUND_CONC * s;
+        let p = y as usize * self.w as usize + x as usize;
+        self.height[p] *= 1.0 - s;
+    }
+
     /// The sRGB colour at a pixel — Kubelka-Munk mix of its concentration vector over the palette.
     pub fn color_at(&self, x: u32, y: u32) -> Srgb {
         pigment::mix(self.palette.pigments, self.conc_at(x, y))
@@ -166,6 +183,17 @@ mod tests {
         let d = delta_e76(srgb_to_lab(col), srgb_to_lab(palette::CADMIUM_RED.masstone));
         assert!(d < 25.0, "a heavy deposit reads mostly as the pigment: {col:?} (ΔE {d})");
         assert!(c.height[0] > 0.4, "height accumulated");
+    }
+
+    #[test]
+    fn wipe_scrapes_pigment_and_height_back() {
+        let mut c = Canvas::white(2, 2, palette::ZORN, 0.7);
+        c.deposit(0, 0, &[0.0, 1.2, 0.0, 0.0], 0.6); // a red pass + impasto
+        let before = srgb_to_lab(c.color_at(0, 0)).l;
+        let h_before = c.height[0];
+        c.wipe(0, 0, 0.8);
+        assert!(srgb_to_lab(c.color_at(0, 0)).l > before + 3.0, "wiping back lightens toward the ground");
+        assert!(c.height[0] < h_before, "impasto height scraped down");
     }
 
     #[test]

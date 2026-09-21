@@ -114,6 +114,35 @@ impl Stroke {
         }
     }
 
+    /// Apply this stroke as a WIPE (§8.7): walk the path with the brush footprint and scrape `strength` of the
+    /// pigment + height back at each covered pixel, exposing what's beneath. No load, no pickup.
+    pub fn wipe(&self, canvas: &mut Canvas, brush: &BrushConfig, strength: f32) {
+        let pts = densify(&self.path);
+        let nb = brush.bristles.max(1);
+        for i in 0..pts.len() {
+            let p = pts[i];
+            let q = if i + 1 < pts.len() { pts[i + 1] } else { pts[i.saturating_sub(1)] };
+            let (mut dx, mut dy) = (q[0] - p[0], q[1] - p[1]);
+            let dl = (dx * dx + dy * dy).sqrt();
+            if dl > 1e-4 {
+                dx /= dl;
+                dy /= dl;
+            }
+            let (perpx, perpy) = (-dy, dx);
+            let t = if pts.len() > 1 { i as f32 / (pts.len() - 1) as f32 } else { 0.0 };
+            let width = self.width0 + (self.width1 - self.width0) * t;
+            for b in 0..nb {
+                let off = ((b as f32 + 0.5) / nb as f32 - 0.5) * width;
+                let x = (p[0] + perpx * off).round();
+                let y = (p[1] + perpy * off).round();
+                if x < 0.0 || y < 0.0 || x >= canvas.w as f32 || y >= canvas.h as f32 {
+                    continue;
+                }
+                canvas.wipe(x as u32, y as u32, strength * self.pressure);
+            }
+        }
+    }
+
     /// One bristle touching one pixel: deposit a fraction of load, pick up wet canvas pigment, update the load.
     fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize) {
         let p = py as usize * canvas.w as usize + px as usize;

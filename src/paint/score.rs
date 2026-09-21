@@ -182,7 +182,14 @@ impl StrokeScore {
         let mut canvas = Canvas::white(out_w, out_h, palette, self.header.tooth);
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         for rec in &self.strokes {
-            if rec.wipe || !keep(rec) {
+            if !keep(rec) {
+                continue;
+            }
+            let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+            if rec.wipe {
+                // A subtractive WIPE stroke: scrape pigment back (strength recorded in `wet`).
+                let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load: Vec::new(), pressure: rec.press, wetness: rec.wet };
+                s.wipe(&mut canvas, &brush, rec.wet);
                 continue;
             }
             let mut load = vec![0f32; n];
@@ -191,7 +198,6 @@ impl StrokeScore {
                     load[i] += val * ss;
                 }
             }
-            let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
             let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
             s.rasterize(&mut canvas, &brush);
         }
@@ -324,6 +330,23 @@ mod tests {
         let last = frames.last().unwrap().to_image().into_raw();
         let full = s.replay(64, 48).unwrap().to_image().into_raw();
         assert_eq!(last, full, "the final frame is the finished painting");
+    }
+
+    #[test]
+    fn replay_applies_a_wipe_record() {
+        // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, brush: BrushConfig::default() };
+        let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0 };
+        let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
+        let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0 };
+        let with_wipe = StrokeScore { header: base, strokes: vec![stroke, wipe] };
+        let a = no_wipe.replay(40, 20).unwrap();
+        let b = with_wipe.replay(40, 20).unwrap();
+        use crate::paint::color::{delta_e76, srgb_to_lab};
+        let lifted = srgb_to_lab(b.color_at(18, 10)).l - srgb_to_lab(a.color_at(18, 10)).l;
+        assert!(lifted > 5.0, "the wipe lightened the scraped band (ΔL {lifted})");
+        // Away from the wipe, the two are identical.
+        assert!(delta_e76(srgb_to_lab(a.color_at(5, 10)), srgb_to_lab(b.color_at(5, 10))) < 1.0, "untouched elsewhere");
     }
 
     #[test]
