@@ -40,6 +40,10 @@ pub struct PaintParams {
     pub brush_sizes: Vec<f32>,
     /// The smallest brush allowed, so the finest pass still cannot chase pixel detail.
     pub min_brush: f32,
+    /// ARMATURE resolution (RFC §1.1/§5.1): the reference is coarsened to this longest-side before painting, so
+    /// structure survives but DETAIL does not — the brush must invent the surface rather than trace it. `None`
+    /// keeps the reference full-resolution (the P0 from-image behaviour).
+    pub armature_side: Option<u32>,
     /// Charge multiplier for a stroke's load (how much paint the brush holds vs its footprint).
     pub charge: f32,
     /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
@@ -50,6 +54,9 @@ pub struct PaintParams {
     /// DENSITY mark model (§8.6): build value by black hatch marks whose count scales with darkness, instead
     /// of loaded continuous strokes (pen-ink). Uses the palette's darkest pigment.
     pub density: bool,
+    /// A TONED ground (imprimatura) to prime the canvas with — for opaque media, so light passages show.
+    /// `None` = a white ground / paper.
+    pub ground: Option<Srgb>,
     pub seed: u64,
     pub brush: BrushConfig,
 }
@@ -57,7 +64,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -169,10 +176,36 @@ fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &
     back
 }
 
+/// Coarsen an image to an ARMATURE: downsample to `side` (longest edge) then upsample back, smoothly — so the
+/// structure survives but the fine detail is gone. The brush then invents the surface instead of tracing it.
+fn coarsen(img: &RgbImage, side: u32) -> RgbImage {
+    let (w, h) = img.dimensions();
+    let scale = side as f32 / w.max(h) as f32;
+    if scale >= 1.0 {
+        return img.clone();
+    }
+    let (dw, dh) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
+    let small = imageops::resize(img, dw, dh, imageops::FilterType::Triangle);
+    imageops::resize(&small, w, h, imageops::FilterType::Triangle)
+}
+
 /// Paint a reference image under the PAINT-1 constraints, returning the canvas and the stroke count.
 pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
     let (w, h) = (input.width(), input.height());
-    let mut canvas = Canvas::white(w, h, p.palette, 0.85);
+    // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
+    // canvas stays full size; only the thing being painted FROM is coarsened.
+    let armature_owned;
+    let input: &RgbImage = match p.armature_side.filter(|&s| s > 0) {
+        Some(s) => {
+            armature_owned = coarsen(input, s);
+            &armature_owned
+        }
+        None => input,
+    };
+    let mut canvas = match p.ground {
+        Some(tone) => Canvas::toned(w, h, p.palette, tone, 0.85),
+        None => Canvas::white(w, h, p.palette, 0.85),
+    };
     let n = p.palette.pigments.len();
     // Mixture cache keyed on the quantised reference colour — thousands of strokes sample similar colours.
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
@@ -190,7 +223,7 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
     };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, brush: p.brush },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush },
         strokes: Vec::new(),
     };
 
@@ -431,6 +464,26 @@ mod tests {
         let dark = patch_mean(2, 18);
         let light = patch_mean(62, 78);
         assert!(dark < light - 15.0, "hatch density darkens the dark side more ({dark:.0} vs {light:.0})");
+    }
+
+    #[test]
+    fn a_low_res_armature_paints_from_structure_not_detail() {
+        // A detailed reference (fine checker over a gradient). Painting from a low-res ARMATURE keeps the broad
+        // structure (still correlates) but the finest checker detail is gone, so it traces LESS than painting
+        // the full-resolution reference.
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            let t = (x as f32 / 96.0 * 200.0) as u8;
+            let checker = if (x / 3 + y / 3) % 2 == 0 { 40 } else { 0 };
+            image::Rgb([t.saturating_add(checker), (120 + checker) as u8, (60 + checker) as u8])
+        });
+        let mut full = PaintParams::new(palette::EARTH, 400);
+        full.brush_sizes = vec![18.0, 9.0];
+        let mut arm = full.clone();
+        arm.armature_side = Some(24);
+        let tr_full = traceability(&paint_from_image(&img, &full).canvas.to_image(), &img);
+        let tr_arm = traceability(&paint_from_image(&img, &arm).canvas.to_image(), &img);
+        assert!(tr_arm > 0.1, "some broad structure survives, not random (corr {tr_arm})");
+        assert!(tr_arm <= tr_full + 0.02, "the armature traces no MORE of the detailed reference than full-res ({tr_arm} vs {tr_full})");
     }
 
     #[test]

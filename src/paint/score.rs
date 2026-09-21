@@ -23,6 +23,8 @@ pub struct ScoreHeader {
     pub width: u32,
     pub height: u32,
     pub tooth: f32,
+    /// The toned ground (imprimatura), if any — replay must prime the canvas the same way the paint did.
+    pub ground: Option<crate::paint::color::Srgb>,
     pub brush: BrushConfig,
 }
 
@@ -68,9 +70,10 @@ impl StrokeScore {
         let b = &h.brush;
         let mut o = String::new();
         o.push_str("# plakat stroke score v1\n");
+        let ground = h.ground.map(|g| format!(" ground={},{},{}", g[0], g[1], g[2])).unwrap_or_default();
         o.push_str(&format!(
-            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max),
+            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={}{}\n",
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), ground,
         ));
         for s in &self.strokes {
             let spline = s.spline.iter().map(|p| format!("{},{}", fmt_f(p[0]), fmt_f(p[1]))).collect::<Vec<_>>().join(";");
@@ -119,6 +122,10 @@ impl StrokeScore {
                         width: w,
                         height: h,
                         tooth: get("tooth").parse().unwrap_or(0.85),
+                        ground: m.get("ground").and_then(|g| {
+                            let v: Vec<u8> = g.split(',').filter_map(|x| x.parse().ok()).collect();
+                            (v.len() == 3).then_some([v[0], v[1], v[2]])
+                        }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -179,7 +186,10 @@ impl StrokeScore {
     pub fn replay_filtered(&self, out_w: u32, out_h: u32, keep: impl Fn(&StrokeRecord) -> bool) -> Result<Canvas> {
         let (palette, brush, sx, sy, ss) = self.replay_setup(out_w, out_h)?;
         let n = palette.pigments.len();
-        let mut canvas = Canvas::white(out_w, out_h, palette, self.header.tooth);
+        let mut canvas = match self.header.ground {
+            Some(g) => Canvas::toned(out_w, out_h, palette, g, self.header.tooth),
+            None => Canvas::white(out_w, out_h, palette, self.header.tooth),
+        };
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         for rec in &self.strokes {
             if !keep(rec) {
@@ -209,7 +219,10 @@ impl StrokeScore {
     pub fn replay_frames(&self, out_w: u32, out_h: u32, every: usize) -> Result<Vec<Canvas>> {
         let (palette, brush, sx, sy, ss) = self.replay_setup(out_w, out_h)?;
         let n = palette.pigments.len();
-        let mut canvas = Canvas::white(out_w, out_h, palette, self.header.tooth);
+        let mut canvas = match self.header.ground {
+            Some(g) => Canvas::toned(out_w, out_h, palette, g, self.header.tooth),
+            None => Canvas::white(out_w, out_h, palette, self.header.tooth),
+        };
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let every = every.max(1);
         let mut frames = Vec::new();
@@ -263,7 +276,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, brush: BrushConfig::default() },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default() },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9 },
                 StrokeRecord { id: 2, wipe: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0 },
@@ -335,7 +348,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, brush: BrushConfig::default() };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default() };
         let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0 };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0 };

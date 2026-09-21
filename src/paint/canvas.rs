@@ -62,6 +62,18 @@ impl Canvas {
         Self::with_ground(w, h, palette, &ground, tooth)
     }
 
+    /// A canvas primed with a TONED ground (imprimatura): the given tone, solved into the palette. Opaque media
+    /// work on a mid-tone so light passages SHOW (light paint on a white ground is invisible) and the picture
+    /// reads as one keyed surface rather than sparse marks on paper.
+    pub fn toned(w: u32, h: u32, palette: Palette, tone: Srgb, tooth: f32) -> Self {
+        let m = crate::paint::mixer::solve_mixture(&palette, tone, 3);
+        let mut ground = vec![0f32; palette.pigments.len()];
+        for (&i, &wt) in m.pigments.iter().zip(m.weights.iter()) {
+            ground[i] = wt * GROUND_CONC;
+        }
+        Self::with_ground(w, h, palette, &ground, tooth)
+    }
+
     pub fn palette(&self) -> &Palette {
         &self.palette
     }

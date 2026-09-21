@@ -221,6 +221,22 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.medium = plan.medium.name.to_string();
     params.seed = plan.seed;
     params.brush.k_pickup = plan.medium.pickup; // the medium's pickup drives the dirty brush
+    // Paint from a LOW-RES ARMATURE (§1.1): coarsen the reference so the brush invents the surface instead of
+    // tracing detail. Sized to the WORKING canvas (below).
+    // Paint at a normalized WORKING resolution so the stroke budget (a style control, §9.1) gives a consistent
+    // DENSITY regardless of the output size; the score then replays at the requested output size (§G4). This is
+    // what stops a big canvas reading as sparse scribble.
+    let work = {
+        let longest = plan.size.0.max(plan.size.1);
+        let work_max = 640u32;
+        if longest > work_max {
+            let s = work_max as f32 / longest as f32;
+            ((plan.size.0 as f32 * s).round() as u32, (plan.size.1 as f32 * s).round() as u32)
+        } else {
+            plan.size
+        }
+    };
+    params.armature_side = Some((work.0.max(work.1) / 6).clamp(56, 160));
     // Surface-white media reserve their whites (paper shows through); density media build value by hatch marks.
     use crate::paint::medium::{MarkModel, WhiteSource};
     if plan.medium.white_source == WhiteSource::Surface {
@@ -273,8 +289,38 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         plan.stages.len(),
     );
 
+    // Drop to the working resolution: scale the pass radii + min brush, resize the reference. Painting there
+    // keeps the density right; the score replays to the output size afterward.
+    if work != plan.size {
+        let s = work.0 as f32 / plan.size.0 as f32;
+        if let Some(passes) = params.passes.as_mut() {
+            for pass in passes.iter_mut() {
+                pass.radius *= s;
+            }
+        }
+        params.min_brush *= s;
+        reference = image::imageops::resize(&reference, work.0, work.1, image::imageops::FilterType::Triangle);
+        println!("{}  working at {}×{} (budget density) → replay to {}×{}", style("·").dim(), work.0, work.1, plan.size.0, plan.size.1);
+    }
+
+    // Opaque media work on a TONED ground (imprimatura) so light passages show — keyed to the reference's own
+    // mean tone (derived, not scene-specific), darkened toward a mid imprimatura.
+    if plan.medium.opacity == crate::paint::medium::Opacity::Opaque {
+        let n = (reference.width() * reference.height()).max(1) as u64;
+        let mut s = [0u64; 3];
+        for px in reference.pixels() {
+            for c in 0..3 {
+                s[c] += px.0[c] as u64;
+            }
+        }
+        let mean = [(s[0] / n) as u8, (s[1] / n) as u8, (s[2] / n) as u8];
+        // Pull toward a mid value so it's a working ground, not the final key.
+        params.ground = Some([(mean[0] as u16 * 6 / 10 + 40) as u8, (mean[1] as u16 * 6 / 10 + 40) as u8, (mean[2] as u16 * 6 / 10 + 40) as u8]);
+    }
+
     let result = painter::paint_from_image(&reference, &params);
-    let image_out = result.canvas.to_image();
+    // Output at the requested size — replay the score up from the working canvas (resolution-independent).
+    let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image() } else { result.canvas.to_image() };
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
