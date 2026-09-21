@@ -57,6 +57,9 @@ pub struct PaintParams {
     /// A TONED ground (imprimatura) to prime the canvas with — for opaque media, so light passages show.
     /// `None` = a white ground / paper.
     pub ground: Option<Srgb>,
+    /// NEGATIVE PAINTING (§8.7): a protect mask (`w*h`, true = leave unpainted) — strokes are not seeded inside
+    /// it, so a shape is DEFINED by painting the space around it. Generalises the `reserve`. `None` = paint all.
+    pub protect: Option<Vec<bool>>,
     pub seed: u64,
     pub brush: BrushConfig,
 }
@@ -64,7 +67,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -130,7 +133,7 @@ fn rgb_dist(a: Srgb, b: Srgb) -> f32 {
 
 /// Grow a stroke in ONE direction (`sign` = +1 forward, −1 backward) from the seed along the orientation
 /// field, ending when the reference colour drifts too far from the stroke's colour or the half-length cap hits.
-fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb) -> Vec<[f32; 2]> {
+fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>) -> Vec<[f32; 2]> {
     let (w, h) = (reference.width(), reference.height());
     let max_len = (radius * 2.5).max(radius + 1.0);
     let step = (radius * 0.6).max(1.0);
@@ -141,6 +144,12 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
     while travelled < max_len {
         let (ix, iy) = (x.round().clamp(0.0, w as f32 - 1.0) as usize, y.round().clamp(0.0, h as f32 - 1.0) as usize);
         let i = iy * w as usize + ix;
+        // Negative painting: the stroke terminates at the protected shape's edge (paint AROUND it).
+        if let Some(m) = protect {
+            if m.get(i).copied().unwrap_or(false) {
+                break;
+            }
+        }
         let mut d = stroke_dir(gx[i], gy[i]);
         d = [d[0] * sign, d[1] * sign];
         // Keep the direction from flipping 180° between steps.
@@ -167,10 +176,10 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
 
 /// Grow a stroke through the seed in BOTH directions (Hertzmann), so a seed mid-feature paints the whole
 /// isophote it sits on, not just the half below it.
-fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb) -> Vec<[f32; 2]> {
-    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0);
+fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>) -> Vec<[f32; 2]> {
+    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0, protect);
     back.reverse();
-    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0);
+    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0, protect);
     back.push([x0, y0]);
     back.extend(fwd);
     back
@@ -266,6 +275,12 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                     continue;
                 }
                 let (ix, iy) = (cx as u32, cy as u32);
+                // NEGATIVE PAINTING: never seed a stroke inside the protected shape — paint around it.
+                if let Some(mask) = &p.protect {
+                    if mask.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false) {
+                        continue;
+                    }
+                }
                 let target = reference.get_pixel(ix, iy).0;
                 let tluma = color::linear_luma(color::srgb_to_linear(target));
                 // RESERVE the whites for a surface-white medium: bright cells keep the paper (no stroke enters).
@@ -285,7 +300,7 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                     continue;
                 }
                 let load = mixture_for(target, &p.palette, p.charge);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target);
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, p.protect.as_deref());
                 let s = Stroke { path, width0: radius, width1: (radius * 0.6).max(p.min_brush * 0.6), load, pressure: 1.0, wetness: 1.0 };
                 s.rasterize(&mut canvas, &p.brush);
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
@@ -464,6 +479,26 @@ mod tests {
         let dark = patch_mean(2, 18);
         let light = patch_mean(62, 78);
         assert!(dark < light - 15.0, "hatch density darkens the dark side more ({dark:.0} vs {light:.0})");
+    }
+
+    #[test]
+    fn negative_painting_leaves_the_protected_shape() {
+        // Paint around a protected central square — the shape stays (near) the ground while the surround is
+        // painted, defining the shape by negative space.
+        let img = gradient_img(60, 60);
+        let mut p = PaintParams::new(palette::EARTH, 600);
+        p.brush_sizes = vec![8.0];
+        let mut mask = vec![false; 60 * 60];
+        for y in 22..38 {
+            for x in 22..38 {
+                mask[y * 60 + x] = true;
+            }
+        }
+        p.protect = Some(mask);
+        let c = paint_from_image(&img, &p).canvas;
+        // The protected centre is (near) the bare white ground; a surround pixel is painted (has height).
+        assert!(c.height[30 * 60 + 30] < 0.05, "protected shape left unpainted");
+        assert!(c.height[30 * 60 + 5] > 0.0 || c.height[10 * 60 + 30] > 0.0, "the surround is painted");
     }
 
     #[test]
