@@ -190,6 +190,9 @@ pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLO
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
 /// The media executable through P2 — adds watercolour (reservation) and pen-ink (density).
 pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
+/// Every executable medium (P3 adds indirect oil, ink wash, tempera — they reuse the opaque-continuous,
+/// transparent-reserve, and density paths respectively; tempera's density marks are monochrome for now).
+pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).
@@ -200,9 +203,9 @@ impl MediumProfile {
     pub fn is_p1_executable(&self) -> bool {
         P1_EXECUTABLE.contains(&self.name)
     }
-    /// Whether the engine (through P2) can render this medium.
+    /// Whether the engine can render this medium.
     pub fn is_executable(&self) -> bool {
-        P2_EXECUTABLE.contains(&self.name)
+        EXECUTABLE.contains(&self.name)
     }
 }
 

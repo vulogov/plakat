@@ -95,7 +95,7 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
     let medium = MediumProfile::by_name(spec.medium.as_deref().unwrap_or("oil-direct"))
         .with_context(|| format!("unknown medium {:?}", spec.medium))?;
     if !medium.is_executable() {
-        bail!("medium {:?} is declared but not executable yet — the engine renders {}; the rest land in later phases", medium.name, medium::P2_EXECUTABLE.join(" / "));
+        bail!("medium {:?} is not executable — the engine renders {}", medium.name, medium::EXECUTABLE.join(" / "));
     }
     let palette = Palette::by_name(spec.palette.as_deref().unwrap_or("zorn"))
         .with_context(|| format!("unknown palette {:?} — try: {}", spec.palette, palette::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")))?;
@@ -166,11 +166,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_p2_media_and_rejects_the_rest() {
-        // Watercolour + pen-ink are executable through P2; tempera / ink-wash / indirect-oil are not yet.
-        assert!(compile(&PaintSpec { medium: Some("watercolour".into()), ..Default::default() }, 256, 256).is_ok());
-        assert!(compile(&PaintSpec { medium: Some("pen-ink".into()), ..Default::default() }, 256, 256).is_ok());
-        assert!(compile(&PaintSpec { medium: Some("tempera".into()), ..Default::default() }, 256, 256).is_err(), "tempera is later");
+    fn accepts_every_declared_medium_and_rejects_unknown() {
+        // All seven declared media are executable now (P3 added indirect-oil / ink-wash / tempera).
+        for m in ["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera"] {
+            assert!(compile(&PaintSpec { medium: Some(m.into()), ..Default::default() }, 256, 256).is_ok(), "{m} compiles");
+        }
+        assert!(compile(&PaintSpec { medium: Some("crayon".into()), ..Default::default() }, 256, 256).is_err(), "unknown medium errors");
     }
 
     #[test]
