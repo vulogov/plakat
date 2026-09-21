@@ -39,8 +39,39 @@ pub enum PaintCmd {
     From(FromArgs),
     /// Re-render a stroke score to an image at any size (no GPU).
     Replay(ReplayArgs),
+    /// Export derived products from a score: per-stage separations, a stages sheet, the impasto height.
+    Export(ExportArgs),
+    /// Render a stroke-by-stroke timelapse from a score (PNG frames; GIF when few enough).
+    Timelapse(TimelapseArgs),
     /// Inspect a built-in palette's pigments.
     Palette(PaletteArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ExportArgs {
+    /// The `.strokes` score.
+    pub score: PathBuf,
+    /// What to export: `separations` (one PNG per stage), `stages` (cumulative per stage), `height` (16-bit).
+    #[arg(value_parser = ["separations", "stages", "height"])]
+    pub target: String,
+    /// Output directory (separations/stages) or file (height).
+    #[arg(short, long, default_value = "export")]
+    pub out: PathBuf,
+    #[arg(long)]
+    pub size: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct TimelapseArgs {
+    pub score: PathBuf,
+    /// Output directory for the PNG frames.
+    #[arg(short, long, default_value = "timelapse")]
+    pub out: PathBuf,
+    /// Emit a frame every N strokes.
+    #[arg(long, default_value_t = 25)]
+    pub every: usize,
+    #[arg(long)]
+    pub size: Option<String>,
 }
 
 /// The resolved arguments for painting a spec (from the top-level positional form).
@@ -112,6 +143,8 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Lint(a)) => run_show(a, true),
         Some(PaintCmd::From(a)) => run_from(a),
         Some(PaintCmd::Replay(a)) => run_replay(a),
+        Some(PaintCmd::Export(a)) => run_export(a),
+        Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
             Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report }),
@@ -295,6 +328,71 @@ fn run_from(a: FromArgs) -> Result<()> {
         let tr = painter::traceability(&out, &img);
         println!("{}  traceability {:.3} (→1 = traced/filter; a painting keeps structure but invents surface)", style("·").dim(), tr);
     }
+    Ok(())
+}
+
+fn load_score(path: &std::path::Path, size: Option<&str>) -> Result<(crate::paint::score::StrokeScore, u32, u32)> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let score = crate::paint::score::StrokeScore::parse(&text).context("parsing the stroke score")?;
+    let (w, h) = match size {
+        Some(s) => {
+            let (ws, hs) = s.split_once(['x', 'X']).context("--size must be WxH")?;
+            (ws.trim().parse().context("bad width")?, hs.trim().parse().context("bad height")?)
+        }
+        None => (score.header.width, score.header.height),
+    };
+    Ok((score, w, h))
+}
+
+fn run_export(a: ExportArgs) -> Result<()> {
+    let (score, w, h) = load_score(&a.score, a.size.as_deref())?;
+    match a.target.as_str() {
+        "height" => {
+            let canvas = score.replay(w, h).context("replaying for height")?;
+            let out = if a.out.extension().is_some() { a.out.clone() } else { a.out.with_extension("png") };
+            if let Some(p) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(p).ok();
+            }
+            canvas.height_image().save(&out).with_context(|| format!("writing {}", out.display()))?;
+            println!("{}  impasto height (16-bit) → {}", style("✓").green(), out.display());
+        }
+        "separations" | "stages" => {
+            std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+            let stages = score.stages();
+            let cumulative = a.target == "stages";
+            println!("{}  {} {} → {}/", style("◆").cyan(), stages.len(), a.target, a.out.display());
+            for (i, stage) in stages.iter().enumerate() {
+                // separations: this stage alone; stages: the painting through the end of this stage.
+                let upto = i; // index in the stage order
+                let canvas = score.replay_filtered(w, h, |r| {
+                    let ri = stages.iter().position(|s| s == &r.stage).unwrap_or(usize::MAX);
+                    if cumulative {
+                        ri <= upto
+                    } else {
+                        r.stage == *stage
+                    }
+                })?;
+                let safe: String = stage.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' }).collect();
+                let path = a.out.join(format!("{:02}-{}.png", i + 1, safe));
+                canvas.to_image().save(&path).with_context(|| format!("writing {}", path.display()))?;
+                println!("    {}", path.display());
+            }
+        }
+        other => anyhow::bail!("unknown export target {other:?}"),
+    }
+    Ok(())
+}
+
+fn run_timelapse(a: TimelapseArgs) -> Result<()> {
+    let (score, w, h) = load_score(&a.score, a.size.as_deref())?;
+    std::fs::create_dir_all(&a.out).with_context(|| format!("creating {}", a.out.display()))?;
+    let frames = score.replay_frames(w, h, a.every).context("replaying frames")?;
+    println!("{}  timelapse {} → {}/ ({} frames, every {} strokes)", style("◆").cyan(), a.score.display(), a.out.display(), frames.len(), a.every);
+    for (i, canvas) in frames.iter().enumerate() {
+        let path = a.out.join(format!("frame-{i:04}.png"));
+        canvas.to_image().save(&path).with_context(|| format!("writing {}", path.display()))?;
+    }
+    println!("{}  {} frames → {}/  (assemble with: ffmpeg -i {}/frame-%04d.png out.mp4)", style("✓").green(), frames.len(), a.out.display(), a.out.display());
     Ok(())
 }
 

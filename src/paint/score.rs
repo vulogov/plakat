@@ -163,36 +163,32 @@ impl StrokeScore {
         Ok(StrokeScore { header, strokes })
     }
 
-    /// Replay the score onto a fresh canvas at `out_w × out_h`. Geometry (and the brush width + load charge)
-    /// scale from the score's native size, so the same score renders at any resolution with no upscaler. At
-    /// the native size this reproduces the original paint byte-for-byte.
-    pub fn replay(&self, out_w: u32, out_h: u32) -> Result<Canvas> {
-        let palette = Palette::by_name(&self.header.palette).with_context(|| format!("stroke score: unknown palette {:?}", self.header.palette))?;
+    /// The distinct stage names in first-seen order — the basis for stage separations / a stages contact sheet.
+    pub fn stages(&self) -> Vec<String> {
+        let mut seen = Vec::new();
+        for s in &self.strokes {
+            if !seen.iter().any(|x| x == &s.stage) {
+                seen.push(s.stage.clone());
+            }
+        }
+        seen
+    }
+
+    /// Replay only the strokes matching `keep`, in order, onto a fresh canvas at `out_w × out_h`. The building
+    /// block for separations (one stage), a cumulative stages sheet, `--until N`, and frame emission.
+    pub fn replay_filtered(&self, out_w: u32, out_h: u32, keep: impl Fn(&StrokeRecord) -> bool) -> Result<Canvas> {
+        let (palette, brush, sx, sy, ss) = self.replay_setup(out_w, out_h)?;
         let n = palette.pigments.len();
         let mut canvas = Canvas::white(out_w, out_h, palette, self.header.tooth);
-        let sx = out_w as f32 / self.header.width.max(1) as f32;
-        let sy = out_h as f32 / self.header.height.max(1) as f32;
-        let ss = (sx * sy).sqrt(); // isotropic scale for widths + physics
-
-        // Resolution independence: at scale `ss` a stroke has ~ss× more integration steps, so the deposit rate
-        // is scaled by 1/ss to keep the per-unit-LENGTH dry-out profile constant, and the load charge by ss so
-        // the extra steps still empty the brush over the stroke. Native (ss=1) leaves the brush untouched, so
-        // native replay stays byte-identical.
-        let mut brush = self.header.brush;
-        brush.k_deposit /= ss;
-        brush.load_max *= ss;
-
-        // Map pigment names → palette indices once.
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
-
         for rec in &self.strokes {
-            if rec.wipe {
-                continue; // deposit-only replay in this slice
+            if rec.wipe || !keep(rec) {
+                continue;
             }
             let mut load = vec![0f32; n];
             for (name, val) in &rec.mix {
                 if let Some(i) = index_of(name) {
-                    load[i] += val * ss; // more paint to cover the longer path at higher resolution
+                    load[i] += val * ss;
                 }
             }
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
@@ -201,6 +197,57 @@ impl StrokeScore {
         }
         Ok(canvas)
     }
+
+    /// Replay the whole score in order, emitting a canvas frame every `every` strokes (plus the final frame).
+    /// A single O(n) forward pass, so a long timelapse is linear rather than quadratic.
+    pub fn replay_frames(&self, out_w: u32, out_h: u32, every: usize) -> Result<Vec<Canvas>> {
+        let (palette, brush, sx, sy, ss) = self.replay_setup(out_w, out_h)?;
+        let n = palette.pigments.len();
+        let mut canvas = Canvas::white(out_w, out_h, palette, self.header.tooth);
+        let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
+        let every = every.max(1);
+        let mut frames = Vec::new();
+        let mut laid = 0usize;
+        for rec in &self.strokes {
+            if !rec.wipe {
+                let mut load = vec![0f32; n];
+                for (name, val) in &rec.mix {
+                    if let Some(i) = index_of(name) {
+                        load[i] += val * ss;
+                    }
+                }
+                let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+                let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
+                s.rasterize(&mut canvas, &brush);
+                laid += 1;
+                if laid % every == 0 {
+                    frames.push(canvas.snapshot());
+                }
+            }
+        }
+        frames.push(canvas); // always end on the finished painting
+        Ok(frames)
+    }
+
+    /// Resolve the palette, scaled brush, and scale factors shared by every replay path.
+    fn replay_setup(&self, out_w: u32, out_h: u32) -> Result<(Palette, BrushConfig, f32, f32, f32)> {
+        let palette = Palette::by_name(&self.header.palette).with_context(|| format!("stroke score: unknown palette {:?}", self.header.palette))?;
+        let sx = out_w as f32 / self.header.width.max(1) as f32;
+        let sy = out_h as f32 / self.header.height.max(1) as f32;
+        let ss = (sx * sy).sqrt();
+        let mut brush = self.header.brush;
+        brush.k_deposit /= ss;
+        brush.load_max *= ss;
+        Ok((palette, brush, sx, sy, ss))
+    }
+
+    /// Replay the score onto a fresh canvas at `out_w × out_h`. Geometry (and the brush width + load charge)
+    /// scale from the score's native size, so the same score renders at any resolution with no upscaler. At
+    /// the native size this reproduces the original paint byte-for-byte.
+    pub fn replay(&self, out_w: u32, out_h: u32) -> Result<Canvas> {
+        self.replay_filtered(out_w, out_h, |_| true)
+    }
+
 }
 
 #[cfg(test)]
@@ -256,6 +303,27 @@ mod tests {
         // Cross-resolution replay keeps the structure (well above chance); pixel-tight resolution-independence
         // (A2 to a high bar) is a later refinement of the deposit/charge scaling.
         assert!(tr > 0.65, "same score at 4× keeps structure (corr {tr})");
+    }
+
+    #[test]
+    fn stages_and_filtered_replay() {
+        let s = sample();
+        assert_eq!(s.stages(), vec!["shadow-mass".to_string(), "light-mass".to_string()], "distinct stages in order");
+        // Replaying only the light-mass stage differs from the full painting (the shadow stroke is absent).
+        let full = s.replay(64, 48).unwrap().to_image().into_raw();
+        let one = s.replay_filtered(64, 48, |r| r.stage == "light-mass").unwrap().to_image().into_raw();
+        assert_ne!(full, one, "a single-stage separation is not the whole painting");
+    }
+
+    #[test]
+    fn replay_frames_emits_progress_and_ends_finished() {
+        let s = sample();
+        let frames = s.replay_frames(64, 48, 1).unwrap();
+        // 2 strokes, every=1 → a frame after each, plus the final = 3 (with a duplicate final, fine for a reel).
+        assert!(frames.len() >= 2, "one frame per stroke + the finish");
+        let last = frames.last().unwrap().to_image().into_raw();
+        let full = s.replay(64, 48).unwrap().to_image().into_raw();
+        assert_eq!(last, full, "the final frame is the finished painting");
     }
 
     #[test]

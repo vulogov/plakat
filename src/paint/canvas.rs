@@ -18,6 +18,7 @@ use crate::paint::pigment;
 pub const GROUND_CONC: f32 = 0.25;
 
 /// A pigment canvas over a fixed palette basis.
+#[derive(Clone)]
 pub struct Canvas {
     pub w: u32,
     pub h: u32,
@@ -97,6 +98,21 @@ impl Canvas {
     /// The sRGB colour at a pixel — Kubelka-Munk mix of its concentration vector over the palette.
     pub fn color_at(&self, x: u32, y: u32) -> Srgb {
         pigment::mix(self.palette.pigments, self.conc_at(x, y))
+    }
+
+    /// A copy of the current canvas state — for timelapse frames.
+    pub fn snapshot(&self) -> Canvas {
+        self.clone()
+    }
+
+    /// The impasto height as a 16-bit grayscale image, normalised to the canvas's peak height (0 if flat).
+    pub fn height_image(&self) -> image::ImageBuffer<image::Luma<u16>, Vec<u16>> {
+        let peak = self.height.iter().copied().fold(0.0_f32, f32::max);
+        let scale = if peak > 0.0 { 65535.0 / peak } else { 0.0 };
+        image::ImageBuffer::from_fn(self.w, self.h, |x, y| {
+            let v = self.height[y as usize * self.w as usize + x as usize] * scale;
+            image::Luma([v.round().clamp(0.0, 65535.0) as u16])
+        })
     }
 
     /// Render the whole canvas to an sRGB image (no impasto relight — that is a later output stage).
