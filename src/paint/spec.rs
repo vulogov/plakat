@@ -109,6 +109,15 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
     let fine = 4.0_f32;
     let total_w: f32 = stages.iter().map(stage_weight).sum::<f32>().max(1e-3);
 
+    // The first stage is the block-in; it must COVER the canvas or the painting reads as sparse scribble. Give
+    // it at least a coverage floor — strokes ≈ canvas area / (a coarse stroke's footprint) — regardless of its
+    // weighted share, and let the remaining stages split the rest of the budget.
+    // ~grid cells at the coarse brush (grid ≈ 0.9·radius), ×1.4 so the block-in overlaps and truly covers.
+    let coverage_floor = (1.4 * (size.0 as f32 * size.1 as f32) / (coarse * coarse * 0.81)).ceil() as usize;
+    let ground_budget = coverage_floor.max(((budget as f32) * stage_weight(&stages[0]) / total_w).round() as usize);
+    let rest_budget = budget.saturating_sub(ground_budget.min(budget)).max(stages.len());
+    let rest_w: f32 = stages.iter().skip(1).map(stage_weight).sum::<f32>().max(1e-3);
+
     let passes: Vec<PassSpec> = stages
         .iter()
         .enumerate()
@@ -116,7 +125,11 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
             // Radius: geometric coarse → fine across the schedule.
             let frac = if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 };
             let radius = coarse * (fine / coarse).powf(frac);
-            let b = ((budget as f32) * stage_weight(s) / total_w).round() as usize;
+            let b = if i == 0 {
+                ground_budget
+            } else {
+                ((rest_budget as f32) * stage_weight(s) / rest_w).round() as usize
+            };
             PassSpec { radius: radius.max(fine), budget: b.max(1), stage: s.slug() }
         })
         .collect();

@@ -152,7 +152,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes }),
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -170,17 +170,22 @@ fn run_new(a: NewArgs) -> Result<()> {
 }
 
 /// Load a spec + its reference image, returning `(spec, reference, plan)`.
-fn load_spec(path: &std::path::Path, size_override: Option<&str>) -> Result<(crate::paint::spec::PaintSpec, image::RgbImage, crate::paint::PaintPlan)> {
+fn load_spec(path: &std::path::Path, size_override: Option<&str>) -> Result<(crate::paint::spec::PaintSpec, Option<image::RgbImage>, crate::paint::PaintPlan)> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut spec = crate::paint::spec::PaintSpec::parse(&text)?;
     if let Some(s) = size_override {
         spec.surface.get_or_insert_with(Default::default).size = Some(s.to_string());
     }
-    let reference = spec.reference.clone().context("PaintSpec: `reference:` image is required in P1")?;
-    // Resolve the reference relative to the spec's directory.
-    let ref_path = path.parent().map(|d| d.join(&reference)).unwrap_or_else(|| reference.clone().into());
-    let img = image::open(&ref_path).with_context(|| format!("opening reference {}", ref_path.display()))?.to_rgb8();
-    let (w, h) = img.dimensions();
+    // A reference IMAGE, if given (resolved relative to the spec's directory). Otherwise the armature is
+    // constructed from the `subject:` prose (the model as art director).
+    let img = match spec.reference.clone() {
+        Some(reference) => {
+            let ref_path = path.parent().map(|d| d.join(&reference)).unwrap_or_else(|| reference.clone().into());
+            Some(image::open(&ref_path).with_context(|| format!("opening reference {}", ref_path.display()))?.to_rgb8())
+        }
+        None => None,
+    };
+    let (w, h) = img.as_ref().map(|i| i.dimensions()).or_else(|| spec.size()).unwrap_or((1024, 1280));
     let plan = crate::paint::spec::compile(&spec, w, h)?;
     Ok((spec, img, plan))
 }
@@ -207,7 +212,7 @@ fn run_show(a: SpecFileArgs, lint_only: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_spec(a: SpecArgs) -> Result<()> {
+async fn run_spec(a: SpecArgs) -> Result<()> {
     let (spec, img, plan) = load_spec(&a.spec, a.size.as_deref())?;
     let out = a.out.clone().unwrap_or_else(|| a.spec.with_extension("").with_extension("png"));
 
@@ -223,20 +228,36 @@ fn run_spec(a: SpecArgs) -> Result<()> {
     }
     params.density = plan.medium.mark_model == MarkModel::Density;
 
-    // The reference is resized to the plan's output size so the score's geometry is at output scale.
-    let mut reference = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };
+    // Get the reference to paint from, and depth for the merge, one of two ways:
+    //   • a supplied `reference:` image → optional CPU-proxy depth (merge only with --planes), or
+    //   • the model as ART DIRECTOR: construct an armature from the `subject:` prose (SDXL render +
+    //     Depth-Anything depth), and merge with that REAL depth. GPU.
+    let (mut reference, depth, n_planes) = match img {
+        Some(img) => {
+            let r = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };
+            let depth = a.planes.filter(|&n| n > 1).map(|_| crate::paint::armature::depth_proxy(plan.size.0, plan.size.1));
+            (r, depth, a.planes.unwrap_or(1))
+        }
+        None => {
+            let subject = spec.subject.clone().filter(|s| !s.trim().is_empty()).context("PaintSpec: give a `reference:` image or a `subject:` (prose) to construct an armature")?;
+            let device = crate::device::select("auto")?;
+            println!("{}  armature: rendering \"{}\" (sdxl) + estimating depth (Depth-Anything)…", style("◆").cyan(), subject);
+            let (colour, depth) = crate::paint::armature::construct(&subject, plan.size.0, plan.size.1, "sdxl", 24, plan.seed, device).await?;
+            // Merge only when asked (--planes): the recession merge is for multi-plane compositions; on a
+            // single subject it would flatten the figure. Default paints the constructed reference directly.
+            (colour, Some(depth), a.planes.unwrap_or(1))
+        }
+    };
 
-    // The MERGE (P2): assign depth planes, apply atmospheric recession + palette unity, and paint from the
-    // merged reference. Bring-up uses a CPU depth proxy; the real per-figure SDXL armature is the GPU path.
-    if let Some(n) = a.planes.filter(|&n| n > 1) {
-        let (w, h) = reference.dimensions();
+    // The MERGE (P2): assign depth planes, apply atmospheric recession + palette unity, paint from the merged
+    // reference — so the reference already carries plane structure, recession, and palette unity.
+    if let (Some(depth), true) = (depth.as_ref(), n_planes > 1) {
         let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
-        let depth = crate::paint::armature::depth_proxy(w, h);
-        let merged = crate::paint::armature::merged_reference(&colour, &depth, &plan.palette, n, 0.55);
+        let merged = crate::paint::armature::merged_reference(&colour, depth, &plan.palette, n_planes, 0.35);
         for (i, p) in reference.pixels_mut().enumerate() {
             p.0 = merged[i];
         }
-        println!("{}  merge: {} depth planes · recession + palette unity (CPU proxy depth)", style("·").dim(), n);
+        println!("{}  merge: {} depth planes · recession + palette unity", style("·").dim(), n_planes);
     }
 
     println!(

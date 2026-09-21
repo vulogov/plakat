@@ -145,8 +145,10 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
         if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
             break;
         }
+        // Stop where the reference no longer matches this stroke's colour (Hertzmann's rule), after a minimum
+        // length so strokes read as paint, not one-step scribble.
         let here = reference.get_pixel(x as u32, y as u32).0;
-        if rgb_dist(here, color0) > 0.18 && travelled > step {
+        if rgb_dist(here, color0) > 0.18 && travelled > step * 1.5 {
             break;
         }
         pts.push([x, y]);

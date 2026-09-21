@@ -9,6 +9,36 @@
 
 use crate::paint::color::{self, Srgb};
 
+/// Construct an armature from PROSE via the model (RFC PAINT-1 §5): render the subject with SDXL, then estimate
+/// its depth with Depth-Anything. The model is the consultant that produces STRUCTURE; the stroke engine
+/// paints the surface from it. Returns the colour reference and the depth field — the channels the merge
+/// consumes. GPU. (Per-figure decomposition + segmentation/normals/saliency are refinements; this single-image
+/// construction is the prose→painting bring-up.)
+pub async fn construct(subject: &str, w: u32, h: u32, model: &str, steps: usize, seed: u64, device: candle_core::Device) -> anyhow::Result<(image::RgbImage, Vec<f32>)> {
+    use anyhow::Context;
+    let spec = crate::device::spec_of(&device).to_string();
+    let imgs = crate::api::Generate::new(model)
+        .prompt(subject)
+        .size(w, h)
+        .steps(steps)
+        .seed(seed)
+        .device(&spec)
+        .run()
+        .await
+        .with_context(|| format!("armature: rendering the subject with {model}"))?;
+    let img = imgs.into_iter().next().context("armature: the render produced no image")?;
+    let colour = image::RgbImage::from_raw(img.width(), img.height(), img.pixels().to_vec()).context("armature: render buffer size mismatch")?;
+    // Depth-Anything reads from a path.
+    let tmp = tempfile::Builder::new().prefix("plakat-armature-").suffix(".png").tempfile().context("armature scratch file")?;
+    colour.save(tmp.path()).context("armature: saving the render for depth")?;
+    let depth = crate::pipelines::depth::DepthPipeline::load(device)
+        .await
+        .context("armature: loading Depth-Anything")?
+        .depth_map(tmp.path(), colour.width(), colour.height())
+        .context("armature: depth estimation")?;
+    Ok((colour, depth))
+}
+
 /// The low-resolution structural stack. All channels share the armature resolution `w × h` (small — structure
 /// survives downsampling, detail does not).
 #[derive(Clone, Debug)]
