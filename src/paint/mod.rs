@@ -23,6 +23,7 @@ pub mod painter;
 pub mod palette;
 pub mod pigment;
 pub mod score;
+pub mod seam;
 pub mod spec;
 pub mod stroke;
 
@@ -35,5 +36,6 @@ pub use painter::{paint_from_image, traceability, PaintParams, PaintResult};
 pub use palette::Palette;
 pub use pigment::Pigment;
 pub use score::{ScoreHeader, StrokeRecord, StrokeScore};
+pub use seam::{classify_seams, extract_seams, paint_region, EdgeClass, Seam};
 pub use spec::{compile, PaintPlan, PaintSpec};
 pub use stroke::{BrushConfig, Stroke};
