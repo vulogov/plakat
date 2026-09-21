@@ -30,6 +30,7 @@ pub mod outpaint;
 pub mod persona;
 pub mod bookart;
 pub mod layers;
+pub mod paint;
 pub mod texture;
 pub mod comic;
 pub mod product;
@@ -193,6 +194,9 @@ pub enum Command {
     /// tileable albedo/normal/roughness/metallic/height/AO set. `new` scaffolds,
     /// `lint` validates, `show` resolves (generation + derivation land across later phases).
     Texture(texture::TextureArgs),
+    /// Stroke-space painting engine (RFC PAINT-1, the 7.0 flagship). P0: `from <IMAGE>` repaints an image in
+    /// stroke space (the filter-gate); `palette <NAME>` inspects a palette. Spec-driven paint lands later.
+    Paint(paint::PaintArgs),
     /// Multi-panel comic pages (RFC COMIC-1). A `ComicSpec` HJSON → a bordered page.
     /// `new` scaffolds, `lint` validates, `show` resolves the plan, `layout` composites
     /// supplied panel images (scene art + balloons land across later phases).
@@ -467,6 +471,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
             layers::run(args, device).await
         }
         Command::Texture(args) => texture::run(args).await,
+        Command::Paint(args) => paint::run(args).await,
         Command::Comic(args) => comic::run(args).await,
         Command::Product(args) => product::run(args).await,
         Command::Naturalize(args) => naturalize::run(args).await,

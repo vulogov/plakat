@@ -17,6 +17,7 @@
 pub mod canvas;
 pub mod color;
 pub mod mixer;
+pub mod painter;
 pub mod palette;
 pub mod pigment;
 pub mod stroke;
@@ -24,6 +25,7 @@ pub mod stroke;
 pub use canvas::Canvas;
 pub use color::{Lab, Srgb};
 pub use mixer::{solve_mixture, Mixture};
+pub use painter::{paint_from_image, traceability, PaintParams, PaintResult};
 pub use palette::Palette;
 pub use pigment::Pigment;
 pub use stroke::{BrushConfig, Stroke};
