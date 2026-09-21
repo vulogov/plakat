@@ -107,6 +107,9 @@ pub struct ReplayArgs {
     /// Render size `WxH` (default: the score's native size).
     #[arg(long)]
     pub size: Option<String>,
+    /// Stop after stroke N (truncation — an intermediate state of the painting).
+    #[arg(long)]
+    pub until: Option<u32>,
 }
 
 #[derive(Args, Debug)]
@@ -378,7 +381,10 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
         score.header.palette,
         score.header.medium,
     );
-    let canvas = score.replay(w, h).context("replaying the score")?;
+    let canvas = match a.until {
+        Some(n) => score.replay_filtered(w, h, |r| r.id <= n).context("replaying the score")?,
+        None => score.replay(w, h).context("replaying the score")?,
+    };
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }

@@ -17,6 +17,7 @@
 pub mod armature;
 pub mod canvas;
 pub mod color;
+pub mod detect;
 pub mod medium;
 pub mod mixer;
 pub mod painter;
@@ -30,6 +31,7 @@ pub mod stroke;
 pub use armature::{assign_planes, Armature, Planes};
 pub use canvas::Canvas;
 pub use color::{Lab, Srgb};
+pub use detect::{cutout_fraction, halo_fraction, is_cutout, is_halo};
 pub use medium::{generate_schedule, MediumProfile, Stage};
 pub use mixer::{solve_mixture, Mixture};
 pub use painter::{paint_from_image, traceability, PaintParams, PaintResult};
