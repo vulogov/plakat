@@ -19,12 +19,23 @@ use crate::paint::palette::Palette;
 use crate::paint::score::{ScoreHeader, StrokeRecord, StrokeScore};
 use crate::paint::stroke::{BrushConfig, Stroke};
 
+/// One pass of the painter: a stage painted at a brush radius with its own stroke budget. When a plan (P1.3)
+/// supplies passes, they drive the painter; otherwise the coarse→fine `brush_sizes` do.
+#[derive(Clone, Debug)]
+pub struct PassSpec {
+    pub radius: f32,
+    pub budget: usize,
+    pub stage: String,
+}
+
 /// Parameters for a paint-from-image run.
 #[derive(Clone, Debug)]
 pub struct PaintParams {
     pub palette: Palette,
     /// Total stroke budget across all layers — inviolable.
     pub budget: usize,
+    /// Explicit stage passes (from a compiled plan). `None` → derive passes from `brush_sizes`.
+    pub passes: Option<Vec<PassSpec>>,
     /// Brush radii, coarse → fine. A radius below `min_brush` is skipped.
     pub brush_sizes: Vec<f32>,
     /// The smallest brush allowed, so the finest pass still cannot chase pixel detail.
@@ -40,7 +51,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, charge: 6.0, medium: "oil-direct".into(), seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -175,17 +186,24 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
         strokes: Vec::new(),
     };
 
+    // The passes to run: an explicit plan (P1.3), else coarse→fine from brush_sizes (P0).
+    let sizes: Vec<f32> = p.brush_sizes.iter().copied().filter(|&r| r >= p.min_brush).collect();
+    let passes: Vec<PassSpec> = p.passes.clone().unwrap_or_else(|| {
+        sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { "restate".into() } }).collect()
+    });
+
     let mut placed = 0usize;
     let mut k = 0u64;
-    let sizes: Vec<f32> = p.brush_sizes.iter().copied().filter(|&r| r >= p.min_brush).collect();
-    for (layer, &radius) in sizes.iter().enumerate() {
-        // The coarsest layer is a block-in: it covers the whole canvas so no white ground survives. Later
-        // layers only restate where the canvas is still wrong.
+    for (layer, pass) in passes.iter().enumerate() {
+        let radius = pass.radius.max(p.min_brush);
+        // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
+        // only restate where the canvas is still wrong.
         let block_in = layer == 0;
         if placed >= p.budget {
             break;
         }
-        // The reference this layer paints from is blurred ∝ the brush — a coarse brush has no detail to trace.
+        let mut in_pass = 0usize;
+        // The reference this pass paints from is blurred ∝ the brush — a coarse brush has no detail to trace.
         let reference = imageops::blur(input, radius * 0.7);
         let luma = luma_map(&reference);
         let (gx, gy) = sobel(&luma, w, h);
@@ -195,7 +213,7 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
         let rows = ((h as f32) / grid).ceil() as u32;
         for gyi in 0..rows {
             for gxi in 0..cols {
-                if placed >= p.budget {
+                if placed >= p.budget || in_pass >= pass.budget {
                     break;
                 }
                 k += 1;
@@ -219,10 +237,11 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 placed += 1;
+                in_pass += 1;
                 score.strokes.push(StrokeRecord {
                     id: placed as u32,
                     wipe: false,
-                    stage: if block_in { "block-in".into() } else { "restate".into() },
+                    stage: pass.stage.clone(),
                     spline: s.path,
                     w0: s.width0,
                     w1: s.width1,

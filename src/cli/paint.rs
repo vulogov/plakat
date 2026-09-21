@@ -13,18 +13,53 @@ use crate::paint::palette::{self, Palette};
 
 #[derive(Args, Debug)]
 pub struct PaintArgs {
+    /// A PaintSpec to paint (when no subcommand is given): `plakat paint <SPEC>`.
+    pub spec: Option<PathBuf>,
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// Override the output size `WxH`.
+    #[arg(long)]
+    pub size: Option<String>,
+    /// Also print the traceability.
+    #[arg(long)]
+    pub report: bool,
     #[command(subcommand)]
-    pub cmd: PaintCmd,
+    pub cmd: Option<PaintCmd>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum PaintCmd {
+    /// Scaffold a PaintSpec.
+    New(NewArgs),
+    /// Show a spec's compiled plan: stages, brush radii, per-stage budget.
+    Show(SpecFileArgs),
+    /// Validate a spec (medium executable, palette known, reference present).
+    Lint(SpecFileArgs),
     /// Repaint an existing image in stroke space (P0 — the filter-gate). Writes the image + its stroke score.
     From(FromArgs),
     /// Re-render a stroke score to an image at any size (no GPU).
     Replay(ReplayArgs),
     /// Inspect a built-in palette's pigments.
     Palette(PaletteArgs),
+}
+
+/// The resolved arguments for painting a spec (from the top-level positional form).
+pub struct SpecArgs {
+    pub spec: PathBuf,
+    pub out: Option<PathBuf>,
+    pub size: Option<String>,
+    pub report: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct NewArgs {
+    #[arg(default_value = "painting.paint.hjson")]
+    pub out: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct SpecFileArgs {
+    pub spec: PathBuf,
 }
 
 #[derive(Args, Debug)]
@@ -72,10 +107,117 @@ pub struct PaletteArgs {
 
 pub async fn run(args: PaintArgs) -> Result<()> {
     match args.cmd {
-        PaintCmd::From(a) => run_from(a),
-        PaintCmd::Replay(a) => run_replay(a),
-        PaintCmd::Palette(a) => run_palette(a),
+        Some(PaintCmd::New(a)) => run_new(a),
+        Some(PaintCmd::Show(a)) => run_show(a, false),
+        Some(PaintCmd::Lint(a)) => run_show(a, true),
+        Some(PaintCmd::From(a)) => run_from(a),
+        Some(PaintCmd::Replay(a)) => run_replay(a),
+        Some(PaintCmd::Palette(a)) => run_palette(a),
+        None => match args.spec {
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report }),
+            None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
+        },
     }
+}
+
+const SCAFFOLD: &str = "{\n  paint: {\n    version: 1\n    // P1 paints from a reference image (the prose subject + armature land in P2).\n    reference: \"input.png\"\n    medium: oil-direct        // oil-direct | gouache\n    palette: zorn             // zorn | split-primary | verdaccio | earth | limited-landscape | sumi\n    surface: { size: \"1024x1280\" }\n    budget: { strokes: 1500 }\n    seed: 42\n  }\n}\n";
+
+fn run_new(a: NewArgs) -> Result<()> {
+    if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&a.out, SCAFFOLD).with_context(|| format!("writing {}", a.out.display()))?;
+    println!("{}  scaffolded a PaintSpec → {}", style("✓").green(), a.out.display());
+    Ok(())
+}
+
+/// Load a spec + its reference image, returning `(spec, reference, plan)`.
+fn load_spec(path: &std::path::Path, size_override: Option<&str>) -> Result<(crate::paint::spec::PaintSpec, image::RgbImage, crate::paint::PaintPlan)> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut spec = crate::paint::spec::PaintSpec::parse(&text)?;
+    if let Some(s) = size_override {
+        spec.surface.get_or_insert_with(Default::default).size = Some(s.to_string());
+    }
+    let reference = spec.reference.clone().context("PaintSpec: `reference:` image is required in P1")?;
+    // Resolve the reference relative to the spec's directory.
+    let ref_path = path.parent().map(|d| d.join(&reference)).unwrap_or_else(|| reference.clone().into());
+    let img = image::open(&ref_path).with_context(|| format!("opening reference {}", ref_path.display()))?.to_rgb8();
+    let (w, h) = img.dimensions();
+    let plan = crate::paint::spec::compile(&spec, w, h)?;
+    Ok((spec, img, plan))
+}
+
+fn run_show(a: SpecFileArgs, lint_only: bool) -> Result<()> {
+    let (_, _, plan) = load_spec(&a.spec, None)?;
+    println!(
+        "{}  {}  ·  medium {}  ·  palette {}  ·  {}×{}  ·  budget {}  ·  {} stages",
+        style("◆").cyan(),
+        a.spec.display(),
+        plan.medium.name,
+        plan.palette.name,
+        plan.size.0,
+        plan.size.1,
+        plan.budget,
+        plan.stages.len(),
+    );
+    for pass in &plan.passes {
+        println!("    {:<14} brush {:>5.1}px   budget {}", pass.stage, pass.radius, pass.budget);
+    }
+    if lint_only {
+        println!("{}  spec is valid", style("✓").green());
+    }
+    Ok(())
+}
+
+fn run_spec(a: SpecArgs) -> Result<()> {
+    let (spec, img, plan) = load_spec(&a.spec, a.size.as_deref())?;
+    let out = a.out.clone().unwrap_or_else(|| a.spec.with_extension("").with_extension("png"));
+
+    let mut params = PaintParams::new(plan.palette, plan.budget);
+    params.passes = Some(plan.passes.clone());
+    params.medium = plan.medium.name.to_string();
+    params.seed = plan.seed;
+    params.brush.k_pickup = plan.medium.pickup; // the medium's pickup drives the dirty brush
+
+    // The reference is resized to the plan's output size so the score's geometry is at output scale.
+    let reference = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };
+
+    println!(
+        "{}  paint {} → {}  ({}×{} · {} · {} · budget {} · {} stages)",
+        style("◆").cyan(),
+        a.spec.display(),
+        out.display(),
+        plan.size.0,
+        plan.size.1,
+        plan.medium.name,
+        plan.palette.name,
+        plan.budget,
+        plan.stages.len(),
+    );
+
+    let result = painter::paint_from_image(&reference, &params);
+    let image_out = result.canvas.to_image();
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).ok();
+    }
+    image_out.save(&out).with_context(|| format!("writing {}", out.display()))?;
+    let score_path = out.with_extension("strokes");
+    std::fs::write(&score_path, result.score.to_text()).with_context(|| format!("writing {}", score_path.display()))?;
+    // Sidecar recipe (§11.5).
+    let sidecar = out.with_extension("json");
+    let subject = spec.subject.clone().unwrap_or_default();
+    let recipe = format!(
+        "{{\n  \"medium\": \"{}\",\n  \"palette\": \"{}\",\n  \"size\": \"{}x{}\",\n  \"budget\": {},\n  \"strokes\": {},\n  \"seed\": {},\n  \"subject\": {}\n}}\n",
+        plan.medium.name, plan.palette.name, plan.size.0, plan.size.1, plan.budget, result.strokes, plan.seed, serde_json::to_string(&subject).unwrap_or_else(|_| "\"\"".into()),
+    );
+    std::fs::write(&sidecar, recipe).ok();
+
+    println!("{}  {} strokes → {}  ·  score → {}  ·  recipe → {}", style("✓").green(), result.strokes, out.display(), score_path.display(), sidecar.display());
+    if a.report {
+        let tr = painter::traceability(&image_out, &reference);
+        println!("{}  traceability {:.3}", style("·").dim(), tr);
+    }
+    Ok(())
 }
 
 fn run_replay(a: ReplayArgs) -> Result<()> {

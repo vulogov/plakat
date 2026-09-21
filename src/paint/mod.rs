@@ -22,6 +22,7 @@ pub mod painter;
 pub mod palette;
 pub mod pigment;
 pub mod score;
+pub mod spec;
 pub mod stroke;
 
 pub use canvas::Canvas;
@@ -32,4 +33,5 @@ pub use painter::{paint_from_image, traceability, PaintParams, PaintResult};
 pub use palette::Palette;
 pub use pigment::Pigment;
 pub use score::{ScoreHeader, StrokeRecord, StrokeScore};
+pub use spec::{compile, PaintPlan, PaintSpec};
 pub use stroke::{BrushConfig, Stroke};
