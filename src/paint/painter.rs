@@ -78,6 +78,8 @@ pub struct PaintResult {
     pub strokes: usize,
     /// The replayable stroke score — the canonical artifact.
     pub score: StrokeScore,
+    /// Stages the critic rejected (rolled back) — empty without a critic.
+    pub rejected: Vec<String>,
 }
 
 fn luma_map(img: &RgbImage) -> Vec<f32> {
@@ -198,8 +200,25 @@ fn coarsen(img: &RgbImage, side: u32) -> RgbImage {
     imageops::resize(&small, w, h, imageops::FilterType::Triangle)
 }
 
-/// Paint a reference image under the PAINT-1 constraints, returning the canvas and the stroke count.
+/// A pass-level CRITIC (RFC PAINT-1 §10.1): scores a rendered canvas so the painter can accept or reject a
+/// whole PASS. Injected as a closure so the loop logic is testable offline (the aesthetic/CLIP scorer is wired
+/// by the CLI). Higher is better.
+pub type PassCritic<'a> = dyn Fn(&RgbImage) -> f32 + 'a;
+
+/// Paint a reference image under the PAINT-1 constraints. See [`paint_critiqued`] for the pass-level critic.
 pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
+    paint_inner(input, p, None, 0.0)
+}
+
+/// Paint with a pass-level CRITIC (§10.1): after each stage pass the canvas is scored; a pass that does not
+/// improve the score by at least `margin` is REJECTED (the canvas + score are rolled back) and its stage
+/// recorded as tabu, so the loop never keeps a configuration that made the painting worse. Pass-level only —
+/// per-stroke scoring is prohibitively expensive and rejected outright (§10.1, N4).
+pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, margin: f32) -> PaintResult {
+    paint_inner(input, p, Some(critic), margin)
+}
+
+fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32) -> PaintResult {
     let (w, h) = (input.width(), input.height());
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
     // canvas stays full size; only the thing being painted FROM is coarsened.
@@ -244,6 +263,7 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
 
     let mut placed = 0usize;
     let mut k = 0u64;
+    let mut rejected: Vec<String> = Vec::new();
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
         // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
@@ -253,6 +273,8 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
             break;
         }
         let mut in_pass = 0usize;
+        // Critic: snapshot the canvas + score BEFORE the pass, so a pass that hurts can be rolled back.
+        let snapshot = critic.map(|c| (canvas.clone(), score.strokes.len(), placed, c(&canvas.to_image())));
         // The reference this pass paints from is blurred ∝ the brush — a coarse brush has no detail to trace.
         let reference = imageops::blur(input, radius * 0.7);
         let luma = luma_map(&reference);
@@ -321,8 +343,23 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
                 });
             }
         }
+
+        // Critic verdict: if the pass didn't improve the score by `margin`, ROLL BACK the canvas + score and
+        // record the stage as tabu (§10.1). The block-in is never rejected — the canvas must be covered.
+        if let (Some(c), Some((snap_canvas, snap_len, snap_placed, before))) = (critic, snapshot) {
+            let after = c(&canvas.to_image());
+            if !block_in && after < before + margin {
+                canvas = snap_canvas;
+                score.strokes.truncate(snap_len);
+                placed = snap_placed;
+                rejected.push(pass.stage.clone());
+            }
+        }
     }
-    PaintResult { canvas, strokes: placed, score }
+    if !rejected.is_empty() {
+        tracing::info!(target: "plakat", "paint critic: rejected {} pass(es): {}", rejected.len(), rejected.join(", "));
+    }
+    PaintResult { canvas, strokes: placed, score, rejected }
 }
 
 /// The density mark model (§8.6): at a cell, lay black hatch marks whose count scales with the target
@@ -479,6 +516,21 @@ mod tests {
         let dark = patch_mean(2, 18);
         let light = patch_mean(62, 78);
         assert!(dark < light - 15.0, "hatch density darkens the dark side more ({dark:.0} vs {light:.0})");
+    }
+
+    #[test]
+    fn critic_rejects_passes_that_dont_improve() {
+        let img = gradient_img(48, 48);
+        let mut p = PaintParams::new(palette::EARTH, 300);
+        p.brush_sizes = vec![16.0, 8.0, 4.0]; // → passes: block-in, restate, restate
+        // A FLAT critic: no pass ever improves the score, so every non-block-in pass is rolled back.
+        let flat = |_img: &RgbImage| 0.5f32;
+        let r = paint_critiqued(&img, &p, &flat, 0.01);
+        assert_eq!(r.rejected.len(), 2, "the two restate passes rejected; the block-in is never rejected");
+        // An IMPROVING critic (rewards coverage): passes are kept.
+        let rewarding = |img: &RgbImage| img.pixels().map(|px| 255 - px.0[0] as i32).sum::<i32>() as f32;
+        let r2 = paint_critiqued(&img, &p, &rewarding, 0.0);
+        assert!(r2.rejected.len() < 2, "passes that improve the score are kept ({} rejected)", r2.rejected.len());
     }
 
     #[test]

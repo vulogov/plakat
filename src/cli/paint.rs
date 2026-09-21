@@ -27,6 +27,10 @@ pub struct PaintArgs {
     /// for bring-up; the real per-figure armature is the GPU path. Default off (single plane).
     #[arg(long)]
     pub planes: Option<u32>,
+    /// Pass-level CRITIC (§10.1): score each stage pass with the aesthetic predictor and roll back any pass
+    /// that makes the painting worse. GPU.
+    #[arg(long)]
+    pub critic: bool,
     #[command(subcommand)]
     pub cmd: Option<PaintCmd>,
 }
@@ -85,6 +89,7 @@ pub struct SpecArgs {
     pub size: Option<String>,
     pub report: bool,
     pub planes: Option<u32>,
+    pub critic: bool,
 }
 
 #[derive(Args, Debug)]
@@ -155,7 +160,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -334,7 +339,24 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         params.ground = Some([(mean[0] as u16 * 6 / 10 + 40) as u8, (mean[1] as u16 * 6 / 10 + 40) as u8, (mean[2] as u16 * 6 / 10 + 40) as u8]);
     }
 
-    let result = painter::paint_from_image(&reference, &params);
+    let result = if a.critic {
+        let device = crate::device::select("auto")?;
+        let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device).await.context("loading the aesthetic critic")?;
+        let tmp = tempfile::Builder::new().prefix("plakat-paint-critic-").tempdir().context("critic scratch dir")?;
+        let tmp_path = tmp.path().join("pass.png");
+        let score_fn = |img: &image::RgbImage| -> f32 {
+            img.save(&tmp_path).ok();
+            scorer.score_path(&tmp_path).unwrap_or(0.0)
+        };
+        println!("{}  critic: aesthetic pass accept/reject", style("◆").cyan());
+        let r = painter::paint_critiqued(&reference, &params, &score_fn, 0.0);
+        if !r.rejected.is_empty() {
+            println!("{}  critic rolled back {} pass(es): {}", style("·").dim(), r.rejected.len(), r.rejected.join(", "));
+        }
+        r
+    } else {
+        painter::paint_from_image(&reference, &params)
+    };
     // Output at the requested size — replay the score up from the working canvas (resolution-independent).
     let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image() } else { result.canvas.to_image() };
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
