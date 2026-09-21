@@ -14,6 +14,7 @@
 //! painter over an input image, and the halo/cutout/traceability detectors that decide whether the thesis
 //! holds.
 
+pub mod armature;
 pub mod canvas;
 pub mod color;
 pub mod medium;
@@ -25,6 +26,7 @@ pub mod score;
 pub mod spec;
 pub mod stroke;
 
+pub use armature::{assign_planes, Armature, Planes};
 pub use canvas::Canvas;
 pub use color::{Lab, Srgb};
 pub use medium::{generate_schedule, MediumProfile, Stage};
