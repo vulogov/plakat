@@ -71,6 +71,10 @@ pub mod persona;
 pub mod bookart;
 /// 6.33 flagship (RFC LAYERED-1): `plakat layers` — plan-guided layered generation.
 pub mod layered;
+/// 7.0 flagship (RFC PAINT-1): `plakat paint` — a stroke-space painting engine. The model produces a
+/// low-resolution structural armature; a deterministic, weight-free stroke engine paints the full-resolution
+/// image from it in a declared medium. Everything below the armature merge is pure + GPU-free.
+pub mod paint;
 /// v6.3 flagship: `plakat texture` — seamless PBR material synthesis (RFC TEXTURE-1). Always compiled
 /// (the deterministic front half + derivation are weight-free).
 pub mod texture;
