@@ -23,6 +23,10 @@ pub struct PaintArgs {
     /// Also print the traceability.
     #[arg(long)]
     pub report: bool,
+    /// Apply the merge with N depth planes (recession + palette unity) before painting. Uses a CPU depth proxy
+    /// for bring-up; the real per-figure armature is the GPU path. Default off (single plane).
+    #[arg(long)]
+    pub planes: Option<u32>,
     #[command(subcommand)]
     pub cmd: Option<PaintCmd>,
 }
@@ -80,6 +84,7 @@ pub struct SpecArgs {
     pub out: Option<PathBuf>,
     pub size: Option<String>,
     pub report: bool,
+    pub planes: Option<u32>,
 }
 
 #[derive(Args, Debug)]
@@ -147,7 +152,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report }),
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes }),
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -219,7 +224,20 @@ fn run_spec(a: SpecArgs) -> Result<()> {
     params.density = plan.medium.mark_model == MarkModel::Density;
 
     // The reference is resized to the plan's output size so the score's geometry is at output scale.
-    let reference = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };
+    let mut reference = if img.dimensions() == plan.size { img } else { image::imageops::resize(&img, plan.size.0, plan.size.1, image::imageops::FilterType::Triangle) };
+
+    // The MERGE (P2): assign depth planes, apply atmospheric recession + palette unity, and paint from the
+    // merged reference. Bring-up uses a CPU depth proxy; the real per-figure SDXL armature is the GPU path.
+    if let Some(n) = a.planes.filter(|&n| n > 1) {
+        let (w, h) = reference.dimensions();
+        let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
+        let depth = crate::paint::armature::depth_proxy(w, h);
+        let merged = crate::paint::armature::merged_reference(&colour, &depth, &plan.palette, n, 0.55);
+        for (i, p) in reference.pixels_mut().enumerate() {
+            p.0 = merged[i];
+        }
+        println!("{}  merge: {} depth planes · recession + palette unity (CPU proxy depth)", style("·").dim(), n);
+    }
 
     println!(
         "{}  paint {} → {}  ({}×{} · {} · {} · budget {} · {} stages)",

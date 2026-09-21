@@ -160,6 +160,42 @@ pub fn value_from_colour(colour: &[Srgb]) -> Vec<f32> {
     colour.iter().map(|&c| color::linear_luma(color::srgb_to_linear(c))).collect()
 }
 
+/// Scale a colour to a target luma while keeping its hue (linear-RGB gain toward the target value).
+fn revalue(c: Srgb, target: f32) -> Srgb {
+    let lin = color::srgb_to_linear(c);
+    let l = color::linear_luma(lin).max(1e-4);
+    let g = (target / l).clamp(0.0, 4.0);
+    color::linear_to_srgb([lin[0] * g, lin[1] * g, lin[2] * g])
+}
+
+/// A crude, GPU-free monocular depth PROXY for bring-up: nearer = more central and lower in the frame (a
+/// standing-subject / ground-plane prior). The real armature uses a depth estimator; this lets the merge run
+/// on CPU. Returns `[0,1]`, larger = closer.
+pub fn depth_proxy(w: u32, h: u32) -> Vec<f32> {
+    let mut d = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let cx = (x as f32 / w as f32 - 0.5) * 2.0; // −1..1
+            let cy = y as f32 / h as f32; // 0 top … 1 bottom
+            let central = 1.0 - cx.abs(); // central → near
+            let low = cy; // lower → near
+            d.push((0.45 * central + 0.55 * low).clamp(0.0, 1.0));
+        }
+    }
+    d
+}
+
+/// Compose the merge into a paintable REFERENCE (RFC PAINT-1 §5.5): assign planes from `depth`, apply
+/// atmospheric recession to the value, quantise the colour to the palette, and recombine — so the reference
+/// the painter works from already carries plane structure, recession, and palette unity. Returns an sRGB field.
+pub fn merged_reference(colour: &[Srgb], depth: &[f32], palette: &crate::paint::palette::Palette, n_planes: u32, far_compression: f32) -> Vec<Srgb> {
+    let planes = assign_planes(depth, n_planes);
+    let mut value = value_from_colour(colour);
+    apply_recession(&mut value, &planes, far_compression);
+    let quant = quantise_to_palette(colour, palette);
+    quant.iter().zip(value.iter()).map(|(&c, &v)| revalue(c, v)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +250,29 @@ mod tests {
         // Near plane (index 0) is essentially untouched.
         let near: Vec<f32> = value.iter().enumerate().filter(|(i, _)| planes.plane[*i] == 0).map(|(_, &v)| v).collect();
         assert!((near[0] - 0.4).abs() < 0.02 && (near[1] - 0.6).abs() < 0.02, "near plane kept its range");
+    }
+
+    #[test]
+    fn merged_reference_applies_recession_and_palette() {
+        // Two vertical planes via the proxy? Use explicit depth: top row far, bottom row near.
+        let w = 4;
+        let h = 2;
+        // Colours: high-contrast pair on each row.
+        let colour = vec![[10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240]];
+        let depth = vec![0.1, 0.1, 0.1, 0.1, 0.9, 0.9, 0.9, 0.9]; // top far, bottom near
+        let merged = merged_reference(&colour, &depth, &palette::EARTH, 2, 0.8);
+        let val = value_from_colour(&merged);
+        // Far (top) plane's value contrast is compressed vs the near (bottom) plane's.
+        let far_range = (val[1] - val[0]).abs();
+        let near_range = (val[5] - val[4]).abs();
+        assert!(far_range < near_range, "recession compresses the far plane ({far_range} < {near_range})");
+    }
+
+    #[test]
+    fn depth_proxy_is_nearer_low_and_central() {
+        let d = depth_proxy(3, 3);
+        // Bottom-centre is nearer than top-corner.
+        assert!(d[3 * 2 + 1] > d[0], "bottom-centre nearer than top-left");
     }
 
     #[test]
