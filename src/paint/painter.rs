@@ -60,6 +60,10 @@ pub struct PaintParams {
     /// NEGATIVE PAINTING (§8.7): a protect mask (`w*h`, true = leave unpainted) — strokes are not seeded inside
     /// it, so a shape is DEFINED by painting the space around it. Generalises the `reserve`. `None` = paint all.
     pub protect: Option<Vec<bool>>,
+    /// FOCAL HARD-EDGE (§7.4): a region mask (`w*h`, true = subject) — a stroke's growth TERMINATES when it
+    /// crosses the subject/background boundary, so the subject stays crisp against the ground instead of
+    /// smearing across the seam. `None` = strokes cross freely (soft everywhere).
+    pub region_mask: Option<Vec<bool>>,
     pub seed: u64,
     pub brush: BrushConfig,
 }
@@ -67,7 +71,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, seed: 42, brush: BrushConfig::default() }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default() }
     }
 }
 
@@ -135,7 +139,7 @@ fn rgb_dist(a: Srgb, b: Srgb) -> f32 {
 
 /// Grow a stroke in ONE direction (`sign` = +1 forward, −1 backward) from the seed along the orientation
 /// field, ending when the reference colour drifts too far from the stroke's colour or the half-length cap hits.
-fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>) -> Vec<[f32; 2]> {
+fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>) -> Vec<[f32; 2]> {
     let (w, h) = (reference.width(), reference.height());
     let max_len = (radius * 2.5).max(radius + 1.0);
     let step = (radius * 0.6).max(1.0);
@@ -149,6 +153,13 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
         // Negative painting: the stroke terminates at the protected shape's edge (paint AROUND it).
         if let Some(m) = protect {
             if m.get(i).copied().unwrap_or(false) {
+                break;
+            }
+        }
+        // Focal hard-edge: the stroke terminates when it leaves its seed's region (subject vs ground), keeping
+        // the silhouette crisp.
+        if let Some((mask, seed_region)) = region {
+            if travelled > 0.0 && mask.get(i).copied().unwrap_or(seed_region) != seed_region {
                 break;
             }
         }
@@ -178,10 +189,10 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
 
 /// Grow a stroke through the seed in BOTH directions (Hertzmann), so a seed mid-feature paints the whole
 /// isophote it sits on, not just the half below it.
-fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>) -> Vec<[f32; 2]> {
-    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0, protect);
+fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>) -> Vec<[f32; 2]> {
+    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0, protect, region);
     back.reverse();
-    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0, protect);
+    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0, protect, region);
     back.push([x0, y0]);
     back.extend(fwd);
     back
@@ -323,7 +334,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     continue;
                 }
                 let load = mixture_for(target, &p.palette, p.charge);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, p.protect.as_deref());
+                // The seed's region (subject/ground) for the focal hard-edge — the stroke stays in it.
+                let region = p.region_mask.as_deref().map(|m| (m, m.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false)));
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, p.protect.as_deref(), region);
                 let s = Stroke { path, width0: radius, width1: (radius * 0.6).max(p.min_brush * 0.6), load, pressure: 1.0, wetness: 1.0 };
                 s.rasterize(&mut canvas, &p.brush);
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
@@ -532,6 +545,23 @@ mod tests {
         let rewarding = |img: &RgbImage| img.pixels().map(|px| 255 - px.0[0] as i32).sum::<i32>() as f32;
         let r2 = paint_critiqued(&img, &p, &rewarding, 0.0);
         assert!(r2.rejected.len() < 2, "passes that improve the score are kept ({} rejected)", r2.rejected.len());
+    }
+
+    #[test]
+    fn focal_edge_paints_with_a_region_mask() {
+        // Plumbing: painting with a region mask (subject vs ground) completes and lays strokes; the growth
+        // termination is the same machinery as the tested `protect`.
+        let img = gradient_img(60, 60);
+        let mut p = PaintParams::new(palette::EARTH, 500);
+        p.brush_sizes = vec![10.0];
+        let mut mask = vec![false; 60 * 60];
+        for y in 0..60 {
+            for x in 0..30 {
+                mask[y * 60 + x] = true; // left half = subject
+            }
+        }
+        p.region_mask = Some(mask);
+        assert!(paint_from_image(&img, &p).strokes > 0, "paints with a region mask");
     }
 
     #[test]

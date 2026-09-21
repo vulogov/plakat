@@ -35,6 +35,10 @@ pub struct PaintArgs {
     /// masses read solid (sharper subject). Opt-in.
     #[arg(long)]
     pub families: bool,
+    /// FOCAL HARD-EDGE (§7.4): matte the subject (U2Net) and terminate strokes at its silhouette, so the
+    /// subject stays crisp against the ground instead of smearing across it. GPU.
+    #[arg(long)]
+    pub crisp: bool,
     #[command(subcommand)]
     pub cmd: Option<PaintCmd>,
 }
@@ -95,6 +99,7 @@ pub struct SpecArgs {
     pub planes: Option<u32>,
     pub critic: bool,
     pub families: bool,
+    pub crisp: bool,
 }
 
 #[derive(Args, Debug)]
@@ -165,7 +170,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -347,6 +352,23 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // (near-white) so light passages read as painted, not stark paper, without flattening the mid-tones.
     if plan.medium.opacity == crate::paint::medium::Opacity::Opaque {
         params.ground = Some([236, 230, 220]);
+    }
+
+    // FOCAL HARD-EDGE (§7.4): matte the subject and terminate strokes at its silhouette, so it stays crisp.
+    if a.crisp {
+        let device = crate::device::select("auto")?;
+        let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading U2Net for --crisp")?;
+        let alpha = matter.matte(&reference).context("matting the subject")?;
+        let mask: Vec<bool> = alpha.pixels().map(|p| p.0[0] > 128).collect();
+        let total = mask.len().max(1);
+        let covered = mask.iter().filter(|&&b| b).count();
+        // Only use it if the matte actually found a subject (not everything / nothing).
+        if covered > total / 50 && covered < total * 49 / 50 {
+            params.region_mask = Some(mask);
+            println!("{}  focal hard-edge: subject matted ({}% of the frame)", style("·").dim(), covered * 100 / total);
+        } else {
+            println!("{}  focal hard-edge: no clear subject matted — skipping", style("·").dim());
+        }
     }
 
     let result = if a.critic {
