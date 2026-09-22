@@ -460,6 +460,15 @@ pub struct FromArgs {
     /// face automatically (no need for --preserve-face). Must be larger than --armature.
     #[arg(long)]
     pub armature_face: Option<u32>,
+    /// SUBJECT-BODY armature resolution (px, RFC §5.2 multi-region): with `--armature`, paint the matted SUBJECT
+    /// body from a MID armature (this size) — background coarsest, body mid, face fine. Runs U2Net to matte the
+    /// subject. Between --armature and --armature-face.
+    #[arg(long)]
+    pub armature_body: Option<u32>,
+    /// AERIAL PERSPECTIVE via the subject matte (0..1): veil the BACKGROUND so the subject advances. Uses the
+    /// U2Net matte (run for --armature-body), not the CPU depth proxy that `--haze` uses.
+    #[arg(long)]
+    pub recede: Option<f32>,
     /// PAINTING PLAN (RFC §5): `auto` analyses the image (art director) and fills the structural decisions
     /// (armature, focal armature, value-key, reserve, budget, medium, palette) that unset flags leave open; or a
     /// path to a `plan.hjson` (from `plakat paint plan`) to paint from a saved/edited plan. Explicit flags win.
@@ -1091,6 +1100,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.armature_face.is_none() {
             a.armature_face = plan.armature_face;
         }
+        if a.armature_body.is_none() {
+            a.armature_body = plan.armature_body;
+        }
+        if a.recede.is_none() && plan.recede > 0.0 {
+            a.recede = Some(plan.recede);
+        }
         if a.value_key.is_none() {
             a.value_key = Some(plan.value_key);
         }
@@ -1230,6 +1245,29 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.face_mask = build_face_mask(&a.input, w, h).await?;
         if params.face_mask.is_none() {
             println!("{}  face: none detected — painting without a face focal region", style("·").yellow());
+        }
+    }
+    // MULTI-REGION armature (RFC §5.2): matte the SUBJECT (U2Net) so the body paints from a mid armature and the
+    // background from the coarsest — plus optional aerial recession of the (matted) background.
+    params.armature_body_side = a.armature_body;
+    if a.armature_body.is_some() || a.recede.is_some() {
+        let device = crate::device::select("auto")?;
+        let matter = crate::pipelines::matting::Matter::load(&device).await.context("loading U2Net for the subject matte")?;
+        let alpha = matter.matte(&img).context("matting the subject")?;
+        let mask: Vec<f32> = alpha.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+        let covered = mask.iter().filter(|&&m| m > 0.5).count();
+        let total = mask.len().max(1);
+        if covered > total / 50 && covered < total * 49 / 50 {
+            println!("{}  subject matte: {}% foreground → three-tier armature", style("·").dim(), covered * 100 / total);
+            if let Some(r) = a.recede.filter(|&r| r > 0.0) {
+                // The matte IS the depth here: subject near (advances), background far (recedes/veils).
+                params.depth = Some(mask.clone());
+                params.haze = r.clamp(0.0, 1.0);
+            }
+            params.subject_mask = Some(mask);
+        } else {
+            println!("{}  subject matte: no clear subject — skipping the body tier", style("·").yellow());
+            params.armature_body_side = None;
         }
     }
     if a.haze > 0.0 {

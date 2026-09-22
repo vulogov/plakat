@@ -45,6 +45,23 @@ plakat paint from photo.png --medium watercolour --palette image \
   the crisp *detail tier* inside the face).
 - No face detected → falls back to the uniform coarse armature.
 
+## `--armature-body <px>` + `--recede` — the three‑tier (multi‑region) armature
+
+The face‑vs‑rest split is two tiers. A portrait wants **three**: a *coarsest* background, a *mid* subject body,
+and a *fine* face. `--armature-body` mattes the subject (U2Net) and paints the body from a mid armature, so the
+background settles to the calmest washes / paper while the body keeps a little more structure than the sky.
+`--recede` then veils the (matted) **background** so the subject advances — aerial perspective from the matte,
+no depth model needed.
+
+```bash
+plakat paint from photo.png --medium watercolour --palette image \
+    --armature 44 --armature-body 104 --armature-face 200 --recede 0.28 ...
+```
+
+`--plan auto` sets all three tiers + recession automatically when it detects a subject. Ordering:
+`--armature` (background) < `--armature-body` (body) < `--armature-face` (face). More semantic tiers
+(hair/skin/clothing via OWL‑ViT/SAM) plug into the same blend as further regions.
+
 ---
 
 ## The painting plan — analyze once, paint deterministically

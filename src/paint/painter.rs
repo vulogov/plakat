@@ -98,6 +98,12 @@ pub struct PaintParams {
     /// armature (this size) than the rest of the canvas (`armature_side`), so the beard/background become washes
     /// while the face stays crisp — variable-resolution structure in one pass. `None` = uniform armature.
     pub armature_face_side: Option<u32>,
+    /// SUBJECT-BODY armature resolution (RFC §5.2, multi-region): a MID resolution for the subject body (between
+    /// the background `armature_side` and the face `armature_face_side`), applied where `subject_mask` is set.
+    /// Gives a three-tier armature — background coarsest, body mid, face fine.
+    pub armature_body_side: Option<u32>,
+    /// The subject (foreground) 0..1 mask for `armature_body_side` — from a matte model (U2Net). Row-major, canvas-sized.
+    pub subject_mask: Option<Vec<f32>>,
     /// Charge multiplier for a stroke's load (how much paint the brush holds vs its footprint).
     pub charge: f32,
     /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
@@ -206,7 +212,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
     }
 }
 
@@ -569,16 +575,23 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let armature_owned;
     let input: &RgbImage = match p.armature_side.filter(|&s| s > 0) {
         Some(s) => {
-            let coarse = coarsen(input, s);
-            // FOCAL armature (RFC §5.2): build the FACE from a finer armature than the rest, blended by the face
-            // mask — a wash beard/background AND a crisp face in one pass. Falls back to a uniform coarse armature.
-            armature_owned = match (&p.face_mask, p.armature_face_side) {
-                (Some(mask), Some(fs)) if mask.len() == (w * h) as usize && fs > s => {
-                    let fine = coarsen(input, fs);
-                    blend_by_mask(&coarse, &fine, mask, w, h)
+            // MULTI-REGION armature (RFC §5.2): coarsest background, mid subject body, fine face — each region
+            // painted from its own armature resolution, blended by the region masks. Falls back to uniform coarse.
+            let mut arm = coarsen(input, s);
+            let px = (w * h) as usize;
+            if let (Some(mask), Some(bs)) = (&p.subject_mask, p.armature_body_side) {
+                if mask.len() == px && bs > s {
+                    let body = coarsen(input, bs);
+                    arm = blend_by_mask(&arm, &body, mask, w, h);
                 }
-                _ => coarse,
-            };
+            }
+            if let (Some(mask), Some(fs)) = (&p.face_mask, p.armature_face_side) {
+                if mask.len() == px && fs > s {
+                    let fine = coarsen(input, fs);
+                    arm = blend_by_mask(&arm, &fine, mask, w, h);
+                }
+            }
+            armature_owned = arm;
             &armature_owned
         }
         None => input,

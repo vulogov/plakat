@@ -27,6 +27,13 @@ pub struct PaintPlan {
     /// FINE focal (face) armature resolution (px), or `null` for a uniform armature (RFC §5.2).
     #[serde(default)]
     pub armature_face: Option<u32>,
+    /// MID subject-body armature resolution (px) — the three-tier plan: background coarsest, body mid, face fine.
+    /// Needs a subject matte (U2Net), run automatically when set (RFC §5.2 multi-region).
+    #[serde(default)]
+    pub armature_body: Option<u32>,
+    /// AERIAL PERSPECTIVE strength (0..1): veil the BACKGROUND (matte-derived) so the subject advances (§5.5).
+    #[serde(default)]
+    pub recede: f32,
     /// Value-key strength (tonal-range expansion) — higher for a flat, low-contrast reference.
     #[serde(default)]
     pub value_key: f32,
@@ -62,6 +69,8 @@ impl Default for PaintPlan {
             style: default_style(),
             armature: default_armature(),
             armature_face: None,
+            armature_body: None,
+            recede: 0.0,
             value_key: 0.0,
             reserve: None,
             budget: None,
@@ -89,6 +98,12 @@ impl PaintPlan {
         o.push_str(&format!("armature: {}\n", self.armature));
         if let Some(af) = self.armature_face {
             o.push_str(&format!("armature_face: {af}\n"));
+        }
+        if let Some(ab) = self.armature_body {
+            o.push_str(&format!("armature_body: {ab}\n"));
+        }
+        if self.recede > 1e-3 {
+            o.push_str(&format!("recede: {:.2}\n", self.recede));
         }
         o.push_str(&format!("value_key: {:.2}\n", self.value_key));
         if let Some(r) = self.reserve {
@@ -126,19 +141,22 @@ pub struct Analysis {
 pub fn plan_from(a: &Analysis) -> PaintPlan {
     let mut notes = Vec::new();
 
-    // A COARSE body armature so the engine invents the surface instead of tracing (RFC §1.1). Larger canvases can
-    // carry a touch more structure without tracing.
+    // A COARSE base armature so the engine invents the surface instead of tracing (RFC §1.1). Larger canvases can
+    // carry a touch more structure without tracing. (Reduced further for the background when a subject is present.)
     let armature = if a.short_side >= 900 { 88 } else { 72 };
-    notes.push(format!("coarse armature {armature}px — paint from structure, not pixels (no tracing)"));
+    notes.push("paint from a coarse armature — structure, not pixels (no tracing)".into());
 
     // A detected FACE is the focal region: give it a FINE armature so features stay crisp while the beard / hair /
-    // background become washes (RFC §5.2). No face → a uniform coarse armature.
-    let armature_face = if a.faces > 0 {
-        notes.push(format!("{} face(s) → focal armature 200px (crisp face over a wash body)", a.faces));
-        Some(200)
+    // background become washes (RFC §5.2). With a subject present, use a THREE-TIER plan — a coarser background, a
+    // mid subject body, and the fine face — plus a touch of aerial recession so the subject advances.
+    let (armature_face, armature_body, recede, armature) = if a.faces > 0 {
+        notes.push(format!("{} face(s) → three-tier armature: background {}px · body 104px · face 200px", a.faces, (armature as f32 * 0.6).round() as u32));
+        notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
+        // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
+        ((Some(200)), Some(104), 0.28, (armature as f32 * 0.6).round().max(36.0) as u32)
     } else {
         notes.push("no face → uniform coarse armature".into());
-        None
+        (None, None, 0.0, armature)
     };
 
     // VALUE KEY from measured contrast: a flat, foggy reference (low stddev) needs more tonal expansion for real
@@ -163,6 +181,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         style: "impressionist".into(),
         armature,
         armature_face,
+        armature_body,
+        recede,
         value_key,
         reserve,
         budget: Some(budget),
@@ -181,6 +201,8 @@ mod tests {
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
         assert_eq!(flat.armature_face, Some(200), "a detected face gets a focal armature");
+        assert_eq!(flat.armature_body, Some(104), "a subject gets a mid body armature (three-tier)");
+        assert!(flat.recede > 0.0 && flat.armature < 72, "background recedes and goes coarser with a subject");
         assert_eq!(flat.reserve, Some(0.9), "watercolour reserves the paper");
     }
 
@@ -189,6 +211,7 @@ mod tests {
         let a = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false };
         let plan = plan_from(&a);
         assert_eq!(plan.armature_face, None);
+        assert_eq!(plan.armature_body, None, "no subject → no body tier");
         assert_eq!(plan.reserve, None, "an opaque medium does not reserve paper");
     }
 
