@@ -72,6 +72,23 @@ pub struct PaintSpec {
     pub sheen: Option<f32>,
     /// LIFT — wipe removability (oil high; watercolour staining low).
     pub lift: Option<f32>,
+    /// BROKEN COLOUR (0..1): per-stroke hue/chroma variation for optical-mix vibrancy (oil/gouache/pastel).
+    pub broken: Option<f32>,
+    /// CONTOUR (0..1): line-drawing pass over the strongest edges (pen/pencil/charcoal).
+    pub contour: Option<f32>,
+    /// SALIENCY-GATED DENSITY (0..1, 0 = off — opt-in): reserve dense strokes for the focal, high-structure
+    /// passages and lay flat/empty regions thin, so a large stroke budget does not over-work the background
+    /// into a uniform hatch. The block-in always covers the canvas; only restating/detail passes are thinned.
+    pub saliency: Option<f32>,
+    /// RESERVE threshold (0..1, surface-white media): cells brighter than this keep the bare paper (no stroke).
+    /// Raise toward 1 to close white holes in light passages; lower to keep more paper. Default 0.72 (watercolour/ink).
+    pub reserve: Option<f32>,
+    /// SELECTIVE DETAIL (0..1, 0 = off — opt-in): paint the masses loose but fire the crisp detail tier only in
+    /// the focal region (eyes/glasses) — loose-wash plus sharp accents. Small = tighter focus; 1 = detail everywhere.
+    pub focus_detail: Option<f32>,
+    /// PRESERVE FACE (0..1, 0 = off — opt-in): detect the face(s) and fire the crisp detail tier only on the real
+    /// face box (loose elsewhere). Model-targeted variant of `focus_detail`; needs a `reference:` to detect on.
+    pub preserve_face: Option<f32>,
     /// Brushwork plan: the default brush and, later, per-element assignments (see `BrushworkSpec`).
     pub brushwork: Option<BrushworkSpec>,
     /// COMPOSITION LAYERS (per-element painting): render, matte and paint each element on its own layer, back to
@@ -209,8 +226,10 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
     if !medium.is_executable() {
         bail!("medium {:?} is not executable — the engine renders {}", medium.name, medium::EXECUTABLE.join(" / "));
     }
-    // Palette defaults to the one that SUITS this medium (sumi for ink/pencil, split-primary for gouache, …).
-    let palette = Palette::by_name(spec.palette.as_deref().unwrap_or(medium.default_palette))
+    // Palette: `image`/`auto` is resolved FROM the reference by the CLI (a placeholder here); otherwise the
+    // named palette, defaulting to the one that SUITS this medium (sumi for ink/pencil, split-primary for gouache).
+    let pal_name = spec.palette.as_deref().filter(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "image" | "auto")).unwrap_or(medium.default_palette);
+    let palette = Palette::by_name(pal_name)
         .with_context(|| format!("unknown palette {:?} — try: {}", spec.palette, palette::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")))?;
     let seed = spec.seed.unwrap_or(42);
     let size = spec.size().unwrap_or((ref_w, ref_h));

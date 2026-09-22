@@ -52,6 +52,28 @@ pub struct PaintArgs {
     /// IMPASTO (0..1) textured thick-paint relief at output — overrides the medium default (oil high, flat 0).
     #[arg(long)]
     pub impasto: Option<f32>,
+    /// BROKEN COLOUR (0..1) — per-stroke hue/chroma variation for optical-mix vibrancy (oil/gouache/pastel).
+    #[arg(long)]
+    pub broken: Option<f32>,
+    /// CONTOUR (0..1) — line-drawing pass over the strongest edges (pen/pencil/charcoal).
+    #[arg(long)]
+    pub contour: Option<f32>,
+    /// SALIENCY-GATED DENSITY (0..1, opt-in): reserve dense strokes for the focal subject and lay flat/empty
+    /// regions THIN — stops a big stroke budget over-working the background into a uniform hatch. 0 = off.
+    #[arg(long)]
+    pub saliency: Option<f32>,
+    /// RESERVE threshold (0..1, surface-white media): cells brighter than this keep the bare paper (no stroke).
+    /// Raise toward 1 to CLOSE white holes in light passages; lower to keep more paper. Default 0.72 (watercolour/ink).
+    #[arg(long)]
+    pub reserve: Option<f32>,
+    /// SELECTIVE DETAIL (0..1, opt-in): paint the masses loose but fire the crisp detail tier ONLY in the focal
+    /// region (eyes/glasses) — loose-wash + sharp accents. Pair with `--style impressionist`. Small = tighter focus.
+    #[arg(long)]
+    pub focus_detail: Option<f32>,
+    /// PRESERVE FACE (0..1, opt-in): DETECT the face(s) and fire the crisp detail tier only on the real face box
+    /// — loose everywhere else. Like --focus-detail but model-targeted. Higher = more of the face preserved crisp.
+    #[arg(long)]
+    pub preserve_face: Option<f32>,
     /// Also print the traceability.
     #[arg(long)]
     pub report: bool,
@@ -142,6 +164,12 @@ pub struct SpecArgs {
     pub opacity: Option<f32>,
     pub pickup: Option<f32>,
     pub impasto: Option<f32>,
+    pub broken: Option<f32>,
+    pub contour: Option<f32>,
+    pub saliency: Option<f32>,
+    pub reserve: Option<f32>,
+    pub focus_detail: Option<f32>,
+    pub preserve_face: Option<f32>,
 }
 
 /// Resize a per-pixel depth field from `(sw,sh)` to `(dw,dh)` and normalise it to `[0,1]` (min–max), so aerial
@@ -155,6 +183,77 @@ fn resize_depth(depth: &[f32], (sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> Ve
     });
     let scaled = image::imageops::resize(&norm, dw, dh, image::imageops::FilterType::Triangle);
     scaled.pixels().map(|p| p.0[0] as f32 / 65535.0).collect()
+}
+
+/// Deterministic k-means over RGB points (few iterations) — the dominant colours of an image.
+fn kmeans_rgb(px: &[[f32; 3]], k: usize, iters: usize) -> Vec<[f32; 3]> {
+    if px.is_empty() {
+        return Vec::new();
+    }
+    let k = k.max(1).min(px.len());
+    let mut cents: Vec<[f32; 3]> = (0..k).map(|i| px[(i * px.len() / k).min(px.len() - 1)]).collect();
+    let mut assign = vec![0usize; px.len()];
+    for _ in 0..iters {
+        for (i, p) in px.iter().enumerate() {
+            let (mut best, mut bd) = (0usize, f32::MAX);
+            for (c, ct) in cents.iter().enumerate() {
+                let d = (p[0] - ct[0]).powi(2) + (p[1] - ct[1]).powi(2) + (p[2] - ct[2]).powi(2);
+                if d < bd {
+                    bd = d;
+                    best = c;
+                }
+            }
+            assign[i] = best;
+        }
+        let mut sum = vec![[0f32; 3]; k];
+        let mut cnt = vec![0f32; k];
+        for (i, p) in px.iter().enumerate() {
+            let a = assign[i];
+            for j in 0..3 {
+                sum[a][j] += p[j];
+            }
+            cnt[a] += 1.0;
+        }
+        for c in 0..k {
+            if cnt[c] > 0.0 {
+                for j in 0..3 {
+                    cents[c][j] = sum[c][j] / cnt[c];
+                }
+            }
+        }
+    }
+    cents
+}
+
+/// Build a PALETTE FROM the reference IMAGE: cluster its dominant colours into pigments (plus a near-white and
+/// near-black so the value range and ground are covered), so any photo repaints cleanly in any medium instead
+/// of being forced through a fixed palette that can't represent its colours. The pigments are leaked to
+/// `'static` — intentional, once per CLI run.
+fn palette_from_image(img: &image::RgbImage, k: usize) -> crate::paint::palette::Palette {
+    use crate::paint::pigment::Pigment;
+    let small = image::imageops::resize(img, 64, 64, image::imageops::FilterType::Triangle);
+    let px: Vec<[f32; 3]> = small.pixels().map(|p| [p.0[0] as f32, p.0[1] as f32, p.0[2] as f32]).collect();
+    // MORE clusters → colours captured PROPORTIONALLY: a small vivid area (a red shirt) becomes its own minor
+    // pigment instead of being averaged away, without over-representing it (which warms the whole picture).
+    let clusters = kmeans_rgb(&px, k.saturating_sub(2).max(4), 14);
+    // Always include a near-white (ground / lights) and a near-black (darks), then the scene's dominant hues.
+    let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
+    for c in clusters {
+        cols.push([c[0].round().clamp(0.0, 255.0) as u8, c[1].round().clamp(0.0, 255.0) as u8, c[2].round().clamp(0.0, 255.0) as u8]);
+    }
+    // Safety net: if NO strongly-saturated pigment made it in, add the single most saturated distinct colour so a
+    // vivid accent isn't lost entirely — but only one, so it can't dominate.
+    let sat_of = |c: &[u8; 3]| -> f32 {
+        let (mx, mn) = (*c.iter().max().unwrap() as f32, *c.iter().min().unwrap() as f32);
+        if mx < 1.0 { 0.0 } else { (mx - mn) / mx }
+    };
+    if !cols.iter().any(|c| sat_of(c) > 0.45) {
+        if let Some(c) = small.pixels().map(|p| p.0).filter(|c| sat_of(c) > 0.45).max_by(|a, b| sat_of(a).partial_cmp(&sat_of(b)).unwrap_or(std::cmp::Ordering::Equal)) {
+            cols.push(c);
+        }
+    }
+    let pigments: Vec<Pigment> = cols.iter().enumerate().map(|(i, c)| Pigment { name: Box::leak(format!("img-{i}").into_boxed_str()), masstone: *c }).collect();
+    crate::paint::palette::Palette { name: "image", pigments: Box::leak(pigments.into_boxed_slice()) }
 }
 
 /// Parse the fidelity register from the CLI string.
@@ -200,9 +299,13 @@ pub struct FromArgs {
     /// Output path.
     #[arg(short, long, default_value = "painting.png")]
     pub out: PathBuf,
-    /// Palette name (zorn / split-primary / verdaccio / earth / limited-landscape / sumi).
+    /// Palette name, or `image` / `auto` to DERIVE a palette from the reference's dominant colours.
     #[arg(long, default_value = "zorn")]
     pub palette: String,
+    /// MEDIUM to repaint the image in (oil-direct / watercolour / gouache / ink-wash / pen-ink / pencil /
+    /// pastel / charcoal / acrylic / …). Applies the full technique behaviour; the flags below override it.
+    #[arg(long)]
+    pub medium: Option<String>,
     /// Total stroke budget — inviolable.
     #[arg(long, default_value_t = 1500)]
     pub budget: usize,
@@ -256,6 +359,29 @@ pub struct FromArgs {
     /// SHEEN / gloss (0..1) specular on ridges.
     #[arg(long)]
     pub sheen: Option<f32>,
+    /// BROKEN COLOUR (0..1) per-stroke hue/chroma variation.
+    #[arg(long)]
+    pub broken: Option<f32>,
+    /// CONTOUR (0..1) line-drawing pass over the strongest edges.
+    #[arg(long)]
+    pub contour: Option<f32>,
+    /// SALIENCY-GATED DENSITY (0..1, opt-in): reserve dense strokes for the focal subject and lay flat/empty
+    /// regions THIN (so a big stroke budget stops over-working the background into a uniform hatch). 0 = off.
+    #[arg(long)]
+    pub saliency: Option<f32>,
+    /// RESERVE threshold (0..1, surface-white media): cells brighter than this keep the bare paper (no stroke).
+    /// Raise toward 1 to CLOSE white holes in light passages; lower to keep more paper. Default 0.72 (watercolour/ink).
+    #[arg(long)]
+    pub reserve: Option<f32>,
+    /// SELECTIVE DETAIL (0..1, opt-in): paint the masses loose but fire the crisp detail tier ONLY in the focal
+    /// region (eyes/glasses) — loose-wash + sharp accents. Pair with `--style impressionist`. Small = tighter focus.
+    #[arg(long)]
+    pub focus_detail: Option<f32>,
+    /// PRESERVE FACE (0..1, opt-in): DETECT the face(s) and fire the crisp detail tier only on the real face box
+    /// — loose everywhere else. Like --focus-detail but model-targeted (uses the face detector). Higher = more of
+    /// the face preserved crisp; lower = only the core. Pair with a loose base (`--style impressionist`).
+    #[arg(long)]
+    pub preserve_face: Option<f32>,
 }
 
 #[derive(Args, Debug)]
@@ -269,13 +395,13 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::New(a)) => run_new(a),
         Some(PaintCmd::Show(a)) => run_show(a, false),
         Some(PaintCmd::Lint(a)) => run_show(a, true),
-        Some(PaintCmd::From(a)) => run_from(a),
+        Some(PaintCmd::From(a)) => run_from(a).await,
         Some(PaintCmd::Replay(a)) => run_replay(a),
         Some(PaintCmd::Export(a)) => run_export(a),
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -315,6 +441,44 @@ const SCAFFOLD: &str = r#"{
   }
 }
 "#;
+
+/// Detect faces in `path` and build a feathered 0..1 mask (row-major, sized `w`×`h`) over the face box(es), for
+/// `--preserve-face`. Runs the SCRFD detector (small — CPU is fine). `None` when no face is found. The box is
+/// expanded a little (brow/chin) and the edges feathered, so the crisp detail tier fades into the loose masses
+/// rather than leaving a hard rectangle. Detects at native resolution, then resizes the mask to the paint size.
+async fn build_face_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
+    use candle_core::DType;
+    let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
+    let device = crate::device::select("auto")?;
+    let weights = crate::pipelines::scrfd::resolve_scrfd_weights().await.context("resolving the face-detector weights")?
+        .context("face-detector weights not available — run a faceswap/restore once to fetch them")?;
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(&weights, crate::pipelines::scrfd::SCRFDConfig::default(), &device, DType::F32).context("loading the face detector")?;
+    let faces = det.detect(path).context("detecting faces")?;
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    let mut m = image::GrayImage::new(iw, ih);
+    for f in &faces {
+        let [x1, y1, x2, y2] = f.bbox;
+        let (ex, ey) = ((x2 - x1) * 0.12, (y2 - y1) * 0.12);
+        let x1 = (x1 - ex).max(0.0) as u32;
+        let y1 = (y1 - ey).max(0.0) as u32;
+        let x2 = ((x2 + ex).min(iw as f32) as u32).min(iw);
+        let y2 = ((y2 + ey).min(ih as f32) as u32).min(ih);
+        for yy in y1..y2 {
+            for xx in x1..x2 {
+                m.put_pixel(xx, yy, image::Luma([255]));
+            }
+        }
+    }
+    let mean_face = faces.iter().map(|f| (f.bbox[2] - f.bbox[0]).min(f.bbox[3] - f.bbox[1])).sum::<f32>() / faces.len() as f32;
+    let feather = (mean_face * 0.12).clamp(2.0, 60.0);
+    let blurred = image::imageops::blur(&m, feather);
+    let scaled = image::imageops::resize(&blurred, w, h, image::imageops::FilterType::Triangle);
+    let mask: Vec<f32> = scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+    println!("{}  preserve-face: {} face(s) detected → focal mask", style("·").dim(), faces.len());
+    Ok(Some(mask))
+}
 
 fn run_new(a: NewArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -407,6 +571,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.granulate = spec.granulate.unwrap_or(plan.medium.granulate).clamp(0.0, 1.0);
     params.sheen = spec.sheen.unwrap_or(plan.medium.sheen).clamp(0.0, 1.0);
     params.lift = spec.lift.unwrap_or(plan.medium.lift).clamp(0.0, 1.0);
+    params.broken = spec.broken.or(a.broken).unwrap_or(plan.medium.broken).clamp(0.0, 1.0);
+    params.contour = spec.contour.or(a.contour).unwrap_or(plan.medium.contour).clamp(0.0, 1.0);
+    params.saliency = spec.saliency.or(a.saliency).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.focus_detail = spec.focus_detail.or(a.focus_detail).unwrap_or(0.0).clamp(0.0, 1.0);
     // Paint from a LOW-RES ARMATURE (§1.1): coarsen the reference so the brush invents the surface instead of
     // tracing detail. Sized to the WORKING canvas (below).
     // Paint at a normalized WORKING resolution so the stroke budget (a style control, §9.1) gives a consistent
@@ -431,9 +599,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.armature_side = None;
     // Surface-white media reserve their whites (paper shows through); density media build value by hatch marks.
     use crate::paint::medium::{MarkModel, WhiteSource};
-    if plan.medium.white_source == WhiteSource::Surface {
-        params.reserve = Some(0.72);
-    }
+    // Reserve threshold: cells brighter than this keep the bare paper (no stroke). `--reserve`/`reserve:` override
+    // the medium default — raise it (→1) to CLOSE white holes in light passages, lower it to keep more paper.
+    let reserve_default = (plan.medium.white_source == WhiteSource::Surface).then_some(0.72);
+    params.reserve = spec.reserve.or(a.reserve).map(|r| r.clamp(0.0, 1.0)).or(reserve_default);
     params.density = plan.medium.mark_model == MarkModel::Density;
 
     // Get the reference to paint from, and depth for the merge, one of two ways:
@@ -510,6 +679,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         }
     }
 
+    // PALETTE-FROM-IMAGE: `palette: image`/`auto` derives a palette from the reference's dominant colours, so a
+    // photo or supplied image repaints cleanly in any medium (not forced through a palette that can't hold it).
+    if matches!(spec.palette.as_deref().map(|s| s.trim().to_ascii_lowercase()).as_deref(), Some("image") | Some("auto")) {
+        params.palette = palette_from_image(&reference, 16);
+        println!("{}  palette: derived {} pigments from the image", style("·").dim(), params.palette.pigments.len());
+    }
+
     // FAMILY-KEY (§5.5.5, opt-in): split light/shadow and enforce the invariant so the masses read solid.
     if a.families {
         let (w, h) = reference.dimensions();
@@ -553,6 +729,19 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         }
     }
 
+    // PRESERVE FACE (opt-in): detect the face on the (working-resolution) reference and fire the crisp detail
+    // tier only there. Detect on a temp PNG since the detector reads a path.
+    if let Some(pf) = spec.preserve_face.or(a.preserve_face) {
+        params.preserve_face = pf.clamp(0.0, 1.0);
+        let (rw, rh) = reference.dimensions();
+        let tmp = tempfile::Builder::new().prefix("plakat-paint-face-").suffix(".png").tempfile().context("face-detect scratch file")?;
+        reference.save(tmp.path()).context("writing the reference for face detection")?;
+        params.face_mask = build_face_mask(tmp.path(), rw, rh).await?;
+        if params.face_mask.is_none() {
+            println!("{}  preserve-face: no face detected — painting without a face focal region", style("·").yellow());
+        }
+    }
+
     let result = if a.critic {
         let device = crate::device::select("auto")?;
         let scorer = crate::pipelines::aesthetic::AestheticScorer::load(&device).await.context("loading the aesthetic critic")?;
@@ -569,7 +758,11 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         }
         r
     } else {
-        painter::paint_from_image(&reference, &params)
+        let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
+        let r = painter::paint_from_image_progress(&reference, &params, &|placed| pb.set_position(placed as u64));
+        pb.set_position(r.strokes as u64);
+        pb.finish_and_clear();
+        r
     };
     // Output at the requested size — replay the score up from the working canvas (resolution-independent).
     let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image_finished(&result.score.header.finish()) } else { result.canvas.to_image_finished(&result.score.header.finish()) };
@@ -719,19 +912,64 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
-fn run_from(a: FromArgs) -> Result<()> {
-    let palette = Palette::by_name(&a.palette)
-        .with_context(|| format!("unknown palette {:?} — try: {}", a.palette, palette::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")))?;
+async fn run_from(a: FromArgs) -> Result<()> {
     let img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
 
-    // Brush sizes: derived from the image if not given — a coarse block-in down to a fine restatement.
+    // Palette: `image`/`auto` derives one from the reference; otherwise a named palette (defaulting to the
+    // medium's own when a medium is given).
+    let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
+        "image" | "auto" => {
+            let p = palette_from_image(&img, 16);
+            println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
+            p
+        }
+        _ if a.medium.is_some() && a.palette == "zorn" => {
+            // A medium was chosen but no palette was named — DERIVE one from the image. A fixed medium palette
+            // (e.g. a landscape palette) rarely fits an arbitrary photo (a portrait's skin, a plaid shirt …).
+            let p = palette_from_image(&img, 16);
+            println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
+            p
+        }
+        name => Palette::by_name(name).with_context(|| format!("unknown palette {:?} — try: {}, image", name, palette::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")))?,
+    };
+
+    // Brush sizes: derived from the image if not given — a coarse block-in down to a FINE restatement (the
+    // finest reaches near `min_brush`, so faces and detail resolve, not just masses).
     let brush_sizes = a.brush.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| {
         let coarse = (w.max(h) as f32 / 18.0).max(a.min_brush * 2.0);
-        vec![coarse, coarse * 0.5, coarse * 0.25]
+        vec![coarse, coarse * 0.55, coarse * 0.3, (coarse * 0.16).max(a.min_brush)]
     });
 
     let mut params = PaintParams::new(palette, a.budget);
+    // MEDIUM: apply the full technique behaviour (as the spec path does); the flags below still override.
+    if let Some(mname) = &a.medium {
+        use crate::paint::medium::{MarkModel, WhiteSource};
+        let m = crate::paint::medium::MediumProfile::by_name(mname).with_context(|| format!("unknown medium {mname:?} — try: {}", crate::paint::medium::EXECUTABLE.join(" / ")))?;
+        params.medium = m.name.to_string();
+        params.bleed = m.bleed;
+        params.opacity = m.body;
+        params.impasto = m.impasto;
+        params.chroma = m.chroma;
+        params.dry_shift = m.dry_shift;
+        params.granulate = m.granulate;
+        params.sheen = m.sheen;
+        params.lift = m.lift;
+        params.brush.k_pickup = m.pickup;
+        params.broken = m.broken;
+        params.contour = m.contour;
+        params.density = m.mark_model == MarkModel::Density;
+        if m.white_source == WhiteSource::Surface {
+            params.reserve = Some(0.72);
+        } else {
+            params.ground = Some([236, 230, 220]);
+        }
+        println!("{}  medium: {} (full technique)", style("·").dim(), m.name);
+    }
+    // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
+    if let Some(rv) = a.reserve {
+        params.reserve = Some(rv.clamp(0.0, 1.0));
+    }
     params.brush_sizes = brush_sizes.clone();
     params.min_brush = a.min_brush;
     params.seed = a.seed;
@@ -763,6 +1001,25 @@ fn run_from(a: FromArgs) -> Result<()> {
     if let Some(sh) = a.sheen {
         params.sheen = sh.clamp(0.0, 1.0);
     }
+    if let Some(bk) = a.broken {
+        params.broken = bk.clamp(0.0, 1.0);
+    }
+    if let Some(co) = a.contour {
+        params.contour = co.clamp(0.0, 1.0);
+    }
+    if let Some(sl) = a.saliency {
+        params.saliency = sl.clamp(0.0, 1.0);
+    }
+    if let Some(fd) = a.focus_detail {
+        params.focus_detail = fd.clamp(0.0, 1.0);
+    }
+    if let Some(pf) = a.preserve_face {
+        params.preserve_face = pf.clamp(0.0, 1.0);
+        params.face_mask = build_face_mask(&a.input, w, h).await?;
+        if params.face_mask.is_none() {
+            println!("{}  preserve-face: no face detected — painting without a face focal region", style("·").yellow());
+        }
+    }
     if a.haze > 0.0 {
         // A CPU depth proxy (central + low = near) so aerial perspective can be exercised without a depth model.
         params.depth = Some(crate::paint::armature::depth_proxy(w, h));
@@ -781,7 +1038,10 @@ fn run_from(a: FromArgs) -> Result<()> {
         brush_sizes.iter().map(|r| format!("{r:.0}")).collect::<Vec<_>>().join("→"),
     );
 
-    let result = painter::paint_from_image(&img, &params);
+    let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
+    let result = painter::paint_from_image_progress(&img, &params, &|placed| pb.set_position(placed as u64));
+    pb.set_position(result.strokes as u64);
+    pb.finish_and_clear();
     let out = result.canvas.to_image_finished(&result.score.header.finish());
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();

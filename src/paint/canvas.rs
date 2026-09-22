@@ -291,9 +291,11 @@ impl Canvas {
                             }
                         }
                     }
-                    // GRANULATION — the paper's tooth holds pigment unevenly: a mottled darkening where paint sits.
+                    // GRANULATION — the paper's tooth holds pigment unevenly: a MOTTLE (some grains lighter, some
+                    // darker) where paint sits, with NO net darkening (a centred grain), so it reads as texture,
+                    // not grey noise.
                     if f.granulate > 1e-3 && paint > 0.05 {
-                        let d = f.granulate * paint * grain(x, y, f.seed) * 0.55;
+                        let d = f.granulate * paint * (grain(x, y, f.seed) - 0.5) * 0.7;
                         for v in c.iter_mut() {
                             *v = (*v * (1.0 - d)).clamp(0.0, 1.0);
                         }
@@ -319,10 +321,15 @@ impl Canvas {
                     let hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak;
                     let hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak;
                     let facing = hx * lx + hy * ly;
+                    // Gate by the paint AMOUNT here: thin / flat passages (a wash, a bare background) barely stand
+                    // off the surface, so they get little relief — only built-up strokes catch light. Keeps the
+                    // background smooth instead of a canvas-weave grain.
+                    let total: f32 = self.conc[(y * w + x) * self.n..(y * w + x) * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                    let amt = (total / 2.0).clamp(0.0, 1.0);
                     // Diffuse impasto shading + a sharper glossy highlight on the near ridges (sheen).
-                    let mut shade = gain * facing;
+                    let mut shade = gain * facing * amt;
                     if spec > 0.0 && facing > 0.0 {
-                        shade += spec * facing * facing;
+                        shade += spec * facing * facing * amt;
                     }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {

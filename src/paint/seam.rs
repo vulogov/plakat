@@ -40,7 +40,7 @@ pub fn extract_seams(plane: &[u32], w: u32, h: u32, value: &[f32], saliency: &[f
     use std::collections::HashMap;
     let (wi, hi) = (w as i32, h as i32);
     let mut acc: HashMap<(u32, u32), (usize, f32, f32)> = HashMap::new(); // (len, contrast_sum, peak_sal)
-    let at = |x: i32, y: i32| (y as usize * w as usize + x as usize);
+    let at = |x: i32, y: i32| y as usize * w as usize + x as usize;
     let sal = |i: usize| saliency.get(i).copied().unwrap_or(0.0);
     for y in 0..hi {
         for x in 0..wi {

@@ -98,6 +98,12 @@ pub struct MediumProfile {
     pub lift: f32,
     /// The palette that suits this medium, used when the spec names none.
     pub default_palette: &'static str,
+    /// BROKEN COLOUR (0..1): per-stroke hue/chroma variation — adjacent marks are different pure-ish colours
+    /// that optically mix (oil/gouache/pastel vibrancy) instead of one pre-mixed tone. 0 = a single solved tone.
+    pub broken: f32,
+    /// CONTOUR (0..1): a line-drawing pass that draws the strongest edges as clean strokes — for the LINE media
+    /// (pen, pencil) that outline the subject, not just shade it. 0 = no drawn lines.
+    pub contour: f32,
     pub families: Families,
     pub subtractive: bool,
     pub mark_model: MarkModel,
@@ -123,6 +129,8 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     sheen: 0.15,
     lift: 0.8,
     default_palette: "zorn",
+    broken: 0.35,
+    contour: 0.0,
     // pickup drags wet paint and reads as a hazy smear.
     pickup: 0.3,
     families: Families::Split,
@@ -148,6 +156,8 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     sheen: 0.12,
     lift: 0.7,
     default_palette: "zorn",
+    broken: 0.25,
+    contour: 0.0,
     families: Families::Split,
     subtractive: true,
     mark_model: MarkModel::Continuous,
@@ -171,6 +181,8 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     sheen: 0.0,
     lift: 0.5,
     default_palette: "split-primary",
+    broken: 0.3,
+    contour: 0.0,
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -194,6 +206,8 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     sheen: 0.0,
     lift: 0.2,
     default_palette: "limited-landscape",
+    broken: 0.15,
+    contour: 0.0,
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -217,6 +231,8 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     sheen: 0.0,
     lift: 0.1,
     default_palette: "sumi",
+    broken: 0.1,
+    contour: 0.2,
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -240,6 +256,8 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     sheen: 0.0,
     lift: 0.0,
     default_palette: "sumi",
+    broken: 0.0,
+    contour: 0.6,
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Density,
@@ -263,6 +281,8 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     sheen: 0.05,
     lift: 0.3,
     default_palette: "verdaccio",
+    broken: 0.2,
+    contour: 0.0,
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Density,
@@ -287,6 +307,8 @@ pub const PENCIL: MediumProfile = MediumProfile {
     sheen: 0.05,
     lift: 0.6,
     default_palette: "sumi",
+    broken: 0.0,
+    contour: 0.5,
     families: Families::Unified,
     subtractive: false,
     // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
@@ -294,8 +316,83 @@ pub const PENCIL: MediumProfile = MediumProfile {
     finish_policy: FinishPolicy::Uniform,
 };
 
+pub const PASTEL: MediumProfile = MediumProfile {
+    name: "pastel",
+    value_direction: ValueDirection::MidOut,
+    opacity: Opacity::Opaque,
+    white_source: WhiteSource::Pigment,
+    reversibility: Reversibility::Minimal, // soft, blendable, liftable
+    stage_budget: 4,
+    pickup: 0.4, // strokes blend where they cross
+    bleed: 0.1,  // soft dry blending
+    body: 0.9,   // chalky, covers
+    impasto: 0.1,
+    chroma: 1.15, // HIGH chroma — vivid chalk
+    dry_shift: 0.0,
+    granulate: 0.25, // chalky tooth
+    sheen: 0.0,      // matte
+    lift: 0.5,
+    default_palette: "split-primary",
+    broken: 0.4, // pastel layers broken colour
+    contour: 0.0,
+    families: Families::Split,
+    subtractive: false,
+    mark_model: MarkModel::Continuous,
+    finish_policy: FinishPolicy::Uniform,
+};
+
+pub const CHARCOAL: MediumProfile = MediumProfile {
+    name: "charcoal",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface, // paper is the light; lift highlights out
+    reversibility: Reversibility::Minimal,
+    stage_budget: 3,
+    pickup: 0.2,
+    bleed: 0.3,  // SMUDGY — soft graded blacks
+    body: 0.8,   // rich, dramatic black
+    impasto: 0.0,
+    chroma: 0.4, // near-monochrome, warm black
+    dry_shift: 0.0,
+    granulate: 0.35, // charcoal grain
+    sheen: 0.0,
+    lift: 0.6, // erase / lift highlights
+    default_palette: "sumi",
+    broken: 0.0,
+    contour: 0.3, // draws as well as shades
+    families: Families::Unified,
+    subtractive: false,
+    mark_model: MarkModel::Continuous, // tonal smudge, not hatch
+    finish_policy: FinishPolicy::Uniform,
+};
+
+pub const ACRYLIC: MediumProfile = MediumProfile {
+    name: "acrylic",
+    value_direction: ValueDirection::MidOut,
+    opacity: Opacity::Opaque,
+    white_source: WhiteSource::Pigment,
+    reversibility: Reversibility::None, // FAST-DRY — no reworking, layers stack cleanly
+    stage_budget: 6,
+    pickup: 0.15, // little wet blend (dries fast)
+    bleed: 0.05,
+    body: 1.0,     // opaque plastic
+    impasto: 0.35, // can be thick
+    chroma: 1.10,  // vivid plastic colour
+    dry_shift: -0.03, // darkens slightly on drying
+    granulate: 0.0,
+    sheen: 0.2, // plastic sheen
+    lift: 0.0,  // permanent once dry
+    default_palette: "split-primary",
+    broken: 0.25,
+    contour: 0.0,
+    families: Families::Split,
+    subtractive: false,
+    mark_model: MarkModel::Continuous,
+    finish_policy: FinishPolicy::Uniform,
+};
+
 /// Every declared medium.
-pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA, PENCIL];
+pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA, PENCIL, PASTEL, CHARCOAL, ACRYLIC];
 
 /// The media P1 can execute (opaque continuous).
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
@@ -303,7 +400,7 @@ pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
 pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
 /// Every executable medium (P3 adds indirect oil, ink wash, tempera — they reuse the opaque-continuous,
 /// transparent-reserve, and density paths respectively; tempera's density marks are monochrome for now).
-pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera", "pencil"];
+pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera", "pencil", "pastel", "charcoal", "acrylic"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).

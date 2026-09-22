@@ -30,7 +30,7 @@ pub fn is_cutout(seams: &[Seam], hard_cap: f32) -> bool {
 /// `plane` the plane index map; `margin` how far the extremum must exceed its cross-boundary neighbours.
 pub fn halo_fraction(value: &[f32], plane: &[u32], w: u32, h: u32, margin: f32) -> f32 {
     let (wi, hi) = (w as i32, h as i32);
-    let at = |x: i32, y: i32| (y as usize * w as usize + x as usize);
+    let at = |x: i32, y: i32| y as usize * w as usize + x as usize;
     let mut boundary = 0usize;
     let mut rim = 0usize;
     for y in 0..hi {

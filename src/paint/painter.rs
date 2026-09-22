@@ -150,18 +150,44 @@ pub struct PaintParams {
     pub granulate: f32,
     pub sheen: f32,
     pub lift: f32,
+    /// BROKEN COLOUR (0..1): per-stroke hue/chroma variation so adjacent marks optically mix (vibrancy). The
+    /// varied colour is baked into the recorded stroke, so replay is exact — no header field needed.
+    pub broken: f32,
+    /// CONTOUR (0..1): a final line-drawing pass that draws the strongest edges (pen/pencil). Recorded strokes.
+    pub contour: f32,
     /// Fidelity register — `Legible` resolves features, `Impressionist` stays loose (§style knob).
     pub style: PaintStyle,
     /// EDGE-HARDNESS strength (0..1): how many boundaries are treated as HARD, where strokes terminate so the
     /// masses meet crisply (edge-control craft — not outlining). Higher = more hard edges. 0 = all edges soft.
     /// Ignored for `Impressionist` and for density media.
     pub define: f32,
+    /// SALIENCY-GATED DENSITY (0..1, 0 = off — opt-in): reserve dense strokes for the focal, high-structure
+    /// passages and lay flat, empty regions THIN. At `1` a restating/detail pass paints at full density only
+    /// where saliency is high and drops (up to all of) its strokes where it is low; at `0.5` the background
+    /// keeps ~half. The block-in is never gated (the canvas is always covered), so the background stays a calm
+    /// smooth mass instead of being over-worked into a uniform hatch. Off = byte-identical to the ungated engine.
+    pub saliency: f32,
+    /// SELECTIVE DETAIL (0..1, 0 = off — opt-in): paint the masses in a LOOSE register but fire the crisp detail
+    /// tier ONLY inside the focal region (the compact, central, high-contrast area — a portrait's eyes/glasses),
+    /// so the rest stays a loose wash instead of chasing every high-frequency texture (a beard) into speckle.
+    /// The value opens the focal region: small = only the very focus gets detail, `1` = the whole canvas (all
+    /// fine passes detail everywhere). Pairs with a loose base (`--style impressionist`). Off = unchanged engine.
+    pub focus_detail: f32,
+    /// PRESERVE FACE (0..1, 0 = off — opt-in): strength of the DETECTED-FACE focal region. Like `focus_detail`
+    /// but the focal region is the real face box(es) from the detector (via `face_mask`), not the centre prior —
+    /// so the crisp detail tier lands on the actual face however it is placed. Higher = more of the (feathered)
+    /// face gets preserved (crisp, reference-tracked); lower = only the face core. Needs `face_mask` set.
+    pub preserve_face: f32,
+    /// A feathered 0..1 face-region mask (row-major, canvas-sized) from the face detector, for `preserve_face`.
+    /// Built by the CLI (which owns the model/device); `None` = no face preservation. Takes priority over the
+    /// centre-prior focal field when present.
+    pub face_mask: Option<Vec<f32>>,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, style: PaintStyle::Legible, define: 0.6 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None }
     }
 }
 
@@ -322,6 +348,30 @@ fn rgb_dist(a: Srgb, b: Srgb) -> f32 {
     ((la[0] - lb[0]).powi(2) + (la[1] - lb[1]).powi(2) + (la[2] - lb[2]).powi(2)).sqrt()
 }
 
+/// BROKEN COLOUR: perturb a stroke's target colour — lift its chroma and jitter its hue a little, per stroke —
+/// so adjacent marks are DIFFERENT pure-ish colours that OPTICALLY MIX (the vibrancy of oil / gouache / pastel)
+/// instead of one pre-mixed muddy tone. The hue jitter is luma-neutral (weighted to sum zero over the sRGB luma
+/// coefficients), so values stay put. Deterministic per stroke → the varied load is recorded and replays exact.
+fn broken_color(target: Srgb, amt: f32, seed: u64, k: u64) -> Srgb {
+    if amt <= 1e-3 {
+        return target;
+    }
+    let a = amt.clamp(0.0, 1.0);
+    let (r, g, b) = (target[0] as f32 / 255.0, target[1] as f32 / 255.0, target[2] as f32 / 255.0);
+    let l = 0.299 * r + 0.587 * g + 0.114 * b;
+    let cb = 1.0 + a * 0.35; // lift chroma
+    let (mut rr, mut gg, mut bb) = (l + (r - l) * cb, l + (g - l) * cb, l + (b - l) * cb);
+    // Luma-neutral hue jitter: pick br, bg freely, set bb so 0.299·br + 0.587·bg + 0.114·bb = 0.
+    let s = a * 0.16;
+    let br = s * jitter(seed ^ 0x00B4, k);
+    let bg = s * jitter(seed ^ 0x00B5, k.wrapping_add(1));
+    let bbb = -(0.299 * br + 0.587 * bg) / 0.114;
+    rr += br;
+    gg += bg;
+    bb += bbb;
+    [(rr * 255.0).round().clamp(0.0, 255.0) as u8, (gg * 255.0).round().clamp(0.0, 255.0) as u8, (bb * 255.0).round().clamp(0.0, 255.0) as u8]
+}
+
 /// Grow a stroke in ONE direction (`sign` = +1 forward, −1 backward) from the seed along the orientation
 /// field, ending when the reference colour drifts too far from the stroke's colour or the half-length cap hits.
 #[allow(clippy::too_many_arguments)]
@@ -454,14 +504,20 @@ pub type PassCritic<'a> = dyn Fn(&RgbImage) -> f32 + 'a;
 
 /// Paint a reference image under the PAINT-1 constraints. See [`paint_critiqued`] for the pass-level critic.
 pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
-    paint_inner(input, p, None, 0.0, None)
+    paint_inner(input, p, None, 0.0, None, None)
+}
+
+/// As [`paint_from_image`] but reports progress: `progress(placed)` is called as strokes are laid, so the CLI
+/// can render a live progress bar. `placed` counts up to (at most) the stroke budget.
+pub fn paint_from_image_progress(input: &RgbImage, p: &PaintParams, progress: &dyn Fn(usize)) -> PaintResult {
+    paint_inner(input, p, None, 0.0, None, Some(progress))
 }
 
 /// Paint an element ONTO an existing canvas (a composition layer): the strokes stack over whatever is already
 /// there, so a nearer element occludes farther ones. Use `p.paint_mask` for the element's footprint and
 /// `p.layer_brush` for its brush. The returned score holds only THIS layer's strokes (the caller concatenates).
 pub fn paint_onto(base: Canvas, input: &RgbImage, p: &PaintParams) -> PaintResult {
-    paint_inner(input, p, None, 0.0, Some(base))
+    paint_inner(input, p, None, 0.0, Some(base), None)
 }
 
 /// Paint with a pass-level CRITIC (§10.1): after each stage pass the canvas is scored; a pass that does not
@@ -469,10 +525,10 @@ pub fn paint_onto(base: Canvas, input: &RgbImage, p: &PaintParams) -> PaintResul
 /// recorded as tabu, so the loop never keeps a configuration that made the painting worse. Pass-level only —
 /// per-stroke scoring is prohibitively expensive and rejected outright (§10.1, N4).
 pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, margin: f32) -> PaintResult {
-    paint_inner(input, p, Some(critic), margin, None)
+    paint_inner(input, p, Some(critic), margin, None, None)
 }
 
-fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>) -> PaintResult {
+fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(usize)>) -> PaintResult {
     let (w, h) = (input.width(), input.height());
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
     // canvas stays full size; only the thing being painted FROM is coarsened.
@@ -543,6 +599,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // freely (soft/lost) elsewhere. Off for the loose Impressionist register and for density media.
     let hardness = (p.style != PaintStyle::Impressionist && p.define > 0.0 && !p.density).then(|| edge_hardness(input, p.define));
     let hard_ref = hardness.as_ref().map(|(m, t)| (m.as_slice(), *t));
+    // SALIENCY field for the opt-in density gate — computed once from the reference (§ saliency). None = off.
+    let saliency = (p.saliency > 0.0).then(|| saliency_field(input));
+    // FOCAL field for the opt-in selective-detail gate. A detected FACE MASK (`--preserve-face`) takes priority
+    // over the centre-prior focal field (`--focus-detail`), since the real face box targets the face however it
+    // is placed. `focal_strength` opens the region for whichever source is active.
+    let (focal, focal_strength) = if let Some(fm) = &p.face_mask {
+        (Some(std::borrow::Cow::Borrowed(fm)), p.preserve_face)
+    } else if p.focus_detail > 0.0 {
+        (Some(std::borrow::Cow::Owned(focal_field(input))), p.focus_detail)
+    } else {
+        (None, 0.0)
+    };
+    let focus_on = focal.is_some();
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
         // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
@@ -564,7 +633,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // Impressionist keeps every pass soft (no detail tier). HIGH-FIDELITY treats every non-block-in pass as
         // detail (tight tracking of the sharp reference); Legible reserves detail for the genuinely fine brushes.
         let fidelity = p.style == PaintStyle::Fidelity;
-        let detail = !block_in && ((p.style == PaintStyle::Legible && radius <= p.min_brush * 2.5) || fidelity);
+        // A fine brush (absolute size). SELECTIVE DETAIL (`focus_detail`) turns the fine passes into detail passes
+        // even under a loose base register — but their strokes are gated to the FOCAL region below, so the masses
+        // stay loose and only the eye's destination (eyes/glasses) gets crisp accents.
+        let fine = radius <= p.min_brush * 2.5;
+        let detail = !block_in && (fidelity || (p.style == PaintStyle::Legible && fine) || (focus_on && fine));
         // The reference this pass paints from. Fidelity paints from a SHARP reference at every scale (it tracks
         // real structure, doesn't invent) — a touch of unsharp even on the block-in. Legible blurs the masses and
         // sharpens only for detail.
@@ -655,13 +728,38 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         continue;
                     }
                 }
+                // SELECTIVE DETAIL (`focus_detail`): the crisp detail tier fires ONLY inside the focal region —
+                // the compact, central, high-contrast area the eye goes to (eyes/glasses) — so the rest of the
+                // painting keeps the loose wash the coarse passes laid. `focus_detail` opens the region (1 = the
+                // whole canvas, small = only the very focus). The masses (non-detail passes) are never gated.
+                if let (Some(foc), true) = (&focal, detail) {
+                    let f = foc[iy as usize * w as usize + ix as usize];
+                    if f < 1.0 - focal_strength {
+                        continue;
+                    }
+                }
+                // SALIENCY-GATED DENSITY (opt-in): thin the restating/detail passes in flat, low-structure
+                // passages so the background stays a calm smooth mass while the focal subject keeps full
+                // density. The block-in is never gated (the canvas must be covered). Deterministic skip, and
+                // replay-exact since only the strokes that ARE placed get recorded into the score.
+                if let Some(sal) = &saliency {
+                    if !block_in {
+                        let s = sal[iy as usize * w as usize + ix as usize];
+                        let keep = (1.0 - p.saliency) + p.saliency * s;
+                        if jitter(p.seed, k.wrapping_mul(0x1000_0001).wrapping_add(0x5EED)) + 0.5 > keep {
+                            continue;
+                        }
+                    }
+                }
                 // DENSITY mark model: build value with black hatch marks whose count scales with darkness.
                 if p.density {
                     let n = density_marks(&mut canvas, &mut score, &mut placed, &mut in_pass, pass.budget, p.budget, cx, cy, radius, tluma, &gx, &gy, p, &pass.stage);
                     k = k.wrapping_add(n as u64);
                     continue;
                 }
-                let load = mixture_for(target, &p.palette, p.charge);
+                // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
+                let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
+                let load = mixture_for(load_target, &p.palette, p.charge);
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
@@ -698,6 +796,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 placed += 1;
                 in_pass += 1;
+                if let Some(pr) = progress {
+                    if placed % 64 == 0 {
+                        pr(placed);
+                    }
+                }
                 score.strokes.push(StrokeRecord {
                     id: placed as u32,
                     wipe: false,
@@ -731,6 +834,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         tracing::info!(target: "plakat", "paint critic: rejected {} pass(es): {}", rejected.len(), rejected.join(", "));
     }
 
+    // CONTOUR pass (line media): DRAW the strongest edges as clean lines — pen/pencil/charcoal outline the
+    // subject, they don't only shade it. Laid before the bleed so a smudgy medium softens the lines a touch.
+    if p.contour > 0.0 && placed < p.budget {
+        contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
+    }
+
     // Wet-into-wet BLEED (watercolour / ink-wash): fuse the pigment into wet neighbours so colours bloom and
     // soften — the wet media's signature. Deterministic from the final wetness state, so replay reproduces it.
     if p.bleed > 0.0 {
@@ -738,6 +847,90 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     }
 
     PaintResult { canvas, strokes: placed, score, rejected }
+}
+
+/// The CONTOUR / line pass: draw the reference's strongest edges as clean dark lines that follow the edge
+/// tangent — the drawn linework of pen, pencil and charcoal (the boat, the figure, the tree outlines). Strokes
+/// are thin, low-waver, no-pickup, in the local dark colour, recorded into the score like any other stroke.
+fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    let sharp = imageops::unsharpen(input, 1.0, 1);
+    let luma = luma_map(&sharp);
+    let (gx, gy) = sobel(&luma, w, h);
+    let mag: Vec<f32> = gx.iter().zip(&gy).map(|(a, b)| (a * a + b * b).sqrt()).collect();
+    // Keep only the strongest edges; more `contour` → draw more of them.
+    let mut sorted = mag.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let keep = (0.03 + 0.12 * p.contour.clamp(0.0, 1.0)).min(0.3);
+    let thr = sorted[((1.0 - keep) * (sorted.len() as f32 - 1.0)) as usize].max(1e-3);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let radius = (p.min_brush * 0.7).max(1.5);
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.08;
+    brush.round = 0.95;
+    let cap = ((*placed) as f32 + (p.budget - *placed) as f32 * (0.08 + 0.14 * p.contour)).min(p.budget as f32) as usize;
+    let grid = radius.max(1.5);
+    let cols = ((w as f32) / grid).ceil() as u32;
+    let rows = ((h as f32) / grid).ceil() as u32;
+    for gyi in 0..rows {
+        for gxi in 0..cols {
+            if *placed >= cap {
+                break;
+            }
+            *k += 1;
+            let jx = jitter(p.seed ^ 0xC047, *k) * grid;
+            let jy = jitter(p.seed ^ 0xC048, k.wrapping_add(1)) * grid;
+            let cx = (gxi as f32 + 0.5) * grid + jx;
+            let cy = (gyi as f32 + 0.5) * grid + jy;
+            if cx < 1.0 || cy < 1.0 || cx >= w as f32 - 1.0 || cy >= h as f32 - 1.0 {
+                continue;
+            }
+            let i = cy as usize * w as usize + cx as usize;
+            if mag[i] < thr {
+                continue;
+            }
+            if let Some(m) = &p.protect {
+                if m.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+            }
+            // The line's colour: the darker side of the edge (its shadow line), toward the ink pigment.
+            let gnorm = mag[i].max(1e-6);
+            let (ux, uy) = (gx[i] / gnorm, gy[i] / gnorm);
+            let sx = (cx + ux * radius).clamp(0.0, w as f32 - 1.0);
+            let sy = (cy + uy * radius).clamp(0.0, h as f32 - 1.0);
+            let dark = sharp.get_pixel(sx as u32, sy as u32).0;
+            let dl = color::linear_luma(color::srgb_to_linear(dark));
+            let mut load = vec![0f32; p.palette.pigments.len()];
+            // Darker edges → a stronger (blacker) line; lighter edges → a fainter graphite line.
+            load[ink] = p.charge * (0.5 + 0.5 * (1.0 - dl)).clamp(0.35, 1.0);
+            // Grow along the edge tangent (the isophote): a clean, low-waver drawn line.
+            let path = grow_path(cx, cy, radius, &gx, &gy, &sharp, dark, p.protect.as_deref(), None, None, 0.9);
+            if path.len() < 2 {
+                continue;
+            }
+            let path = waver_path(&path, 0.05 * radius, p.seed, *k);
+            let s = Stroke { path, width0: radius, width1: (radius * 0.7).max(1.0), load, pressure: 1.0, wetness: 0.4 };
+            s.rasterize(canvas, &brush);
+            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: false,
+                stage: "contour".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.3,
+                mix,
+                wet: s.wetness,
+                press: s.pressure,
+                streak: brush.streak,
+                round: brush.round,
+            });
+        }
+    }
 }
 
 /// An EDGE-HARDNESS field in `[0,1]` from the reference (RFC §7 / edge-control craft). Real painters don't
@@ -761,6 +954,64 @@ fn edge_hardness(input: &RgbImage, strength: f32) -> (Vec<f32>, f32) {
     // Threshold: only the strongest few edges are "hard". Higher strength lowers the bar (more hard edges).
     let thr = (0.82 - 0.42 * strength.clamp(0.0, 1.0)).clamp(0.35, 0.85);
     (mag, thr)
+}
+
+/// SALIENCY field (opt-in density gate): a smooth per-pixel importance map — high where the reference carries
+/// STRUCTURE (the focal subject, edges, texture) and low in flat, empty passages (a plain sky, a blank wall or
+/// curtain). Built from the luma-gradient energy spread to a REGIONAL scale (so it marks "this area is busy",
+/// not "this pixel is an edge") and normalised by a high percentile. Used to thin stroke density where it is
+/// low, so the subject is worked up while the background stays a calm mass. Deterministic (replay-exact).
+fn saliency_field(input: &RgbImage) -> Vec<f32> {
+    let (w, h) = (input.width(), input.height());
+    let luma = luma_map(&imageops::blur(input, 1.0));
+    let (gx, gy) = sobel(&luma, w, h);
+    let mut mag: Vec<f32> = gx.iter().zip(&gy).map(|(a, b)| (a * a + b * b).sqrt()).collect();
+    // Normalise the edge energy first, then SPREAD it over a region so a busy area lifts its whole neighbourhood.
+    let mut sorted = mag.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let p95 = sorted[((sorted.len() as f32 - 1.0) * 0.95) as usize].max(1e-3);
+    for m in &mut mag {
+        *m = (*m / p95).clamp(0.0, 1.0);
+    }
+    let buf = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(mag[(y * w + x) as usize] * 255.0) as u8]));
+    let region = (w.min(h) as f32 * 0.045).clamp(4.0, 48.0);
+    let blurred = imageops::blur(&buf, region);
+    let mut sal: Vec<f32> = blurred.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+    // Renormalise the spread field so the busiest region reaches 1 (the flat passages sit near 0).
+    let mut s2 = sal.clone();
+    s2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let hi = s2[((s2.len() as f32 - 1.0) * 0.90) as usize].max(1e-3);
+    for s in &mut sal {
+        *s = (*s / hi).clamp(0.0, 1.0);
+    }
+    sal
+}
+
+/// FOCAL field for SELECTIVE DETAIL: the saliency field weighted by a CENTRE PRIOR (a broad Gaussian centred on
+/// the canvas). Raw saliency marks a large busy texture (a beard, foliage) just as high as a compact focal
+/// feature, so it alone can't tell "the eye's destination" from "a busy mass". The centre prior — the standard
+/// saliency centre-bias — lifts the compact, central, high-contrast region (a portrait's eyes/glasses) above
+/// the peripheral mass, so the crisp detail tier fires where the eye goes and the rest stays a loose wash.
+/// Generic (no face model, no scene assumption): just centre-weighted contrast. Normalised to [0,1].
+fn focal_field(input: &RgbImage) -> Vec<f32> {
+    let (w, h) = (input.width(), input.height());
+    let sal = saliency_field(input);
+    let (cx, cy) = (w as f32 * 0.5, h as f32 * 0.5);
+    let s = (w.min(h) as f32 * 0.38).max(1.0);
+    let denom = 2.0 * s * s;
+    let mut f: Vec<f32> = (0..(w as usize * h as usize))
+        .map(|i| {
+            let x = (i as u32 % w) as f32;
+            let y = (i as u32 / w) as f32;
+            let d2 = (x - cx).powi(2) + (y - cy).powi(2);
+            sal[i] * (-d2 / denom).exp()
+        })
+        .collect();
+    let mx = f.iter().copied().fold(0.0_f32, f32::max).max(1e-3);
+    for v in &mut f {
+        *v /= mx;
+    }
+    f
 }
 
 
