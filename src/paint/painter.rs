@@ -94,6 +94,10 @@ pub struct PaintParams {
     /// structure survives but DETAIL does not — the brush must invent the surface rather than trace it. `None`
     /// keeps the reference full-resolution (the P0 from-image behaviour).
     pub armature_side: Option<u32>,
+    /// FOCAL armature resolution (RFC §5.2): when set with a `face_mask`, the face region is built from a FINER
+    /// armature (this size) than the rest of the canvas (`armature_side`), so the beard/background become washes
+    /// while the face stays crisp — variable-resolution structure in one pass. `None` = uniform armature.
+    pub armature_face_side: Option<u32>,
     /// Charge multiplier for a stroke's load (how much paint the brush holds vs its footprint).
     pub charge: f32,
     /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
@@ -182,12 +186,27 @@ pub struct PaintParams {
     /// Built by the CLI (which owns the model/device); `None` = no face preservation. Takes priority over the
     /// centre-prior focal field when present.
     pub face_mask: Option<Vec<f32>>,
+    /// SPLATTER (0..1, 0 = off): flick fine pigment droplets across the painting — the watercolour/ink spatter
+    /// mark. Higher = denser spray. Recorded as strokes (replay-exact). See `splatter_pass`.
+    pub splatter: f32,
+    /// EDGE POOLING (0..1, 0 = off): darken pigment where a wash meets a hard boundary — the pigment ring a
+    /// watercolour wash dries into (the "cauliflower"/edge-bloom look). An output-stage effect (see `Finish`).
+    pub edge_pool: f32,
+    /// PAPER EDGE (0..1, 0 = off): fade the painting to bare paper at the borders with an irregular DECKLED edge
+    /// — the torn-paper vignette a watercolour sits in. An output-stage effect (see `Finish`).
+    pub paper_edge: f32,
+    /// FINISH GRADE (painting-safe, recorded for replay). CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
+    pub contrast: f32,
+    /// WARMTH (−1..1, 0 = neutral): white-balance shift, + warm / − cool.
+    pub warmth: f32,
+    /// CLARITY (0..1, 0 = off): gentle LOCAL contrast (large-radius unsharp) — NOT edge sharpening.
+    pub clarity: f32,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
     }
 }
 
@@ -486,6 +505,21 @@ fn recede(input: &RgbImage, depth: &[f32], haze: f32) -> RgbImage {
 
 /// Coarsen an image to an ARMATURE: downsample to `side` (longest edge) then upsample back, smoothly — so the
 /// structure survives but the fine detail is gone. The brush then invents the surface instead of tracing it.
+/// Per-pixel blend of two same-size armatures by a 0..1 mask: `mask=1` takes `fine`, `mask=0` takes `coarse`.
+/// Used for the focal armature — fine inside the (feathered) face, coarse outside.
+fn blend_by_mask(coarse: &RgbImage, fine: &RgbImage, mask: &[f32], w: u32, h: u32) -> RgbImage {
+    RgbImage::from_fn(w, h, |x, y| {
+        let m = mask[(y * w + x) as usize].clamp(0.0, 1.0);
+        let c = coarse.get_pixel(x, y).0;
+        let f = fine.get_pixel(x, y).0;
+        image::Rgb([
+            (c[0] as f32 * (1.0 - m) + f[0] as f32 * m).round() as u8,
+            (c[1] as f32 * (1.0 - m) + f[1] as f32 * m).round() as u8,
+            (c[2] as f32 * (1.0 - m) + f[2] as f32 * m).round() as u8,
+        ])
+    })
+}
+
 fn coarsen(img: &RgbImage, side: u32) -> RgbImage {
     let (w, h) = img.dimensions();
     let scale = side as f32 / w.max(h) as f32;
@@ -535,7 +569,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let armature_owned;
     let input: &RgbImage = match p.armature_side.filter(|&s| s > 0) {
         Some(s) => {
-            armature_owned = coarsen(input, s);
+            let coarse = coarsen(input, s);
+            // FOCAL armature (RFC §5.2): build the FACE from a finer armature than the rest, blended by the face
+            // mask — a wash beard/background AND a crisp face in one pass. Falls back to a uniform coarse armature.
+            armature_owned = match (&p.face_mask, p.armature_face_side) {
+                (Some(mask), Some(fs)) if mask.len() == (w * h) as usize && fs > s => {
+                    let fine = coarsen(input, fs);
+                    blend_by_mask(&coarse, &fine, mask, w, h)
+                }
+                _ => coarse,
+            };
             &armature_owned
         }
         None => input,
@@ -581,7 +624,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, lift: p.lift },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift },
         strokes: Vec::new(),
     };
 
@@ -840,6 +883,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
+    // SPLATTER pass (watercolour / ink): flick droplets across the painting — the signature spatter. Laid before
+    // the bleed so wet media soften a few of the spots into little blooms.
+    if p.splatter > 0.0 && placed < p.budget {
+        splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
+    }
+
     // Wet-into-wet BLEED (watercolour / ink-wash): fuse the pigment into wet neighbours so colours bloom and
     // soften — the wet media's signature. Deterministic from the final wetness state, so replay reproduces it.
     if p.bleed > 0.0 {
@@ -928,6 +977,108 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
                 press: s.pressure,
                 streak: brush.streak,
                 round: brush.round,
+            });
+        }
+    }
+}
+
+/// The SPLATTER pass: flick fine droplets of pigment across the painting — the signature spatter of a loaded
+/// brush tapped over the paper (visible in nearly every loose watercolour). Most droplets are tiny DARK spots in
+/// the palette's darkest pigment; a few are coarser blobs; and — on a surface-white medium — a fraction LIFT to
+/// the paper for the bright speckle of spray/snow/sparkle. Positions come from a hash so the spatter is even but
+/// unstructured, and every droplet is recorded into the score (the bright ones as wipe strokes at `wet*lift`,
+/// exactly as replay applies them) so a re-render reproduces it. `splatter` scales the count.
+fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    let strength = p.splatter.clamp(0.0, 1.0);
+    if strength <= 0.0 {
+        return;
+    }
+    // One droplet per ~1400 px at full strength; capped well under the budget so spatter never dominates.
+    let want = (w as f32 * h as f32 / 1400.0 * strength) as usize;
+    let n = want.min(p.budget.saturating_sub(*placed)).min(8000);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let np = p.palette.pigments.len();
+    let can_lift = p.reserve.is_some() && p.lift > 1e-3;
+    // BACKGROUND BIAS — real spatter lands on the clean paper, not over the subject's face. Bias droplets toward
+    // LOW-saliency (background/margin) regions and keep them OFF the detected face, so spatter reads as a tasteful
+    // accent instead of muddying the subject. Deterministic (recorded strokes replay regardless).
+    let sal = saliency_field(input);
+    // Use the score's base brush UNCHANGED (streak/round are recorded per-stroke below): a tiny droplet is
+    // barely affected by pickup, and keeping the header brush is what makes replay byte-identical (replay
+    // rebuilds each stroke's brush from the header + recorded streak/round — an unrecorded override would drift).
+    let mut brush = p.brush;
+    brush.streak = 0.0;
+    brush.round = 1.0;
+    for _ in 0..n {
+        *k = k.wrapping_add(1);
+        let hx = jitter(p.seed ^ 0x5D19, *k) + 0.5;
+        let hy = jitter(p.seed ^ 0x9C4B, k.wrapping_add(11)) + 0.5;
+        let cx = (hx * w as f32).clamp(1.0, w as f32 - 2.0);
+        let cy = (hy * h as f32).clamp(1.0, h as f32 - 2.0);
+        let i = cy as usize * w as usize + cx as usize;
+        if let Some(m) = &p.protect {
+            if m.get(i).copied().unwrap_or(false) {
+                continue;
+            }
+        }
+        // Skip the detected FACE entirely — never spatter over the face.
+        if let Some(fm) = &p.face_mask {
+            if fm.get(i).copied().unwrap_or(0.0) > 0.35 {
+                continue;
+            }
+        }
+        // Background bias: the busier (higher-saliency) a spot, the more likely the droplet is dropped, so most
+        // land on the calm background/margins. `hb` in [0,1] from an independent hash stream.
+        let hb = jitter(p.seed ^ 0x1B7F, k.wrapping_add(17)) + 0.5;
+        if hb < sal[i] * 0.9 {
+            continue;
+        }
+        let rr = (jitter(p.seed ^ 0x2AE7, k.wrapping_add(3)) + 0.5).clamp(0.0, 1.0);
+        // Mostly fine (sub-pixel to ~2px); a short tail of coarser blobs.
+        let radius = if rr > 0.94 { 2.0 + 3.0 * (rr - 0.94) / 0.06 } else { 0.6 + 1.2 * rr };
+        let path = vec![[cx, cy], [cx + 0.6, cy + 0.4]];
+        let lift = can_lift && (jitter(p.seed ^ 0x71C3, k.wrapping_add(5)) + 0.5) < 0.22 * strength;
+        if lift {
+            // Bright droplet: scrape to the paper. Apply at wet*lift so replay (same formula) matches exactly.
+            let wet = 1.6_f32;
+            let s = Stroke { path, width0: radius, width1: radius, load: vec![0.0; np], pressure: 1.0, wetness: wet };
+            s.wipe(canvas, &brush, wet * p.lift);
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: true,
+                stage: "splatter".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.0,
+                mix: Vec::new(),
+                wet,
+                press: 1.0,
+                streak: 0.0,
+                round: 1.0,
+            });
+        } else {
+            let mut load = vec![0f32; np];
+            load[ink] = p.charge * (0.45 + 0.55 * rr);
+            let s = Stroke { path, width0: radius, width1: radius, load, pressure: 1.0, wetness: 0.5 };
+            s.rasterize(canvas, &brush);
+            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: false,
+                stage: "splatter".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.0,
+                mix,
+                wet: s.wetness,
+                press: 1.0,
+                streak: 0.0,
+                round: 1.0,
             });
         }
     }

@@ -49,7 +49,7 @@ luminous watercolour, a matte gouache, a graded ink wash, a graphite pencil land
 | `model`            | —                   | `sdxl` `sd35` `sana` `sd15` `pixart` `pony` `flux` | Armature model — the **ceiling** for the painting. |
 | `steps`            | —                   | 1–100                                  | Armature diffusion steps. More = clearer figure / net / faces. |
 | `medium`           | —                   | see techniques below                   | The technique — sets all behaviour defaults. |
-| `palette`          | —                   | `zorn` `split-primary` `verdaccio` `earth` `limited-landscape` `sumi` | Pigment set (subtractive Kubelka‑Munk mixing). |
+| `palette`          | `--palette`         | `zorn` `split-primary` `verdaccio` `earth` `limited-landscape` `sumi` · time/mood presets · `image` | Pigment set (subtractive Kubelka‑Munk mixing). `image`/`auto` derives from the reference. **All names & presets → [PAINT_PALETTE.md](PAINT_PALETTE.md).** |
 | `style`            | `--style`           | `fidelity` \| `legible` \| `impressionist` | How closely to track the armature. |
 | `define`           | `--define`          | 0..1                                   | Edge hardness — how many boundaries meet crisply. |
 | `haze`             | `--haze`            | 0..1                                   | Aerial perspective (background recession). Use **0** with `fidelity`. |
@@ -71,6 +71,16 @@ luminous watercolour, a matte gouache, a graded ink wash, a graphite pencil land
 | `reserve`          | `--reserve`         | 0..1 (default 0.72, surface‑white)     | Paper‑white cutoff — cells brighter than this keep bare paper (no stroke). Raise toward 1 to **close white holes** in light passages; lower to keep more paper. |
 | `focus_detail`     | `--focus-detail`    | 0..1 (0 = off, opt‑in)                 | Selective detail — paint the masses **loose** but fire the crisp detail tier only in a central focal region (saliency × centre prior). Loose‑wash + sharp accents. Pair with `--style impressionist`. Small = tighter focus. |
 | `preserve_face`    | `--preserve-face`   | 0..1 (0 = off, opt‑in)                 | Like `focus_detail` but the focal region is the **detected face box** (SCRFD), so crisp detail lands on the real face however it sits. Higher = more of the (feathered) face kept crisp. Needs a reference/photo with a face. |
+| `splatter`         | `--splatter`        | 0..1 (0 = off, opt‑in)                 | Flick fine pigment **droplets** across the painting — watercolour/ink spatter (spray, snow, sparkle, freckles). Recorded strokes (replay‑exact). |
+| `edge_pool`        | `--edge-pool`       | 0..1 (0 = off, opt‑in)                 | Darken pigment at **wash boundaries** — the watercolour edge‑bloom / "cauliflower" ring. Output stage, recorded. |
+| `paper_edge`       | `--paper-edge`      | 0..1 (0 = off, opt‑in)                 | Fade to a **deckled bare‑paper border** — the torn‑paper watercolour vignette. Output stage, recorded. |
+| `contrast`         | `--contrast`        | 0.5..2 (1 = neutral)                   | Finish‑grade tonal **contrast** (S‑curve). Painting‑safe, recorded for replay. |
+| `warmth`           | `--warmth`          | −1..1 (0 = neutral)                    | Finish **white‑balance** shift — + warm (amber), − cool (blue). Recorded for replay. |
+| `clarity`          | `--clarity`         | 0..1 (0 = off)                         | Gentle **local contrast** (midtone punch) — NOT edge sharpening (that would re‑introduce photographic detail). Recorded for replay. |
+| —                  | `--armature`        | px (~48–96)                            | **Paint from a COARSE armature**, not the photo — the plan‑vs‑pixels switch (stops tracing → no beard scribble). Unset = filter mode. See [PAINT_PLAN.md](PAINT_PLAN.md). |
+| —                  | `--armature-face`   | px (~160–220)                          | With `--armature`, paint the detected FACE from a finer armature — crisp face + wash body in one pass. |
+| —                  | `--plan`            | `auto` \| path                         | Analyze the image (art director) → structural plan, or load a `plan.hjson`. Fills unset structural flags. See [PAINT_PLAN.md](PAINT_PLAN.md). |
+| —                  | `--value-key`       | 0..1 (`paint from`)                    | Expand the reference's tonal range before painting — real darks/lights vs a foggy midtone. |
 | `surface.size`     | `--size`            | `WxH`                                  | Output size. |
 | `seed`             | —                   | int                                    | Reproducible. |
 

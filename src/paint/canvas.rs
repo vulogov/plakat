@@ -306,6 +306,35 @@ impl Canvas {
                 }
             }
         }
+        // EDGE POOLING — a watercolour wash dries into a darker pigment RING at its boundary (the "cauliflower" /
+        // edge-bloom). Darken where the PAINT AMOUNT changes fastest — the rim of a wash — scaled by `edge_pool`.
+        if f.edge_pool > 1e-3 {
+            let mut amt = vec![0f32; w * h];
+            for (idx, a) in amt.iter_mut().enumerate() {
+                let total: f32 = self.conc[idx * self.n..idx * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                *a = (1.0 - (-1.6 * total).exp()).clamp(0.0, 1.0);
+            }
+            for y in 0..h {
+                for x in 0..w {
+                    let xl = x.saturating_sub(1);
+                    let xr = (x + 1).min(w - 1);
+                    let yt = y.saturating_sub(1);
+                    let yb = (y + 1).min(h - 1);
+                    let gx = amt[y * w + xr] - amt[y * w + xl];
+                    let gy = amt[yb * w + x] - amt[yt * w + x];
+                    let g = (gx * gx + gy * gy).sqrt();
+                    let here = amt[y * w + x];
+                    let d = (f.edge_pool * g * 1.6 * here).clamp(0.0, 0.5);
+                    if d < 1e-3 {
+                        continue;
+                    }
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    for cc in 0..3 {
+                        p.0[cc] = (p.0[cc] as f32 * (1.0 - d)).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
         // IMPASTO + SHEEN relight from the paint HEIGHT.
         if f.impasto > 1e-4 || f.sheen > 1e-4 {
             let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
@@ -342,6 +371,66 @@ impl Canvas {
                 }
             }
         }
+        // FINISH GRADE — a painting-safe tonal grade (the SAFE subset of a naturalize pass): CONTRAST (S-curve
+        // around mid-grey), WARMTH (white balance), and CLARITY (gentle LOCAL contrast — a large-radius unsharp,
+        // midtone punch, NOT edge sharpening that would re-introduce photographic detail). Whole-image, recorded
+        // in the score so replay reproduces it.
+        let grade = (f.contrast - 1.0).abs() > 1e-3 || f.warmth.abs() > 1e-3 || f.clarity > 1e-3;
+        if grade {
+            let contrast = f.contrast.clamp(0.3, 3.0);
+            let warmth = f.warmth.clamp(-1.0, 1.0);
+            let clarity = f.clarity.clamp(0.0, 1.0);
+            let blurred: Option<RgbImage> = (clarity > 1e-3).then(|| image::imageops::blur(&img, (w.min(h) as f32 * 0.02).clamp(2.0, 20.0)));
+            for y in 0..h {
+                for x in 0..w {
+                    let bp = blurred.as_ref().map(|b| b.get_pixel(x as u32, y as u32).0);
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    let mut c = [p.0[0] as f32 / 255.0, p.0[1] as f32 / 255.0, p.0[2] as f32 / 255.0];
+                    if (contrast - 1.0).abs() > 1e-3 {
+                        for v in c.iter_mut() {
+                            *v = (0.5 + (*v - 0.5) * contrast).clamp(0.0, 1.0);
+                        }
+                    }
+                    if warmth.abs() > 1e-3 {
+                        c[0] = (c[0] + warmth * 0.12).clamp(0.0, 1.0);
+                        c[2] = (c[2] - warmth * 0.12).clamp(0.0, 1.0);
+                    }
+                    if let Some(b) = bp {
+                        for i in 0..3 {
+                            let lo = b[i] as f32 / 255.0;
+                            c[i] = (c[i] + clarity * 0.6 * (c[i] - lo)).clamp(0.0, 1.0);
+                        }
+                    }
+                    for i in 0..3 {
+                        p.0[i] = (c[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+        // PAPER EDGE — fade to bare paper at the borders with an IRREGULAR deckled edge (the torn-paper vignette a
+        // watercolour sits in). The fade band's inner boundary wobbles per-pixel via the grain hash, so the edge
+        // reads as torn paper, not a clean rectangle. Paper tone = a warm near-white.
+        if f.paper_edge > 1e-3 {
+            let paper = [249.0_f32, 246.0, 240.0];
+            let band = (w.min(h) as f32 * (0.03 + 0.12 * f.paper_edge.clamp(0.0, 1.0))).max(2.0);
+            for y in 0..h {
+                for x in 0..w {
+                    let d = x.min(w - 1 - x).min(y).min(h - 1 - y) as f32;
+                    // Irregular inner boundary: the band width wobbles with a low-frequency hash of the position.
+                    let wob = 0.55 + 0.9 * grain(x / 3, y / 3, f.seed ^ 0x9E37);
+                    let edge = band * wob;
+                    if d >= edge {
+                        continue;
+                    }
+                    let t = (1.0 - d / edge).clamp(0.0, 1.0);
+                    let fade = t * t; // ease in toward the very border
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    for cc in 0..3 {
+                        p.0[cc] = (p.0[cc] as f32 * (1.0 - fade) + paper[cc] * fade).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
         img
     }
 }
@@ -359,13 +448,25 @@ pub struct Finish {
     pub granulate: f32,
     /// Gloss sheen (specular highlight on ridges — oil).
     pub sheen: f32,
+    /// Edge pooling (0..1): darken pigment at wash boundaries — the watercolour edge-bloom / "cauliflower" ring.
+    pub edge_pool: f32,
+    /// Paper edge (0..1): fade the painting to bare paper at the borders with an irregular DECKLED edge — the
+    /// torn-paper vignette a watercolour sits in. 0 = full-bleed rectangle.
+    pub paper_edge: f32,
+    /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
+    /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
+    pub contrast: f32,
+    /// WARMTH (−1..1, 0 = neutral): white-balance shift — + warms (toward amber), − cools (toward blue).
+    pub warmth: f32,
+    /// CLARITY (0..1, 0 = off): gentle LOCAL contrast (large-radius unsharp) — midtone punch, NOT edge sharpening.
+    pub clarity: f32,
     /// Grain seed (deterministic granulation for exact replay).
     pub seed: u64,
 }
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, seed: 0 }
+        Self { impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 

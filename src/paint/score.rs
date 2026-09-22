@@ -11,13 +11,28 @@ use anyhow::{bail, Context, Result};
 
 use crate::paint::canvas::Canvas;
 use crate::paint::palette::Palette;
+use crate::paint::pigment::Pigment;
 use crate::paint::stroke::{BrushConfig, Stroke};
+
+/// Reconstruct a `Palette` from recorded pigment definitions (`name`, sRGB). The `Palette`/`Pigment` types hold
+/// `&'static` data, so the reconstructed set is leaked — bounded by the number of palettes a single CLI run
+/// replays, which is small.
+fn palette_from_defs(name: &str, defs: &[(String, [u8; 3])]) -> Palette {
+    let pigs: Vec<Pigment> = defs
+        .iter()
+        .map(|(n, rgb)| Pigment { name: Box::leak(n.clone().into_boxed_str()), masstone: *rgb })
+        .collect();
+    Palette { name: Box::leak(name.to_string().into_boxed_str()), pigments: Box::leak(pigs.into_boxed_slice()) }
+}
 
 /// The score header — everything replay needs to reconstruct the canvas identically.
 #[derive(Clone, Debug)]
 pub struct ScoreHeader {
     pub version: u32,
     pub palette: String,
+    /// The palette's pigment definitions (`name`, sRGB masstone), so a DERIVED palette (`--palette image`) — or
+    /// any palette — replays without the binary knowing it. Empty = resolve `palette` by name (old scores).
+    pub pigments: Vec<(String, [u8; 3])>,
     pub medium: String,
     pub seed: u64,
     pub width: u32,
@@ -37,6 +52,14 @@ pub struct ScoreHeader {
     pub dry_shift: f32,
     pub granulate: f32,
     pub sheen: f32,
+    /// EDGE POOLING — darken pigment at wash boundaries (watercolour edge-bloom), applied at output.
+    pub edge_pool: f32,
+    /// PAPER EDGE — fade to a deckled paper border at output (torn-paper vignette).
+    pub paper_edge: f32,
+    /// FINISH GRADE (painting-safe tonal grade, applied at output): contrast, warmth (WB), clarity (local contrast).
+    pub contrast: f32,
+    pub warmth: f32,
+    pub clarity: f32,
     /// LIFT — wipe removability (staining), applied during painting.
     pub lift: f32,
 }
@@ -71,6 +94,11 @@ impl ScoreHeader {
             dry_shift: self.dry_shift,
             granulate: self.granulate,
             sheen: self.sheen,
+            edge_pool: self.edge_pool,
+            paper_edge: self.paper_edge,
+            contrast: self.contrast,
+            warmth: self.warmth,
+            clarity: self.clarity,
             seed: self.seed,
         }
     }
@@ -103,9 +131,13 @@ impl StrokeScore {
         o.push_str("# plakat stroke score v1\n");
         let ground = h.ground.map(|g| format!(" ground={},{},{}", g[0], g[1], g[2])).unwrap_or_default();
         o.push_str(&format!(
-            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} lift={}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.lift), ground,
+            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
         ));
+        // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
+        for (name, rgb) in &h.pigments {
+            o.push_str(&format!("P {} {} {} {}\n", name, rgb[0], rgb[1], rgb[2]));
+        }
         for s in &self.strokes {
             let spline = s.spline.iter().map(|p| format!("{},{}", fmt_f(p[0]), fmt_f(p[1]))).collect::<Vec<_>>().join(";");
             let mix = s.mix.iter().map(|(n, v)| format!("{n}:{}", fmt_f(*v))).collect::<Vec<_>>().join(",");
@@ -132,6 +164,7 @@ impl StrokeScore {
     pub fn parse(text: &str) -> Result<Self> {
         let mut header: Option<ScoreHeader> = None;
         let mut strokes = Vec::new();
+        let mut pigments: Vec<(String, [u8; 3])> = Vec::new();
         for (lineno, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -150,6 +183,7 @@ impl StrokeScore {
                     header = Some(ScoreHeader {
                         version: 1,
                         palette: get("palette"),
+                        pigments: Vec::new(),
                         medium: get("medium"),
                         seed: get("seed").parse().unwrap_or(0),
                         width: w,
@@ -166,6 +200,11 @@ impl StrokeScore {
                         dry_shift: get("dryshift").parse().unwrap_or(0.0),
                         granulate: get("granulate").parse().unwrap_or(0.0),
                         sheen: get("sheen").parse().unwrap_or(0.0),
+                        edge_pool: get("edgepool").parse().unwrap_or(0.0),
+                        paper_edge: get("paperedge").parse().unwrap_or(0.0),
+                        contrast: get("contrast").parse().unwrap_or(1.0),
+                        warmth: get("warmth").parse().unwrap_or(0.0),
+                        clarity: get("clarity").parse().unwrap_or(0.0),
                         lift: get("lift").parse().unwrap_or(1.0),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
@@ -207,11 +246,23 @@ impl StrokeScore {
                         round: get("round").parse().unwrap_or(0.7),
                     });
                 }
+                "P" => {
+                    // Pigment definition: `P <name> <r> <g> <b>`.
+                    let name = it.next().unwrap_or("").to_string();
+                    let mut rgb = [0u8; 3];
+                    for c in rgb.iter_mut() {
+                        *c = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    }
+                    if !name.is_empty() {
+                        pigments.push((name, rgb));
+                    }
+                }
                 "C" => { /* checkpoint markers ignored on parse in this slice */ }
                 _ => bail!("stroke score: unrecognised record on line {}: {:?}", lineno + 1, tag),
             }
         }
-        let header = header.context("stroke score: missing H header line")?;
+        let mut header = header.context("stroke score: missing H header line")?;
+        header.pigments = pigments;
         Ok(StrokeScore { header, strokes })
     }
 
@@ -310,7 +361,13 @@ impl StrokeScore {
 
     /// Resolve the palette, scaled brush, and scale factors shared by every replay path.
     fn replay_setup(&self, out_w: u32, out_h: u32) -> Result<(Palette, BrushConfig, f32, f32, f32)> {
-        let palette = Palette::by_name(&self.header.palette).with_context(|| format!("stroke score: unknown palette {:?}", self.header.palette))?;
+        // Prefer the score's own pigment definitions (self-contained — works for a derived `image` palette or any
+        // palette the running binary doesn't know); fall back to a built-in by name for old, pigment-less scores.
+        let palette = if !self.header.pigments.is_empty() {
+            palette_from_defs(&self.header.palette, &self.header.pigments)
+        } else {
+            Palette::by_name(&self.header.palette).with_context(|| format!("stroke score: unknown palette {:?}", self.header.palette))?
+        };
         let sx = out_w as f32 / self.header.width.max(1) as f32;
         let sy = out_h as f32 / self.header.height.max(1) as f32;
         let ss = (sx * sy).sqrt();
@@ -336,7 +393,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0 },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7 },
                 StrokeRecord { id: 2, wipe: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7 },
@@ -408,7 +465,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0 };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
         let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7 };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7 };

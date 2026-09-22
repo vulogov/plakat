@@ -89,6 +89,18 @@ pub struct PaintSpec {
     /// PRESERVE FACE (0..1, 0 = off — opt-in): detect the face(s) and fire the crisp detail tier only on the real
     /// face box (loose elsewhere). Model-targeted variant of `focus_detail`; needs a `reference:` to detect on.
     pub preserve_face: Option<f32>,
+    /// SPLATTER (0..1, 0 = off — opt-in): flick fine pigment droplets across the painting — watercolour/ink spatter.
+    pub splatter: Option<f32>,
+    /// EDGE POOLING (0..1, 0 = off — opt-in): darken pigment at wash boundaries — the watercolour edge-bloom ring.
+    pub edge_pool: Option<f32>,
+    /// PAPER EDGE (0..1, 0 = off — opt-in): fade to a deckled bare-paper border — the torn-paper watercolour vignette.
+    pub paper_edge: Option<f32>,
+    /// FINISH GRADE (painting-safe, recorded for replay): CONTRAST (0.5..2, 1 = neutral).
+    pub contrast: Option<f32>,
+    /// WARMTH (−1..1, 0 = neutral): finish white-balance shift, + warm / − cool.
+    pub warmth: Option<f32>,
+    /// CLARITY (0..1, 0 = off): gentle local contrast (not edge sharpening).
+    pub clarity: Option<f32>,
     /// Brushwork plan: the default brush and, later, per-element assignments (see `BrushworkSpec`).
     pub brushwork: Option<BrushworkSpec>,
     /// COMPOSITION LAYERS (per-element painting): render, matte and paint each element on its own layer, back to

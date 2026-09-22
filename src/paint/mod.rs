@@ -22,6 +22,7 @@ pub mod medium;
 pub mod mixer;
 pub mod painter;
 pub mod palette;
+pub mod plan;
 pub mod pigment;
 pub mod score;
 pub mod seam;

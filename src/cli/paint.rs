@@ -74,6 +74,24 @@ pub struct PaintArgs {
     /// — loose everywhere else. Like --focus-detail but model-targeted. Higher = more of the face preserved crisp.
     #[arg(long)]
     pub preserve_face: Option<f32>,
+    /// SPLATTER (0..1, opt-in): flick fine pigment droplets across the painting — the watercolour/ink spatter mark.
+    #[arg(long)]
+    pub splatter: Option<f32>,
+    /// EDGE POOLING (0..1, opt-in): darken pigment at wash boundaries — the watercolour edge-bloom / "cauliflower".
+    #[arg(long)]
+    pub edge_pool: Option<f32>,
+    /// PAPER EDGE (0..1, opt-in): fade to a deckled bare-paper border — the torn-paper vignette a watercolour sits in.
+    #[arg(long)]
+    pub paper_edge: Option<f32>,
+    /// CONTRAST (0.5..2, 1 = neutral): painting-safe finish grade, recorded for replay.
+    #[arg(long)]
+    pub contrast: Option<f32>,
+    /// WARMTH (−1..1, 0 = neutral): finish white-balance shift (+ warm / − cool), recorded for replay.
+    #[arg(long)]
+    pub warmth: Option<f32>,
+    /// CLARITY (0..1, opt-in): gentle LOCAL contrast (not edge sharpening), recorded for replay.
+    #[arg(long)]
+    pub clarity: Option<f32>,
     /// Also print the traceability.
     #[arg(long)]
     pub report: bool,
@@ -115,6 +133,23 @@ pub enum PaintCmd {
     Timelapse(TimelapseArgs),
     /// Inspect a built-in palette's pigments.
     Palette(PaletteArgs),
+    /// Analyze an image (art director) and write a PAINTING PLAN — the structural decisions the paint stage runs.
+    Plan(PlanArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PlanArgs {
+    /// The image to analyze (a photo or a generation).
+    pub input: PathBuf,
+    /// Where to write the plan (HJSON). Default: alongside the image as `<name>.plan.hjson`. `-` = stdout.
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// The medium the plan targets (drives the reserve decision).
+    #[arg(long, default_value = "watercolour")]
+    pub medium: String,
+    /// The palette the plan targets.
+    #[arg(long, default_value = "image")]
+    pub palette: String,
 }
 
 #[derive(Args, Debug)]
@@ -170,6 +205,12 @@ pub struct SpecArgs {
     pub reserve: Option<f32>,
     pub focus_detail: Option<f32>,
     pub preserve_face: Option<f32>,
+    pub splatter: Option<f32>,
+    pub edge_pool: Option<f32>,
+    pub paper_edge: Option<f32>,
+    pub contrast: Option<f32>,
+    pub warmth: Option<f32>,
+    pub clarity: Option<f32>,
 }
 
 /// Resize a per-pixel depth field from `(sw,sh)` to `(dw,dh)` and normalise it to `[0,1]` (min–max), so aerial
@@ -382,6 +423,48 @@ pub struct FromArgs {
     /// the face preserved crisp; lower = only the core. Pair with a loose base (`--style impressionist`).
     #[arg(long)]
     pub preserve_face: Option<f32>,
+    /// SPLATTER (0..1, opt-in): flick fine pigment droplets across the painting — the watercolour/ink spatter
+    /// mark (spray, snow, sparkle). Higher = denser. On surface-white media a few droplets lift to the paper.
+    #[arg(long)]
+    pub splatter: Option<f32>,
+    /// EDGE POOLING (0..1, opt-in): darken pigment where a wash meets a hard boundary — the watercolour
+    /// edge-bloom / "cauliflower" ring a drying wash leaves. Higher = stronger rings.
+    #[arg(long)]
+    pub edge_pool: Option<f32>,
+    /// PAPER EDGE (0..1, opt-in): fade to bare paper at the borders with an irregular DECKLED edge — the
+    /// torn-paper vignette a watercolour sits in. Higher = wider fade. Great for portraits on paper.
+    #[arg(long)]
+    pub paper_edge: Option<f32>,
+    /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
+    #[arg(long)]
+    pub contrast: Option<f32>,
+    /// WARMTH (−1..1, 0 = neutral): finish white-balance shift — + warm (amber), − cool (blue). Recorded for replay.
+    #[arg(long)]
+    pub warmth: Option<f32>,
+    /// CLARITY (0..1, opt-in): gentle LOCAL contrast (midtone punch) — NOT edge sharpening. Recorded for replay.
+    #[arg(long)]
+    pub clarity: Option<f32>,
+    /// VALUE KEY (0..1, opt-in): expand the reference's tonal range BEFORE painting so the picture reads with
+    /// real DARKS and LIGHTS instead of a foggy midtone — the biggest lever for punch from a low-contrast photo.
+    /// The spec path does this always; here it is a knob. 0 = off; ~0.7–1.0 for a flat photo.
+    #[arg(long)]
+    pub value_key: Option<f32>,
+    /// ARMATURE resolution (px, RFC §1.1/§5): paint from a COARSE structural armature at this short-side size
+    /// instead of the full-resolution photo, so the engine INVENTS the surface rather than TRACING detail (which
+    /// is what turns a beard into scribble). ~48–96 is the paintable range (§12.1). Unset = paint from the photo
+    /// (a filter — the RFC anti-pattern). This is the plan-vs-pixels switch.
+    #[arg(long)]
+    pub armature: Option<u32>,
+    /// FOCAL armature resolution (px, RFC §5.2): with `--armature`, paint the DETECTED FACE from a finer armature
+    /// (this size) than the rest — a wash beard/background AND a crisp face in one pass. ~160–220 works. Detects a
+    /// face automatically (no need for --preserve-face). Must be larger than --armature.
+    #[arg(long)]
+    pub armature_face: Option<u32>,
+    /// PAINTING PLAN (RFC §5): `auto` analyses the image (art director) and fills the structural decisions
+    /// (armature, focal armature, value-key, reserve, budget, medium, palette) that unset flags leave open; or a
+    /// path to a `plan.hjson` (from `plakat paint plan`) to paint from a saved/edited plan. Explicit flags win.
+    #[arg(long)]
+    pub plan: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -400,8 +483,9 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Export(a)) => run_export(a),
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
+        Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -489,6 +573,53 @@ fn stroke_summary(performed: usize, budget: usize) -> String {
     } else {
         format!("{performed} strokes laid")
     }
+}
+
+/// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
+fn luma_stddev(img: &image::RgbImage) -> f32 {
+    let n = (img.width() * img.height()).max(1) as f32;
+    let lumas = img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0);
+    let mean = lumas.clone().sum::<f32>() / n;
+    (lumas.map(|l| (l - mean).powi(2)).sum::<f32>() / n).sqrt()
+}
+
+/// Gather the signals the plan analyzer needs: a face count (SCRFD) and the tonal-contrast proxy.
+async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str) -> Result<crate::paint::plan::Analysis> {
+    let img = image::open(path).with_context(|| format!("opening {}", path.display()))?.to_rgb8();
+    let (w, h) = img.dimensions();
+    // Face presence via the detector (a mask is Some when a face is found).
+    let faces = match build_face_mask(path, w, h).await {
+        Ok(Some(_)) => 1,
+        _ => 0,
+    };
+    let surface_white = crate::paint::medium::MediumProfile::by_name(medium).map(|m| m.white_source == crate::paint::medium::WhiteSource::Surface).unwrap_or(false);
+    Ok(crate::paint::plan::Analysis {
+        faces,
+        luma_stddev: luma_stddev(&img),
+        medium: medium.to_string(),
+        palette: palette.to_string(),
+        short_side: w.min(h),
+        long_side: w.max(h),
+        surface_white,
+    })
+}
+
+async fn run_plan(a: PlanArgs) -> Result<()> {
+    let analysis = analyze_image(&a.input, &a.medium, &a.palette).await?;
+    let plan = crate::paint::plan::plan_from(&analysis);
+    let text = plan.to_hjson();
+    match a.out.as_deref() {
+        Some(p) if p.as_os_str() == "-" => print!("{text}"),
+        _ => {
+            let out = a.out.unwrap_or_else(|| a.input.with_extension("plan.hjson"));
+            std::fs::write(&out, &text).with_context(|| format!("writing {}", out.display()))?;
+            println!("{}  painting plan → {}", style("✓").green(), out.display());
+            for n in &plan.notes {
+                println!("{}  {n}", style("·").dim());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_new(a: NewArgs) -> Result<()> {
@@ -586,6 +717,12 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.contour = spec.contour.or(a.contour).unwrap_or(plan.medium.contour).clamp(0.0, 1.0);
     params.saliency = spec.saliency.or(a.saliency).unwrap_or(0.0).clamp(0.0, 1.0);
     params.focus_detail = spec.focus_detail.or(a.focus_detail).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.splatter = spec.splatter.or(a.splatter).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.edge_pool = spec.edge_pool.or(a.edge_pool).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.paper_edge = spec.paper_edge.or(a.paper_edge).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.contrast = spec.contrast.or(a.contrast).unwrap_or(1.0).clamp(0.3, 3.0);
+    params.warmth = spec.warmth.or(a.warmth).unwrap_or(0.0).clamp(-1.0, 1.0);
+    params.clarity = spec.clarity.or(a.clarity).unwrap_or(0.0).clamp(0.0, 1.0);
     // Paint from a LOW-RES ARMATURE (§1.1): coarsen the reference so the brush invents the surface instead of
     // tracing detail. Sized to the WORKING canvas (below).
     // Paint at a normalized WORKING resolution so the stroke budget (a style control, §9.1) gives a consistent
@@ -923,8 +1060,50 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_from(a: FromArgs) -> Result<()> {
-    let img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
+async fn run_from(mut a: FromArgs) -> Result<()> {
+    // PAINTING PLAN (RFC §5): resolve `--plan auto|<file>` FIRST and let it fill the structural decisions that
+    // unset flags leave open — the art director hands the technique a plan. Explicit flags always win.
+    if let Some(spec) = a.plan.clone() {
+        let plan = if spec == "auto" {
+            let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette).await?;
+            let p = crate::paint::plan::plan_from(&analysis);
+            println!("{}  plan (auto):", style("◆").cyan());
+            for n in &p.notes {
+                println!("{}  {n}", style("·").dim());
+            }
+            p
+        } else {
+            let text = std::fs::read_to_string(&spec).with_context(|| format!("reading plan {spec}"))?;
+            crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?
+        };
+        if a.medium.is_none() {
+            a.medium = Some(plan.medium.clone());
+        }
+        if a.palette == "zorn" {
+            a.palette = plan.palette.clone();
+        }
+        if a.style == "legible" {
+            a.style = plan.style.clone();
+        }
+        if a.armature.is_none() {
+            a.armature = Some(plan.armature);
+        }
+        if a.armature_face.is_none() {
+            a.armature_face = plan.armature_face;
+        }
+        if a.value_key.is_none() {
+            a.value_key = Some(plan.value_key);
+        }
+        if a.reserve.is_none() {
+            a.reserve = plan.reserve;
+        }
+        if a.budget == 1500 {
+            if let Some(b) = plan.budget {
+                a.budget = b;
+            }
+        }
+    }
+    let mut img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
 
     // Palette: `image`/`auto` derives one from the reference; otherwise a named palette (defaulting to the
@@ -1024,17 +1203,58 @@ async fn run_from(a: FromArgs) -> Result<()> {
     if let Some(fd) = a.focus_detail {
         params.focus_detail = fd.clamp(0.0, 1.0);
     }
+    if let Some(sp) = a.splatter {
+        params.splatter = sp.clamp(0.0, 1.0);
+    }
+    if let Some(ep) = a.edge_pool {
+        params.edge_pool = ep.clamp(0.0, 1.0);
+    }
+    if let Some(pe) = a.paper_edge {
+        params.paper_edge = pe.clamp(0.0, 1.0);
+    }
+    if let Some(ct) = a.contrast {
+        params.contrast = ct.clamp(0.3, 3.0);
+    }
+    if let Some(wm) = a.warmth {
+        params.warmth = wm.clamp(-1.0, 1.0);
+    }
+    if let Some(cl) = a.clarity {
+        params.clarity = cl.clamp(0.0, 1.0);
+    }
+    // Detect the face once if EITHER preserve-face (crisp detail tier) or armature-face (focal armature) needs it.
     if let Some(pf) = a.preserve_face {
         params.preserve_face = pf.clamp(0.0, 1.0);
+    }
+    params.armature_face_side = a.armature_face;
+    if a.preserve_face.is_some() || a.armature_face.is_some() {
         params.face_mask = build_face_mask(&a.input, w, h).await?;
         if params.face_mask.is_none() {
-            println!("{}  preserve-face: no face detected — painting without a face focal region", style("·").yellow());
+            println!("{}  face: none detected — painting without a face focal region", style("·").yellow());
         }
     }
     if a.haze > 0.0 {
         // A CPU depth proxy (central + low = near) so aerial perspective can be exercised without a depth model.
         params.depth = Some(crate::paint::armature::depth_proxy(w, h));
         params.haze = a.haze.clamp(0.0, 1.0);
+    }
+
+    // RFC §1.1 — the plan-vs-pixels switch: paint from a COARSE structural armature (structure survives
+    // downsampling, detail does not), so the engine INVENTS the surface instead of TRACING the photo. Unset keeps
+    // the legacy full-resolution "filter" behaviour that the existing tuning knobs operate on.
+    params.armature_side = a.armature.filter(|&s| s > 0);
+
+    // VALUE KEY (§5.5.2): expand the reference's tonal range so the painting reads with real darks/lights instead
+    // of a foggy midtone — the spec path does this always; here it is opt-in. Blend by strength so it is tunable.
+    if let Some(vk) = a.value_key.filter(|&v| v > 0.0) {
+        let vk = vk.clamp(0.0, 1.0);
+        let colour: Vec<crate::paint::color::Srgb> = img.pixels().map(|p| p.0).collect();
+        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96);
+        for (i, p) in img.pixels_mut().enumerate() {
+            for c in 0..3 {
+                p.0[c] = (p.0[c] as f32 * (1.0 - vk) + keyed[i][c] as f32 * vk).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        println!("{}  value-key: tonal range expanded (strength {vk:.2})", style("·").dim());
     }
 
     println!(

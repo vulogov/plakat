@@ -27,6 +27,21 @@ pub const BURNT_SIENNA: Pigment = pig!("burnt-sienna", 120, 60, 35);
 pub const RAW_UMBER: Pigment = pig!("raw-umber", 82, 66, 50);
 pub const TERRE_VERTE: Pigment = pig!("terre-verte", 96, 110, 80);
 pub const VIRIDIAN: Pigment = pig!("viridian", 22, 110, 90);
+// Extended cabinet — for the scene/mood presets below.
+pub const PAYNES_GREY: Pigment = pig!("paynes-grey", 60, 70, 85);
+pub const INDIGO: Pigment = pig!("indigo", 34, 40, 68);
+pub const DIOXAZINE_PURPLE: Pigment = pig!("dioxazine-purple", 70, 40, 90);
+pub const CADMIUM_ORANGE: Pigment = pig!("cadmium-orange", 235, 130, 40);
+pub const GOLD_OCHRE: Pigment = pig!("gold-ochre", 210, 160, 70);
+pub const SAP_GREEN: Pigment = pig!("sap-green", 90, 130, 60);
+pub const OLIVE_GREEN: Pigment = pig!("olive-green", 110, 110, 60);
+pub const DEEP_GREEN: Pigment = pig!("deep-green", 30, 70, 45);
+pub const TEAL: Pigment = pig!("teal", 30, 120, 120);
+pub const SKY_BLUE: Pigment = pig!("sky-blue", 135, 180, 215);
+pub const LAVENDER: Pigment = pig!("lavender", 120, 100, 160);
+pub const ROSE_MADDER: Pigment = pig!("rose-madder", 220, 150, 150);
+pub const SAND: Pigment = pig!("sand", 205, 180, 140);
+pub const SLATE: Pigment = pig!("slate", 90, 100, 110);
 
 /// A named limited palette.
 #[derive(Clone, Copy, Debug)]
@@ -53,8 +68,44 @@ pub const LIMITED_LANDSCAPE: Palette =
 /// Sumi — ink and paper: black and white only. For ink wash and grisaille.
 pub const SUMI: Palette = Palette { name: "sumi", pigments: &[IVORY_BLACK, TITANIUM_WHITE] };
 
+// ── Scene / mood presets ─────────────────────────────────────────────────────────────────────────────────
+// Time-of-day and weather/biome palettes: pick the one that matches the LIGHT and MOOD of the scene, and the
+// whole painting inherits that harmony. Each spans value (a light and a dark) so it can carry a full image.
+/// Early morning — cool, soft, pale first light with a warm touch.
+pub const EARLY_MORNING: Palette = Palette { name: "early-morning", pigments: &[SKY_BLUE, LAVENDER, ROSE_MADDER, CERULEAN_BLUE, YELLOW_OCHRE, PAYNES_GREY, TITANIUM_WHITE] };
+/// Bright day — clear high-key daylight: clean blues, greens and warm accents.
+pub const BRIGHT_DAY: Palette = Palette { name: "bright-day", pigments: &[CERULEAN_BLUE, ULTRAMARINE_BLUE, SAP_GREEN, CADMIUM_YELLOW, CADMIUM_RED, BURNT_SIENNA, TITANIUM_WHITE] };
+/// Early evening — golden hour: warm gold and orange over cool shadow.
+pub const EARLY_EVENING: Palette = Palette { name: "early-evening", pigments: &[GOLD_OCHRE, CADMIUM_ORANGE, CADMIUM_RED, QUINACRIDONE_ROSE, ULTRAMARINE_BLUE, RAW_UMBER, TITANIUM_WHITE] };
+/// Late evening — dim warm dusk sinking into purple.
+pub const LATE_EVENING: Palette = Palette { name: "late-evening", pigments: &[DIOXAZINE_PURPLE, ALIZARIN_CRIMSON, BURNT_SIENNA, INDIGO, GOLD_OCHRE, IVORY_BLACK, TITANIUM_WHITE] };
+/// Night — deep cool dark: indigo, blue and violet with sparse light.
+pub const NIGHT: Palette = Palette { name: "night", pigments: &[INDIGO, ULTRAMARINE_BLUE, PAYNES_GREY, PHTHALO_BLUE, DIOXAZINE_PURPLE, IVORY_BLACK, TITANIUM_WHITE] };
+/// Rain — desaturated cool greys, muted blues and greens.
+pub const RAIN: Palette = Palette { name: "rain", pigments: &[PAYNES_GREY, SLATE, CERULEAN_BLUE, TERRE_VERTE, RAW_UMBER, IVORY_BLACK, TITANIUM_WHITE] };
+/// Storm — dark and dramatic: deep indigo, green-black and a bruised warm.
+pub const STORM: Palette = Palette { name: "storm", pigments: &[INDIGO, PAYNES_GREY, DEEP_GREEN, BURNT_SIENNA, DIOXAZINE_PURPLE, IVORY_BLACK, TITANIUM_WHITE] };
+/// Desert — warm sand and ochre under a clean sky.
+pub const DESERT: Palette = Palette { name: "desert", pigments: &[SAND, GOLD_OCHRE, BURNT_SIENNA, CADMIUM_ORANGE, CERULEAN_BLUE, RAW_UMBER, TITANIUM_WHITE] };
+/// Forest — earthy greens and browns.
+pub const FOREST: Palette = Palette { name: "forest", pigments: &[SAP_GREEN, OLIVE_GREEN, TERRE_VERTE, BURNT_SIENNA, RAW_UMBER, YELLOW_OCHRE, TITANIUM_WHITE] };
+/// Rainforest — saturated humid greens and deep shadow.
+pub const RAINFOREST: Palette = Palette { name: "rainforest", pigments: &[VIRIDIAN, SAP_GREEN, DEEP_GREEN, TEAL, GOLD_OCHRE, RAW_UMBER, TITANIUM_WHITE] };
+/// Snow — cool whites with blue shadow.
+pub const SNOW: Palette = Palette { name: "snow", pigments: &[TITANIUM_WHITE, CERULEAN_BLUE, PAYNES_GREY, LAVENDER, SKY_BLUE, SLATE, IVORY_BLACK] };
+/// Vivid colours — saturated primaries and secondaries at full strength.
+pub const VIVID_COLORS: Palette = Palette { name: "vivid-colors", pigments: &[CADMIUM_YELLOW, CADMIUM_ORANGE, CADMIUM_RED, QUINACRIDONE_ROSE, ULTRAMARINE_BLUE, PHTHALO_BLUE, VIRIDIAN, TITANIUM_WHITE] };
+/// Rich colours — deep jewel tones.
+pub const RICH_COLORS: Palette = Palette { name: "rich-colors", pigments: &[ALIZARIN_CRIMSON, DIOXAZINE_PURPLE, PHTHALO_BLUE, VIRIDIAN, BURNT_SIENNA, GOLD_OCHRE, IVORY_BLACK, TITANIUM_WHITE] };
+/// Muted colours — greyed, desaturated harmony.
+pub const MUTED_COLORS: Palette = Palette { name: "muted-colors", pigments: &[YELLOW_OCHRE, TERRE_VERTE, RAW_UMBER, PAYNES_GREY, ROSE_MADDER, SLATE, TITANIUM_WHITE] };
+
 /// Every built-in palette.
-pub const ALL: &[Palette] = &[ZORN, SPLIT_PRIMARY, VERDACCIO, EARTH, LIMITED_LANDSCAPE, SUMI];
+pub const ALL: &[Palette] = &[
+    ZORN, SPLIT_PRIMARY, VERDACCIO, EARTH, LIMITED_LANDSCAPE, SUMI,
+    EARLY_MORNING, BRIGHT_DAY, EARLY_EVENING, LATE_EVENING, NIGHT, RAIN, STORM,
+    DESERT, FOREST, RAINFOREST, SNOW, VIVID_COLORS, RICH_COLORS, MUTED_COLORS,
+];
 
 impl Palette {
     /// Look a palette up by name (case-insensitive).
