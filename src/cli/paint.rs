@@ -308,6 +308,17 @@ fn parse_style(s: &str) -> Result<crate::paint::painter::PaintStyle> {
     }
 }
 
+fn parse_edge_mode(s: &str) -> Result<crate::paint::painter::EdgeMode> {
+    use crate::paint::painter::EdgeMode;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "line" => Ok(EdgeMode::Line),
+        "colour" | "color" | "temperature" => Ok(EdgeMode::Colour),
+        "knife" | "scrape" | "lift" => Ok(EdgeMode::Knife),
+        "lost" | "none" | "soft" => Ok(EdgeMode::Lost),
+        other => anyhow::bail!("unknown --silhouette-mode {other:?} (use: line | colour | knife | lost)"),
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct NewArgs {
     #[arg(default_value = "painting.paint.hjson")]
@@ -469,6 +480,28 @@ pub struct FromArgs {
     /// U2Net matte (run for --armature-body), not the CPU depth proxy that `--haze` uses.
     #[arg(long)]
     pub recede: Option<f32>,
+    /// SEMANTIC tiers (RFC §5.2): detect parts (hair/beard) with OWL-ViT and give them their own armature tier —
+    /// a coarse WASH for the beard, kept softer than the body. Runs the open-vocab detector.
+    #[arg(long)]
+    pub semantic: bool,
+    /// FAMILY SEPARATION (RFC §3.3): partition the reference into LIGHT and SHADOW families and enforce the
+    /// invariant (no light value darker than the lightest shadow), so masses read SOLID rather than a washed
+    /// average. The single biggest lever against the "washed photograph" look. `--plan auto` enables it.
+    #[arg(long)]
+    pub families: bool,
+    /// COMMIT SHADOWS (0..1, RFC §3.3): paint the DARK value masses DECISIVELY — lift the reserve, deepen the
+    /// darks pass over pass, and load more pigment there — so the painting has a solid value backbone instead of
+    /// a pale wash. `--plan auto` enables it. The direct fix for "covering the image with a wash".
+    #[arg(long)]
+    pub commit_shadows: Option<f32>,
+    /// SILHOUETTE (0..1, RFC §5/§7): mark the detected subject boundary so a light shirt/shoulders read by their
+    /// EDGE against a light ground instead of vanishing. Needs a subject (matte). `--plan auto` enables it.
+    #[arg(long)]
+    pub silhouette: Option<f32>,
+    /// How the silhouette EDGE is marked (RFC §7 edge craft): `line` (soft contour) · `colour` (a temperature
+    /// shift, no line) · `knife` (a scraped/lifted crisp edge) · `lost` (dissolved). Default `line`.
+    #[arg(long)]
+    pub silhouette_mode: Option<String>,
     /// PAINTING PLAN (RFC §5): `auto` analyses the image (art director) and fills the structural decisions
     /// (armature, focal armature, value-key, reserve, budget, medium, palette) that unset flags leave open; or a
     /// path to a `plan.hjson` (from `plakat paint plan`) to paint from a saved/edited plan. Explicit flags win.
@@ -582,6 +615,67 @@ fn stroke_summary(performed: usize, budget: usize) -> String {
     } else {
         format!("{performed} strokes laid")
     }
+}
+
+/// Build a feathered 0..1 mask (sized `w`×`h`) covering a set of boxes in the ORIGINAL image's coordinates
+/// (`iw`×`ih`). Boxes are expanded slightly and the edges feathered so a region tier fades into its neighbours.
+fn boxes_to_mask(boxes: &[(f32, f32, f32, f32)], iw: u32, ih: u32, w: u32, h: u32) -> Vec<f32> {
+    let mut m = image::GrayImage::new(iw, ih);
+    let mut sizes = 0.0f32;
+    for &(x0, y0, x1, y1) in boxes {
+        let (ex, ey) = ((x1 - x0) * 0.08, (y1 - y0) * 0.08);
+        let x0 = (x0 - ex).max(0.0) as u32;
+        let y0 = (y0 - ey).max(0.0) as u32;
+        let x1 = ((x1 + ex).min(iw as f32) as u32).min(iw);
+        let y1 = ((y1 + ey).min(ih as f32) as u32).min(ih);
+        sizes += (x1 - x0).min(y1 - y0) as f32;
+        for yy in y0..y1 {
+            for xx in x0..x1 {
+                m.put_pixel(xx, yy, image::Luma([255]));
+            }
+        }
+    }
+    let feather = (sizes / boxes.len().max(1) as f32 * 0.1).clamp(2.0, 50.0);
+    let blurred = image::imageops::blur(&m, feather);
+    let scaled = image::imageops::resize(&blurred, w, h, image::imageops::FilterType::Triangle);
+    scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect()
+}
+
+/// SEMANTIC regions (RFC §5.2) via OWL-ViT. Returns `(hair/beard wash tiers, clothing mask)`:
+/// - hair/beard → a COARSE wash armature tier (kept softer than the body);
+/// - clothing/shoulders → a mask to EXTEND the subject fact, so a light shirt is painted, not reserved to paper.
+/// Both are open-vocab detections; a model-free empty result if nothing is found.
+async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>)> {
+    let device = crate::device::select("auto")?;
+    let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
+    let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
+    let detect = |queries: &[&str], thr: f32| -> Vec<(f32, f32, f32, f32)> {
+        let mut boxes = Vec::new();
+        for q in queries {
+            for d in owl.detect_all(path, q, thr, 4).unwrap_or_default() {
+                boxes.push((d.x0, d.y0, d.x1, d.y1));
+            }
+        }
+        boxes
+    };
+    let mut tiers = Vec::new();
+    // HAIR / BEARD → a coarse WASH tier (kept softer than the body).
+    let hair = detect(&["a beard", "long hair", "hair", "a moustache"], 0.12);
+    if !hair.is_empty() {
+        let res = (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6));
+        println!("{}  semantic: {} hair/beard region(s) → coarse wash tier {res}px", style("·").dim(), hair.len());
+        tiers.push((boxes_to_mask(&hair, iw, ih, w, h), res));
+    }
+    // CLOTHING / SHOULDERS → extend the subject so a light shirt is PAINTED, not reserved to blank paper.
+    let clothing = detect(&["a shirt", "clothing", "a t-shirt", "shoulders", "a jacket"], 0.10);
+    let clothing_mask = if clothing.is_empty() {
+        println!("{}  semantic: no clothing detected", style("·").yellow());
+        None
+    } else {
+        println!("{}  semantic: {} clothing region(s) → extend the subject (paint the shirt)", style("·").dim(), clothing.len());
+        Some(boxes_to_mask(&clothing, iw, ih, w, h))
+    };
+    Ok((tiers, clothing_mask))
 }
 
 /// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
@@ -1106,6 +1200,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.recede.is_none() && plan.recede > 0.0 {
             a.recede = Some(plan.recede);
         }
+        if plan.semantic {
+            a.semantic = true;
+        }
+        if plan.families {
+            a.families = true;
+        }
+        if a.commit_shadows.is_none() && plan.commit_shadows > 0.0 {
+            a.commit_shadows = Some(plan.commit_shadows);
+        }
+        if a.silhouette.is_none() && plan.silhouette > 0.0 {
+            a.silhouette = Some(plan.silhouette);
+        }
+        if a.silhouette_mode.is_none() {
+            a.silhouette_mode = plan.silhouette_mode.clone();
+        }
         if a.value_key.is_none() {
             a.value_key = Some(plan.value_key);
         }
@@ -1270,6 +1379,25 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             params.armature_body_side = None;
         }
     }
+    // SEMANTIC regions (RFC §5.2): OWL-ViT detects hair/beard → a coarse wash tier; and clothing/shoulders →
+    // EXTEND the subject fact so a light shirt is painted (not reserved to paper — the fix for vanished shoulders).
+    if a.semantic {
+        let coarse = a.armature.unwrap_or(72);
+        let body = a.armature_body.unwrap_or(coarse + 40);
+        let (tiers, clothing) = build_semantic_regions(&a.input, w, h, coarse, body).await?;
+        params.region_tiers = tiers;
+        if let Some(cloth) = clothing {
+            // Union the clothing into the subject mask so the reserve treats the shirt as subject, not background.
+            match params.subject_mask.as_mut() {
+                Some(subj) if subj.len() == cloth.len() => {
+                    for (s, c) in subj.iter_mut().zip(&cloth) {
+                        *s = s.max(*c);
+                    }
+                }
+                _ => params.subject_mask = Some(cloth),
+            }
+        }
+    }
     if a.haze > 0.0 {
         // A CPU depth proxy (central + low = near) so aerial perspective can be exercised without a depth model.
         params.depth = Some(crate::paint::armature::depth_proxy(w, h));
@@ -1293,6 +1421,32 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             }
         }
         println!("{}  value-key: tonal range expanded (strength {vk:.2})", style("·").dim());
+    }
+
+    // FAMILY SEPARATION (RFC §3.3): partition light/shadow families and enforce the invariant, so masses read
+    // SOLID instead of a washed photographic average. The spec path does this via --families; here it is wired for
+    // the from-photo path too. Applied AFTER value-key so it groups the re-keyed values.
+    if a.families {
+        let (fw, fh) = img.dimensions();
+        let colour: Vec<crate::paint::color::Srgb> = img.pixels().map(|p| p.0).collect();
+        let keyed = crate::paint::armature::key_families(&colour, fw, fh, 135.0, 40.0);
+        for (i, p) in img.pixels_mut().enumerate() {
+            p.0 = keyed[i];
+        }
+        println!("{}  families: light/shadow split · invariant enforced (solid masses)", style("·").dim());
+    }
+    // COMMIT SHADOWS (RFC §3.3): paint the dark masses decisively (see the painter). Computed from the value-keyed,
+    // family-split reference so it targets the real shadow structure.
+    params.commit_shadows = a.commit_shadows.unwrap_or(0.0).clamp(0.0, 1.0);
+    if params.commit_shadows > 0.0 {
+        println!("{}  commit-shadows: dark masses painted decisively (strength {:.2})", style("·").dim(), params.commit_shadows);
+    }
+    params.silhouette = a.silhouette.unwrap_or(0.0).clamp(0.0, 1.0);
+    if let Some(m) = a.silhouette_mode.as_deref() {
+        params.silhouette_mode = parse_edge_mode(m)?;
+    }
+    if params.silhouette > 0.0 {
+        println!("{}  silhouette: subject edge marked ({:?}, strength {:.2})", style("·").dim(), params.silhouette_mode, params.silhouette);
     }
 
     println!(

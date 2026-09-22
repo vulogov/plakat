@@ -34,6 +34,22 @@ pub struct PaintPlan {
     /// AERIAL PERSPECTIVE strength (0..1): veil the BACKGROUND (matte-derived) so the subject advances (§5.5).
     #[serde(default)]
     pub recede: f32,
+    /// SEMANTIC tiers (RFC §5.2): detect parts (hair/beard) with OWL-ViT and give them their own armature tier —
+    /// e.g. a coarse wash for the beard. Runs the detector when true.
+    #[serde(default)]
+    pub semantic: bool,
+    /// FAMILY SEPARATION (RFC §3.3): partition light/shadow masses so the painting reads solid, not washed.
+    #[serde(default)]
+    pub families: bool,
+    /// COMMIT SHADOWS (0..1, RFC §3.3): paint the dark value masses decisively (a solid value backbone).
+    #[serde(default)]
+    pub commit_shadows: f32,
+    /// SILHOUETTE (0..1, RFC §5/§7): mark the subject boundary so a light subject reads by its edge.
+    #[serde(default)]
+    pub silhouette: f32,
+    /// How the silhouette edge is marked: `line` / `colour` / `knife` / `lost` (RFC §7 edge craft).
+    #[serde(default)]
+    pub silhouette_mode: Option<String>,
     /// Value-key strength (tonal-range expansion) — higher for a flat, low-contrast reference.
     #[serde(default)]
     pub value_key: f32,
@@ -71,6 +87,11 @@ impl Default for PaintPlan {
             armature_face: None,
             armature_body: None,
             recede: 0.0,
+            semantic: false,
+            families: false,
+            commit_shadows: 0.0,
+            silhouette: 0.0,
+            silhouette_mode: None,
             value_key: 0.0,
             reserve: None,
             budget: None,
@@ -104,6 +125,19 @@ impl PaintPlan {
         }
         if self.recede > 1e-3 {
             o.push_str(&format!("recede: {:.2}\n", self.recede));
+        }
+        if self.semantic {
+            o.push_str("semantic: true\n");
+        }
+        if self.families {
+            o.push_str("families: true\n");
+        }
+        if self.commit_shadows > 1e-3 {
+            o.push_str(&format!("commit_shadows: {:.2}\n", self.commit_shadows));
+        }
+        if self.silhouette > 1e-3 {
+            o.push_str(&format!("silhouette: {:.2}\n", self.silhouette));
+            o.push_str(&format!("silhouette_mode: {}\n", self.silhouette_mode.as_deref().unwrap_or("line")));
         }
         o.push_str(&format!("value_key: {:.2}\n", self.value_key));
         if let Some(r) = self.reserve {
@@ -153,21 +187,37 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         notes.push(format!("{} face(s) → three-tier armature: background {}px · body 104px · face 200px", a.faces, (armature as f32 * 0.6).round() as u32));
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
         // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
-        ((Some(200)), Some(104), 0.28, (armature as f32 * 0.6).round().max(36.0) as u32)
+        notes.push("semantic tiers (OWL-ViT): hair/beard → a coarse wash tier".into());
+        // Mild recession only — heavy recede erases the subject's soft periphery (beard tips, light shoulders).
+        ((Some(200)), Some(104), 0.15, (armature as f32 * 0.62).round().max(40.0) as u32)
     } else {
         notes.push("no face → uniform coarse armature".into());
         (None, None, 0.0, armature)
     };
+    let semantic = a.faces > 0;
+    // FAMILY SEPARATION — group light/shadow masses so the painting reads SOLID, not a washed photographic average.
+    let families = true;
+    notes.push("family separation (light/shadow masses) → solid, not washed".into());
+    // COMMIT SHADOWS — paint the dark masses decisively (a solid value backbone), the direct fix for a pale wash.
+    let commit_shadows = 0.85;
+    notes.push("commit shadows 0.85 → decisive dark masses (value backbone, not a wash)".into());
+    // SILHOUETTE — mark the subject boundary (line by default) so a light subject reads by its edge, when a
+    // subject is present. The mode (line/colour/knife/lost) is a plan/CLI choice.
+    let (silhouette, silhouette_mode) = if a.faces > 0 { (0.5, Some("line".to_string())) } else { (0.0, None) };
+    if silhouette > 0.0 {
+        notes.push("silhouette 0.50 (line) → shoulders/collar read by their edge".into());
+    }
 
     // VALUE KEY from measured contrast: a flat, foggy reference (low stddev) needs more tonal expansion for real
     // darks and lights; a punchy reference needs little. Map stddev∈[~0.10,0.28] → value_key∈[0.9,0.2].
     let value_key = ((0.28 - a.luma_stddev) / (0.28 - 0.10) * 0.7 + 0.2).clamp(0.0, 0.95);
     notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
 
-    // Reserve the paper for surface-white media so lights read as paper, not paint.
-    let reserve = a.surface_white.then_some(0.9);
+    // Reserve the paper for surface-white media — but NOT so high it eats light subject areas (a white shirt,
+    // shoulders). 0.82 keeps the brightest highlights as paper while still painting the light masses.
+    let reserve = a.surface_white.then_some(0.82);
     if reserve.is_some() {
-        notes.push("surface-white medium → reserve 0.90 (keep the paper for the lights)".into());
+        notes.push("surface-white medium → reserve 0.82 (paper for the highlights, paint the light masses)".into());
     }
 
     // Budget scales with area so density is consistent; capped so a big canvas doesn't run away.
@@ -183,6 +233,11 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         armature_face,
         armature_body,
         recede,
+        semantic,
+        families,
+        commit_shadows,
+        silhouette,
+        silhouette_mode,
         value_key,
         reserve,
         budget: Some(budget),
@@ -203,7 +258,7 @@ mod tests {
         assert_eq!(flat.armature_face, Some(200), "a detected face gets a focal armature");
         assert_eq!(flat.armature_body, Some(104), "a subject gets a mid body armature (three-tier)");
         assert!(flat.recede > 0.0 && flat.armature < 72, "background recedes and goes coarser with a subject");
-        assert_eq!(flat.reserve, Some(0.9), "watercolour reserves the paper");
+        assert_eq!(flat.reserve, Some(0.82), "watercolour reserves the paper (for the highlights, not the light masses)");
     }
 
     #[test]

@@ -59,8 +59,42 @@ plakat paint from photo.png --medium watercolour --palette image \
 ```
 
 `--plan auto` sets all three tiers + recession automatically when it detects a subject. Ordering:
-`--armature` (background) < `--armature-body` (body) < `--armature-face` (face). More semantic tiers
-(hair/skin/clothing via OWL‑ViT/SAM) plug into the same blend as further regions.
+`--armature` (background) < `--armature-body` (body) < `--armature-face` (face).
+
+## `--semantic` — semantic region tiers (OWL‑ViT)
+
+Detect named parts and give each its own armature tier. v1 detects **hair/beard** (open‑vocab, OWL‑ViT) and
+assigns it a **coarse wash tier** — softer than the subject body — so a beard stays a flowing wash rather than
+picking up body‑level structure. The tiers blend coarse→fine with body/face, so the finer **face** tier is laid
+last and wins where a beard box overlaps the jaw.
+
+```bash
+plakat paint from photo.png --plan auto --semantic ...     # (--plan auto enables it automatically for a subject)
+```
+
+Tiers are `(mask, resolution)` regions in the same blend — more parts (skin, clothing, hands) add as further
+tiers with no paint‑side change. SAM can later refine an OWL‑ViT box into a precise part mask (a beard‑shaped
+region instead of a box); v1 uses feathered boxes, which the finer face tier corrects over the face.
+
+`--semantic` also detects **clothing/shoulders** and unions it into the subject fact, so a light shirt is
+*painted* (a light mass) instead of being reserved to blank paper — the fix for vanished shoulders.
+
+## Painting decisively over the facts — not a wash
+
+Detecting regions is not enough; the deterministic painter must *paint decisively over them*, or a light subject
+just washes out. Three fact‑driven controls, all enabled by `--plan auto` and tunable via CLI/plan:
+
+- **`--commit-shadows <0..1>`** (RFC §3.3) — in the dark value masses (derived from *this image's* own value
+  percentiles), the reserve is lifted, the darks deepen pass over pass, and more pigment is loaded — a **solid
+  value backbone** instead of a pale wash.
+- **Subject‑gated reserve** — `reserve` is a fact about the *background*: bright cells keep paper only *outside*
+  the detected subject. Inside the subject, a light shirt/skin is painted as a light mass, never reserved away.
+- **`--silhouette <0..1>` + `--silhouette-mode`** (RFC §5/§7) — mark the detected subject boundary so a light
+  subject reads by its **edge**. The mode is how a painter marks an edge:
+  - `line` — a soft drawn contour (default),
+  - `colour` — a temperature/hue shift, *no line*,
+  - `knife` — a scraped/lifted crisp lighter edge,
+  - `lost` — dissolved (no marking).
 
 ---
 

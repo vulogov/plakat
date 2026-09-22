@@ -78,6 +78,22 @@ pub enum PaintStyle {
     Fidelity,
 }
 
+/// How an EDGE is marked, the way a painter chooses (RFC §7 edge craft). Real painters do not only draw a line:
+/// they mark an edge with a **line**, a **colour change** (a temperature/hue shift, no line), a **knife** (a
+/// scraped/lifted crisp edge), or leave it **lost** (dissolved).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EdgeMode {
+    /// A soft drawn contour line in the local dark (default).
+    #[default]
+    Line,
+    /// A CHROMATIC edge — mark it by cooling/shifting the colour rather than a line (a temperature edge).
+    Colour,
+    /// A KNIFE edge — scrape/lift to a crisp lighter edge (a negative, palette-knife edge).
+    Knife,
+    /// A LOST edge — no marking (the edge dissolves).
+    Lost,
+}
+
 /// Parameters for a paint-from-image run.
 #[derive(Clone, Debug)]
 pub struct PaintParams {
@@ -104,6 +120,20 @@ pub struct PaintParams {
     pub armature_body_side: Option<u32>,
     /// The subject (foreground) 0..1 mask for `armature_body_side` — from a matte model (U2Net). Row-major, canvas-sized.
     pub subject_mask: Option<Vec<f32>>,
+    /// SEMANTIC region tiers (RFC §5.2): extra `(mask, armature_resolution_px)` regions — e.g. a coarse hair/beard
+    /// tier (kept as a wash) or a clothing tier — from OWL-ViT/SAM. Blended coarse→fine with the body/face tiers.
+    pub region_tiers: Vec<(Vec<f32>, u32)>,
+    /// SILHOUETTE (0..1, RFC §5): mark the detected SUBJECT boundary (the matte silhouette) so a light shirt /
+    /// shoulders read against a light background by their edge instead of vanishing. Needs `subject_mask`.
+    /// Recorded strokes (replay-exact). How the edge is marked is `silhouette_mode`.
+    pub silhouette: f32,
+    /// How the silhouette edge is MARKED: line / colour change / knife / lost (RFC §7 edge craft).
+    pub silhouette_mode: EdgeMode,
+    /// COMMIT SHADOWS (0..1, RFC §3.3 shadow family): paint the DARK value masses DECISIVELY — in the shadow
+    /// regions the reserve is lifted (darks always paint), the restate floor drops (darks build to full depth),
+    /// and the pigment charge is boosted (committed, not a thin wash). This is what turns a pale "washed
+    /// photograph" into a painting with a solid value backbone. Derived from the reference's own value structure.
+    pub commit_shadows: f32,
     /// Charge multiplier for a stroke's load (how much paint the brush holds vs its footprint).
     pub charge: f32,
     /// Medium name recorded in the score header (physics still comes from `brush` in this slice).
@@ -212,7 +242,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
     }
 }
 
@@ -575,21 +605,31 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let armature_owned;
     let input: &RgbImage = match p.armature_side.filter(|&s| s > 0) {
         Some(s) => {
-            // MULTI-REGION armature (RFC §5.2): coarsest background, mid subject body, fine face — each region
-            // painted from its own armature resolution, blended by the region masks. Falls back to uniform coarse.
-            let mut arm = coarsen(input, s);
+            // MULTI-REGION armature (RFC §5.2): coarsest background, then each region (subject body, semantic
+            // parts, face) painted from its OWN armature resolution, blended coarse→fine so a finer region wins
+            // where they overlap (the face over a coarse beard tier). Falls back to a uniform coarse armature.
             let px = (w * h) as usize;
-            if let (Some(mask), Some(bs)) = (&p.subject_mask, p.armature_body_side) {
-                if mask.len() == px && bs > s {
-                    let body = coarsen(input, bs);
-                    arm = blend_by_mask(&arm, &body, mask, w, h);
+            let mut tiers: Vec<(&[f32], u32)> = Vec::new();
+            if let (Some(m), Some(bs)) = (&p.subject_mask, p.armature_body_side) {
+                if m.len() == px && bs > s {
+                    tiers.push((m, bs));
                 }
             }
-            if let (Some(mask), Some(fs)) = (&p.face_mask, p.armature_face_side) {
-                if mask.len() == px && fs > s {
-                    let fine = coarsen(input, fs);
-                    arm = blend_by_mask(&arm, &fine, mask, w, h);
+            for (m, side) in &p.region_tiers {
+                if m.len() == px && *side > s {
+                    tiers.push((m, *side));
                 }
+            }
+            if let (Some(m), Some(fs)) = (&p.face_mask, p.armature_face_side) {
+                if m.len() == px && fs > s {
+                    tiers.push((m, fs));
+                }
+            }
+            tiers.sort_by_key(|(_, side)| *side); // coarse → fine, so the finest region is laid last and wins
+            let mut arm = coarsen(input, s);
+            for (mask, side) in tiers {
+                let lvl = coarsen(input, side);
+                arm = blend_by_mask(&arm, &lvl, mask, w, h);
             }
             armature_owned = arm;
             &armature_owned
@@ -657,6 +697,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let hard_ref = hardness.as_ref().map(|(m, t)| (m.as_slice(), *t));
     // SALIENCY field for the opt-in density gate — computed once from the reference (§ saliency). None = off.
     let saliency = (p.saliency > 0.0).then(|| saliency_field(input));
+    // SHADOW field for COMMIT-SHADOWS: the dark value masses (1 = deep shadow → 0 = light), so the shadow family
+    // paints decisively (see the stroke loop). The shadow/light boundary is DERIVED FROM THIS IMAGE'S OWN value
+    // distribution (percentiles) — a fact — so it adapts to any image (dark, light, high-key, low-key) instead of
+    // a hardcoded threshold. None = off.
+    let shadow = (p.commit_shadows > 0.0).then(|| {
+        let luma = luma_map(input);
+        let mut sorted = luma.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len().max(1);
+        let lo = sorted[n * 12 / 100]; // deep-shadow anchor
+        let hi = sorted[n * 55 / 100]; // shadow→light boundary (this image's lower-mid value)
+        let span = (hi - lo).max(1e-3);
+        luma.iter().map(|&l| ((hi - l) / span).clamp(0.0, 1.0)).collect::<Vec<f32>>()
+    });
     // FOCAL field for the opt-in selective-detail gate. A detected FACE MASK (`--preserve-face`) takes priority
     // over the centre-prior focal field (`--focus-detail`), since the real face box targets the face however it
     // is placed. `focal_strength` opens the region for whichever source is active.
@@ -759,15 +813,25 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 let target = reference.get_pixel(ix, iy).0;
                 let tluma = color::linear_luma(color::srgb_to_linear(target));
-                // RESERVE the whites for a surface-white medium: bright cells keep the paper (no stroke enters).
+                // COMMIT SHADOWS (RFC §3.3): in the dark value masses, paint DECISIVELY — lift the reserve so darks
+                // always land, drop the restate floor so they build to full depth, and boost the pigment charge so
+                // they read as committed paint, not a thin wash. `sh` in [0,1] is the shadow strength here.
+                let region_i = iy as usize * w as usize + ix as usize;
+                let sh = shadow.as_ref().map(|s| s[region_i] * p.commit_shadows).unwrap_or(0.0);
+                // RESERVE is a fact about the BACKGROUND, not the subject: bright cells keep the paper only OUTSIDE
+                // the detected subject (matte). Inside the subject a light shirt / shoulders / skin is PAINTED as a
+                // light mass — never reserved to blank paper (that is what made the shoulders vanish). And never
+                // reserve inside a committed shadow. Determined over the detected extents, not raw luma.
+                let subj = p.subject_mask.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
                 if let Some(rt) = p.reserve {
-                    if tluma > rt {
+                    if tluma > rt && sh < 0.35 && subj < 0.5 {
                         continue;
                     }
                 }
                 // Later layers only restate where the canvas is still notably wrong; the block-in covers all.
                 // Detail passes use a lower threshold so fine features (which the soft masses missed) still land.
-                let restate_floor = if detail { 0.03 } else { 0.06 };
+                // Committed shadows drop the floor toward zero so the darks deepen pass over pass.
+                let restate_floor = (if detail { 0.03 } else { 0.06 }) * (1.0 - 0.85 * sh);
                 if !block_in && !p.density && rgb_dist(canvas.color_at(ix, iy), target) < restate_floor {
                     continue;
                 }
@@ -815,7 +879,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
                 let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
-                let load = mixture_for(load_target, &p.palette, p.charge);
+                // Committed shadows carry MORE pigment so the dark masses read solid, not a thin transparent wash.
+                let load = mixture_for(load_target, &p.palette, p.charge * (1.0 + 1.1 * sh));
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
@@ -896,6 +961,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
+    // SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary so shoulders/collar read by their
+    // contour against a light ground. Laid before the bleed so a wet medium softens the line.
+    if p.silhouette > 0.0 && p.subject_mask.is_some() && placed < p.budget {
+        silhouette_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
+    }
+
     // SPLATTER pass (watercolour / ink): flick droplets across the painting — the signature spatter. Laid before
     // the bleed so wet media soften a few of the spots into little blooms.
     if p.splatter > 0.0 && placed < p.budget {
@@ -909,6 +980,107 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     }
 
     PaintResult { canvas, strokes: placed, score, rejected }
+}
+
+/// The SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary (the matte's edge — a fact), so a
+/// light subject (a white shirt, shoulders) reads against a light ground by its CONTOUR instead of vanishing.
+/// The edge colour is the LOCAL reference colour darkened a little (a soft form edge, not an ink line); strokes
+/// follow the boundary tangent, low charge, and are recorded like any other stroke (replay-exact).
+fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    let mask = match &p.subject_mask {
+        Some(m) if m.len() == (w * h) as usize => m,
+        _ => return,
+    };
+    let strength = p.silhouette.clamp(0.0, 1.0);
+    // The boundary = the gradient of the subject mask.
+    let (gx, gy) = sobel(mask, w, h);
+    let mag: Vec<f32> = gx.iter().zip(&gy).map(|(a, b)| (a * a + b * b).sqrt()).collect();
+    let peak = mag.iter().copied().fold(0.0_f32, f32::max).max(1e-3);
+    let radius = (p.min_brush * 1.1).max(2.0);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let brush = p.brush; // header brush (streak/round recorded) → replay-exact
+    let grid = radius.max(2.0);
+    let cols = ((w as f32) / grid).ceil() as u32;
+    let rows = ((h as f32) / grid).ceil() as u32;
+    let cap = ((*placed) as f32 + (p.budget - *placed) as f32 * (0.06 + 0.14 * strength)).min(p.budget as f32) as usize;
+    for gyi in 0..rows {
+        for gxi in 0..cols {
+            if *placed >= cap {
+                break;
+            }
+            *k += 1;
+            let cx = (gxi as f32 + 0.5) * grid + jitter(p.seed ^ 0x51A1, *k) * grid;
+            let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed ^ 0x51A2, k.wrapping_add(1)) * grid;
+            if cx < 1.0 || cy < 1.0 || cx >= w as f32 - 1.0 || cy >= h as f32 - 1.0 {
+                continue;
+            }
+            let i = cy as usize * w as usize + cx as usize;
+            let m = (mag[i] / peak).clamp(0.0, 1.0);
+            if m < 0.35 {
+                continue;
+            }
+            let base = input.get_pixel(cx as u32, cy as u32).0;
+            let dl = color::linear_luma(color::srgb_to_linear(base));
+            // Grow along the boundary TANGENT (grow_path follows the isophote, perpendicular to the gradient).
+            let path = grow_path(cx, cy, radius, &gx, &gy, input, base, p.protect.as_deref(), None, None, 0.85);
+            if path.len() < 2 {
+                continue;
+            }
+            let path = waver_path(&path, 0.08 * radius, p.seed, *k);
+            let np = p.palette.pigments.len();
+            // EDGE MODE — how a painter marks this edge (RFC §7):
+            let (load, wipe, wet, press): (Vec<f32>, bool, f32, f32) = match p.silhouette_mode {
+                EdgeMode::Lost => continue,
+                EdgeMode::Line => {
+                    // A soft drawn line in the local dark.
+                    let mut l = vec![0f32; np];
+                    l[ink] = p.charge * strength * m * (0.35 + 0.45 * (1.0 - dl));
+                    (l, false, 0.5, 0.8)
+                }
+                EdgeMode::Colour => {
+                    // A CHROMATIC edge: mark by COOLING the local colour (no line) — mix the local tone with the
+                    // palette's coolest pigment so the edge reads as a temperature shift, not a value line.
+                    let cool = crate::paint::canvas::coolest_pigment(&p.palette);
+                    let target = [(base[0] as f32 * 0.9) as u8, (base[1] as f32 * 0.95) as u8, base[2].saturating_add(12)];
+                    let mx = mixer::solve_mixture(&p.palette, target, 3);
+                    let mut l = vec![0f32; np];
+                    for (&idx, &wt) in mx.pigments.iter().zip(mx.weights.iter()) {
+                        l[idx] = wt * p.charge * strength * m * 0.7;
+                    }
+                    l[cool] += p.charge * strength * m * 0.5;
+                    (l, false, 0.6, 0.7)
+                }
+                EdgeMode::Knife => {
+                    // A KNIFE edge: scrape/lift to a crisp LIGHTER edge (a negative, palette-knife edge). Applied
+                    // as a wipe at wet*lift, exactly as replay applies it.
+                    (vec![0f32; np], true, 1.4, 1.0)
+                }
+            };
+            let s = Stroke { path, width0: radius, width1: (radius * 0.8).max(1.0), load, pressure: press, wetness: wet };
+            if wipe {
+                s.wipe(canvas, &brush, wet * p.lift);
+            } else {
+                s.rasterize(canvas, &brush);
+            }
+            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe,
+                stage: "silhouette".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.4,
+                mix,
+                wet: s.wetness,
+                press: s.pressure,
+                streak: brush.streak,
+                round: brush.round,
+            });
+        }
+    }
 }
 
 /// The CONTOUR / line pass: draw the reference's strongest edges as clean dark lines that follow the edge

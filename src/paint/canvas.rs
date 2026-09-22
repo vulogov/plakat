@@ -495,6 +495,17 @@ pub fn darkest_pigment(palette: &Palette) -> usize {
         .unwrap_or(0)
 }
 
+/// The index of the COOLEST pigment in a palette (most blue relative to red), used for a chromatic edge.
+pub fn coolest_pigment(palette: &Palette) -> usize {
+    (0..palette.pigments.len())
+        .max_by(|&a, &b| {
+            let ca = palette.pigments[a].masstone[2] as i32 - palette.pigments[a].masstone[0] as i32;
+            let cb = palette.pigments[b].masstone[2] as i32 - palette.pigments[b].masstone[0] as i32;
+            ca.cmp(&cb)
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
