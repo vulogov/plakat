@@ -502,6 +502,11 @@ pub struct FromArgs {
     /// shift, no line) · `knife` (a scraped/lifted crisp edge) · `lost` (dissolved). Default `line`.
     #[arg(long)]
     pub silhouette_mode: Option<String>,
+    /// SAM precise masks (RFC §5): use MobileSAM (prompted from the detected face) for a PRECISE subject and face
+    /// mask — a SHARP silhouette edge and a face-shaped focal region — instead of the soft U2Net matte / feathered
+    /// box. Sharpens the silhouette and improves the face. `--plan auto` enables it.
+    #[arg(long)]
+    pub sam: bool,
     /// PAINTING PLAN (RFC §5): `auto` analyses the image (art director) and fills the structural decisions
     /// (armature, focal armature, value-key, reserve, budget, medium, palette) that unset flags leave open; or a
     /// path to a `plan.hjson` (from `plakat paint plan`) to paint from a saved/edited plan. Explicit flags win.
@@ -676,6 +681,67 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
         Some(boxes_to_mask(&clothing, iw, ih, w, h))
     };
     Ok((tiers, clothing_mask))
+}
+
+/// Detect the primary (largest, highest-score) face box `[x0,y0,x1,y1]` in original-image pixels, via SCRFD.
+async fn detect_primary_face(path: &std::path::Path) -> Result<Option<[f32; 4]>> {
+    use candle_core::DType;
+    let device = crate::device::select("auto")?;
+    let weights = match crate::pipelines::scrfd::resolve_scrfd_weights().await.ok().flatten() {
+        Some(w) => w,
+        None => return Ok(None),
+    };
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(&weights, crate::pipelines::scrfd::SCRFDConfig::default(), &device, DType::F32)?;
+    let mut faces = det.detect(path)?;
+    faces.sort_by(|a, b| {
+        let area = |f: &crate::pipelines::scrfd::Face| (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]);
+        area(b).partial_cmp(&area(a)).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(faces.first().map(|f| f.bbox))
+}
+
+/// Precise SUBJECT + FACE masks via MobileSAM, prompted from the detected face box (a fact). SAM segments the
+/// actual silhouette, so the edge is SHARP (unlike the soft U2Net matte / feathered box). Returns `(subject,
+/// face)` masks sized `w`×`h` in [0,1]. `None` if no face is found (nothing to prompt with).
+async fn sam_regions(path: &std::path::Path, w: u32, h: u32) -> Result<(Option<Vec<f32>>, Option<Vec<f32>>)> {
+    use crate::pipelines::sam::{build_selection_mask, PointPrompt};
+    let face = match detect_primary_face(path).await? {
+        Some(b) => b,
+        None => return Ok((None, None)),
+    };
+    let device = crate::device::select("auto")?;
+    let (iw, ih) = image::image_dimensions(path)?;
+    let (fx, fy) = ((face[0] + face[2]) * 0.5, (face[1] + face[3]) * 0.5);
+    let fh = (face[3] - face[1]).max(1.0);
+    let corners = |mut v: Vec<PointPrompt>| {
+        for (cx, cy) in [(2.0, 2.0), (iw as f64 - 2.0, 2.0), (2.0, ih as f64 - 2.0), (iw as f64 - 2.0, ih as f64 - 2.0)] {
+            v.push(PointPrompt { x: cx, y: cy, foreground: false });
+        }
+        v
+    };
+    let mask_to_vec = |m: image::GrayImage| -> Vec<f32> {
+        let s = image::imageops::resize(&m, w, h, image::imageops::FilterType::Triangle);
+        s.pixels().map(|p| p.0[0] as f32 / 255.0).collect()
+    };
+    // SUBJECT: foreground on the face + down the torso; background at the corners.
+    let subj_pts = corners(vec![
+        PointPrompt { x: fx as f64, y: fy as f64, foreground: true },
+        PointPrompt { x: fx as f64, y: (fy + 1.6 * fh).min(ih as f32 - 2.0) as f64, foreground: true },
+        PointPrompt { x: fx as f64, y: (fy + 2.8 * fh).min(ih as f32 - 2.0) as f64, foreground: true },
+    ]);
+    let subject = build_selection_mask(path, &subj_pts, &device).await.ok().map(mask_to_vec);
+    // FACE/HEAD: foreground on the face + forehead; background at the corners AND the torso (exclude the body).
+    let face_pts = corners(vec![
+        PointPrompt { x: fx as f64, y: fy as f64, foreground: true },
+        PointPrompt { x: fx as f64, y: (fy - 0.3 * fh).max(2.0) as f64, foreground: true },
+        PointPrompt { x: fx as f64, y: (fy + 2.6 * fh).min(ih as f32 - 2.0) as f64, foreground: false },
+    ]);
+    let face_mask = build_selection_mask(path, &face_pts, &device).await.ok().map(|m| {
+        // Feather the face mask a touch so its armature/detail region fades into the surroundings.
+        let blurred = image::imageops::blur(&m, (fh * 0.06).clamp(2.0, 30.0));
+        mask_to_vec(blurred)
+    });
+    Ok((subject, face_mask))
 }
 
 /// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
@@ -1215,6 +1281,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.silhouette_mode.is_none() {
             a.silhouette_mode = plan.silhouette_mode.clone();
         }
+        if plan.sam {
+            a.sam = true;
+        }
         if a.value_key.is_none() {
             a.value_key = Some(plan.value_key);
         }
@@ -1395,6 +1464,35 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     }
                 }
                 _ => params.subject_mask = Some(cloth),
+            }
+        }
+    }
+    // SAM PRECISE MASKS (RFC §5): replace the soft subject/face masks with MobileSAM's precise silhouette (prompted
+    // from the detected face) — a SHARP silhouette edge and a face-shaped focal region. Run last so it overrides.
+    if a.sam {
+        let (subject, face_m) = sam_regions(&a.input, w, h).await?;
+        if let Some(s) = subject {
+            let cov = s.iter().filter(|&&m| m > 0.5).count();
+            if cov > s.len() / 50 && cov < s.len() * 49 / 50 {
+                println!("{}  sam: precise subject mask ({}% foreground) — sharp silhouette", style("·").dim(), cov * 100 / s.len().max(1));
+                // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
+                match params.subject_mask.as_mut() {
+                    Some(sm) if sm.len() == s.len() => {
+                        for (a, b) in sm.iter_mut().zip(&s) {
+                            *a = a.max(*b);
+                        }
+                    }
+                    _ => params.subject_mask = Some(s),
+                }
+            } else {
+                println!("{}  sam: subject mask unusable — keeping the matte", style("·").yellow());
+            }
+        }
+        if let Some(fm) = face_m {
+            let cov = fm.iter().filter(|&&m| m > 0.4).count();
+            if cov > fm.len() / 200 && cov < fm.len() / 2 {
+                println!("{}  sam: precise face mask — face-shaped focal region", style("·").dim());
+                params.face_mask = Some(fm);
             }
         }
     }

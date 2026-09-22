@@ -50,6 +50,9 @@ pub struct PaintPlan {
     /// How the silhouette edge is marked: `line` / `colour` / `knife` / `lost` (RFC §7 edge craft).
     #[serde(default)]
     pub silhouette_mode: Option<String>,
+    /// SAM precise masks (RFC §5): use MobileSAM for a precise subject/face mask (sharp silhouette, face-shaped focal).
+    #[serde(default)]
+    pub sam: bool,
     /// Value-key strength (tonal-range expansion) — higher for a flat, low-contrast reference.
     #[serde(default)]
     pub value_key: f32,
@@ -92,6 +95,7 @@ impl Default for PaintPlan {
             commit_shadows: 0.0,
             silhouette: 0.0,
             silhouette_mode: None,
+            sam: false,
             value_key: 0.0,
             reserve: None,
             budget: None,
@@ -138,6 +142,9 @@ impl PaintPlan {
         if self.silhouette > 1e-3 {
             o.push_str(&format!("silhouette: {:.2}\n", self.silhouette));
             o.push_str(&format!("silhouette_mode: {}\n", self.silhouette_mode.as_deref().unwrap_or("line")));
+        }
+        if self.sam {
+            o.push_str("sam: true\n");
         }
         o.push_str(&format!("value_key: {:.2}\n", self.value_key));
         if let Some(r) = self.reserve {
@@ -188,8 +195,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
         // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
         notes.push("semantic tiers (OWL-ViT): hair/beard → a coarse wash tier".into());
+        notes.push("SAM precise masks → sharp silhouette + face-shaped focal (finer face armature)".into());
         // Mild recession only — heavy recede erases the subject's soft periphery (beard tips, light shoulders).
-        ((Some(200)), Some(104), 0.15, (armature as f32 * 0.62).round().max(40.0) as u32)
+        // A finer face armature (240) since SAM gives a precise, face-shaped focal region.
+        ((Some(240)), Some(104), 0.15, (armature as f32 * 0.62).round().max(40.0) as u32)
     } else {
         notes.push("no face → uniform coarse armature".into());
         (None, None, 0.0, armature)
@@ -207,6 +216,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     if silhouette > 0.0 {
         notes.push("silhouette 0.50 (line) → shoulders/collar read by their edge".into());
     }
+    // SAM precise masks when a subject is present — a sharp silhouette and a face-shaped focal region.
+    let sam = a.faces > 0;
 
     // VALUE KEY from measured contrast: a flat, foggy reference (low stddev) needs more tonal expansion for real
     // darks and lights; a punchy reference needs little. Map stddev∈[~0.10,0.28] → value_key∈[0.9,0.2].
@@ -238,6 +249,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         commit_shadows,
         silhouette,
         silhouette_mode,
+        sam,
         value_key,
         reserve,
         budget: Some(budget),
@@ -255,7 +267,7 @@ mod tests {
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
-        assert_eq!(flat.armature_face, Some(200), "a detected face gets a focal armature");
+        assert_eq!(flat.armature_face, Some(240), "a detected face gets a fine focal armature (SAM precise focal)");
         assert_eq!(flat.armature_body, Some(104), "a subject gets a mid body armature (three-tier)");
         assert!(flat.recede > 0.0 && flat.armature < 72, "background recedes and goes coarser with a subject");
         assert_eq!(flat.reserve, Some(0.82), "watercolour reserves the paper (for the highlights, not the light masses)");

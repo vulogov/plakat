@@ -73,8 +73,19 @@ plakat paint from photo.png --plan auto --semantic ...     # (--plan auto enable
 ```
 
 Tiers are `(mask, resolution)` regions in the same blend — more parts (skin, clothing, hands) add as further
-tiers with no paint‑side change. SAM can later refine an OWL‑ViT box into a precise part mask (a beard‑shaped
-region instead of a box); v1 uses feathered boxes, which the finer face tier corrects over the face.
+tiers with no paint‑side change.
+
+## `--sam` — precise masks (MobileSAM)
+
+The U2Net matte and feathered detection boxes give *soft* boundaries, so a silhouette edge drawn on them is
+weak. `--sam` prompts **MobileSAM** from the detected face (a fact) to segment the **precise subject silhouette**
+and a **face‑shaped focal region** — a sharp silhouette edge and detail concentrated on the actual face, not a
+rectangle. `--plan auto` enables it when a subject is present (and raises the face armature, since the focal
+region is now precise). It runs last and overrides the soft masks.
+
+```bash
+plakat paint from photo.png --plan auto --sam --silhouette 0.6 --silhouette-mode line ...
+```
 
 `--semantic` also detects **clothing/shoulders** and unions it into the subject fact, so a light shirt is
 *painted* (a light mass) instead of being reserved to blank paper — the fix for vanished shoulders.
