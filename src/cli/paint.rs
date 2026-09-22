@@ -650,7 +650,7 @@ fn boxes_to_mask(boxes: &[(f32, f32, f32, f32)], iw: u32, ih: u32, w: u32, h: u3
 /// - hair/beard → a COARSE wash armature tier (kept softer than the body);
 /// - clothing/shoulders → a mask to EXTEND the subject fact, so a light shirt is painted, not reserved to paper.
 /// Both are open-vocab detections; a model-free empty result if nothing is found.
-async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>)> {
+async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32, face: u32) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>)> {
     let device = crate::device::select("auto")?;
     let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
     let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
@@ -664,12 +664,21 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
         boxes
     };
     let mut tiers = Vec::new();
-    // HAIR / BEARD → a coarse WASH tier (kept softer than the body).
-    let hair = detect(&["a beard", "long hair", "hair", "a moustache"], 0.12);
-    if !hair.is_empty() {
-        let res = (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6));
-        println!("{}  semantic: {} hair/beard region(s) → coarse wash tier {res}px", style("·").dim(), hair.len());
-        tiers.push((boxes_to_mask(&hair, iw, ih, w, h), res));
+    // A named part → its armature-resolution ROLE, derived from the plan's own tiers (not image-tuned):
+    //   hair/beard = COARSE wash · skin = MID smooth form · hands = FINE (structure, a secondary focal).
+    let hair_res = (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6));
+    let skin_res = (body + (face.saturating_sub(body)) / 4).clamp(body, face);
+    let hands_res = ((body + face) / 2).clamp(body, face);
+    for (label, queries, thr, res) in [
+        ("hair/beard", &["a beard", "long hair", "hair", "a moustache"][..], 0.12_f32, hair_res),
+        ("skin", &["skin", "a neck", "a bald head", "a forehead"][..], 0.11, skin_res),
+        ("hands", &["a hand", "hands", "fingers"][..], 0.11, hands_res),
+    ] {
+        let boxes = detect(queries, thr);
+        if !boxes.is_empty() {
+            println!("{}  semantic: {} {label} region(s) → armature tier {res}px", style("·").dim(), boxes.len());
+            tiers.push((boxes_to_mask(&boxes, iw, ih, w, h), res));
+        }
     }
     // CLOTHING / SHOULDERS → extend the subject so a light shirt is PAINTED, not reserved to blank paper.
     let clothing = detect(&["a shirt", "clothing", "a t-shirt", "shoulders", "a jacket"], 0.10);
@@ -1453,7 +1462,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if a.semantic {
         let coarse = a.armature.unwrap_or(72);
         let body = a.armature_body.unwrap_or(coarse + 40);
-        let (tiers, clothing) = build_semantic_regions(&a.input, w, h, coarse, body).await?;
+        let face = a.armature_face.unwrap_or(body + 96);
+        let (tiers, clothing) = build_semantic_regions(&a.input, w, h, coarse, body, face).await?;
         params.region_tiers = tiers;
         if let Some(cloth) = clothing {
             // Union the clothing into the subject mask so the reserve treats the shirt as subject, not background.

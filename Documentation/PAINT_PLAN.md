@@ -87,8 +87,16 @@ region is now precise). It runs last and overrides the soft masks.
 plakat paint from photo.png --plan auto --sam --silhouette 0.6 --silhouette-mode line ...
 ```
 
-`--semantic` also detects **clothing/shoulders** and unions it into the subject fact, so a light shirt is
-*painted* (a light mass) instead of being reserved to blank paper — the fix for vanished shoulders.
+`--semantic` detects several parts, each given an armature tier **derived from the plan's own coarse/body/face**
+resolutions (fact‑driven, not fixed constants):
+- **hair/beard** → a **coarse** wash tier (softer than the body);
+- **skin** (neck/forehead/bald head) → a **mid** tier (smooth form);
+- **hands** → a **fine** tier (a secondary focal — hands need structure);
+- **clothing/shoulders** → unioned into the **subject fact**, so a light shirt is *painted* (a light mass)
+  instead of being reserved to blank paper (the fix for vanished shoulders).
+
+Each is a `(mask, resolution)` region in the same blend; adding more parts is one entry in the detector, no
+paint‑side change.
 
 ## Painting decisively over the facts — not a wash
 
