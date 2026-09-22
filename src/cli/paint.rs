@@ -480,6 +480,17 @@ async fn build_face_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Optio
     Ok(Some(mask))
 }
 
+/// Human summary of the stroke count against the budget. The budget is a CEILING, not a quota: the gates
+/// (saliency / reserve / focus / preserve-face / restate) can exhaust the eligible cells before it is reached,
+/// so when fewer strokes were laid we say so explicitly instead of silently reporting a number below the budget.
+fn stroke_summary(performed: usize, budget: usize) -> String {
+    if performed < budget {
+        format!("{performed} of {budget} strokes performed (gates capped placement below budget)")
+    } else {
+        format!("{performed} strokes laid")
+    }
+}
+
 fn run_new(a: NewArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
@@ -781,7 +792,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     );
     std::fs::write(&sidecar, recipe).ok();
 
-    println!("{}  {} strokes → {}  ·  score → {}  ·  recipe → {}", style("✓").green(), result.strokes, out.display(), score_path.display(), sidecar.display());
+    println!("{}  {} → {}  ·  score → {}  ·  recipe → {}", style("✓").green(), stroke_summary(result.strokes, plan.budget), out.display(), score_path.display(), sidecar.display());
     if a.report {
         let tr = painter::traceability(&image_out, &reference);
         println!("{}  traceability {:.3}", style("·").dim(), tr);
@@ -1052,7 +1063,7 @@ async fn run_from(a: FromArgs) -> Result<()> {
     let score_path = a.out.with_extension("strokes");
     std::fs::write(&score_path, result.score.to_text()).with_context(|| format!("writing {}", score_path.display()))?;
 
-    println!("{}  {} strokes laid → {}  ·  score → {}", style("✓").green(), result.strokes, a.out.display(), score_path.display());
+    println!("{}  {} → {}  ·  score → {}", style("✓").green(), stroke_summary(result.strokes, a.budget), a.out.display(), score_path.display());
     if a.report {
         let tr = painter::traceability(&out, &img);
         println!("{}  traceability {:.3} (→1 = traced/filter; a painting keeps structure but invents surface)", style("·").dim(), tr);
