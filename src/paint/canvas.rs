@@ -10,12 +10,18 @@
 
 use image::RgbImage;
 
-use crate::paint::color::Srgb;
+use crate::paint::color::{self, LinRgb, Srgb};
 use crate::paint::palette::Palette;
 use crate::paint::pigment;
 
-/// A thin priming's worth of ground pigment — low enough that an opaque stroke covers it.
+/// A thin priming's worth of ground pigment — used only to derive the ground COLOUR in the constructors.
 pub const GROUND_CONC: f32 = 0.25;
+
+/// Film-build opacity: how fast a pixel's paint HIDES the ground as concentration accumulates. Opacity is
+/// `1 − e^(−OPACITY_K · total_concentration)`, so a thin glaze lets the ground show (light) and a built stroke
+/// becomes opaque — which is what restores deep darks, bright lights, and saturated colour. Without this the
+/// ground stays a permanent proportion of every pixel and the whole painting washes out to mid-value.
+const OPACITY_K: f32 = 1.6;
 
 /// A pigment canvas over a fixed palette basis.
 #[derive(Clone)]
@@ -23,7 +29,8 @@ pub struct Canvas {
     pub w: u32,
     pub h: u32,
     palette: Palette,
-    /// Per-pixel concentration over the palette: `w*h*n`, row-major, pixel-major.
+    /// Per-pixel concentration over the palette: `w*h*n`, row-major, pixel-major. This is DEPOSITED paint only
+    /// — the ground is NOT baked in here; it shows through via opacity where the paint is thin.
     conc: Vec<f32>,
     /// Per-pixel paint height (impasto), row-major.
     pub height: Vec<f32>,
@@ -31,6 +38,12 @@ pub struct Canvas {
     pub wetness: Vec<f32>,
     /// Per-pixel static surface tooth in `[0,1]` (how much the brush catches), row-major.
     pub tooth: Vec<f32>,
+    /// The ground's linear reflectance — shown through where the paint film is thin (glaze) and hidden where
+    /// it's built up (opaque). Stored separately so it can never dilute the paint's own colour as a proportion.
+    ground_lin: LinRgb,
+    /// BODY / opacity multiplier on the film-build (1 = opaque media; lower = transparent, the ground glows
+    /// through more even as paint builds — watercolour, ink).
+    opacity: f32,
     n: usize,
 }
 
@@ -44,11 +57,17 @@ impl Canvas {
         for i in 0..n.min(ground.len()) {
             g[i] = ground[i].max(0.0);
         }
-        let mut conc = Vec::with_capacity(px * n);
-        for _ in 0..px {
-            conc.extend_from_slice(&g);
-        }
-        Self { w, h, palette, conc, height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], n }
+        // The ground contributes only its COLOUR (reflectance), stored separately; the canvas starts bare (no
+        // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
+        let gsum: f32 = g.iter().sum();
+        let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
+        Self { w, h, palette, conc: vec![0.0; px * n], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, n }
+    }
+
+    /// Set the BODY / opacity multiplier (1 = opaque; lower = transparent). Builder-style.
+    pub fn with_opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity.clamp(0.1, 1.0);
+        self
     }
 
     /// A canvas primed with a WHITE ground (the lightest pigment in the palette), i.e. bare paper / gessoed
@@ -113,20 +132,88 @@ impl Canvas {
     pub fn wipe(&mut self, x: u32, y: u32, strength: f32) {
         let s = strength.clamp(0.0, 1.0);
         let i = self.idx(x, y);
+        // Scale the deposited paint down — thinning the film re-exposes the ground through the opacity model, so
+        // there's no need to inject ground pigment back into the mix.
         for c in 0..self.n {
             self.conc[i + c] *= 1.0 - s;
         }
-        // Restore the primer (white ground) proportionally, so wiping EXPOSES the ground rather than just
-        // scaling the same mixture down (which, being a ratio, wouldn't change the colour).
-        let white = lightest_pigment(&self.palette);
-        self.conc[i + white] += GROUND_CONC * s;
         let p = y as usize * self.w as usize + x as usize;
         self.height[p] *= 1.0 - s;
     }
 
-    /// The sRGB colour at a pixel — Kubelka-Munk mix of its concentration vector over the palette.
+    /// Wet-into-wet BLEED (watercolour / ink-wash): diffuse the deposited pigment into WET neighbours, so
+    /// colours fuse and bloom at the edges. `strength` (0..1) scales both the spread and how far it reaches;
+    /// only WET pixels bleed, so dry paint keeps its edge. Deterministic — replay reproduces it from the same
+    /// wetness state. A no-op at `strength == 0` (the dry media).
+    pub fn bleed(&mut self, strength: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 {
+            return;
+        }
+        let (w, h) = (self.w as usize, self.h as usize);
+        let n = self.n;
+        let iters = (1.0 + 5.0 * s).round() as usize; // more strength → farther bloom
+        for _ in 0..iters {
+            let src = self.conc.clone();
+            for y in 0..h {
+                for x in 0..w {
+                    let p = y * w + x;
+                    let a = s * self.wetness[p].clamp(0.0, 1.0);
+                    if a <= 1e-4 {
+                        continue;
+                    }
+                    for c in 0..n {
+                        let mut sum = 0.0;
+                        let mut cnt = 0.0;
+                        for dy in -1i32..=1 {
+                            for dx in -1i32..=1 {
+                                let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                                let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                                sum += src[(ny * w + nx) * n + c];
+                                cnt += 1.0;
+                            }
+                        }
+                        let avg = sum / cnt;
+                        let idx = p * n + c;
+                        self.conc[idx] = self.conc[idx] * (1.0 - a) + avg * a;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clear the deposited paint (and height, wetness) wherever `mask` is true, re-exposing the ground. Used to
+    /// PRIME a composition layer's footprint before painting it, so a nearer element paints fresh and opaquely
+    /// OCCLUDES the farther layers beneath — the colour model mixes by concentration RATIO, so without this a
+    /// thin new layer would be dominated by the thick paint already there and fail to cover.
+    pub fn clear_mask(&mut self, mask: &[bool]) {
+        for p in 0..(self.w as usize * self.h as usize).min(mask.len()) {
+            if mask[p] {
+                for c in 0..self.n {
+                    self.conc[p * self.n + c] = 0.0;
+                }
+                self.height[p] = 0.0;
+                self.wetness[p] = 0.0;
+            }
+        }
+    }
+
+    /// The sRGB colour at a pixel: the paint's own Kubelka-Munk colour (from deposited pigment) composited OVER
+    /// the ground with a film-build opacity that grows with the amount of paint laid. Thin paint → the ground
+    /// shows (glaze/light); built paint → opaque, so darks stay dark, lights bright, and colour saturated.
     pub fn color_at(&self, x: u32, y: u32) -> Srgb {
-        pigment::mix(self.palette.pigments, self.conc_at(x, y))
+        let conc = self.conc_at(x, y);
+        let total: f32 = conc.iter().map(|c| c.max(0.0)).sum();
+        if total <= 1e-4 {
+            return color::linear_to_srgb(self.ground_lin);
+        }
+        let paint = pigment::mix_linear(self.palette.pigments, conc);
+        let alpha = 1.0 - (-OPACITY_K * self.opacity * total).exp();
+        let mut out = [0f32; 3];
+        for c in 0..3 {
+            out[c] = alpha * paint[c] + (1.0 - alpha) * self.ground_lin[c];
+        }
+        color::linear_to_srgb(out)
     }
 
     /// A copy of the current canvas state — for timelapse frames.
@@ -155,6 +242,133 @@ impl Canvas {
         }
         img
     }
+
+    /// Backwards-compatible impasto-only relight (used where no other material stage applies).
+    pub fn to_image_relit(&self, impasto: f32) -> RgbImage {
+        self.to_image_finished(&Finish { impasto, ..Default::default() })
+    }
+
+    /// Render WITH the MEDIUM'S MATERIAL FINISH (RFC §8.5 output stages) — the way the *paint itself* behaves,
+    /// beyond how it was applied:
+    /// - **chroma**: saturation range (oil vivid, gouache/watercolour muted);
+    /// - **dry_shift**: the value change on drying (+ watercolour dries lighter; − gouache dries to a matte,
+    ///   compressed mid);
+    /// - **granulate**: pigment settling into the paper's tooth — the mottled watercolour / graphite grain;
+    /// - **impasto** + **sheen**: thick paint relit from stroke height (a raking light + a glossy specular).
+    ///
+    /// All are deterministic (grain seeded) and recorded in the score, so `replay` reproduces the material
+    /// exactly. `Finish::default()` (all neutral) reproduces `to_image`.
+    pub fn to_image_finished(&self, f: &Finish) -> RgbImage {
+        let mut img = self.to_image();
+        let (w, h) = (self.w as usize, self.h as usize);
+        let material = (f.chroma - 1.0).abs() > 1e-3 || f.dry_shift.abs() > 1e-3 || f.granulate > 1e-3;
+        if material {
+            for y in 0..h {
+                for x in 0..w {
+                    // How much PAINT is here (vs bare ground) — material stages act on paint, not the paper.
+                    let total: f32 = self.conc[(y * w + x) * self.n..(y * w + x) * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                    let paint = (1.0 - (-1.6 * total).exp()).clamp(0.0, 1.0);
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    let mut c = [p.0[0] as f32 / 255.0, p.0[1] as f32 / 255.0, p.0[2] as f32 / 255.0];
+                    // CHROMA — push away from (or toward) the pixel's own luma.
+                    if (f.chroma - 1.0).abs() > 1e-3 {
+                        let l = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+                        for v in c.iter_mut() {
+                            *v = (l + (*v - l) * f.chroma).clamp(0.0, 1.0);
+                        }
+                    }
+                    // DRY SHIFT — +: dries lighter (watercolour); −: dries to a matte, compressed mid (gouache).
+                    if f.dry_shift.abs() > 1e-3 {
+                        let s = f.dry_shift * paint;
+                        if s >= 0.0 {
+                            for v in c.iter_mut() {
+                                *v = (*v + s * (1.0 - *v)).clamp(0.0, 1.0);
+                            }
+                        } else {
+                            let k = -s;
+                            for v in c.iter_mut() {
+                                *v = (*v * (1.0 - k) + 0.5 * k - 0.04 * k).clamp(0.0, 1.0);
+                            }
+                        }
+                    }
+                    // GRANULATION — the paper's tooth holds pigment unevenly: a mottled darkening where paint sits.
+                    if f.granulate > 1e-3 && paint > 0.05 {
+                        let d = f.granulate * paint * grain(x, y, f.seed) * 0.55;
+                        for v in c.iter_mut() {
+                            *v = (*v * (1.0 - d)).clamp(0.0, 1.0);
+                        }
+                    }
+                    for i in 0..3 {
+                        p.0[i] = (c[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+        // IMPASTO + SHEEN relight from the paint HEIGHT.
+        if f.impasto > 1e-4 || f.sheen > 1e-4 {
+            let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
+            let (lx, ly) = (0.55_f32, 0.83_f32);
+            let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
+            let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
+            for y in 0..h {
+                for x in 0..w {
+                    let xl = x.saturating_sub(1);
+                    let xr = (x + 1).min(w - 1);
+                    let yt = y.saturating_sub(1);
+                    let yb = (y + 1).min(h - 1);
+                    let hx = (self.height[y * w + xr] - self.height[y * w + xl]) / peak;
+                    let hy = (self.height[yb * w + x] - self.height[yt * w + x]) / peak;
+                    let facing = hx * lx + hy * ly;
+                    // Diffuse impasto shading + a sharper glossy highlight on the near ridges (sheen).
+                    let mut shade = gain * facing;
+                    if spec > 0.0 && facing > 0.0 {
+                        shade += spec * facing * facing;
+                    }
+                    let shade = shade.clamp(-0.55, 0.85);
+                    if shade.abs() < 1e-4 {
+                        continue;
+                    }
+                    let p = img.get_pixel_mut(x as u32, y as u32);
+                    for cc in 0..3 {
+                        p.0[cc] = (p.0[cc] as f32 * (1.0 + shade)).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+        img
+    }
+}
+
+/// The MEDIUM'S material finish, applied at output (§8.5). Neutral by default (= `to_image`).
+#[derive(Clone, Copy, Debug)]
+pub struct Finish {
+    /// Impasto relief strength (0 flat → 1 thick, light-catching).
+    pub impasto: f32,
+    /// Saturation multiplier (1 neutral; >1 vivid oil; <1 muted gouache/watercolour).
+    pub chroma: f32,
+    /// Drying value shift (+ lighter watercolour; − matte-compressed gouache).
+    pub dry_shift: f32,
+    /// Granulation strength (paper-tooth pigment settling — watercolour, graphite).
+    pub granulate: f32,
+    /// Gloss sheen (specular highlight on ridges — oil).
+    pub sheen: f32,
+    /// Grain seed (deterministic granulation for exact replay).
+    pub seed: u64,
+}
+
+impl Default for Finish {
+    fn default() -> Self {
+        Self { impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, seed: 0 }
+    }
+}
+
+/// Deterministic paper-grain value in `[0,1]` at a pixel (a hashed mottle) — for granulation.
+fn grain(x: usize, y: usize, seed: u64) -> f32 {
+    let mut z = seed.wrapping_add((x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add((y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    z as f32 / u64::MAX as f32
 }
 
 /// The index of the lightest pigment in a palette (highest CIELAB L*), used as "white"/ground.

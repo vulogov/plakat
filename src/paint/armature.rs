@@ -14,15 +14,14 @@ use crate::paint::color::{self, Srgb};
 /// paints the surface from it. Returns the colour reference and the depth field — the channels the merge
 /// consumes. GPU. (Per-figure decomposition + segmentation/normals/saliency are refinements; this single-image
 /// construction is the prose→painting bring-up.)
-pub async fn construct(subject: &str, w: u32, h: u32, model: &str, steps: usize, seed: u64, device: candle_core::Device) -> anyhow::Result<(image::RgbImage, Vec<f32>)> {
+pub async fn construct(subject: &str, w: u32, h: u32, model: &str, steps: usize, seed: u64, negative: &str, device: candle_core::Device) -> anyhow::Result<(image::RgbImage, Vec<f32>)> {
     use anyhow::Context;
     let spec = crate::device::spec_of(&device).to_string();
-    let imgs = crate::api::Generate::new(model)
-        .prompt(subject)
-        .size(w, h)
-        .steps(steps)
-        .seed(seed)
-        .device(&spec)
+    let mut g = crate::api::Generate::new(model).prompt(subject).size(w, h).steps(steps).seed(seed).device(&spec);
+    if !negative.trim().is_empty() {
+        g = g.negative(negative);
+    }
+    let imgs = g
         .run()
         .await
         .with_context(|| format!("armature: rendering the subject with {model}"))?;

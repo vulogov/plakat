@@ -77,6 +77,27 @@ pub struct MediumProfile {
     pub stage_budget: usize,
     /// Pickup coefficient for the brush (0 = no pickup, 1 = strong).
     pub pickup: f32,
+    /// Wet-into-wet BLEED (0..1): how much pigment fuses/blooms into wet neighbours — the wet media's signature.
+    pub bleed: f32,
+    /// BODY / opacity (0..1): how opaquely the paint covers — 1 = opaque (gouache/oil), low = transparent
+    /// (watercolour/ink, the ground glows through).
+    pub body: f32,
+    /// IMPASTO (0..1): how much the paint stands off the surface and CATCHES LIGHT — the thick, textured,
+    /// palette-knife quality of oil. 0 = flat (watercolour/ink). Relit at output from the stroke height.
+    pub impasto: f32,
+    // ── Paint MATERIAL physics (how the paint itself behaves, applied at output; §8.5) ──────────────────────
+    /// CHROMA / saturation range (1 = neutral; >1 vivid oil; <1 muted gouache/watercolour).
+    pub chroma: f32,
+    /// DRY SHIFT — value change on drying (+ watercolour dries lighter; − gouache dries to a matte mid).
+    pub dry_shift: f32,
+    /// GRANULATION — pigment settling into the paper's tooth (watercolour / graphite grain).
+    pub granulate: f32,
+    /// SHEEN / gloss — specular highlight on the paint ridges (oil glossy; watercolour/gouache matte).
+    pub sheen: f32,
+    /// LIFT — how removable the paint is by a wipe (oil wet = high; watercolour staining = low; ink/pen = ~0).
+    pub lift: f32,
+    /// The palette that suits this medium, used when the spec names none.
+    pub default_palette: &'static str,
     pub families: Families,
     pub subtractive: bool,
     pub mark_model: MarkModel,
@@ -92,7 +113,18 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     white_source: WhiteSource::Pigment,
     reversibility: Reversibility::Hours,
     stage_budget: 1,
-    pickup: 0.65,
+    // Modest pickup: alla-prima keeps marks distinct (sitting on top), not smeared into one another. High
+    bleed: 0.08,
+    body: 1.0,
+    impasto: 0.6,
+    chroma: 1.08,
+    dry_shift: 0.0,
+    granulate: 0.0,
+    sheen: 0.15,
+    lift: 0.8,
+    default_palette: "zorn",
+    // pickup drags wet paint and reads as a hazy smear.
+    pickup: 0.3,
     families: Families::Split,
     subtractive: true,
     mark_model: MarkModel::Continuous,
@@ -107,6 +139,15 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     reversibility: Reversibility::Days,
     stage_budget: 8,
     pickup: 0.4,
+    bleed: 0.1,
+    body: 0.9,
+    impasto: 0.4,
+    chroma: 1.05,
+    dry_shift: 0.0,
+    granulate: 0.0,
+    sheen: 0.12,
+    lift: 0.7,
+    default_palette: "zorn",
     families: Families::Split,
     subtractive: true,
     mark_model: MarkModel::Continuous,
@@ -121,6 +162,15 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     reversibility: Reversibility::Minimal,
     stage_budget: 3,
     pickup: 0.8,
+    bleed: 0.05,
+    body: 1.0,
+    impasto: 0.15,
+    chroma: 0.85,
+    dry_shift: -0.05,
+    granulate: 0.0,
+    sheen: 0.0,
+    lift: 0.5,
+    default_palette: "split-primary",
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -135,6 +185,15 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     reversibility: Reversibility::Minimal,
     stage_budget: 3,
     pickup: 0.15,
+    bleed: 0.55,
+    body: 0.45,
+    impasto: 0.0,
+    chroma: 0.92,
+    dry_shift: 0.08,
+    granulate: 0.35,
+    sheen: 0.0,
+    lift: 0.2,
+    default_palette: "limited-landscape",
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -149,6 +208,15 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     reversibility: Reversibility::None,
     stage_budget: 1,
     pickup: 0.9,
+    bleed: 0.7,
+    body: 0.4,
+    impasto: 0.0,
+    chroma: 0.9,
+    dry_shift: 0.05,
+    granulate: 0.22,
+    sheen: 0.0,
+    lift: 0.1,
+    default_palette: "sumi",
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
@@ -163,6 +231,15 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     reversibility: Reversibility::None,
     stage_budget: 1,
     pickup: 0.0,
+    bleed: 0.0,
+    body: 1.0,
+    impasto: 0.0,
+    chroma: 0.8,
+    dry_shift: 0.0,
+    granulate: 0.0,
+    sheen: 0.0,
+    lift: 0.0,
+    default_palette: "sumi",
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Density,
@@ -177,14 +254,48 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     reversibility: Reversibility::None,
     stage_budget: 40,
     pickup: 0.05,
+    bleed: 0.03,
+    body: 0.85,
+    impasto: 0.12,
+    chroma: 0.95,
+    dry_shift: 0.0,
+    granulate: 0.1,
+    sheen: 0.05,
+    lift: 0.3,
+    default_palette: "verdaccio",
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Density,
     finish_policy: FinishPolicy::Uniform,
 };
 
+pub const PENCIL: MediumProfile = MediumProfile {
+    name: "pencil",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::Minimal, // graphite lifts / smudges
+    stage_budget: 4,
+    pickup: 0.1,
+    // Graphite SMUDGES into soft graded tones — a little wet-like fusion, far less than a wash.
+    bleed: 0.15,
+    body: 0.7, // greys, not opaque black
+    impasto: 0.0,
+    chroma: 0.7,
+    dry_shift: 0.0,
+    granulate: 0.3,
+    sheen: 0.05,
+    lift: 0.6,
+    default_palette: "sumi",
+    families: Families::Unified,
+    subtractive: false,
+    // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
+    mark_model: MarkModel::Density,
+    finish_policy: FinishPolicy::Uniform,
+};
+
 /// Every declared medium.
-pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA];
+pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA, PENCIL];
 
 /// The media P1 can execute (opaque continuous).
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
@@ -192,7 +303,7 @@ pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
 pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
 /// Every executable medium (P3 adds indirect oil, ink wash, tempera — they reuse the opaque-continuous,
 /// transparent-reserve, and density paths respectively; tempera's density marks are monochrome for now).
-pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera"];
+pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera", "pencil"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).

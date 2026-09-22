@@ -20,6 +20,38 @@ pub struct PaintArgs {
     /// Override the output size `WxH`.
     #[arg(long)]
     pub size: Option<String>,
+    /// Override the stroke budget (total marks). When unset, the spec's `budget.strokes` is used, else a
+    /// painting-scale default is derived from the canvas size and medium.
+    #[arg(long)]
+    pub strokes: Option<usize>,
+    /// Fidelity register: `legible` (default — resolves & hardens edges) or `impressionist` (loose masses).
+    #[arg(long, default_value = "legible")]
+    pub style: String,
+    /// Edge-HARDNESS strength (0..1) — how many boundaries are treated as HARD (strokes stop, masses meet crisply). Legible only.
+    #[arg(long, default_value_t = 0.6)]
+    pub define: f32,
+    /// AERIAL PERSPECTIVE strength (0..1): veil distant passages toward the atmosphere so the background recedes
+    /// and the foreground advances (depth "layers"). Uses the armature's depth map. 0 = flat single plane.
+    #[arg(long, default_value_t = 0.55)]
+    pub haze: f32,
+    /// STROKE LENGTH multiplier (1.0 = default): longer = cleaner sweeping strokes; shorter = choppier.
+    #[arg(long, default_value_t = 1.0)]
+    pub stroke_length: f32,
+    /// STROKE WIDTH multiplier (1.0 = default): wider = fewer/broader marks; narrower = finer/more marks.
+    #[arg(long, default_value_t = 1.0)]
+    pub stroke_width: f32,
+    /// BLEED (0..1) wet-into-wet fusion — overrides the medium default (watercolour/ink bleed; oil/gouache don't).
+    #[arg(long)]
+    pub bleed: Option<f32>,
+    /// OPACITY / body (0.1..1) — overrides the medium default (1 = opaque; low = transparent).
+    #[arg(long)]
+    pub opacity: Option<f32>,
+    /// PICKUP (0..1) dirty-brush drag — overrides the medium default.
+    #[arg(long)]
+    pub pickup: Option<f32>,
+    /// IMPASTO (0..1) textured thick-paint relief at output — overrides the medium default (oil high, flat 0).
+    #[arg(long)]
+    pub impasto: Option<f32>,
     /// Also print the traceability.
     #[arg(long)]
     pub report: bool,
@@ -100,6 +132,40 @@ pub struct SpecArgs {
     pub critic: bool,
     pub families: bool,
     pub crisp: bool,
+    pub strokes: Option<usize>,
+    pub style: String,
+    pub define: f32,
+    pub haze: f32,
+    pub stroke_length: f32,
+    pub stroke_width: f32,
+    pub bleed: Option<f32>,
+    pub opacity: Option<f32>,
+    pub pickup: Option<f32>,
+    pub impasto: Option<f32>,
+}
+
+/// Resize a per-pixel depth field from `(sw,sh)` to `(dw,dh)` and normalise it to `[0,1]` (min–max), so aerial
+/// perspective works regardless of the raw depth range. Larger = nearer.
+fn resize_depth(depth: &[f32], (sw, sh): (u32, u32), (dw, dh): (u32, u32)) -> Vec<f32> {
+    let (mn, mx) = depth.iter().fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    let span = (mx - mn).max(1e-6);
+    let norm = image::ImageBuffer::from_fn(sw, sh, |x, y| {
+        let v = depth.get((y * sw + x) as usize).copied().unwrap_or(mn);
+        image::Luma([(((v - mn) / span) * 65535.0).round().clamp(0.0, 65535.0) as u16])
+    });
+    let scaled = image::imageops::resize(&norm, dw, dh, image::imageops::FilterType::Triangle);
+    scaled.pixels().map(|p| p.0[0] as f32 / 65535.0).collect()
+}
+
+/// Parse the fidelity register from the CLI string.
+fn parse_style(s: &str) -> Result<crate::paint::painter::PaintStyle> {
+    use crate::paint::painter::PaintStyle;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "legible" | "legibility" => Ok(PaintStyle::Legible),
+        "impressionist" | "impressionistic" | "loose" => Ok(PaintStyle::Impressionist),
+        "fidelity" | "high-fidelity" | "realist" | "realistic" | "detailed" | "tight" => Ok(PaintStyle::Fidelity),
+        other => anyhow::bail!("unknown --style {other:?} (use: legible | impressionist | fidelity)"),
+    }
 }
 
 #[derive(Args, Debug)]
@@ -151,6 +217,45 @@ pub struct FromArgs {
     /// Print the traceability (correlation to the reference): high = a filter, lower = a painting.
     #[arg(long)]
     pub report: bool,
+    /// Fidelity register: `legible` (default — resolves resolves features, draws edges hardens edges) or `impressionist` (loose masses).
+    #[arg(long, default_value = "legible")]
+    pub style: String,
+    /// Edge-HARDNESS strength (0..1) — how many boundaries are treated as HARD (strokes stop, masses meet crisply). Legible only.
+    #[arg(long, default_value_t = 0.6)]
+    pub define: f32,
+    /// AERIAL PERSPECTIVE strength (0..1) using a CPU depth proxy (central+low = near). 0 = flat.
+    #[arg(long, default_value_t = 0.0)]
+    pub haze: f32,
+    /// STROKE LENGTH multiplier (1.0 = default): longer = cleaner sweeping strokes; shorter = choppier.
+    #[arg(long, default_value_t = 1.0)]
+    pub stroke_length: f32,
+    /// STROKE WIDTH multiplier (1.0 = default): wider = fewer/broader marks; narrower = finer/more marks.
+    #[arg(long, default_value_t = 1.0)]
+    pub stroke_width: f32,
+    /// BLEED (0..1) wet-into-wet fusion (default 0 for `from`).
+    #[arg(long)]
+    pub bleed: Option<f32>,
+    /// OPACITY / body (0.1..1) — 1 = opaque, low = transparent.
+    #[arg(long)]
+    pub opacity: Option<f32>,
+    /// PICKUP (0..1) dirty-brush drag.
+    #[arg(long)]
+    pub pickup: Option<f32>,
+    /// IMPASTO (0..1) textured thick-paint relief at output.
+    #[arg(long)]
+    pub impasto: Option<f32>,
+    /// CHROMA / saturation (1 neutral; >1 vivid; <1 muted).
+    #[arg(long)]
+    pub chroma: Option<f32>,
+    /// DRY SHIFT (−0.4..0.4): + dries lighter (watercolour); − dries to a matte mid (gouache).
+    #[arg(long)]
+    pub dry_shift: Option<f32>,
+    /// GRANULATION (0..1) paper-tooth pigment settling (watercolour / graphite grain).
+    #[arg(long)]
+    pub granulate: Option<f32>,
+    /// SHEEN / gloss (0..1) specular on ridges.
+    #[arg(long)]
+    pub sheen: Option<f32>,
 }
 
 #[derive(Args, Debug)]
@@ -170,13 +275,46 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Timelapse(a)) => run_timelapse(a),
         Some(PaintCmd::Palette(a)) => run_palette(a),
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
 }
 
-const SCAFFOLD: &str = "{\n  paint: {\n    version: 1\n    // P1 paints from a reference image (the prose subject + armature land in P2).\n    reference: \"input.png\"\n    medium: oil-direct        // oil-direct | gouache\n    palette: zorn             // zorn | split-primary | verdaccio | earth | limited-landscape | sumi\n    surface: { size: \"1024x1280\" }\n    budget: { strokes: 1500 }\n    seed: 42\n  }\n}\n";
+const SCAFFOLD: &str = r#"{
+  paint: {
+    version: 1
+
+    // WHAT to paint: a prose `subject:` (the model renders an armature) OR a `reference:` image path.
+    subject: "an old fisherman in a yellow oilskin hauling a net, grey sea, overcast sky, full figure"
+    negative: "blurry, deformed hands, extra limbs, faceless, back turned, low detail"
+
+    // ARMATURE MODEL — the armature is the CEILING for the painting, so the model choice matters most:
+    //   sdxl   : balanced default, wide style range
+    //   sd35   : best anatomy / composition (hands, faces); low-mem mode fits 24GB Metal
+    //   sana   : light + fast, painterly — good for cheap drafts while you tune the spec
+    //   sd15   : fastest / lightest, lower fidelity (quick drafts)
+    //   pixart : artistic  ·  pony : stylized  ·  flux : coherent (note: GGUF Flux is broken on Metal)
+    // Tip: draft the composition with a fast model (sana/sd15), then switch to sdxl/sd35 for the final.
+    model: sdxl
+    steps: 40
+
+    // MEDIUM: oil-direct | oil-indirect | gouache | watercolour | ink-wash | pen-ink | tempera
+    medium: watercolour
+    // PALETTE: zorn | split-primary | verdaccio | earth | limited-landscape | sumi
+    palette: limited-landscape
+
+    // STYLE: fidelity (tracks the armature — recognizable & detailed) | legible | impressionist
+    style: fidelity
+    // define = edge hardness (0..1).  haze = aerial depth recession (0..1; use 0 with fidelity).
+    define: 0.7
+    haze: 0
+
+    surface: { size: "768x1024" }
+    seed: 42
+  }
+}
+"#;
 
 fn run_new(a: NewArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -188,11 +326,14 @@ fn run_new(a: NewArgs) -> Result<()> {
 }
 
 /// Load a spec + its reference image, returning `(spec, reference, plan)`.
-fn load_spec(path: &std::path::Path, size_override: Option<&str>) -> Result<(crate::paint::spec::PaintSpec, Option<image::RgbImage>, crate::paint::PaintPlan)> {
+fn load_spec(path: &std::path::Path, size_override: Option<&str>, strokes_override: Option<usize>) -> Result<(crate::paint::spec::PaintSpec, Option<image::RgbImage>, crate::paint::PaintPlan)> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut spec = crate::paint::spec::PaintSpec::parse(&text)?;
     if let Some(s) = size_override {
         spec.surface.get_or_insert_with(Default::default).size = Some(s.to_string());
+    }
+    if let Some(n) = strokes_override {
+        spec.budget.get_or_insert_with(Default::default).strokes = Some(n);
     }
     // A reference IMAGE, if given (resolved relative to the spec's directory). Otherwise the armature is
     // constructed from the `subject:` prose (the model as art director).
@@ -209,7 +350,7 @@ fn load_spec(path: &std::path::Path, size_override: Option<&str>) -> Result<(cra
 }
 
 fn run_show(a: SpecFileArgs, lint_only: bool) -> Result<()> {
-    let (_, _, plan) = load_spec(&a.spec, None)?;
+    let (_, _, plan) = load_spec(&a.spec, None, None)?;
     println!(
         "{}  {}  ·  medium {}  ·  palette {}  ·  {}×{}  ·  budget {}  ·  {} stages",
         style("◆").cyan(),
@@ -231,14 +372,41 @@ fn run_show(a: SpecFileArgs, lint_only: bool) -> Result<()> {
 }
 
 async fn run_spec(a: SpecArgs) -> Result<()> {
-    let (spec, img, plan) = load_spec(&a.spec, a.size.as_deref())?;
+    let (spec, img, plan) = load_spec(&a.spec, a.size.as_deref(), a.strokes)?;
     let out = a.out.clone().unwrap_or_else(|| a.spec.with_extension("").with_extension("png"));
+
+    // COMPOSITION: when the scene is decomposed into elements, render a single COHERENT armature with the
+    // LAYERED pipeline (elements are plan constraints anchored into one diffusion — shared light/perspective, no
+    // cut-and-paste), then paint THAT through the normal reference path below.
+    let img = if let Some(comp) = spec.composition.clone().filter(|c| !c.elements.is_empty()) {
+        Some(render_layered_armature(&spec, &plan, &comp).await?)
+    } else {
+        img
+    };
 
     let mut params = PaintParams::new(plan.palette, plan.budget);
     params.passes = Some(plan.passes.clone());
     params.medium = plan.medium.name.to_string();
     params.seed = plan.seed;
-    params.brush.k_pickup = plan.medium.pickup; // the medium's pickup drives the dirty brush
+    // Painter controls are SCENE-authoritative: the HJSON value wins when set, else the CLI default. Keeps the
+    // spec the control surface (no code-constant tuning per picture).
+    params.style = parse_style(spec.style.as_deref().unwrap_or(&a.style))?;
+    params.define = spec.define.unwrap_or(a.define).clamp(0.0, 1.0);
+    params.stroke_len = spec.stroke_length.unwrap_or(a.stroke_length).clamp(0.2, 4.0);
+    params.stroke_width = spec.stroke_width.unwrap_or(a.stroke_width).clamp(0.3, 3.0);
+    let haze = spec.haze.unwrap_or(a.haze).clamp(0.0, 1.0);
+    // TECHNIQUE behaviour: each control defaults to the MEDIUM's characteristic value, overridable by the spec
+    // then the CLI — so watercolour bleeds and glows, oil is opaque and dirty, pen-ink is crisp, out of the box.
+    params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
+    params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
+    params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
+    params.brush.k_pickup = spec.pickup.or(a.pickup).unwrap_or(plan.medium.pickup).clamp(0.0, 1.0);
+    // MATERIAL physics: the paint's own behaviour, defaulting to the medium.
+    params.chroma = spec.chroma.unwrap_or(plan.medium.chroma).clamp(0.3, 2.0);
+    params.dry_shift = spec.dry_shift.unwrap_or(plan.medium.dry_shift).clamp(-0.4, 0.4);
+    params.granulate = spec.granulate.unwrap_or(plan.medium.granulate).clamp(0.0, 1.0);
+    params.sheen = spec.sheen.unwrap_or(plan.medium.sheen).clamp(0.0, 1.0);
+    params.lift = spec.lift.unwrap_or(plan.medium.lift).clamp(0.0, 1.0);
     // Paint from a LOW-RES ARMATURE (§1.1): coarsen the reference so the brush invents the surface instead of
     // tracing detail. Sized to the WORKING canvas (below).
     // Paint at a normalized WORKING resolution so the stroke budget (a style control, §9.1) gives a consistent
@@ -246,7 +414,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // what stops a big canvas reading as sparse scribble.
     let work = {
         let longest = plan.size.0.max(plan.size.1);
-        let work_max = 640u32;
+        // Paint near-native so the fine DETAIL passes can resolve real features (a face, a net, windows). The
+        // old 640 cap forced an upscale that blurred the surface; the auto budget scales with area, so density
+        // stays consistent without downscaling. Still capped so a huge output doesn't run unbounded on CPU.
+        let work_max = 1024u32;
         if longest > work_max {
             let s = work_max as f32 / longest as f32;
             ((plan.size.0 as f32 * s).round() as u32, (plan.size.1 as f32 * s).round() as u32)
@@ -278,8 +449,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         None => {
             let subject = spec.subject.clone().filter(|s| !s.trim().is_empty()).context("PaintSpec: give a `reference:` image or a `subject:` (prose) to construct an armature")?;
             let device = crate::device::select("auto")?;
-            println!("{}  armature: rendering \"{}\" (sdxl) + estimating depth (Depth-Anything)…", style("◆").cyan(), subject);
-            let (colour, depth) = crate::paint::armature::construct(&subject, plan.size.0, plan.size.1, "sdxl", 24, plan.seed, device).await?;
+            // Armature quality is scene-authoritative: steps / model / negative come from the HJSON. More steps
+            // = a clearer, more coherent armature (figure, net, sea), which is the biggest lever on legibility.
+            let steps = spec.steps.unwrap_or(24).clamp(1, 100);
+            let model = spec.model.clone().unwrap_or_else(|| "sdxl".into());
+            let negative = spec.negative.clone().unwrap_or_default();
+            println!("{}  armature: rendering \"{}\" ({}, {} steps) + estimating depth (Depth-Anything)…", style("◆").cyan(), subject, model, steps);
+            let (colour, depth) = crate::paint::armature::construct(&subject, plan.size.0, plan.size.1, &model, steps, plan.seed, &negative, device).await?;
             // Merge only when asked (--planes): the recession merge is for multi-plane compositions; on a
             // single subject it would flatten the figure. Default paints the constructed reference directly.
             (colour, Some(depth), a.planes.unwrap_or(1))
@@ -324,6 +500,16 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         println!("{}  working at {}×{} (budget density) → replay to {}×{}", style("·").dim(), work.0, work.1, plan.size.0, plan.size.1);
     }
 
+    // AERIAL PERSPECTIVE: hand the painter the depth map (at working resolution) so the background recedes and
+    // the foreground advances — foreground/background "layers". Only when a plane-merge isn't already applied.
+    if haze > 0.0 && n_planes <= 1 {
+        if let Some(d) = depth.as_ref() {
+            params.depth = Some(resize_depth(d, plan.size, work));
+            params.haze = haze;
+            println!("{}  aerial perspective: depth recession (haze {:.2})", style("·").dim(), haze);
+        }
+    }
+
     // FAMILY-KEY (§5.5.5, opt-in): split light/shadow and enforce the invariant so the masses read solid.
     if a.families {
         let (w, h) = reference.dimensions();
@@ -343,10 +529,6 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
             p.0 = keyed[i];
         }
     }
-    // Damp the dirty-brush pickup a touch so the expanded value range survives painting (pickup pulls loads
-    // toward the mid ground; too much flattens the picture).
-    params.brush.k_pickup *= 0.6;
-
     // Ground: the proven path paints on a WHITE ground (like the coherent P0 portrait) — a mean-keyed toned
     // ground made every mid-tone stroke blend into it (flat grey). Opaque media get a faint warm imprimatura
     // (near-white) so light passages read as painted, not stark paper, without flattening the mid-tones.
@@ -390,7 +572,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         painter::paint_from_image(&reference, &params)
     };
     // Output at the requested size — replay the score up from the working canvas (resolution-independent).
-    let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image() } else { result.canvas.to_image() };
+    let image_out = if work != plan.size { result.score.replay(plan.size.0, plan.size.1).context("replaying to output size")?.to_image_finished(&result.score.header.finish()) } else { result.canvas.to_image_finished(&result.score.header.finish()) };
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
@@ -413,6 +595,96 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     }
     Ok(())
 }
+
+/// Build a LAYERED plan (HJSON) from the composition elements: the first element becomes the backdrop
+/// (farthest), the rest become anchored layers placed by their `mask` hint and ordered by depth. The layered
+/// pipeline anchors each as a low-frequency constraint inside one diffusion, so the scene is co-rendered
+/// (shared light/perspective) — the opposite of cut-and-paste.
+fn build_layer_plan_hjson(scene: &str, comp: &crate::paint::spec::CompositionSpec, w: u32, h: u32) -> String {
+    let place_of = |mask: &str| -> &'static str {
+        match mask.trim().to_ascii_lowercase().as_str() {
+            "top" | "upper" | "sky" => "center-top",
+            "bottom" | "lower" | "foreground" | "ground" => "center-bottom",
+            "left" => "center-left",
+            "right" => "center-right",
+            _ => "center",
+        }
+    };
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    let mut o = String::new();
+    o.push_str("{\n");
+    o.push_str(&format!("  size: \"{}x{}\"\n", w, h));
+    o.push_str(&format!("  prompt: {}\n", q(scene)));
+    let mut layers = comp.elements.iter();
+    // First element = backdrop (the farthest plane); its weight/window set the backdrop anchor strength.
+    if let Some(bg) = layers.next() {
+        let bp = bg.subject.clone().unwrap_or_default();
+        o.push_str(&format!("  backdrop: {{ prompt: {}", q(&bp)));
+        if let Some(wt) = bg.weight {
+            o.push_str(&format!(", weight: {:.3}", wt));
+        }
+        if let Some(wn) = bg.window {
+            o.push_str(&format!(", window: {:.3}", wn));
+        }
+        o.push_str(" }\n");
+    }
+    o.push_str("  layers: [\n");
+    let rest: Vec<_> = layers.collect();
+    let n = rest.len().max(1);
+    for (i, el) in rest.iter().enumerate() {
+        let id = el.name.clone().unwrap_or_else(|| format!("layer-{i}"));
+        let prompt = el.subject.clone().unwrap_or_default();
+        // Placement: explicit `place` wins, else map the coarse `mask` hint.
+        let place = el.place.clone().unwrap_or_else(|| place_of(el.mask.as_deref().unwrap_or("center")).to_string());
+        // Nearer elements come later in the list → smaller depth (0 = nearest); an explicit depth overrides.
+        let depth = el.depth.unwrap_or(0.75 * (1.0 - (i as f32 + 1.0) / (n as f32 + 1.0)));
+        o.push_str(&format!("    {{ id: {}, prompt: {}, place: {}, depth: {:.3}", q(&id), q(&prompt), q(&place), depth));
+        if let Some(sz) = el.size.as_deref() {
+            o.push_str(&format!(", size: {}", q(sz)));
+        }
+        if let Some(wt) = el.weight {
+            o.push_str(&format!(", weight: {:.3}", wt));
+        }
+        if let Some(wn) = el.window {
+            o.push_str(&format!(", window: {:.3}", wn));
+        }
+        o.push_str(" }\n");
+    }
+    o.push_str("  ]\n}\n");
+    o
+}
+
+/// Render a single COHERENT armature for a composition via the LAYERED pipeline (plan → drafts → one anchored
+/// diffusion). Returns the finished image to be PAINTED. This replaces cut-and-paste compositing: no draft
+/// pixel reaches the output; the elements are co-rendered into one scene.
+async fn render_layered_armature(spec: &crate::paint::spec::PaintSpec, plan: &crate::paint::PaintPlan, comp: &crate::paint::spec::CompositionSpec) -> Result<image::RgbImage> {
+    let (ow, oh) = plan.size;
+    let scene = spec.subject.clone().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+        comp.elements.iter().filter_map(|e| e.subject.clone()).collect::<Vec<_>>().join(", ")
+    });
+    let plan_hjson = build_layer_plan_hjson(&scene, comp, ow, oh);
+    let tmp = tempfile::Builder::new().prefix("plakat-paint-layered-").tempdir().context("layered scratch dir")?;
+    let plan_path = tmp.path().join("plan.hjson");
+    std::fs::write(&plan_path, &plan_hjson).context("writing the layered plan")?;
+    let armature_path = tmp.path().join("armature.png");
+    let model = spec.model.clone().unwrap_or_else(|| "sdxl".into());
+    let steps = spec.steps.unwrap_or(36).clamp(1, 100);
+    println!(
+        "{}  layered armature: {} elements → one coherent render ({}, {} steps · no cut-and-paste)…",
+        style("◆").cyan(), comp.elements.len(), model, steps,
+    );
+    crate::api::Layered::from_plan(&model, &plan_path, &armature_path)
+        .size(format!("{}x{}", ow, oh))
+        .steps(steps)
+        .seed(plan.seed)
+        .run()
+        .await
+        .context("layered armature render")?;
+    let img = image::open(&armature_path).context("opening the layered armature")?.to_rgb8();
+    println!("{}  layered armature ready → painting", style("·").dim());
+    Ok(img)
+}
+
 
 fn run_replay(a: ReplayArgs) -> Result<()> {
     let text = std::fs::read_to_string(&a.score).with_context(|| format!("reading {}", a.score.display()))?;
@@ -442,7 +714,7 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }
-    canvas.to_image().save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
+    canvas.to_image_finished(&score.header.finish()).save(&a.out).with_context(|| format!("writing {}", a.out.display()))?;
     println!("{}  rendered → {}", style("✓").green(), a.out.display());
     Ok(())
 }
@@ -463,6 +735,39 @@ fn run_from(a: FromArgs) -> Result<()> {
     params.brush_sizes = brush_sizes.clone();
     params.min_brush = a.min_brush;
     params.seed = a.seed;
+    params.style = parse_style(&a.style)?;
+    params.define = a.define.clamp(0.0, 1.0);
+    params.stroke_len = a.stroke_length.clamp(0.2, 4.0);
+    params.stroke_width = a.stroke_width.clamp(0.3, 3.0);
+    if let Some(b) = a.bleed {
+        params.bleed = b.clamp(0.0, 1.0);
+    }
+    if let Some(o) = a.opacity {
+        params.opacity = o.clamp(0.1, 1.0);
+    }
+    if let Some(pk) = a.pickup {
+        params.brush.k_pickup = pk.clamp(0.0, 1.0);
+    }
+    if let Some(im) = a.impasto {
+        params.impasto = im.clamp(0.0, 1.0);
+    }
+    if let Some(ch) = a.chroma {
+        params.chroma = ch.clamp(0.3, 2.0);
+    }
+    if let Some(ds) = a.dry_shift {
+        params.dry_shift = ds.clamp(-0.4, 0.4);
+    }
+    if let Some(gr) = a.granulate {
+        params.granulate = gr.clamp(0.0, 1.0);
+    }
+    if let Some(sh) = a.sheen {
+        params.sheen = sh.clamp(0.0, 1.0);
+    }
+    if a.haze > 0.0 {
+        // A CPU depth proxy (central + low = near) so aerial perspective can be exercised without a depth model.
+        params.depth = Some(crate::paint::armature::depth_proxy(w, h));
+        params.haze = a.haze.clamp(0.0, 1.0);
+    }
 
     println!(
         "{}  paint from {} → {}  ({}×{} px · palette {} · budget {} · brushes {})",
@@ -477,7 +782,7 @@ fn run_from(a: FromArgs) -> Result<()> {
     );
 
     let result = painter::paint_from_image(&img, &params);
-    let out = result.canvas.to_image();
+    let out = result.canvas.to_image_finished(&result.score.header.finish());
     if let Some(parent) = a.out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).ok();
     }

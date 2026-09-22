@@ -30,10 +30,110 @@ pub struct PaintSpec {
     pub subject: Option<String>,
     pub medium: Option<String>,
     pub palette: Option<String>,
+    /// Fidelity register: `legible` (default) or `impressionist`.
     pub style: Option<String>,
     pub surface: Option<SurfaceSpec>,
     pub budget: Option<BudgetSpec>,
     pub seed: Option<u64>,
+    // ── Armature (the model as art director) ────────────────────────────────────────────────────────────────
+    /// Diffusion steps for the armature render — MORE steps = a clearer, more coherent armature (a clearer
+    /// figure, net, sea), which the painter then renders. The single biggest lever on subject legibility.
+    pub steps: Option<usize>,
+    /// Negative prompt for the armature render (e.g. "blurry, deformed hands, extra limbs").
+    pub negative: Option<String>,
+    /// Armature model (default sdxl).
+    pub model: Option<String>,
+    // ── Painter controls (scene-authoritative; the code carries only defaults) ───────────────────────────────
+    /// Edge-hardness strength (0..1) — how many boundaries read as HARD (crisp meetings). Legible only.
+    pub define: Option<f32>,
+    /// Aerial-perspective strength (0..1) — background recession via the depth map. 0 = flat.
+    pub haze: Option<f32>,
+    /// STROKE LENGTH multiplier (default 1.0) — longer = cleaner sweeping strokes, shorter = choppier.
+    pub stroke_length: Option<f32>,
+    /// STROKE WIDTH multiplier (default 1.0) — wider = fewer, broader marks; narrower = finer, more marks.
+    pub stroke_width: Option<f32>,
+    // ── Technique behaviour (each overrides the medium's default) ────────────────────────────────────────────
+    /// Wet-into-wet BLEED (0..1): fusion/bloom of the wet media. Default per medium (watercolour/ink high).
+    pub bleed: Option<f32>,
+    /// BODY / opacity (0.1..1): 1 = opaque cover (gouache/oil), low = transparent (watercolour/ink glow).
+    pub opacity: Option<f32>,
+    /// PICKUP (0..1): the dirty-brush drag — high fuses neighbouring colour (oil/ink), low keeps marks clean.
+    pub pickup: Option<f32>,
+    /// IMPASTO (0..1): the textured, light-catching thick-paint relief at output — oil/knife high, flat media 0.
+    pub impasto: Option<f32>,
+    // ── Paint MATERIAL physics (each overrides the medium default) ───────────────────────────────────────────
+    /// CHROMA / saturation range (1 neutral; >1 vivid oil; <1 muted gouache/watercolour).
+    pub chroma: Option<f32>,
+    /// DRY SHIFT — value change on drying (+ watercolour dries lighter; − gouache dries to a matte mid).
+    pub dry_shift: Option<f32>,
+    /// GRANULATION — pigment settling into the paper tooth (watercolour / graphite grain).
+    pub granulate: Option<f32>,
+    /// SHEEN / gloss — specular highlight on paint ridges (oil glossy; watercolour/gouache matte).
+    pub sheen: Option<f32>,
+    /// LIFT — wipe removability (oil high; watercolour staining low).
+    pub lift: Option<f32>,
+    /// Brushwork plan: the default brush and, later, per-element assignments (see `BrushworkSpec`).
+    pub brushwork: Option<BrushworkSpec>,
+    /// COMPOSITION LAYERS (per-element painting): render, matte and paint each element on its own layer, back to
+    /// front. When present, this drives the painting instead of a single `subject` armature.
+    pub composition: Option<CompositionSpec>,
+}
+
+/// A composition: an ordered list of ELEMENTS painted back-to-front (first = farthest).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CompositionSpec {
+    pub elements: Vec<ElementSpec>,
+}
+
+/// One composition ELEMENT (e.g. sky, sea, figure, net): its own render, mask, and brush.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ElementSpec {
+    pub name: Option<String>,
+    /// What to render for this element (prose → its own SDXL armature).
+    pub subject: Option<String>,
+    /// Negative prompt for this element's render.
+    pub negative: Option<String>,
+    /// The brush for this element (vocabulary name: flat / filbert / round / fan / rigger / knife / wash).
+    pub brush: Option<String>,
+    /// Coarse footprint / placement hint (also the fallback for `place`): `full` / `top` / `upper` / `bottom` /
+    /// `lower` / `left` / `right` / `middle` / `subject`.
+    pub mask: Option<String>,
+    // ── Layered-plan placement + anchor strength (passed straight through to `plakat layers`) ────────────────
+    /// Explicit placement words for the layered plan (e.g. "center-bottom", "center-top", "left mid front").
+    /// Overrides the `mask`→place mapping.
+    pub place: Option<String>,
+    /// Element size word: `small` / `medium` / `large`.
+    pub size: Option<String>,
+    /// Anchor WEIGHT (0..1): how strongly this element's low-frequency guide holds (higher = the plan's layout
+    /// dominates; lower = the finish diffusion is freer). The backdrop's weight comes from the first element.
+    pub weight: Option<f32>,
+    /// Anchor WINDOW (0..1): the step-fraction at which this element stops being anchored (higher = held longer).
+    pub window: Option<f32>,
+    /// Explicit depth (0 = nearest); else derived from the element's order.
+    pub depth: Option<f32>,
+    /// Per-element armature steps (else the spec-level `steps`).
+    pub steps: Option<usize>,
+    /// Per-element stroke budget (else derived from the element's area).
+    pub strokes: Option<usize>,
+}
+
+/// The brushwork plan (RFC brush vocabulary). `default` names the brush for unassigned areas; `assign` maps a
+/// prompt phrase / element to a brush + stroke character (per-element region assignment lands with detection).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BrushworkSpec {
+    pub default: Option<String>,
+    #[serde(default)]
+    pub assign: Vec<BrushAssign>,
+}
+
+/// One brushwork assignment: paint the region matching `where` with brush `brush` (and optional stroke length).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BrushAssign {
+    #[serde(rename = "where")]
+    pub where_: Option<String>,
+    pub brush: Option<String>,
+    /// Stroke length register: `short` | `medium` | `long`.
+    pub strokes: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +174,18 @@ pub struct PaintPlan {
     pub size: (u32, u32),
 }
 
+/// A painting-scale default stroke budget derived from the canvas area and the medium (used when the spec
+/// gives no explicit `budget.strokes`). ~14k marks per megapixel for a loaded-brush medium — an 832×1024
+/// canvas lands near 12k — scaled up for density media, whose marks are many and small. Clamped to a sane band.
+pub fn auto_budget(size: (u32, u32), medium: &MediumProfile) -> usize {
+    let mp = (size.0 as f32 * size.1 as f32) / 1_000_000.0;
+    let per_mp = match medium.mark_model {
+        medium::MarkModel::Density => 60_000.0, // hatch/stipple: many small marks
+        medium::MarkModel::Continuous => 30_000.0, // enough small marks for the detail passes to resolve features
+    };
+    ((per_mp * mp).round() as usize).clamp(1_500, 120_000)
+}
+
 /// A stage's share of the stroke budget — structural masses get the most, accents/highlights the fewest but
 /// carry the focal notes (§9). Weights are relative; the compiler normalises them.
 fn stage_weight(s: &Stage) -> f32 {
@@ -97,11 +209,15 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
     if !medium.is_executable() {
         bail!("medium {:?} is not executable — the engine renders {}", medium.name, medium::EXECUTABLE.join(" / "));
     }
-    let palette = Palette::by_name(spec.palette.as_deref().unwrap_or("zorn"))
+    // Palette defaults to the one that SUITS this medium (sumi for ink/pencil, split-primary for gouache, …).
+    let palette = Palette::by_name(spec.palette.as_deref().unwrap_or(medium.default_palette))
         .with_context(|| format!("unknown palette {:?} — try: {}", spec.palette, palette::ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")))?;
-    let budget = spec.budget.as_ref().and_then(|b| b.strokes).unwrap_or(1500).max(1);
     let seed = spec.seed.unwrap_or(42);
     let size = spec.size().unwrap_or((ref_w, ref_h));
+    // Budget: the spec's explicit `budget.strokes` wins; otherwise DERIVE a painting-scale count from the
+    // canvas area and the medium — a real painting is many thousands of marks across its layers, not a flat
+    // default. Density media (pen-ink, tempera) pack far more, smaller marks than a loaded brush.
+    let budget = spec.budget.as_ref().and_then(|b| b.strokes).unwrap_or_else(|| auto_budget(size, &medium)).max(1);
 
     let stages = medium::generate_schedule(&medium);
     let n = stages.len().max(1);
