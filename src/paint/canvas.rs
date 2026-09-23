@@ -44,6 +44,9 @@ pub struct Canvas {
     /// BODY / opacity multiplier on the film-build (1 = opaque media; lower = transparent, the ground glows
     /// through more even as paint builds — watercolour, ink).
     opacity: f32,
+    /// Hiding power (the film-build's `OPACITY_K`). Measured: a full block-in already hides 96% of the ground at
+    /// the default, so this is NOT the lever for a light/grey painting (that was the palette gamut).
+    opacity_k: f32,
     n: usize,
 }
 
@@ -61,7 +64,22 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
+    }
+
+    /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
+    /// picture is paint versus ground showing through. A diagnostic for the "too light / too grey" tell.
+    pub fn mean_film_alpha(&self) -> f32 {
+        let px = (self.w * self.h) as usize;
+        if px == 0 {
+            return 0.0;
+        }
+        let mut acc = 0f64;
+        for p in 0..px {
+            let total: f32 = self.conc[p * self.n..p * self.n + self.n].iter().map(|c| c.max(0.0)).sum();
+            acc += (1.0 - (-self.opacity_k * self.opacity * total).exp()) as f64;
+        }
+        (acc / px as f64) as f32
     }
 
     /// Set the BODY / opacity multiplier (1 = opaque; lower = transparent). Builder-style.
@@ -222,7 +240,7 @@ impl Canvas {
             return color::linear_to_srgb(self.ground_lin);
         }
         let paint = pigment::mix_linear(self.palette.pigments, conc);
-        let alpha = 1.0 - (-OPACITY_K * self.opacity * total).exp();
+        let alpha = 1.0 - (-self.opacity_k * self.opacity * total).exp();
         let mut out = [0f32; 3];
         for c in 0..3 {
             out[c] = alpha * paint[c] + (1.0 - alpha) * self.ground_lin[c];

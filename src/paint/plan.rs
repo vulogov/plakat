@@ -214,7 +214,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         // paint, so the budget is used and the painting reads rich — not a sparse wash. The structure-preserving
         // armature keeps this from tracing. Mild recession only (heavy recede erases soft periphery).
         // Background stays only a touch coarser than the body (0.85), not the old aggressive 0.62 that starved it.
-        ((Some(300)), Some(210), 0.12, (armature as f32 * 0.85).round().max(90.0) as u32)
+        // No aerial veil by default: measured on a real scene it lifted mean luma +0.04 and moved the painting
+        // AWAY from the target structure (SSIM); the reference's own depth cues carry the recession. `--recede`
+        // stays available for a deliberate atmospheric treatment.
+        ((Some(300)), Some(210), 0.0, (armature as f32 * 0.85).round().max(90.0) as u32)
     } else {
         notes.push("no face → uniform coarse armature".into());
         (None, None, 0.0, armature)
@@ -234,7 +237,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
 
     // VALUE KEY from measured contrast: a flat, foggy reference (low stddev) needs more tonal expansion for real
     // darks and lights; a punchy reference needs little. Map stddev∈[~0.10,0.28] → value_key∈[0.9,0.2].
-    let value_key = ((0.28 - a.luma_stddev) / (0.28 - 0.10) * 0.7 + 0.2).clamp(0.0, 0.95);
+    // Expand ONLY a genuinely flat/foggy reference (low luma σ). A normal-contrast reference gets no stretch: the
+    // stretch lightened a faithful painting by +0.04 mean luma for nothing — a painter re-keys a fog, not a
+    // clear day. σ ≥ 0.20 → 0; σ 0.08 → 0.7.
+    let value_key = ((0.20 - a.luma_stddev) / (0.20 - 0.08) * 0.7).clamp(0.0, 0.7);
     notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
     // SHADOW FLOOR (RFC §3.3): the re-key keeps the shadow family a narrow, LIFTED band — a solid dark mass, not a
     // crush to black. 0.16 ≈ a deep but readable dark; raise for a high-key picture, lower for a nocturne.
@@ -289,7 +295,9 @@ mod tests {
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
         assert_eq!(flat.armature_face, Some(300), "a detected face gets a fine focal armature (SAM precise focal)");
         assert_eq!(flat.armature_body, Some(210), "a subject gets a mid body armature (three-tier)");
-        assert!(flat.recede > 0.0 && flat.armature < 120, "background recedes and goes a touch coarser with a subject");
+        // No aerial veil by default (measured: it lifted mean luma +0.04 and hurt structural agreement with the
+        // target); the background still goes a touch coarser than the base armature with a subject present.
+        assert!(flat.recede == 0.0 && flat.armature < 120, "no default veil; background a touch coarser with a subject ({} / {})", flat.recede, flat.armature);
         assert_eq!(flat.reserve, Some(0.92), "watercolour reserves the paper only for true highlights");
     }
 

@@ -301,8 +301,38 @@ fn palette_from_image(img: &image::RgbImage, k: usize) -> crate::paint::palette:
     let clusters = kmeans_rgb(&px, k.saturating_sub(2).max(4), 14);
     // Always include a near-white (ground / lights) and a near-black (darks), then the scene's dominant hues.
     let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
-    for c in clusters {
-        cols.push([c[0].round().clamp(0.0, 255.0) as u8, c[1].round().clamp(0.0, 255.0) as u8, c[2].round().clamp(0.0, 255.0) as u8]);
+    // Each cluster's PIGMENT is its chroma EXTREME, not its centroid. A centroid is an average — always duller
+    // and more mid-toned than the colours it summarises — and Kubelka-Munk can only mix DOWN from the pigments
+    // it has, so a palette of averages caps the chroma of the whole painting (measured on a real scene: −40%
+    // saturation against the source, fully recovered by a wide palette). A painter lays out tube colours and
+    // greys them by mixing; picking each cluster's purest member does the same while keeping the hue the image
+    // actually has. The 85th percentile of saturation (not the maximum) so a noisy outlier can't hijack a hue.
+    let satf = |c: &[f32; 3]| -> f32 {
+        let mx = c[0].max(c[1]).max(c[2]);
+        let mn = c[0].min(c[1]).min(c[2]);
+        if mx < 1.0 { 0.0 } else { (mx - mn) / mx }
+    };
+    let mut members: Vec<Vec<[f32; 3]>> = vec![Vec::new(); clusters.len()];
+    for p in &px {
+        let (mut best, mut bd) = (0usize, f32::MAX);
+        for (i, c) in clusters.iter().enumerate() {
+            let d = (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2);
+            if d < bd {
+                bd = d;
+                best = i;
+            }
+        }
+        members[best].push(*p);
+    }
+    for (i, c) in clusters.iter().enumerate() {
+        let m = &mut members[i];
+        let rep = if m.len() >= 8 {
+            m.sort_by(|a, b| satf(a).partial_cmp(&satf(b)).unwrap_or(std::cmp::Ordering::Equal));
+            m[(m.len() - 1) * 85 / 100]
+        } else {
+            *c
+        };
+        cols.push([rep[0].round().clamp(0.0, 255.0) as u8, rep[1].round().clamp(0.0, 255.0) as u8, rep[2].round().clamp(0.0, 255.0) as u8]);
     }
     // Safety net: if NO strongly-saturated pigment made it in, add the single most saturated distinct colour so a
     // vivid accent isn't lost entirely — but only one, so it can't dominate.
