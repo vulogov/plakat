@@ -74,7 +74,10 @@ fn default_palette() -> String {
     "image".into()
 }
 fn default_style() -> String {
-    "impressionist".into()
+    // LEGIBLE resolves features on the fine passes (it has a detail tier); IMPRESSIONIST has none, so an
+    // analyzer that defaulted to impressionist produced masses-only mush. Legible is the right default; a user
+    // who wants loose masses still asks for `--style impressionist` or writes it into the plan.
+    "legible".into()
 }
 fn default_armature() -> u32 {
     72
@@ -192,7 +195,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // background become washes (RFC §5.2). With a subject present, use a THREE-TIER plan — a coarser background, a
     // mid subject body, and the fine face — plus a touch of aerial recession so the subject advances.
     let (armature_face, armature_body, recede, armature) = if a.faces > 0 {
-        notes.push(format!("{} face(s) → three-tier armature: background {}px · body 104px · face 200px", a.faces, (armature as f32 * 0.6).round() as u32));
+        notes.push(format!("{} face(s) → three-tier armature: background {}px · body 210px · face 300px", a.faces, (armature as f32 * 0.85).round().max(90.0) as u32));
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
         // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
         notes.push("semantic tiers (OWL-ViT): hair/beard → a slightly coarser tier".into());
@@ -241,7 +244,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     PaintPlan {
         medium: a.medium.clone(),
         palette: a.palette.clone(),
-        style: "impressionist".into(),
+        style: "legible".into(),
         armature,
         armature_face,
         armature_body,

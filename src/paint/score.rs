@@ -43,6 +43,9 @@ pub struct ScoreHeader {
     pub brush: BrushConfig,
     /// Wet-into-wet BLEED strength applied after painting (0 = dry media) — replay reproduces it.
     pub bleed: f32,
+    /// INTER-PASS DRYING (0..1): how much the canvas dried between passes during painting. Recorded so a replay
+    /// (at any resolution) dries at the same stage boundaries and reproduces the delivered image. 0 = never dried.
+    pub dry: f32,
     /// BODY / opacity of the paint film (1 = opaque; lower = transparent) — replay must match.
     pub opacity: f32,
     /// IMPASTO relight strength at output (0 = flat) — the textured oil/knife look, replayed from height.
@@ -131,8 +134,8 @@ impl StrokeScore {
         o.push_str("# plakat stroke score v1\n");
         let ground = h.ground.map(|g| format!(" ground={},{},{}", g[0], g[1], g[2])).unwrap_or_default();
         o.push_str(&format!(
-            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
+            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
         ));
         // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
         for (name, rgb) in &h.pigments {
@@ -190,10 +193,11 @@ impl StrokeScore {
                         height: h,
                         tooth: get("tooth").parse().unwrap_or(0.85),
                         ground: m.get("ground").and_then(|g| {
-                            let v: Vec<u8> = g.split(',').filter_map(|x| x.parse().ok()).collect();
+                            let v: Vec<u8> = g.split(',').filter_map(|x| x.parse::<u8>().ok()).collect();
                             (v.len() == 3).then_some([v[0], v[1], v[2]])
                         }),
                         bleed: get("bleed").parse().unwrap_or(0.0),
+                        dry: get("dry").parse().unwrap_or(0.0),
                         opacity: get("opacity").parse().unwrap_or(1.0),
                         impasto: get("impasto").parse().unwrap_or(0.0),
                         chroma: get("chroma").parse().unwrap_or(1.0),
@@ -289,9 +293,21 @@ impl StrokeScore {
         .with_opacity(self.header.opacity);
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let full = |k: &dyn Fn(&StrokeRecord) -> bool| self.strokes.iter().all(|r| k(r));
+        // Inter-pass drying: the paint dried the canvas at each pass boundary; a stage change in the recorded
+        // stream marks one. Reproduce it here so replay matches the delivered image (no-op for old scores, dry=0).
+        let dry_keep = 1.0 - self.header.dry;
+        let mut last_stage: Option<&str> = None;
         for rec in &self.strokes {
             if !keep(rec) {
                 continue;
+            }
+            if self.header.dry > 0.0 {
+                if let Some(prev) = last_stage {
+                    if prev != rec.stage {
+                        canvas.dry(dry_keep);
+                    }
+                }
+                last_stage = Some(&rec.stage);
             }
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
             if rec.wipe {
@@ -334,7 +350,17 @@ impl StrokeScore {
         let every = every.max(1);
         let mut frames = Vec::new();
         let mut laid = 0usize;
+        let dry_keep = 1.0 - self.header.dry;
+        let mut last_stage: Option<&str> = None;
         for rec in &self.strokes {
+            if self.header.dry > 0.0 {
+                if let Some(prev) = last_stage {
+                    if prev != rec.stage {
+                        canvas.dry(dry_keep);
+                    }
+                }
+                last_stage = Some(&rec.stage);
+            }
             if !rec.wipe {
                 let mut load = vec![0f32; n];
                 for (name, val) in &rec.mix {
@@ -393,7 +419,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7 },
                 StrokeRecord { id: 2, wipe: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7 },
@@ -465,7 +491,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
         let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7 };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7 };

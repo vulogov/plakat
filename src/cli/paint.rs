@@ -31,8 +31,9 @@ pub struct PaintArgs {
     #[arg(long, default_value_t = 0.6)]
     pub define: f32,
     /// AERIAL PERSPECTIVE strength (0..1): veil distant passages toward the atmosphere so the background recedes
-    /// and the foreground advances (depth "layers"). Uses the armature's depth map. 0 = flat single plane.
-    #[arg(long, default_value_t = 0.55)]
+    /// and the foreground advances (depth "layers"). Uses the armature's depth map. 0 = flat single plane
+    /// (default — opt in; a non-zero default fogged every painting that had any depth).
+    #[arg(long, default_value_t = 0.0)]
     pub haze: f32,
     /// STROKE LENGTH multiplier (1.0 = default): longer = cleaner sweeping strokes; shorter = choppier.
     #[arg(long, default_value_t = 1.0)]
@@ -43,6 +44,10 @@ pub struct PaintArgs {
     /// BLEED (0..1) wet-into-wet fusion — overrides the medium default (watercolour/ink bleed; oil/gouache don't).
     #[arg(long)]
     pub bleed: Option<f32>,
+    /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (fully wet-into-wet, the
+    /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
+    #[arg(long, default_value_t = 0.5)]
+    pub dry: f32,
     /// OPACITY / body (0.1..1) — overrides the medium default (1 = opaque; low = transparent).
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -196,6 +201,7 @@ pub struct SpecArgs {
     pub stroke_length: f32,
     pub stroke_width: f32,
     pub bleed: Option<f32>,
+    pub dry: f32,
     pub opacity: Option<f32>,
     pub pickup: Option<f32>,
     pub impasto: Option<f32>,
@@ -390,6 +396,10 @@ pub struct FromArgs {
     /// BLEED (0..1) wet-into-wet fusion (default 0 for `from`).
     #[arg(long)]
     pub bleed: Option<f32>,
+    /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
+    /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
+    #[arg(long, default_value_t = 0.5)]
+    pub dry: f32,
     /// OPACITY / body (0.1..1) — 1 = opaque, low = transparent.
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -467,7 +477,7 @@ pub struct FromArgs {
     #[arg(long)]
     pub armature: Option<u32>,
     /// VALUE MASSES in the structure-preserving armature (RFC §5): how many value levels it quantises to — the
-    /// block-in a painter sees. Fewer = bolder flatter masses; more = subtler. Default 6.
+    /// block-in a painter sees. Fewer = bolder flatter masses; more = subtler (and, too high, filter-like). Default 8.
     #[arg(long)]
     pub armature_levels: Option<u32>,
     /// FOCAL armature resolution (px, RFC §5.2): with `--armature`, paint the DETECTED FACE from a finer armature
@@ -536,7 +546,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -886,6 +896,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // TECHNIQUE behaviour: each control defaults to the MEDIUM's characteristic value, overridable by the spec
     // then the CLI — so watercolour bleeds and glows, oil is opaque and dirty, pen-ink is crisp, out of the box.
     params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
+    params.dry = a.dry.clamp(0.0, 1.0);
     params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
     params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
     params.brush.k_pickup = spec.pickup.or(a.pickup).unwrap_or(plan.medium.pickup).clamp(0.0, 1.0);
@@ -1373,6 +1384,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.define = a.define.clamp(0.0, 1.0);
     params.stroke_len = a.stroke_length.clamp(0.2, 4.0);
     params.stroke_width = a.stroke_width.clamp(0.3, 3.0);
+    params.dry = a.dry.clamp(0.0, 1.0);
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
     }

@@ -182,6 +182,10 @@ pub struct PaintParams {
     pub stroke_width: f32,
     /// Wet-into-wet BLEED (0..1) applied after painting — the wet media's fusion/bloom. Default per medium.
     pub bleed: f32,
+    /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never dries (fully wet-into-wet —
+    /// every later pass picks up the masses beneath and smears them into mud); 1 = bone dry between passes (each
+    /// pass a crisp overlay). Default ~0.5. This is the single biggest lever against the muddy/washed look.
+    pub dry: f32,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -245,7 +249,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 14, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5 }
     }
 }
 
@@ -751,7 +755,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift },
         strokes: Vec::new(),
     };
 
@@ -788,7 +792,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // FOCAL field for the opt-in selective-detail gate. A detected FACE MASK (`--preserve-face`) takes priority
     // over the centre-prior focal field (`--focus-detail`), since the real face box targets the face however it
     // is placed. `focal_strength` opens the region for whichever source is active.
-    let (focal, focal_strength) = if let Some(fm) = &p.face_mask {
+    // A focal source only ENGAGES when its strength is > 0. A face mask with `preserve_face == 0` (the default,
+    // e.g. from `--plan auto`, which builds the mask for the silhouette but does not ask for selective face
+    // detail) must NOT switch the restrictive focal gate on: with strength 0 the gate `f < 1 - strength` skips
+    // every detail stroke outside the exact face core — the bug that erased detail across the whole canvas. When
+    // no source asks for focus, `focal` stays None and the gate below is a no-op, so detail paints everywhere.
+    let (focal, focal_strength) = if let (Some(fm), true) = (&p.face_mask, p.preserve_face > 0.0) {
         (Some(std::borrow::Cow::Borrowed(fm)), p.preserve_face)
     } else if p.focus_detail > 0.0 {
         (Some(std::borrow::Cow::Owned(focal_field(input))), p.focus_detail)
@@ -1025,6 +1034,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 placed = snap_placed;
                 rejected.push(pass.stage.clone());
             }
+        }
+        // Dry the canvas before the next pass so the just-laid masses SET: the restatement then reads as fresh
+        // overlays instead of picking the masses back up and stirring them into mud. Wet-into-wet is `--dry 0`.
+        if layer + 1 < passes.len() {
+            canvas.dry(1.0 - p.dry);
         }
     }
     if !rejected.is_empty() {

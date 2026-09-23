@@ -46,6 +46,12 @@ impl Default for BrushConfig {
 /// Saturation at which the tooth is full and deposit stops.
 const SAT_FULL: f32 = 6.0;
 
+/// How hard a full tooth throttles further deposit. At 1.0 (the old behaviour) a saturated pixel refuses ALL new
+/// paint, so once the block-in fills the tooth no later pass can build a darker dark or a brighter light — the
+/// value range freezes into a flat, washed mid-tone. Below 1.0 a full pixel still accepts a fraction of each
+/// stroke, so opaque media keep building value by shifting the pigment RATIO (KM colour is by ratio, not amount).
+const SAT_THROTTLE: f32 = 0.72;
+
 /// Deterministic per-lane hash in `[0,1]` (a hashed LCG) — for reproducible bristle-load variation.
 fn lane_hash(seed: u64, b: u64) -> f32 {
     let mut z = seed.wrapping_add(b.wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add(0x1234_5678);
@@ -216,7 +222,7 @@ impl Stroke {
 
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
-        let df = (brush.k_deposit * contact * (1.0 - sat)).clamp(0.0, 1.0);
+        let df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
         deposit.clear();
         deposit.resize(n, 0.0);
         let mut dep_total = 0.0;

@@ -141,6 +141,20 @@ impl Canvas {
         self.height[p] *= 1.0 - s;
     }
 
+    /// DRY the whole canvas between passes: scale every pixel's wetness by `keep` (0 = bone dry, 1 = leave fully
+    /// wet). A brush picks up canvas pigment in proportion to wetness, so a canvas that never dries lets each pass
+    /// lift and re-deposit the masses beneath — the mechanism behind the muddy/smeared look. Drying between passes
+    /// lets the block-in set before the restatement, so later marks read as fresh overlays, not stirred mud.
+    pub fn dry(&mut self, keep: f32) {
+        let k = keep.clamp(0.0, 1.0);
+        if k >= 1.0 {
+            return;
+        }
+        for w in &mut self.wetness {
+            *w *= k;
+        }
+    }
+
     /// Wet-into-wet BLEED (watercolour / ink-wash): diffuse the deposited pigment into WET neighbours, so
     /// colours fuse and bloom at the edges. `strength` (0..1) scales both the spread and how far it reaches;
     /// only WET pixels bleed, so dry paint keeps its edge. Deterministic — replay reproduces it from the same

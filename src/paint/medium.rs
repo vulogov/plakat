@@ -270,7 +270,9 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     opacity: Opacity::Transparent,
     white_source: WhiteSource::Pigment,
     reversibility: Reversibility::None,
-    stage_budget: 40,
+    // Tempera builds in a few deliberate hatched layers, not 40 — a budget of 40 fragmented into ~37 degenerate
+    // colour passes that each restated almost nothing. Six matches the other layered media.
+    stage_budget: 6,
     pickup: 0.05,
     bleed: 0.03,
     body: 0.85,
