@@ -466,6 +466,10 @@ pub struct FromArgs {
     /// (a filter — the RFC anti-pattern). This is the plan-vs-pixels switch.
     #[arg(long)]
     pub armature: Option<u32>,
+    /// VALUE MASSES in the structure-preserving armature (RFC §5): how many value levels it quantises to — the
+    /// block-in a painter sees. Fewer = bolder flatter masses; more = subtler. Default 6.
+    #[arg(long)]
+    pub armature_levels: Option<u32>,
     /// FOCAL armature resolution (px, RFC §5.2): with `--armature`, paint the DETECTED FACE from a finer armature
     /// (this size) than the rest — a wash beard/background AND a crisp face in one pass. ~160–220 works. Detects a
     /// face automatically (no need for --preserve-face). Must be larger than --armature.
@@ -1516,6 +1520,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // downsampling, detail does not), so the engine INVENTS the surface instead of TRACING the photo. Unset keeps
     // the legacy full-resolution "filter" behaviour that the existing tuning knobs operate on.
     params.armature_side = a.armature.filter(|&s| s > 0);
+    if let Some(lv) = a.armature_levels {
+        params.armature_levels = lv.clamp(2, 32);
+    }
 
     // VALUE KEY (§5.5.2): expand the reference's tonal range so the painting reads with real darks/lights instead
     // of a foggy midtone — the spec path does this always; here it is opt-in. Blend by strength so it is tunable.

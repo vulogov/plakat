@@ -120,6 +120,9 @@ pub struct PaintParams {
     pub armature_body_side: Option<u32>,
     /// The subject (foreground) 0..1 mask for `armature_body_side` — from a matte model (U2Net). Row-major, canvas-sized.
     pub subject_mask: Option<Vec<f32>>,
+    /// VALUE MASSES in the structure-preserving armature (RFC §5): how many value levels the armature quantises to
+    /// (the block-in a painter sees). Fewer = bolder, flatter masses; more = subtler. ~5–7 reads as a painting.
+    pub armature_levels: u32,
     /// SEMANTIC region tiers (RFC §5.2): extra `(mask, armature_resolution_px)` regions — e.g. a coarse hair/beard
     /// tier (kept as a wash) or a clothing tier — from OWL-ViT/SAM. Blended coarse→fine with the body/face tiers.
     pub region_tiers: Vec<(Vec<f32>, u32)>,
@@ -242,7 +245,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 14, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.55, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0 }
     }
 }
 
@@ -556,15 +559,84 @@ fn blend_by_mask(coarse: &RgbImage, fine: &RgbImage, mask: &[f32], w: u32, h: u3
     })
 }
 
-fn coarsen(img: &RgbImage, side: u32) -> RgbImage {
+/// Build a STRUCTURE-PRESERVING armature (RFC §1.1/§5). The old `coarsen` was a BLUR, which destroys structure
+/// (edges, the boundaries of value masses) along with texture — so the engine painted a structureless smear. This
+/// instead flattens *texture* while KEEPING edges (an edge-preserving / bilateral smooth), then quantises the
+/// result into a few VALUE MASSES with clean boundaries (posterise). The armature is therefore coarse in texture
+/// but SHARP in structure — the beard is a dark mass with a defined edge, the face a light mass, the eyes dark
+/// accents — so the strokes paint recognizable form instead of averaging blurry colour. `side` is the structure
+/// resolution (LARGER = more structure retained → smaller smoothing radius); `levels` = number of value masses.
+fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     let (w, h) = img.dimensions();
-    let scale = side as f32 / w.max(h) as f32;
-    if scale >= 1.0 {
-        return img.clone();
+    // Structure resolution → spatial radius: a coarser armature removes more texture (bigger radius).
+    let r = ((w.min(h) as f32 / side.max(1) as f32).round() as i32).clamp(1, 16);
+    // SPEED: a large radius is run at REDUCED resolution (downsample → small-radius bilateral → upsample), a
+    // standard bilateral speedup, so the cost is bounded regardless of coarseness. Fine tiers (small r) run at
+    // full resolution so the focal region stays crisp.
+    let mut sm;
+    let bil;
+    if r <= 3 {
+        // FINE armature: keep the reference's own detail/texture — a bilateral here would over-smooth the face
+        // into a photo-smooth "cut-and-paste" surface while the rest stays brushy. Natural, consistent brushwork.
+        bil = img.clone();
+    } else if r > 4 {
+        // COARSE armature: bilateral at reduced resolution (bounded cost) to flatten texture, keep edges.
+        let scale = (4.0 / r as f32).clamp(0.1, 1.0);
+        let (sw2, sh2) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
+        sm = imageops::resize(img, sw2, sh2, imageops::FilterType::Triangle);
+        sm = bilateral(&sm, 4);
+        bil = imageops::resize(&sm, w, h, imageops::FilterType::Triangle);
+    } else {
+        bil = bilateral(img, r);
     }
-    let (dw, dh) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
-    let small = imageops::resize(img, dw, dh, imageops::FilterType::Triangle);
-    imageops::resize(&small, w, h, imageops::FilterType::Triangle)
+    // Quantise into VALUE MASSES with clean boundaries (posterise).
+    let mut out = bil;
+    if levels >= 2 {
+        let step = 255.0 / (levels - 1) as f32;
+        for p in out.pixels_mut() {
+            for k in 0..3 {
+                p.0[k] = ((p.0[k] as f32 / step).round() * step).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Edge-preserving bilateral smooth at spatial radius `r` (px): flatten texture while keeping edges.
+fn bilateral(img: &RgbImage, r: i32) -> RgbImage {
+    let (w, h) = img.dimensions();
+    let r = r.max(1);
+    let sigma_c = 30.0_f32;
+    let inv2s2 = 1.0 / (2.0 * (r as f32 * 0.6).max(1.0).powi(2));
+    let inv2c2 = 1.0 / (2.0 * sigma_c * sigma_c);
+    let sw: Vec<f32> = (-r..=r).flat_map(|dy| (-r..=r).map(move |dx| (-((dx * dx + dy * dy) as f32) * inv2s2).exp())).collect();
+    let mut out = RgbImage::new(w, h);
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let c0 = img.get_pixel(x as u32, y as u32).0;
+            let (mut acc, mut wsum) = ([0f32; 3], 0f32);
+            let mut si = 0usize;
+            for dy in -r..=r {
+                let yy = (y + dy).clamp(0, h as i32 - 1) as u32;
+                for dx in -r..=r {
+                    let xx = (x + dx).clamp(0, w as i32 - 1) as u32;
+                    let c = img.get_pixel(xx, yy).0;
+                    let dc = (c[0] as f32 - c0[0] as f32).powi(2) + (c[1] as f32 - c0[1] as f32).powi(2) + (c[2] as f32 - c0[2] as f32).powi(2);
+                    let wgt = sw[si] * (-dc * inv2c2).exp();
+                    si += 1;
+                    acc[0] += c[0] as f32 * wgt;
+                    acc[1] += c[1] as f32 * wgt;
+                    acc[2] += c[2] as f32 * wgt;
+                    wsum += wgt;
+                }
+            }
+            let p = out.get_pixel_mut(x as u32, y as u32);
+            for k in 0..3 {
+                p.0[k] = (acc[k] / wsum.max(1e-6)).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    out
 }
 
 /// A pass-level CRITIC (RFC PAINT-1 §10.1): scores a rendered canvas so the painter can accept or reject a
@@ -626,9 +698,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
             }
             tiers.sort_by_key(|(_, side)| *side); // coarse → fine, so the finest region is laid last and wins
-            let mut arm = coarsen(input, s);
+            // STRUCTURE-PRESERVING armature (not a blur): value masses with sharp edges, per region resolution.
+            let levels = p.armature_levels.max(2);
+            let mut arm = structure_armature(input, s, levels);
             for (mask, side) in tiers {
-                let lvl = coarsen(input, side);
+                let lvl = structure_armature(input, side, levels);
                 arm = blend_by_mask(&arm, &lvl, mask, w, h);
             }
             armature_owned = arm;
@@ -830,8 +904,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 // Later layers only restate where the canvas is still notably wrong; the block-in covers all.
                 // Detail passes use a lower threshold so fine features (which the soft masses missed) still land.
-                // Committed shadows drop the floor toward zero so the darks deepen pass over pass.
-                let restate_floor = (if detail { 0.03 } else { 0.06 }) * (1.0 - 0.85 * sh);
+                // Committed shadows drop the floor toward zero so the darks deepen pass over pass. The SUBJECT
+                // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
+                // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
+                let restate_floor = (if detail { 0.03 } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj);
                 if !block_in && !p.density && rgb_dist(canvas.color_at(ix, iy), target) < restate_floor {
                     continue;
                 }
@@ -1606,10 +1682,13 @@ mod tests {
         // the full-resolution reference. (With the coherent structure-tensor flow field, full-res also declines
         // to chase per-pixel checker noise, so the two converge — the invariant is that coarsening adds no
         // spurious detail, i.e. the armature never traces *substantially* more than full-res.)
+        // A reference with real STRUCTURE — two big value masses (dark left / light right) plus a fine checker
+        // texture. The structure-preserving armature keeps the mass STRUCTURE (the boundary) while dropping the
+        // checker TEXTURE, so it paints the broad structure and never traces the fine checker.
         let img = image::RgbImage::from_fn(96, 96, |x, y| {
-            let t = (x as f32 / 96.0 * 200.0) as u8;
-            let checker = if (x / 3 + y / 3) % 2 == 0 { 40 } else { 0 };
-            image::Rgb([t.saturating_add(checker), (120 + checker) as u8, (60 + checker) as u8])
+            let mass = if x < 48 { 40u8 } else { 200u8 }; // two value masses with a hard boundary
+            let checker = if (x / 3 + y / 3) % 2 == 0 { 30 } else { 0 };
+            image::Rgb([mass.saturating_add(checker), (100 + checker) as u8, (60 + checker) as u8])
         });
         let mut full = PaintParams::new(palette::EARTH, 400);
         full.brush_sizes = vec![18.0, 9.0];
@@ -1617,13 +1696,9 @@ mod tests {
         arm.armature_side = Some(24);
         let tr_full = traceability(&paint_from_image(&img, &full).canvas.to_image(), &img);
         let tr_arm = traceability(&paint_from_image(&img, &arm).canvas.to_image(), &img);
-        // Both keep the broad structure (positive correlation) but neither chases the fine checker — with the
-        // coherent flow + opaque film the two now correlate comparably (the coarsening no longer LOSES broad
-        // structure, and full-res no longer over-traces noise), so the invariant is simply that the armature
-        // still paints the broad structure, not random noise.
-        assert!(tr_arm > 0.1, "the armature still paints the broad structure (corr {tr_arm})");
-        // Full-res on a fine checker barely correlates — the fine detail brush chases the checker and decorrelates
-        // (the armature, being smooth, keeps more broad structure). The floor just guards against total noise.
+        // The structure-preserving armature keeps the value-mass structure (the boundary survives), so it paints
+        // the broad structure — it never LOSES it into a smear, and never traces the fine checker.
+        assert!(tr_arm > 0.1, "the armature paints the broad value-mass structure (corr {tr_arm})");
         assert!(tr_full > 0.01, "full-res still paints some structure ({tr_full})");
     }
 

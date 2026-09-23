@@ -182,10 +182,11 @@ pub struct Analysis {
 pub fn plan_from(a: &Analysis) -> PaintPlan {
     let mut notes = Vec::new();
 
-    // A COARSE base armature so the engine invents the surface instead of tracing (RFC §1.1). Larger canvases can
-    // carry a touch more structure without tracing. (Reduced further for the background when a subject is present.)
-    let armature = if a.short_side >= 900 { 88 } else { 72 };
-    notes.push("paint from a coarse armature — structure, not pixels (no tracing)".into());
+    // The base armature (structure resolution). With the STRUCTURE-PRESERVING armature (edge-preserving + value
+    // masses, not a blur) this can be fairly FINE without tracing — finer retains modelling, and density comes
+    // from the budget, not from over-coarsening. (The background goes a bit coarser when a subject is present.)
+    let armature = if a.short_side >= 900 { 150 } else { 120 };
+    notes.push("structure-preserving armature (value masses + edges), fine enough to keep modelling".into());
 
     // A detected FACE is the focal region: give it a FINE armature so features stay crisp while the beard / hair /
     // background become washes (RFC §5.2). With a subject present, use a THREE-TIER plan — a coarser background, a
@@ -194,11 +195,13 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         notes.push(format!("{} face(s) → three-tier armature: background {}px · body 104px · face 200px", a.faces, (armature as f32 * 0.6).round() as u32));
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
         // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
-        notes.push("semantic tiers (OWL-ViT): hair/beard → a coarse wash tier".into());
+        notes.push("semantic tiers (OWL-ViT): hair/beard → a slightly coarser tier".into());
         notes.push("SAM precise masks → sharp silhouette + face-shaped focal (finer face armature)".into());
-        // Mild recession only — heavy recede erases the subject's soft periphery (beard tips, light shoulders).
-        // A finer face armature (240) since SAM gives a precise, face-shaped focal region.
-        ((Some(240)), Some(104), 0.15, (armature as f32 * 0.62).round().max(40.0) as u32)
+        // FINE armatures build DENSITY: a fine (detailed) armature keeps the restate passes finding structure to
+        // paint, so the budget is used and the painting reads rich — not a sparse wash. The structure-preserving
+        // armature keeps this from tracing. Mild recession only (heavy recede erases soft periphery).
+        // Background stays only a touch coarser than the body (0.85), not the old aggressive 0.62 that starved it.
+        ((Some(300)), Some(210), 0.12, (armature as f32 * 0.85).round().max(90.0) as u32)
     } else {
         notes.push("no face → uniform coarse armature".into());
         (None, None, 0.0, armature)
@@ -210,12 +213,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // COMMIT SHADOWS — paint the dark masses decisively (a solid value backbone), the direct fix for a pale wash.
     let commit_shadows = 0.85;
     notes.push("commit shadows 0.85 → decisive dark masses (value backbone, not a wash)".into());
-    // SILHOUETTE — mark the subject boundary (line by default) so a light subject reads by its edge, when a
-    // subject is present. The mode (line/colour/knife/lost) is a plan/CLI choice.
-    let (silhouette, silhouette_mode) = if a.faces > 0 { (0.5, Some("line".to_string())) } else { (0.0, None) };
-    if silhouette > 0.0 {
-        notes.push("silhouette 0.50 (line) → shoulders/collar read by their edge".into());
-    }
+    // SILHOUETTE — OFF by default: an auto-drawn contour line reads as tacked-on on most subjects (it is only
+    // wanted deliberately). Opt in with `--silhouette <n>` / `--silhouette-mode`; the plan leaves it disabled.
+    let (silhouette, silhouette_mode) = (0.0, None);
     // SAM precise masks when a subject is present — a sharp silhouette and a face-shaped focal region.
     let sam = a.faces > 0;
 
@@ -224,17 +224,19 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     let value_key = ((0.28 - a.luma_stddev) / (0.28 - 0.10) * 0.7 + 0.2).clamp(0.0, 0.95);
     notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
 
-    // Reserve the paper for surface-white media — but NOT so high it eats light subject areas (a white shirt,
-    // shoulders). 0.82 keeps the brightest highlights as paper while still painting the light masses.
-    let reserve = a.surface_white.then_some(0.82);
+    // Reserve the paper ONLY for the brightest highlights — a lower cutoff starves a light subject (a white
+    // beard/shirt) into sparse, washed paper. 0.92 paints the light masses and keeps only the true whites as paper.
+    let reserve = a.surface_white.then_some(0.92);
     if reserve.is_some() {
-        notes.push("surface-white medium → reserve 0.82 (paper for the highlights, paint the light masses)".into());
+        notes.push("surface-white medium → reserve 0.92 (paper only for true highlights; paint the light masses)".into());
     }
 
-    // Budget scales with area so density is consistent; capped so a big canvas doesn't run away.
+    // Budget scales with area for DENSITY — the earlier low budgets starved the painting into a sparse, washed
+    // look. Match a rich block-in (~1 stroke per ~9 px, like the 30k reference on 512²), capped so a big canvas
+    // stays sane. This is the single biggest lever the analyzer was getting wrong.
     let area = a.short_side as u64 * a.long_side as u64;
-    let budget = ((area / 40) as usize).clamp(4000, 14000);
-    notes.push(format!("budget {budget} strokes (area-scaled)"));
+    let budget = ((area / 9) as usize).clamp(12000, 34000);
+    notes.push(format!("budget {budget} strokes (dense — area/9, matches a rich block-in)"));
 
     PaintPlan {
         medium: a.medium.clone(),
@@ -267,10 +269,10 @@ mod tests {
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
-        assert_eq!(flat.armature_face, Some(240), "a detected face gets a fine focal armature (SAM precise focal)");
-        assert_eq!(flat.armature_body, Some(104), "a subject gets a mid body armature (three-tier)");
-        assert!(flat.recede > 0.0 && flat.armature < 72, "background recedes and goes coarser with a subject");
-        assert_eq!(flat.reserve, Some(0.82), "watercolour reserves the paper (for the highlights, not the light masses)");
+        assert_eq!(flat.armature_face, Some(300), "a detected face gets a fine focal armature (SAM precise focal)");
+        assert_eq!(flat.armature_body, Some(210), "a subject gets a mid body armature (three-tier)");
+        assert!(flat.recede > 0.0 && flat.armature < 120, "background recedes and goes a touch coarser with a subject");
+        assert_eq!(flat.reserve, Some(0.92), "watercolour reserves the paper only for true highlights");
     }
 
     #[test]

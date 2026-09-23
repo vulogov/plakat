@@ -12,19 +12,32 @@ becomes a scribble, skin becomes mush. That is a painterly filter, not a paintin
 
 ---
 
-## `--armature <px>` — paint from structure, not pixels
+## `--armature <px>` — paint from structure, not pixels (structure‑preserving)
 
-Paint from a coarse armature at this short‑side resolution instead of the photo. **This is the single most
-important switch for a good result from a photo.**
+Paint from an armature at this structure resolution instead of the raw photo. **The single most important switch
+for a good result from a photo** — but *how* it reduces the image matters, and this is where an earlier version
+went wrong.
+
+The armature is built by an **edge‑preserving smooth (bilateral) + value‑mass quantise (posterise)**, NOT a
+blur. A blur destroys structure (edges, the boundaries of value masses) *along with* texture, so the engine
+paints a structureless **smear (mush)**. The structure‑preserving armature is *coarse in texture but sharp in
+structure* — the beard is a dark mass with a defined edge, the face a light mass, the eyes dark accents — so the
+strokes paint recognizable form.
 
 ```bash
-plakat paint from photo.png --medium watercolour --palette image --armature 72 ...
+plakat paint from photo.png --medium oil-direct --palette image --armature 160 --budget 30000 ...
 ```
 
-- **~48–96px** is the paintable range (§12.1): coarse enough that detail can't be traced, coherent enough to
-  paint. A beard at this resolution is a *value mass* → the engine paints it as washes, not hairs.
-- **Unset** = paint from the full‑resolution photo — the legacy "filter" behaviour the surface tuning knobs
-  operate on. Use it only when you *want* a filter over an already‑simplified image.
+- **LARGER = more structure retained** (finer armature, lighter smoothing). A moderately fine armature (~120–190)
+  keeps modelling; density then comes from the **budget**, not from over‑coarsening.
+- **`--armature-levels <N>`** = number of value masses (default 14). Fewer = bolder, flatter block‑in masses (but
+  too few flattens the reference so much that the restate passes have nothing to paint → sparse); more = subtler.
+- **Budget is the density lever.** A rich, non‑washed result needs a *dense* budget (the analyzer now defaults to
+  ~area/9). A sparse budget starves the painting into a wash — that was a second cause of the earlier smears.
+- **Unset** = paint from the full‑resolution photo (the legacy "filter" behaviour).
+
+**Honest note:** low‑contrast subjects (a white beard/shirt on a light ground) have little value structure to
+paint, so they read sparser than high‑contrast subjects however you tune — that's the subject, not the engine.
 
 A single global armature has one problem: coarse enough to keep the beard from scribbling is **too** coarse for
 the face. That is what the focal armature solves.
