@@ -379,6 +379,13 @@ impl Canvas {
                         continue;
                     }
                     let p = img.get_pixel_mut(x as u32, y as u32);
+                    // The relief is MULTIPLICATIVE, so on a LIGHT passage (a bright sky, a pale wall) a given normal
+                    // swings a large ABSOLUTE amount and the canvas weave reads as a hard textured BAND against the
+                    // darker, smoother masses — a seam. Damp the relief toward the light end so the texture's
+                    // magnitude is even across the value range (impasto still reads on the mid/dark brushwork).
+                    let l = (p.0[0] as f32 * 0.299 + p.0[1] as f32 * 0.587 + p.0[2] as f32 * 0.114) / 255.0;
+                    let ldamp = (1.0 - 0.8 * (l - 0.45).max(0.0) / 0.55).clamp(0.22, 1.0);
+                    let shade = shade * ldamp;
                     for cc in 0..3 {
                         p.0[cc] = (p.0[cc] as f32 * (1.0 + shade)).round().clamp(0.0, 255.0) as u8;
                     }

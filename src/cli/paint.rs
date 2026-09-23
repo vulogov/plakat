@@ -49,9 +49,14 @@ pub struct PaintArgs {
     #[arg(long, default_value_t = 0.5)]
     pub dry: f32,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
-    /// through); 1 = smooth opaque cover. Default 0.65 — the main lever against speckly "dry pastel" grain.
-    #[arg(long, default_value_t = 0.65)]
+    /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
+    /// can bleed into reserved paper.
+    #[arg(long, default_value_t = 0.0)]
     pub coverage: f32,
+    /// DETAIL COHERENCE bar (0..1, default 0.14): min structure a detail stroke needs to land. Higher = cleaner
+    /// (fewer stray speckle marks on flat sky/walls, softer); lower = busier. Background held ~2.6x stricter.
+    #[arg(long, default_value_t = 0.14)]
+    pub detail_coherence: f32,
     /// OPACITY / body (0.1..1) — overrides the medium default (1 = opaque; low = transparent).
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -207,6 +212,7 @@ pub struct SpecArgs {
     pub bleed: Option<f32>,
     pub dry: f32,
     pub coverage: f32,
+    pub detail_coherence: f32,
     pub opacity: Option<f32>,
     pub pickup: Option<f32>,
     pub impasto: Option<f32>,
@@ -406,9 +412,14 @@ pub struct FromArgs {
     #[arg(long, default_value_t = 0.5)]
     pub dry: f32,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
-    /// through); 1 = smooth opaque cover. Default 0.65 — the main lever against speckly "dry pastel" grain.
-    #[arg(long, default_value_t = 0.65)]
+    /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
+    /// can bleed into reserved paper.
+    #[arg(long, default_value_t = 0.0)]
     pub coverage: f32,
+    /// DETAIL COHERENCE bar (0..1, default 0.14): min structure a detail stroke needs to land. Higher = cleaner
+    /// (fewer stray speckle marks on flat sky/walls, softer); lower = busier. Background held ~2.6x stricter.
+    #[arg(long, default_value_t = 0.14)]
+    pub detail_coherence: f32,
     /// OPACITY / body (0.1..1) — 1 = opaque, low = transparent.
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -555,7 +566,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, coverage: args.coverage, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, coverage: args.coverage, detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -907,6 +918,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
+    params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
     params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
     params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
     params.brush.k_pickup = spec.pickup.or(a.pickup).unwrap_or(plan.medium.pickup).clamp(0.0, 1.0);
@@ -1396,6 +1408,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.stroke_width = a.stroke_width.clamp(0.3, 3.0);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
+    params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
     }
@@ -1474,8 +1487,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if covered > total / 50 && covered < total * 49 / 50 {
             println!("{}  subject matte: {}% foreground → three-tier armature", style("·").dim(), covered * 100 / total);
             if let Some(r) = a.recede.filter(|&r| r > 0.0) {
-                // The matte IS the depth here: subject near (advances), background far (recedes/veils).
-                params.depth = Some(mask.clone());
+                // The matte IS the depth here: subject near (advances), background far (recedes/veils). But a HARD
+                // subject/background boundary makes the aerial veil switch abruptly across it — a visible
+                // horizontal SEAM between "veiled, light" and "full, dark". FEATHER the matte into a smooth depth
+                // field (blur only this copy — the subject mask below stays sharp) so the recession is gradual.
+                let (mw, mh) = (img.width(), img.height());
+                let gm = image::GrayImage::from_fn(mw, mh, |x, y| image::Luma([(mask[(y * mw + x) as usize] * 255.0).clamp(0.0, 255.0) as u8]));
+                let feather = (mw.max(mh) as f32 * 0.05).max(2.0);
+                let blurred = image::imageops::blur(&gm, feather);
+                params.depth = Some(blurred.pixels().map(|p| p.0[0] as f32 / 255.0).collect());
                 params.haze = r.clamp(0.0, 1.0);
             }
             params.subject_mask = Some(mask);

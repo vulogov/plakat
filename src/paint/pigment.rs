@@ -44,10 +44,27 @@ fn linear_from_ks(ks: [f32; 3]) -> LinRgb {
     r
 }
 
+/// How hard a pigment's K/S magnitude is damped when it MIXES (per unit of `TINT_DAMP`). Single-constant KM
+/// makes `K/S` blow up as reflectance → 0, so a dark pigment (black, a deep earth) has a huge K/S and, weighted
+/// only by concentration, swamps a mixture into mud — the "everything goes grey-black" tell. Damping a pigment's
+/// mixing weight in proportion to its K/S counteracts that: a dark pigment still darkens, but no longer overrides
+/// the hue of everything it touches, so mixtures keep their colour. Tuned against real scenes.
+const TINT_DAMP: f32 = 0.03;
+
 impl Pigment {
     /// The pigment's per-channel `K/S`, from its masstone.
     pub fn ks(&self) -> [f32; 3] {
         ks_from_linear(color::srgb_to_linear(self.masstone))
+    }
+
+    /// Per-pigment TINTING STRENGTH for MIXING (0..1]: the mixing weight multiplier that damps the single-constant
+    /// K/S blow-up (see [`TINT_DAMP`]). Darker/higher-K/S pigments get a lower weight so they stop muddying every
+    /// mixture; light, low-K/S pigments stay ~1. A SOLO pigment is unaffected (the weight cancels in the average),
+    /// so a pigment painted alone still reads as its masstone.
+    pub fn tinting(&self) -> f32 {
+        let ks = self.ks();
+        let mean = (ks[0] + ks[1] + ks[2]) / 3.0;
+        1.0 / (1.0 + TINT_DAMP * mean)
     }
 }
 
@@ -66,13 +83,25 @@ pub fn mix_linear(pigments: &[Pigment], concentrations: &[f32]) -> LinRgb {
     if n == 0 || total <= 0.0 {
         return color::srgb_to_linear([128, 128, 128]); // a defined, safe mid-grey
     }
+    // Weight each pigment by concentration × its TINTING STRENGTH, so a dark high-K/S pigment stops swamping the
+    // mixture into mud. Accumulate the weighted K/S and the weight sum in one pass, then normalise — so it stays a
+    // proportion (scaling all concentrations leaves colour unchanged) and a solo pigment's weight cancels (its
+    // masstone is preserved). Allocation-free (hot path: called per pixel).
     let mut ks = [0f32; 3];
+    let mut wsum = 0f32;
     for i in 0..n {
-        let w = concentrations[i].max(0.0) / total;
+        let w = (concentrations[i].max(0.0) / total) * pigments[i].tinting();
         let p = pigments[i].ks();
         for c in 0..3 {
             ks[c] += w * p[c];
         }
+        wsum += w;
+    }
+    if wsum <= 0.0 {
+        return color::srgb_to_linear([128, 128, 128]);
+    }
+    for c in 0..3 {
+        ks[c] /= wsum;
     }
     linear_from_ks(ks)
 }
