@@ -48,6 +48,10 @@ pub struct PaintArgs {
     /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
     #[arg(long, default_value_t = 0.5)]
     pub dry: f32,
+    /// SHADOW FLOOR (0..0.45): the value re-key lifts the SHADOW family into a narrow band above this floor instead of
+    /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
+    #[arg(long)]
+    pub shadow_floor: Option<f32>,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
     /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
     /// can bleed into reserved paper.
@@ -211,6 +215,7 @@ pub struct SpecArgs {
     pub stroke_width: f32,
     pub bleed: Option<f32>,
     pub dry: f32,
+    pub shadow_floor: Option<f32>,
     pub coverage: f32,
     pub detail_coherence: f32,
     pub opacity: Option<f32>,
@@ -411,6 +416,10 @@ pub struct FromArgs {
     /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
     #[arg(long, default_value_t = 0.5)]
     pub dry: f32,
+    /// SHADOW FLOOR (0..0.45): the value re-key lifts the SHADOW family into a narrow band above this floor instead of
+    /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
+    #[arg(long)]
+    pub shadow_floor: Option<f32>,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
     /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
     /// can bleed into reserved paper.
@@ -566,7 +575,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, coverage: args.coverage, detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, coverage: args.coverage, detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -1063,7 +1072,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // darks rather than collapsing toward the mid ground.
     {
         let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
-        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96);
+        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96, a.shadow_floor.unwrap_or(0.16).clamp(0.0, 0.45));
         for (i, p) in reference.pixels_mut().enumerate() {
             p.0 = keyed[i];
         }
@@ -1333,6 +1342,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.value_key.is_none() {
             a.value_key = Some(plan.value_key);
         }
+        if a.shadow_floor.is_none() {
+            a.shadow_floor = Some(plan.shadow_floor);
+        }
         if a.reserve.is_none() {
             a.reserve = plan.reserve;
         }
@@ -1572,7 +1584,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(vk) = a.value_key.filter(|&v| v > 0.0) {
         let vk = vk.clamp(0.0, 1.0);
         let colour: Vec<crate::paint::color::Srgb> = img.pixels().map(|p| p.0).collect();
-        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96);
+        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96, a.shadow_floor.unwrap_or(0.16).clamp(0.0, 0.45));
         for (i, p) in img.pixels_mut().enumerate() {
             for c in 0..3 {
                 p.0[c] = (p.0[c] as f32 * (1.0 - vk) + keyed[i][c] as f32 * vk).round().clamp(0.0, 255.0) as u8;

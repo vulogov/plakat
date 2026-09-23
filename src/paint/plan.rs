@@ -56,6 +56,10 @@ pub struct PaintPlan {
     /// Value-key strength (tonal-range expansion) — higher for a flat, low-contrast reference.
     #[serde(default)]
     pub value_key: f32,
+    /// Shadow floor (0..0.45): the value re-key lifts the SHADOW family into a narrow band above this value instead
+    /// of stretching darks to black (RFC §3.3 — a shadow mass is a solid dark, never crushed).
+    #[serde(default = "default_shadow_floor")]
+    pub shadow_floor: f32,
     /// Reserve threshold for surface-white media (paper whites), or `null` for the medium default.
     #[serde(default)]
     pub reserve: Option<f32>,
@@ -73,6 +77,10 @@ fn default_medium() -> String {
 fn default_palette() -> String {
     "image".into()
 }
+fn default_shadow_floor() -> f32 {
+    0.16
+}
+
 fn default_style() -> String {
     // LEGIBLE resolves features on the fine passes (it has a detail tier); IMPRESSIONIST has none, so an
     // analyzer that defaulted to impressionist produced masses-only mush. Legible is the right default; a user
@@ -100,6 +108,7 @@ impl Default for PaintPlan {
             silhouette_mode: None,
             sam: false,
             value_key: 0.0,
+            shadow_floor: 0.16,
             reserve: None,
             budget: None,
             notes: Vec::new(),
@@ -150,6 +159,7 @@ impl PaintPlan {
             o.push_str("sam: true\n");
         }
         o.push_str(&format!("value_key: {:.2}\n", self.value_key));
+        o.push_str(&format!("shadow_floor: {:.2}\n", self.shadow_floor));
         if let Some(r) = self.reserve {
             o.push_str(&format!("reserve: {r:.2}\n"));
         }
@@ -226,6 +236,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // darks and lights; a punchy reference needs little. Map stddev∈[~0.10,0.28] → value_key∈[0.9,0.2].
     let value_key = ((0.28 - a.luma_stddev) / (0.28 - 0.10) * 0.7 + 0.2).clamp(0.0, 0.95);
     notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
+    // SHADOW FLOOR (RFC §3.3): the re-key keeps the shadow family a narrow, LIFTED band — a solid dark mass, not a
+    // crush to black. 0.16 ≈ a deep but readable dark; raise for a high-key picture, lower for a nocturne.
+    let shadow_floor = 0.16;
+    notes.push("shadow floor 0.16 → shadow family lifted off black (solid dark masses, RFC §3.3)".into());
 
     // Reserve the paper ONLY for the brightest highlights — a lower cutoff starves a light subject (a white
     // beard/shirt) into sparse, washed paper. 0.92 paints the light masses and keeps only the true whites as paper.
@@ -256,6 +270,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         silhouette_mode,
         sam,
         value_key,
+        shadow_floor,
         reserve,
         budget: Some(budget),
         notes,

@@ -616,7 +616,10 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
             let b = p.0[2] as f32 / 255.0;
             let y = 0.299 * r + 0.587 * g + 0.114 * b;
             if y > 1e-4 {
-                let yq = (y / step).round() * step;
+                // Snap to the nearest value level, but FLOOR the bottom bin at step/2: plain rounding sent every
+                // value below step/2 to exactly 0 — a black hole that turned dark grass and shadow masses PURE
+                // BLACK before a stroke was laid. A shadow mass is a solid dark, never black (RFC §3.3).
+                let yq = ((y / step).round() * step).max(0.5 * step);
                 let s = (yq / y).clamp(0.0, 2.0);
                 p.0[0] = (r * s * 255.0).clamp(0.0, 255.0) as u8;
                 p.0[1] = (g * s * 255.0).clamp(0.0, 255.0) as u8;

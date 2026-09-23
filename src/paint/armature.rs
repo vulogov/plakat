@@ -197,10 +197,15 @@ fn revalue(c: Srgb, target: f32) -> Srgb {
     color::linear_to_srgb([lin[0] * g, lin[1] * g, lin[2] * g])
 }
 
-/// VALUE RE-KEY (§5.5.2): expand a colour field's tonal range so the picture reads with real lights and darks
-/// instead of collapsing toward a mid grey. The 5th/95th luma percentiles are stretched to `[out_low,
-/// out_high]` and each pixel re-valued to its new luma (hue kept). Robust to outliers; deterministic.
-pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32) -> Vec<Srgb> {
+/// VALUE RE-KEY (§5.5.2) as TWO FAMILIES (§3.3): expand a colour field's tonal range so the picture reads with
+/// real lights and darks instead of collapsing toward a mid grey — but not by stretching the darks to black.
+/// The 5th/95th luma percentiles span `[out_low, out_high]`; the image's own shadow/light boundary (the 55th
+/// percentile, the same lower-mid value the shadow field uses) splits the range into a SHADOW family, compressed
+/// into the NARROW, LIFTED band `[shadow_floor, boundary]`, and a LIGHT family that keeps the full range above
+/// it. The family invariant holds by construction (every light value ≥ every shadow value), and the shadow mass
+/// reads as a solid dark, never a crushed black. `shadow_floor == out_low` reproduces a plain linear stretch.
+/// Each pixel is re-valued to its new luma (hue kept). Robust to outliers; deterministic.
+pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32, shadow_floor: f32) -> Vec<Srgb> {
     if colour.is_empty() {
         return Vec::new();
     }
@@ -210,12 +215,25 @@ pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32) -> Vec<Srgb> {
     let p = |q: f32| sorted[((q * (sorted.len() - 1) as f32).round() as usize).min(sorted.len() - 1)];
     let (lo, hi) = (p(0.05), p(0.95));
     let span = (hi - lo).max(1e-3);
+    // The shadow→light boundary, in input and output value.
+    let t_mid = ((p(0.55) - lo) / span).clamp(0.0, 1.0);
+    let mid_out = out_low + t_mid * (out_high - out_low);
+    let floor = shadow_floor.clamp(out_low, mid_out);
     colour
         .iter()
         .zip(vals.iter())
         .map(|(&c, &v)| {
             let t = ((v - lo) / span).clamp(0.0, 1.0);
-            revalue(c, out_low + t * (out_high - out_low))
+            let nv = if t <= t_mid {
+                // Shadow family: a narrow band lifted off black.
+                let u = if t_mid > 1e-6 { t / t_mid } else { 0.0 };
+                floor + u * (mid_out - floor)
+            } else {
+                // Light family: the full range above the boundary.
+                let u = (t - t_mid) / (1.0 - t_mid).max(1e-6);
+                mid_out + u * (out_high - mid_out)
+            };
+            revalue(c, nv)
         })
         .collect()
 }
@@ -378,7 +396,7 @@ mod tests {
     fn value_key_expands_a_flat_range() {
         // A low-contrast field (all mid-grey-ish) → value-key stretches its tonal range wide.
         let colour: Vec<Srgb> = (0..20).map(|i| { let v = (120 + i) as u8; [v, v, v] }).collect();
-        let keyed = value_key(&colour, 0.05, 0.95);
+        let keyed = value_key(&colour, 0.05, 0.95, 0.05);
         let vin = value_from_colour(&colour);
         let vout = value_from_colour(&keyed);
         let range = |v: &[f32]| v.iter().cloned().fold(0.0_f32, f32::max) - v.iter().cloned().fold(1.0_f32, f32::min);
