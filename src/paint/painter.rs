@@ -186,6 +186,10 @@ pub struct PaintParams {
     /// every later pass picks up the masses beneath and smears them into mud); 1 = bone dry between passes (each
     /// pass a crisp overlay). Default ~0.5. This is the single biggest lever against the muddy/washed look.
     pub dry: f32,
+    /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = a raked, dry flat brush (texture-
+    /// forward, but the white ground shows through between marks as grain); 1 = a smooth, opaque cover. Default
+    /// ~0.65. The main lever against the speckly "dry pastel on paper" grain of an under-covered ground.
+    pub coverage: f32,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -249,7 +253,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.65 }
     }
 }
 
@@ -856,7 +860,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             BrushProfile { radius_scale: 0.9, len: if block_in { 1.2 } else { 0.85 }, streak: 0.10, round: 0.92, waver: 0.03 }
         } else {
             let role = if block_in { "flat" } else if detail { "round" } else { "filbert" };
-            BrushProfile::named(role)
+            let mut pr = BrushProfile::named(role);
+            if block_in {
+                // COVERAGE: the raked flat block-in (streak 0.70) leaves the white ground showing between marks —
+                // the speckly grain. Blend it toward a smooth, gap-free cover so the base actually HIDES the
+                // ground; the restatement then modulates a covered field instead of filling holes in bare paper.
+                let c = p.coverage.clamp(0.0, 1.0);
+                pr.streak = pr.streak * (1.0 - c) + 0.10 * c;
+                pr.round = pr.round * (1.0 - c) + 0.85 * c;
+            }
+            pr
         };
         let mut pass_brush = p.brush;
         pass_brush.streak = profile.streak;

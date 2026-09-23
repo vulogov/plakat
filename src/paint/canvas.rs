@@ -484,13 +484,40 @@ impl Default for Finish {
     }
 }
 
-/// Deterministic paper-grain value in `[0,1]` at a pixel (a hashed mottle) — for granulation.
-fn grain(x: usize, y: usize, seed: u64) -> f32 {
-    let mut z = seed.wrapping_add((x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add((y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
+/// Hashed value in `[0,1]` at an integer lattice point.
+fn hash01(ix: i64, iy: i64, seed: u64) -> f32 {
+    let mut z = seed.wrapping_add((ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add((iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
     z as f32 / u64::MAX as f32
+}
+
+/// Smooth VALUE NOISE in `[0,1]`: hashed lattice points, smoothstep-interpolated. Correlated across neighbouring
+/// pixels (unlike a per-pixel hash), so it reads as clustered mottle rather than static.
+fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
+    let x0 = fx.floor() as i64;
+    let y0 = fy.floor() as i64;
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+    let sx = tx * tx * (3.0 - 2.0 * tx);
+    let sy = ty * ty * (3.0 - 2.0 * ty);
+    let a = hash01(x0, y0, seed);
+    let b = hash01(x0 + 1, y0, seed);
+    let c = hash01(x0, y0 + 1, seed);
+    let d = hash01(x0 + 1, y0 + 1, seed);
+    let top = a + (b - a) * sx;
+    let bot = c + (d - c) * sx;
+    top + (bot - top) * sy
+}
+
+/// Deterministic paper-grain value in `[0,1]` at a pixel — the mottle granulation settles into. A LOW-FREQUENCY
+/// value noise at the paper-tooth scale (a coarse cell plus a finer octave), NOT a per-pixel hash: real
+/// granulation is pigment pooling in clusters across the tooth, so a per-pixel hash read as digital static.
+fn grain(x: usize, y: usize, seed: u64) -> f32 {
+    let coarse = value_noise(x as f32 / 5.0, y as f32 / 5.0, seed);
+    let fine = value_noise(x as f32 / 2.2, y as f32 / 2.2, seed ^ 0x9E37_79B9);
+    (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
 }
 
 /// The index of the lightest pigment in a palette (highest CIELAB L*), used as "white"/ground.

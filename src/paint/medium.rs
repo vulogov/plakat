@@ -202,7 +202,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     impasto: 0.0,
     chroma: 0.92,
     dry_shift: 0.08,
-    granulate: 0.35,
+    granulate: 0.18,
     sheen: 0.0,
     lift: 0.2,
     default_palette: "limited-landscape",
@@ -227,7 +227,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     impasto: 0.0,
     chroma: 0.9,
     dry_shift: 0.05,
-    granulate: 0.22,
+    granulate: 0.13,
     sheen: 0.0,
     lift: 0.1,
     default_palette: "sumi",
@@ -279,7 +279,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     impasto: 0.12,
     chroma: 0.95,
     dry_shift: 0.0,
-    granulate: 0.1,
+    granulate: 0.07,
     sheen: 0.05,
     lift: 0.3,
     default_palette: "verdaccio",
@@ -305,7 +305,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     impasto: 0.0,
     chroma: 0.7,
     dry_shift: 0.0,
-    granulate: 0.3,
+    granulate: 0.18,
     sheen: 0.05,
     lift: 0.6,
     default_palette: "sumi",
@@ -331,7 +331,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     impasto: 0.1,
     chroma: 1.15, // HIGH chroma — vivid chalk
     dry_shift: 0.0,
-    granulate: 0.25, // chalky tooth
+    granulate: 0.15, // chalky tooth
     sheen: 0.0,      // matte
     lift: 0.5,
     default_palette: "split-primary",
@@ -356,7 +356,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     impasto: 0.0,
     chroma: 0.4, // near-monochrome, warm black
     dry_shift: 0.0,
-    granulate: 0.35, // charcoal grain
+    granulate: 0.2, // charcoal grain
     sheen: 0.0,
     lift: 0.6, // erase / lift highlights
     default_palette: "sumi",
