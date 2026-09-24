@@ -472,14 +472,17 @@ fn broken_color(target: Srgb, amt: f32, seed: u64, k: u64) -> Srgb {
     let l = 0.299 * r + 0.587 * g + 0.114 * b;
     let cb = 1.0 + a * 0.35; // lift chroma
     let (mut rr, mut gg, mut bb) = (l + (r - l) * cb, l + (g - l) * cb, l + (b - l) * cb);
-    // Luma-neutral hue jitter: pick br, bg freely, set bb so 0.299·br + 0.587·bg + 0.114·bb = 0.
-    let s = a * 0.16;
-    let br = s * jitter(seed ^ 0x00B4, k);
-    let bg = s * jitter(seed ^ 0x00B5, k.wrapping_add(1));
-    let bbb = -(0.299 * br + 0.587 * bg) / 0.114;
-    rr += br;
-    gg += bg;
-    bb += bbb;
+    // Luma-neutral hue jitter in a BALANCED chroma plane (YCbCr's Cb/Cr axes), so no channel carries a 4x
+    // compensation gain — solving the old "set blue to cancel the luma" rule dumped up to 3.9x the jitter into
+    // blue, the blue flecks on every shadow mass. And PROPORTIONAL to the value that is there: broken colour
+    // varies the colour a passage has, so a dark mass stays a solid dark (an absolute jitter was a 20% swing on
+    // a luma-0.15 mass, the light flecks in the darks) while lights and mid-tones keep their optical vibrancy.
+    let s = a * 0.16 * (0.2 + 0.8 * l);
+    let dcb = s * jitter(seed ^ 0x00B4, k);
+    let dcr = s * jitter(seed ^ 0x00B5, k.wrapping_add(1));
+    rr += 1.402 * dcr;
+    gg += -0.344 * dcb - 0.714 * dcr;
+    bb += 1.772 * dcb;
     [(rr * 255.0).round().clamp(0.0, 255.0) as u8, (gg * 255.0).round().clamp(0.0, 255.0) as u8, (bb * 255.0).round().clamp(0.0, 255.0) as u8]
 }
 
