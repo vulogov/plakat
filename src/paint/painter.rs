@@ -1240,7 +1240,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
 
     // CONTOUR pass (line media): DRAW the strongest edges as clean lines — pen/pencil/charcoal outline the
     // subject, they don't only shade it. Laid before the bleed so a smudgy medium softens the lines a touch.
-    if p.contour > 0.0 && placed < p.budget {
+    // (Density media draw their contours in `ink_drawing`; this pass would stack its row-ordered dashes on top,
+    // thickening whatever lies in the first rows until its cap hits.)
+    if p.contour > 0.0 && !p.density && placed < p.budget {
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
