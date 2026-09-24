@@ -46,6 +46,16 @@ impl Default for BrushConfig {
 /// Saturation at which the tooth is full and deposit stops.
 const SAT_FULL: f32 = 6.0;
 
+/// The mark length (px) a brush's charge is sized for. A brush is loaded FOR THE MARK it is about to make: a
+/// wide block-in stroke of 160px carries proportionally more paint than a 10px detail dab, and lays it along
+/// its whole length. Without this every stroke spent its charge over the first ~12px (the load depleted
+/// geometrically per pixel-hit regardless of length) and dragged nearly dry for the rest — the block-in came
+/// out as a light raked wash over the ground (measured: block-in luma 0.67 against a 0.33 reference) while the
+/// short detail marks landed at full strength, which is exactly the "dark rims, light cores" tell. Marks at or
+/// under this length deplete as before; longer marks deplete proportionally slower, so the charge lasts the mark
+/// (with a natural drybrush tail from the remaining geometric decay).
+const CHARGE_PX: f32 = 12.0;
+
 /// How hard a full tooth throttles further deposit. At 1.0 (the old behaviour) a saturated pixel refuses ALL new
 /// paint, so once the block-in fills the tooth no later pass can build a darker dark or a brighter light — the
 /// value range freezes into a flat, washed mid-tone. Below 1.0 a full pixel still accepts a fraction of each
@@ -126,6 +136,9 @@ impl Stroke {
         let mut bwet: Vec<f32> = vec![self.wetness; nb];
         let n = canvas.n_pigments();
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
+        // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
+        // fraction of what it deposits, so a long stroke lays paint along its whole travel.
+        let deplete = (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0);
 
         for i in 0..pts.len() {
             let p = pts[i];
@@ -174,7 +187,7 @@ impl Stroke {
                     let floor = 0.12 + (1.0 - rnd) * 0.33; // flat brush deposits more evenly across its width
                     (1.0 - d.powf(pw)).max(floor)
                 };
-                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, &mut scratch);
+                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, deplete, &mut scratch);
             }
         }
     }
@@ -214,7 +227,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deposit: &mut Vec<f32>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>) {
         let p = py as usize * canvas.w as usize + px as usize;
         let tooth = canvas.tooth[p];
         let contact = (self.pressure * cover.clamp(0.0, 1.0) * tooth).clamp(0.0, 1.0);
@@ -230,7 +243,7 @@ impl Stroke {
             let d = load[c].max(0.0) * df;
             deposit[c] = d;
             dep_total += d;
-            load[c] -= d;
+            load[c] -= d * deplete;
         }
         canvas.deposit(px, py, deposit, dep_total * brush.viscosity);
 
