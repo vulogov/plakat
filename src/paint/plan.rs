@@ -60,6 +60,11 @@ pub struct PaintPlan {
     /// of stretching darks to black (RFC §3.3 — a shadow mass is a solid dark, never crushed).
     #[serde(default = "default_shadow_floor")]
     pub shadow_floor: f32,
+    /// Detail-tier stroke-length multiplier (1.0 = the profile's own length; the analyzer picks ~0.3: short dabs
+    /// make features read where long drags smear them — the wide block-in keeps its long covering strokes).
+    /// `paint from` uses it when `--detail-length` is unset.
+    #[serde(default = "default_detail_len")]
+    pub detail_len: f32,
     /// Reserve threshold for surface-white media (paper whites), or `null` for the medium default.
     #[serde(default)]
     pub reserve: Option<f32>,
@@ -79,6 +84,10 @@ fn default_palette() -> String {
 }
 fn default_shadow_floor() -> f32 {
     0.16
+}
+
+fn default_detail_len() -> f32 {
+    1.0
 }
 
 fn default_style() -> String {
@@ -109,6 +118,7 @@ impl Default for PaintPlan {
             sam: false,
             value_key: 0.0,
             shadow_floor: 0.16,
+            detail_len: 1.0,
             reserve: None,
             budget: None,
             notes: Vec::new(),
@@ -160,6 +170,7 @@ impl PaintPlan {
         }
         o.push_str(&format!("value_key: {:.2}\n", self.value_key));
         o.push_str(&format!("shadow_floor: {:.2}\n", self.shadow_floor));
+        o.push_str(&format!("detail_len: {:.2}\n", self.detail_len));
         if let Some(r) = self.reserve {
             o.push_str(&format!("reserve: {r:.2}\n"));
         }
@@ -258,8 +269,16 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // look. Match a rich block-in (~1 stroke per ~9 px, like the 30k reference on 512²), capped so a big canvas
     // stays sane. This is the single biggest lever the analyzer was getting wrong.
     let area = a.short_side as u64 * a.long_side as u64;
-    let budget = ((area / 9) as usize).clamp(12000, 34000);
-    notes.push(format!("budget {budget} strokes (dense — area/9, matches a rich block-in)"));
+    // THIN + SHORT + MANY (measured policy): thin brushes seed a denser grid and short marks cover less each, so
+    // the budget must scale to match or coverage is lost (the ground shows and the picture lightens). ~1 stroke
+    // per 10 px² lays ~105k at 1024² (all of them are placed); the cap keeps a huge canvas sane.
+    let budget = ((area / 10) as usize).clamp(12000, 120000);
+    notes.push(format!("budget {budget} strokes (thin marks need density — area/10)"));
+    // DEPTH ORDER: the widest layer covers with long strokes; each thinner layer on top is shorter, tapering to
+    // ~0.3 of the profile length on the finest. Long drags on the fine layers smeared features into blobs; short
+    // dabs let the face, hands, book and distant figures READ (validated against a target painting at 1:1).
+    let detail_len = 0.3;
+    notes.push("layers: wide+long block-in, thinner+shorter on top (finest at 0.3 length)".into());
 
     PaintPlan {
         medium: a.medium.clone(),
@@ -277,6 +296,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         sam,
         value_key,
         shadow_floor,
+        detail_len,
         reserve,
         budget: Some(budget),
         notes,

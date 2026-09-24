@@ -196,6 +196,11 @@ pub struct PaintParams {
     /// so stray detail marks don't speckle a structureless sky/wall, while the subject keeps its modelling.
     /// Higher = cleaner (fewer stray marks, softer); lower = busier.
     pub detail_coherence: f32,
+    /// FINEST-LAYER STROKE LENGTH multiplier (1.0 = the pass profile's own length). Stroke length TAPERS with the
+    /// layers: the widest (block-in) keeps its long covering strokes, each thinner layer on top is shorter, down
+    /// to this on the finest — a painter's depth order. A global shortening starves the block-in of coverage
+    /// (white specks of ground between dabs); long strokes on the fine layers smear the features.
+    pub detail_len: f32,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -259,7 +264,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0 }
     }
 }
 
@@ -924,7 +929,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let mut pass_brush = p.brush;
         pass_brush.streak = profile.streak;
         pass_brush.round = profile.round;
-        let len_mul = profile.len;
+        // DEPTH ORDER of the layers: the first, widest pass COVERS with long strokes; each thinner layer laid on top
+        // uses SHORTER ones, tapering (by brush radius) to the plan's `detail_len` on the finest — wide-and-long to
+        // cover, then a few layers of thinner-and-shorter to resolve. Shortening every layer alike starved the
+        // block-in (white specks of ground between dabs); long strokes on the fine layers smeared the features.
+        let (r_coarse, r_fine) = (
+            passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius),
+            passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius),
+        );
+        let depth_t = if r_coarse > r_fine + 1e-6 { ((r_coarse - radius) / (r_coarse - r_fine)).clamp(0.0, 1.0) } else { 0.0 };
+        let len_mul = profile.len * (1.0 + (p.detail_len - 1.0) * depth_t);
         let b_waver = profile.waver;
         let grid = (radius * 0.9).max(1.5);
 

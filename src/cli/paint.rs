@@ -52,6 +52,11 @@ pub struct PaintArgs {
     /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
     #[arg(long)]
     pub shadow_floor: Option<f32>,
+    /// FINEST-LAYER STROKE LENGTH (0.1..2): stroke length tapers with the layers — the wide block-in keeps long
+    /// covering strokes, each thinner layer on top is shorter, down to this on the finest. Short fine dabs make
+    /// features read; the plan picks ~0.3. 1 = every layer keeps its profile's own length.
+    #[arg(long)]
+    pub detail_length: Option<f32>,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
     /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
     /// can bleed into reserved paper.
@@ -216,6 +221,7 @@ pub struct SpecArgs {
     pub bleed: Option<f32>,
     pub dry: f32,
     pub shadow_floor: Option<f32>,
+    pub detail_length: Option<f32>,
     pub coverage: f32,
     pub detail_coherence: f32,
     pub opacity: Option<f32>,
@@ -435,7 +441,7 @@ pub struct FromArgs {
     #[arg(long, value_delimiter = ',')]
     pub brush: Option<Vec<f32>>,
     /// The smallest brush allowed (keeps the finest pass off pixel detail).
-    #[arg(long, default_value_t = 4.0)]
+    #[arg(long, default_value_t = 2.0)]
     pub min_brush: f32,
     #[arg(long, default_value_t = 42)]
     pub seed: u64,
@@ -468,6 +474,11 @@ pub struct FromArgs {
     /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
     #[arg(long)]
     pub shadow_floor: Option<f32>,
+    /// FINEST-LAYER STROKE LENGTH (0.1..2): stroke length tapers with the layers — the wide block-in keeps long
+    /// covering strokes, each thinner layer on top is shorter, down to this on the finest. Short fine dabs make
+    /// features read; the plan picks ~0.3. 1 = every layer keeps its profile's own length.
+    #[arg(long)]
+    pub detail_length: Option<f32>,
     /// BLOCK-IN COVERAGE (0..1): how gap-free the first pass lays its base. 0 = raked/dry (grainy — ground shows
     /// through); 1 = smooth opaque cover. Default 0 (opt-in): marginal on most images, and a covering footprint
     /// can bleed into reserved paper.
@@ -623,7 +634,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, coverage: args.coverage, detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -975,6 +986,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
+    params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
     params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
     params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
@@ -1401,6 +1413,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 a.budget = b;
             }
         }
+        if a.detail_length.is_none() {
+            a.detail_length = Some(plan.detail_len);
+        }
     }
     let mut img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
@@ -1426,8 +1441,20 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // Brush sizes: derived from the image if not given — a coarse block-in down to a FINE restatement (the
     // finest reaches near `min_brush`, so faces and detail resolve, not just masses).
     let brush_sizes = a.brush.clone().filter(|v| !v.is_empty()).unwrap_or_else(|| {
-        let coarse = (w.max(h) as f32 / 18.0).max(a.min_brush * 2.0);
-        vec![coarse, coarse * 0.55, coarse * 0.3, (coarse * 0.16).max(a.min_brush)]
+        // A painter COVERS with a wide brush and long strokes, then resolves features with thin, short ones. So the
+        // ladder keeps a WIDE coarse brush (~1/18 of the long side, 57 px at 1024²) for a hole-free block-in and
+        // halves all the way down to the finest (2 px) for detail; the DETAIL tier alone gets short marks (the
+        // plan's `detail_len`). Thinning/shortening everything starved the block-in of coverage — white specks
+        // of ground between dabs — while a wide-only ladder smeared the features.
+        let coarse = (w.max(h) as f32 / 18.0).max(a.min_brush * 8.0);
+        let mut ladder: Vec<f32> = Vec::new();
+        let mut r = coarse;
+        while r >= a.min_brush * 1.5 {
+            ladder.push(r);
+            r *= 0.5;
+        }
+        ladder.push(a.min_brush);
+        ladder
     });
 
     let mut params = PaintParams::new(palette, a.budget);
@@ -1468,6 +1495,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.stroke_width = a.stroke_width.clamp(0.3, 3.0);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
+    params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
