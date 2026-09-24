@@ -238,8 +238,11 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     let families = true;
     notes.push("family separation (light/shadow masses) → solid, not washed".into());
     // COMMIT SHADOWS — paint the dark masses decisively (a solid value backbone), the direct fix for a pale wash.
-    let commit_shadows = 0.85;
-    notes.push("commit shadows 0.85 → decisive dark masses (value backbone, not a wash)".into());
+    // Measured (same ladder, budget, length): 0.40 → 0.85 → 1.00 cut speck flecks on smooth masses 0.040 → 0.031
+    // → 0.029 (target painting 0.025) and gave the best structural agreement — committed darks are laid SOLID, so
+    // nothing later flecks them. Full commitment is the right default; `--commit-shadows` lowers it deliberately.
+    let commit_shadows = 1.0;
+    notes.push("commit shadows 1.0 → decisive solid dark masses (value backbone; fewer flecks)".into());
     // SILHOUETTE — OFF by default: an auto-drawn contour line reads as tacked-on on most subjects (it is only
     // wanted deliberately). Opt in with `--silhouette <n>` / `--silhouette-mode`; the plan leaves it disabled.
     let (silhouette, silhouette_mode) = (0.0, None);

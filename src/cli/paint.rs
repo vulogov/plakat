@@ -66,6 +66,11 @@ pub struct PaintArgs {
     /// (fewer stray speckle marks on flat sky/walls, softer); lower = busier. Background held ~2.6x stricter.
     #[arg(long, default_value_t = 0.14)]
     pub detail_coherence: f32,
+    /// DETAIL RESTATE floor (0..1, default 0.08): a fine-layer mark lands only where the canvas still disagrees with
+    /// the target by at least this much — error-driven. Lower = the fine layers restate everything (specks on
+    /// smooth masses); higher = they touch only unresolved features.
+    #[arg(long, default_value_t = 0.08)]
+    pub detail_restate: f32,
     /// OPACITY / body (0.1..1) — overrides the medium default (1 = opaque; low = transparent).
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -224,6 +229,7 @@ pub struct SpecArgs {
     pub detail_length: Option<f32>,
     pub coverage: f32,
     pub detail_coherence: f32,
+    pub detail_restate: f32,
     pub opacity: Option<f32>,
     pub pickup: Option<f32>,
     pub impasto: Option<f32>,
@@ -488,6 +494,11 @@ pub struct FromArgs {
     /// (fewer stray speckle marks on flat sky/walls, softer); lower = busier. Background held ~2.6x stricter.
     #[arg(long, default_value_t = 0.14)]
     pub detail_coherence: f32,
+    /// DETAIL RESTATE floor (0..1, default 0.08): a fine-layer mark lands only where the canvas still disagrees with
+    /// the target by at least this much — error-driven. Lower = the fine layers restate everything (specks on
+    /// smooth masses); higher = they touch only unresolved features.
+    #[arg(long, default_value_t = 0.08)]
+    pub detail_restate: f32,
     /// OPACITY / body (0.1..1) — 1 = opaque, low = transparent.
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -634,7 +645,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -988,6 +999,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
+    params.detail_restate = a.detail_restate.clamp(0.0, 1.0);
     params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
     params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
     params.brush.k_pickup = spec.pickup.or(a.pickup).unwrap_or(plan.medium.pickup).clamp(0.0, 1.0);
@@ -1497,6 +1509,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
+    params.detail_restate = a.detail_restate.clamp(0.0, 1.0);
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
     }
