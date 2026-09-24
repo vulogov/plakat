@@ -302,19 +302,28 @@ impl StrokeScore {
         // Inter-pass drying: the paint dried the canvas at each pass boundary; a stage change in the recorded
         // stream marks one. Reproduce it here so replay matches the delivered image (no-op for old scores, dry=0).
         let dry_keep = 1.0 - self.header.dry;
+        // The pass schedule the paint ran: distinct stage names in order. Each boundary bled (wet-into-wet,
+        // tapering coarse → fine, see `painter::pass_bleed_taper`) and then dried.
+        let stages = self.stage_schedule(&keep);
+        let n_stages = stages.len();
+        let mut stage_idx = 0usize;
         let mut last_stage: Option<&str> = None;
         for rec in &self.strokes {
             if !keep(rec) {
                 continue;
             }
-            if self.header.dry > 0.0 {
-                if let Some(prev) = last_stage {
-                    if prev != rec.stage {
+            if let Some(prev) = last_stage {
+                if prev != rec.stage {
+                    if self.header.bleed > 0.0 && stage_idx < n_stages {
+                        canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
+                    }
+                    if self.header.dry > 0.0 {
                         canvas.dry(dry_keep);
                     }
+                    stage_idx += 1;
                 }
-                last_stage = Some(&rec.stage);
             }
+            last_stage = Some(&rec.stage);
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
             if rec.wipe {
                 // A subtractive WIPE stroke: scrape pigment back (strength recorded in `wet`). LIFT scales how
@@ -334,12 +343,26 @@ impl StrokeScore {
             let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), ..brush };
             s.rasterize(&mut canvas, &sb);
         }
-        // Wet-into-wet BLEED (the final fusion the paint applied) — only on a FULL replay; a truncated/filtered
-        // replay is an intermediate state, before the fusion.
+        // The last pass's own bleed (it is not followed by a boundary), then the light final touch — only on a
+        // FULL replay; a truncated/filtered replay is an intermediate state, before the fusion.
         if self.header.bleed > 0.0 && full(&keep) {
-            canvas.bleed(self.header.bleed);
+            if stage_idx < n_stages {
+                canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
+            }
+            canvas.bleed(self.header.bleed * crate::paint::painter::FINAL_BLEED);
         }
         Ok(canvas)
+    }
+
+    /// The ordered list of distinct stage names among the kept strokes — the pass schedule the paint ran.
+    fn stage_schedule(&self, keep: &dyn Fn(&StrokeRecord) -> bool) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for rec in self.strokes.iter().filter(|r| keep(r)) {
+            if out.last().map(|s| s != &rec.stage).unwrap_or(true) {
+                out.push(rec.stage.clone());
+            }
+        }
+        out
     }
 
     /// Replay the whole score in order, emitting a canvas frame every `every` strokes (plus the final frame).
@@ -357,16 +380,23 @@ impl StrokeScore {
         let mut frames = Vec::new();
         let mut laid = 0usize;
         let dry_keep = 1.0 - self.header.dry;
+        let stages = self.stage_schedule(&|_| true);
+        let n_stages = stages.len();
+        let mut stage_idx = 0usize;
         let mut last_stage: Option<&str> = None;
         for rec in &self.strokes {
-            if self.header.dry > 0.0 {
-                if let Some(prev) = last_stage {
-                    if prev != rec.stage {
+            if let Some(prev) = last_stage {
+                if prev != rec.stage {
+                    if self.header.bleed > 0.0 && stage_idx < n_stages {
+                        canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
+                    }
+                    if self.header.dry > 0.0 {
                         canvas.dry(dry_keep);
                     }
+                    stage_idx += 1;
                 }
-                last_stage = Some(&rec.stage);
             }
+            last_stage = Some(&rec.stage);
             if !rec.wipe {
                 let mut load = vec![0f32; n];
                 for (name, val) in &rec.mix {
@@ -385,7 +415,10 @@ impl StrokeScore {
             }
         }
         if self.header.bleed > 0.0 {
-            canvas.bleed(self.header.bleed); // the final wet fusion, as on the finished painting
+            if stage_idx < n_stages {
+                canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
+            }
+            canvas.bleed(self.header.bleed * crate::paint::painter::FINAL_BLEED); // the light final touch
         }
         frames.push(canvas); // always end on the finished painting
         Ok(frames)

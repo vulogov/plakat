@@ -871,7 +871,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // The passes to run: an explicit plan (P1.3), else coarse→fine from brush_sizes (P0).
     let sizes: Vec<f32> = p.brush_sizes.iter().copied().filter(|&r| r >= p.min_brush).collect();
     let passes: Vec<PassSpec> = p.passes.clone().unwrap_or_else(|| {
-        sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { "restate".into() } }).collect()
+        sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { format!("restate-{i}") } }).collect()
     });
 
     let mut placed = 0usize;
@@ -1230,6 +1230,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         // Dry the canvas before the next pass so the just-laid masses SET: the restatement then reads as fresh
         // overlays instead of picking the masses back up and stirring them into mud. Wet-into-wet is `--dry 0`.
+        // WET-INTO-WET per pass, tapering coarse → fine: the broad washes bloom into each other while still wet,
+        // the later, finer work goes onto paper that has set and stays crisp. One bleed over the finished
+        // painting fused EVERYTHING (measured: an ink-wash lost half its sharpness in that final step, and the
+        // whole sheet read as one blur). The same schedule is reproduced by the score replay at each stage
+        // boundary, so the drawing stays byte-exact.
+        if p.bleed > 0.0 {
+            canvas.bleed(p.bleed * pass_bleed_taper(layer, passes.len()));
+        }
         if layer + 1 < passes.len() {
             canvas.dry(1.0 - p.dry);
         }
@@ -1258,14 +1266,27 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
-    // Wet-into-wet BLEED (watercolour / ink-wash): fuse the pigment into wet neighbours so colours bloom and
-    // soften — the wet media's signature. Deterministic from the final wetness state, so replay reproduces it.
+    // A last, light wet-into-wet touch over the finish passes (contour, silhouette, splatter) so a wet medium
+    // softens those marks a little — the strong fusion happened pass by pass above.
     if p.bleed > 0.0 {
-        canvas.bleed(p.bleed);
+        canvas.bleed(p.bleed * FINAL_BLEED);
     }
 
     PaintResult { canvas, strokes: placed, score, rejected }
 }
+
+/// The fraction of the medium's bleed applied after pass `layer` of `n`: full on the block-in, none on the
+/// finest pass (linear in between). Shared with the score replay so both apply the identical schedule.
+pub fn pass_bleed_taper(layer: usize, n: usize) -> f32 {
+    if n <= 1 {
+        1.0
+    } else {
+        1.0 - layer as f32 / (n - 1) as f32
+    }
+}
+
+/// The fraction of the medium's bleed applied once over the finished painting (after the finish passes).
+pub const FINAL_BLEED: f32 = 0.2;
 
 /// The SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary (the matte's edge — a fact), so a
 /// light subject (a white shirt, shoulders) reads against a light ground by its CONTOUR instead of vanishing.
@@ -1926,6 +1947,22 @@ mod tests {
         let replayed = result.score.replay(64, 48).unwrap().to_image().into_raw();
         assert_eq!(painted, replayed, "score replay == the original paint at native size");
         assert_eq!(result.score.strokes.len(), result.strokes, "one record per stroke laid");
+    }
+
+    #[test]
+    fn a_wet_multi_pass_paint_replays_byte_exact() {
+        // Wet media bleed after EVERY pass (tapering) and dry between them; the replay must reproduce that
+        // schedule from the stage names alone, or the delivered image and its score would disagree.
+        let img = gradient_img(64, 48);
+        let mut p = PaintParams::new(palette::EARTH, 400);
+        p.brush_sizes = vec![16.0, 8.0, 4.0];
+        p.bleed = 0.5;
+        p.dry = 0.5;
+        let result = paint_from_image(&img, &p);
+        let painted = result.canvas.to_image().into_raw();
+        let replayed = result.score.replay(64, 48).unwrap().to_image().into_raw();
+        assert_eq!(painted, replayed, "per-pass bleed + drying replay byte-for-byte");
+        assert!(result.score.strokes.iter().any(|r| r.stage == "restate-2"), "every pass has its own stage name");
     }
 
     #[test]
