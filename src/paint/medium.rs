@@ -122,7 +122,10 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     // Modest pickup: alla-prima keeps marks distinct (sitting on top), not smeared into one another. High
     bleed: 0.08,
     body: 1.0,
-    impasto: 0.6,
+    // 0.3, not 0.6: measured on an 11-image bench, the relief relight was the largest remaining source of
+    // invented texture on smooth passages (edges 0.081 -> 0.059, dark flecks 0.026 -> 0.019, structure kept
+    // 0.099 -> 0.085 at 0.3); it still reads as oil. 0 matches a flat reference painting best (`--impasto 0`).
+    impasto: 0.3,
     chroma: 1.08,
     dry_shift: 0.0,
     granulate: 0.0,
