@@ -30,8 +30,14 @@ pub struct Canvas {
     pub h: u32,
     palette: Palette,
     /// Per-pixel concentration over the palette: `w*h*n`, row-major, pixel-major. This is DEPOSITED paint only
-    /// — the ground is NOT baked in here; it shows through via opacity where the paint is thin.
+    /// — the ground is NOT baked in here; it shows through via opacity where the paint is thin. It is the
+    /// pigment RATIO of the visible film: a new deposit COVERS what lies beneath (see [`Canvas::deposit`]), so
+    /// this is not a running sum over every stroke ever laid.
     conc: Vec<f32>,
+    /// Per-pixel paint AMOUNT (the sum of every deposit, minus wipes), row-major. Drives the film-build opacity
+    /// over the ground and the tooth saturation; kept apart from `conc` so covering a light block-in with a
+    /// dark restatement changes the film's colour without thinning it.
+    film: Vec<f32>,
     /// Per-pixel paint height (impasto), row-major.
     pub height: Vec<f32>,
     /// Per-pixel wet pigment available for pickup, row-major (0 = dry).
@@ -64,7 +70,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -75,9 +81,8 @@ impl Canvas {
             return 0.0;
         }
         let mut acc = 0f64;
-        for p in 0..px {
-            let total: f32 = self.conc[p * self.n..p * self.n + self.n].iter().map(|c| c.max(0.0)).sum();
-            acc += (1.0 - (-self.opacity_k * self.opacity * total).exp()) as f64;
+        for &total in &self.film {
+            acc += (1.0 - (-self.opacity_k * self.opacity * total.max(0.0)).exp()) as f64;
         }
         (acc / px as f64) as f32
     }
@@ -129,18 +134,28 @@ impl Canvas {
         &self.conc[i..i + self.n]
     }
 
-    /// Total pigment concentration at a pixel — the "saturation" that throttles further deposit.
+    /// Total paint AMOUNT at a pixel (every deposit ever laid here, minus wipes) — the "saturation" that
+    /// throttles further deposit and the film thickness that hides the ground.
     pub fn saturation_at(&self, x: u32, y: u32) -> f32 {
-        self.conc_at(x, y).iter().sum()
+        self.film[y as usize * self.w as usize + x as usize]
     }
 
-    /// Deposit a concentration delta at a pixel (adds to the accumulated pigment) and raise its height.
+    /// Deposit a concentration delta at a pixel and raise its height. Paint COVERS: the deposit hides the film
+    /// beneath it by the same film-build law that hides the ground (`1 − e^(−k · opacity · amount)`), so an
+    /// opaque medium's restatement replaces the colour under it (a dark laid over the light block-in reads dark)
+    /// while a thin or transparent deposit (a glaze, watercolour body) still mixes with what is there. Without
+    /// this, every stroke ever laid stayed a permanent proportion of the pixel — a dark mass restated over a
+    /// light block-in could only nudge the average, leaving every shadow mass with a light core and a dark rim.
+    /// The paint amount (`film`) keeps accumulating, so covering never thins the film or re-exposes the ground.
     pub fn deposit(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
         let i = self.idx(x, y);
+        let amount: f32 = delta.iter().take(self.n).map(|d| d.max(0.0)).sum();
+        let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
         for c in 0..self.n {
-            self.conc[i + c] += delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
         }
         let p = y as usize * self.w as usize + x as usize;
+        self.film[p] += amount;
         self.height[p] += height.max(0.0);
     }
 
@@ -156,6 +171,7 @@ impl Canvas {
             self.conc[i + c] *= 1.0 - s;
         }
         let p = y as usize * self.w as usize + x as usize;
+        self.film[p] *= 1.0 - s;
         self.height[p] *= 1.0 - s;
     }
 
@@ -187,6 +203,7 @@ impl Canvas {
         let iters = (1.0 + 5.0 * s).round() as usize; // more strength → farther bloom
         for _ in 0..iters {
             let src = self.conc.clone();
+            let src_film = self.film.clone();
             for y in 0..h {
                 for x in 0..w {
                     let p = y * w + x;
@@ -194,6 +211,16 @@ impl Canvas {
                     if a <= 1e-4 {
                         continue;
                     }
+                    // The paint amount blooms with the pigment, so the wash's edge thins as it spreads.
+                    let mut fsum = 0.0;
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                            let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                            fsum += src_film[ny * w + nx];
+                        }
+                    }
+                    self.film[p] = self.film[p] * (1.0 - a) + (fsum / 9.0) * a;
                     for c in 0..n {
                         let mut sum = 0.0;
                         let mut cnt = 0.0;
@@ -224,6 +251,7 @@ impl Canvas {
                 for c in 0..self.n {
                     self.conc[p * self.n + c] = 0.0;
                 }
+                self.film[p] = 0.0;
                 self.height[p] = 0.0;
                 self.wetness[p] = 0.0;
             }
@@ -235,7 +263,7 @@ impl Canvas {
     /// shows (glaze/light); built paint → opaque, so darks stay dark, lights bright, and colour saturated.
     pub fn color_at(&self, x: u32, y: u32) -> Srgb {
         let conc = self.conc_at(x, y);
-        let total: f32 = conc.iter().map(|c| c.max(0.0)).sum();
+        let total = self.film[y as usize * self.w as usize + x as usize].max(0.0);
         if total <= 1e-4 {
             return color::linear_to_srgb(self.ground_lin);
         }
@@ -298,7 +326,7 @@ impl Canvas {
             for y in 0..h {
                 for x in 0..w {
                     // How much PAINT is here (vs bare ground) — material stages act on paint, not the paper.
-                    let total: f32 = self.conc[(y * w + x) * self.n..(y * w + x) * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                    let total = self.film[y * w + x].max(0.0);
                     let paint = (1.0 - (-1.6 * total).exp()).clamp(0.0, 1.0);
                     let p = img.get_pixel_mut(x as u32, y as u32);
                     let mut c = [p.0[0] as f32 / 255.0, p.0[1] as f32 / 255.0, p.0[2] as f32 / 255.0];
@@ -343,7 +371,7 @@ impl Canvas {
         if f.edge_pool > 1e-3 {
             let mut amt = vec![0f32; w * h];
             for (idx, a) in amt.iter_mut().enumerate() {
-                let total: f32 = self.conc[idx * self.n..idx * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                let total = self.film[idx].max(0.0);
                 *a = (1.0 - (-1.6 * total).exp()).clamp(0.0, 1.0);
             }
             for y in 0..h {
@@ -385,7 +413,7 @@ impl Canvas {
                     // Gate by the paint AMOUNT here: thin / flat passages (a wash, a bare background) barely stand
                     // off the surface, so they get little relief — only built-up strokes catch light. Keeps the
                     // background smooth instead of a canvas-weave grain.
-                    let total: f32 = self.conc[(y * w + x) * self.n..(y * w + x) * self.n + self.n].iter().map(|v| v.max(0.0)).sum();
+                    let total = self.film[y * w + x].max(0.0);
                     let amt = (total / 2.0).clamp(0.0, 1.0);
                     // Diffuse impasto shading + a sharper glossy highlight on the near ridges (sheen).
                     let mut shade = gain * facing * amt;

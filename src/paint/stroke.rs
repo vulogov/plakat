@@ -239,8 +239,8 @@ impl Stroke {
         let empty = (1.0 - Self::load_norm(load) / brush.load_max.max(1e-3)).clamp(0.0, 1.0);
         let pf = brush.k_pickup * cw * empty;
         if pf > 0.0 {
-            let csum = canvas.saturation_at(px, py).max(1e-6);
             let cconc = canvas.conc_at(px, py); // borrow directly — no clone
+            let csum = cconc.iter().map(|c| c.max(0.0)).sum::<f32>().max(1e-6);
             for c in 0..n.min(load.len()) {
                 load[c] += (cconc[c] / csum) * pf;
             }
