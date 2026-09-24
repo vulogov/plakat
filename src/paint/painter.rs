@@ -1037,8 +1037,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
 
         let cols = ((w as f32) / grid).ceil() as u32;
         let rows = ((h as f32) / grid).ceil() as u32;
-        for gyi in 0..rows {
-            for gxi in 0..cols {
+        // Visit the pass's seed cells in a SCRAMBLED order (a deterministic hashed permutation), not row by row.
+        // When the budget runs out mid-pass, row order left the bottom of every picture untouched by that pass —
+        // measured: the 2px pass changed nothing below 55% of the height, so every face, figure or detail in the
+        // lower half was painted without the fine layers. Scrambled, a cap thins the pass uniformly. Replay-exact.
+        let n_cells = (rows as usize) * (cols as usize);
+        let mut order: Vec<u32> = (0..n_cells as u32).collect();
+        let order_seed = p.seed ^ (layer as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        order.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
+        for cell in order {
+            let (gyi, gxi) = (cell / cols, cell % cols);
+            {
                 if placed >= p.budget || in_pass >= pass.budget {
                     break;
                 }
