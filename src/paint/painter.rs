@@ -627,7 +627,15 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     let mut out = bil;
     if levels >= 2 {
         let step = 1.0 / (levels - 1) as f32;
-        for p in out.pixels_mut() {
+        // Quantise only where there is an EDGE to make crisp. A value mass is flat, but a painter keeps a smooth
+        // GRADIENT smooth — a sunset sky, a field falling off into haze — while posterising it snaps a wide, slow
+        // gradient into flat bands with jagged contour edges the painting then faithfully copies (the tell on
+        // any low-contrast scene). The snap strength is the local value RANGE over the smoothing window measured
+        // against one level step: a real boundary (a step or more across the window) snaps fully; a slow
+        // gradient (a small fraction of a step) is left continuous. Texture is already flattened by the bilateral.
+        let yl = luma_map(&out);
+        let range = local_range(&yl, w as usize, h as usize, r.max(2) as usize);
+        for (i, p) in out.pixels_mut().enumerate() {
             let r = p.0[0] as f32 / 255.0;
             let g = p.0[1] as f32 / 255.0;
             let b = p.0[2] as f32 / 255.0;
@@ -636,12 +644,47 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
                 // Snap to the nearest value level, but FLOOR the bottom bin at step/2: plain rounding sent every
                 // value below step/2 to exactly 0 — a black hole that turned dark grass and shadow masses PURE
                 // BLACK before a stroke was laid. A shadow mass is a solid dark, never black (RFC §3.3).
-                let yq = ((y / step).round() * step).max(0.5 * step);
+                let snapped = ((y / step).round() * step).max(0.5 * step);
+                let edge = ((range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+                let yq = y + (snapped - y) * edge;
                 let s = (yq / y).clamp(0.0, 2.0);
                 p.0[0] = (r * s * 255.0).clamp(0.0, 255.0) as u8;
                 p.0[1] = (g * s * 255.0).clamp(0.0, 255.0) as u8;
                 p.0[2] = (b * s * 255.0).clamp(0.0, 255.0) as u8;
             }
+        }
+    }
+    out
+}
+
+/// Local value RANGE (max − min) of a luma field over a square window of half-width `r` — a cheap "is there an
+/// edge nearby" measure. Separable (row max/min then column max/min), so it costs O(w·h·r).
+fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    let mut row_max = vec![0f32; w * h];
+    let mut row_min = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let (x0, x1) = (x.saturating_sub(r), (x + r).min(w - 1));
+            let (mut mx, mut mn) = (f32::MIN, f32::MAX);
+            for xx in x0..=x1 {
+                let v = luma[y * w + xx];
+                mx = mx.max(v);
+                mn = mn.min(v);
+            }
+            row_max[y * w + x] = mx;
+            row_min[y * w + x] = mn;
+        }
+    }
+    let mut out = vec![0f32; w * h];
+    for y in 0..h {
+        let (y0, y1) = (y.saturating_sub(r), (y + r).min(h - 1));
+        for x in 0..w {
+            let (mut mx, mut mn) = (f32::MIN, f32::MAX);
+            for yy in y0..=y1 {
+                mx = mx.max(row_max[yy * w + x]);
+                mn = mn.min(row_min[yy * w + x]);
+            }
+            out[y * w + x] = mx - mn;
         }
     }
     out

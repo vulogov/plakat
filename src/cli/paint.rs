@@ -1371,6 +1371,8 @@ fn run_replay(a: ReplayArgs) -> Result<()> {
 async fn run_from(mut a: FromArgs) -> Result<()> {
     // PAINTING PLAN (RFC §5): resolve `--plan auto|<file>` FIRST and let it fill the structural decisions that
     // unset flags leave open — the art director hands the technique a plan. Explicit flags always win.
+    // Whether the background armature tier came from the plan (adjustable by the matte below) or the user.
+    let mut armature_from_plan = false;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette).await?;
@@ -1395,6 +1397,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         if a.armature.is_none() {
             a.armature = Some(plan.armature);
+            armature_from_plan = true;
         }
         if a.armature_face.is_none() {
             a.armature_face = plan.armature_face;
@@ -1600,6 +1603,17 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let total = mask.len().max(1);
         if covered > total / 50 && covered < total * 49 / 50 {
             println!("{}  subject matte: {}% foreground → three-tier armature", style("·").dim(), covered * 100 / total);
+            // The background goes COARSER than the body only when the subject fills the frame (a portrait, a
+            // bust). In a SCENE where the matted subject is small, the background IS the picture — a field, a
+            // sky, a street — and painting it from the coarsest tier erased its structure wholesale (a landscape
+            // reduced to a few flat bands with small figures in front). Give it the body's resolution; the face
+            // tier stays finer. Only when the plan chose the background tier — an explicit `--armature` is kept.
+            if armature_from_plan && covered * 100 / total < 30 {
+                if let Some(body) = a.armature_body.filter(|&b| a.armature.map_or(true, |c| b > c)) {
+                    a.armature = Some(body);
+                    println!("{}  small subject ({}%) → the background carries the picture: background armature {}px (body tier)", style("·").dim(), covered * 100 / total, body);
+                }
+            }
             if let Some(r) = a.recede.filter(|&r| r > 0.0) {
                 // The matte IS the depth here: subject near (advances), background far (recedes/veils). But a HARD
                 // subject/background boundary makes the aerial veil switch abruptly across it — a visible
