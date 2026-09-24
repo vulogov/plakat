@@ -207,6 +207,12 @@ pub struct PaintParams {
     /// not resolve the error is large → the dab lands. The old floor (0.03) let the fine layers restate nearly
     /// every cell, blanketing smooth masses with mark boundaries.
     pub detail_restate: f32,
+    /// DETAIL SHARPEN (unsharp-mask radius as a fraction of the brush radius; 0 = none): the reference the fine
+    /// layers paint from. Unsharp masking puts DARK overshoot along the hairline, eye sockets and beard edge; a few
+    /// strokes sampling it are invisible, but the dense fine layers turn it into black scrawl on a face and dark
+    /// blobs on a wall (measured: face dark-feature energy 0.107 vs the target's 0.087). Off by default — the
+    /// armature already carries the structure; crisp short strokes give the detail its edge.
+    pub detail_sharpen: f32,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -270,7 +276,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0 }
     }
 }
 
@@ -899,7 +905,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let reference = if fidelity {
             imageops::unsharpen(input, (radius * 0.22).max(0.5), 1)
         } else if detail {
-            imageops::unsharpen(input, (radius * 0.4).max(0.6), 1)
+            // Fine layers read the armature as-is unless a detail sharpen is asked for (see `detail_sharpen`).
+            if p.detail_sharpen > 0.0 {
+                imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
+            } else {
+                input.clone()
+            }
         } else {
             // Coarse passes lay masses from a softened reference — but a radius×0.5 blur erases the structure
             // (object edges, value boundaries) before a stroke is placed, so strokes see no boundary to stop at

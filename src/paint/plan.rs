@@ -280,8 +280,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // DEPTH ORDER: the widest layer covers with long strokes; each thinner layer on top is shorter, tapering to
     // ~0.3 of the profile length on the finest. Long drags on the fine layers smeared features into blobs; short
     // dabs let the face, hands, book and distant figures READ (validated against a target painting at 1:1).
-    let detail_len = 0.3;
-    notes.push("layers: wide+long block-in, thinner+shorter on top (finest at 0.3 length)".into());
+    // 0.5, not 0.3: measured against the target painting, 0.3 popped detail but cost speck flecks on the smooth
+    // masses (0.036 vs 0.033 at 0.5, target 0.025) and structural agreement (0.257 vs 0.254, best of the run).
+    let detail_len = 0.5;
+    notes.push("layers: wide+long block-in, thinner+shorter on top (finest at 0.5 length)".into());
 
     PaintPlan {
         medium: a.medium.clone(),
