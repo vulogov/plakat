@@ -368,6 +368,18 @@ fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32) -> (Vec<f32>, Vec
     let jxx = box_blur(&jxx, w, h, sigma);
     let jyy = box_blur(&jyy, w, h, sigma);
     let jxy = box_blur(&jxy, w, h, sigma);
+    // FORM vs ATMOSPHERE: the tensor's coherence is normalised by gradient energy, so a smooth atmospheric
+    // gradient (a sunset sky, haze, still water) is as "coherent" as a cheek — and strokes then circle the sun
+    // along its isophotes, the whirl tell. A painter follows form only where there is form: an EDGE within the
+    // window. Where the local value range is below a fraction of a level step there is nothing to follow, so
+    // the flow fades to "lay it flat" (horizontal marks), and the detail gate (which reads this magnitude)
+    // rejects marks there too. Range is a value fact of the image, not a tuned constant per scene.
+    // Ramp vs edge, scale-free: over a window 3× wider a slow RAMP's range grows ~3× (it keeps climbing) while
+    // an EDGE's range saturates (the step is the step). The ratio small/large therefore separates atmosphere
+    // (≈1/3) from form (→1) whatever the image's contrast; a floor on the small-window range keeps noise out.
+    let s_small = sigma.max(2) as usize;
+    let range_s = local_range(luma, w as usize, h as usize, s_small);
+    let range_l = local_range(luma, w as usize, h as usize, s_small * 3);
     let (mut ox, mut oy) = (vec![0f32; n], vec![0f32; n]);
     for i in 0..n {
         // Dominant-eigenvector orientation of the smoothed 2×2 tensor.
@@ -375,8 +387,18 @@ fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32) -> (Vec<f32>, Vec
         // Coherence in [0,1]: anisotropy of the tensor.
         let disc = ((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]).sqrt();
         let coh = (disc / (jxx[i] + jyy[i] + 1e-6)).clamp(0.0, 1.0);
-        ox[i] = theta.cos() * coh;
-        oy[i] = theta.sin() * coh;
+        let ratio = range_s[i] / (range_l[i] + 1e-4);
+        let mut edge = ((ratio - 0.35) / 0.4).clamp(0.0, 1.0) * (range_s[i] / 0.02).clamp(0.0, 1.0);
+        // ATMOSPHERE is a slow ramp that stays slow over a wide window too (a sky, haze, a glow): little value
+        // change even across 3 windows. Form that merely has soft modelling still climbs a lot across the wide
+        // window (a cheek turns, a sleeve folds), so it keeps following its isophotes. Only true atmosphere is
+        // laid FLAT — long level marks — the way a painter blends a sky, instead of circling a sun's isophotes.
+        let flat = ((0.18 - range_l[i]) / 0.08).clamp(0.0, 1.0) * (1.0 - edge);
+        edge = edge.max(1.0 - flat);
+        // Form: the local tensor at full magnitude. Atmosphere: a vertical "gradient" (= a horizontal stroke) at a
+        // low magnitude, so the direction is defined but the detail gate (which reads this magnitude) does not fire.
+        ox[i] = theta.cos() * coh * edge;
+        oy[i] = theta.sin() * coh * edge + 0.05 * (1.0 - edge);
     }
     (ox, oy)
 }
