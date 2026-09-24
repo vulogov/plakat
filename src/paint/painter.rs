@@ -941,6 +941,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         (None, 0.0)
     };
     let focus_on = focal.is_some();
+    // DENSITY media (pen-and-ink) do not paint masses with a brush ladder: they DRAW the composition — the
+    // structure's contour lines first, then TONE by hatching — and leave the paper everywhere else.
+    let passes: Vec<PassSpec> = if p.density {
+        ink_drawing(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k, progress);
+        Vec::new()
+    } else {
+        passes
+    };
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
         // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
@@ -1121,12 +1129,6 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                             continue;
                         }
                     }
-                }
-                // DENSITY mark model: build value with black hatch marks whose count scales with darkness.
-                if p.density {
-                    let n = density_marks(&mut canvas, &mut score, &mut placed, &mut in_pass, pass.budget, p.budget, cx, cy, radius, tluma, &gx, &gy, p, &pass.stage);
-                    k = k.wrapping_add(n as u64);
-                    continue;
                 }
                 // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
                 let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
@@ -1412,7 +1414,10 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
             // Darker edges → a stronger (blacker) line; lighter edges → a fainter graphite line.
             load[ink] = p.charge * (0.5 + 0.5 * (1.0 - dl)).clamp(0.35, 1.0);
             // Grow along the edge tangent (the isophote): a clean, low-waver drawn line.
-            let path = grow_path(cx, cy, radius, &gx, &gy, &sharp, dark, p.protect.as_deref(), None, None, 0.9);
+            // TRACE the edge: a drawn contour runs along its boundary for tens of pixels (the generic cap of 2.2
+            // radii would make 3px dashes of a 1.5px pen). The colour-drift and protect stops still end it.
+            let trace = (w.max(h) as f32 * 0.04 / (2.2 * radius)).max(1.0);
+            let path = grow_path(cx, cy, radius, &gx, &gy, &sharp, dark, p.protect.as_deref(), None, None, trace);
             if path.len() < 2 {
                 continue;
             }
@@ -1629,70 +1634,56 @@ fn focal_field(input: &RgbImage) -> Vec<f32> {
 /// darkness — value is built by mark DENSITY, not pigment concentration. Darker cells add a crosshatch. No
 /// pickup, single bristle. Records each mark into the score; respects the budget. Returns the count laid.
 #[allow(clippy::too_many_arguments)]
-fn density_marks(
-    canvas: &mut Canvas,
-    score: &mut StrokeScore,
-    placed: &mut usize,
-    in_pass: &mut usize,
-    pass_budget: usize,
-    total_budget: usize,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    tluma: f32,
-    gx: &[f32],
-    gy: &[f32],
-    p: &PaintParams,
-    stage: &str,
-) -> usize {
-    let darkness = (1.0 - tluma).clamp(0.0, 1.0);
-    let n = (darkness * 6.0).round() as usize;
-    if n == 0 {
-        return 0;
-    }
-    let (w, h) = (canvas.w, canvas.h);
-    let ci = (cy.round().clamp(0.0, h as f32 - 1.0) as usize) * w as usize + (cx.round().clamp(0.0, w as f32 - 1.0) as usize);
-    let dir = stroke_dir(gx[ci], gy[ci]);
-    let perp = [-dir[1], dir[0]];
+/// PEN-AND-INK (density media): rasterise the drawing that [`crate::paint::ink::plan`] derives from the
+/// armature — contour lines first, then the hatch — with a pen (no pickup, full ink, a hair of waver), recording
+/// every line as a stroke so the drawing replays exactly like a painting.
+#[allow(clippy::too_many_arguments)]
+fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+    let w = input.width() as usize;
+    let drawing = crate::paint::ink::plan(input, p.contour, p.budget.saturating_sub(*placed), p.seed);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let mut load = vec![0f32; p.palette.pigments.len()];
-    load[ink] = p.charge;
+    load[ink] = p.charge * 2.0; // a pen lays full ink
     let mut brush = p.brush;
     brush.k_pickup = 0.0;
     brush.bristles = 1;
-    let half = radius * 0.5;
-    let mut laid = 0usize;
-    for m in 0..n {
-        if *placed >= total_budget || *in_pass >= pass_budget {
+    brush.streak = 0.0;
+    brush.round = 1.0;
+    let blocked = |pt: &[f32; 2]| protect.map(|m| m.get(pt[1] as usize * w + pt[0] as usize).copied().unwrap_or(false)).unwrap_or(false);
+    let lines = drawing.contours.iter().map(|c| ("contour".to_string(), drawing.contour_width, c)).chain(drawing.hatch.iter().map(|(li, s)| (format!("hatch-{li}"), drawing.hatch_width, s)));
+    for (stage, width, poly) in lines {
+        if *placed >= p.budget {
             break;
         }
-        let off = ((m as f32 + 0.5) / n as f32 - 0.5) * radius;
-        // Crosshatch the darkest cells: alternate marks run perpendicular.
-        let (d, spread) = if m % 2 == 1 && darkness >= 0.6 { (perp, dir) } else { (dir, perp) };
-        let (mx, my) = (cx + spread[0] * off, cy + spread[1] * off);
-        let a = [mx - d[0] * half, my - d[1] * half];
-        let b = [mx + d[0] * half, my + d[1] * half];
-        let s = Stroke { path: vec![a, b], width0: 1.5, width1: 1.5, load: load.clone(), pressure: 1.0, wetness: 0.0 };
+        if poly.len() < 2 || blocked(&poly[poly.len() / 2]) {
+            continue;
+        }
+        *k += 1;
+        let path = waver_path(poly, 0.12 * width, p.seed, *k);
+        let s = Stroke { path, width0: width, width1: width, load: load.clone(), pressure: 1.0, wetness: 0.0 };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        *in_pass += 1;
-        laid += 1;
+        if let Some(pr) = progress {
+            if *placed % 64 == 0 {
+                pr(*placed);
+            }
+        }
         score.strokes.push(StrokeRecord {
             id: *placed as u32,
             wipe: false,
-            stage: stage.to_string(),
+            stage,
             spline: s.path,
-            w0: 1.5,
-            w1: 1.5,
-            taper: 0.0,
-            mix: vec![(p.palette.pigments[ink].name.to_string(), p.charge)],
+            w0: width,
+            w1: width,
+            taper: 0.15,
+            mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])],
             wet: 0.0,
             press: 1.0,
             streak: brush.streak,
-            round: brush.round, pickup: None,
+            round: brush.round,
+            pickup: None,
         });
     }
-    laid
 }
 
 /// Traceability (RFC PAINT-1 §12.1): the mean linear-luma correlation between a painted image and its
@@ -1786,7 +1777,9 @@ mod tests {
         };
         let dark = patch_mean(2, 18);
         let light = patch_mean(62, 78);
-        assert!(dark < light - 10.0, "hatch density darkens the dark side more ({dark:.0} vs {light:.0})");
+        // The fixture's light side is a 0.68 value (one hatch layer), its dark side 0.24 (three, cross-hatched).
+        assert!(dark < light - 30.0, "hatch tone: the dark side is cross-hatched darker ({dark:.0} vs {light:.0})");
+        assert!(light > 160.0, "a 0.68 value carries a single open hatch, not a cross-hatch ({light:.0})");
     }
 
     #[test]
