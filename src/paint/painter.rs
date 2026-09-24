@@ -213,6 +213,14 @@ pub struct PaintParams {
     /// blobs on a wall (measured: face dark-feature energy 0.107 vs the target's 0.087). Off by default — the
     /// armature already carries the structure; crisp short strokes give the detail its edge.
     pub detail_sharpen: f32,
+    /// DETAIL TEXTURE (default 1.0): how much of the SOURCE's fine texture the fine layers may restate inside the
+    /// flat masses the armature simplified — wheat, grass, bark, weave. The armature is structure, not detail
+    /// (RFC §1.1), and a painter blocks in a wheat field as one mass; the texture strokes on top come from looking
+    /// at the subject. The residual (source minus its blur at the pass's scale) is added to the armature only where
+    /// the armature is locally FLAT, never at its edges (an edge residual is overshoot — the face-scrawl tell), and
+    /// only OUTSIDE the matted subject (texture is for the background masses; on a face it is scrawl).
+    /// 0 = fine layers read the plain armature.
+    pub detail_texture: f32,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -276,7 +284,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0 }
     }
 }
 
@@ -715,6 +723,38 @@ fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     out
 }
 
+/// The reference a FINE layer paints from: the armature (structure) plus the SOURCE's fine texture inside the
+/// armature's flat masses. `residual = source − blur(source, σ ≈ 1.5·radius)` is the texture at this pass's
+/// scale; it is added with weight `amount · flat`, where `flat` fades to zero wherever the armature's local value
+/// range spans a level step (an edge) — texture in the masses, never overshoot at the boundaries.
+fn texture_reference(armature: &RgbImage, source: &RgbImage, radius: f32, levels: u32, amount: f32, subject: Option<&[f32]>) -> RgbImage {
+    let (w, h) = (armature.width() as usize, armature.height() as usize);
+    let blurred = imageops::blur(source, (radius * 1.5).max(1.0));
+    let luma = luma_map(armature);
+    let range = local_range(&luma, w, h, (radius.round() as usize).max(2));
+    let step = 1.0 / (levels - 1) as f32;
+    let mut out = armature.clone();
+    for (i, px) in out.pixels_mut().enumerate() {
+        let flat = (1.0 - (range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+        // Texture is for the BACKGROUND masses the plan simplified (a field, grass, foliage) — never the subject:
+        // on a face the source's residual is eye-socket and beard scrawl (the user's regression). The matte says
+        // which is which.
+        let bg = 1.0 - subject.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0);
+        let k = amount * flat * bg;
+        if k <= 0.0 {
+            continue;
+        }
+        let (x, y) = ((i % w) as u32, (i / w) as u32);
+        let s = source.get_pixel(x, y).0;
+        let b = blurred.get_pixel(x, y).0;
+        for c in 0..3 {
+            let v = px.0[c] as f32 + k * (s[c] as f32 - b[c] as f32);
+            px.0[c] = v.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 /// Edge-preserving bilateral smooth at spatial radius `r` (px): flatten texture while keeping edges.
 fn bilateral(img: &RgbImage, r: i32) -> RgbImage {
     let (w, h) = img.dimensions();
@@ -785,6 +825,8 @@ pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, m
 
 fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(usize)>) -> PaintResult {
     let (w, h) = (input.width(), input.height());
+    // The subject as given, before it is reduced to an armature: the fine layers look at it for TEXTURE.
+    let source: &RgbImage = input;
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
     // canvas stays full size; only the thing being painted FROM is coarsened.
     let armature_owned;
@@ -981,9 +1023,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let reference = if fidelity {
             imageops::unsharpen(input, (radius * 0.22).max(0.5), 1)
         } else if detail {
-            // Fine layers read the armature as-is unless a detail sharpen is asked for (see `detail_sharpen`).
+            // Fine layers read the armature, plus the subject's own texture inside the flat masses (see
+            // `detail_texture`), unless a detail sharpen is asked for instead (see `detail_sharpen`).
             if p.detail_sharpen > 0.0 {
                 imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
+            } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) {
+                texture_reference(input, source, radius, p.armature_levels.max(2), p.detail_texture, p.subject_mask.as_deref())
             } else {
                 input.clone()
             }
