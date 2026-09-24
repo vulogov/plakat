@@ -57,6 +57,10 @@ impl BrushProfile {
             "rigger" => BrushProfile { radius_scale: 0.45, len: 2.20, streak: 0.10, round: 0.92, waver: 0.08 },
             // broad, opaque, square-edged slabs — bold blocking
             "knife" => BrushProfile { radius_scale: 1.25, len: 1.10, streak: 0.00, round: 0.15, waver: 0.05 },
+            // A graphite point: narrow, fairly short, a little streaky (the tooth), a hand's waver.
+            "pencil" => BrushProfile { radius_scale: 0.35, len: 0.90, streak: 0.30, round: 0.80, waver: 0.08 },
+            // A tempera brush: small, short, clean, even — the strokes read as a woven net.
+            "tempera" => BrushProfile { radius_scale: 0.60, len: 0.60, streak: 0.15, round: 0.65, waver: 0.06 },
             // broad, long, soft, thin — watercolour / sky washes
             "wash" => BrushProfile { radius_scale: 1.30, len: 1.60, streak: 0.15, round: 0.85, waver: 0.10 },
             _ => BrushProfile { radius_scale: 0.95, len: 1.00, streak: 0.50, round: 0.70, waver: 0.12 },
@@ -221,6 +225,20 @@ pub struct PaintParams {
     /// only OUTSIDE the matted subject (texture is for the background masses; on a face it is scrawl).
     /// 0 = fine layers read the plain armature.
     pub detail_texture: f32,
+    /// CROSS-HATCH (medium mark character): each restating pass rotates its stroke direction by this many radians
+    /// more than the previous one; 0 = every pass follows the form.
+    pub hatch_angle: f32,
+    /// Density media: hatch as an engraving (see `ink::HatchStyle::ENGRAVING`).
+    pub engrave: bool,
+    /// After the tonal passes, draw the ink planner's contours on top in the darkest pigment (pencil sketch =
+    /// line and tone). Replaces the legacy contour finish.
+    pub draw_contours: bool,
+    /// Density media: draw with a loaded brush (sumi-e) — see `ink::HatchStyle::SUMI`.
+    pub brush_drawing: bool,
+    /// SUMI-E (two registers on one sheet): the LIGHT value family as a few soft graded washes with dissolving
+    /// edges, most of the sheet left paper; the DARK family as bold dry-brush black SHAPES with ragged edges;
+    /// no drawn contours.
+    pub sumi: bool,
     /// BODY / opacity (0.1..1) of the paint film — 1 = opaque, low = transparent (the ground glows through).
     pub opacity: f32,
     /// IMPASTO relight strength (0..1) applied at OUTPUT — the textured oil/knife look. Recorded for replay.
@@ -284,7 +302,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false }
     }
 }
 
@@ -736,9 +754,9 @@ fn texture_reference(armature: &RgbImage, source: &RgbImage, radius: f32, levels
     let mut out = armature.clone();
     for (i, px) in out.pixels_mut().enumerate() {
         let flat = (1.0 - (range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
-        // Texture is for the BACKGROUND masses the plan simplified (a field, grass, foliage) — never the subject:
-        // on a face the source's residual is eye-socket and beard scrawl (the user's regression). The matte says
-        // which is which.
+        // Texture is for the masses the plan simplified (a field, grass, foliage, the ground under a bench) —
+        // never a FACE: there the source's residual is eye-socket and beard scrawl (the user's regression). The
+        // detected face mask says where; without one, the subject matte stands in.
         let bg = 1.0 - subject.map(|m| m.get(i).copied().unwrap_or(0.0)).unwrap_or(0.0);
         let k = amount * flat * bg;
         if k <= 0.0 {
@@ -875,6 +893,27 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         _ => input,
     };
+    // PAINT DARKER, IT DRIES LIGHTER: a medium with a positive dry shift (watercolour, ink-wash) lightens every
+    // painted value on drying (`Finish::dry_shift`, v' = v + s·(1 − v)). A watercolourist knows this and lays the
+    // wash darker than the value wanted, so the DRIED sheet lands on it. Read the reference through the exact
+    // inverse of the drying step, v = (v' − s)/(1 − s), and the finished painting matches the reference's value
+    // instead of sitting a shift above it (measured: a watercolour 12% too light). Negative shifts (gouache's
+    // matte compression) are a look, not an error, and are left alone.
+    let dried_owned;
+    let input: &RgbImage = if p.dry_shift > 1e-3 {
+        let s = p.dry_shift.min(0.5);
+        let mut img = input.clone();
+        for px in img.pixels_mut() {
+            for c in 0..3 {
+                let v = px.0[c] as f32 / 255.0;
+                px.0[c] = (((v - s) / (1.0 - s)).clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+        }
+        dried_owned = img;
+        &dried_owned
+    } else {
+        input
+    };
     // A composition layer paints ONTO the accumulated canvas (occlusion); a standalone painting starts fresh.
     // BODY/opacity is a medium property — transparent media (watercolour/ink) let the ground glow through.
     let mut canvas = base.unwrap_or_else(|| {
@@ -983,10 +1022,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         (None, 0.0)
     };
     let focus_on = focal.is_some();
+    // The HEAD (for the texture rule): the detected face box grown to take in hair, beard and neck — a face box
+    // is tight, and the residual on a beard is scrawl just as it is on an eye socket. Grown by a fraction of the
+    // short side (a head's margin is a fact of the sheet, not of the scene).
+    let head_mask: Option<Vec<f32>> = p.face_mask.as_ref().map(|fm| {
+        let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(fm[(y * w + x) as usize] * 255.0).clamp(0.0, 255.0) as u8]));
+        let sigma = (w.min(h) as f32 / 40.0).max(2.0);
+        imageops::blur(&g, sigma).pixels().map(|px| (px.0[0] as f32 / 255.0 * 6.0).clamp(0.0, 1.0)).collect()
+    });
     // DENSITY media (pen-and-ink) do not paint masses with a brush ladder: they DRAW the composition — the
     // structure's contour lines first, then TONE by hatching — and leave the paper everywhere else.
     let passes: Vec<PassSpec> = if p.density {
-        ink_drawing(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k, progress);
+        ink_drawing(&mut canvas, &mut score, input, source, head_mask.as_deref(), p, protect_all.as_deref(), &mut placed, &mut k, progress);
         Vec::new()
     } else {
         passes
@@ -1028,7 +1075,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             if p.detail_sharpen > 0.0 {
                 imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
             } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) {
-                texture_reference(input, source, radius, p.armature_levels.max(2), p.detail_texture, p.subject_mask.as_deref())
+                texture_reference(input, source, radius, p.armature_levels.max(2), p.detail_texture, head_mask.as_deref().or(p.subject_mask.as_deref()))
             } else {
                 input.clone()
             }
@@ -1043,6 +1090,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // edges; coarse legible passes smooth it so masses follow gross form.
         let sigma = if detail || fidelity { 2 } else { (radius * 0.9).round().clamp(2.0, 24.0) as i32 };
         let (gx, gy) = coherent_gradient(&luma, w, h, sigma);
+        // CROSS-HATCH: rotate this pass's flow by the medium's hatch angle × layer, so successive restatements
+        // cross the form at the classic angles instead of all lying along it (tempera's woven net).
+        let (gx, gy) = if p.hatch_angle.abs() > 1e-3 && !block_in {
+            let (sn, cs) = (p.hatch_angle * layer as f32).sin_cos();
+            (gx.iter().zip(&gy).map(|(x, y)| x * cs - y * sn).collect::<Vec<f32>>(), gx.iter().zip(&gy).map(|(x, y)| x * sn + y * cs).collect::<Vec<f32>>())
+        } else {
+            (gx, gy)
+        };
         // BRUSH for this pass: the composition layer's `layer_brush` if set, else the intelligent per-role
         // default. HIGH-FIDELITY uses a clean, low-waver, short-tracking brush at every pass so strokes lie down
         // as disciplined marks that follow the reference — not the loose, wavering, streaky invention.
@@ -1295,7 +1350,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // subject, they don't only shade it. Laid before the bleed so a smudgy medium softens the lines a touch.
     // (Density media draw their contours in `ink_drawing`; this pass would stack its row-ordered dashes on top,
     // thickening whatever lies in the first rows until its cap hits.)
-    if p.contour > 0.0 && !p.density && placed < p.budget {
+    // SUMI-E: over the wash painting, the darkest masses as bold dry-brush black shapes (the second register).
+    if p.sumi && placed < p.budget {
+        canvas.dry(0.0);
+        sumi_ink(&mut canvas, &mut score, input, p, &mut placed, &mut k, progress);
+    }
+    if p.draw_contours && placed < p.budget {
+        ink_contours(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k);
+    } else if p.contour > 0.0 && !p.density && placed < p.budget {
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
@@ -1715,19 +1777,119 @@ fn focal_field(input: &RgbImage) -> Vec<f32> {
 /// armature — contour lines first, then the hatch — with a pen (no pickup, full ink, a hair of waver), recording
 /// every line as a stroke so the drawing replays exactly like a painting.
 #[allow(clippy::too_many_arguments)]
-fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+/// SUMI-E's second register: the DARKEST masses of the sheet (its own value quantiles — at most the darkest
+/// eighth) as bold dry-brush BLACK SHAPES over the wash painting: wide strokes following each mass's form, a
+/// split-hair brush (streaky, ragged), no pickup, each stroke confined to its mass so the edge is the mass's
+/// edge. Deterministic, replay-exact.
+#[allow(clippy::too_many_arguments)]
+fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+    let (w, h) = (input.width(), input.height());
+    let long = w.max(h) as f32;
+    let firm = imageops::blur(input, (long / 400.0).max(1.0));
+    let fluma = luma_map(&firm);
+    let mut sorted = fluma.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let ink_t = sorted[((sorted.len() as f32 - 1.0) * 0.12) as usize].min(0.10);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let n = p.palette.pigments.len();
+    let (fgx, fgy) = coherent_gradient(&fluma, w, h, (long / 200.0).max(2.0) as i32);
+    let mut dry = p.brush;
+    dry.k_pickup = 0.0;
+    dry.bristles = 11;
+    dry.streak = 0.75; // a dry brush: ragged, split hairs
+    dry.round = 0.55;
+    let ir = (long / 90.0).max(3.0);
+    let igrid = ir * 0.7;
+    let (icols, irows) = (((w as f32) / igrid).ceil() as u32, ((h as f32) / igrid).ceil() as u32);
+    let mask: Vec<bool> = fluma.iter().map(|&l| l <= ink_t).collect();
+    let amt = p.charge * 1.2;
+    for gyi in 0..irows {
+        for gxi in 0..icols {
+            if *placed >= p.budget {
+                break;
+            }
+            *k += 1;
+            let cx = (gxi as f32 + 0.5) * igrid + jitter(p.seed ^ 0x51, *k) * igrid;
+            let cy = (gyi as f32 + 0.5) * igrid + jitter(p.seed ^ 0x52, k.wrapping_add(1)) * igrid;
+            if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
+                continue;
+            }
+            let i = cy as usize * w as usize + cx as usize;
+            if !mask[i] {
+                continue;
+            }
+            let mut load = vec![0f32; n];
+            load[ink] = amt;
+            let target = firm.get_pixel(cx as u32, cy as u32).0;
+            let path = grow_path(cx, cy, ir, &fgx, &fgy, &firm, target, None, Some((&mask, true)), None, 2.2);
+            if path.len() < 2 {
+                continue;
+            }
+            let s = Stroke { path, width0: ir * 1.5, width1: ir * 0.6, load, pressure: 1.0, wetness: 0.15 };
+            s.rasterize(canvas, &dry);
+            *placed += 1;
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0) });
+            if let Some(pr) = progress { if *placed % 64 == 0 { pr(*placed); } }
+        }
+    }
+}
+
+/// The ink planner's CONTOURS only (no hatch), drawn on top of a tonal painting in the darkest pigment — the
+/// line of a pencil sketch over its shading. Uses the medium's `contour` strength for how many edges to keep.
+#[allow(clippy::too_many_arguments)]
+fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
     let w = input.width() as usize;
-    let drawing = crate::paint::ink::plan(input, p.contour, p.budget.saturating_sub(*placed), p.seed);
+    let drawing = crate::paint::ink::plan_with(input, p.contour.max(0.3), p.budget.saturating_sub(*placed), p.seed, crate::paint::ink::HatchStyle::NONE);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let mut load = vec![0f32; p.palette.pigments.len()];
+    load[ink] = p.charge * 1.6;
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.bristles = 1;
+    brush.streak = 0.1;
+    brush.round = 0.9;
+    let width = (drawing.contour_width * 0.8).max(0.8);
+    let blocked = |pt: &[f32; 2]| protect.map(|m| m.get(pt[1] as usize * w + pt[0] as usize).copied().unwrap_or(false)).unwrap_or(false);
+    for poly in &drawing.contours {
+        if *placed >= p.budget {
+            break;
+        }
+        if poly.len() < 2 || blocked(&poly[poly.len() / 2]) {
+            continue;
+        }
+        *k += 1;
+        let path = waver_path(poly, 0.15 * width, p.seed, *k);
+        let s = Stroke { path, width0: width, width1: width, load: load.clone(), pressure: 0.9, wetness: 0.1 };
+        s.rasterize(canvas, &brush);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.1, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0) });
+    }
+}
+
+fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, source: &RgbImage, head: Option<&[f32]>, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+    let w = input.width() as usize;
+    let style = if p.brush_drawing { crate::paint::ink::HatchStyle::SUMI } else if p.engrave { crate::paint::ink::HatchStyle::ENGRAVING } else { crate::paint::ink::HatchStyle::PEN };
+    // The head is DRAWN from the source's full detail (the armature has simplified the face away).
+    let detail = head.map(|m| (source, m));
+    let drawing = crate::paint::ink::plan_detailed(input, detail, p.contour, p.budget.saturating_sub(*placed), p.seed, style);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let mut load = vec![0f32; p.palette.pigments.len()];
     load[ink] = p.charge * 2.0; // a pen lays full ink
     let mut brush = p.brush;
     brush.k_pickup = 0.0;
-    brush.bristles = 1;
-    brush.streak = 0.0;
-    brush.round = 1.0;
+    // A pen is one stiff point; a sumi brush is a soft loaded tuft (many bristles, a little streak, wet).
+    if p.brush_drawing {
+        brush.bristles = 7;
+        brush.streak = 0.25;
+        brush.round = 0.85;
+    } else {
+        brush.bristles = 1;
+        brush.streak = 0.0;
+        brush.round = 1.0;
+    }
+    let wet = if p.brush_drawing { 0.6 } else { 0.0 };
     let blocked = |pt: &[f32; 2]| protect.map(|m| m.get(pt[1] as usize * w + pt[0] as usize).copied().unwrap_or(false)).unwrap_or(false);
-    let lines = drawing.contours.iter().map(|c| ("contour".to_string(), drawing.contour_width, c)).chain(drawing.hatch.iter().map(|(li, s)| (format!("hatch-{li}"), drawing.hatch_width, s)));
+    let lines = drawing.contours.iter().map(|c| ("contour".to_string(), drawing.contour_width, c)).chain(drawing.hatch.iter().enumerate().map(|(i, (li, s))| (format!("hatch-{li}"), drawing.hatch_widths.as_ref().map(|v| v[i]).unwrap_or(drawing.hatch_width), s)));
     for (stage, width, poly) in lines {
         if *placed >= p.budget {
             break;
@@ -1737,7 +1899,9 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
         }
         *k += 1;
         let path = waver_path(poly, 0.12 * width, p.seed, *k);
-        let s = Stroke { path, width0: width, width1: width, load: load.clone(), pressure: 1.0, wetness: 0.0 };
+        // A brush stroke tapers to its lift-off; a pen line does not.
+        let w1 = if p.brush_drawing { width * 0.35 } else { width };
+        let s = Stroke { path, width0: width, width1: w1, load: load.clone(), pressure: 1.0, wetness: wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
         if let Some(pr) = progress {
@@ -1751,10 +1915,10 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
             stage,
             spline: s.path,
             w0: width,
-            w1: width,
+            w1: w1,
             taper: 0.15,
             mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])],
-            wet: 0.0,
+            wet,
             press: 1.0,
             streak: brush.streak,
             round: brush.round,

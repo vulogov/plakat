@@ -447,8 +447,9 @@ pub struct FromArgs {
     /// Palette name, or `image` / `auto` to DERIVE a palette from the reference's dominant colours.
     #[arg(long, default_value = "zorn")]
     pub palette: String,
-    /// MEDIUM to repaint the image in (oil-direct / watercolour / gouache / ink-wash / pen-ink / pencil /
-    /// pastel / charcoal / acrylic / …). Applies the full technique behaviour; the flags below override it.
+    /// MEDIUM to repaint the image in (oil-direct / oil-indirect / acrylic / gouache / tempera / pastel /
+    /// watercolour / ink-wash / japanese-ink / pen-ink / durer / pencil / black-pencil / charcoal). Applies the
+    /// full technique behaviour — physics, finish and the medium's own MARK; the flags below override it.
     #[arg(long)]
     pub medium: Option<String>,
     /// Total stroke budget — inviolable.
@@ -689,7 +690,8 @@ const SCAFFOLD: &str = r#"{
     model: sdxl
     steps: 40
 
-    // MEDIUM: oil-direct | oil-indirect | gouache | watercolour | ink-wash | pen-ink | tempera
+    // MEDIUM: oil-direct | oil-indirect | acrylic | gouache | tempera | pastel | watercolour | ink-wash |
+    //         japanese-ink | pen-ink | durer | pencil | black-pencil | charcoal
     medium: watercolour
     // PALETTE: zorn | split-primary | verdaccio | earth | limited-landscape | sumi
     palette: limited-landscape
@@ -1496,6 +1498,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
 
     let mut params = PaintParams::new(palette, a.budget);
     // MEDIUM: apply the full technique behaviour (as the spec path does); the flags below still override.
+    // The medium's MARK character (its brush, stroke proportions, charge, hatching, own grey) — applied AFTER
+    // the flags below so it multiplies what the user asked for.
+    let mut mark: Option<crate::paint::medium::MarkCharacter> = None;
     if let Some(mname) = &a.medium {
         use crate::paint::medium::{MarkModel, WhiteSource};
         let m = crate::paint::medium::MediumProfile::by_name(mname).with_context(|| format!("unknown medium {mname:?} — try: {}", crate::paint::medium::EXECUTABLE.join(" / ")))?;
@@ -1517,6 +1522,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         } else {
             params.ground = Some([236, 230, 220]);
         }
+        mark = Some(m.mark);
         println!("{}  medium: {} (full technique)", style("·").dim(), m.name);
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
@@ -1530,6 +1536,36 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.define = a.define.clamp(0.0, 1.0);
     params.stroke_len = a.stroke_length.clamp(0.2, 4.0);
     params.stroke_width = a.stroke_width.clamp(0.3, 3.0);
+    if let Some(mk) = mark {
+        if let Some(role) = mk.role {
+            params.layer_brush = Some(painter::BrushProfile::named(role));
+        }
+        params.stroke_len *= mk.stroke_len;
+        params.stroke_width *= mk.stroke_width;
+        params.charge *= mk.charge;
+        params.hatch_angle = mk.hatch_angle;
+        params.engrave = mk.engrave;
+        if (mk.budget_scale - 1.0).abs() > 1e-3 {
+            params.budget = ((params.budget as f32 * mk.budget_scale) as usize).max(500);
+        }
+        if let Some(l) = mk.levels {
+            params.armature_levels = l.clamp(2, 32);
+        }
+        if let Some(rv) = mk.reserve {
+            params.reserve = Some(rv.clamp(0.0, 1.0));
+        }
+        if let Some(n) = mk.ladder_keep {
+            params.brush_sizes.truncate(n.max(1));
+        }
+        params.draw_contours = mk.draw_contours;
+        params.brush_drawing = mk.brush_drawing;
+        params.sumi = mk.sumi;
+        if mk.monochrome {
+            // Graphite / sumi draw in their own grey whatever the picture's colours.
+            params.palette = crate::paint::palette::SUMI;
+            println!("{}  palette: monochrome medium → its own grey (sumi)", style("·").dim());
+        }
+    }
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -1590,6 +1626,11 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(cl) = a.clarity {
         params.clarity = cl.clamp(0.0, 1.0);
+    }
+    // The medium's mark on the FINISH and the block-in (after the flags, so they multiply what was asked).
+    if let Some(mk) = mark {
+        params.contrast = (params.contrast * mk.contrast).clamp(0.3, 3.0);
+        params.coverage = params.coverage.max(mk.coverage);
     }
     // Detect the face once if EITHER preserve-face (crisp detail tier) or armature-face (focal armature) needs it.
     if let Some(pf) = a.preserve_face {

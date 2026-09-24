@@ -211,5 +211,5 @@ plakat paint palette zorn            # show the pigments in the Zorn palette
 **Styles:** `legible` (default — resolves features, draws hard edges) · `impressionist` (loose masses) ·
 `fidelity` (tightest, sharp reference, every pass adds detail).
 
-**Media (11):** `oil-direct` · `oil-indirect` · `gouache` · `watercolour` · `ink-wash` · `pen-ink` · `tempera` ·
-`pencil` · `pastel` · `charcoal` · `acrylic`.
+**Media (14):** `oil-direct` · `oil-indirect` · `gouache` · `watercolour` · `ink-wash` · `japanese-ink` · `pen-ink` · `durer` · `tempera` ·
+`pencil` · `black-pencil` · `pastel` · `charcoal` · `acrylic`.

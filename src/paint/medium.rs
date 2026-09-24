@@ -58,6 +58,58 @@ pub enum MarkModel {
     Density,
 }
 
+/// The MARK a medium makes — the physical character of its stroke, as distinct from its finish. Two media that
+/// only differ in finish (chroma, grain) paint the same picture in two tints; a pencil and a tempera brush make
+/// DIFFERENT marks: a dry point draws thin grey directional strokes and leaves the paper, tempera builds form in
+/// short cross-hatched colour strokes. Applied on top of the pass-role brushes; `1.0`/`None` = the brush default.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkCharacter {
+    /// A named brush ([`crate::paint::painter::BrushProfile::named`]) used for EVERY pass, or `None` for the
+    /// per-role default (flat block-in → filbert → round detail).
+    pub role: Option<&'static str>,
+    /// Multiplier on stroke length.
+    pub stroke_len: f32,
+    /// Multiplier on stroke width.
+    pub stroke_width: f32,
+    /// Multiplier on the pigment charge (a pencil lays grey, not black).
+    pub charge: f32,
+    /// Cross-hatching: each restating pass rotates its stroke direction by this many radians more than the last
+    /// (0 = every pass follows the form). Tempera / hatched media.
+    pub hatch_angle: f32,
+    /// The medium draws in its OWN black/grey regardless of the picture's colours (graphite).
+    pub monochrome: bool,
+    /// Density media only: hatch as an ENGRAVING (lines follow the form, fine and dense) instead of a pen.
+    pub engrave: bool,
+    /// Multiplier on the stroke budget: a medium of FEW marks (sumi-e) says so here.
+    pub budget_scale: f32,
+    /// Simplify the armature to this many value masses (sumi-e's paper / grey / black), or `None` for the plan's.
+    pub levels: Option<u32>,
+    /// Reserve threshold: cells lighter than this stay PAPER (sumi-e keeps most of the sheet white), or `None`
+    /// for the medium/plan default.
+    pub reserve: Option<f32>,
+    /// Keep only the first N (widest) rungs of the brush ladder: a medium of FEW BOLD strokes (sumi-e) has no
+    /// fine restating passes — every mark is a committed one. `None` = the full ladder.
+    pub ladder_keep: Option<usize>,
+    /// Multiplier on the finish contrast (sumi-e's black is black, its paper is paper).
+    pub contrast: f32,
+    /// Block-in coverage 0..1 (gap-free base): a medium of short opaque strokes (tempera) shows no ground.
+    pub coverage: f32,
+    /// After the tonal passes, DRAW the composition's contours (the ink planner's edge chains) in the medium's
+    /// own dark on top — a pencil sketch is line AND tone.
+    pub draw_contours: bool,
+    /// Density media only: the drawing is made with a loaded BRUSH (sumi-e) — bold contours, wide wet tone
+    /// strokes only in the mid-to-dark values, paper for the light.
+    pub brush_drawing: bool,
+    /// SUMI-E: two registers — graded washes for the light family, bold dry-brush black shapes for the dark;
+    /// no contours (see `painter::sumi_painting`).
+    pub sumi: bool,
+}
+
+impl MarkCharacter {
+    /// A loaded brush: the pass-role defaults, no hatching, the picture's colours.
+    pub const BRUSH: MarkCharacter = MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false };
+}
+
 /// Whether the canvas finishes uniformly or plane-by-plane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinishPolicy {
@@ -107,6 +159,8 @@ pub struct MediumProfile {
     pub families: Families,
     pub subtractive: bool,
     pub mark_model: MarkModel,
+    /// The physical character of the medium's mark (see [`MarkCharacter`]).
+    pub mark: MarkCharacter,
     pub finish_policy: FinishPolicy,
 }
 
@@ -139,6 +193,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     families: Families::Split,
     subtractive: true,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -164,6 +219,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     families: Families::Split,
     subtractive: true,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -189,6 +245,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::BackToFront,
 };
 
@@ -214,6 +271,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::BackToFront,
 };
 
@@ -239,6 +297,36 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
+    finish_policy: FinishPolicy::BackToFront,
+};
+
+/// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
+pub const JAPANESE_INK: MediumProfile = MediumProfile {
+    name: "japanese-ink",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::None,
+    stage_budget: 1,
+    pickup: 0.9,
+    bleed: 0.7,
+    body: 0.4,
+    impasto: 0.0,
+    chroma: 0.9,
+    dry_shift: 0.05,
+    granulate: 0.08, // a little paper tooth
+    sheen: 0.0,
+    lift: 0.1,
+    default_palette: "sumi",
+    broken: 0.1,
+    contour: 0.0, // no drawn lines
+    families: Families::Unified,
+    subtractive: false,
+    mark_model: MarkModel::Continuous, // a PAINTING of two registers (see `MarkCharacter::sumi`)
+    // SUMI-E: one soft wide brush loaded with rich black, long calligraphic strokes that follow the form, the
+    // paper left as the light — in the ink's own grey, never the picture's colours.
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.2, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: true },
     finish_policy: FinishPolicy::BackToFront,
 };
 
@@ -264,6 +352,36 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Density,
+    mark: MarkCharacter::BRUSH,
+    finish_policy: FinishPolicy::Uniform,
+};
+
+/// ALBRECHT DÜRER (copperplate engraving): the pen-and-ink drawing model with an engraver's hatch — lines that
+/// wrap the form, fine and dense, cross-hatched in the darks; crisp contours; pure black on white.
+pub const DURER: MediumProfile = MediumProfile {
+    name: "durer",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::None,
+    stage_budget: 1,
+    pickup: 0.0,
+    bleed: 0.0,
+    body: 1.0,
+    impasto: 0.0,
+    chroma: 0.8,
+    dry_shift: 0.0,
+    granulate: 0.0,
+    sheen: 0.0,
+    lift: 0.0,
+    default_palette: "sumi",
+    broken: 0.0,
+    contour: 0.55, // the plate draws its detail — windows, hands, eyes — before it shades
+    families: Families::Unified,
+    subtractive: false,
+    mark_model: MarkModel::Density,
+    // The burin: every line follows the form, fine and dense, cross-hatched in the darks; pure black on the paper.
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: true, budget_scale: 3.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -290,7 +408,10 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     contour: 0.0,
     families: Families::Split,
     subtractive: false,
-    mark_model: MarkModel::Density,
+    mark_model: MarkModel::Continuous, // an opaque PAINTING built in short hatched colour strokes — not a pen drawing (the density model is pen-and-ink)
+    // EGG TEMPERA: form built in SHORT strokes, each restating pass cross-hatched 45° off the last — the classic
+    // tempera net of colour, matte and even.
+    mark: MarkCharacter { role: Some("tempera"), stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -317,7 +438,40 @@ pub const PENCIL: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
-    mark_model: MarkModel::Density,
+    mark_model: MarkModel::Continuous, // GRAPHITE: soft grey tonal strokes on the paper (like charcoal, lighter), plus the contour pass — not pen hatch
+    // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
+    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.5, charge: 0.45, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false },
+    finish_policy: FinishPolicy::Uniform,
+};
+
+/// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
+/// deeper darks, the same paper lights.
+pub const BLACK_PENCIL: MediumProfile = MediumProfile {
+    name: "black-pencil",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::Minimal, // graphite lifts / smudges
+    stage_budget: 4,
+    pickup: 0.1,
+    // Graphite SMUDGES into soft graded tones — a little wet-like fusion, far less than a wash.
+    bleed: 0.15,
+    body: 0.7, // greys, not opaque black
+    impasto: 0.0,
+    chroma: 0.7,
+    dry_shift: 0.0,
+    granulate: 0.18,
+    sheen: 0.05,
+    lift: 0.6,
+    default_palette: "sumi",
+    broken: 0.0,
+    contour: 0.5,
+    families: Families::Unified,
+    subtractive: false,
+    // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
+    mark_model: MarkModel::Continuous, // GRAPHITE: soft grey tonal strokes on the paper (like charcoal, lighter), plus the contour pass — not pen hatch
+    // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
+    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.6, charge: 0.9, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -343,6 +497,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -368,6 +523,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous, // tonal smudge, not hatch
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -378,26 +534,27 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     white_source: WhiteSource::Pigment,
     reversibility: Reversibility::None, // FAST-DRY — no reworking, layers stack cleanly
     stage_budget: 6,
-    pickup: 0.15, // little wet blend (dries fast)
+    pickup: 0.05, // fast-drying: a mark sits on top, it does not lift the one beneath // little wet blend (dries fast)
     bleed: 0.05,
     body: 1.0,     // opaque plastic
-    impasto: 0.35, // can be thick
+    impasto: 0.15, // a thin relief — acrylic is flatter than oil
     chroma: 1.10,  // vivid plastic colour
     dry_shift: -0.03, // darkens slightly on drying
     granulate: 0.0,
     sheen: 0.2, // plastic sheen
     lift: 0.0,  // permanent once dry
     default_palette: "split-primary",
-    broken: 0.25,
+    broken: 0.1, // little optical mixing: flat, even colour
     contour: 0.0,
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
+    mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
 };
 
 /// Every declared medium.
-pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, PEN_INK, TEMPERA, PENCIL, PASTEL, CHARCOAL, ACRYLIC];
+pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, JAPANESE_INK, PEN_INK, DURER, TEMPERA, PENCIL, BLACK_PENCIL, PASTEL, CHARCOAL, ACRYLIC];
 
 /// The media P1 can execute (opaque continuous).
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
@@ -405,7 +562,7 @@ pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
 pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
 /// Every executable medium (P3 adds indirect oil, ink wash, tempera — they reuse the opaque-continuous,
 /// transparent-reserve, and density paths respectively; tempera's density marks are monochrome for now).
-pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "pen-ink", "tempera", "pencil", "pastel", "charcoal", "acrylic"];
+pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "japanese-ink", "pen-ink", "durer", "tempera", "pencil", "black-pencil", "pastel", "charcoal", "acrylic"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).

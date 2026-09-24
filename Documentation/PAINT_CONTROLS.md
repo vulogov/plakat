@@ -277,17 +277,20 @@ stroke_width: 0.8
 
 | medium        | body | bleed | pickup | impasto | chroma | dry_shift | granulate | sheen | lift | broken | contour | marks      | whites   | palette |
 |---------------|:----:|:-----:|:------:|:-------:|:------:|:---------:|:---------:|:-----:|:----:|:------:|:-------:|------------|----------|---------|
-| oil-direct    | 1.00 | 0.08  | 0.30   | 0.60    | 1.08   | 0.00      | 0.00      | 0.15  | 0.80 | 0.35   | 0.00    | continuous | pigment  | zorn |
+| oil-direct    | 1.00 | 0.08  | 0.30   | 0.30    | 1.08   | 0.00      | 0.00      | 0.15  | 0.80 | 0.35   | 0.00    | continuous | pigment  | zorn |
 | oil-indirect  | 0.90 | 0.10  | 0.40   | 0.40    | 1.05   | 0.00      | 0.00      | 0.12  | 0.70 | 0.25   | 0.00    | continuous | pigment  | zorn |
 | gouache       | 1.00 | 0.05  | 0.80   | 0.15    | 0.85   | −0.05     | 0.00      | 0.00  | 0.50 | 0.30   | 0.00    | continuous | pigment  | split-primary |
 | watercolour   | 0.45 | 0.55  | 0.15   | 0.00    | 0.92   | +0.08     | 0.35      | 0.00  | 0.20 | 0.15   | 0.00    | continuous | reserved | limited-landscape |
 | ink-wash      | 0.40 | 0.70  | 0.90   | 0.00    | 0.90   | +0.05     | 0.22      | 0.00  | 0.10 | 0.10   | 0.20    | continuous | reserved | sumi |
+| japanese-ink  | 0.40 | 0.70  | 0.90   | 0.00    | 0.90   | +0.05     | 0.06      | 0.00  | 0.10 | 0.10   | 0.15    | continuous · one wide soft brush, long calligraphic strokes, its own black | reserved | sumi (always) |
 | pen-ink       | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.60    | density    | reserved | sumi |
-| pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.30      | 0.05  | 0.60 | 0.00   | 0.50    | density    | reserved | sumi |
-| tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | density    | pigment  | verdaccio |
+| durer         | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.70    | density · engraving: lines follow the form, fine, cross-hatched darks | reserved | sumi (always) |
+| pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · graphite point: thin grey directional strokes, its own grey | reserved | sumi (always) |
+| black-pencil  | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · the graphite mark with a soft dark point | reserved | sumi (always) |
+| tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · short strokes, each pass cross-hatched 45° | pigment  | verdaccio |
 | pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
-| acrylic       | 1.00 | 0.05  | 0.15   | 0.35    | 1.10   | −0.03     | 0.00      | 0.20  | 0.00 | 0.25   | 0.00    | continuous | pigment  | split-primary |
+| acrylic       | 1.00 | 0.05  | 0.05   | 0.15    | 1.10   | −0.03     | 0.00      | 0.20  | 0.00 | 0.10   | 0.00    | continuous | pigment  | split-primary |
 
 Every value is a **default** — set the same‑named field in the spec (or the CLI flag) to override it. The score
 records the applied `bleed` / `opacity` / `impasto` so a re‑render (`plakat paint replay`) reproduces the
