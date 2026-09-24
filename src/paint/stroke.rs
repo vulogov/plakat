@@ -60,7 +60,7 @@ const CHARGE_PX: f32 = 12.0;
 /// paint, so once the block-in fills the tooth no later pass can build a darker dark or a brighter light — the
 /// value range freezes into a flat, washed mid-tone. Below 1.0 a full pixel still accepts a fraction of each
 /// stroke, so opaque media keep building value by shifting the pigment RATIO (KM colour is by ratio, not amount).
-const SAT_THROTTLE: f32 = 0.72;
+const SAT_THROTTLE: f32 = 0.4;
 
 /// Deterministic per-lane hash in `[0,1]` (a hashed LCG) — for reproducible bristle-load variation.
 fn lane_hash(seed: u64, b: u64) -> f32 {
