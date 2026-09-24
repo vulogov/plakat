@@ -294,26 +294,36 @@ fn kmeans_rgb(px: &[[f32; 3]], k: usize, iters: usize) -> Vec<[f32; 3]> {
 /// `'static` — intentional, once per CLI run.
 fn palette_from_image(img: &image::RgbImage, k: usize) -> crate::paint::palette::Palette {
     use crate::paint::pigment::Pigment;
-    let small = image::imageops::resize(img, 64, 64, image::imageops::FilterType::Triangle);
-    let px: Vec<[f32; 3]> = small.pixels().map(|p| [p.0[0] as f32, p.0[1] as f32, p.0[2] as f32]).collect();
-    // MORE clusters → colours captured PROPORTIONALLY: a small vivid area (a red shirt) becomes its own minor
-    // pigment instead of being averaged away, without over-representing it (which warms the whole picture).
-    let clusters = kmeans_rgb(&px, k.saturating_sub(2).max(4), 14);
+    // Sample ACTUAL pixels (nearest-neighbour = a strided sample of the full-resolution image), never a box
+    // average: a Triangle downsample to 64² averaged each 16×16 patch, so a grass passage of green blades with
+    // blue and white flower specks became one olive-grey — and the palette derived from it had no green and no
+    // blue at all (measured: the grass band painted at a quarter of the source's saturation while the sunlit
+    // wall was fine). A painter's tubes span the colours that are THERE, not the average of a patch.
+    let small = image::imageops::resize(img, 128, 128, image::imageops::FilterType::Nearest);
+    let srgbs: Vec<crate::paint::color::Srgb> = small.pixels().map(|p| p.0).collect();
+    // Cluster in CIELAB, not RGB. In RGB every dark colour sits close to every other dark colour, so a dark
+    // green, a dark blue and a dark grey fall into one neutral "dark" cluster whose extreme is still mud —
+    // measured on a real scene as a 76% saturation collapse in a grass-and-flowers passage while the sunlit
+    // wall (light, warm — well separated in RGB) kept its chroma. Lab's a*/b* carry hue at any lightness, so
+    // the cool darks get their own pigments. MORE clusters → colours captured PROPORTIONALLY: a small vivid area
+    // becomes its own minor pigment instead of being averaged away, without over-representing it.
+    let lab: Vec<[f32; 3]> = srgbs
+        .iter()
+        .map(|&c| {
+            let l = crate::paint::color::srgb_to_lab(c);
+            [l.l, l.a, l.b]
+        })
+        .collect();
+    let clusters = kmeans_rgb(&lab, k.saturating_sub(2).max(4), 14);
     // Always include a near-white (ground / lights) and a near-black (darks), then the scene's dominant hues.
     let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
-    // Each cluster's PIGMENT is its chroma EXTREME, not its centroid. A centroid is an average — always duller
-    // and more mid-toned than the colours it summarises — and Kubelka-Munk can only mix DOWN from the pigments
-    // it has, so a palette of averages caps the chroma of the whole painting (measured on a real scene: −40%
-    // saturation against the source, fully recovered by a wide palette). A painter lays out tube colours and
-    // greys them by mixing; picking each cluster's purest member does the same while keeping the hue the image
-    // actually has. The 85th percentile of saturation (not the maximum) so a noisy outlier can't hijack a hue.
-    let satf = |c: &[f32; 3]| -> f32 {
-        let mx = c[0].max(c[1]).max(c[2]);
-        let mn = c[0].min(c[1]).min(c[2]);
-        if mx < 1.0 { 0.0 } else { (mx - mn) / mx }
-    };
-    let mut members: Vec<Vec<[f32; 3]>> = vec![Vec::new(); clusters.len()];
-    for p in &px {
+    // Each cluster's PIGMENT is its CHROMA EXTREME, not its centroid. A centroid is an average — always duller
+    // than the colours it summarises — and Kubelka-Munk can only mix DOWN from the pigments it has, so a palette
+    // of averages caps the chroma of the whole painting. A painter lays out tube colours and greys them by
+    // mixing; picking each cluster's purest member (by Lab chroma, √(a²+b²)) does the same while keeping the hue
+    // the image actually has. The 85th percentile, not the maximum, so a noisy outlier can't hijack a hue.
+    let mut members: Vec<Vec<usize>> = vec![Vec::new(); clusters.len()];
+    for (pi, p) in lab.iter().enumerate() {
         let (mut best, mut bd) = (0usize, f32::MAX);
         for (i, c) in clusters.iter().enumerate() {
             let d = (p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2);
@@ -322,17 +332,25 @@ fn palette_from_image(img: &image::RgbImage, k: usize) -> crate::paint::palette:
                 best = i;
             }
         }
-        members[best].push(*p);
+        members[best].push(pi);
     }
+    let chroma = |pi: &usize| -> f32 { (lab[*pi][1].powi(2) + lab[*pi][2].powi(2)).sqrt() };
     for (i, c) in clusters.iter().enumerate() {
         let m = &mut members[i];
-        let rep = if m.len() >= 8 {
-            m.sort_by(|a, b| satf(a).partial_cmp(&satf(b)).unwrap_or(std::cmp::Ordering::Equal));
-            m[(m.len() - 1) * 85 / 100]
+        if m.len() >= 8 {
+            m.sort_by(|a, b| chroma(a).partial_cmp(&chroma(b)).unwrap_or(std::cmp::Ordering::Equal));
+            cols.push(srgbs[m[(m.len() - 1) * 85 / 100]]);
         } else {
-            *c
-        };
-        cols.push([rep[0].round().clamp(0.0, 255.0) as u8, rep[1].round().clamp(0.0, 255.0) as u8, rep[2].round().clamp(0.0, 255.0) as u8]);
+            // A tiny cluster: fall back to its nearest actual pixel to the centroid (never invent a colour).
+            let near = lab.iter().enumerate().min_by(|(_, a), (_, b)| {
+                let da = (a[0] - c[0]).powi(2) + (a[1] - c[1]).powi(2) + (a[2] - c[2]).powi(2);
+                let db = (b[0] - c[0]).powi(2) + (b[1] - c[1]).powi(2) + (b[2] - c[2]).powi(2);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if let Some((pi, _)) = near {
+                cols.push(srgbs[pi]);
+            }
+        }
     }
     // Safety net: if NO strongly-saturated pigment made it in, add the single most saturated distinct colour so a
     // vivid accent isn't lost entirely — but only one, so it can't dominate.
