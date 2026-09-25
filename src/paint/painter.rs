@@ -189,10 +189,9 @@ pub struct PaintParams {
     /// PIGMENT DIFFUSION (-1..+1, default 0 = none): which way the pigment travels in the wet wash. +1 = into the
     /// darks (they charge up, lights stay clean), -1 = out into the lights (feathered halos). See `Canvas::bleed_with`.
     pub diffuse: f32,
-    /// PARALLELISM: worker threads for stroke placement. 1 (the default) = the classic single order — one
-    /// painter, byte-identical to every accepted render; 0 = every core, ≥2 = that many: the checkerboard TILE
-    /// schedule, whose picture is the same for every thread count ≥ 2 and replays byte-exact from its score,
-    /// but is a different hand from the single order (same look, different micro-texture).
+    /// PARALLELISM: worker threads for the up-front pigment MIXING of each pass (0 = every core, the default).
+    /// One painter lays the strokes in the classic order whatever the count — the thread count never changes
+    /// the picture. (Mixing was 99% of a stroke's cost; the brush itself is under 1%.)
     pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never dries (fully wet-into-wet —
     /// every later pass picks up the masses beneath and smears them into mud); 1 = bone dry between passes (each
@@ -310,7 +309,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 1 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 0 }
     }
 }
 
@@ -466,17 +465,12 @@ fn mixture_for_key(key: u32, palette: &Palette, n: usize) -> Vec<f32> {
     v
 }
 
-/// The pigment mixture for a target colour at `charge`, through a per-caller cache keyed on the quantised colour.
+/// The pigment mixture for a target colour at `charge`, through a cache keyed on the quantised colour and solved
+/// from the bucket's representative (`mixture_for_key`) — so the answer never depends on which colour of the
+/// bucket asked first, and a table filled up front in parallel is the same table this fills lazily.
 fn mixture_cached(cache: &mut std::collections::HashMap<u32, Vec<f32>>, target: Srgb, palette: &Palette, charge: f32, n: usize) -> Vec<f32> {
     let key = mixture_key(target);
-    let base = cache.entry(key).or_insert_with(|| {
-        let m = mixer::solve_mixture(palette, target, 3);
-        let mut v = vec![0f32; n];
-        for (&idx, &w) in m.pigments.iter().zip(m.weights.iter()) {
-            v[idx] = w;
-        }
-        v
-    });
+    let base = cache.entry(key).or_insert_with(|| mixture_for_key(key, palette, n));
     base.iter().map(|c| c * charge).collect()
 }
 
@@ -1185,13 +1179,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // lower half was painted without the fine layers. Scrambled, a cap thins the pass uniformly. Replay-exact.
         let n_cells = (rows as usize) * (cols as usize);
         let order_seed = p.seed ^ (layer as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        // ONE STROKE ATTEMPT at seed cell `cell` with jitter key `k`, laid onto `cv` — the whole canvas, or a
-        // tile's sub-canvas whose origin is `origin` — and returned as its record (global coordinates, id unset),
-        // or None when the seed was skipped. Both schedules below lay their marks through this one function, so
-        // the same (cell, key, canvas-under-the-mark) always yields the same mark.
-        let attempt = |cell: u32, k: u64, cv: &mut Canvas, origin: (u32, u32), cache: &mut std::collections::HashMap<u32, Vec<f32>>, shared: Option<&std::collections::HashMap<u32, Vec<f32>>>| -> Option<StrokeRecord> {
+        // ONE STROKE ATTEMPT at seed cell `cell` with jitter key `k`, laid onto `cv` and returned as its record
+        // (id unset), or None when the seed was skipped.
+        let attempt = |cell: u32, k: u64, cv: &mut Canvas, cache: &mut std::collections::HashMap<u32, Vec<f32>>| -> Option<StrokeRecord> {
             let (gyi, gxi) = (cell / cols, cell % cols);
-            let (ox, oy) = origin;
             {
                 let jx = jitter(p.seed, k) * grid;
                 let jy = jitter(p.seed, k.wrapping_add(1)) * grid;
@@ -1237,7 +1228,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
                 // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
                 let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj);
-                if !block_in && !p.density && rgb_dist(cv.color_at(ix - ox, iy - oy), target) < restate_floor {
+                if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
                 // Detail passes only add marks where there is COHERENT structure to resolve. On an incoherent,
@@ -1283,11 +1274,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
                 let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
                 // Committed shadows carry MORE pigment so the dark masses read solid, not a thin transparent wash.
-                let charge = p.charge * (1.0 + 1.1 * sh);
-                let load = match shared.and_then(|sh| sh.get(&mixture_key(load_target))) {
-                    Some(base) => base.iter().map(|c| c * charge).collect::<Vec<f32>>(),
-                    None => mixture_cached(cache, load_target, &p.palette, charge, n),
-                };
+                let load = mixture_cached(cache, load_target, &p.palette, p.charge * (1.0 + 1.1 * sh), n);
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
@@ -1333,7 +1320,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 stroke_brush.streak = s_streak;
                 stroke_brush.round = s_round;
                 let s = Stroke { path, width0: rw, width1: (rw * 0.55).max(p.min_brush * 0.5), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
-                s.rasterize_offset(cv, &stroke_brush, ox, oy, w, h);
+                s.rasterize(cv, &stroke_brush);
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 Some(StrokeRecord {
@@ -1355,211 +1342,68 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             }
         };
 
-        // The pass's stroke cap: its own budget, and what the painting's budget has left.
-        let cap_pass = pass.budget.min(p.budget.saturating_sub(placed));
-        let threads = if p.threads == 0 { std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1) } else { p.threads };
-        if threads <= 1 {
-            // CLASSIC ORDER: visit the pass's seed cells in a SCRAMBLED order (a deterministic hashed permutation),
-            // not row by row. When the budget runs out mid-pass, row order left the bottom of every picture
-            // untouched by that pass — measured: the 2px pass changed nothing below 55% of the height, so every
-            // face, figure or detail in the lower half was painted without the fine layers. Scrambled, a cap thins
-            // the pass uniformly. Replay-exact.
-            let mut order: Vec<u32> = (0..n_cells as u32).collect();
-            order.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
-            for cell in order {
-                if placed >= p.budget || in_pass >= pass.budget {
-                    break;
+        // CLASSIC ORDER: visit the pass's seed cells in a SCRAMBLED order (a deterministic hashed permutation),
+        // not row by row. When the budget runs out mid-pass, row order left the bottom of every picture
+        // untouched by that pass — measured: the 2px pass changed nothing below 55% of the height, so every
+        // face, figure or detail in the lower half was painted without the fine layers. Scrambled, a cap thins
+        // the pass uniformly. Replay-exact.
+        let mut order: Vec<u32> = (0..n_cells as u32).collect();
+        order.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
+        // MIXTURES UP FRONT, in parallel: a seed's target colour is known before any mark is laid (the reference
+        // at the jittered seed, the broken-colour jitter by key), and a bucket's mixture is solved from its own
+        // representative colour whoever asks, so the pass's NEW colours are solved here on every core and the
+        // painter below only looks them up. Measured: the solver was 99% of a stroke's cost; this is where the
+        // cores go, and it leaves the picture exactly as one painter in one order would lay it.
+        {
+            let mut keys: Vec<u32> = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for (i, &cell) in order.iter().enumerate() {
+                let (gyi, gxi) = (cell / cols, cell % cols);
+                let kk = k + i as u64 + 1;
+                let cx = (gxi as f32 + 0.5) * grid + jitter(p.seed, kk) * grid;
+                let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed, kk.wrapping_add(1)) * grid;
+                if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
+                    continue;
                 }
-                k += 1;
-                if let Some(mut rec) = attempt(cell, k, &mut canvas, (0, 0), &mut cache, None) {
-                    placed += 1;
-                    in_pass += 1;
-                    if let Some(pr) = progress {
-                        if placed % 64 == 0 {
-                            pr(placed);
-                        }
-                    }
-                    rec.id = placed as u32;
-                    score.strokes.push(rec);
+                let target = reference.get_pixel(cx as u32, cy as u32).0;
+                let t = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, kk) } else { target };
+                let key = mixture_key(t);
+                if !cache.contains_key(&key) && seen.insert(key) {
+                    keys.push(key);
                 }
             }
-        } else {
-            // TILE SCHEDULE (parallel): cut the pass into square tiles wider than twice a mark's REACH (both
-            // halves of the longest path, the widest footprint, the waver, a margin). Tiles of one checkerboard
-            // PHASE (even/odd column × even/odd row) are a full tile apart, so no two can touch the same pixel:
-            // each paints on a private copy of its tile-plus-reach, in parallel, and is pasted back in tile
-            // order. The pass's budget is shared out by cell count; a tile that hits its share is fed again in a
-            // later round from what the others left, so a cap still thins the pass evenly. The record order —
-            // round, phase, tile, then the tile's own scrambled order — is a valid sequential order of the same
-            // marks on the same canvas states, so the replay is byte-exact and the picture is the same for any
-            // thread count ≥ 2.
-            let len_max = radius * 2.2 * (len_mul * p.stroke_len * 1.18).max(0.2);
-            let step = (radius * 0.6).max(1.0);
-            let rw_max = (radius * profile.radius_scale * p.stroke_width * 1.15).max(p.min_brush * 0.8);
-            let reach = ((2.0 * len_max + 2.0 * step + rw_max * (0.5 + b_waver) + 3.0) * 1.25).ceil() as u32;
-            let tile_cells = ((2.0 * reach as f32 / grid).ceil() as u32).max(3);
-            let tiles_x = cols.div_ceil(tile_cells) as usize;
-            let tiles_y = rows.div_ceil(tile_cells) as usize;
-            let k_base = k;
-            k += n_cells as u64;
-            if prof_on { eprintln!("PROFILE   tiles {tiles_x}x{tiles_y} (tile {tile_cells} cells, reach {reach}px, grid {grid:.1}) cells {n_cells}"); }
-            // MIXTURES UP FRONT, in parallel, order-independent: a seed's target colour is known before any mark
-            // is laid (the reference at the jittered seed, the broken-colour jitter by key), so the pass's
-            // distinct quantised colours are solved once here from each bucket's own representative colour.
-            // (A lazy cache per tile re-solved the same colours in every tile — a 1024² fine pass has 1,700
-            // tiles and ran 4× SLOWER than the single order; a first-hit shared cache would depend on which
-            // worker got there first.)
-            let shared: std::collections::HashMap<u32, Vec<f32>> = {
-                let mut keys: Vec<u32> = Vec::new();
-                let mut seen = std::collections::HashSet::new();
-                for cell in 0..n_cells as u32 {
-                    let (gyi, gxi) = (cell / cols, cell % cols);
-                    let kk = k_base + cell as u64 + 1;
-                    let cx = (gxi as f32 + 0.5) * grid + jitter(p.seed, kk) * grid;
-                    let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed, kk.wrapping_add(1)) * grid;
-                    if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
-                        continue;
-                    }
-                    let target = reference.get_pixel(cx as u32, cy as u32).0;
-                    let t = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, kk) } else { target };
-                    let key = mixture_key(t);
-                    if seen.insert(key) {
-                        keys.push(key);
-                    }
+            let threads = if p.threads == 0 { std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1) } else { p.threads };
+            if threads <= 1 || keys.len() < 64 {
+                for key in &keys {
+                    cache.insert(*key, mixture_for_key(*key, &p.palette, n));
                 }
+            } else {
                 let chunk = keys.len().div_ceil(threads).max(1);
                 let solved: Vec<Vec<(u32, Vec<f32>)>> = std::thread::scope(|sc| {
                     let handles: Vec<_> = keys.chunks(chunk).map(|ch| sc.spawn(move || ch.iter().map(|&key| (key, mixture_for_key(key, &p.palette, n))).collect::<Vec<_>>())).collect();
                     handles.into_iter().map(|hd| hd.join().expect("mixture solve thread")).collect()
                 });
-                solved.into_iter().flatten().collect()
-            };
-            if prof_on { eprintln!("PROFILE   mixtures {} keys solved up front", shared.len()); }
-            struct Tile {
-                cells: Vec<u32>,
-                cursor: usize,
-                capped: bool,
-            }
-            let mut tiles: Vec<Tile> = (0..tiles_x * tiles_y).map(|_| Tile { cells: Vec::new(), cursor: 0, capped: false }).collect();
-            for cell in 0..n_cells as u32 {
-                let (gyi, gxi) = (cell / cols, cell % cols);
-                tiles[(gyi / tile_cells) as usize * tiles_x + (gxi / tile_cells) as usize].cells.push(cell);
-            }
-            for t in tiles.iter_mut() {
-                t.cells.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
-            }
-            struct Job<'j> {
-                t: usize,
-                rx0: u32,
-                ry0: u32,
-                sub: Canvas,
-                share: usize,
-                cells: &'j [u32],
-            }
-            struct Done {
-                t: usize,
-                rx0: u32,
-                ry0: u32,
-                sub: Canvas,
-                recs: Vec<StrokeRecord>,
-                used: usize,
-            }
-            let mut remaining = cap_pass;
-            for round in 0..4 {
-                if remaining == 0 {
-                    break;
+                for (key, v) in solved.into_iter().flatten() {
+                    cache.insert(key, v);
                 }
-                let elig: Vec<usize> = (0..tiles.len()).filter(|&t| tiles[t].cursor < tiles[t].cells.len() && (round == 0 || tiles[t].capped)).collect();
-                if elig.is_empty() {
-                    break;
-                }
-                let tot: usize = elig.iter().map(|&t| tiles[t].cells.len() - tiles[t].cursor).sum();
-                let mut shares = vec![0usize; tiles.len()];
-                let mut sum = 0usize;
-                for &t in &elig {
-                    let rem = tiles[t].cells.len() - tiles[t].cursor;
-                    shares[t] = ((remaining as u128 * rem as u128) / tot.max(1) as u128) as usize;
-                    sum += shares[t];
-                }
-                let mut left = remaining.saturating_sub(sum);
-                for &t in &elig {
-                    if left == 0 {
-                        break;
-                    }
-                    shares[t] += 1;
-                    left -= 1;
-                }
-                for phase in 0..4usize {
-                    let work: Vec<usize> = elig.iter().copied().filter(|&t| shares[t] > 0 && (t % tiles_x) % 2 == phase % 2 && (t / tiles_x) % 2 == phase / 2).collect();
-                    if work.is_empty() {
-                        continue;
-                    }
-                    // Private copies of each tile plus its reach (same-phase copies never overlap).
-                    let jobs: Vec<std::sync::Mutex<Option<Job>>> = work
-                        .iter()
-                        .map(|&t| {
-                            let (tx, ty) = ((t % tiles_x) as u32, (t / tiles_x) as u32);
-                            let px0 = ((tx * tile_cells) as f32 * grid).floor().max(0.0) as u32;
-                            let px1 = (((tx + 1) * tile_cells) as f32 * grid).ceil().min(w as f32) as u32;
-                            let py0 = ((ty * tile_cells) as f32 * grid).floor().max(0.0) as u32;
-                            let py1 = (((ty + 1) * tile_cells) as f32 * grid).ceil().min(h as f32) as u32;
-                            let rx0 = px0.saturating_sub(reach);
-                            let rx1 = (px1 + reach).min(w);
-                            let ry0 = py0.saturating_sub(reach);
-                            let ry1 = (py1 + reach).min(h);
-                            let sub = canvas.crop(rx0, ry0, rx1 - rx0, ry1 - ry0);
-                            std::sync::Mutex::new(Some(Job { t, rx0, ry0, sub, share: shares[t], cells: &tiles[t].cells[tiles[t].cursor..] }))
-                        })
-                        .collect();
-                    let next = std::sync::atomic::AtomicUsize::new(0);
-                    let done: std::sync::Mutex<Vec<Done>> = std::sync::Mutex::new(Vec::with_capacity(jobs.len()));
-                    let attempt = &attempt;
-                    std::thread::scope(|sc| {
-                        for _ in 0..threads.min(jobs.len()) {
-                            sc.spawn(|| {
-                                loop {
-                                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if i >= jobs.len() {
-                                        break;
-                                    }
-                                    let Some(mut job) = jobs[i].lock().unwrap().take() else { break };
-                                    // A cache per TILE (not per worker): a quantised key keeps the first mixture that
-                                    // hit it, so the cache must not depend on which worker took which tiles.
-                                    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
-                                    let mut recs = Vec::new();
-                                    let mut used = 0usize;
-                                    while recs.len() < job.share && used < job.cells.len() {
-                                        let cell = job.cells[used];
-                                        used += 1;
-                                        if let Some(rec) = attempt(cell, k_base + cell as u64 + 1, &mut job.sub, (job.rx0, job.ry0), &mut cache, Some(&shared)) {
-                                            recs.push(rec);
-                                        }
-                                    }
-                                    done.lock().unwrap().push(Done { t: job.t, rx0: job.rx0, ry0: job.ry0, sub: job.sub, recs, used });
-                                }
-                            });
-                        }
-                    });
-                    drop(jobs);
-                    let mut done = done.into_inner().unwrap();
-                    done.sort_by_key(|d| d.t);
-                    for d in done {
-                        canvas.paste(&d.sub, d.rx0, d.ry0);
-                        let n_recs = d.recs.len();
-                        for mut rec in d.recs {
-                            placed += 1;
-                            in_pass += 1;
-                            rec.id = placed as u32;
-                            score.strokes.push(rec);
-                        }
-                        tiles[d.t].cursor += d.used;
-                        tiles[d.t].capped = n_recs >= shares[d.t] && tiles[d.t].cursor < tiles[d.t].cells.len();
-                        remaining = remaining.saturating_sub(n_recs);
-                    }
-                    if let Some(pr) = progress {
+            }
+            if prof_on { eprintln!("PROFILE   mixtures {} new keys solved up front ({threads} threads)", keys.len()); }
+        }
+        for cell in order {
+            if placed >= p.budget || in_pass >= pass.budget {
+                break;
+            }
+            k += 1;
+            if let Some(mut rec) = attempt(cell, k, &mut canvas, &mut cache) {
+                placed += 1;
+                in_pass += 1;
+                if let Some(pr) = progress {
+                    if placed % 64 == 0 {
                         pr(placed);
                     }
                 }
+                rec.id = placed as u32;
+                score.strokes.push(rec);
             }
         }
 
@@ -2418,30 +2262,24 @@ mod tests {
     }
 
     #[test]
-    fn the_tile_schedule_is_the_same_for_any_thread_count_and_replays_byte_exact() {
-        // The parallel checkerboard schedule: the picture must not depend on how many workers painted it, and
-        // its score — recorded phase by phase, tile by tile — must replay to the same bytes sequentially.
+    fn the_thread_count_never_changes_the_picture() {
+        // Mixing runs up front on several threads; one painter lays the classic order. Any count, same bytes,
+        // and the score replays byte-exact.
         let img = gradient_img(160, 120);
         let mut p = PaintParams::new(palette::EARTH, 3000);
         p.brush_sizes = vec![12.0, 6.0, 3.0];
         p.min_brush = 2.0;
         p.bleed = 0.3;
         p.dry = 0.5;
-        p.threads = 2;
+        p.threads = 1;
         let a = paint_from_image(&img, &p);
-        p.threads = 5;
+        p.threads = 3;
         let b = paint_from_image(&img, &p);
-        assert!(a.strokes > 200, "the tiled paint lays a real number of strokes ({})", a.strokes);
-        assert_eq!(a.canvas.to_image().into_raw(), b.canvas.to_image().into_raw(), "the tile order does not depend on the thread count");
+        assert!(a.strokes > 200, "a real number of strokes ({})", a.strokes);
+        assert_eq!(a.canvas.to_image().into_raw(), b.canvas.to_image().into_raw(), "the thread count does not change the picture");
         assert_eq!(a.score.strokes.len(), b.score.strokes.len());
         let replayed = a.score.replay(160, 120).unwrap().to_image().into_raw();
-        assert_eq!(a.canvas.to_image().into_raw(), replayed, "a tiled paint replays byte-exact from its score");
-        assert!(a.strokes <= 3000, "the budget holds under the tile schedule");
-        // The budget is spent under the tile schedule as it is in the classic order (a cap thins evenly).
-        p.threads = 1;
-        let c = paint_from_image(&img, &p);
-        let ratio = a.strokes as f32 / c.strokes.max(1) as f32;
-        assert!((0.85..=1.15).contains(&ratio), "tiled {} vs classic {} strokes", a.strokes, c.strokes);
+        assert_eq!(a.canvas.to_image().into_raw(), replayed, "replays byte-exact from its score");
     }
 
     #[test]

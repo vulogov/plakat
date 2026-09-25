@@ -346,43 +346,6 @@ impl Canvas {
         }
     }
 
-    /// A copy of the rectangle `(x0, y0, cw, ch)` as its own canvas — every per-pixel buffer — so a TILE can be
-    /// painted in isolation on another thread; `paste` writes it back. (The parallel tile schedule.)
-    pub fn crop(&self, x0: u32, y0: u32, cw: u32, ch: u32) -> Canvas {
-        let n = self.n;
-        let (w, cw, ch) = (self.w as usize, cw as usize, ch as usize);
-        let (x0, y0) = (x0 as usize, y0 as usize);
-        let mut conc = Vec::with_capacity(cw * ch * n);
-        let mut film = Vec::with_capacity(cw * ch);
-        let mut height = Vec::with_capacity(cw * ch);
-        let mut wetness = Vec::with_capacity(cw * ch);
-        let mut tooth = Vec::with_capacity(cw * ch);
-        for y in 0..ch {
-            let row = (y0 + y) * w + x0;
-            conc.extend_from_slice(&self.conc[row * n..(row + cw) * n]);
-            film.extend_from_slice(&self.film[row..row + cw]);
-            height.extend_from_slice(&self.height[row..row + cw]);
-            wetness.extend_from_slice(&self.wetness[row..row + cw]);
-            tooth.extend_from_slice(&self.tooth[row..row + cw]);
-        }
-        Canvas { w: cw as u32, h: ch as u32, palette: self.palette.clone(), conc, film, height, wetness, tooth, ground_lin: self.ground_lin, opacity: self.opacity, opacity_k: self.opacity_k, n }
-    }
-
-    /// Write a `crop` back at `(x0, y0)` (the inverse of `crop`).
-    pub fn paste(&mut self, sub: &Canvas, x0: u32, y0: u32) {
-        let n = self.n;
-        let (w, cw, ch) = (self.w as usize, sub.w as usize, sub.h as usize);
-        let (x0, y0) = (x0 as usize, y0 as usize);
-        for y in 0..ch {
-            let row = (y0 + y) * w + x0;
-            self.conc[row * n..(row + cw) * n].copy_from_slice(&sub.conc[y * cw * n..(y + 1) * cw * n]);
-            self.film[row..row + cw].copy_from_slice(&sub.film[y * cw..(y + 1) * cw]);
-            self.height[row..row + cw].copy_from_slice(&sub.height[y * cw..(y + 1) * cw]);
-            self.wetness[row..row + cw].copy_from_slice(&sub.wetness[y * cw..(y + 1) * cw]);
-            self.tooth[row..row + cw].copy_from_slice(&sub.tooth[y * cw..(y + 1) * cw]);
-        }
-    }
-
     /// Clear the deposited paint (and height, wetness) wherever `mask` is true, re-exposing the ground. Used to
     /// PRIME a composition layer's footprint before painting it, so a nearer element paints fresh and opaquely
     /// OCCLUDES the farther layers beneath — the colour model mixes by concentration RATIO, so without this a
@@ -778,27 +741,6 @@ mod tests {
         let before = dry.conc_at(1, 0)[2];
         dry.bleed_with(0.5, -1.0);
         assert!((dry.conc_at(1, 0)[2] - before).abs() < 1e-6, "a dry cell takes no drifting pigment");
-    }
-
-    #[test]
-    fn crop_and_paste_round_trip_every_buffer() {
-        let mut c = Canvas::white(6, 5, palette::ZORN, 0.7);
-        c.deposit(2, 1, &[0.0, 3.0, 0.0, 0.0], 0.4);
-        c.deposit(4, 3, &[0.0, 0.0, 2.0, 0.0], 0.2);
-        c.wetness[2 * 6 + 4] = 0.9;
-        let sub = c.crop(1, 1, 4, 3);
-        assert_eq!(sub.color_at(1, 0), c.color_at(2, 1), "a crop reads the same colour at the shifted position");
-        assert_eq!(sub.conc_at(3, 2), c.conc_at(4, 3));
-        let mut d = Canvas::white(6, 5, palette::ZORN, 0.7);
-        d.paste(&sub, 1, 1);
-        for y in 1..4 {
-            for x in 1..5 {
-                assert_eq!(d.conc_at(x, y), c.conc_at(x, y));
-                assert_eq!(d.wetness[y as usize * 6 + x as usize], c.wetness[y as usize * 6 + x as usize]);
-                assert_eq!(d.height[y as usize * 6 + x as usize], c.height[y as usize * 6 + x as usize]);
-            }
-        }
-        assert_eq!(d.conc_at(0, 0), c.conc_at(0, 0), "outside the rectangle the ground is untouched");
     }
 
     #[test]

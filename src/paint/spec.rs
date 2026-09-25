@@ -58,8 +58,7 @@ pub struct PaintSpec {
     /// PIGMENT DIFFUSION (-1..+1): which way the wet pigment travels — +1 into the darks, -1 out into the lights,
     /// 0 (default) none.
     pub diffuse: Option<f32>,
-    /// Worker THREADS for stroke placement: 1/absent = the classic single order (byte-identical), 0 = every core,
-    /// ≥2 = that many — the tile schedule (same picture for any count ≥ 2, a different hand from the single order).
+    /// Worker THREADS for the up-front pigment mixing (0/absent = every core). Never changes the picture.
     pub threads: Option<usize>,
     /// BODY / opacity (0.1..1): 1 = opaque cover (gouache/oil), low = transparent (watercolour/ink glow).
     pub opacity: Option<f32>,

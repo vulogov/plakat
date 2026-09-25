@@ -49,10 +49,9 @@ pub struct PaintArgs {
     /// edges). Needs a wet medium (`--bleed` > 0).
     #[arg(long, allow_hyphen_values = true)]
     pub diffuse: Option<f32>,
-    /// THREADS for stroke placement. 1 (default) = the classic single painter, byte-identical to earlier renders;
-    /// 0 = every core, 2+ = that many: the parallel tile schedule — same picture for any count ≥ 2, replay-exact,
-    /// but a different hand from the single order. (Mixtures are solved allocation-free either way.)
-    #[arg(long, default_value_t = 1)]
+    /// THREADS for the up-front pigment mixing of each pass (0 = every core, the default). One painter lays the
+    /// strokes whatever the count — the thread count never changes the picture.
+    #[arg(long, default_value_t = 0)]
     pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (fully wet-into-wet, the
     /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
@@ -501,10 +500,9 @@ pub struct FromArgs {
     /// edges). Needs a wet medium (`--bleed` > 0).
     #[arg(long, allow_hyphen_values = true)]
     pub diffuse: Option<f32>,
-    /// THREADS for stroke placement. 1 (default) = the classic single painter, byte-identical to earlier renders;
-    /// 0 = every core, 2+ = that many: the parallel tile schedule — same picture for any count ≥ 2, replay-exact,
-    /// but a different hand from the single order. (Mixtures are solved allocation-free either way.)
-    #[arg(long, default_value_t = 1)]
+    /// THREADS for the up-front pigment mixing of each pass (0 = every core, the default). One painter lays the
+    /// strokes whatever the count — the thread count never changes the picture.
+    #[arg(long, default_value_t = 0)]
     pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
     /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
