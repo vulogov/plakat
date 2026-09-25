@@ -1,13 +1,617 @@
 # plakat — release history
 
-"What's new" sections for v0.13 through 1.12. The current
-release's notes live in the [main README](../README.md). Older
-cycles are archived here so the README stays focused on what's
-new this turn.
+Every cycle's "what's new", newest first. The current release's
+note also heads the [main README](../README.md) — only that one,
+so the README stays focused on what is new this turn; everything
+older is archived here.
 
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 6.37.0 — `plakat paint`: the quality release
+
+A full cycle of measured work on the stroke engine, judged crop by crop against real paintings.
+The painter now **covers** (a deposit hides the paint beneath it), **charges the brush for the
+mark’s length** (a long drag lays paint along its whole travel), works in a **painter’s depth
+order** (wide + long block-in, thinner + shorter layers on top), **commits its shadows**, keeps
+a slow **gradient smooth** where the picture is a ramp and follows **form** only where there is
+form. **16 media**, each with its own MARK: **pen-ink** and **durer** now *draw* the
+composition — traced contours, tone by hatching, the swelling lines of an engraving;
+**black-pencil** and **japanese-ink** (sumi dry-brush masses) join them; and two are built on a
+new **WASH mark** — an area fill with a wet, blooming edge, the watercolour’s own mark, which
+no bundle of brush strokes could make: **`line-and-wash`** (each value mass washed once in the
+picture’s own colour, modelled within, a fine coloured ink line over it — and a nocturne keeps
+its night) and **`early-book-illustration`** (the flat colour-book print). The stroke budget
+now scales with **size × complexity**; `--gradation` keeps clouds and soft-lit walls from
+banding, `--diffuse` drives pigment into the darks or out to the lights, `--fill` is a print
+tune for papers that swallow fine marks. And it is **~20× faster**: an allocation-free,
+bit-identical mixture solver plus parallel up-front mixing paint a 1024² picture in 7 s and a 4
+Mpx one in 42 s — one painter lays every stroke, so the thread count never changes the picture.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.37.0) · ["Start to Finish"
+book →](Book/START_TO_FINISH/START_TO_FINISH-web.pdf)
+## What's new in 6.36.0 — `plakat paint`: a stroke-space painting engine
+
+A new weight-free studio (RFC PAINT-1) that turns a photo or prose into a real painting, stroke
+by stroke — not a filter over pixels. A **pigment canvas** with subtractive Kubelka-Munk mixing
+and a **bristle brush** that picks up and drags colour, painting from a **structure-preserving
+armature** (value masses + edges — never a blur, which is what turns a coarse plan into a
+smear) in the working method of a declared medium: **11 media** (oil direct/indirect,
+watercolour, gouache, egg tempera, ink-wash, pen-ink, pencil, pastel, charcoal, acrylic), each
+with its own application + material physics. `plakat paint from <photo>` **analyses the image
+into facts** — subject matte (U2Net), face (SCRFD), hair/skin/hands/clothing (OWL-ViT), a
+precise silhouette (MobileSAM) — writes an inspectable **painting plan** (`paint plan`), and
+paints decisively over it: per-region armature resolution, light/shadow families, committed
+dark masses, marked edges (line / colour / knife / lost), splatter, wash edge-bloom, deckled
+paper. The canonical artifact is a **replayable, resolution-independent stroke score** — the
+image is one rendering of it, and re-rendering is GPU-free. **20 palettes** including
+scene/mood presets and one derived from the image itself. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.36.0) · ["Start to Finish" book
+→](Book/START_TO_FINISH/START_TO_FINISH-web.pdf)
+## What's new in 6.35.0 — layered generation gets structure & self-correction
+
+The [layered engine](https://github.com/vulogov/plakat/releases/tag/v6.34.0) grows a second
+constraint channel and a feedback loop. **`layers render --depth-control`** runs a depth
+estimator over the composed guide and drives a **ControlNet-Depth** pass on the finish, so
+subjects gain real *form* and the scene gains *perspective* — high-frequency structure on top
+of the low-frequency layout anchor, and still not one pixel copied (a depth map is a
+constraint, like the anchor). **`--adapt`** closes the loop: when the render's built-in verify
+flags a subject that drifted, it **raises that layer's anchor and re-renders at the same seed**
+— the subjects that landed stay put while the strays are pulled in harder — before any masked
+repair. **`compile --layered`** now lays subjects out smarter too: **non-overlapping boxes**,
+figures on a shared ground-line, prose-elevated subjects (a hanging lantern) raised into the
+frame, depth from the words. Plus contrast-preserving colour-harmonisation (a red coat keeps
+its red), a tighter draft budget, and a verify that stops chasing phantom misses on painted
+subjects. Composition without collage — now with depth. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.35.0) · ["Start to Finish" book
+→](Book/START_TO_FINISH/START_TO_FINISH-web.pdf)
+## What's new in 6.34.0 — layered generation, now from prose
+
+The [layered engine](https://github.com/vulogov/plakat/releases/tag/v6.33.0) reaches the
+compile path you already use. Add **`--layered`** to `plakat compile` and it detects any
+*fusion-prone* scene — two or more independent `foreground` subjects that don't interact — and
+**decomposes it into a layered plan automatically**, emitting a `type: layered` task plus an
+auto-built sidecar plan (backdrop from your prose, one placed layer per figure). **`compile
+--layered --improve`** then sharpens **each layer's prompt separately** — rendering and scoring
+one subject at a time, with its own polish history — instead of scoring the whole crowd at
+once. Layered renders now also **sit in the scene instead of floating on it**: the guide
+grounds each subject with a soft contact shadow and colour-harmonises it toward the backdrop,
+and **`layers render --verify --repair`** closes the loop — OWL-ViT checks each subject landed
+and re-asserts the misses. Composition without collage, straight from the sentences you wrote.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.34.0) · ["Start to Finish"
+book →](Book/START_TO_FINISH/START_TO_FINISH-web.pdf)
+## What's new in 6.33.0 — layered generation
+
+A new way to build complex, multi-subject scenes without the *fusion smear* diffusion falls
+into when you ask for several subjects at once. **`plakat layers`** splits a prompt into a
+**plan** — a backdrop plus independent subject layers, each with its own full-detail prompt and
+a box — drafts each subject **alone** (binding is trivial with one subject), composes the
+drafts into a low-frequency **guide**, and finishes with **one anchored denoising pass** of
+your own model, steered toward the guide's layout only in its low frequencies (layers are
+constraints, never pixels). Author a plan by hand or **decompose prose into one with an LLM** —
+**`layers plan`**, now able to drive any local **Ollama** model via `--provider
+ollama:<model>`. **`lint`** reports each subject's size class and **`show`** draws the boxes
+offline; **`render`** runs the whole pipeline (SD 1.5 / SDXL / Flux); then **`verify`**
+(OWL-ViT) checks each subject landed, **`repair --auto`** re-asserts the misses, **`lift`**
+rebuilds tiny subjects, and **`diff`** / **`eval`** measure how well the finish honoured the
+plan. Composition without collage — reach for it when a scene has several distinct subjects
+that keep fusing. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.33.0) ·
+["Start to Finish" book →](Book/START_TO_FINISH/START_TO_FINISH-web.pdf)
+## What's new in 6.32.0 — the book-production suite & a smarter compile
+
+`plakat bookart` grew from ornaments into whole **books**. **`bookart title-page`** sets
+old-style letterpress title pages in four hands — **letterpress / engraved / modern /
+playbill** — with a pictorial emblem, **`--fit`** to auto-shrink to one page, and
+**`--historical`** figures; **`bookart cover`** lays out a dust jacket (back · spine · front)
+with the **spine width computed from the page count**; **`bookart book`** assembles a whole
+**typeset book from a Markdown manuscript** — chapter openers, raised initials, running heads &
+folios, tailpieces and a colophon, with real Markdown (section heads, blockquotes, scene
+breaks, *italic*/**bold**); **`bookart endpaper`** tiles a motif into a seamless diaper; and
+**`--print`** adds bleed + crop/fold marks for the press. Meanwhile `plakat compile` got
+smarter: **`--preflight`** gates a render run (LoRA triggers, budgets, regions — exits non-zero
+for CI), **`--matrix`** expands one scene into a **scene × weather × model variation grid**,
+**`--smysl-defaults`** lets the corpus configure the *knobs* (the best model/steps learned from
+ranked renders), and **multi-objective `--improve`** adds **CLIP prompt-adherence** so a
+winning edit stays faithful to the prompt, not just prettier. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.32.0) · [bookart tutorial
+→](Documentation/Tutorials/BOOKART_TUTORIAL.md)
+## What's new in 6.31.0 — the smysl improve loop & bordered Typst book pages
+
+`compile --improve[-all|-scene]` closes an automatic **enhance → improve → emit** loop — it
+renders each scene, scores it with the LAION **aesthetic predictor**, rewrites the prompt,
+keeps only real gains, and **writes the winning prompt back into the scenario HJSON** (the
+improvement lands in the artifact, not just the console). The **smysl corpus is active tabu
+memory** — created if missing, consulted on every run — so the loop never re-tries a rejected
+change (the death-march cure); **`--improve-skip-good`** leaves already-good scenes alone,
+**`--improve-seeds`** corroborates a keep/reject verdict across seeds, the render model loads
+**once** (resident pipeline), and **`--keep-compiled-images`** archives the whole trajectory.
+**`plakat bookart typst`** wraps an ornament into a **bordered, PDF-compilable Typst page**
+where the *text* is the subject — the text box is fitted to the ornament's *measured* clear
+window, so the art frames the text and never covers it — and it emits a reusable **`book-page`
+template** (`set page(background: …)`) that borders every page of a whole book, so Typst
+paginates your text with no page-by-page setup. Plus **control-generate `mode: blockin`** — a
+flat-mass notan pre-image so the finish isn't dominated by draft structure. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.31.0) · [bookart tutorial
+→](Documentation/Tutorials/BOOKART_TUTORIAL.md)
+## What's new in 6.30.0 — smysl provenance & budget layer for `compile`
+
+`compile`'s prose → analyze → fix → scenario chain is an AI→AI→human handoff whose reasoning
+used to evaporate into printed reports and `.txt.N` backups. 6.30.0 preserves it as a **smysl
+corpus** — a `--smysl` sidecar recording every decision, `--trace` to read it back, model-free
+budget packing and per-model budgets.
+## What's new in 6.29.0 — prose authoring loop + posed & connected composition
+
+**`compile --make-composition`** has an LLM pick the generation strategy (pure / skeleton /
+regional), tune naturalize to the scene and rewrite the prose; `--analyze` adds a feasibility
+critic. `control-generate` gains per-figure POSE and CONTACT from prose, so multi-figure scenes
+stand and touch.
+## What's new in 6.28.0 — control-generate multi-figure + compile 3-tier composition
+
+Reliable multi-figure `control-generate` — regional attribute-binding combined with OpenPose —
+and a composition grammar that drives it from prose.
+## What's new in 6.27.1 — build fix
+
+A one-line patch over 6.27.0: the `templates`-gated `model_family` Tera helper still matched
+only `sd15`/`sdxl`/`flux` after the cycle added the `Sd3` and `Cascade` families.
+## What's new in 6.27.0 — painterly repaint, compile correctness & reproducible runs
+
+The cycle that makes a prose prompt actually become the painting you asked for. **Painterly
+repaint** — `naturalize --repaint` (and the scenario/prose `repaint=` spec) re-paints an image
+via img2img anchored to the medium, building *form + brushwork together* where a weight-free
+filter can't; **`repaint-style="fine detailed watercolor, small strokes"`** gives controllable
+brushwork, and **stroke-based rendering** places real oil/gouache/pastel marks (`--brush-scale`
+tunes stroke size). **Compile correctness overhaul** — attention weights `(term:1.5)` now
+survive translate **and** enhance (deterministic, inline, no source-language tail; the fix was
+`translate:` inheriting from the global block), a **hybrid negative** (deterministic base +
+bounded LLM defects), the enhancer's objective is the *best possible image* under a **DO NO
+HARM** contract, and **SD3.5 / Stable Cascade** get proper prose profiles + token budgets.
+**Reproducible runs** — **`unique-files: true`** writes each pass into a timestamped `run-…/`
+folder (nothing overwritten), **`keep-prenaturalize: true`** keeps the raw render beside the
+`.natural.png`, and **`rank --suggest`** reads an image's tells and proposes a `naturalize:`
+spec to improve it. Plus per-task `naturalize:`/`restore-faces:` overrides, `repair=` anatomy
+fix, and a macOS OOM-guard that measures *real* free RAM (`vm_stat`) and rides VAE-decode swap
+spikes. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.27.0) · [Naturalize
+tutorial →](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.26.2 — `plakat compile`: reusable components + full scenario parity
+
+Write image sets as DRY prose. Define reusable pieces once — `component.street: cobblestone
+medieval street` — and **compose** scenes from them: `composition: component.street,
+component.sky` then your own prose (compose-then-prose), enriched + token-budget-checked. Works
+in prose **and** hand-authored scenarios (`components: {…}` + per-task `composition: […]`). And
+a compiled prose file now reaches **near-parity with a hand-written scenario**: ~35 scalar
+fields as directives (`aspect`, `naturalize`, `pag-scale`, `refiner`, `fast`, `look`,
+animate/Flux knobs…), repeatable **`region:`** for regional prompting, and a generic
+**`set.<key>: value`** escape hatch. Plus compile fixes: an explicit `negative:` is
+authoritative, meaningful auto task-names, and diligence warnings when the budget/style is off.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.26.2) · [Compile tutorial
+→](Documentation/Tutorials/COMPILE_TUTORIAL.md)
+## What's new in 6.26.1 — compile: enforce the negative seed contract
+
+An explicit `negative:` directive seeds the LLM with a "these terms MUST appear verbatim"
+instruction; a weak model would paraphrase it away. The contract is now enforced after
+generation.
+## What's new in 6.26.0 — plakat photos: people + hybrid search (RFC PHOTOS-PEOPLE-1)
+
+Four gaps filled in the photo manager (which already had near-dup, ArcFace clustering,
+sharpness cull, HNSW search). **People management** — the `people` command names a cluster
+(`people rename person-3 Alice` retags the whole library; `tag:alice` then browses that
+person), `people merge <a> <b>` folds two clusters, `people list` shows counts. **Hybrid
+search** — perceptual lookalike now honours the active filter, so "find similar to THIS"
+combines with `tag:beach date>=2024 rating>=4`. **Quality-aware keeper** — near-dup dedup now
+keeps the *crispest* frame (rating → sharpness → aesthetic), not just the highest-rated.
+**Person-aware `soft-face`** — the face scan reuses its detected boxes to flag blurry-face
+frames (`tag:soft-face`) relative to the library. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.26.0) · [Photos tutorial
+→](Documentation/Tutorials/PHOTOS_TUTORIAL.md)
+## What's new in 6.25.0 — generate-core levers (RFC GENERATE-CORE-1)
+
+Three genuinely-missing text-to-image controls (the core already had weighting, BREAK,
+clip-skip, 10 schedulers, and box-regional). **Subseed / variation-seed** — `--subseed N
+--subseed-strength 0.15` slerp-blends a second seed's init noise into `--seed`'s for
+*controlled* variation ("the same image, nudged"), following `--count` as a coherent family.
+**Prompt scheduling + alternation** — `[cat:tiger:0.4]` swaps the prompt at 40% of steps,
+`[red|blue]` alternates each step (bare `[x]` stays de-emphasis); each distinct per-step prompt
+is encoded once and selected in the denoise loop. **Regional prompting v2** — `--region
+"0,0,0.5,1,w=1.3,feather=0.1:a wolf"` adds per-region **strength** and **soft-edge feather** to
+the existing box regions. SD 1.5 / SDXL. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.25.0) · [Advanced prompting
+→](Documentation/Tutorials/ADVANCED_PROMPTING_TUTORIAL.md)
+## What's new in 6.24.0 — `plakat ui` workbench (RFC UI-GALLERY-1)
+
+Turns the TUI into an editor — **no new tabs**, everything folds into **Chat** and **History**.
+**History** (`Ctrl-4`): on the selected frame **`n`** naturalizes in place, **`y`** varies,
+**`e`** etches provenance, **`Delete`** trashes (confirm-twice); **`Space`** multi-selects (✓)
+so `n`/`e`/`Delete` act on a **whole batch**. **Chat** edits the latest frame: **`/relight
+<preset>`**, **`/faceswap <src>`**, **`/etch`**, **`/upscale [2–4]`** (weight-free Lanczos),
+**`/remove-bg`** (transparent cutout) — all post back to the thread. **`Ctrl-F`** maximizes the
+preview; **`/settings`** reports device/model/output and **`/settings etch on`** stamps
+provenance into every finished frame. (The thumbnail **grid** `v`, live **filter** `/`, and
+**semantic search** `?` were already there.) [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.24.0) · [UI tutorial
+→](Documentation/Tutorials/UI_TUTORIAL.md)
+## What's new in 6.23.0 — relight lighting presets (RFC RELIGHT-1)
+
+Makes `plakat relight` (IC-Light) a **menu with real directional control** instead of a
+freeform-prompt guess. **11 named presets** — `--light key-left` / `key-right` / `top` / `rim`
+/ `softbox` / `golden-hour` / `sunset` / `moonlight` / `candlelight` / `neon` / `overcast`
+(`--list-lights`), each a curated prompt + negative. **Directional backdrop** — the subject is
+now composited over a **light-direction gradient** (brighter on the light side) rather than
+flat grey, so IC-Light gets a genuine spatial cue and "key from the left" actually lights from
+the left; `--light-angle <deg>` steers a custom direction. A `--prompt` still works (and
+extends a preset); `api::Relight::light(name)` in the library. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.23.0) · [Tutorial
+→](Documentation/Tutorials/RELIGHT_TUTORIAL.md)
+## What's new in 6.22.0 — face-swap ecosystem parity (RFC FACESWAP-4)
+
+Finishes the piece deferred in 6.21.0 so face-swap is a first-class citizen **everywhere**.
+**`api::FaceSwap`** — a library builder (`FaceSwap::new(scene, source).face(0).run().await?` →
+`Image`), mirroring `api::Naturalize`/`api::Upscale`. **Scenario `type: faceswap`** — swap a
+source face into a scene as one step of a scenario pipeline (`scene` + `source` + optional
+`face`), alongside `generate` / `naturalize` / `texture` tasks. Combined with the CLI verb
+(6.20) and the Bund `plakat.faceswap` word (6.21), face-swap now works from CLI · library ·
+scripts · pipelines. **`plakat compile` improvements** too: a `type: faceswap` prose block now
+compiles to a faceswap task; the emitted scenario is **validated** before writing (guaranteed
+runnable); `--decompile` round-trips spec-tasks; and **`@include <file>`** inlines prose files
+(split large sets across files). [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.22.0)
+## What's new in 6.21.0 — face-swap depth (RFC FACESWAP-3)
+
+Four additions to the `plakat faceswap` verb, all reusing the proven engine. **`--dry-run` /
+`--preview`** — detect the faces and print them (index · bbox · score, largest-first) so you
+can pick `--face N`; `--preview PATH` draws colour-coded numbered boxes (SCRFD-only, no big
+download). **Batch** — point it at a **directory** and it swaps every image into the `--out`
+dir. **Per-face sources** — `--source` is now **repeatable**, and each source is **matched to
+its closest face by ArcFace recognition** (identity-follows-face, so a group photo gets each
+person their own identity even as faces reorder). **Video** — an mp4/mov/webm/gif input swaps
+**every frame** and re-encodes (needs `ffmpeg`). Plus `--source-face N` (pick the identity in a
+multi-face source photo), a small-face sharpen, swap **controls** (`--feather`,
+`--no-color-match`, `--match rank|identity`, `--report`), a Bund **`plakat.faceswap`**
+scripting word, and `--etch` provenance on the output. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.21.0)
+## What's new in 6.20.0 — `plakat faceswap` + colour-match (RFC FACESWAP-2)
+
+Exposes the proven face-swap engine as a **standalone verb** — `plakat faceswap <scene>
+--source <face.png> [--face N | --all] [--restore]` swaps the face(s) in an image **you already
+have** (SCRFD 5-point align → ArcFace identity → inswapper_128 → paste-back), with no scene
+generation. Plus a quality fix that benefits *every* caller (standalone, `persona`,
+`multiperson --swap`): the swapped crop is now **colour-matched** to the target face it
+replaces (clamped mean tone), so it carries the scene's lighting/white-balance instead of the
+source photo's — killing the "pasted head" tell. inswapper weights are non-commercial
+(InsightFace), gated behind opt-in. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.20.0)
+## What's new in 6.19.0 — seam quality (RFC SEAMS-1)
+
+A depth cycle sharpening the tiling both `plakat texture` and `plakat upscale --diffusion` rely
+on (native circular-conv is Metal-blocked, so both feather). **Frequency-aware texture seams**
+— the seam feather no longer cross-fades raw pixels (which blurred detail); it matches the
+low-frequency **tone** across the boundary with a smoothstep ramp while preserving all
+high-frequency detail, and a `seam_score` makes the residual measurable. New **`mode:
+"mirror"`** reflects the tile so opposite edges are identical by construction (perfectly
+seamless). **Upscale tile seams** — smoothstep overlap feather + **cross-tile colour match**
+(each tile's exposure is matched to its already-placed neighbours before blending, killing the
+tile-drift seam). **Pigment-aware normal-from-photo** — height is chroma-gated so a coloured
+speck no longer becomes fake geometry, while neutral micro-relief is kept. Plus: texture
+**`mode: "auto"`** (measure the seam → feather or mirror), a **quieter `--etch` mark** (skip
+the QIM ripple in flat blocks while keeping decode), an upscale **pre-sharpen**, cleaner
+**fractal deep-zoom** glitch handling, **`replace-bg`** colour-decontaminated + refined mattes
+(no pasted-cutout halo), tone-matched **face restore**, and perspective **product
+reflections**. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.19.0) ·
+[Texture guide →](Documentation/TEXTURE.md)
+## What's new in 6.18.0 — naturalize round 6 (RFC QUALITY-9)
+
+Makes weight-free de-slop **faster at scale**, **reusable**, and **more honestly captured**.
+**Per-image adaptive LUT** — `naturalize photo.png --export-lut look.cube` now bakes *that
+image's* colour grade (the gray-world white-balance + auto-levels + vibrance fitted on the
+photo, plus the film grade), closing the old fixed-grade limitation; with no input it's still
+the fixed grade. Honest carve-out: the spatial unsharp/micro aren't colour LUTs and are
+excluded. **Save / load your own presets** — dial a look, `naturalize … --save-preset myfav`,
+reuse it anywhere with `--preset myfav` (your saved presets shadow the built-in library;
+`--list-presets` shows both; stored in `~/.config/plakat/naturalize.presets`). The **`plakat
+ui` Naturalize tab** gets `w` save / `p` load for the same presets. **Batch de-slop in `plakat
+photos`** — "naturalize ALL selected" (chord `aN`) de-slops every selected image in one action,
+each recorded/undoable per image. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.18.0) · [Tutorial
+→](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.17.0 — naturalize round 5 (RFC QUALITY-8)
+
+Makes de-slop **aware of where the image came from**, and **interactive**. **Model-aware
+presets + `--preset auto`** — reads the input's generation metadata (plakat sidecar / A1111
+`parameters`), identifies the model, and applies a recipe tuned to that family's tells (SDXL
+over-saturates, SD 1.5 is soft, Flux is clean-but-plastic…); no metadata → the analysis-driven
+recommendation. **EXIF-aware** — a genuine camera capture (Make/Model/exposure present) gets a
+**gentler** touch (de-slop shouldn't fight a real photograph), and the pass preserves the
+file's metadata. **Naturalize tab in `plakat ui`** (`Ctrl-9`) — dial the weight-free knobs
+(polish / micro / grain / desaturate / paper) with a **live before→after scorecard** and image
+preview; **Space** toggles original ↔ de-slopped; **`o`** opens any external image; **`s`**
+saves. **In `plakat photos`** — the Edit palette closes the **import → de-slop → etch →
+verify** loop: *naturalize* (chord `an`, a first-class edit op with undo/redo/versions), *etch
+provenance* (`me`, writes L0+L1 into the file), *verify provenance* (`mv`, the offline `doctor
+--if-plakat` verdict). [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.17.0) · [Tutorial
+→](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.16.0 — naturalize round 4 (RFC QUALITY-7)
+
+**folder scorecard** — `naturalize <dir> --report` ranks a whole folder worst-AI-first with an
+aggregate summary (mean AI-tell, count over threshold, dominant tell). **LUT export** —
+`naturalize --export-lut grade.cube` bakes the fixed film grade (desaturate + warm) into a
+standard **`.cube`** 3-D LUT for DaVinci Resolve / Premiere / OBS (honest: the per-image
+white-balance/auto-levels aren't captured). **Preset library** — `--list-presets` + six named
+recipes (`portrait`, `landscape`, `product`, `anime`, `film`, `restore`), each a saved spec so
+`--preset portrait` == the scorecard's recommendation. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.16.0) · [Tutorial
+→](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.15.0 — naturalize round 3 (RFC QUALITY-6)
+
+**scorecard** — `naturalize <img> --report` prints plakat's own AI-tell verdict (oversaturation
++ over-smoothness decomposed, CLIP-detected medium) **plus the exact recipe to run** (`--json`
+for structured); turns "is this sloppy, and what do I run?" into one command. **Video /
+animation de-slop** — point `naturalize` at an mp4/mov/webm/gif and it de-slops **every frame**
+and re-encodes; the grain is **frame-invariant** so the texture sits still (no flicker).
+**Per-region focuses** — `--auto-regions` (faces→people, sky band→sky, rest→base) and manual
+`--region "x0,y0,x1,y1:spec"`, feathered-composited, so a multi-subject frame gets each subject
+its own de-slop. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.15.0) ·
+[Tutorial →](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.14.0 — naturalize follow-ups round 2 (RFC QUALITY-5)
+
+**auto-paper** — watercolour/gouache/ink-wash art (named via `--medium`/`--style` or **CLIP
+auto-detected**) auto-applies `--paper` at 0.6, so wet-media art gets pigment authenticity by
+default; also reachable from a spec (`generate --naturalize "… paper=0.6"`), scenario, and
+`api::Naturalize`. **Person-detection for repair** — figure-scoped `--repair` now unions
+OWL-ViT "person" boxes with the face-projected ones (new `detect_all` + NMS), so figures whose
+face isn't found (back turned / distant / occluded) are covered too. **Batch** — point
+`naturalize` at a **directory** and it de-slops every image into the `--out` dir. [Release
+notes →](https://github.com/vulogov/plakat/releases/tag/v6.14.0) · [Tutorial
+→](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.13.0 — naturalize follow-ups (RFC QUALITY-4)
+
+Tightens the 6.12 de-slop tools against real failures. **Figure-scoped repair** — `--repair`
+now projects a body box from each detected face and repaints **only the figures**, preserving
+faces **and** background (fixes the 6.12 "background changed / colours drifted" regression);
+`--repair-scope figures|non-face|full`. **Auto medium-detection** — a **CLIP zero-shot**
+classifier picks the source medium when you don't pass `--style`/`--medium`, so a re-paint
+holds the medium instead of drifting to photoreal. **`--paper`** — weight-free **watercolor
+paper / pigment authenticity** (paper tooth + granulation + edge pooling, pigment-gated so
+photos are untouched) — fixes the "simulated media" tell; recommended ~0.6. Plus **5 new
+content focuses** (`--animal --food --interior --textile --foliage-macro`). [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.13.0) · [Tutorial
+→](Documentation/NATURALIZE_TUTORIAL.md)
+## What's new in 6.12.0 — `naturalize` = de-slop (RFC QUALITY-3)
+
+Reframes naturalize around making AI output **less sloppy — a genuinely better picture**, not
+disguising it. The headline is the **weight-free** pass, which improves an image and
+**preserves the original** (composition, style, faces): new **`polish`** (gray-world white
+balance + ratio-preserving auto-levels + vibrance + unsharp — kills the colour cast, muddy
+contrast, oversaturation) and **`micro`** (variance-gated pore/micro-wrinkle texture — the fix
+for plastic AI skin). Presets rebalanced polish-forward; chromatic aberration (a degradation)
+cut to ~0. The **model-backed** tools are now honest, opt-in *best-effort*: **`--repair`**
+(face-protected — protects faces so they never go uncanny, gently repaints the rest
+**in-style**), **`--style`/`--medium`** (anchor any re-paint to the source medium instead of
+drifting to photoreal), and **`--declutter`** (remove named slop; wires via a weight-free
+sky-gated detector). The load-bearing truth, documented plainly: a diffusion model *re-paints,
+it doesn't reason* — structural tells (extra limbs, floating wires) need a **re-generation**,
+not a post-pass. New **[tutorial](Documentation/NATURALIZE_TUTORIAL.md)**. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.12.0) · [Guide
+→](Documentation/QUALITY.md)
+## What's new in 6.11.0 — quality, in depth (RFC QUALITY-2)
+
+Finishes the three `naturalize` deferrals. **Hi-res fix** — `generate --hires <factor>` (and
+`--quality high`) runs a tile-ControlNet upscale-diffuse after generation, injecting *real
+coherent detail* (fixes cloud-foliage, dissolving backgrounds, incoherent geometry that grain
+can't touch); order is gen → hires → naturalize → etch. **Full re-etch** — `naturalize` on a
+plakat-etched image now re-embeds a fresh **L1** pixel mark into the naturalized pixels and
+chains the source as `parent`, so `doctor --if-plakat` resolves it as a **valid `generated`
+etch** (not a stale mark); `--no-reetch` writes a clean output, and a never-etched input stays
+un-etched. **AI-tell ranking** (weight-free) — `rank --ai-tells` lists the least-AI-looking
+first, and `generate --keep-best K --ai-tells` prunes a batch on *aesthetic − λ·ai_tell* to the
+most human-looking frames. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.11.0) · [Guide
+→](Documentation/QUALITY.md)
+## What's new in 6.10.1 — naturalize focus-flags fix + corpus driver
+
+Four content-focus flags (`--sea`, `--river`, `--mech`, …) were dead on `plakat naturalize`,
+plus a comprehensive corpus driver.
+## What's new in 6.10.0 — `plakat naturalize` (make it read human-sourced)
+
+Reduce the "AI-generated" fingerprint of an image (RFC QUALITY-1). A weight-free **analog
+post-pass** — film grain · chromatic aberration · vignette · bloom · a *desaturating* film
+grade — breaks the too-clean, over-saturated digital look (realism, **not** vintage). **Content
+focus qualifiers** pre-tune it to a subject's tell — `--people` (waxy skin), `--sky` (banding),
+`--vegetation` (cloud-foliage mush), `--cityscape`, `--landscape`, `--sea`/`--river`,
+`--mechanics`, `--household` — all combining. **Corrective focuses** (model-backed) fix what
+grain can't: `--geometry`/`--anatomy` (img2img re-resolve) and `--no-twins` (detect + inpaint
+duplicate faces). Plus `--designature` (dissolve a foreign ghost-signature smudge), a
+`--quality low|medium|high` generation preset (bundles
+CFG-rescale/FreeU/PAG/dynamic-threshold/ADetailer), and `generate --naturalize` / scenario
+`naturalize:` passes that **preserve the `--etch` provenance**. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.10.0) · [Guide
+→](Documentation/QUALITY.md)
+## What's new in 6.9.0 — `plakat product`
+
+The flagship (RFC PRODUCT-1). Turn a **subject** — a cutout, a photo, or a text prompt — into a
+studio **product-shot / packshot**: the subject on a controlled background (white / grey sweep
+/ gradient / a generated scene), **grounded** with a physically-plausible contact shadow and
+floor reflection derived from its alpha, at a chosen camera angle, optionally relit to a named
+lighting rig (IC-Light). A packshot is *structured data* — the same rig and grounding reproduce
+across a whole catalog. **`product sheet`** tiles a subject's angles into a labelled contact
+sheet; **`product turntable`** sweeps the key light. The grounding / sweep / composite half is
+**weight-free** — a supplied cutout → a sellable shot with no GPU; only relight +
+subject-generation need a model. Wired everywhere: scenario `type: product`, `compile`, Bund
+`plakat.product.*`, `plakat::api::Product`. Fully additive. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.9.0) · [Guide →](Documentation/PRODUCT.md)
+## What's new in 6.8.2 — `plakat comic` reference-lock, finished
+
+Closes the three 6.8.1 deferrals. **Multi-character panels** now face-lock too — detected faces
+are matched to the `chars` list by reading-order position (left→right, or right→left for
+`rtl`), so a two-shot keeps *both* identities. **Scene-art reuse**: label a panel with `id:`
+and another `reuse: "@id"` renders it as the **exact** same image, book-wide (an establishing
+shot that repeats identically, not a re-generated recurrence). And **`--restore-faces`** runs a
+restore-faces refine over panels whose swapped face is small (distant / group shots) to crisp
+the detail. All best-effort on top of the face-swap weights; the reuse/id half is weight-free.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.2) · [Guide
+→](Documentation/COMIC.md)
+## What's new in 6.8.1 — `plakat comic` goes multi-page
+
+A comic strip spans pages that share a cast, style, and engine while the panels and dialogue
+change. A `ComicSpec` gains `pages: [...]` (the top-level cast/style/model is the shared
+**world** propagated to every page → `page_00.png, page_01.png, …`), a named `scenes: { alley:
+"…" }` library that a panel references with `@alley` so a setting recurs, and `extends:
+"series.hjson"` to inherit a base spec. **Reference-lock** (`comic cast` + `render --lock`)
+renders each character once and **face-swaps** that reference onto every single-character panel
+(SCRFD+ArcFace+inswapper) so the same face holds across pages — beyond description-level drift
+— plus a `style_lora` that locks the look book-wide. The multi-page/scenes/extends half is
+weight-free. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.8.1) · [Guide
+→](Documentation/COMIC.md)
+## What's new in 6.8.0 — `plakat comic`
+
+The flagship (RFC COMIC-1). A small HJSON `ComicSpec` becomes a **lettered, multi-panel comic
+page** — a panel grid, per-panel **scene art**, a **recurring cast** whose identity holds
+across panels (a `persona:` member compiles through the deterministic persona layer; a
+`describe:` member is seed-locked), and **speech balloons + captions** placed and lettered over
+the art. The balloon algorithm is the novel piece: fit the largest legible box → place it in
+open space (off detected faces, non-overlapping, biased to the reading corner) → draw one of
+four kinds (speech · thought · shout · caption) with a tail toward the speaker. The
+**weight-free half** (layout · balloons · composite) needs no GPU — bring your own panels with
+`comic layout/letter --panels <dir>`; only `comic render` generates the art, and lettering
+rides an asset-free all-caps bitmap face. Wired everywhere: scenario `type: comic`, `compile`,
+Bund `plakat.comic.*`, `plakat::api::Comic`. Fully additive. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.8.0) · [Guide →](Documentation/COMIC.md)
+## What's new in 6.7.0 — provenance etching (`--etch` / `doctor --if-plakat`)
+
+Opt-in `--etch` writes a 64-bit provenance id into images plakat produces by four independent
+evidence layers — an **L0** manifest (PNG chunk + sidecar), an **L1** pixel etch (a
+spread-spectrum DCT-QIM mark surviving transcode/rescale), an **L2** latent Fourier-ring mark,
+and an **L3** CLIP fingerprint (a local store that matches on *semantics*). `plakat doctor
+--if-plakat <IMAGE>` reads whatever survived into a **graded verdict** with a p-value —
+`generated` / `derived` / `probable-derivative` / `inconclusive` / `no-evidence` — degrading
+gracefully rather than off a cliff. Honest by design: it's verifiable through incidental
+editing, format churn, rescaling, and moderate generative edits — **not** a defence against a
+determined remover. Off by default; the module is always compiled. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.7.0) · [Guide →](Documentation/ETCH.md)
+## What's new in 6.6.0 — `plakat texture` engine interop
+
+One `texture export --engine gltf|unreal|unity-hdrp|godot|materialx|plakat` picks the naming +
+packing + material document in a single flag — a **complete glTF 2.0** material (with
+**`KHR_materials_anisotropy`** driven by the brushed-metal flow map), a **MaterialX** (`.mtlx`)
+`standard_surface` for USD/Arnold/Substance, and the **Unity HDRP mask map** (which packs the
+same data *differently* from ORM: R=metal/G=AO/B=detail/A=smoothness). The packing conventions
+live in one verified table so a material drops into each engine correctly. Weight-free.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.6.0) · [Guide
+→](Documentation/TEXTURE.md)
+## What's new in 6.5.1 — texture layout: trim sheets & decals
+
+Trim sheets and decals for `plakat texture`, and a fix for the 6.5.0 Windows release build
+(`E0283`/`E0284` type inference on two `.parse()` calls, pinned with turbofish).
+## What's new in 6.5.0
+
+**v6.5.0/6.5.1 — `plakat texture` layout: trim sheets & decals**: compose several materials
+into one banded **trim-sheet atlas** (each strip tiling along its run axis) with a `trim.json`
+UV-region sidecar, and stamp **decals** — alpha-masked overlays (a crack, rust streak, sign) —
+onto a base material, blending the normal via **Reoriented Normal Mapping** so decal detail
+rides the base slope instead of flattening it. All weight-free. *(This cycle set out to make
+generation natively seamless; measure-first G0 showed per-step latent-roll doesn't work and
+native circular-conv would need vendoring candle's whole UNet block stack for a smear feather
+already handles — so it pivoted here; findings kept in the roadmap.)* Fully additive. [Release
+notes →](https://github.com/vulogov/plakat/releases/tag/v6.5.0) · [Guide
+→](Documentation/TEXTURE.md)
+## What's new in 6.4.0 — deepen `plakat texture`
+
+Composite materials now get **spatially-varying** channels — `metallic: "auto"` / `roughness:
+"auto"` region-vote a *structured* mask (bare metal vs rust, wet vs dry) where a single-class
+material still (correctly) stays flat — plus **anisotropy** for brushed/grained metals (a flow
+map + a grain-stretched preview highlight), a weight-free `texture blend` (two materials → one,
+through a tileable mask), `--variations N`, hand-painted `--metallic-ref`/`--roughness-ref`
+masks, and an *adaptive* seam feather. The `verify` scorecard now explains a flat map
+(*"uniform metallic — correct for a single-class material, not a defect"*). Fully additive.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.4.0) · [Guide
+→](Documentation/TEXTURE.md)
+## What's new in 6.3.0 — `plakat texture`
+
+The 6.3 flagship (RFC TEXTURE-1). Turn a prompt or a photo into a **seamless, tileable PBR
+material set** — albedo · normal · roughness · metallic · height · ambient-occlusion —
+flat-lit, exported **engine-ready** (ORM pack, Unity/Unreal naming, glTF) with a pure-Rust lit
+**preview**. A material is structured data: a small HJSON `TextureSpec` resolved
+deterministically → generate → derive → *measure* (a tileability scorecard) → export. Fully
+additive. [Release notes →](https://github.com/vulogov/plakat/releases/tag/v6.3.0) · [Guide
+→](Documentation/TEXTURE.md)
+## What's new in 6.2.0 — consolidation & polish
+
+A breather after four flagships. A **cleaner `bookart` default look** (the `line` binariser is
+now contrast-adaptive and ink-weight-responsive — no more faint origins; `woodcut` is no longer
+a slab), the **docs brought fully current** for the 6.1 surface, a **perf pass** (no regression
+vs the 2.4.0 baseline; dropped a redundant temp-PNG round-trip), and hardening (robustness
+tests + a CI feature-matrix). Fully additive. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.2.0)
+## What's new in 6.1.0 — `plakat bookart` everywhere, and finished
+
+The 6.x flagship (RFC BOOKART-1) now lives on **every automation surface** — scenario `type:
+bookart`, `compile`, Bund `plakat.bookart.*`, the `plakat::api::BookArt` builder, and
+`--import` into a `plakat photos` album — plus **six** trained origin traditions (Russian /
+English / Japanese / American / Chinese / European), raster→SVG **tracing**, glyph-driven
+**initials** (real letterforms, any script), **EPUB** manuscripts, an OpenType **dingbat font**
+export, and one-command **ink-weight re-finishing**. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.1.0) · [Guide →](Documentation/BOOKART.md)
+· [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
+## What's new in 6.0.1 — `plakat bookart` polish
+
+Post-6.0.0 polish: the procedural ornament tuned to genuine, varied book art, compact
+born-vector SVG, and a corpus using Bilibin's actual pen-line idiom.
+## What's new in 6.0.0 — `plakat bookart`
+
+The 6.x flagship (RFC BOOKART-1). Compose **reusable, print-ready, transparent black-and-white
+book ornaments** — headpieces, tailpieces, borders, corners, dividers, vignettes — from a small
+HJSON spec, in a chosen illustration tradition (Russian / English / Japanese …) and drawing
+technique, at an exact page size. A hybrid render router (vector-native procedural +
+trained-tradition diffusion + composite), B/W-native transparency, a coherent **kit** and
+**manuscript-aware** set. Fully additive. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v6.0.0) · [Guide →](Documentation/BOOKART.md)
+· [Transparency →](Documentation/BOOKART_TRANSPARENCY.md)
+## What's new in 5.0.0 — `plakat persona`
+
+The 5.x flagship (RFC PERSONA-1). Compose a **specific, reusable synthetic person** from a
+small HJSON spec and render that same person recognisably across scenes and model families —
+resolved deterministically, conditioned geometrically, small details *composited* (not
+prompted), anchored by a cast reference set, and **measured** by a scorecard. Fully additive.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v5.0.0) · [Guide
+→](Documentation/PERSONA.md) · [Worked demo →](corpus/PERSONA_CORPUS.md)
+## What's new in 4.11.0 — finishing the edit verbs
+
+`remove --what` now **SAM-refines** the detected box to the object's outline (not just a
+rectangle), and `replace-bg --keep "<subject>"` picks the kept subject by text (OWL-ViT → SAM)
+instead of the automatic matte. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v4.11.0) · [Tutorial
+→](Documentation/Tutorials/EDIT_TUTORIAL.md)
+## What's new in 4.10.0 — text-targeted removal
+
+`plakat remove --what "the trash can"` — an open-vocabulary **OWL-ViT** detector (ported to
+candle, verified vs transformers at corr 1.0) finds the named object, then inpaints it away.
+[Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.10.0) · [Tutorial
+→](Documentation/Tutorials/EDIT_TUTORIAL.md)
+## What's new in 4.9.0 — one-shot edit commands
+
+**`plakat remove`** (erase an object — select it with `--point`/`--box`/`--depth-band`, it's
+inpainted away) and **`plakat replace-bg`** (swap the background — mattes the subject,
+generates a new background from `--prompt`, composites). [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v4.9.0) · [Tutorial
+→](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+## What's new in 4.8.0 — rounding out Sana
+
+**Sana outpaint** (`plakat outpaint --model sana`) and a **Sana ControlNet** (`plakat generate
+--model sana-600m --control canny --control-from img.png`) — the public 600M ControlNet,
+verified against diffusers at corr 1.0. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v4.8.0) · [Tutorial
+→](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+## What's new in 4.7.0 — finishing the Sana family
+
+The **Sana-1.5** checkpoint (`--model sana-1.5`, adds `qk_norm`) and **Sana inpaint** (`plakat
+img2img --model sana --mask …`). Also fixes a Metal DC-AE encode bug that silently degraded
+Sana img2img on Apple Silicon. [Release notes
+→](https://github.com/vulogov/plakat/releases/tag/v4.7.0) · [Tutorial
+→](Documentation/Tutorials/GENERATE_TUTORIAL.md)
+## What's new in 4.6.0 — Sana deepening
+
+The Sana family gains its true **DPM++ 2M flow** sampler (now the default), **img2img**
+(`plakat img2img --model sana`), and the **0.6B / 512 / 2K variants** (`sana-600m`, `sana-512`,
+`sana-2k`). [Release notes →](https://github.com/vulogov/plakat/releases/tag/v4.6.0) ·
+[Tutorial →](Documentation/Tutorials/GENERATE_TUTORIAL.md)
 ## What's new in 4.5.0 — Sana
 
 A **sixth model family**: **Sana 1.6B** (`--model sana`), NVIDIA/MIT's efficient text-to-image DiT.
