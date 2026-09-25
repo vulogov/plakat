@@ -186,6 +186,14 @@ pub struct PaintParams {
     pub stroke_width: f32,
     /// Wet-into-wet BLEED (0..1) applied after painting — the wet media's fusion/bloom. Default per medium.
     pub bleed: f32,
+    /// PIGMENT DIFFUSION (-1..+1, default 0 = none): which way the pigment travels in the wet wash. +1 = into the
+    /// darks (they charge up, lights stay clean), -1 = out into the lights (feathered halos). See `Canvas::bleed_with`.
+    pub diffuse: f32,
+    /// PARALLELISM: worker threads for stroke placement. 1 (the default) = the classic single order — one
+    /// painter, byte-identical to every accepted render; 0 = every core, ≥2 = that many: the checkerboard TILE
+    /// schedule, whose picture is the same for every thread count ≥ 2 and replays byte-exact from its score,
+    /// but is a different hand from the single order (same look, different micro-texture).
+    pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never dries (fully wet-into-wet —
     /// every later pass picks up the masses beneath and smears them into mud); 1 = bone dry between passes (each
     /// pass a crisp overlay). Default ~0.5. This is the single biggest lever against the muddy/washed look.
@@ -302,7 +310,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 1 }
     }
 }
 
@@ -439,6 +447,37 @@ fn stroke_dir(gx: f32, gy: f32) -> [f32; 2] {
         // perpendicular to (gx,gy) is (-gy,gx)
         [-gy / m, gx / m]
     }
+}
+
+/// The mixture cache's key: the colour quantised to 6 bits a channel.
+fn mixture_key(c: Srgb) -> u32 {
+    ((c[0] as u32 >> 2) << 12) | ((c[1] as u32 >> 2) << 6) | (c[2] as u32 >> 2)
+}
+
+/// The pigment weights (unit charge) for a quantised key, solved from the bucket's own representative colour —
+/// the same answer whoever asks, in whatever order (the tile schedule's shared table).
+fn mixture_for_key(key: u32, palette: &Palette, n: usize) -> Vec<f32> {
+    let c: Srgb = [(((key >> 12) & 63) * 4 + 2) as u8, (((key >> 6) & 63) * 4 + 2) as u8, ((key & 63) * 4 + 2) as u8];
+    let m = mixer::solve_mixture(palette, c, 3);
+    let mut v = vec![0f32; n];
+    for (&idx, &w) in m.pigments.iter().zip(m.weights.iter()) {
+        v[idx] = w;
+    }
+    v
+}
+
+/// The pigment mixture for a target colour at `charge`, through a per-caller cache keyed on the quantised colour.
+fn mixture_cached(cache: &mut std::collections::HashMap<u32, Vec<f32>>, target: Srgb, palette: &Palette, charge: f32, n: usize) -> Vec<f32> {
+    let key = mixture_key(target);
+    let base = cache.entry(key).or_insert_with(|| {
+        let m = mixer::solve_mixture(palette, target, 3);
+        let mut v = vec![0f32; n];
+        for (&idx, &w) in m.pigments.iter().zip(m.weights.iter()) {
+            v[idx] = w;
+        }
+        v
+    });
+    base.iter().map(|c| c * charge).collect()
 }
 
 /// Deterministic per-index jitter in `[-0.5,0.5]` (a hashed LCG — no RNG dependency, reproducible).
@@ -843,6 +882,12 @@ pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, m
 
 fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(usize)>) -> PaintResult {
     let (w, h) = (input.width(), input.height());
+    // PROFILE (`PLAKAT_PAINT_PROFILE=1`): per-stage and per-pass wall-clock times, printed to stderr at the end.
+    // This is how the stroke cost was found to be the mixture solver, not the brush — keep it.
+    let prof_on = std::env::var("PLAKAT_PAINT_PROFILE").is_ok();
+    let mut prof_acc: Vec<(&'static str, f64)> = Vec::new();
+    let mut prof_t = std::time::Instant::now();
+    let lap = |name: &'static str, acc: &mut Vec<(&'static str, f64)>, t: &mut std::time::Instant| { if prof_on { acc.push((name, t.elapsed().as_secs_f64())); *t = std::time::Instant::now(); } };
     // The subject as given, before it is reduced to an armature: the fine layers look at it for TEXTURE.
     let source: &RgbImage = input;
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
@@ -879,7 +924,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 arm = blend_by_mask(&arm, &lvl, mask, w, h);
             }
             armature_owned = arm;
-            &armature_owned
+                    &armature_owned
         }
         None => input,
     };
@@ -929,23 +974,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         canvas.clear_mask(mask);
     }
     let n = p.palette.pigments.len();
+    lap("setup(armature+canvas)", &mut prof_acc, &mut prof_t);
     // Mixture cache keyed on the quantised reference colour — thousands of strokes sample similar colours.
+    // (A tile worker keeps its own; the solve is deterministic, so a cache never changes a mark.)
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
-    let mut mixture_for = |target: Srgb, palette: &Palette, charge: f32| -> Vec<f32> {
-        let key = ((target[0] as u32 >> 2) << 12) | ((target[1] as u32 >> 2) << 6) | (target[2] as u32 >> 2);
-        let base = cache.entry(key).or_insert_with(|| {
-            let m = mixer::solve_mixture(palette, target, 3);
-            let mut v = vec![0f32; n];
-            for (&idx, &w) in m.pigments.iter().zip(m.weights.iter()) {
-                v[idx] = w;
-            }
-            v
-        });
-        base.iter().map(|c| c * charge).collect()
-    };
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift },
         strokes: Vec::new(),
     };
 
@@ -954,6 +989,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let passes: Vec<PassSpec> = p.passes.clone().unwrap_or_else(|| {
         sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { format!("restate-{i}") } }).collect()
     });
+    // The schedule goes into the score so a replay crosses every pass boundary the paint crossed — a pass that
+    // lays no stroke included. Density media run no passes (the drawing is laid by `ink_drawing`).
+    score.header.stages = Some(if p.density { Vec::new() } else { passes.iter().map(|q| q.stage.clone()).collect() });
 
     let mut placed = 0usize;
     let mut k = 0u64;
@@ -1022,6 +1060,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         (None, 0.0)
     };
     let focus_on = focal.is_some();
+    lap("fields(hardness/shadow/protect/head)", &mut prof_acc, &mut prof_t);
     // The HEAD (for the texture rule): the detected face box grown to take in hair, beard and neck — a face box
     // is tight, and the residual on a beard is scrawl just as it is on an eye socket. Grown by a fraction of the
     // short side (a head's margin is a fact of the sheet, not of the scene).
@@ -1040,6 +1079,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     };
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
+        let pass_t0 = std::time::Instant::now();
         // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
         // only restate where the canvas is still wrong.
         let block_in = layer == 0;
@@ -1085,6 +1125,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // and smear. A gentler blur keeps the masses' EDGES while still dropping texture.
             imageops::blur(input, (radius * 0.32).max(0.6))
         };
+        lap("pass:reference", &mut prof_acc, &mut prof_t);
         let luma = luma_map(&reference);
         // Coherent flow (structure tensor). Fidelity + detail keep it TIGHT (small sigma) so strokes hug local
         // edges; coarse legible passes smooth it so masses follow gross form.
@@ -1133,6 +1174,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let depth_t = if r_coarse > r_fine + 1e-6 { ((r_coarse - radius) / (r_coarse - r_fine)).clamp(0.0, 1.0) } else { 0.0 };
         let len_mul = profile.len * (1.0 + (p.detail_len - 1.0) * depth_t);
         let b_waver = profile.waver;
+        lap("pass:flow", &mut prof_acc, &mut prof_t);
         let grid = (radius * 0.9).max(1.5);
 
         let cols = ((w as f32) / grid).ceil() as u32;
@@ -1142,35 +1184,34 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // measured: the 2px pass changed nothing below 55% of the height, so every face, figure or detail in the
         // lower half was painted without the fine layers. Scrambled, a cap thins the pass uniformly. Replay-exact.
         let n_cells = (rows as usize) * (cols as usize);
-        let mut order: Vec<u32> = (0..n_cells as u32).collect();
         let order_seed = p.seed ^ (layer as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        order.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
-        for cell in order {
+        // ONE STROKE ATTEMPT at seed cell `cell` with jitter key `k`, laid onto `cv` — the whole canvas, or a
+        // tile's sub-canvas whose origin is `origin` — and returned as its record (global coordinates, id unset),
+        // or None when the seed was skipped. Both schedules below lay their marks through this one function, so
+        // the same (cell, key, canvas-under-the-mark) always yields the same mark.
+        let attempt = |cell: u32, k: u64, cv: &mut Canvas, origin: (u32, u32), cache: &mut std::collections::HashMap<u32, Vec<f32>>, shared: Option<&std::collections::HashMap<u32, Vec<f32>>>| -> Option<StrokeRecord> {
             let (gyi, gxi) = (cell / cols, cell % cols);
+            let (ox, oy) = origin;
             {
-                if placed >= p.budget || in_pass >= pass.budget {
-                    break;
-                }
-                k += 1;
                 let jx = jitter(p.seed, k) * grid;
                 let jy = jitter(p.seed, k.wrapping_add(1)) * grid;
                 let cx = (gxi as f32 + 0.5) * grid + jx;
                 let cy = (gyi as f32 + 0.5) * grid + jy;
                 if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
-                    continue;
+                    return None;
                 }
                 let (ix, iy) = (cx as u32, cy as u32);
                 // COMPOSITION LAYER: only seed inside this element's footprint (so it paints its own region and
                 // leaves the rest of the accumulated canvas untouched).
                 if let Some(mask) = &p.paint_mask {
                     if !mask.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false) {
-                        continue;
+                        return None;
                     }
                 }
                 // NEGATIVE PAINTING: never seed a stroke inside the protected shape — paint around it.
                 if let Some(mask) = &p.protect {
                     if mask.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false) {
-                        continue;
+                        return None;
                     }
                 }
                 let target = reference.get_pixel(ix, iy).0;
@@ -1187,7 +1228,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let subj = p.subject_mask.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
                 if let Some(rt) = p.reserve {
                     if tluma > rt && sh < 0.35 && subj < 0.5 {
-                        continue;
+                        return None;
                     }
                 }
                 // Later layers only restate where the canvas is still notably wrong; the block-in covers all.
@@ -1196,8 +1237,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
                 // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
                 let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj);
-                if !block_in && !p.density && rgb_dist(canvas.color_at(ix, iy), target) < restate_floor {
-                    continue;
+                if !block_in && !p.density && rgb_dist(cv.color_at(ix - ox, iy - oy), target) < restate_floor {
+                    return None;
                 }
                 // Detail passes only add marks where there is COHERENT structure to resolve. On an incoherent,
                 // structureless region (e.g. a tangled net the armature rendered as noise) the flow field has no
@@ -1213,7 +1254,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // stricter so stray detail marks don't speckle it — the sky-speckle tell.
                     let thresh = p.detail_coherence * (1.0 + 1.6 * (1.0 - subj));
                     if coh < thresh {
-                        continue;
+                        return None;
                     }
                 }
                 // SELECTIVE DETAIL (`focus_detail`): the crisp detail tier fires ONLY inside the focal region —
@@ -1223,7 +1264,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 if let (Some(foc), true) = (&focal, detail) {
                     let f = foc[iy as usize * w as usize + ix as usize];
                     if f < 1.0 - focal_strength {
-                        continue;
+                        return None;
                     }
                 }
                 // SALIENCY-GATED DENSITY (opt-in): thin the restating/detail passes in flat, low-structure
@@ -1235,14 +1276,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         let s = sal[iy as usize * w as usize + ix as usize];
                         let keep = (1.0 - p.saliency) + p.saliency * s;
                         if jitter(p.seed, k.wrapping_mul(0x1000_0001).wrapping_add(0x5EED)) + 0.5 > keep {
-                            continue;
+                            return None;
                         }
                     }
                 }
                 // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
                 let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
                 // Committed shadows carry MORE pigment so the dark masses read solid, not a thin transparent wash.
-                let load = mixture_for(load_target, &p.palette, p.charge * (1.0 + 1.1 * sh));
+                let charge = p.charge * (1.0 + 1.1 * sh);
+                let load = match shared.and_then(|sh| sh.get(&mixture_key(load_target))) {
+                    Some(base) => base.iter().map(|c| c * charge).collect::<Vec<f32>>(),
+                    None => mixture_cached(cache, load_target, &p.palette, charge, n),
+                };
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
@@ -1288,18 +1333,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 stroke_brush.streak = s_streak;
                 stroke_brush.round = s_round;
                 let s = Stroke { path, width0: rw, width1: (rw * 0.55).max(p.min_brush * 0.5), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
-                s.rasterize(&mut canvas, &stroke_brush);
+                s.rasterize_offset(cv, &stroke_brush, ox, oy, w, h);
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                placed += 1;
-                in_pass += 1;
-                if let Some(pr) = progress {
-                    if placed % 64 == 0 {
-                        pr(placed);
-                    }
-                }
-                score.strokes.push(StrokeRecord {
-                    id: placed as u32,
+                Some(StrokeRecord {
+                    id: 0,
                     wipe: false,
                     stage: pass.stage.clone(),
                     spline: s.path,
@@ -1313,7 +1351,215 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     round: s_round,
                     // A detail accent's near-clean pickup is part of how it was laid — record it so replay is exact.
                     pickup: if detail { Some(stroke_brush.k_pickup) } else { None },
+                })
+            }
+        };
+
+        // The pass's stroke cap: its own budget, and what the painting's budget has left.
+        let cap_pass = pass.budget.min(p.budget.saturating_sub(placed));
+        let threads = if p.threads == 0 { std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1) } else { p.threads };
+        if threads <= 1 {
+            // CLASSIC ORDER: visit the pass's seed cells in a SCRAMBLED order (a deterministic hashed permutation),
+            // not row by row. When the budget runs out mid-pass, row order left the bottom of every picture
+            // untouched by that pass — measured: the 2px pass changed nothing below 55% of the height, so every
+            // face, figure or detail in the lower half was painted without the fine layers. Scrambled, a cap thins
+            // the pass uniformly. Replay-exact.
+            let mut order: Vec<u32> = (0..n_cells as u32).collect();
+            order.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
+            for cell in order {
+                if placed >= p.budget || in_pass >= pass.budget {
+                    break;
+                }
+                k += 1;
+                if let Some(mut rec) = attempt(cell, k, &mut canvas, (0, 0), &mut cache, None) {
+                    placed += 1;
+                    in_pass += 1;
+                    if let Some(pr) = progress {
+                        if placed % 64 == 0 {
+                            pr(placed);
+                        }
+                    }
+                    rec.id = placed as u32;
+                    score.strokes.push(rec);
+                }
+            }
+        } else {
+            // TILE SCHEDULE (parallel): cut the pass into square tiles wider than twice a mark's REACH (both
+            // halves of the longest path, the widest footprint, the waver, a margin). Tiles of one checkerboard
+            // PHASE (even/odd column × even/odd row) are a full tile apart, so no two can touch the same pixel:
+            // each paints on a private copy of its tile-plus-reach, in parallel, and is pasted back in tile
+            // order. The pass's budget is shared out by cell count; a tile that hits its share is fed again in a
+            // later round from what the others left, so a cap still thins the pass evenly. The record order —
+            // round, phase, tile, then the tile's own scrambled order — is a valid sequential order of the same
+            // marks on the same canvas states, so the replay is byte-exact and the picture is the same for any
+            // thread count ≥ 2.
+            let len_max = radius * 2.2 * (len_mul * p.stroke_len * 1.18).max(0.2);
+            let step = (radius * 0.6).max(1.0);
+            let rw_max = (radius * profile.radius_scale * p.stroke_width * 1.15).max(p.min_brush * 0.8);
+            let reach = ((2.0 * len_max + 2.0 * step + rw_max * (0.5 + b_waver) + 3.0) * 1.25).ceil() as u32;
+            let tile_cells = ((2.0 * reach as f32 / grid).ceil() as u32).max(3);
+            let tiles_x = cols.div_ceil(tile_cells) as usize;
+            let tiles_y = rows.div_ceil(tile_cells) as usize;
+            let k_base = k;
+            k += n_cells as u64;
+            if prof_on { eprintln!("PROFILE   tiles {tiles_x}x{tiles_y} (tile {tile_cells} cells, reach {reach}px, grid {grid:.1}) cells {n_cells}"); }
+            // MIXTURES UP FRONT, in parallel, order-independent: a seed's target colour is known before any mark
+            // is laid (the reference at the jittered seed, the broken-colour jitter by key), so the pass's
+            // distinct quantised colours are solved once here from each bucket's own representative colour.
+            // (A lazy cache per tile re-solved the same colours in every tile — a 1024² fine pass has 1,700
+            // tiles and ran 4× SLOWER than the single order; a first-hit shared cache would depend on which
+            // worker got there first.)
+            let shared: std::collections::HashMap<u32, Vec<f32>> = {
+                let mut keys: Vec<u32> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for cell in 0..n_cells as u32 {
+                    let (gyi, gxi) = (cell / cols, cell % cols);
+                    let kk = k_base + cell as u64 + 1;
+                    let cx = (gxi as f32 + 0.5) * grid + jitter(p.seed, kk) * grid;
+                    let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed, kk.wrapping_add(1)) * grid;
+                    if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
+                        continue;
+                    }
+                    let target = reference.get_pixel(cx as u32, cy as u32).0;
+                    let t = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, kk) } else { target };
+                    let key = mixture_key(t);
+                    if seen.insert(key) {
+                        keys.push(key);
+                    }
+                }
+                let chunk = keys.len().div_ceil(threads).max(1);
+                let solved: Vec<Vec<(u32, Vec<f32>)>> = std::thread::scope(|sc| {
+                    let handles: Vec<_> = keys.chunks(chunk).map(|ch| sc.spawn(move || ch.iter().map(|&key| (key, mixture_for_key(key, &p.palette, n))).collect::<Vec<_>>())).collect();
+                    handles.into_iter().map(|hd| hd.join().expect("mixture solve thread")).collect()
                 });
+                solved.into_iter().flatten().collect()
+            };
+            if prof_on { eprintln!("PROFILE   mixtures {} keys solved up front", shared.len()); }
+            struct Tile {
+                cells: Vec<u32>,
+                cursor: usize,
+                capped: bool,
+            }
+            let mut tiles: Vec<Tile> = (0..tiles_x * tiles_y).map(|_| Tile { cells: Vec::new(), cursor: 0, capped: false }).collect();
+            for cell in 0..n_cells as u32 {
+                let (gyi, gxi) = (cell / cols, cell % cols);
+                tiles[(gyi / tile_cells) as usize * tiles_x + (gxi / tile_cells) as usize].cells.push(cell);
+            }
+            for t in tiles.iter_mut() {
+                t.cells.sort_by_key(|&c| jitter(order_seed, c as u64).to_bits());
+            }
+            struct Job<'j> {
+                t: usize,
+                rx0: u32,
+                ry0: u32,
+                sub: Canvas,
+                share: usize,
+                cells: &'j [u32],
+            }
+            struct Done {
+                t: usize,
+                rx0: u32,
+                ry0: u32,
+                sub: Canvas,
+                recs: Vec<StrokeRecord>,
+                used: usize,
+            }
+            let mut remaining = cap_pass;
+            for round in 0..4 {
+                if remaining == 0 {
+                    break;
+                }
+                let elig: Vec<usize> = (0..tiles.len()).filter(|&t| tiles[t].cursor < tiles[t].cells.len() && (round == 0 || tiles[t].capped)).collect();
+                if elig.is_empty() {
+                    break;
+                }
+                let tot: usize = elig.iter().map(|&t| tiles[t].cells.len() - tiles[t].cursor).sum();
+                let mut shares = vec![0usize; tiles.len()];
+                let mut sum = 0usize;
+                for &t in &elig {
+                    let rem = tiles[t].cells.len() - tiles[t].cursor;
+                    shares[t] = ((remaining as u128 * rem as u128) / tot.max(1) as u128) as usize;
+                    sum += shares[t];
+                }
+                let mut left = remaining.saturating_sub(sum);
+                for &t in &elig {
+                    if left == 0 {
+                        break;
+                    }
+                    shares[t] += 1;
+                    left -= 1;
+                }
+                for phase in 0..4usize {
+                    let work: Vec<usize> = elig.iter().copied().filter(|&t| shares[t] > 0 && (t % tiles_x) % 2 == phase % 2 && (t / tiles_x) % 2 == phase / 2).collect();
+                    if work.is_empty() {
+                        continue;
+                    }
+                    // Private copies of each tile plus its reach (same-phase copies never overlap).
+                    let jobs: Vec<std::sync::Mutex<Option<Job>>> = work
+                        .iter()
+                        .map(|&t| {
+                            let (tx, ty) = ((t % tiles_x) as u32, (t / tiles_x) as u32);
+                            let px0 = ((tx * tile_cells) as f32 * grid).floor().max(0.0) as u32;
+                            let px1 = (((tx + 1) * tile_cells) as f32 * grid).ceil().min(w as f32) as u32;
+                            let py0 = ((ty * tile_cells) as f32 * grid).floor().max(0.0) as u32;
+                            let py1 = (((ty + 1) * tile_cells) as f32 * grid).ceil().min(h as f32) as u32;
+                            let rx0 = px0.saturating_sub(reach);
+                            let rx1 = (px1 + reach).min(w);
+                            let ry0 = py0.saturating_sub(reach);
+                            let ry1 = (py1 + reach).min(h);
+                            let sub = canvas.crop(rx0, ry0, rx1 - rx0, ry1 - ry0);
+                            std::sync::Mutex::new(Some(Job { t, rx0, ry0, sub, share: shares[t], cells: &tiles[t].cells[tiles[t].cursor..] }))
+                        })
+                        .collect();
+                    let next = std::sync::atomic::AtomicUsize::new(0);
+                    let done: std::sync::Mutex<Vec<Done>> = std::sync::Mutex::new(Vec::with_capacity(jobs.len()));
+                    let attempt = &attempt;
+                    std::thread::scope(|sc| {
+                        for _ in 0..threads.min(jobs.len()) {
+                            sc.spawn(|| {
+                                loop {
+                                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if i >= jobs.len() {
+                                        break;
+                                    }
+                                    let Some(mut job) = jobs[i].lock().unwrap().take() else { break };
+                                    // A cache per TILE (not per worker): a quantised key keeps the first mixture that
+                                    // hit it, so the cache must not depend on which worker took which tiles.
+                                    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+                                    let mut recs = Vec::new();
+                                    let mut used = 0usize;
+                                    while recs.len() < job.share && used < job.cells.len() {
+                                        let cell = job.cells[used];
+                                        used += 1;
+                                        if let Some(rec) = attempt(cell, k_base + cell as u64 + 1, &mut job.sub, (job.rx0, job.ry0), &mut cache, Some(&shared)) {
+                                            recs.push(rec);
+                                        }
+                                    }
+                                    done.lock().unwrap().push(Done { t: job.t, rx0: job.rx0, ry0: job.ry0, sub: job.sub, recs, used });
+                                }
+                            });
+                        }
+                    });
+                    drop(jobs);
+                    let mut done = done.into_inner().unwrap();
+                    done.sort_by_key(|d| d.t);
+                    for d in done {
+                        canvas.paste(&d.sub, d.rx0, d.ry0);
+                        let n_recs = d.recs.len();
+                        for mut rec in d.recs {
+                            placed += 1;
+                            in_pass += 1;
+                            rec.id = placed as u32;
+                            score.strokes.push(rec);
+                        }
+                        tiles[d.t].cursor += d.used;
+                        tiles[d.t].capped = n_recs >= shares[d.t] && tiles[d.t].cursor < tiles[d.t].cells.len();
+                        remaining = remaining.saturating_sub(n_recs);
+                    }
+                    if let Some(pr) = progress {
+                        pr(placed);
+                    }
+                }
             }
         }
 
@@ -1330,17 +1576,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         // Dry the canvas before the next pass so the just-laid masses SET: the restatement then reads as fresh
         // overlays instead of picking the masses back up and stirring them into mud. Wet-into-wet is `--dry 0`.
+        lap("pass:strokes", &mut prof_acc, &mut prof_t);
         // WET-INTO-WET per pass, tapering coarse → fine: the broad washes bloom into each other while still wet,
         // the later, finer work goes onto paper that has set and stays crisp. One bleed over the finished
         // painting fused EVERYTHING (measured: an ink-wash lost half its sharpness in that final step, and the
         // whole sheet read as one blur). The same schedule is reproduced by the score replay at each stage
         // boundary, so the drawing stays byte-exact.
         if p.bleed > 0.0 {
-            canvas.bleed(p.bleed * pass_bleed_taper(layer, passes.len()));
+            canvas.bleed_with(p.bleed * pass_bleed_taper(layer, passes.len()), p.diffuse);
         }
         if layer + 1 < passes.len() {
             canvas.dry(1.0 - p.dry);
         }
+        lap("pass:bleed+dry", &mut prof_acc, &mut prof_t);
+        if prof_on { eprintln!("PROFILE pass {layer} r={radius:.1} strokes={in_pass} {:.2}s", pass_t0.elapsed().as_secs_f64()); }
     }
     if !rejected.is_empty() {
         tracing::info!(target: "plakat", "paint critic: rejected {} pass(es): {}", rejected.len(), rejected.join(", "));
@@ -1376,9 +1625,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // A last, light wet-into-wet touch over the finish passes (contour, silhouette, splatter) so a wet medium
     // softens those marks a little — the strong fusion happened pass by pass above.
     if p.bleed > 0.0 {
-        canvas.bleed(p.bleed * FINAL_BLEED);
+        canvas.bleed_with(p.bleed * FINAL_BLEED, p.diffuse);
     }
 
+    lap("finish passes", &mut prof_acc, &mut prof_t);
+    if prof_on {
+        let mut agg: Vec<(&'static str, f64)> = Vec::new();
+        for (n, t) in &prof_acc {
+            match agg.iter_mut().find(|(m, _)| m == n) { Some(e) => e.1 += t, None => agg.push((n, *t)) }
+        }
+        let total: f64 = agg.iter().map(|(_, t)| t).sum();
+        for (n, t) in &agg { eprintln!("PROFILE {:<40} {:7.2}s {:5.1}%", n, t, 100.0 * t / total.max(1e-9)); }
+        eprintln!("PROFILE {:<40} {:7.2}s", "TOTAL paint_inner", total);
+    }
     PaintResult { canvas, strokes: placed, score, rejected }
 }
 
@@ -2156,6 +2415,33 @@ mod tests {
         let replayed = result.score.replay(64, 48).unwrap().to_image().into_raw();
         assert_eq!(painted, replayed, "score replay == the original paint at native size");
         assert_eq!(result.score.strokes.len(), result.strokes, "one record per stroke laid");
+    }
+
+    #[test]
+    fn the_tile_schedule_is_the_same_for_any_thread_count_and_replays_byte_exact() {
+        // The parallel checkerboard schedule: the picture must not depend on how many workers painted it, and
+        // its score — recorded phase by phase, tile by tile — must replay to the same bytes sequentially.
+        let img = gradient_img(160, 120);
+        let mut p = PaintParams::new(palette::EARTH, 3000);
+        p.brush_sizes = vec![12.0, 6.0, 3.0];
+        p.min_brush = 2.0;
+        p.bleed = 0.3;
+        p.dry = 0.5;
+        p.threads = 2;
+        let a = paint_from_image(&img, &p);
+        p.threads = 5;
+        let b = paint_from_image(&img, &p);
+        assert!(a.strokes > 200, "the tiled paint lays a real number of strokes ({})", a.strokes);
+        assert_eq!(a.canvas.to_image().into_raw(), b.canvas.to_image().into_raw(), "the tile order does not depend on the thread count");
+        assert_eq!(a.score.strokes.len(), b.score.strokes.len());
+        let replayed = a.score.replay(160, 120).unwrap().to_image().into_raw();
+        assert_eq!(a.canvas.to_image().into_raw(), replayed, "a tiled paint replays byte-exact from its score");
+        assert!(a.strokes <= 3000, "the budget holds under the tile schedule");
+        // The budget is spent under the tile schedule as it is in the classic order (a cap thins evenly).
+        p.threads = 1;
+        let c = paint_from_image(&img, &p);
+        let ratio = a.strokes as f32 / c.strokes.max(1) as f32;
+        assert!((0.85..=1.15).contains(&ratio), "tiled {} vs classic {} strokes", a.strokes, c.strokes);
     }
 
     #[test]

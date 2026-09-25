@@ -198,6 +198,48 @@ pub struct Analysis {
     pub long_side: u32,
     /// Whether the medium reserves the paper white (watercolour / ink).
     pub surface_white: bool,
+    /// STRUCTURE: the standard deviation of the 8-neighbour Laplacian of the luma (in [0,1] units) — how much
+    /// pixel-scale detail the picture carries (a flat portrait ~0.2, a busy street or foliage ~0.5). Scales the
+    /// stroke budget: a complex picture needs more marks per pixel to be restated than a plain one.
+    pub structure: f32,
+}
+
+/// The stroke-budget multiplier a picture's `structure` earns, relative to the reference it was tuned on
+/// (`STRUCTURE_NORM` → ×1). Never below ×1 (the accepted density is the floor — a plain picture is not thinned) and capped so a noisy one does not explode.
+pub fn structure_factor(structure: f32) -> f32 {
+    (structure / STRUCTURE_NORM).clamp(1.0, 1.6)
+}
+/// The structure of the pictures the area/10 density was tuned and accepted on.
+pub const STRUCTURE_NORM: f32 = 0.3330;
+
+/// `structure` for `Analysis`: σ of the 8-neighbour Laplacian of the [0,1] luma (border pixels excluded).
+pub fn structure_of(img: &image::RgbImage) -> f32 {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w < 3 || h < 3 {
+        return 0.0;
+    }
+    let luma: Vec<f32> = img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0).collect();
+    let (mut sum, mut sq, mut n) = (0.0f64, 0.0f64, 0u64);
+    for y in 1..h - 1 {
+        for x in 1..w - 1 {
+            let c = luma[y * w + x];
+            let mut nb = 0.0f32;
+            for dy in [-1i64, 0, 1] {
+                for dx in [-1i64, 0, 1] {
+                    if dx != 0 || dy != 0 {
+                        nb += luma[((y as i64 + dy) as usize) * w + (x as i64 + dx) as usize];
+                    }
+                }
+            }
+            let l = (8.0 * c - nb) as f64;
+            sum += l;
+            sq += l * l;
+            n += 1;
+        }
+    }
+    let n = n.max(1) as f64;
+    let mean = sum / n;
+    ((sq / n - mean * mean).max(0.0)).sqrt() as f32
 }
 
 /// Turn measured signals into a plan — the deterministic art director. The rules encode the tuning that had to be
@@ -275,8 +317,23 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // THIN + SHORT + MANY (measured policy): thin brushes seed a denser grid and short marks cover less each, so
     // the budget must scale to match or coverage is lost (the ground shows and the picture lightens). ~1 stroke
     // per 10 px² lays ~105k at 1024² (all of them are placed); the cap keeps a huge canvas sane.
-    let budget = ((area / 10) as usize).clamp(12000, 120000);
-    notes.push(format!("budget {budget} strokes (thin marks need density — area/10)"));
+    // The budget is a DENSITY, not a count: `paint from` paints at the image's own resolution, and a cap made
+    // every canvas above ~1.2 Mpx thinner (a 4 Mpx sheet got a third of the strokes per pixel — its fine
+    // passes starved and the features smeared; a photo grew, the budget did not). Drawing media are the
+    // exception: their lines are spaced by the sheet's size already and their budget only widens the hatch,
+    // so they keep the cap (and the accepted renders).
+    let drawing = crate::paint::medium::MediumProfile::by_name(&a.medium).map(|m| m.mark_model == crate::paint::medium::MarkModel::Density).unwrap_or(false);
+    // ... and a density is not enough either: the SAME area of a plain portrait and of a busy street do not need
+    // the same number of marks — the street's detail must be restated mark by mark, the portrait's masses are
+    // covered by a few. So the painted budget is area/10 × a COMPLEXITY factor read from the picture's own
+    // structure (Laplacian σ, see `structure_factor`), ×1 for the pictures the density was accepted on.
+    let factor = structure_factor(a.structure);
+    let budget = if drawing { ((area / 10) as usize).clamp(12000, 120000) } else { (((area / 10) as f64 * factor as f64) as usize).max(12000) };
+    notes.push(if drawing {
+        format!("budget {budget} strokes (thin marks need density — area/10, drawing cap 120k)")
+    } else {
+        format!("budget {budget} strokes (area/10 × complexity {factor:.2}: structure {:.3} vs norm {STRUCTURE_NORM})", a.structure)
+    });
     // DEPTH ORDER: the widest layer covers with long strokes; each thinner layer on top is shorter, tapering to
     // ~0.3 of the profile length on the finest. Long drags on the fine layers smeared features into blobs; short
     // dabs let the face, hands, book and distant figures READ (validated against a target painting at 1:1).
@@ -314,7 +371,7 @@ mod tests {
 
     #[test]
     fn flat_reference_gets_more_value_key_than_punchy() {
-        let base = Analysis { faces: 1, luma_stddev: 0.12, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true };
+        let base = Analysis { faces: 1, luma_stddev: 0.12, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
@@ -328,7 +385,7 @@ mod tests {
 
     #[test]
     fn no_face_means_uniform_armature() {
-        let a = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false };
+        let a = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false, structure: STRUCTURE_NORM };
         let plan = plan_from(&a);
         assert_eq!(plan.armature_face, None);
         assert_eq!(plan.armature_body, None, "no subject → no body tier");
@@ -337,7 +394,7 @@ mod tests {
 
     #[test]
     fn hjson_round_trips() {
-        let a = Analysis { faces: 1, luma_stddev: 0.15, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true };
+        let a = Analysis { faces: 1, luma_stddev: 0.15, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
         let plan = plan_from(&a);
         let parsed = PaintPlan::parse(&plan.to_hjson()).expect("parses");
         assert_eq!(parsed.armature, plan.armature);
@@ -345,7 +402,30 @@ mod tests {
         assert_eq!(parsed.medium, "watercolour");
     }
 
+    #[test]
+    fn budget_scales_with_size_and_complexity() {
+        let plain = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM };
+        let b1 = plan_from(&plain).budget.unwrap();
+        assert_eq!(b1, 1024 * 1024 / 10, "the accepted density at the norm structure: area/10");
+        let busy = Analysis { structure: STRUCTURE_NORM * 1.4, ..base_like(&plain) };
+        let b2 = plan_from(&busy).budget.unwrap();
+        assert!((b2 as f32 / b1 as f32 - 1.4).abs() < 0.01, "a busier picture earns proportionally more marks: {b2} vs {b1}");
+        let flat = Analysis { structure: 0.01, ..base_like(&plain) };
+        assert_eq!(plan_from(&flat).budget.unwrap(), b1, "a blank sheet never drops below the accepted density");
+        let noisy = Analysis { structure: 10.0, ..base_like(&plain) };
+        assert_eq!(plan_from(&noisy).budget.unwrap(), (b1 as f32 * 1.6) as usize, "noise does not explode the budget: 1.6× cap");
+        let big = Analysis { short_side: 2048, long_side: 2048, ..base_like(&plain) };
+        assert_eq!(plan_from(&big).budget.unwrap(), 2048 * 2048 / 10, "budget is a density: 4× the area, 4× the strokes (no cap)");
+        let drawing = Analysis { medium: "pen-ink".into(), ..base_like(&big) };
+        assert_eq!(plan_from(&drawing).budget.unwrap(), 120000, "drawing media keep the 120k cap");
+        // structure_of on a flat sheet is 0, on a checkerboard is large
+        let flat_img = image::RgbImage::from_pixel(16, 16, image::Rgb([128, 128, 128]));
+        assert!(structure_of(&flat_img) < 1e-6);
+        let chk = image::RgbImage::from_fn(16, 16, |x, y| if (x + y) % 2 == 0 { image::Rgb([255, 255, 255]) } else { image::Rgb([0, 0, 0]) });
+        assert!(structure_of(&chk) > 1.0);
+    }
+
     fn base_like(a: &Analysis) -> Analysis {
-        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white }
+        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white, structure: a.structure }
     }
 }

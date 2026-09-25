@@ -110,6 +110,17 @@ impl Stroke {
 
     /// Rasterise the stroke onto the canvas, evolving each bristle's load by deposit + pickup as it travels.
     pub fn rasterize(&self, canvas: &mut Canvas, brush: &BrushConfig) {
+        let (w, h) = (canvas.w, canvas.h);
+        self.rasterize_offset(canvas, brush, 0, 0, w, h);
+    }
+
+    /// `rasterize` onto a SUB-CANVAS whose origin is `(ox, oy)` of a `full_w × full_h` sheet (the parallel tile
+    /// schedule). The mark keeps its global coordinates — the lane streaks hash the path's origin and the
+    /// bounds are the full sheet's — only the pixel writes are shifted, so a tiled paint and its sequential
+    /// replay lay byte-identical marks. A pixel outside the sub-canvas is dropped (the schedule sizes its
+    /// margins so that never happens; a debug build asserts it).
+    #[allow(clippy::too_many_arguments)]
+    pub fn rasterize_offset(&self, canvas: &mut Canvas, brush: &BrushConfig, ox: u32, oy: u32, full_w: u32, full_h: u32) {
         let pts = densify(&self.path);
         if pts.is_empty() || self.load.is_empty() {
             return;
@@ -168,7 +179,7 @@ impl Stroke {
                 let off = (fr - 0.5) * width;
                 let x = (p[0] + perpx * off).round();
                 let y = (p[1] + perpy * off).round();
-                if x < 0.0 || y < 0.0 || x >= canvas.w as f32 || y >= canvas.h as f32 {
+                if x < 0.0 || y < 0.0 || x >= full_w as f32 || y >= full_h as f32 {
                     continue;
                 }
                 let (px, py) = (x as u32, y as u32);
@@ -177,6 +188,12 @@ impl Stroke {
                 }
                 last_x = px as i32;
                 last_y = py as i32;
+                let inside = px >= ox && py >= oy && px - ox < canvas.w && py - oy < canvas.h;
+                debug_assert!(inside, "stroke escaped its tile: ({px},{py}) outside {ox},{oy} + {}x{}", canvas.w, canvas.h);
+                if !inside {
+                    continue;
+                }
+                let (px, py) = (px - ox, py - oy);
                 // Cross-section falloff by brush ROUNDNESS: a round brush feathers gently to the edge (soft
                 // mark); a flat brush holds a flatter top and drops sharper (a squarer edge). `round` in [0,1]
                 // interpolates between them.

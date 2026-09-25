@@ -43,6 +43,14 @@ pub struct ScoreHeader {
     pub brush: BrushConfig,
     /// Wet-into-wet BLEED strength applied after painting (0 = dry media) — replay reproduces it.
     pub bleed: f32,
+    /// Signed PIGMENT DIFFUSION (-1..+1) of the bleed — replay reproduces it (absent in older scores = 0).
+    pub diffuse: f32,
+    /// The PASS SCHEDULE the paint ran — every pass's stage name in order, laid or empty. Replay crosses each
+    /// pass boundary (its tapered bleed, then drying) from this list, so a pass that laid no stroke (a fine pass
+    /// on a picture that was already right, a tiny sheet) and the finish stages (contour, splatter…) that are
+    /// not passes still reproduce the delivered image exactly. `None` = a score written before the schedule was
+    /// recorded: the distinct stage names present stand in for it.
+    pub stages: Option<Vec<String>>,
     /// INTER-PASS DRYING (0..1): how much the canvas dried between passes during painting. Recorded so a replay
     /// (at any resolution) dries at the same stage boundaries and reproduces the delivered image. 0 = never dried.
     pub dry: f32,
@@ -137,9 +145,13 @@ impl StrokeScore {
         let mut o = String::new();
         o.push_str("# plakat stroke score v1\n");
         let ground = h.ground.map(|g| format!(" ground={},{},{}", g[0], g[1], g[2])).unwrap_or_default();
+        let ground = match &h.stages {
+            Some(st) => format!("{ground} stages={}", st.iter().map(|x| x.replace(' ', "_")).collect::<Vec<_>>().join(",")),
+            None => ground,
+        };
         o.push_str(&format!(
-            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
+            "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
         ));
         // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
         for (name, rgb) in &h.pigments {
@@ -202,6 +214,8 @@ impl StrokeScore {
                             (v.len() == 3).then_some([v[0], v[1], v[2]])
                         }),
                         bleed: get("bleed").parse().unwrap_or(0.0),
+                        diffuse: get("diffuse").parse().unwrap_or(0.0),
+                        stages: m.get("stages").map(|v| v.split(',').filter(|x| !x.is_empty()).map(|x| x.to_string()).collect()),
                         dry: get("dry").parse().unwrap_or(0.0),
                         opacity: get("opacity").parse().unwrap_or(1.0),
                         impasto: get("impasto").parse().unwrap_or(0.0),
@@ -299,31 +313,22 @@ impl StrokeScore {
         .with_opacity(self.header.opacity);
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let full = |k: &dyn Fn(&StrokeRecord) -> bool| self.strokes.iter().all(|r| k(r));
-        // Inter-pass drying: the paint dried the canvas at each pass boundary; a stage change in the recorded
-        // stream marks one. Reproduce it here so replay matches the delivered image (no-op for old scores, dry=0).
-        let dry_keep = 1.0 - self.header.dry;
-        // The pass schedule the paint ran: distinct stage names in order. Each boundary bled (wet-into-wet,
-        // tapering coarse → fine, see `painter::pass_bleed_taper`) and then dried.
-        let stages = self.stage_schedule(&keep);
+        // The pass schedule the paint ran (recorded, or the stage names present). Each pass boundary bled
+        // (wet-into-wet, tapering coarse → fine, see `painter::pass_bleed_taper`) and then dried; a record from
+        // a later pass crosses every boundary up to it (empty passes included), a record from a finish stage
+        // (contour, splatter…) first crosses the rest of them.
+        let stages = self.pass_stages(&keep);
         let n_stages = stages.len();
-        let mut stage_idx = 0usize;
-        let mut last_stage: Option<&str> = None;
+        let mut cur = 0usize;
         for rec in &self.strokes {
             if !keep(rec) {
                 continue;
             }
-            if let Some(prev) = last_stage {
-                if prev != rec.stage {
-                    if self.header.bleed > 0.0 && stage_idx < n_stages {
-                        canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
-                    }
-                    if self.header.dry > 0.0 {
-                        canvas.dry(dry_keep);
-                    }
-                    stage_idx += 1;
-                }
+            let at = stages.iter().position(|st| st == &rec.stage).unwrap_or(n_stages);
+            if at > cur {
+                self.cross_passes(&mut canvas, cur, at, n_stages);
+                cur = at;
             }
-            last_stage = Some(&rec.stage);
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
             if rec.wipe {
                 // A subtractive WIPE stroke: scrape pigment back (strength recorded in `wet`). LIFT scales how
@@ -343,15 +348,38 @@ impl StrokeScore {
             let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), ..brush };
             s.rasterize(&mut canvas, &sb);
         }
-        // The last pass's own bleed (it is not followed by a boundary), then the light final touch — only on a
-        // FULL replay; a truncated/filtered replay is an intermediate state, before the fusion.
-        if self.header.bleed > 0.0 && full(&keep) {
-            if stage_idx < n_stages {
-                canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
+        // The remaining pass boundaries (the last pass's own bleed, any trailing empty pass), then the light
+        // final touch — only on a FULL replay; a truncated/filtered replay is an intermediate state, before the
+        // fusion.
+        if full(&keep) {
+            self.cross_passes(&mut canvas, cur, n_stages, n_stages);
+            if self.header.bleed > 0.0 {
+                canvas.bleed_with(self.header.bleed * crate::paint::painter::FINAL_BLEED, self.header.diffuse);
             }
-            canvas.bleed(self.header.bleed * crate::paint::painter::FINAL_BLEED);
         }
         Ok(canvas)
+    }
+
+    /// The pass schedule to reproduce: the recorded one (see `ScoreHeader::stages`), else the distinct stage
+    /// names present among the kept strokes.
+    fn pass_stages(&self, keep: &dyn Fn(&StrokeRecord) -> bool) -> Vec<String> {
+        match &self.header.stages {
+            Some(st) => st.clone(),
+            None => self.stage_schedule(keep),
+        }
+    }
+
+    /// Cross the pass boundaries `from..to` of an `n`-pass schedule exactly as the painter does after each pass:
+    /// the pass's tapered wet-into-wet bleed, then — when another pass follows — the inter-pass drying.
+    fn cross_passes(&self, canvas: &mut Canvas, from: usize, to: usize, n: usize) {
+        for idx in from..to.min(n) {
+            if self.header.bleed > 0.0 {
+                canvas.bleed_with(self.header.bleed * crate::paint::painter::pass_bleed_taper(idx, n), self.header.diffuse);
+            }
+            if self.header.dry > 0.0 && idx + 1 < n {
+                canvas.dry(1.0 - self.header.dry);
+            }
+        }
     }
 
     /// The ordered list of distinct stage names among the kept strokes — the pass schedule the paint ran.
@@ -379,24 +407,15 @@ impl StrokeScore {
         let every = every.max(1);
         let mut frames = Vec::new();
         let mut laid = 0usize;
-        let dry_keep = 1.0 - self.header.dry;
-        let stages = self.stage_schedule(&|_| true);
+        let stages = self.pass_stages(&|_| true);
         let n_stages = stages.len();
-        let mut stage_idx = 0usize;
-        let mut last_stage: Option<&str> = None;
+        let mut cur = 0usize;
         for rec in &self.strokes {
-            if let Some(prev) = last_stage {
-                if prev != rec.stage {
-                    if self.header.bleed > 0.0 && stage_idx < n_stages {
-                        canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
-                    }
-                    if self.header.dry > 0.0 {
-                        canvas.dry(dry_keep);
-                    }
-                    stage_idx += 1;
-                }
+            let at = stages.iter().position(|st| st == &rec.stage).unwrap_or(n_stages);
+            if at > cur {
+                self.cross_passes(&mut canvas, cur, at, n_stages);
+                cur = at;
             }
-            last_stage = Some(&rec.stage);
             if !rec.wipe {
                 let mut load = vec![0f32; n];
                 for (name, val) in &rec.mix {
@@ -414,11 +433,9 @@ impl StrokeScore {
                 }
             }
         }
+        self.cross_passes(&mut canvas, cur, n_stages, n_stages);
         if self.header.bleed > 0.0 {
-            if stage_idx < n_stages {
-                canvas.bleed(self.header.bleed * crate::paint::painter::pass_bleed_taper(stage_idx, n_stages));
-            }
-            canvas.bleed(self.header.bleed * crate::paint::painter::FINAL_BLEED); // the light final touch
+            canvas.bleed_with(self.header.bleed * crate::paint::painter::FINAL_BLEED, self.header.diffuse); // the light final touch
         }
         frames.push(canvas); // always end on the finished painting
         Ok(frames)
@@ -458,7 +475,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None },
                 StrokeRecord { id: 2, wipe: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None },
@@ -530,7 +547,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
         let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None };

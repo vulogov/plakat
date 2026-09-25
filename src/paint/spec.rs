@@ -55,6 +55,12 @@ pub struct PaintSpec {
     // ── Technique behaviour (each overrides the medium's default) ────────────────────────────────────────────
     /// Wet-into-wet BLEED (0..1): fusion/bloom of the wet media. Default per medium (watercolour/ink high).
     pub bleed: Option<f32>,
+    /// PIGMENT DIFFUSION (-1..+1): which way the wet pigment travels — +1 into the darks, -1 out into the lights,
+    /// 0 (default) none.
+    pub diffuse: Option<f32>,
+    /// Worker THREADS for stroke placement: 1/absent = the classic single order (byte-identical), 0 = every core,
+    /// ≥2 = that many — the tile schedule (same picture for any count ≥ 2, a different hand from the single order).
+    pub threads: Option<usize>,
     /// BODY / opacity (0.1..1): 1 = opaque cover (gouache/oil), low = transparent (watercolour/ink glow).
     pub opacity: Option<f32>,
     /// PICKUP (0..1): the dirty-brush drag — high fuses neighbouring colour (oil/ink), low keeps marks clean.

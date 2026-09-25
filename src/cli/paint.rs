@@ -44,6 +44,16 @@ pub struct PaintArgs {
     /// BLEED (0..1) wet-into-wet fusion — overrides the medium default (watercolour/ink bleed; oil/gouache don't).
     #[arg(long)]
     pub bleed: Option<f32>,
+    /// PIGMENT DIFFUSION (-1..+1, default 0 = none): which way the wet pigment travels. +1 = into the darks (they
+    /// charge up, the lights stay clean, crisp light-side edges); -1 = out into the lights (feathered halos, soft
+    /// edges). Needs a wet medium (`--bleed` > 0).
+    #[arg(long, allow_hyphen_values = true)]
+    pub diffuse: Option<f32>,
+    /// THREADS for stroke placement. 1 (default) = the classic single painter, byte-identical to earlier renders;
+    /// 0 = every core, 2+ = that many: the parallel tile schedule — same picture for any count ≥ 2, replay-exact,
+    /// but a different hand from the single order. (Mixtures are solved allocation-free either way.)
+    #[arg(long, default_value_t = 1)]
+    pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (fully wet-into-wet, the
     /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
     #[arg(long, default_value_t = 0.5)]
@@ -233,6 +243,8 @@ pub struct SpecArgs {
     pub stroke_length: f32,
     pub stroke_width: f32,
     pub bleed: Option<f32>,
+    pub diffuse: Option<f32>,
+    pub threads: usize,
     pub dry: f32,
     pub shadow_floor: Option<f32>,
     pub detail_length: Option<f32>,
@@ -484,6 +496,16 @@ pub struct FromArgs {
     /// BLEED (0..1) wet-into-wet fusion (default 0 for `from`).
     #[arg(long)]
     pub bleed: Option<f32>,
+    /// PIGMENT DIFFUSION (-1..+1, default 0 = none): which way the wet pigment travels. +1 = into the darks (they
+    /// charge up, the lights stay clean, crisp light-side edges); -1 = out into the lights (feathered halos, soft
+    /// edges). Needs a wet medium (`--bleed` > 0).
+    #[arg(long, allow_hyphen_values = true)]
+    pub diffuse: Option<f32>,
+    /// THREADS for stroke placement. 1 (default) = the classic single painter, byte-identical to earlier renders;
+    /// 0 = every core, 2+ = that many: the parallel tile schedule — same picture for any count ≥ 2, replay-exact,
+    /// but a different hand from the single order. (Mixtures are solved allocation-free either way.)
+    #[arg(long, default_value_t = 1)]
+    pub threads: usize,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
     /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
     #[arg(long, default_value_t = 0.5)]
@@ -666,7 +688,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -914,6 +936,7 @@ async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str) -> R
         short_side: w.min(h),
         long_side: w.max(h),
         surface_white,
+        structure: crate::paint::plan::structure_of(&img),
     })
 }
 
@@ -1017,6 +1040,8 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     // TECHNIQUE behaviour: each control defaults to the MEDIUM's characteristic value, overridable by the spec
     // then the CLI — so watercolour bleeds and glows, oil is opaque and dirty, pen-ink is crisp, out of the box.
     params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
+    params.diffuse = spec.diffuse.or(a.diffuse).unwrap_or(0.0).clamp(-1.0, 1.0);
+    params.threads = spec.threads.unwrap_or(a.threads);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -1576,6 +1601,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
     }
+    if let Some(d) = a.diffuse {
+        params.diffuse = d.clamp(-1.0, 1.0);
+    }
+    params.threads = a.threads;
     if let Some(o) = a.opacity {
         params.opacity = o.clamp(0.1, 1.0);
     }

@@ -56,6 +56,35 @@ pub struct Canvas {
     n: usize,
 }
 
+/// A 3×3 box blur of a per-pixel field (edge-clamped).
+fn box_blur3(f: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0f32; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sum = 0.0;
+            for dy in -1i32..=1 {
+                for dx in -1i32..=1 {
+                    let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+                    let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+                    sum += f[ny * w + nx];
+                }
+            }
+            out[y * w + x] = sum / 9.0;
+        }
+    }
+    out
+}
+
+/// Pigment drift (see `Canvas::bleed_with`): the share of a cell's load that crosses to a neighbour per step
+/// at full difference, the load difference (as a fraction of the wet cells' mean load) that counts as full, and
+/// the drift steps taken after each bloom iteration (each step travels one pixel). Calibrated on a 1024²
+/// watercolour: rate 0.25 is stable (0.5 piled pigment into a stipple); 4 steps give a visible but unbroken
+/// full-scale effect (+1 moves the picture by DSSIM ~0.02, -1 ~0.004 — gathering feeds itself, spreading
+/// equalises, so the light side is inherently the gentler one).
+const DRIFT_RATE: f32 = 0.25;
+const DRIFT_TAU: f32 = 0.3;
+const DRIFT_STEPS: usize = 4;
+
 impl Canvas {
     /// A canvas primed with a ground: the given concentration vector at every pixel (length = palette size).
     /// `tooth` is uniform. `wetness`/`height` start at zero.
@@ -194,10 +223,22 @@ impl Canvas {
     /// only WET pixels bleed, so dry paint keeps its edge. Deterministic — replay reproduces it from the same
     /// wetness state. A no-op at `strength == 0` (the dry media).
     pub fn bleed(&mut self, strength: f32) {
+        self.bleed_with(strength, 0.0);
+    }
+
+    /// `bleed` with a signed PIGMENT DIFFUSION (`diffuse` in -1..+1). In a real wash the pigment does not only
+    /// fuse: it TRAVELS. +1 favours the darks — pigment migrates from a lighter wet cell into its darker, more
+    /// loaded neighbour (the darks charge up, the lights stay clean, the edge stays crisp on the light side);
+    /// -1 favours the lights — pigment spreads out of the loaded passages into the lighter wet paper around them
+    /// (feathered halos, softened edges). 0 = the plain isotropic bleed, byte-identical to before. The drift is
+    /// mass-conserving (what one cell loses its neighbour gains), gated by BOTH cells' wetness (dry or reserved
+    /// paper neither gives nor takes), and runs after each bloom iteration so it reaches as far as the bloom.
+    pub fn bleed_with(&mut self, strength: f32, diffuse: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 {
             return;
         }
+        let d = diffuse.clamp(-1.0, 1.0);
         let (w, h) = (self.w as usize, self.h as usize);
         let n = self.n;
         let iters = (1.0 + 5.0 * s).round() as usize; // more strength → farther bloom
@@ -238,6 +279,107 @@ impl Canvas {
                     }
                 }
             }
+            if d.abs() > 1e-4 {
+                for _ in 0..DRIFT_STEPS {
+                    self.pigment_drift(s, d);
+                }
+            }
+        }
+    }
+
+    /// One step of directional pigment transport between wet neighbours (see `bleed_with`). Each 4-neighbour
+    /// pair is visited once; the amount moved is a fraction of the SOURCE cell's pigment set by the pair's
+    /// wetness, `|d|`, and how different the two loads are — so an even wash does not drift, a wash against a
+    /// dark passage does. Bounded so a cell can never go negative (≤ ¼ of its load per pair, 4 pairs).
+    fn pigment_drift(&mut self, s: f32, d: f32) {
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let toward_dark = d > 0.0;
+        let mag = d.abs().min(1.0);
+        let cell_load: Vec<f32> = (0..w * h).map(|p| self.conc[p * n..p * n + n].iter().sum::<f32>()).collect();
+        // The drift follows the WASH's level, not the pixel's: the load field smoothed over a few pixels. Judged
+        // pixel by pixel, the transport fed on pixel-scale noise and piled pigment into a checkerboard; judged on
+        // the wash level it moves pigment across the real boundaries between a loaded passage and a thin one.
+        let dark = box_blur3(&box_blur3(&cell_load, w, h), w, h);
+        // The load difference that counts as a real boundary: a fraction of the wet cells' MEAN load — a fact of
+        // this painting, so a thin wash and a loaded one drift alike, and the tiny differences inside one even
+        // wash are left alone (no clumping out of noise).
+        let (mut sum, mut cnt) = (0.0f32, 0usize);
+        for p in 0..w * h {
+            if self.wetness[p] > 1e-3 {
+                sum += dark[p];
+                cnt += 1;
+            }
+        }
+        let scale = (sum / cnt.max(1) as f32) * DRIFT_TAU + 1e-4;
+        let src = self.conc.clone();
+        let src_film = self.film.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                    if nx >= w || ny >= h {
+                        continue;
+                    }
+                    let q = ny * w + nx;
+                    let a = s * mag * self.wetness[p].min(self.wetness[q]).clamp(0.0, 1.0);
+                    if a <= 1e-4 {
+                        continue;
+                    }
+                    let dd = dark[q] - dark[p];
+                    if dd.abs() <= 1e-6 {
+                        continue;
+                    }
+                    // Pigment leaves the lighter cell for the darker one (toward the dark), or the darker for the
+                    // lighter (toward the light).
+                    let (from, to) = if (dd > 0.0) == toward_dark { (p, q) } else { (q, p) };
+                    let f = a * DRIFT_RATE * (dd.abs() / scale).clamp(0.0, 1.0);
+                    for c in 0..n {
+                        let m = src[from * n + c] * f;
+                        self.conc[from * n + c] = (self.conc[from * n + c] - m).max(0.0);
+                        self.conc[to * n + c] += m;
+                    }
+                    let mf = src_film[from] * f;
+                    self.film[from] = (self.film[from] - mf).max(0.0);
+                    self.film[to] += mf;
+                }
+            }
+        }
+    }
+
+    /// A copy of the rectangle `(x0, y0, cw, ch)` as its own canvas — every per-pixel buffer — so a TILE can be
+    /// painted in isolation on another thread; `paste` writes it back. (The parallel tile schedule.)
+    pub fn crop(&self, x0: u32, y0: u32, cw: u32, ch: u32) -> Canvas {
+        let n = self.n;
+        let (w, cw, ch) = (self.w as usize, cw as usize, ch as usize);
+        let (x0, y0) = (x0 as usize, y0 as usize);
+        let mut conc = Vec::with_capacity(cw * ch * n);
+        let mut film = Vec::with_capacity(cw * ch);
+        let mut height = Vec::with_capacity(cw * ch);
+        let mut wetness = Vec::with_capacity(cw * ch);
+        let mut tooth = Vec::with_capacity(cw * ch);
+        for y in 0..ch {
+            let row = (y0 + y) * w + x0;
+            conc.extend_from_slice(&self.conc[row * n..(row + cw) * n]);
+            film.extend_from_slice(&self.film[row..row + cw]);
+            height.extend_from_slice(&self.height[row..row + cw]);
+            wetness.extend_from_slice(&self.wetness[row..row + cw]);
+            tooth.extend_from_slice(&self.tooth[row..row + cw]);
+        }
+        Canvas { w: cw as u32, h: ch as u32, palette: self.palette.clone(), conc, film, height, wetness, tooth, ground_lin: self.ground_lin, opacity: self.opacity, opacity_k: self.opacity_k, n }
+    }
+
+    /// Write a `crop` back at `(x0, y0)` (the inverse of `crop`).
+    pub fn paste(&mut self, sub: &Canvas, x0: u32, y0: u32) {
+        let n = self.n;
+        let (w, cw, ch) = (self.w as usize, sub.w as usize, sub.h as usize);
+        let (x0, y0) = (x0 as usize, y0 as usize);
+        for y in 0..ch {
+            let row = (y0 + y) * w + x0;
+            self.conc[row * n..(row + cw) * n].copy_from_slice(&sub.conc[y * cw * n..(y + 1) * cw * n]);
+            self.film[row..row + cw].copy_from_slice(&sub.film[y * cw..(y + 1) * cw]);
+            self.height[row..row + cw].copy_from_slice(&sub.height[y * cw..(y + 1) * cw]);
+            self.wetness[row..row + cw].copy_from_slice(&sub.wetness[y * cw..(y + 1) * cw]);
+            self.tooth[row..row + cw].copy_from_slice(&sub.tooth[y * cw..(y + 1) * cw]);
         }
     }
 
@@ -605,6 +747,59 @@ mod tests {
     use super::*;
     use crate::paint::color::{delta_e76, srgb_to_lab};
     use crate::paint::palette;
+
+    #[test]
+    fn diffusion_moves_pigment_toward_the_dark_or_the_light_and_conserves_it() {
+        // Two wet cells: a loaded dark one and a thin light one. Zorn: [ochre, cad-red, black, white].
+        let mk = || {
+            let mut c = Canvas::white(2, 1, palette::ZORN, 0.7);
+            c.deposit(0, 0, &[0.0, 0.0, 2.0, 0.0], 0.3);
+            c.deposit(1, 0, &[0.0, 0.0, 0.4, 0.0], 0.1);
+            c.wetness[0] = 1.0;
+            c.wetness[1] = 1.0;
+            c
+        };
+        let total = |c: &Canvas| c.conc_at(0, 0)[2] + c.conc_at(1, 0)[2];
+        let mut iso = mk();
+        iso.bleed_with(0.5, 0.0);
+        let mut plain = mk();
+        plain.bleed(0.5);
+        assert_eq!(iso.conc_at(0, 0), plain.conc_at(0, 0), "diffuse 0 is byte-identical to the plain bleed");
+        let mut dark = mk();
+        dark.bleed_with(0.5, 1.0);
+        let mut light = mk();
+        light.bleed_with(0.5, -1.0);
+        assert!(dark.conc_at(0, 0)[2] > iso.conc_at(0, 0)[2], "+1: the dark cell charges up ({} > {})", dark.conc_at(0, 0)[2], iso.conc_at(0, 0)[2]);
+        assert!(light.conc_at(0, 0)[2] < iso.conc_at(0, 0)[2], "-1: the dark cell gives pigment to the light ({} < {})", light.conc_at(0, 0)[2], iso.conc_at(0, 0)[2]);
+        assert!((total(&dark) - total(&iso)).abs() < 1e-4 && (total(&light) - total(&iso)).abs() < 1e-4, "the drift conserves pigment");
+        // Dry paper neither gives nor takes.
+        let mut dry = mk();
+        dry.wetness[1] = 0.0;
+        let before = dry.conc_at(1, 0)[2];
+        dry.bleed_with(0.5, -1.0);
+        assert!((dry.conc_at(1, 0)[2] - before).abs() < 1e-6, "a dry cell takes no drifting pigment");
+    }
+
+    #[test]
+    fn crop_and_paste_round_trip_every_buffer() {
+        let mut c = Canvas::white(6, 5, palette::ZORN, 0.7);
+        c.deposit(2, 1, &[0.0, 3.0, 0.0, 0.0], 0.4);
+        c.deposit(4, 3, &[0.0, 0.0, 2.0, 0.0], 0.2);
+        c.wetness[2 * 6 + 4] = 0.9;
+        let sub = c.crop(1, 1, 4, 3);
+        assert_eq!(sub.color_at(1, 0), c.color_at(2, 1), "a crop reads the same colour at the shifted position");
+        assert_eq!(sub.conc_at(3, 2), c.conc_at(4, 3));
+        let mut d = Canvas::white(6, 5, palette::ZORN, 0.7);
+        d.paste(&sub, 1, 1);
+        for y in 1..4 {
+            for x in 1..5 {
+                assert_eq!(d.conc_at(x, y), c.conc_at(x, y));
+                assert_eq!(d.wetness[y as usize * 6 + x as usize], c.wetness[y as usize * 6 + x as usize]);
+                assert_eq!(d.height[y as usize * 6 + x as usize], c.height[y as usize * 6 + x as usize]);
+            }
+        }
+        assert_eq!(d.conc_at(0, 0), c.conc_at(0, 0), "outside the rectangle the ground is untouched");
+    }
 
     #[test]
     fn white_ground_reads_white() {

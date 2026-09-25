@@ -87,11 +87,36 @@ pub fn mix_linear(pigments: &[Pigment], concentrations: &[f32]) -> LinRgb {
     // mixture into mud. Accumulate the weighted K/S and the weight sum in one pass, then normalise — so it stays a
     // proportion (scaling all concentrations leaves colour unchanged) and a solo pigment's weight cancels (its
     // masstone is preserved). Allocation-free (hot path: called per pixel).
+    // The per-pigment constants are pure functions of the masstone; gathered here, mixed in `mix_linear_pre` (the
+    // solver precomputes them once per palette and calls the same core — identical arithmetic, so its answers
+    // are the same to the bit). Stack arrays up to 16 pigments (every built-in and derived palette), else a Vec.
+    if n <= 16 {
+        let mut ksl = [[0f32; 3]; 16];
+        let mut tint = [0f32; 16];
+        for i in 0..n {
+            ksl[i] = pigments[i].ks();
+            tint[i] = pigments[i].tinting();
+        }
+        mix_linear_pre(&ksl[..n], &tint[..n], &concentrations[..n], total)
+    } else {
+        let ksl: Vec<[f32; 3]> = pigments[..n].iter().map(|p| p.ks()).collect();
+        let tint: Vec<f32> = pigments[..n].iter().map(|p| p.tinting()).collect();
+        mix_linear_pre(&ksl, &tint, &concentrations[..n], total)
+    }
+}
+
+/// The mixing core of [`mix_linear`] on precomputed per-pigment `K/S` and tinting strength, `total` being the
+/// concentrations' (non-negative) sum. Allocation-free; the solver's hot path.
+pub fn mix_linear_pre(ksl: &[[f32; 3]], tint: &[f32], concentrations: &[f32], total: f32) -> LinRgb {
+    let n = ksl.len().min(tint.len()).min(concentrations.len());
+    if n == 0 || total <= 0.0 {
+        return color::srgb_to_linear([128, 128, 128]);
+    }
     let mut ks = [0f32; 3];
     let mut wsum = 0f32;
     for i in 0..n {
-        let w = (concentrations[i].max(0.0) / total) * pigments[i].tinting();
-        let p = pigments[i].ks();
+        let w = (concentrations[i].max(0.0) / total) * tint[i];
+        let p = ksl[i];
         for c in 0..3 {
             ks[c] += w * p[c];
         }
