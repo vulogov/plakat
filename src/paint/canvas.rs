@@ -84,6 +84,10 @@ fn box_blur3(f: &[f32], w: usize, h: usize) -> Vec<f32> {
 const DRIFT_RATE: f32 = 0.25;
 const DRIFT_TAU: f32 = 0.3;
 const DRIFT_STEPS: usize = 4;
+/// The most of its load a cell may give away in ONE drift step, over all four neighbours together. Without it
+/// a cell between darker neighbours could be drained to bare paper (white specks in a stipple of dark dots —
+/// seen at rate 0.5); with it the failure is impossible whatever the rate.
+const DRIFT_MAX_OUT: f32 = 0.5;
 
 impl Canvas {
     /// A canvas primed with a ground: the given concentration vector at every pixel (length = palette size).
@@ -281,7 +285,7 @@ impl Canvas {
             }
             if d.abs() > 1e-4 {
                 for _ in 0..DRIFT_STEPS {
-                    self.pigment_drift(s, d);
+                    self.pigment_drift(s, d, DRIFT_RATE);
                 }
             }
         }
@@ -291,7 +295,7 @@ impl Canvas {
     /// pair is visited once; the amount moved is a fraction of the SOURCE cell's pigment set by the pair's
     /// wetness, `|d|`, and how different the two loads are — so an even wash does not drift, a wash against a
     /// dark passage does. Bounded so a cell can never go negative (≤ ¼ of its load per pair, 4 pairs).
-    fn pigment_drift(&mut self, s: f32, d: f32) {
+    fn pigment_drift(&mut self, s: f32, d: f32, rate: f32) {
         let (w, h, n) = (self.w as usize, self.h as usize, self.n);
         let toward_dark = d > 0.0;
         let mag = d.abs().min(1.0);
@@ -313,6 +317,23 @@ impl Canvas {
         let scale = (sum / cnt.max(1) as f32) * DRIFT_TAU + 1e-4;
         let src = self.conc.clone();
         let src_film = self.film.clone();
+        // One pair's flow: who gives, who takes, and what share of the giver's load (before the cap).
+        let flow = |p: usize, q: usize, wet: &[f32]| -> Option<(usize, usize, f32)> {
+            let a = s * mag * wet[p].min(wet[q]).clamp(0.0, 1.0);
+            if a <= 1e-4 {
+                return None;
+            }
+            let dd = dark[q] - dark[p];
+            if dd.abs() <= 1e-6 {
+                return None;
+            }
+            // Pigment leaves the lighter cell for the darker one (toward the dark), or the darker for the
+            // lighter (toward the light).
+            let (from, to) = if (dd > 0.0) == toward_dark { (p, q) } else { (q, p) };
+            Some((from, to, a * rate * (dd.abs() / scale).clamp(0.0, 1.0)))
+        };
+        // Pass 1: each cell's intended total outflow, so pass 2 can hold it to `DRIFT_MAX_OUT`.
+        let mut out = vec![0f32; w * h];
         for y in 0..h {
             for x in 0..w {
                 let p = y * w + x;
@@ -320,19 +341,21 @@ impl Canvas {
                     if nx >= w || ny >= h {
                         continue;
                     }
-                    let q = ny * w + nx;
-                    let a = s * mag * self.wetness[p].min(self.wetness[q]).clamp(0.0, 1.0);
-                    if a <= 1e-4 {
+                    if let Some((from, _, f)) = flow(p, ny * w + nx, &self.wetness) {
+                        out[from] += f;
+                    }
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                for (nx, ny) in [(x + 1, y), (x, y + 1)] {
+                    if nx >= w || ny >= h {
                         continue;
                     }
-                    let dd = dark[q] - dark[p];
-                    if dd.abs() <= 1e-6 {
-                        continue;
-                    }
-                    // Pigment leaves the lighter cell for the darker one (toward the dark), or the darker for the
-                    // lighter (toward the light).
-                    let (from, to) = if (dd > 0.0) == toward_dark { (p, q) } else { (q, p) };
-                    let f = a * DRIFT_RATE * (dd.abs() / scale).clamp(0.0, 1.0);
+                    let Some((from, to, f)) = flow(p, ny * w + nx, &self.wetness) else { continue };
+                    let f = if out[from] > DRIFT_MAX_OUT { f * (DRIFT_MAX_OUT / out[from]) } else { f };
                     for c in 0..n {
                         let m = src[from * n + c] * f;
                         self.conc[from * n + c] = (self.conc[from * n + c] - m).max(0.0);
@@ -741,6 +764,30 @@ mod tests {
         let before = dry.conc_at(1, 0)[2];
         dry.bleed_with(0.5, -1.0);
         assert!((dry.conc_at(1, 0)[2] - before).abs() < 1e-6, "a dry cell takes no drifting pigment");
+    }
+
+    #[test]
+    fn a_cell_between_darker_neighbours_is_never_drained() {
+        // A one-cell hole in a loaded wet sheet, pulled toward the dark by all four neighbours at an absurd
+        // rate: the outflow cap keeps at least half of its load in one step (without it the cell is drained to
+        // bare paper — the white-speck failure), and it still gives some.
+        let mut c = Canvas::white(7, 7, palette::ZORN, 0.7);
+        for y in 0..7 {
+            for x in 0..7 {
+                if (x, y) != (3, 3) {
+                    c.deposit(x, y, &[0.0, 0.0, 3.0, 0.0], 0.3);
+                }
+            }
+        }
+        c.deposit(3, 3, &[0.0, 0.0, 0.3, 0.0], 0.1);
+        for w in c.wetness.iter_mut() {
+            *w = 1.0;
+        }
+        let before = c.conc_at(3, 3)[2];
+        c.pigment_drift(1.0, 1.0, 4.0);
+        let after = c.conc_at(3, 3)[2];
+        assert!(after >= before * (1.0 - DRIFT_MAX_OUT) - 1e-6, "the centre keeps at least half: {after} of {before}");
+        assert!(after < before, "…but does give some pigment to the darks");
     }
 
     #[test]

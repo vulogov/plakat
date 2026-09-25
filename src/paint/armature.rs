@@ -147,6 +147,21 @@ pub fn enforce_family_invariant(value: &mut [f32], is_light: &[bool]) {
     }
 }
 
+/// [`enforce_family_invariant`] held off per pixel by `soften` in [0,1]: a light-family value below the lightest
+/// shadow value is raised only by `1 − soften` of the way (1 = untouched). The shadow family is untouched.
+pub fn enforce_family_invariant_soft(value: &mut [f32], is_light: &[bool], soften: &[f32]) {
+    let shadow_max = value.iter().zip(is_light.iter()).filter(|(_, l)| !**l).map(|(v, _)| *v).fold(f32::NEG_INFINITY, f32::max);
+    if shadow_max == f32::NEG_INFINITY {
+        return;
+    }
+    for (i, (v, &l)) in value.iter_mut().zip(is_light).enumerate() {
+        if l && *v < shadow_max {
+            let keep = soften.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            *v += (shadow_max - *v) * (1.0 - keep);
+        }
+    }
+}
+
 /// Apply atmospheric recession: compress each plane's value toward its mean and reduce its contrast, MORE for
 /// farther planes (§5.5.6, §9). The nearest plane (index 0) is untouched; the farthest is flattened toward
 /// `far_compression`. Deterministic, in place.
@@ -244,6 +259,13 @@ pub fn value_key(colour: &[Srgb], out_low: f32, out_high: f32, shadow_floor: f32
 /// spotty. Re-values the colour to the corrected value (hue kept). `key_az`/`key_el` are the light azimuth /
 /// elevation in degrees.
 pub fn key_families(colour: &[Srgb], w: u32, h: u32, key_az: f32, key_el: f32) -> Vec<Srgb> {
+    key_families_soft(colour, w, h, key_az, key_el, None)
+}
+
+/// [`key_families`] with the invariant held off per pixel by `soften` in [0,1] (1 = leave the value alone):
+/// the painter's ramp field under `gradation`, so a soft mass — a cloud's shaded lobe faces away from the key
+/// yet is no shadow mass — is not raised to a plateau. See `painter::ramp_field`.
+pub fn key_families_soft(colour: &[Srgb], w: u32, h: u32, key_az: f32, key_el: f32, soften: Option<&[f32]>) -> Vec<Srgb> {
     if colour.is_empty() {
         return Vec::new();
     }
@@ -266,7 +288,10 @@ pub fn key_families(colour: &[Srgb], w: u32, h: u32, key_az: f32, key_el: f32) -
     let key = [el.cos() * az.cos(), -el.cos() * az.sin(), el.sin()];
     let is_light = split_families(&normal, key);
     let mut v = value;
-    enforce_family_invariant(&mut v, &is_light);
+    match soften {
+        Some(sf) => enforce_family_invariant_soft(&mut v, &is_light, sf),
+        None => enforce_family_invariant(&mut v, &is_light),
+    }
     colour.iter().zip(v.iter()).map(|(&c, &nv)| revalue(c, nv)).collect()
 }
 

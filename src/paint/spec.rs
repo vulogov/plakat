@@ -60,6 +60,9 @@ pub struct PaintSpec {
     pub diffuse: Option<f32>,
     /// Worker THREADS for the up-front pigment mixing (0/absent = every core). Never changes the picture.
     pub threads: Option<usize>,
+    /// GRADATION (0..1): keep slow ramps continuous in the armature (clouds, soft-lit walls, still water keep
+    /// their turning form). 0 (default) = the value masses exactly as planned.
+    pub gradation: Option<f32>,
     /// BODY / opacity (0.1..1): 1 = opaque cover (gouache/oil), low = transparent (watercolour/ink glow).
     pub opacity: Option<f32>,
     /// PICKUP (0..1): the dirty-brush drag — high fuses neighbouring colour (oil/ink), low keeps marks clean.

@@ -98,6 +98,19 @@ pub enum EdgeMode {
     Lost,
 }
 
+/// What the painter reports while it works (the CLI's progress bar).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PaintProgress {
+    /// Strokes laid so far (the bar's position).
+    Placed(usize),
+    /// A pass is MIXING its new colours before it lays a stroke — the bar's position stands still meanwhile;
+    /// this is where the worker threads run.
+    Mixing { pass: usize, passes: usize, radius: f32, colours: usize, threads: usize },
+    /// A pass is laying strokes. The first passes are few, wide marks (each covers thousands of pixels); the
+    /// last are many small ones — so the bar crawls at first and flies at the end.
+    Painting { pass: usize, passes: usize, radius: f32 },
+}
+
 /// Parameters for a paint-from-image run.
 #[derive(Clone, Debug)]
 pub struct PaintParams {
@@ -232,6 +245,11 @@ pub struct PaintParams {
     /// only OUTSIDE the matted subject (texture is for the background masses; on a face it is scrawl).
     /// 0 = fine layers read the plain armature.
     pub detail_texture: f32,
+    /// GRADATION (0..1, default 0): keep slow RAMPS continuous in the armature. The value masses turn a cloud,
+    /// a soft-lit wall or still water into a few flat tones with contour edges; where the picture is a ramp,
+    /// not an edge (the flow rule's scale-free test), this brings the bilateral back toward a plain smooth of
+    /// the source and holds the value snap off, so the mass keeps its turning form. Edges snap as before.
+    pub gradation: f32,
     /// CROSS-HATCH (medium mark character): each restating pass rotates its stroke direction by this many radians
     /// more than the previous one; 0 = every pass follows the form.
     pub hatch_angle: f32,
@@ -309,7 +327,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 0 }
     }
 }
 
@@ -548,7 +566,7 @@ fn broken_color(target: Srgb, amt: f32, seed: u64, k: u64) -> Srgb {
 /// Grow a stroke in ONE direction (`sign` = +1 forward, −1 backward) from the seed along the orientation
 /// field, ending when the reference colour drifts too far from the stroke's colour or the half-length cap hits.
 #[allow(clippy::too_many_arguments)]
-fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>, hard: Option<(&[f32], f32)>, len_mul: f32) -> Vec<[f32; 2]> {
+fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>, hard: Option<(&[f32], f32)>, len_mul: f32, stop_tol: f32) -> Vec<[f32; 2]> {
     let (w, h) = (reference.width(), reference.height());
     // Strokes read as brushwork when they follow form for a mark's length — but a stroke that runs radius×4 (a
     // third of a coarse pass's image width) drags one colour across whole objects and reads as SMEAR, the mush
@@ -599,7 +617,7 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
         // length so strokes read as deliberate brushwork, not one-step patchy dabs. A slightly looser colour
         // tolerance + a longer minimum keeps marks continuous instead of speckled.
         let here = reference.get_pixel(x as u32, y as u32).0;
-        if rgb_dist(here, color0) > 0.16 && travelled > step * 2.0 {
+        if rgb_dist(here, color0) > stop_tol && travelled > step * 2.0 {
             break;
         }
         pts.push([x, y]);
@@ -609,13 +627,18 @@ fn grow_half(x0: f32, y0: f32, sign: f32, radius: f32, gx: &[f32], gy: &[f32], r
     pts
 }
 
+/// How far the reference may drift from a stroke's colour before the stroke stops (Hertzmann's rule): the
+/// classic tolerance. Under `gradation` a stroke on a slow ramp stops sooner, so a soft mass is laid as graded
+/// marks instead of one flat patch.
+const STOP_TOL: f32 = 0.16;
+
 /// Grow a stroke through the seed in BOTH directions (Hertzmann), so a seed mid-feature paints the whole
 /// isophote it sits on, not just the half below it.
 #[allow(clippy::too_many_arguments)]
-fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>, hard: Option<(&[f32], f32)>, len_mul: f32) -> Vec<[f32; 2]> {
-    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0, protect, region, hard, len_mul);
+fn grow_path(x0: f32, y0: f32, radius: f32, gx: &[f32], gy: &[f32], reference: &RgbImage, color0: Srgb, protect: Option<&[bool]>, region: Option<(&[bool], bool)>, hard: Option<(&[f32], f32)>, len_mul: f32, stop_tol: f32) -> Vec<[f32; 2]> {
+    let mut back = grow_half(x0, y0, -1.0, radius, gx, gy, reference, color0, protect, region, hard, len_mul, stop_tol);
     back.reverse();
-    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0, protect, region, hard, len_mul);
+    let fwd = grow_half(x0, y0, 1.0, radius, gx, gy, reference, color0, protect, region, hard, len_mul, stop_tol);
     back.push([x0, y0]);
     back.extend(fwd);
     back
@@ -682,7 +705,7 @@ fn blend_by_mask(coarse: &RgbImage, fine: &RgbImage, mask: &[f32], w: u32, h: u3
 /// but SHARP in structure — the beard is a dark mass with a defined edge, the face a light mass, the eyes dark
 /// accents — so the strokes paint recognizable form instead of averaging blurry colour. `side` is the structure
 /// resolution (LARGER = more structure retained → smaller smoothing radius); `levels` = number of value masses.
-fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
+fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32) -> RgbImage {
     let (w, h) = img.dimensions();
     // Structure resolution → spatial radius: a coarser armature removes more texture (bigger radius).
     let r = ((w.min(h) as f32 / side.max(1) as f32).round() as i32).clamp(1, 16);
@@ -691,6 +714,10 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     // full resolution so the focal region stays crisp.
     let mut sm;
     let bil;
+    // The plain (un-bilateraled) picture at the armature's own resolution — what a ramp is eased toward under
+    // `gradation`: no flattening, and no blur beyond the resolution the tier already has (easing toward a blur
+    // smeared a background face).
+    let mut plain: Option<RgbImage> = None;
     if r <= 3 {
         // FINE armature: keep the reference's own detail/texture — a bilateral here would over-smooth the face
         // into a photo-smooth "cut-and-paste" surface while the rest stays brushy. Natural, consistent brushwork.
@@ -700,6 +727,9 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
         let scale = (4.0 / r as f32).clamp(0.1, 1.0);
         let (sw2, sh2) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
         sm = imageops::resize(img, sw2, sh2, imageops::FilterType::Triangle);
+        if gradation > 0.0 {
+            plain = Some(imageops::resize(&sm, w, h, imageops::FilterType::Triangle));
+        }
         sm = bilateral(&sm, 4);
         bil = imageops::resize(&sm, w, h, imageops::FilterType::Triangle);
     } else {
@@ -709,6 +739,26 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     // shifts hue at every step boundary — skin bands through magenta/green. Instead quantise the LUMA and rescale
     // the pixel to the snapped value, keeping its chroma: the masses read as value steps, not colour steps.
     let mut out = bil;
+    // GRADATION: a slow RAMP is not an edge. The bilateral flattens a soft mass's modelling (a cloud's turning
+    // form, a soft-lit wall, still water: differences below its colour sigma) and the value snap below then
+    // cuts what is left into flat bands with contour edges — the posterised-cloud tell. The same scale-free
+    // test as the flow rule tells a ramp from an edge: over a window 3× wider a ramp's value range keeps
+    // growing (ratio ≈ 1/3) while an edge's saturates (→ 1). Where the picture is a ramp, `gradation` brings
+    // the bilateral back toward a plain smooth of the source (texture gone, gradation kept) and holds the
+    // snap off, so the mass keeps its turning form. 0 = the value masses exactly as before.
+    let ramp: Option<Vec<f32>> = (gradation > 0.0 && r > 3 && levels >= 2).then(|| ramp_field(&out, r.max(2) as usize, levels).into_iter().map(|v| v * gradation).collect());
+    if let (Some(ramp), Some(soft)) = (&ramp, &plain) {
+        for (i, px) in out.pixels_mut().enumerate() {
+            let k = ramp[i];
+            if k <= 0.0 {
+                continue;
+            }
+            let sp = soft.get_pixel((i % w as usize) as u32, (i / w as usize) as u32).0;
+            for c in 0..3 {
+                px.0[c] = (px.0[c] as f32 + k * (sp[c] as f32 - px.0[c] as f32)).clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
     if levels >= 2 {
         let step = 1.0 / (levels - 1) as f32;
         // Quantise only where there is an EDGE to make crisp. A value mass is flat, but a painter keeps a smooth
@@ -729,7 +779,10 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
                 // value below step/2 to exactly 0 — a black hole that turned dark grass and shadow masses PURE
                 // BLACK before a stroke was laid. A shadow mass is a solid dark, never black (RFC §3.3).
                 let snapped = ((y / step).round() * step).max(0.5 * step);
-                let edge = ((range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+                let mut edge = ((range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+                if let Some(rp) = &ramp {
+                    edge *= 1.0 - rp[i];
+                }
                 let yq = y + (snapped - y) * edge;
                 let s = (yq / y).clamp(0.0, 2.0);
                 p.0[0] = (r * s * 255.0).clamp(0.0, 255.0) as u8;
@@ -739,6 +792,35 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
         }
     }
     out
+}
+
+/// Where the picture is a slow RAMP rather than an edge, per pixel in [0,1] (the flow rule's scale-free test at
+/// window `r`: a ramp's value range keeps growing over a window 3× wider, an edge's saturates), and only where
+/// there is a gradient worth keeping against the `levels` value step. The masses' stages (the armature's
+/// bilateral and snap, the family invariant) hold off here under `gradation`, so a cloud, a soft-lit wall or
+/// still water keep their turning form instead of a few flat tones.
+pub fn ramp_field(img: &RgbImage, r: usize, levels: u32) -> Vec<f32> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    // Judge the SMOOTHED picture: texture (a cloud's puffs, grass) and the armature's own tone steps read as
+    // edges in a small window and hid the very ramps this is for (measured: the cloud cores came out 0).
+    let smooth = imageops::blur(img, (r as f32).max(1.0));
+    let yl = luma_map(&smooth);
+    let range_s = local_range(&yl, w, h, r);
+    let range_l = local_range(&yl, w, h, r * 3);
+    let step = 1.0 / (levels.max(2) - 1) as f32;
+    let raw: Vec<f32> = (0..yl.len())
+        .map(|i| {
+            let ratio = range_s[i] / (range_l[i] + 1e-4);
+            let is_ramp = 1.0 - ((ratio - 0.35) / 0.4).clamp(0.0, 1.0);
+            let has_slope = (range_l[i] / (0.5 * step)).clamp(0.0, 1.0);
+            is_ramp * has_slope
+        })
+        .collect();
+    // The square windows leave a blocky field; soften it so the gating has no seams of its own — but never let
+    // the smoothing bleed a ramp onto its neighbouring EDGE (a timber beam next to a pale wall softened when it
+    // did): the raw test gates the smoothed field.
+    let smooth_field = box_blur(&raw, w as u32, h as u32, r as i32);
+    smooth_field.iter().zip(&raw).map(|(sm, rw)| sm * rw.clamp(0.0, 1.0)).collect()
 }
 
 /// Local value RANGE (max − min) of a luma field over a square window of half-width `r` — a cheap "is there an
@@ -855,7 +937,7 @@ pub fn paint_from_image(input: &RgbImage, p: &PaintParams) -> PaintResult {
 
 /// As [`paint_from_image`] but reports progress: `progress(placed)` is called as strokes are laid, so the CLI
 /// can render a live progress bar. `placed` counts up to (at most) the stroke budget.
-pub fn paint_from_image_progress(input: &RgbImage, p: &PaintParams, progress: &dyn Fn(usize)) -> PaintResult {
+pub fn paint_from_image_progress(input: &RgbImage, p: &PaintParams, progress: &dyn Fn(PaintProgress)) -> PaintResult {
     paint_inner(input, p, None, 0.0, None, Some(progress))
 }
 
@@ -874,7 +956,7 @@ pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, m
     paint_inner(input, p, Some(critic), margin, None, None)
 }
 
-fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(usize)>) -> PaintResult {
+fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(PaintProgress)>) -> PaintResult {
     let (w, h) = (input.width(), input.height());
     // PROFILE (`PLAKAT_PAINT_PROFILE=1`): per-stage and per-pass wall-clock times, printed to stderr at the end.
     // This is how the stroke cost was found to be the mixture solver, not the brush — keep it.
@@ -912,9 +994,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             tiers.sort_by_key(|(_, side)| *side); // coarse → fine, so the finest region is laid last and wins
             // STRUCTURE-PRESERVING armature (not a blur): value masses with sharp edges, per region resolution.
             let levels = p.armature_levels.max(2);
-            let mut arm = structure_armature(input, s, levels);
+            let mut arm = structure_armature(input, s, levels, p.gradation);
             for (mask, side) in tiers {
-                let lvl = structure_armature(input, side, levels);
+                let lvl = structure_armature(input, side, levels, 0.0);
                 arm = blend_by_mask(&arm, &lvl, mask, w, h);
             }
             armature_owned = arm;
@@ -1054,6 +1136,21 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         (None, 0.0)
     };
     let focus_on = focal.is_some();
+    // GRADATION in the PAINTING itself: a soft mass is not only simplified by the armature — a wide stroke lays
+    // ONE colour along its whole path (the reference may drift a full `STOP_TOL` before it stops), and the
+    // restate floor then leaves a patch that is within tolerance of a slow gradient alone. So a cloud, a
+    // soft-lit wall, still water end as a few flat patches meeting at contour edges even from a smooth
+    // reference. Where the picture is a ramp (see `ramp_field`), `gradation` makes strokes stop sooner and the
+    // restate floor drop, so the gradient is laid as graded marks and the fine passes restate it. 0 = as before.
+    let ramp_soft: Option<Vec<f32>> = (p.gradation > 0.0 && !p.density).then(|| {
+        let side = p.armature_side.unwrap_or(150).max(1);
+        let r = ((w.min(h) as f32 / side as f32).round() as usize).clamp(2, 16);
+        // Never on the SUBJECT: skin is a ramp by nature, and easing it smeared the faces (the user's regression).
+        // The face mask and the matte say where the subject is; without either, everywhere counts.
+        let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0);
+        ramp_field(input, r, p.armature_levels.max(2)).into_iter().enumerate().map(|(i, v)| v * p.gradation * (1.0 - at(p.face_mask.as_deref(), i).max(at(p.subject_mask.as_deref(), i)))).collect()
+    });
+
     lap("fields(hardness/shadow/protect/head)", &mut prof_acc, &mut prof_t);
     // The HEAD (for the texture rule): the detected face box grown to take in hair, beard and neck — a face box
     // is tight, and the residual on a beard is scrawl just as it is on an eye socket. Grown by a fraction of the
@@ -1211,6 +1308,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // always land, drop the restate floor so they build to full depth, and boost the pigment charge so
                 // they read as committed paint, not a thin wash. `sh` in [0,1] is the shadow strength here.
                 let region_i = iy as usize * w as usize + ix as usize;
+                let soft = ramp_soft.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
                 let sh = shadow.as_ref().map(|s| s[region_i] * p.commit_shadows).unwrap_or(0.0);
                 // RESERVE is a fact about the BACKGROUND, not the subject: bright cells keep the paper only OUTSIDE
                 // the detected subject (matte). Inside the subject a light shirt / shoulders / skin is PAINTED as a
@@ -1227,7 +1325,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // Committed shadows drop the floor toward zero so the darks deepen pass over pass. The SUBJECT
                 // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
                 // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
-                let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj);
+                let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj) * (1.0 - 0.8 * soft);
                 if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
@@ -1291,7 +1389,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let lvar = 1.0 + 0.18 * jitter(p.seed ^ 0x91E3, k.wrapping_add(7));
                 let pvar = 0.85 + 0.15 * (jitter(p.seed ^ 0x2C7D, k.wrapping_add(3)) + 0.5);
                 let rw = (radius * profile.radius_scale * p.stroke_width * wvar).max(p.min_brush * 0.8);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar).max(0.2));
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar).max(0.2), STOP_TOL * (1.0 - 0.6 * soft));
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
@@ -1373,6 +1471,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
             }
             let threads = if p.threads == 0 { std::thread::available_parallelism().map(|t| t.get()).unwrap_or(1) } else { p.threads };
+            if let Some(pr) = progress {
+                pr(PaintProgress::Mixing { pass: layer + 1, passes: passes.len(), radius, colours: keys.len(), threads });
+            }
             if threads <= 1 || keys.len() < 64 {
                 for key in &keys {
                     cache.insert(*key, mixture_for_key(*key, &p.palette, n));
@@ -1389,6 +1490,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             }
             if prof_on { eprintln!("PROFILE   mixtures {} new keys solved up front ({threads} threads)", keys.len()); }
         }
+        if let Some(pr) = progress {
+            pr(PaintProgress::Painting { pass: layer + 1, passes: passes.len(), radius });
+        }
         for cell in order {
             if placed >= p.budget || in_pass >= pass.budget {
                 break;
@@ -1399,7 +1503,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 in_pass += 1;
                 if let Some(pr) = progress {
                     if placed % 64 == 0 {
-                        pr(placed);
+                        pr(PaintProgress::Placed(placed));
                     }
                 }
                 rec.id = placed as u32;
@@ -1539,7 +1643,7 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
             let base = input.get_pixel(cx as u32, cy as u32).0;
             let dl = color::linear_luma(color::srgb_to_linear(base));
             // Grow along the boundary TANGENT (grow_path follows the isophote, perpendicular to the gradient).
-            let path = grow_path(cx, cy, radius, &gx, &gy, input, base, p.protect.as_deref(), None, None, 0.85);
+            let path = grow_path(cx, cy, radius, &gx, &gy, input, base, p.protect.as_deref(), None, None, 0.85, STOP_TOL);
             if path.len() < 2 {
                 continue;
             }
@@ -1659,7 +1763,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
             // TRACE the edge: a drawn contour runs along its boundary for tens of pixels (the generic cap of 2.2
             // radii would make 3px dashes of a 1.5px pen). The colour-drift and protect stops still end it.
             let trace = (w.max(h) as f32 * 0.04 / (2.2 * radius)).max(1.0);
-            let path = grow_path(cx, cy, radius, &gx, &gy, &sharp, dark, p.protect.as_deref(), None, None, trace);
+            let path = grow_path(cx, cy, radius, &gx, &gy, &sharp, dark, p.protect.as_deref(), None, None, trace, STOP_TOL);
             if path.len() < 2 {
                 continue;
             }
@@ -1885,7 +1989,7 @@ fn focal_field(input: &RgbImage) -> Vec<f32> {
 /// split-hair brush (streaky, ragged), no pickup, each stroke confined to its mass so the edge is the mass's
 /// edge. Deterministic, replay-exact.
 #[allow(clippy::too_many_arguments)]
-fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
     let (w, h) = (input.width(), input.height());
     let long = w.max(h) as f32;
     let firm = imageops::blur(input, (long / 400.0).max(1.0));
@@ -1924,7 +2028,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             let mut load = vec![0f32; n];
             load[ink] = amt;
             let target = firm.get_pixel(cx as u32, cy as u32).0;
-            let path = grow_path(cx, cy, ir, &fgx, &fgy, &firm, target, None, Some((&mask, true)), None, 2.2);
+            let path = grow_path(cx, cy, ir, &fgx, &fgy, &firm, target, None, Some((&mask, true)), None, 2.2, STOP_TOL);
             if path.len() < 2 {
                 continue;
             }
@@ -1932,7 +2036,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             s.rasterize(canvas, &dry);
             *placed += 1;
             score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0) });
-            if let Some(pr) = progress { if *placed % 64 == 0 { pr(*placed); } }
+            if let Some(pr) = progress { if *placed % 64 == 0 { pr(PaintProgress::Placed(*placed)); } }
         }
     }
 }
@@ -1969,7 +2073,7 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
     }
 }
 
-fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, source: &RgbImage, head: Option<&[f32]>, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(usize)>) {
+fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, source: &RgbImage, head: Option<&[f32]>, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
     let w = input.width() as usize;
     let style = if p.brush_drawing { crate::paint::ink::HatchStyle::SUMI } else if p.engrave { crate::paint::ink::HatchStyle::ENGRAVING } else { crate::paint::ink::HatchStyle::PEN };
     // The head is DRAWN from the source's full detail (the armature has simplified the face away).
@@ -2009,7 +2113,7 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
         *placed += 1;
         if let Some(pr) = progress {
             if *placed % 64 == 0 {
-                pr(*placed);
+                pr(PaintProgress::Placed(*placed));
             }
         }
         score.strokes.push(StrokeRecord {
@@ -2280,6 +2384,18 @@ mod tests {
         assert_eq!(a.score.strokes.len(), b.score.strokes.len());
         let replayed = a.score.replay(160, 120).unwrap().to_image().into_raw();
         assert_eq!(a.canvas.to_image().into_raw(), replayed, "replays byte-exact from its score");
+    }
+
+    /// Diagnostic, run by hand: `PLAKAT_DIAG_IMG=in.png PLAKAT_DIAG_OUT=dir cargo test --lib dump_armature -- --ignored`
+    /// writes the structure armature at gradation 0 and 1 (side 210, 8 levels) for a look at the value masses.
+    #[test]
+    #[ignore]
+    fn dump_armature_for_a_look() {
+        let (Ok(inp), Ok(out)) = (std::env::var("PLAKAT_DIAG_IMG"), std::env::var("PLAKAT_DIAG_OUT")) else { return };
+        let img = image::open(inp).unwrap().to_rgb8();
+        for g in [0.0f32, 1.0] {
+            structure_armature(&img, 210, 8, g).save(format!("{out}/armature_g{g}.png")).unwrap();
+        }
     }
 
     #[test]

@@ -89,6 +89,10 @@ pub struct PaintArgs {
     /// masses the armature simplified (wheat, grass, bark). 0 = fine layers read the plain armature.
     #[arg(long, default_value_t = 1.0)]
     pub detail_texture: f32,
+    /// GRADATION (0..1, default 0): keep slow ramps continuous in the armature — a cloud, a soft-lit wall,
+    /// still water keep their turning form instead of a few flat tones with contour edges. Edges snap as before.
+    #[arg(long, default_value_t = 0.0)]
+    pub gradation: f32,
     /// OPACITY / body (0.1..1) — overrides the medium default (1 = opaque; low = transparent).
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -252,6 +256,7 @@ pub struct SpecArgs {
     pub detail_restate: f32,
     pub detail_sharpen: f32,
     pub detail_texture: f32,
+    pub gradation: f32,
     pub opacity: Option<f32>,
     pub pickup: Option<f32>,
     pub impasto: Option<f32>,
@@ -540,6 +545,10 @@ pub struct FromArgs {
     /// masses the armature simplified (wheat, grass, bark). 0 = fine layers read the plain armature.
     #[arg(long, default_value_t = 1.0)]
     pub detail_texture: f32,
+    /// GRADATION (0..1, default 0): keep slow ramps continuous in the armature — a cloud, a soft-lit wall,
+    /// still water keep their turning form instead of a few flat tones with contour edges. Edges snap as before.
+    #[arg(long, default_value_t = 0.0)]
+    pub gradation: f32,
     /// OPACITY / body (0.1..1) — 1 = opaque, low = transparent.
     #[arg(long)]
     pub opacity: Option<f32>,
@@ -686,7 +695,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -909,6 +918,31 @@ async fn sam_regions(path: &std::path::Path, w: u32, h: u32) -> Result<(Option<V
 }
 
 /// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
+/// Drive the painting bar from the painter's events: the position is strokes laid; the message says which
+/// pass is running, its brush, and — while the bar stands still — that the pass is mixing its colours on the
+/// worker threads.
+fn paint_progress(pb: &indicatif::ProgressBar, ev: crate::paint::painter::PaintProgress) {
+    use crate::paint::painter::PaintProgress;
+    match ev {
+        PaintProgress::Placed(n) => pb.set_position(n as u64),
+        PaintProgress::Mixing { pass, passes, radius, colours, threads } => pb.set_message(format!("pass {pass}/{passes} · brush {radius:.0}px · mixing {colours} colours on {threads} thread(s)…")),
+        PaintProgress::Painting { pass, passes, radius } => pb.set_message(format!("pass {pass}/{passes} · brush {radius:.0}px")),
+    }
+}
+
+/// Under `gradation`, where the family invariant holds off: the painter's ramp field at the background
+/// armature's scale, scaled by the control (None when the control is 0 — the stage runs exactly as before).
+fn family_soften(img: &image::RgbImage, params: &crate::paint::painter::PaintParams) -> Option<Vec<f32>> {
+    if params.gradation <= 0.0 {
+        return None;
+    }
+    let (w, h) = img.dimensions();
+    let side = params.armature_side.unwrap_or(150).max(1);
+    let r = ((w.min(h) as f32 / side as f32).round() as usize).clamp(2, 16);
+    let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0);
+    Some(crate::paint::painter::ramp_field(img, r, params.armature_levels.max(2)).into_iter().enumerate().map(|(i, v)| v * params.gradation * (1.0 - at(params.face_mask.as_deref(), i).max(at(params.subject_mask.as_deref(), i)))).collect())
+}
+
 fn luma_stddev(img: &image::RgbImage) -> f32 {
     let n = (img.width() * img.height()).max(1) as f32;
     let lumas = img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0);
@@ -1047,6 +1081,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.detail_restate = a.detail_restate.clamp(0.0, 1.0);
     params.detail_sharpen = a.detail_sharpen.clamp(0.0, 1.0);
     params.detail_texture = a.detail_texture.clamp(0.0, 1.0);
+    params.gradation = spec.gradation.unwrap_or(a.gradation).clamp(0.0, 1.0);
     params.opacity = spec.opacity.or(a.opacity).unwrap_or(plan.medium.body).clamp(0.1, 1.0);
     params.impasto = spec.impasto.or(a.impasto).unwrap_or(plan.medium.impasto).clamp(0.0, 1.0);
     params.brush.k_pickup = spec.pickup.or(a.pickup).unwrap_or(plan.medium.pickup).clamp(0.0, 1.0);
@@ -1181,7 +1216,8 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     if a.families {
         let (w, h) = reference.dimensions();
         let colour: Vec<crate::paint::color::Srgb> = reference.pixels().map(|p| p.0).collect();
-        let keyed = crate::paint::armature::key_families(&colour, w, h, 135.0, 40.0);
+        let soften = family_soften(&reference, &params);
+        let keyed = crate::paint::armature::key_families_soft(&colour, w, h, 135.0, 40.0, soften.as_deref());
         for (i, p) in reference.pixels_mut().enumerate() {
             p.0 = keyed[i];
         }
@@ -1250,7 +1286,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
         r
     } else {
         let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
-        let r = painter::paint_from_image_progress(&reference, &params, &|placed| pb.set_position(placed as u64));
+        let r = painter::paint_from_image_progress(&reference, &params, &|ev| paint_progress(&pb, ev));
         pb.set_position(r.strokes as u64);
         pb.finish_and_clear();
         r
@@ -1596,6 +1632,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     params.detail_restate = a.detail_restate.clamp(0.0, 1.0);
     params.detail_sharpen = a.detail_sharpen.clamp(0.0, 1.0);
     params.detail_texture = a.detail_texture.clamp(0.0, 1.0);
+    params.gradation = a.gradation.clamp(0.0, 1.0);
     if let Some(b) = a.bleed {
         params.bleed = b.clamp(0.0, 1.0);
     }
@@ -1794,7 +1831,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if a.families {
         let (fw, fh) = img.dimensions();
         let colour: Vec<crate::paint::color::Srgb> = img.pixels().map(|p| p.0).collect();
-        let keyed = crate::paint::armature::key_families(&colour, fw, fh, 135.0, 40.0);
+        let soften = family_soften(&img, &params);
+        let keyed = crate::paint::armature::key_families_soft(&colour, fw, fh, 135.0, 40.0, soften.as_deref());
         for (i, p) in img.pixels_mut().enumerate() {
             p.0 = keyed[i];
         }
@@ -1827,7 +1865,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     );
 
     let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
-    let result = painter::paint_from_image_progress(&img, &params, &|placed| pb.set_position(placed as u64));
+    let result = painter::paint_from_image_progress(&img, &params, &|ev| paint_progress(&pb, ev));
     pb.set_position(result.strokes as u64);
     pb.finish_and_clear();
     let out = result.canvas.to_image_finished(&result.score.header.finish());
