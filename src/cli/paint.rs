@@ -53,6 +53,11 @@ pub struct PaintArgs {
     /// strokes whatever the count — the thread count never changes the picture.
     #[arg(long, default_value_t = 0)]
     pub threads: usize,
+    /// FILL (0..1, default 0 = auto): a density floor. When the painting stops below this share of the budget,
+    /// the finest pass repeats with its restate floor halved each round until the share is spent. More worked
+    /// and denser on demand — not more detail than the reference holds.
+    #[arg(long, default_value_t = 0.0)]
+    pub fill: f32,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (fully wet-into-wet, the
     /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
     #[arg(long, default_value_t = 0.5)]
@@ -248,6 +253,7 @@ pub struct SpecArgs {
     pub bleed: Option<f32>,
     pub diffuse: Option<f32>,
     pub threads: usize,
+    pub fill: f32,
     pub dry: f32,
     pub shadow_floor: Option<f32>,
     pub detail_length: Option<f32>,
@@ -464,7 +470,8 @@ pub struct FromArgs {
     #[arg(long, default_value = "zorn")]
     pub palette: String,
     /// MEDIUM to repaint the image in (oil-direct / oil-indirect / acrylic / gouache / tempera / pastel /
-    /// watercolour / ink-wash / japanese-ink / pen-ink / durer / pencil / black-pencil / charcoal). Applies the
+    /// watercolour / line-and-wash / early-book-illustration / ink-wash / japanese-ink / pen-ink / durer / pencil /
+    /// black-pencil / charcoal). Applies the
     /// full technique behaviour — physics, finish and the medium's own MARK; the flags below override it.
     #[arg(long)]
     pub medium: Option<String>,
@@ -509,6 +516,11 @@ pub struct FromArgs {
     /// strokes whatever the count — the thread count never changes the picture.
     #[arg(long, default_value_t = 0)]
     pub threads: usize,
+    /// FILL (0..1, default 0 = auto): a density floor. When the painting stops below this share of the budget,
+    /// the finest pass repeats with its restate floor halved each round until the share is spent. More worked
+    /// and denser on demand — not more detail than the reference holds.
+    #[arg(long, default_value_t = 0.0)]
+    pub fill: f32,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
     /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
     #[arg(long, default_value_t = 0.5)]
@@ -695,7 +707,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, fill: args.fill, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -719,8 +731,8 @@ const SCAFFOLD: &str = r#"{
     model: sdxl
     steps: 40
 
-    // MEDIUM: oil-direct | oil-indirect | acrylic | gouache | tempera | pastel | watercolour | ink-wash |
-    //         japanese-ink | pen-ink | durer | pencil | black-pencil | charcoal
+    // MEDIUM: oil-direct | oil-indirect | acrylic | gouache | tempera | pastel | watercolour | line-and-wash |
+    //         early-book-illustration | ink-wash | japanese-ink | pen-ink | durer | pencil | black-pencil | charcoal
     medium: watercolour
     // PALETTE: zorn | split-primary | verdaccio | earth | limited-landscape | sumi
     palette: limited-landscape
@@ -963,6 +975,7 @@ async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str) -> R
     Ok(crate::paint::plan::Analysis {
         faces,
         luma_stddev: luma_stddev(&img),
+        luma_mean: img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0).sum::<f32>() / (img.width() * img.height()).max(1) as f32,
         medium: medium.to_string(),
         palette: palette.to_string(),
         short_side: w.min(h),
@@ -1074,6 +1087,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bleed = spec.bleed.or(a.bleed).unwrap_or(plan.medium.bleed).clamp(0.0, 1.0);
     params.diffuse = spec.diffuse.or(a.diffuse).unwrap_or(0.0).clamp(-1.0, 1.0);
     params.threads = spec.threads.unwrap_or(a.threads);
+    params.fill = spec.fill.unwrap_or(a.fill).clamp(0.0, 1.0);
     params.dry = a.dry.clamp(0.0, 1.0);
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -1503,7 +1517,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.shadow_floor.is_none() {
             a.shadow_floor = Some(plan.shadow_floor);
         }
-        if a.reserve.is_none() {
+        // A luminous medium reserves its paper RELATIVE to the keyed picture (below); the plan's absolute
+        // cutoff would otherwise pass for an explicit `--reserve` and silence it.
+        let luminous_medium = a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
+        if a.reserve.is_none() && !luminous_medium {
             a.reserve = plan.reserve;
         }
         if a.budget == 1500 {
@@ -1619,6 +1636,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.draw_contours = mk.draw_contours;
         params.brush_drawing = mk.brush_drawing;
         params.sumi = mk.sumi;
+        params.luminous = mk.luminous;
+        params.book = mk.book;
+        if mk.luminous && mk.role.is_none() {
+            // A WASH is laid flat: a streak-free brush with a SQUARE edge at every pass — a dried wash has a hard
+            // edge (a soft feathered one read as a blur); the raked block-in and the filbert restatements scrub
+            // a wash into scumbled oil. `--brush` overrides.
+            params.layer_brush = Some(painter::BrushProfile { radius_scale: 1.05, len: 1.1, streak: 0.0, round: 0.3, waver: 0.06 });
+        }
         if mk.monochrome {
             // Graphite / sumi draw in their own grey whatever the picture's colours.
             params.palette = crate::paint::palette::SUMI;
@@ -1640,6 +1665,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.diffuse = d.clamp(-1.0, 1.0);
     }
     params.threads = a.threads;
+    params.fill = a.fill.clamp(0.0, 1.0);
     if let Some(o) = a.opacity {
         params.opacity = o.clamp(0.1, 1.0);
     }
@@ -1816,13 +1842,40 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(vk) = a.value_key.filter(|&v| v > 0.0) {
         let vk = vk.clamp(0.0, 1.0);
         let colour: Vec<crate::paint::color::Srgb> = img.pixels().map(|p| p.0).collect();
-        let keyed = crate::paint::armature::value_key(&colour, 0.04, 0.96, a.shadow_floor.unwrap_or(0.16).clamp(0.0, 0.45));
+        // A luminous medium keys HIGH: the darkest 5% land at 0.30, not 0.04 — a wash's darks stay transparent.
+        let out_low = if params.book { 0.30 } else if params.luminous { 0.12 } else { 0.04 };
+        let keyed = crate::paint::armature::value_key(&colour, out_low, 0.96, a.shadow_floor.unwrap_or(0.16).clamp(0.0, 0.45));
         for (i, p) in img.pixels_mut().enumerate() {
             for c in 0..3 {
                 p.0[c] = (p.0[c] as f32 * (1.0 - vk) + keyed[i][c] as f32 * vk).round().clamp(0.0, 255.0) as u8;
             }
         }
         println!("{}  value-key: tonal range expanded (strength {vk:.2})", style("·").dim());
+    }
+    if params.luminous {
+        // The wash edges BLOOM (the cauliflower rim where a wash dries) unless `--edge-pool` was set; the
+        // watercolour spatters a little unless `--splatter` was set.
+        if a.edge_pool.is_none() {
+            params.edge_pool = 0.3;
+        }
+        if !params.book && a.splatter.is_none() {
+            params.splatter = 0.25;
+        }
+        // Washes SET before the next one is laid (wet-into-wet only within a wash, never a muddy stack) unless
+        // `--dry` was set; and the paper is reserved RELATIVE to the KEYED picture: its lightest ~15% stays
+        // paper (measured on the picture the painter reads — judged before the key, a lifted picture went
+        // almost all paper). `--reserve` overrides.
+        if (a.dry - 0.5).abs() < 1e-6 {
+            params.dry = 1.0;
+        }
+        if a.reserve.is_none() {
+            let mut lum: Vec<f32> = img.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
+            lum.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+            let (qn, lo) = if params.book { (85, 0.6) } else { (88, 0.5) };
+            let q = lum.get(lum.len() * qn / 100).copied().unwrap_or(0.8);
+            params.reserve = Some(q.clamp(lo, 0.9));
+            println!("{}  luminous medium → paper reserved above luma {:.2} (the lightest ~15% of the keyed picture)", style("·").dim(), params.reserve.unwrap_or(0.0));
+        }
     }
 
     // FAMILY SEPARATION (RFC §3.3): partition light/shadow families and enforce the invariant, so masses read

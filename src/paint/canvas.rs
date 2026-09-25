@@ -369,6 +369,122 @@ impl Canvas {
         }
     }
 
+    /// A WASH: fill the area inside `rings` (polygons separated by a `[NaN, NaN]` point; even-odd, so a hole
+    /// ring inside an outer ring stays unfilled) with `load` at every pixel, wet at `wet`. The watercolour's
+    /// area mark. `feather` (px) is the WET EDGE: the wash BLOOMS OUTWARD past its boundary over that distance
+    /// with a falling deposit (0 = a hard, dried edge), so it meets its neighbour and the paper with a soft
+    /// bleed, not a cut — and never with a pale rim inside (an inward ramp stacked into halos).
+    /// Pixel centres are tested (x + 0.5, y + 0.5); the deposit is the same covering law a stroke uses, at
+    /// zero height (a wash stands off nothing).
+    pub fn fill_rings(&mut self, rings: &[[f32; 2]], load: &[f32], wet: f32, feather: f32) {
+        let (w, h) = (self.w as i64, self.h as i64);
+        let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
+        let mut ring: Vec<[f32; 2]> = Vec::new();
+        let flush = |ring: &mut Vec<[f32; 2]>, edges: &mut Vec<([f32; 2], [f32; 2])>| {
+            if ring.len() >= 3 {
+                for i in 0..ring.len() {
+                    edges.push((ring[i], ring[(i + 1) % ring.len()]));
+                }
+            }
+            ring.clear();
+        };
+        for pt in rings {
+            if pt[0].is_nan() || pt[1].is_nan() {
+                flush(&mut ring, &mut edges);
+            } else {
+                ring.push(*pt);
+            }
+        }
+        flush(&mut ring, &mut edges);
+        if edges.is_empty() {
+            return;
+        }
+        let f = feather.max(0.0).round().min(250.0) as usize;
+        let fi = f as i64;
+        let x0 = (edges.iter().map(|e| e.0[0].min(e.1[0])).fold(f32::INFINITY, f32::min).floor() as i64 - fi).max(0);
+        let x1 = (edges.iter().map(|e| e.0[0].max(e.1[0])).fold(f32::NEG_INFINITY, f32::max).ceil() as i64 + fi).min(w);
+        let y0 = (edges.iter().map(|e| e.0[1].min(e.1[1])).fold(f32::INFINITY, f32::min).floor() as i64 - fi).max(0);
+        let y1 = (edges.iter().map(|e| e.0[1].max(e.1[1])).fold(f32::NEG_INFINITY, f32::max).ceil() as i64 + fi).min(h);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+        // 1. The inside mask over the bounding box (scanline, even-odd, pixel centres).
+        let mut mask = vec![false; bw * bh];
+        let mut xs: Vec<f32> = Vec::new();
+        for y in y0..y1 {
+            let yc = y as f32 + 0.5;
+            xs.clear();
+            for (a, b) in &edges {
+                let (ya, yb) = (a[1], b[1]);
+                if (ya <= yc && yb > yc) || (yb <= yc && ya > yc) {
+                    let t = (yc - ya) / (yb - ya);
+                    xs.push(a[0] + t * (b[0] - a[0]));
+                }
+            }
+            if xs.len() < 2 {
+                continue;
+            }
+            xs.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            for pair in xs.chunks(2) {
+                if pair.len() < 2 {
+                    break;
+                }
+                let xa = (pair[0] - 0.5).ceil().max(x0 as f32) as i64;
+                let xb = (pair[1] - 0.5).floor().min(x1 as f32 - 1.0) as i64;
+                for x in xa..=xb {
+                    mask[(y - y0) as usize * bw + (x - x0) as usize] = true;
+                }
+            }
+        }
+        // 2. The wet edge: distance OUTSIDE the boundary by successive dilation, up to `feather` px.
+        let mut dist = vec![0u8; bw * bh];
+        if f > 0 {
+            let mut cur = mask.clone();
+            for d in 1..=f {
+                let mut next = cur.clone();
+                for y in 0..bh {
+                    for x in 0..bw {
+                        let i = y * bw + x;
+                        if cur[i] {
+                            continue;
+                        }
+                        let touch = (x > 0 && cur[i - 1]) || (x + 1 < bw && cur[i + 1]) || (y > 0 && cur[i - bw]) || (y + 1 < bh && cur[i + bw]);
+                        if touch {
+                            next[i] = true;
+                            dist[i] = d as u8;
+                        }
+                    }
+                }
+                cur = next;
+            }
+        }
+        // 3. Deposit: full inside; outside, a bloom falling with the distance (a bleed is thinner than the wash).
+        let mut scaled = vec![0f32; load.len()];
+        for y in 0..bh {
+            for x in 0..bw {
+                let i = y * bw + x;
+                let k = if mask[i] {
+                    1.0
+                } else if dist[i] > 0 {
+                    let t = 1.0 - dist[i] as f32 / (f as f32 + 1.0);
+                    0.6 * t * t
+                } else {
+                    continue;
+                };
+                for (c, v) in load.iter().enumerate() {
+                    scaled[c] = v * k;
+                }
+                let (px, py) = ((x as i64 + x0) as u32, (y as i64 + y0) as u32);
+                self.deposit(px, py, &scaled, 0.0);
+                if mask[i] {
+                    let j = self.idx(px, py) / self.n;
+                    self.wetness[j] = self.wetness[j].max(wet.clamp(0.0, 1.0));
+                }
+            }
+        }
+    }
+
     /// Clear the deposited paint (and height, wetness) wherever `mask` is true, re-exposing the ground. Used to
     /// PRIME a composition layer's footprint before painting it, so a nearer element paints fresh and opaquely
     /// OCCLUDES the farther layers beneath — the colour model mixes by concentration RATIO, so without this a
@@ -788,6 +904,31 @@ mod tests {
         let after = c.conc_at(3, 3)[2];
         assert!(after >= before * (1.0 - DRIFT_MAX_OUT) - 1e-6, "the centre keeps at least half: {after} of {before}");
         assert!(after < before, "…but does give some pigment to the darks");
+    }
+
+    #[test]
+    fn a_wash_fills_its_rings_even_odd_with_a_hard_edge() {
+        // A 20×20 sheet: an outer square with a square hole; the hole stays paper, the edge is exact.
+        let mut c = Canvas::white(20, 20, palette::ZORN, 0.7);
+        let outer = [[2.0, 2.0], [16.0, 2.0], [16.0, 16.0], [2.0, 16.0]];
+        let hole = [[6.0, 6.0], [12.0, 6.0], [12.0, 12.0], [6.0, 12.0]];
+        let mut rings: Vec<[f32; 2]> = outer.to_vec();
+        rings.push([f32::NAN, f32::NAN]);
+        rings.extend_from_slice(&hole);
+        c.fill_rings(&rings, &[0.0, 0.0, 3.0, 0.0], 0.7, 0.0);
+        let dark = |c: &Canvas, x: u32, y: u32| c.color_at(x, y)[0] < 120;
+        assert!(dark(&c, 3, 3) && dark(&c, 15, 15) && dark(&c, 4, 10), "inside the outer ring is washed");
+        assert!(!dark(&c, 8, 8) && !dark(&c, 11, 11), "the hole stays paper");
+        assert!(!dark(&c, 1, 1) && !dark(&c, 17, 10) && !dark(&c, 10, 17), "outside stays paper");
+        assert!(dark(&c, 2, 2) && !dark(&c, 16, 16), "pixel-centre rule: the top-left edge pixel is in, the bottom-right is out");
+        assert!((c.wetness[3 * 20 + 3] - 0.7).abs() < 1e-6 && c.wetness[8 * 20 + 8] < 1e-6, "wet inside, dry in the hole");
+        // A wet edge blooms OUTWARD: just outside the ring carries some pigment, further out none, inside full.
+        let mut fz = Canvas::white(24, 24, palette::ZORN, 0.7);
+        let sq = [[6.0, 6.0], [16.0, 6.0], [16.0, 16.0], [6.0, 16.0]];
+        fz.fill_rings(&sq, &[0.0, 0.0, 3.0, 0.0], 0.7, 3.0);
+        let v = |x: u32, y: u32| fz.color_at(x, y)[0];
+        assert!(v(10, 10) < v(17, 10) && v(17, 10) < v(19, 10) && v(22, 10) > 235, "inside {} < bloom {} < faint {} < paper {}", v(10, 10), v(17, 10), v(19, 10), v(22, 10));
+        assert!((v(10, 10) as i32 - v(6, 10) as i32).abs() < 3, "no pale rim inside the edge");
     }
 
     #[test]

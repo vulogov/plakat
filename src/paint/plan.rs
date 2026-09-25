@@ -188,6 +188,8 @@ pub struct Analysis {
     pub faces: usize,
     /// Global luma standard deviation in [0,1] — a proxy for tonal contrast (low = flat/foggy).
     pub luma_stddev: f32,
+    /// Global mean luma in [0,1] — the picture's key (a nocturne sits well below 0.3).
+    pub luma_mean: f32,
     /// The medium requested (drives the reserve default).
     pub medium: String,
     /// The palette requested (usually `image`).
@@ -276,15 +278,26 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         (None, None, 0.0, armature)
     };
     let semantic = a.faces > 0;
+    // A LUMINOUS medium (line-and-wash) keeps the paper's light: the oil-minded backbone below — family
+    // separation, committed shadows, a deep shadow floor — is what made every wash read heavy and muddy.
+    let medium_mark = crate::paint::medium::MediumProfile::by_name(&a.medium).map(|m| m.mark);
+    let luminous = medium_mark.map(|m| m.luminous).unwrap_or(false);
+    let book = medium_mark.map(|m| m.book).unwrap_or(false);
     // FAMILY SEPARATION — group light/shadow masses so the painting reads SOLID, not a washed photographic average.
-    let families = true;
-    notes.push("family separation (light/shadow masses) → solid, not washed".into());
+    let families = !luminous;
+    if families {
+        notes.push("family separation (light/shadow masses) → solid, not washed".into());
+    } else {
+        notes.push("luminous medium → no family separation, no committed shadows: the washes stay transparent".into());
+    }
     // COMMIT SHADOWS — paint the dark masses decisively (a solid value backbone), the direct fix for a pale wash.
     // Measured (same ladder, budget, length): 0.40 → 0.85 → 1.00 cut speck flecks on smooth masses 0.040 → 0.031
     // → 0.029 (target painting 0.025) and gave the best structural agreement — committed darks are laid SOLID, so
     // nothing later flecks them. Full commitment is the right default; `--commit-shadows` lowers it deliberately.
-    let commit_shadows = 1.0;
-    notes.push("commit shadows 1.0 → decisive solid dark masses (value backbone; fewer flecks)".into());
+    let commit_shadows = if luminous { 0.0 } else { 1.0 };
+    if !luminous {
+        notes.push("commit shadows 1.0 → decisive solid dark masses (value backbone; fewer flecks)".into());
+    }
     // SILHOUETTE — OFF by default: an auto-drawn contour line reads as tacked-on on most subjects (it is only
     // wanted deliberately). Opt in with `--silhouette <n>` / `--silhouette-mode`; the plan leaves it disabled.
     let (silhouette, silhouette_mode) = (0.0, None);
@@ -296,12 +309,28 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // Expand ONLY a genuinely flat/foggy reference (low luma σ). A normal-contrast reference gets no stretch: the
     // stretch lightened a faithful painting by +0.04 mean luma for nothing — a painter re-keys a fog, not a
     // clear day. σ ≥ 0.20 → 0; σ 0.08 → 0.7.
-    let value_key = ((0.20 - a.luma_stddev) / (0.20 - 0.08) * 0.7).clamp(0.0, 0.7);
-    notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
+    // A LUMINOUS medium is re-keyed HIGH whatever the picture's contrast: the illustrator's wash keeps the darks
+    // as transparent mid-darks and lets the paper carry the light (the CLI lifts the low end of the key too).
+    // The BOOK is keyed high (a print's flat light); the watercolour only mildly — its colours are the
+    // picture's own, lightened by thin washes over white paper.
+    // A NOCTURNE stays a nocturne: the watercolour's mild key lifts a daylight picture toward the paper, but
+    // on a dark picture (mean luma below ~0.3) it only washed the night out — no key there; the paper is for
+    // the lamps and the stars alone. (The book keys high regardless: a print's flat light.)
+    let nocturne = a.luma_mean < 0.3;
+    let value_key = if book { 1.0 } else if luminous && nocturne { 0.0 } else if luminous { 0.45 } else { ((0.20 - a.luma_stddev) / (0.20 - 0.08) * 0.7).clamp(0.0, 0.7) };
+    if book {
+        notes.push("book illustration → high key: the whole range lifted, the paper carries the light".into());
+    } else if luminous && nocturne {
+        notes.push(format!("luminous medium, nocturne (mean luma {:.2}) → no key: the night keeps its depth, the paper is for the lights", a.luma_mean));
+    } else if luminous {
+        notes.push(format!("luminous medium → mild key {value_key:.2}: the picture's own colours, lightened by thin washes over paper"));
+    } else {
+        notes.push(format!("luma σ {:.3} → value-key {:.2} (expand a flat reference's tonal range)", a.luma_stddev, value_key));
+    }
     // SHADOW FLOOR (RFC §3.3): the re-key keeps the shadow family a narrow, LIFTED band — a solid dark mass, not a
     // crush to black. 0.16 ≈ a deep but readable dark; raise for a high-key picture, lower for a nocturne.
-    let shadow_floor = 0.16;
-    notes.push("shadow floor 0.16 → shadow family lifted off black (solid dark masses, RFC §3.3)".into());
+    let shadow_floor = if luminous { 0.24 } else { 0.16 };
+    notes.push(format!("shadow floor {shadow_floor:.2} → shadow family lifted off black ({})", if luminous { "a wash's darks stay transparent" } else { "solid dark masses, RFC §3.3" }));
 
     // Reserve the paper ONLY for the brightest highlights — a lower cutoff starves a light subject (a white
     // beard/shirt) into sparse, washed paper. 0.92 paints the light masses and keeps only the true whites as paper.
@@ -371,9 +400,9 @@ mod tests {
 
     #[test]
     fn flat_reference_gets_more_value_key_than_punchy() {
-        let base = Analysis { faces: 1, luma_stddev: 0.12, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
+        let base = Analysis { faces: 1, luma_stddev: 0.12, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
         let flat = plan_from(&base);
-        let punchy = plan_from(&Analysis { luma_stddev: 0.26, ..base_like(&base) });
+        let punchy = plan_from(&Analysis { luma_stddev: 0.26, luma_mean: 0.5, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
         assert_eq!(flat.armature_face, Some(300), "a detected face gets a fine focal armature (SAM precise focal)");
         assert_eq!(flat.armature_body, Some(210), "a subject gets a mid body armature (three-tier)");
@@ -385,7 +414,7 @@ mod tests {
 
     #[test]
     fn no_face_means_uniform_armature() {
-        let a = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false, structure: STRUCTURE_NORM };
+        let a = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false, structure: STRUCTURE_NORM };
         let plan = plan_from(&a);
         assert_eq!(plan.armature_face, None);
         assert_eq!(plan.armature_body, None, "no subject → no body tier");
@@ -394,7 +423,7 @@ mod tests {
 
     #[test]
     fn hjson_round_trips() {
-        let a = Analysis { faces: 1, luma_stddev: 0.15, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
+        let a = Analysis { faces: 1, luma_stddev: 0.15, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
         let plan = plan_from(&a);
         let parsed = PaintPlan::parse(&plan.to_hjson()).expect("parses");
         assert_eq!(parsed.armature, plan.armature);
@@ -404,7 +433,7 @@ mod tests {
 
     #[test]
     fn budget_scales_with_size_and_complexity() {
-        let plain = Analysis { faces: 0, luma_stddev: 0.2, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM };
+        let plain = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM };
         let b1 = plan_from(&plain).budget.unwrap();
         assert_eq!(b1, 1024 * 1024 / 10, "the accepted density at the norm structure: area/10");
         let busy = Analysis { structure: STRUCTURE_NORM * 1.4, ..base_like(&plain) };
@@ -426,6 +455,6 @@ mod tests {
     }
 
     fn base_like(a: &Analysis) -> Analysis {
-        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white, structure: a.structure }
+        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, luma_mean: a.luma_mean, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white, structure: a.structure }
     }
 }

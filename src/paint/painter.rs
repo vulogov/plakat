@@ -202,10 +202,21 @@ pub struct PaintParams {
     /// PIGMENT DIFFUSION (-1..+1, default 0 = none): which way the pigment travels in the wet wash. +1 = into the
     /// darks (they charge up, lights stay clean), -1 = out into the lights (feathered halos). See `Canvas::bleed_with`.
     pub diffuse: f32,
+    /// LUMINOUS medium (line-and-wash): the contour drawing is planned from the SOURCE (the armature has
+    /// simplified the machine and the figures into washes) and laid as a light pen line over the washes.
+    pub luminous: bool,
+    /// BOOK (early-book-illustration): the washes as flat cumulative glazes from the keyed picture at pixel
+    /// scale, no modelling strokes. See `MarkCharacter::book`.
+    pub book: bool,
     /// PARALLELISM: worker threads for the up-front pigment MIXING of each pass (0 = every core, the default).
     /// One painter lays the strokes in the classic order whatever the count — the thread count never changes
     /// the picture. (Mixing was 99% of a stroke's cost; the brush itself is under 1%.)
     pub threads: usize,
+    /// FILL (0..1, default 0 = auto): a density floor. When the gates stop the painting below this share of
+    /// the budget, the finest pass is repeated with its restate floor halved each round (up to six) until the
+    /// share is spent or a round adds almost nothing. More worked and denser on demand; never more detail
+    /// than the reference holds. Replay-exact (the extra marks are ordinary records of the finest stage).
+    pub fill: f32,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never dries (fully wet-into-wet —
     /// every later pass picks up the masses beneath and smears them into mud); 1 = bone dry between passes (each
     /// pass a crisp overlay). Default ~0.5. This is the single biggest lever against the muddy/washed look.
@@ -327,7 +338,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, threads: 0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, fill: 0.0 }
     }
 }
 
@@ -1067,7 +1078,28 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     });
     // The schedule goes into the score so a replay crosses every pass boundary the paint crossed — a pass that
     // lays no stroke included. Density media run no passes (the drawing is laid by `ink_drawing`).
-    score.header.stages = Some(if p.density { Vec::new() } else { passes.iter().map(|q| q.stage.clone()).collect() });
+    // A luminous medium: the washes (one stage per level), then the two finest brush passes at a fraction of
+    // the budget (the modelling within the washes).
+    let luminous_passes: Vec<PassSpec> = if p.luminous && !p.book {
+        // The modelling passes keep the plan's budget for the fine brushes: the restate gate already confines
+        // them to where the washes differ from the picture (a lit window, a machine, a face), so on a flat
+        // wash they lay little and on a detailed passage they resolve it — a quarter share washed the detail
+        // out of every picture with fine structure (a night scene's lamps and figures).
+        // Only the FINE brushes (≤ ~14 px) model within the washes: a mid-scale pass over them re-painted the
+        // masses' own edges and lost detail (measured on a night scene: 0.096 → 0.086 Laplacian σ).
+        let fine: Vec<PassSpec> = passes.iter().filter(|q| q.radius.max(p.min_brush) <= 14.5).cloned().collect();
+        fine.into_iter().map(|q| PassSpec { budget: ((q.budget as f32) * 0.7) as usize, ..q }).collect()
+    } else {
+        Vec::new()
+    };
+    let n_stages_total = p.armature_levels.max(2) as usize + luminous_passes.len();
+    score.header.stages = Some(if p.density {
+        Vec::new()
+    } else if p.luminous {
+        (1..=p.armature_levels.max(2)).map(|l| format!("wash-{l}")).chain(luminous_passes.iter().map(|q| q.stage.clone())).collect()
+    } else {
+        passes.iter().map(|q| q.stage.clone()).collect()
+    });
 
     let mut placed = 0usize;
     let mut k = 0u64;
@@ -1165,6 +1197,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let passes: Vec<PassSpec> = if p.density {
         ink_drawing(&mut canvas, &mut score, input, source, head_mask.as_deref(), p, protect_all.as_deref(), &mut placed, &mut k, progress);
         Vec::new()
+    } else if p.luminous {
+        // A LUMINOUS medium lays its masses as WASHES — area fills, level by level, light to dark, each level
+        // dried before the next (see `wash_passes`) — then MODELS within them with the two finest brushes only
+        // (thin transparent touches from the source's texture: a wash is flat, a watercolour is not), at a
+        // fraction of the budget. The line and the splatter follow.
+        wash_passes(&mut canvas, &mut score, input, source, n_stages_total, p, protect_all.as_deref(), &mut placed, &mut k, progress);
+        luminous_passes
     } else {
         passes
     };
@@ -1206,6 +1245,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             if p.detail_sharpen > 0.0 {
                 imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
             } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) {
+                // (The luminous media too: their modelling passes read the armature, which the washes already
+                // match, so without the source's texture the restate gate found nothing to resolve — a night
+                // scene's lamps and machine washed out. The residual greyed only the old cumulative mud washes.)
                 texture_reference(input, source, radius, p.armature_levels.max(2), p.detail_texture, head_mask.as_deref().or(p.subject_mask.as_deref()))
             } else {
                 input.clone()
@@ -1278,6 +1320,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let order_seed = p.seed ^ (layer as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
         // ONE STROKE ATTEMPT at seed cell `cell` with jitter key `k`, laid onto `cv` and returned as its record
         // (id unset), or None when the seed was skipped.
+        // The restate floor's multiplier: 1 for the pass proper; the FILL rounds (below) halve it round by round.
+        let floor_mul = std::cell::Cell::new(1.0f32);
         let attempt = |cell: u32, k: u64, cv: &mut Canvas, cache: &mut std::collections::HashMap<u32, Vec<f32>>| -> Option<StrokeRecord> {
             let (gyi, gxi) = (cell / cols, cell % cols);
             {
@@ -1325,7 +1369,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // Committed shadows drop the floor toward zero so the darks deepen pass over pass. The SUBJECT
                 // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
                 // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
-                let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj) * (1.0 - 0.8 * soft);
+                let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj) * (1.0 - 0.8 * soft) * floor_mul.get();
                 if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
@@ -1399,7 +1443,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // figure) must DEFINE it, not dissolve into the mass beneath — so detail passes go on nearly dry.
                 let wet = {
                     let base = (0.55 + 0.3 * (jitter(p.seed ^ 0x77A1, k.wrapping_add(5)) + 0.5)).clamp(0.4, 0.85);
-                    if detail {
+                    if p.luminous && !detail {
+                        // A watercolour's modelling touches are laid WET into the wash where the picture is a
+                        // MASS, so they bloom — and DRY where it is an EDGE (the edge-hardness field), so a
+                        // machine's parts, a window frame, a figure's outline sit crisp instead of dissolving
+                        // into each other (a night scene's whole locomotive melted). The finest touches go on
+                        // drier still (the accents that make the picture read).
+                        let hard_here = hard_ref.map(|(m, t)| (m.get(region_i).copied().unwrap_or(0.0) / t.max(1e-4)).clamp(0.0, 1.0)).unwrap_or(0.0);
+                        (base * (1.0 - 0.35 * hard_here) + 0.25 * (1.0 - hard_here)).min(0.95)
+                    } else if detail {
                         base * 0.5
                     } else {
                         base
@@ -1423,7 +1475,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 Some(StrokeRecord {
                     id: 0,
-                    wipe: false,
+                    wipe: false, wash: false,
                     stage: pass.stage.clone(),
                     spline: s.path,
                     w0: s.width0,
@@ -1510,6 +1562,41 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 score.strokes.push(rec);
             }
         }
+        // FILL (see `PaintParams::fill`): the finest pass again, floors halving, until the share is spent.
+        if p.fill > 0.0 && layer + 1 == passes.len() {
+            let target = ((p.budget as f32) * p.fill.clamp(0.0, 1.0)) as usize;
+            let mut round = 0usize;
+            while placed < target && round < 6 {
+                round += 1;
+                floor_mul.set(0.5f32.powi(round as i32));
+                let seed_r = order_seed ^ (round as u64).wrapping_mul(0xD1B5_4A32_D192_ED03);
+                let mut order_r: Vec<u32> = (0..n_cells as u32).collect();
+                order_r.sort_by_key(|&c| jitter(seed_r, c as u64).to_bits());
+                let before = placed;
+                for cell in order_r {
+                    if placed >= target {
+                        break;
+                    }
+                    k += 1;
+                    if let Some(mut rec) = attempt(cell, k, &mut canvas, &mut cache) {
+                        placed += 1;
+                        in_pass += 1;
+                        if let Some(pr) = progress {
+                            if placed % 64 == 0 {
+                                pr(PaintProgress::Placed(placed));
+                            }
+                        }
+                        rec.id = placed as u32;
+                        score.strokes.push(rec);
+                    }
+                }
+                if placed - before < p.budget / 200 {
+                    break; // the floor is no longer what stops it
+                }
+            }
+            floor_mul.set(1.0);
+            tracing::info!(target: "plakat", "fill {:.2}: {} rounds → {} of {} strokes", p.fill, round, placed, p.budget);
+        }
 
         // Critic verdict: if the pass didn't improve the score by `margin`, ROLL BACK the canvas + score and
         // record the stage as tabu (§10.1). The block-in is never rejected — the canvas must be covered.
@@ -1530,10 +1617,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // painting fused EVERYTHING (measured: an ink-wash lost half its sharpness in that final step, and the
         // whole sheet read as one blur). The same schedule is reproduced by the score replay at each stage
         // boundary, so the drawing stays byte-exact.
+        // (A luminous paint's brush passes come after its wash stages: their taper index continues from them.)
+        let (b_idx, b_n) = if p.luminous { (p.armature_levels.max(2) as usize + layer, n_stages_total) } else { (layer, passes.len()) };
         if p.bleed > 0.0 {
-            canvas.bleed_with(p.bleed * pass_bleed_taper(layer, passes.len()), p.diffuse);
+            canvas.bleed_with(p.bleed * pass_bleed_taper(b_idx, b_n), p.diffuse);
         }
-        if layer + 1 < passes.len() {
+        if b_idx + 1 < b_n {
             canvas.dry(1.0 - p.dry);
         }
         lap("pass:bleed+dry", &mut prof_acc, &mut prof_t);
@@ -1553,7 +1642,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         sumi_ink(&mut canvas, &mut score, input, p, &mut placed, &mut k, progress);
     }
     if p.draw_contours && placed < p.budget {
-        ink_contours(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k);
+        ink_contours(&mut canvas, &mut score, input, source, p, protect_all.as_deref(), &mut placed, &mut k);
     } else if p.contour > 0.0 && !p.density && placed < p.budget {
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
@@ -1688,6 +1777,7 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
             score.strokes.push(StrokeRecord {
                 id: *placed as u32,
                 wipe,
+                wash: false,
                 stage: "silhouette".into(),
                 spline: s.path,
                 w0: s.width0,
@@ -1774,7 +1864,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
             *placed += 1;
             score.strokes.push(StrokeRecord {
                 id: *placed as u32,
-                wipe: false,
+                wipe: false, wash: false,
                 stage: "contour".into(),
                 spline: s.path,
                 w0: s.width0,
@@ -1856,6 +1946,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
             score.strokes.push(StrokeRecord {
                 id: *placed as u32,
                 wipe: true,
+                wash: false,
                 stage: "splatter".into(),
                 spline: s.path,
                 w0: s.width0,
@@ -1876,7 +1967,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
             *placed += 1;
             score.strokes.push(StrokeRecord {
                 id: *placed as u32,
-                wipe: false,
+                wipe: false, wash: false,
                 stage: "splatter".into(),
                 spline: s.path,
                 w0: s.width0,
@@ -2035,7 +2126,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             let s = Stroke { path, width0: ir * 1.5, width1: ir * 0.6, load, pressure: 1.0, wetness: 0.15 };
             s.rasterize(canvas, &dry);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0) });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0) });
             if let Some(pr) = progress { if *placed % 64 == 0 { pr(PaintProgress::Placed(*placed)); } }
         }
     }
@@ -2044,12 +2135,311 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
 /// The ink planner's CONTOURS only (no hatch), drawn on top of a tonal painting in the darkest pigment — the
 /// line of a pencil sketch over its shading. Uses the medium's `contour` strength for how many edges to keep.
 #[allow(clippy::too_many_arguments)]
-fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
+/// The WASHES of a luminous medium: the picture's value MASSES, read from the SOURCE smoothed to the scale of
+/// a wash (~0.7% of the long side — a sky, a wall, a road, not every cobble: the masses quantised at pixel
+/// scale were a paint-by-numbers photo), its luma quantised to `armature_levels`, connected components of one
+/// level and one hue family (the small ones left to the line), laid as area fills one pass per level from the
+/// lightest to the darkest — the watercolour order — each pass bled (the wet edges bloom) and dried before the
+/// next. A mass carries its own mean colour from the source (the picture's colours, not a re-keyed version:
+/// a watercolour is light because its washes are THIN over white paper), mixed from the palette; the reserved
+/// paper (`protect`) is cut out of every mass as a hole, so the lights stay paper.
+#[allow(clippy::too_many_arguments)]
+fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImage, source: &RgbImage, n_stages_total: usize, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
+    let (w, h) = (source.width() as usize, source.height() as usize);
+    let levels = p.armature_levels.max(2) as usize;
+    // The BOOK reads the keyed reference at pixel scale (its masks); the watercolour the source at wash scale.
+    // The watercolour reads its masses from the source flattened at wash scale by an EDGE-PRESERVING smooth
+    // (the armature's bilateral, no value snap): a plain blur spread every star and lamp into a pale halo that
+    // became a light mass — a starry sky washed as blue-white blots. Points smaller than a wash are not a
+    // wash; they are the paper's (and a later mark's) business.
+    let smoothed;
+    let input: &RgbImage = if p.book {
+        reference
+    } else {
+        let r_wash = (w.max(h) as f32 * 0.007).max(2.0);
+        smoothed = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
+        &smoothed
+    };
+    let luma = luma_map(input);
+    // The levels span the PICTURE's value range (its 2nd..98th luma percentiles), not 0..1: a night scene lives
+    // in the bottom fifth of the scale, and fixed levels put its whole sky, walls and tracks into one or two
+    // masses — the picture's structure vanished. Levels over its own range give a nocturne the same number of
+    // washes a daylight picture gets (its brightest lights still reserve the paper by the reserve luma).
+    let (lo, hi) = {
+        let mut sorted = luma.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = sorted.len().max(1);
+        let lo = sorted[n * 2 / 100];
+        let hi = sorted[(n * 98 / 100).min(n - 1)];
+        if hi - lo < 0.05 { (0.0, 1.0) } else { (lo, hi) }
+    };
+    let norm = |v: f32| ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+    let step = 1.0 / (levels - 1) as f32;
+    // Per-pixel level; reserved paper is level `levels` (no wash). A mass is one level AND one hue family
+    // (six hue bins, or neutral when the colour is grey): a level's mean colour across a sky and a roof went
+    // grey, and a watercolour's washes are its colours.
+    // The paper is reserved at WASH scale too — where the smoothed picture is above the reserve luma — so the
+    // lights are areas of bare paper, never specks (a pixel-scale reserve left white flecks over everything).
+    // The paper is reserved where the picture, smoothed to wash scale, is above the reserve luma — for the book
+    // too (its masses are pixel-scale, but its paper must be AREAS: a pixel-scale reserve peppered the print
+    // with white specks; an occasional fleck belongs to the style, a rash of them does not).
+    let paper_luma: Vec<f32> = if p.book { luma_map(&imageops::blur(input, (w.max(h) as f32 * 0.004).max(1.5))) } else { luma.clone() };
+    let paper = |i: usize| match p.reserve {
+        Some(rt) => paper_luma[i] > rt,
+        None => protect.map(|m| m.get(i).copied().unwrap_or(false)).unwrap_or(false),
+    };
+    let level: Vec<u16> = (0..w * h)
+        .map(|i| if paper(i) { levels as u16 } else { ((norm(luma[i]) / step).round() as usize).min(levels - 1) as u16 })
+        .collect();
+    let hue_bin: Vec<u8> = input
+        .pixels()
+        .map(|px| {
+            let (r, g, b) = (px.0[0] as f32, px.0[1] as f32, px.0[2] as f32);
+            let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+            // Chroma RELATIVE to brightness: a dark blue night sky is as much a hue as a bright one.
+            if mx - mn < (24.0f32).min(mx * 0.25) {
+                return 6;
+            }
+            let d = mx - mn;
+            let hh = if mx == r { ((g - b) / d).rem_euclid(6.0) } else if mx == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
+            (hh.rem_euclid(6.0).floor() as u8).min(5)
+        })
+        .collect();
+    // Each mass is washed ONCE, with its own colour (stacking every lighter level's glaze under a darker mass
+    // mixed a sky's blue-grey under a wall's brown — mud); the light-to-dark order still lets a darker wash
+    // bloom over a lighter neighbour's edge. A mass is one level and one hue family.
+    let in_pass = |i: usize, lv: usize| if p.book { (level[i] as usize) <= lv } else { (level[i] as usize) == lv };
+    let same = |i: usize, j: usize, lv: usize| in_pass(i, lv) && in_pass(j, lv) && hue_bin[i] == hue_bin[j];
+    // Every mass is washed, however small: a mass below a size threshold was skipped, and its pixels — a
+    // window pane, a fleck of light on a face, a hue island the hue split cut off — stayed bare paper: the
+    // white-speck rash. The book (masks at pixel scale) fills down to a few pixels; the watercolour leaves
+    // only the tiniest islands to its modelling passes.
+    let min_area = if p.book { 6 } else { ((w * h) as f32 * 0.00005).max(24.0) as usize };
+    let n = p.palette.pigments.len();
+    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let n_levels = levels;
+    for lv in (0..n_levels).rev() {
+        let mut labels = vec![u32::MAX; w * h];
+        // Lightest level first: levels count up with luma, so the highest index is the lightest.
+        let stage = format!("wash-{}", n_levels - lv);
+        if let Some(pr) = progress {
+            pr(PaintProgress::Painting { pass: n_levels - lv, passes: n_levels, radius: 0.0 });
+        }
+        // Connected components (4-neighbour) of this level.
+        let mut comps: Vec<(Vec<usize>, [f64; 3])> = Vec::new();
+        for start in 0..w * h {
+            if !in_pass(start, lv) || labels[start] != u32::MAX {
+                continue;
+            }
+            let id = comps.len() as u32;
+            let mut px: Vec<usize> = Vec::new();
+            let mut sum = [0f64; 3];
+            let mut stack = vec![start];
+            labels[start] = id;
+            while let Some(i) = stack.pop() {
+                px.push(i);
+                let c = input.get_pixel((i % w) as u32, (i / w) as u32).0;
+                for ch in 0..3 {
+                    sum[ch] += c[ch] as f64;
+                }
+                let (x, y) = (i % w, i / w);
+                let mut nb = [usize::MAX; 4];
+                if x > 0 { nb[0] = i - 1; }
+                if x + 1 < w { nb[1] = i + 1; }
+                if y > 0 { nb[2] = i - w; }
+                if y + 1 < h { nb[3] = i + w; }
+                for &j in &nb {
+                    if j != usize::MAX && same(i, j, lv) && labels[j] == u32::MAX {
+                        labels[j] = id;
+                        stack.push(j);
+                    }
+                }
+            }
+            comps.push((px, sum));
+        }
+        // Largest first (a big wash under, the small ones over it — the order the record replays in).
+        comps.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        for (px, sum) in &comps {
+            if px.len() < min_area || *placed >= p.budget {
+                continue;
+            }
+            let mean: Srgb = [(sum[0] / px.len() as f64) as u8, (sum[1] / px.len() as f64) as u8, (sum[2] / px.len() as f64) as u8];
+            let mut mask = vec![false; w * h];
+            for &i in px {
+                mask[i] = true;
+            }
+            let rings = mask_rings(&mask, w, h, 1.2);
+            if rings.is_empty() {
+                continue;
+            }
+            // A GLAZE, not a coat: one thin charge per pass; the darks are built by the passes stacking.
+            // A wash's charge grows with its DARKNESS: a thin transparent wash over white paper cannot read deep,
+            // so a night sky washed at a light mass's charge came out grey-blue hatch; a painter floods the
+            // darks (several passes of the same colour) and barely tints the lights.
+            let darkness = 1.0 - (lv as f32 / (n_levels - 1) as f32);
+            let charge = if p.book { 0.2 } else { 0.4 + 2.4 * darkness * darkness };
+            let load = mixture_cached(&mut cache, mean, &p.palette, p.charge * charge, n);
+            let wet = 0.75;
+            // The wet edge: ~0.3% of the long side (6 px on a 2048 sheet), so a wash meets the next with a rim.
+            let feather = (w.max(h) as f32 * 0.002).max(1.0).round();
+            canvas.fill_rings(&rings, &load, wet, feather);
+            *k += 1;
+            *placed += 1;
+            if let Some(pr) = progress {
+                pr(PaintProgress::Placed(*placed));
+            }
+            let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0) });
+        }
+        // The pass boundary, as the stroke passes cross it (and as the replay reproduces it).
+        // The pass boundary as the replay reproduces it: the taper over EVERY stage of the painting (the washes
+        // and the modelling passes after them), then drying when a stage follows.
+        let idx = n_levels - lv - 1;
+        if p.bleed > 0.0 {
+            canvas.bleed_with(p.bleed * pass_bleed_taper(idx, n_stages_total), p.diffuse);
+        }
+        if idx + 1 < n_stages_total {
+            canvas.dry(1.0 - p.dry);
+        }
+    }
+}
+
+/// The boundary RINGS of a pixel mask (outer contours and holes), as polygons on the pixel lattice, simplified
+/// to `tol` px, separated by `[NaN, NaN]` for `Canvas::fill_rings`. Each boundary edge between an inside and an
+/// outside pixel is a unit segment; the segments chain into closed loops.
+fn mask_rings(mask: &[bool], w: usize, h: usize, tol: f32) -> Vec<[f32; 2]> {
+    let inside = |x: i64, y: i64| x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && mask[y as usize * w + x as usize];
+    // Directed edges (a → b), keyed by their start corner, so that the region is always on the LEFT — then
+    // following edges from corner to corner traces every ring exactly once.
+    let key = |x: i64, y: i64| (y * (w as i64 + 1) + x) as usize;
+    let mut next: std::collections::HashMap<usize, Vec<(i64, i64)>> = std::collections::HashMap::new();
+    let mut count = 0usize;
+    for y in 0..h as i64 {
+        for x in 0..w as i64 {
+            if !inside(x, y) {
+                continue;
+            }
+            // Top edge (left→right) when the pixel above is outside; right edge (top→bottom) when the right
+            // neighbour is outside; bottom (right→left) when below is outside; left (bottom→top) when left is.
+            if !inside(x, y - 1) { next.entry(key(x, y)).or_default().push((x + 1, y)); count += 1; }
+            if !inside(x + 1, y) { next.entry(key(x + 1, y)).or_default().push((x + 1, y + 1)); count += 1; }
+            if !inside(x, y + 1) { next.entry(key(x + 1, y + 1)).or_default().push((x, y + 1)); count += 1; }
+            if !inside(x - 1, y) { next.entry(key(x, y + 1)).or_default().push((x, y)); count += 1; }
+        }
+    }
+    let mut out: Vec<[f32; 2]> = Vec::new();
+    let mut used = 0usize;
+    // Deterministic start order: scan corners in raster order.
+    let mut starts: Vec<usize> = next.keys().copied().collect();
+    starts.sort_unstable();
+    for start_key in starts {
+        while let Some(first) = next.get_mut(&start_key).and_then(|v| v.pop()) {
+            used += 1;
+            let sx = (start_key % (w + 1)) as i64;
+            let sy = (start_key / (w + 1)) as i64;
+            let mut ring: Vec<(i64, i64)> = vec![(sx, sy), first];
+            let mut cur = first;
+            while cur != (sx, sy) {
+                let Some(v) = next.get_mut(&key(cur.0, cur.1)) else { break };
+                // At a corner where four edges meet (two rings touch at a point) pick the turn that keeps the
+                // region on the left: the candidate that turns right-most first, else any.
+                let Some(nxt) = v.pop() else { break };
+                used += 1;
+                ring.push(nxt);
+                cur = nxt;
+            }
+            if ring.len() < 4 {
+                continue;
+            }
+            ring.pop(); // the closing repeat of the start
+            let pts: Vec<[f32; 2]> = ring.iter().map(|&(x, y)| [x as f32, y as f32]).collect();
+            let simp = simplify_ring(&pts, tol);
+            if simp.len() >= 3 {
+                if !out.is_empty() {
+                    out.push([f32::NAN, f32::NAN]);
+                }
+                out.extend_from_slice(&simp);
+            }
+        }
+    }
+    debug_assert!(used == count, "every boundary edge belongs to a ring ({used} of {count})");
+    out
+}
+
+/// Douglas–Peucker on a closed ring (split at its two farthest-apart points so the ends are stable).
+fn simplify_ring(pts: &[[f32; 2]], tol: f32) -> Vec<[f32; 2]> {
+    if pts.len() <= 4 || tol <= 0.0 {
+        return pts.to_vec();
+    }
+    // Split at index 0 and the point farthest from it.
+    let far = (1..pts.len()).max_by(|&a, &b| dist2(pts[0], pts[a]).partial_cmp(&dist2(pts[0], pts[b])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(pts.len() / 2);
+    let mut out = Vec::new();
+    dp(&pts[0..=far], tol, &mut out);
+    out.pop();
+    let mut second: Vec<[f32; 2]> = pts[far..].to_vec();
+    second.push(pts[0]);
+    let mut o2 = Vec::new();
+    dp(&second, tol, &mut o2);
+    o2.pop();
+    out.extend(o2);
+    out
+}
+
+fn dist2(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
+}
+
+fn dp(pts: &[[f32; 2]], tol: f32, out: &mut Vec<[f32; 2]>) {
+    if pts.len() < 3 {
+        out.extend_from_slice(pts);
+        return;
+    }
+    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let mut worst = 0.0f32;
+    let mut wi = 0usize;
+    for (i, q) in pts.iter().enumerate().skip(1).take(pts.len() - 2) {
+        let d = ((q[0] - a[0]) * dy - (q[1] - a[1]) * dx).abs() / len;
+        if d > worst {
+            worst = d;
+            wi = i;
+        }
+    }
+    if worst > tol {
+        dp(&pts[..=wi], tol, out);
+        out.pop();
+        dp(&pts[wi..], tol, out);
+    } else {
+        out.push(a);
+        out.push(b);
+    }
+}
+
+fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, source: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
     let w = input.width() as usize;
-    let drawing = crate::paint::ink::plan_with(input, p.contour.max(0.3), p.budget.saturating_sub(*placed), p.seed, crate::paint::ink::HatchStyle::NONE);
+    // A luminous medium draws its pen line from the SOURCE, lightly smoothed (texture off, the machine's and
+    // the figures' edges kept) — the washes' armature has simplified exactly what the line is for.
+    let from_source;
+    let plan_on: &RgbImage = if p.luminous && !std::ptr::eq(source, input) {
+        from_source = imageops::blur(source, (input.width().max(input.height()) as f32 / 1000.0).max(0.8));
+        &from_source
+    } else {
+        input
+    };
+    let drawing = crate::paint::ink::plan_with(plan_on, p.contour.max(0.3), p.budget.saturating_sub(*placed), p.seed, crate::paint::ink::HatchStyle::NONE);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
-    let mut load = vec![0f32; p.palette.pigments.len()];
+    let n = p.palette.pigments.len();
+    let mut load = vec![0f32; n];
     load[ink] = p.charge * 1.6;
+    // A luminous medium's line is a COLOURED ink: the reference's colour under the line, darkened, mixed from
+    // the palette — a brown line on the iron, a blue-grey one in a shadow — never a black outline.
+    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    let mut coloured_load = |c: Srgb| -> Vec<f32> {
+        let lin = color::srgb_to_linear(c);
+        let dark = color::linear_to_srgb([lin[0] * 0.3, lin[1] * 0.3, lin[2] * 0.3]);
+        mixture_cached(&mut cache, dark, &p.palette, p.charge * 1.6, n)
+    };
     let mut brush = p.brush;
     brush.k_pickup = 0.0;
     brush.bristles = 1;
@@ -2066,10 +2456,18 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
         }
         *k += 1;
         let path = waver_path(poly, 0.15 * width, p.seed, *k);
-        let s = Stroke { path, width0: width, width1: width, load: load.clone(), pressure: 0.9, wetness: 0.1 };
+        let (load_here, wet) = if p.luminous {
+            let m = poly[poly.len() / 2];
+            let c = plan_on.get_pixel((m[0].max(0.0) as u32).min(plan_on.width() - 1), (m[1].max(0.0) as u32).min(plan_on.height() - 1)).0;
+            (coloured_load(c), 0.2)
+        } else {
+            (load.clone(), 0.1)
+        };
+        let mix: Vec<(String, f32)> = load_here.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+        let s = Stroke { path, width0: width, width1: width, load: load_here, pressure: 0.9, wetness: wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.1, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0) });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0) });
     }
 }
 
@@ -2118,7 +2516,7 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
         }
         score.strokes.push(StrokeRecord {
             id: *placed as u32,
-            wipe: false,
+            wipe: false, wash: false,
             stage,
             spline: s.path,
             w0: width,
@@ -2396,6 +2794,65 @@ mod tests {
         for g in [0.0f32, 1.0] {
             structure_armature(&img, 210, 8, g).save(format!("{out}/armature_g{g}.png")).unwrap();
         }
+    }
+
+    #[test]
+    fn mask_rings_trace_an_outer_ring_and_a_hole() {
+        // A 12×12 square with a 4×4 hole: two rings, filling them back reproduces the mask exactly.
+        let (w, h) = (16usize, 16usize);
+        let mask: Vec<bool> = (0..w * h).map(|i| { let (x, y) = (i % w, i / w); (2..14).contains(&x) && (2..14).contains(&y) && !((6..10).contains(&x) && (6..10).contains(&y)) }).collect();
+        let rings = mask_rings(&mask, w, h, 0.0);
+        assert_eq!(rings.iter().filter(|p| p[0].is_nan()).count(), 1, "one separator: two rings");
+        let mut c = Canvas::white(w as u32, h as u32, palette::ZORN, 0.7);
+        c.fill_rings(&rings, &[0.0, 0.0, 3.0, 0.0], 0.5, 0.0);
+        for i in 0..w * h {
+            let dark = c.color_at((i % w) as u32, (i / w) as u32)[0] < 120;
+            assert_eq!(dark, mask[i], "pixel {i} ({}, {})", i % w, i / w);
+        }
+    }
+
+    #[test]
+    fn a_luminous_paint_lays_washes_and_replays_byte_exact() {
+        let img = gradient_img(96, 64);
+        let mut p = PaintParams::new(palette::EARTH, 2000);
+        p.brush_sizes = vec![12.0, 6.0];
+        p.luminous = true;
+        p.brush_sizes = vec![12.0, 6.0, 3.0];
+        p.min_brush = 2.0;
+        // (The contour pass is left out: a contour stroke's one-bristle pen is not in its record — a
+        // pre-existing replay gap of the line media, not of the washes under test here.)
+        p.draw_contours = false;
+        p.armature_levels = 4;
+        p.bleed = 0.3;
+        p.dry = 1.0;
+        let r = paint_from_image(&img, &p);
+        let n_wash = r.score.strokes.iter().filter(|s| s.wash).count();
+        assert!(n_wash > 0, "washes were laid");
+        assert!(r.score.strokes.iter().any(|s| !s.wash), "…and modelling strokes within them");
+        let painted = r.canvas.to_image().into_raw();
+        assert_eq!(r.score.replay(96, 64).unwrap().to_image().into_raw(), painted, "washes replay byte-exact from the score");
+        // The text form carries every wash (its rings, NaN separators included) and parses back.
+        let back = StrokeScore::parse(&r.score.to_text()).unwrap();
+        assert_eq!(back.strokes.iter().filter(|s| s.wash).count(), n_wash);
+        assert_eq!(back.strokes.iter().find(|s| s.wash).map(|s| s.spline.len()), r.score.strokes.iter().find(|s| s.wash).map(|s| s.spline.len()));
+    }
+
+    #[test]
+    fn fill_spends_more_of_the_budget_and_replays_byte_exact() {
+        let img = gradient_img(96, 64);
+        let mut p = PaintParams::new(palette::EARTH, 4000);
+        p.brush_sizes = vec![12.0, 6.0, 3.0];
+        p.min_brush = 2.0;
+        p.bleed = 0.3;
+        p.dry = 0.5;
+        let base = paint_from_image(&img, &p);
+        p.fill = 0.9;
+        let filled = paint_from_image(&img, &p);
+        assert!(filled.strokes > base.strokes, "fill lays more strokes: {} vs {}", filled.strokes, base.strokes);
+        assert!(filled.strokes <= 4000);
+        let painted = filled.canvas.to_image().into_raw();
+        assert_eq!(filled.score.replay(96, 64).unwrap().to_image().into_raw(), painted, "a filled paint replays byte-exact");
+        assert!(filled.score.header.stages.as_ref().map(|st| st.len()).unwrap_or(0) == 3, "fill adds no stage of its own");
     }
 
     #[test]

@@ -81,6 +81,10 @@ pub struct StrokeRecord {
     pub id: u32,
     /// A `wipe` (subtractive) stroke rather than a deposit. (Deposit-only in this slice; the flag is recorded.)
     pub wipe: bool,
+    /// A WASH: an area fill, not a brush stroke. `spline` holds the mass's boundary RINGS (outer and holes),
+    /// separated by a `[NaN, NaN]` point, filled even-odd with `mix` at `wet`; `w0` is the wet-edge FEATHER in
+    /// px (0 = hard), `w1`/`streak`/`round` unused. A pool of colour — the watercolour mark a stroke cannot make.
+    pub wash: bool,
     pub stage: String,
     pub spline: Vec<[f32; 2]>,
     pub w0: f32,
@@ -127,7 +131,10 @@ pub struct StrokeScore {
 }
 
 fn fmt_f(v: f32) -> String {
-    // Compact, round-trippable, locale-free.
+    // Compact, round-trippable, locale-free. (A wash's ring separator is NaN.)
+    if v.is_nan() {
+        return "NaN".into();
+    }
     let s = format!("{v:.4}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s.is_empty() || s == "-" {
@@ -162,7 +169,7 @@ impl StrokeScore {
             let mix = s.mix.iter().map(|(n, v)| format!("{n}:{}", fmt_f(*v))).collect::<Vec<_>>().join(",");
             o.push_str(&format!(
                 "{} {} stage={} spline={} w0={} w1={} taper={} mix={} wet={} press={} streak={} round={}{}\n",
-                if s.wipe { "W" } else { "S" },
+                if s.wash { "A" } else if s.wipe { "W" } else { "S" },
                 s.id,
                 s.stage,
                 spline,
@@ -240,7 +247,7 @@ impl StrokeScore {
                         },
                     });
                 }
-                "S" | "W" => {
+                "S" | "W" | "A" => {
                     let id: u32 = it.clone().next().and_then(|s| s.parse().ok()).unwrap_or(0);
                     let m = kv(it);
                     let get = |k: &str| m.get(k).cloned().unwrap_or_default();
@@ -257,6 +264,7 @@ impl StrokeScore {
                     strokes.push(StrokeRecord {
                         id,
                         wipe: tag == "W",
+                        wash: tag == "A",
                         stage: get("stage"),
                         spline,
                         w0: get("w0").parse().unwrap_or(1.0),
@@ -330,6 +338,16 @@ impl StrokeScore {
                 cur = at;
             }
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+            if rec.wash {
+                let mut load = vec![0f32; n];
+                for (name, val) in &rec.mix {
+                    if let Some(i) = index_of(name) {
+                        load[i] += val * ss;
+                    }
+                }
+                canvas.fill_rings(&path, &load, rec.wet, rec.w0 * ss);
+                continue;
+            }
             if rec.wipe {
                 // A subtractive WIPE stroke: scrape pigment back (strength recorded in `wet`). LIFT scales how
                 // much comes off — oil lifts freely, a staining watercolour barely at all.
@@ -424,6 +442,14 @@ impl StrokeScore {
                     }
                 }
                 let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+                if rec.wash {
+                    canvas.fill_rings(&path, &load, rec.wet, rec.w0 * ss);
+                    laid += 1;
+                    if laid % every == 0 {
+                        frames.push(canvas.snapshot());
+                    }
+                    continue;
+                }
                 let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
                 let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), ..brush };
                 s.rasterize(&mut canvas, &sb);
@@ -477,8 +503,8 @@ mod tests {
         StrokeScore {
             header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
             strokes: vec![
-                StrokeRecord { id: 1, wipe: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None },
-                StrokeRecord { id: 2, wipe: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None },
+                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None },
+                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None },
             ],
         }
     }
@@ -548,9 +574,9 @@ mod tests {
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
         let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
-        let stroke = StrokeRecord { id: 1, wipe: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
+        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
-        let wipe = StrokeRecord { id: 2, wipe: true, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
+        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
         let with_wipe = StrokeScore { header: base, strokes: vec![stroke, wipe] };
         let a = no_wipe.replay(40, 20).unwrap();
         let b = with_wipe.replay(40, 20).unwrap();

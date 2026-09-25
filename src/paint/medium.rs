@@ -97,6 +97,14 @@ pub struct MarkCharacter {
     /// After the tonal passes, DRAW the composition's contours (the ink planner's edge chains) in the medium's
     /// own dark on top — a pencil sketch is line AND tone.
     pub draw_contours: bool,
+    /// LUMINOUS: a light-carrying wash medium. The plan keeps the paper's light instead of building a solid value
+    /// backbone — no family separation, no committed shadows, a lifted shadow floor — so the washes stay
+    /// transparent and the reserved paper glows (line-and-wash). The oil-minded defaults make a wash read heavy.
+    pub luminous: bool,
+    /// BOOK: the luminous washes as an early colour-book illustration — flat cumulative glazes from the keyed
+    /// picture at pixel scale (the masks of a 3-5 colour print), high key, no modelling strokes. `luminous`
+    /// alone is the watercolour: washes once each in the picture's own colour at wash scale, modelled within.
+    pub book: bool,
     /// Density media only: the drawing is made with a loaded BRUSH (sumi-e) — bold contours, wide wet tone
     /// strokes only in the mid-to-dark values, paper for the light.
     pub brush_drawing: bool,
@@ -107,7 +115,7 @@ pub struct MarkCharacter {
 
 impl MarkCharacter {
     /// A loaded brush: the pass-role defaults, no hatching, the picture's colours.
-    pub const BRUSH: MarkCharacter = MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false };
+    pub const BRUSH: MarkCharacter = MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false };
 }
 
 /// Whether the canvas finishes uniformly or plane-by-plane.
@@ -275,6 +283,69 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     finish_policy: FinishPolicy::BackToFront,
 };
 
+/// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
+/// illustrator's line-and-wash. Watercolour physics (transparent, bleeding, granulating) laid as a few broad,
+/// long washes from a four-level armature; the light stays paper; then the pen draws the contours in the
+/// palette's darkest pigment over the dried washes (`draw_contours`). A LUMINOUS medium: see `MarkCharacter`.
+pub const LINE_AND_WASH: MediumProfile = MediumProfile {
+    name: "line-and-wash",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::Minimal,
+    stage_budget: 3,
+    pickup: 0.0,
+    bleed: 0.4,
+    body: 0.32,
+    impasto: 0.0,
+    chroma: 1.7,
+    dry_shift: 0.08,
+    granulate: 0.2,
+    sheen: 0.0,
+    lift: 0.2,
+    default_palette: "limited-landscape",
+    broken: 0.0,
+    contour: 0.5,
+    families: Families::Unified,
+    subtractive: false,
+    mark_model: MarkModel::Continuous,
+    // WASHES, not a painting: only the four widest brushes of the ladder at a third of the budget (the full
+    // ladder at full density reproduced the photograph and then keyed it — "pixelising and saturating"), each
+    // pass dried before the next, transparent (body 0.6), never lifted (pickup 0); five value levels; the
+    // paper reserved for the lights; then a fine COLOURED line in the local hue (see `ink_contours`), an accent
+    // that carries the detail the washes leave out.
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: Some(8), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: false },
+    finish_policy: FinishPolicy::BackToFront,
+};
+
+pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
+    name: "early-book-illustration",
+    value_direction: ValueDirection::LightToDark,
+    opacity: Opacity::Transparent,
+    white_source: WhiteSource::Surface,
+    reversibility: Reversibility::Minimal,
+    stage_budget: 3,
+    pickup: 0.0,
+    bleed: 0.35,
+    body: 0.32,
+    impasto: 0.0,
+    chroma: 1.5,
+    dry_shift: 0.08,
+    granulate: 0.16,
+    sheen: 0.0,
+    lift: 0.2,
+    default_palette: "limited-landscape",
+    broken: 0.0,
+    contour: 0.4,
+    families: Families::Unified,
+    subtractive: false,
+    mark_model: MarkModel::Continuous,
+    // Flat cumulative glazes (eight levels, each covering everything as dark or darker), from the keyed picture
+    // at pixel scale — the masks of an early colour-book print — then the coloured line.
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: Some(8), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: true },
+    finish_policy: FinishPolicy::BackToFront,
+};
+
 pub const INK_WASH: MediumProfile = MediumProfile {
     name: "ink-wash",
     value_direction: ValueDirection::LightToDark,
@@ -326,7 +397,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous, // a PAINTING of two registers (see `MarkCharacter::sumi`)
     // SUMI-E: one soft wide brush loaded with rich black, long calligraphic strokes that follow the form, the
     // paper left as the light — in the ink's own grey, never the picture's colours.
-    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.2, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: true },
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.2, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: true, luminous: false, book: false },
     finish_policy: FinishPolicy::BackToFront,
 };
 
@@ -381,7 +452,7 @@ pub const DURER: MediumProfile = MediumProfile {
     subtractive: false,
     mark_model: MarkModel::Density,
     // The burin: every line follows the form, fine and dense, cross-hatched in the darks; pure black on the paper.
-    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: true, budget_scale: 3.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false },
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: true, budget_scale: 3.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -411,7 +482,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous, // an opaque PAINTING built in short hatched colour strokes — not a pen drawing (the density model is pen-and-ink)
     // EGG TEMPERA: form built in SHORT strokes, each restating pass cross-hatched 45° off the last — the classic
     // tempera net of colour, matte and even.
-    mark: MarkCharacter { role: Some("tempera"), stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false },
+    mark: MarkCharacter { role: Some("tempera"), stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -440,7 +511,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
     mark_model: MarkModel::Continuous, // GRAPHITE: soft grey tonal strokes on the paper (like charcoal, lighter), plus the contour pass — not pen hatch
     // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
-    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.5, charge: 0.45, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false },
+    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.5, charge: 0.45, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -471,7 +542,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     // Value is built by HATCHING / shading — mark density, like pen but softer and grey.
     mark_model: MarkModel::Continuous, // GRAPHITE: soft grey tonal strokes on the paper (like charcoal, lighter), plus the contour pass — not pen hatch
     // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
-    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.6, charge: 0.9, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false },
+    mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.6, charge: 0.9, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
 };
 
@@ -554,7 +625,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
 };
 
 /// Every declared medium.
-pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, INK_WASH, JAPANESE_INK, PEN_INK, DURER, TEMPERA, PENCIL, BLACK_PENCIL, PASTEL, CHARCOAL, ACRYLIC];
+pub const ALL: &[MediumProfile] = &[OIL_DIRECT, OIL_INDIRECT, GOUACHE, WATERCOLOUR, LINE_AND_WASH, EARLY_BOOK_ILLUSTRATION, INK_WASH, JAPANESE_INK, PEN_INK, DURER, TEMPERA, PENCIL, BLACK_PENCIL, PASTEL, CHARCOAL, ACRYLIC];
 
 /// The media P1 can execute (opaque continuous).
 pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
@@ -562,7 +633,7 @@ pub const P1_EXECUTABLE: &[&str] = &["oil-direct", "gouache"];
 pub const P2_EXECUTABLE: &[&str] = &["oil-direct", "gouache", "watercolour", "pen-ink"];
 /// Every executable medium (P3 adds indirect oil, ink wash, tempera — they reuse the opaque-continuous,
 /// transparent-reserve, and density paths respectively; tempera's density marks are monochrome for now).
-pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "ink-wash", "japanese-ink", "pen-ink", "durer", "tempera", "pencil", "black-pencil", "pastel", "charcoal", "acrylic"];
+pub const EXECUTABLE: &[&str] = &["oil-direct", "oil-indirect", "gouache", "watercolour", "line-and-wash", "early-book-illustration", "ink-wash", "japanese-ink", "pen-ink", "durer", "tempera", "pencil", "black-pencil", "pastel", "charcoal", "acrylic"];
 
 impl MediumProfile {
     /// Look up a medium by name (case-insensitive).

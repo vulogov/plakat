@@ -60,6 +60,9 @@ pub struct PaintSpec {
     pub diffuse: Option<f32>,
     /// Worker THREADS for the up-front pigment mixing (0/absent = every core). Never changes the picture.
     pub threads: Option<usize>,
+    /// FILL (0..1): a density floor — the finest pass repeats with lowered floors until this share of the
+    /// budget is spent. 0/absent = the auto behaviour.
+    pub fill: Option<f32>,
     /// GRADATION (0..1): keep slow ramps continuous in the armature (clouds, soft-lit walls, still water keep
     /// their turning form). 0 (default) = the value masses exactly as planned.
     pub gradation: Option<f32>,
