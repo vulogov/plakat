@@ -845,6 +845,17 @@ pub fn ramp_field(img: &RgbImage, r: usize, levels: u32) -> Vec<f32> {
 /// with no detail to trace — its values snapped into masses at that resolution, brought back to canvas size.
 /// (`structure_armature` smooths at full resolution with a radius capped at 16 px, so on a large sheet it can
 /// never be coarse: the painter tracked the source through it.)
+/// A NEW painting's armature tiers. The background is read at this many pixels across the sheet's short side
+/// when the picture has faces, and [`NEW_BACKGROUND_SIDE_PLAIN`] when it has none (the picture itself is the
+/// subject); a figure and a face are read at these many pixels ACROSS THEIR OWN EXTENT (RFC §5.2). Fine
+/// enough that the THINGS in the picture survive — a spoon on a shelf, a pencil on a table — and coarse
+/// enough that no texture does: the surface is the brush's. (At a quarter of this the armature threshold
+/// experiment, RFC §12.1, lost every object smaller than a head.)
+pub const NEW_BACKGROUND_SIDE: u32 = 384;
+pub const NEW_BACKGROUND_SIDE_PLAIN: u32 = 512;
+pub const NEW_FIGURE_ACROSS: f32 = 384.0;
+pub const NEW_FACE_ACROSS: f32 = 256.0;
+
 pub fn coarse_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     let (w, h) = img.dimensions();
     let short = w.min(h).max(1);
@@ -1206,7 +1217,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     });
     // FROM SCRATCH: the minimum brush of every plane (RFC §9). A rung below the focal floor touches nothing, so
     // it is not a pass of this painting at all.
-    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(96), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref()));
+    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref()));
     let passes: Vec<PassSpec> = match &plane_floor {
         Some(fl) => {
             let finest = fl.iter().copied().fold(f32::INFINITY, f32::min);

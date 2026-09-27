@@ -525,7 +525,7 @@ pub struct FromArgs {
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
     /// NEW PAINTING (default false; `--new` or `--new true`): paint FROM SCRATCH, as RFC PAINT-1 specifies — the
-    /// picture is read once into a LOW-RESOLUTION armature (structure, no detail to trace) and painted with
+    /// picture is read once into a REDUCED armature (its things, none of its texture) and painted with
     /// the medium's strokes: a minimum brush per plane (broad in the background, finer on the figure, finest
     /// on faces only), a coverage budget, a toned ground under an opaque medium. Without it `paint` tracks its source closely.
     #[arg(long = "new", num_args = 0..=1, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
@@ -1607,8 +1607,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     });
 
     if a.new_painting && a.armature.is_none() {
-        // No plan: the RFC's coarse tiers all the same.
-        a.armature = Some(96);
+        // No plan: the new painting's tiers all the same.
+        a.armature = Some(painter::NEW_BACKGROUND_SIDE);
         armature_from_plan = true;
     }
     let mut params = PaintParams::new(palette, a.budget);
@@ -1961,19 +1961,23 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             params.ground = Some(tone);
             println!("{}  new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", style("·").dim(), tone[0], tone[1], tone[2]);
         }
-        // ARMATURE FIDELITY IS INDEPENDENT OF CANVAS COVERAGE (RFC §5.2): a figure is read at 96 px and a face
-        // at 64 px across ITS OWN extent, whatever share of the sheet it takes — a small face in a wide scene
-        // keeps its structure, a face that fills the frame is not over-resolved. The background keeps its tier.
+        // ARMATURE FIDELITY IS INDEPENDENT OF CANVAS COVERAGE (RFC §5.2): a figure and a face are read at a
+        // fixed number of pixels across THEIR OWN extent, whatever share of the sheet they take — a small face
+        // in a wide scene keeps its structure, a face that fills the frame is not over-resolved. `--armature`
+        // is the DETAIL dial of a new painting: it names the background tier and the others follow in ratio.
         let short = w.min(h) as f32;
-        let bg_side = a.armature.unwrap_or(96);
-        let tier = |across: f32, extent: Option<f32>, lo: u32| extent.map(|e| ((across * short / e.max(8.0)).round() as u32).clamp(lo, (short / 2.0) as u32));
-        if let Some(side) = tier(96.0, params.subject_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)), bg_side) {
+        let nominal = if params.face_mask.is_some() { painter::NEW_BACKGROUND_SIDE } else { painter::NEW_BACKGROUND_SIDE_PLAIN };
+        let bg_side = a.armature.unwrap_or(nominal).clamp(16, short as u32);
+        let xs = bg_side as f32 / nominal as f32;
+        params.armature_side = Some(bg_side);
+        let tier = |across: f32, extent: Option<f32>, lo: u32| extent.map(|e| ((across * xs * short / e.max(8.0)).round() as u32).clamp(lo, (short as u32).max(lo)));
+        if let Some(side) = tier(painter::NEW_FIGURE_ACROSS, params.subject_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)), bg_side) {
             params.armature_body_side = Some(side);
         }
         let body_side = params.armature_body_side.unwrap_or(bg_side);
         // A face's extent is the detector's own box (heads standing close merge into one region of a mask).
         let face_extent = face_extent.or_else(|| params.face_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)));
-        if let Some(side) = tier(64.0, face_extent, body_side) {
+        if let Some(side) = tier(painter::NEW_FACE_ACROSS, face_extent, body_side) {
             params.armature_face_side = Some(side);
         }
         // The figure's silhouette is a SEAM (RFC §7): strokes end at it, so the figure stands against its ground.

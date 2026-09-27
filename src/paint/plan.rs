@@ -263,10 +263,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // The base armature (structure resolution). With the STRUCTURE-PRESERVING armature (edge-preserving + value
     // masses, not a blur) this can be fairly FINE without tracing — finer retains modelling, and density comes
     // from the budget, not from over-coarsening. (The background goes a bit coarser when a subject is present.)
-    // A NEW painting (RFC §1.1, §5.2) reads a LOW-RESOLUTION armature: structure with no detail to trace.
-    let armature = if a.from_scratch { if a.faces > 0 { 96 } else { 128 } } else if a.short_side >= 900 { 150 } else { 120 };
+    // A NEW painting (RFC §1.1, §5.2) reads a REDUCED armature: the things in the picture, none of its texture.
+    let armature = if a.from_scratch { if a.faces > 0 { crate::paint::painter::NEW_BACKGROUND_SIDE } else { crate::paint::painter::NEW_BACKGROUND_SIDE_PLAIN } } else if a.short_side >= 900 { 150 } else { 120 };
     if a.from_scratch {
-        notes.push("new painting: a low-resolution armature — structure only, the brushwork invents the surface (RFC §1.1)".into());
+        notes.push("new painting: a reduced armature — the things in the picture, none of its texture; the brushwork invents the surface (RFC §1.1)".into());
     } else {
         notes.push("structure-preserving armature (value masses + edges), fine enough to keep modelling".into());
     }
@@ -275,9 +275,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // background become washes (RFC §5.2). With a subject present, use a THREE-TIER plan — a coarser background, a
     // mid subject body, and the fine face — plus a touch of aerial recession so the subject advances.
     let (armature_face, armature_body, recede, armature) = if a.faces > 0 && a.from_scratch {
-        notes.push(format!("{} face(s) → three-tier armature: background {armature}px · figure 96px and face 64px ACROSS THEIR OWN EXTENT (RFC §5.2), set once they are found; fine brushes on the focal plane only", a.faces));
+        notes.push(format!("{} face(s) → three-tier armature: background {armature}px · figure {}px and face {}px ACROSS THEIR OWN EXTENT (RFC §5.2), set once they are found; the finest brushes on the focal plane only", a.faces, crate::paint::painter::NEW_FIGURE_ACROSS as u32, crate::paint::painter::NEW_FACE_ACROSS as u32));
         notes.push("subject matte (U2Net) + SAM masks → the planes and their minimum brush".into());
-        (Some(160), Some(96), 0.0, armature)
+        (Some(armature * 2), Some(armature), 0.0, armature)
     } else if a.faces > 0 {
         notes.push(format!("{} face(s) → three-tier armature: background {}px · body 210px · face 300px", a.faces, (armature as f32 * 0.85).round().max(90.0) as u32));
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
@@ -478,15 +478,15 @@ mod tests {
     }
 
     #[test]
-    fn a_new_painting_plans_coarse_tiers() {
+    fn a_new_painting_plans_reduced_tiers() {
         let a = Analysis { faces: 1, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM, from_scratch: true };
         let p = plan_from(&a);
         assert!(p.from_scratch);
-        assert_eq!((p.armature, p.armature_body, p.armature_face), (96, Some(96), Some(160)), "the coarse tiers");
+        assert_eq!((p.armature, p.armature_body, p.armature_face), (384, Some(384), Some(768)), "the reduced tiers (nominal: the figure and face tiers are set at their own extent once found)");
         assert!(p.to_hjson().contains("new: true"));
         assert!(PaintPlan::parse(&p.to_hjson()).unwrap().from_scratch, "the plan round-trips `new`");
         let d = plan_from(&Analysis { from_scratch: false, ..base_like(&a) });
-        assert!(d.armature > 96 && !d.from_scratch, "the default plan is untouched");
+        assert!(d.armature < 384 && !d.from_scratch, "the default plan is untouched");
     }
 
     fn base_like(a: &Analysis) -> Analysis {
