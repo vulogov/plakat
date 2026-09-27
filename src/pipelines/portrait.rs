@@ -1059,13 +1059,30 @@ impl Pipeline {
         latents: &Tensor,
         out_path: &std::path::Path,
     ) -> Result<()> {
+        self.save_image_with_metadata(latents, out_path, None)
+    }
+
+    /// [`Self::save_image`] carrying this render's [`GenerationMetadata`]. With metadata the save goes
+    /// through the provenance path — the Auto1111 `parameters` chunk, the JSON sidecar, and (when
+    /// `--etch` is on) the L0 manifest, the L1 pixel etch and the L3 fingerprint enqueue. Without it the
+    /// image is written plain, which is what every img2img render did before 6.38: `--etch` parsed (it is
+    /// a global flag) and then silently did nothing, so `plakat doctor` reported `no-evidence`.
+    pub fn save_image_with_metadata(
+        &self,
+        latents: &Tensor,
+        out_path: &std::path::Path,
+        metadata: Option<&crate::imaging::metadata::GenerationMetadata>,
+    ) -> Result<()> {
         let (buf, ow, oh) = self.decode_to_rgb8(latents)?;
         if let Some(parent) = out_path.parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        crate::imaging::io::save_rgb_u8(&buf, ow, oh, out_path)?;
+        match metadata {
+            Some(m) => crate::imaging::io::save_rgb_u8_with_metadata(&buf, ow, oh, out_path, m)?,
+            None => crate::imaging::io::save_rgb_u8(&buf, ow, oh, out_path)?,
+        }
         crate::ui::progress::println(&format!("→ {}", out_path.display()));
         Ok(())
     }
