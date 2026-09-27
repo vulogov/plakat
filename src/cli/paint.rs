@@ -205,6 +205,9 @@ pub struct PlanArgs {
     /// The palette the plan targets.
     #[arg(long, default_value = "image")]
     pub palette: String,
+    /// Plan a NEW painting (from scratch, RFC §1.1): coarse armature tiers, `new: true` in the plan.
+    #[arg(long = "new", num_args = 0..=1, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
+    pub new_painting: bool,
 }
 
 #[derive(Args, Debug)]
@@ -521,6 +524,12 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// NEW PAINTING (default false; `--new` or `--new true`): paint FROM SCRATCH, as RFC PAINT-1 specifies — the
+    /// picture is read once into a LOW-RESOLUTION armature (structure, no detail to trace) and painted with
+    /// the medium's strokes: a minimum brush per plane (broad in the background, finer on the figure, finest
+    /// on faces only), a coverage budget, a toned ground under an opaque medium. Without it `paint` tracks its source closely.
+    #[arg(long = "new", num_args = 0..=1, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
+    pub new_painting: bool,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
     /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
     #[arg(long, default_value_t = 0.5)]
@@ -754,6 +763,20 @@ const SCAFFOLD: &str = r#"{
 /// expanded a little (brow/chin) and the edges feathered, so the crisp detail tier fades into the loose masses
 /// rather than leaving a hard rectangle. Detects at native resolution, then resizes the mask to the paint size.
 async fn build_face_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
+    Ok(build_face_mask_ext(path, w, h).await?.map(|(m, _)| m))
+}
+
+/// The EXTENT (px, at paint size) a focal tier must resolve: the smaller box side of the SMALLEST main face —
+/// main = at least half the size of the largest, so a passer-by in the distance does not set the tier, and
+/// every face the picture is about is read at the tier's resolution. Measured on the detector's own boxes:
+/// a mask's connected regions merge when heads stand close, and the merged blob is no face's width.
+fn main_face_extent(sides: &[f32]) -> Option<f32> {
+    let largest = sides.iter().copied().fold(0.0f32, f32::max);
+    sides.iter().copied().filter(|s| *s > 0.0 && *s >= largest * 0.5).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |v| v.min(s))))
+}
+
+/// [`build_face_mask`] plus the main faces' extent at paint size (see [`main_face_extent`]).
+async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<Option<(Vec<f32>, f32)>> {
     use candle_core::DType;
     let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
     let device = crate::device::select("auto")?;
@@ -784,7 +807,10 @@ async fn build_face_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Optio
     let scaled = image::imageops::resize(&blurred, w, h, image::imageops::FilterType::Triangle);
     let mask: Vec<f32> = scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
     println!("{}  preserve-face: {} face(s) detected → focal mask", style("·").dim(), faces.len());
-    Ok(Some(mask))
+    let sides: Vec<f32> = faces.iter().map(|f| (f.bbox[2] - f.bbox[0]).min(f.bbox[3] - f.bbox[1]) * 1.24).collect();
+    let scale = (w as f32 / iw.max(1) as f32).min(h as f32 / ih.max(1) as f32);
+    let extent = main_face_extent(&sides).unwrap_or(mean_face) * scale;
+    Ok(Some((mask, extent)))
 }
 
 /// Human summary of the stroke count against the budget. The budget is a CEILING, not a quota: the gates
@@ -963,7 +989,7 @@ fn luma_stddev(img: &image::RgbImage) -> f32 {
 }
 
 /// Gather the signals the plan analyzer needs: a face count (SCRFD) and the tonal-contrast proxy.
-async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str) -> Result<crate::paint::plan::Analysis> {
+async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str, from_scratch: bool) -> Result<crate::paint::plan::Analysis> {
     let img = image::open(path).with_context(|| format!("opening {}", path.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
     // Face presence via the detector (a mask is Some when a face is found).
@@ -982,11 +1008,12 @@ async fn analyze_image(path: &std::path::Path, medium: &str, palette: &str) -> R
         long_side: w.max(h),
         surface_white,
         structure: crate::paint::plan::structure_of(&img),
+        from_scratch,
     })
 }
 
 async fn run_plan(a: PlanArgs) -> Result<()> {
-    let analysis = analyze_image(&a.input, &a.medium, &a.palette).await?;
+    let analysis = analyze_image(&a.input, &a.medium, &a.palette, a.new_painting).await?;
     let plan = crate::paint::plan::plan_from(&analysis);
     let text = plan.to_hjson();
     match a.out.as_deref() {
@@ -1458,9 +1485,11 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // unset flags leave open — the art director hands the technique a plan. Explicit flags always win.
     // Whether the background armature tier came from the plan (adjustable by the matte below) or the user.
     let mut armature_from_plan = false;
+    // Whether the stroke budget was named on the command line (a new painting otherwise counts its own).
+    let budget_explicit = a.budget != 1500;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
-            let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette).await?;
+            let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;
             let p = crate::paint::plan::plan_from(&analysis);
             println!("{}  plan (auto):", style("◆").cyan());
             for n in &p.notes {
@@ -1471,6 +1500,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let text = std::fs::read_to_string(&spec).with_context(|| format!("reading plan {spec}"))?;
             crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?
         };
+        if plan.from_scratch {
+            a.new_painting = true;
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -1539,6 +1571,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // medium's own when a medium is given).
     let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
         "image" | "auto" => {
+            // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
             let p = palette_from_image(&img, 16);
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
@@ -1546,6 +1579,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         _ if a.medium.is_some() && a.palette == "zorn" => {
             // A medium was chosen but no palette was named — DERIVE one from the image. A fixed medium palette
             // (e.g. a landscape palette) rarely fits an arbitrary photo (a portrait's skin, a plaid shirt …).
+            // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
             let p = palette_from_image(&img, 16);
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
@@ -1572,7 +1606,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         ladder
     });
 
+    if a.new_painting && a.armature.is_none() {
+        // No plan: the RFC's coarse tiers all the same.
+        a.armature = Some(96);
+        armature_from_plan = true;
+    }
     let mut params = PaintParams::new(palette, a.budget);
+    params.from_scratch = a.new_painting;
     // MEDIUM: apply the full technique behaviour (as the spec path does); the flags below still override.
     // The medium's MARK character (its brush, stroke proportions, charge, hatching, own grey) — applied AFTER
     // the flags below so it multiplies what the user asked for.
@@ -1727,8 +1767,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.preserve_face = pf.clamp(0.0, 1.0);
     }
     params.armature_face_side = a.armature_face;
+    let mut face_extent: Option<f32> = None;
     if a.preserve_face.is_some() || a.armature_face.is_some() {
-        params.face_mask = build_face_mask(&a.input, w, h).await?;
+        if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
+            params.face_mask = Some(m);
+            face_extent = Some(e);
+        }
         if params.face_mask.is_none() {
             println!("{}  face: none detected — painting without a face focal region", style("·").yellow());
         }
@@ -1819,7 +1863,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let cov = fm.iter().filter(|&&m| m > 0.4).count();
             if cov > fm.len() / 200 && cov < fm.len() / 2 {
                 println!("{}  sam: precise face mask — face-shaped focal region", style("·").dim());
-                params.face_mask = Some(fm);
+                // A NEW painting's focal plane is EVERY face found: SAM's precise mask is prompted from one
+                // face, and replacing the detector's mask with it left the other faces in the figure tier
+                // (a second child's face painted as a blur beside a resolved one).
+                params.face_mask = Some(match params.face_mask.take() {
+                    Some(prev) if params.from_scratch && prev.len() == fm.len() => prev.iter().zip(&fm).map(|(a, b)| a.max(*b)).collect(),
+                    _ => fm,
+                });
             }
         }
     }
@@ -1890,6 +1940,66 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             p.0 = keyed[i];
         }
         println!("{}  families: light/shadow split · invariant enforced (solid masses)", style("·").dim());
+    }
+    if params.from_scratch {
+        // Nothing restates the source's texture.
+        params.detail_texture = 0.0;
+        // IMPRIMATURA: an opaque painting begun from nothing is begun on a TONED ground — the picture's own
+        // mean colour (in linear light) — so where a broad mark leaves a gap, the gap is the picture's tone,
+        // not a fleck of white priming. A transparent medium keeps its paper: the paper is its light.
+        if params.ground.is_some() {
+            let lin = |v: u8| { let c = v as f64 / 255.0; if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) } };
+            let mut acc = [0.0f64; 3];
+            for px in img.pixels() {
+                for c in 0..3 {
+                    acc[c] += lin(px.0[c]);
+                }
+            }
+            let n = (img.width() as f64 * img.height() as f64).max(1.0);
+            let enc = |v: f64| { let v = v / n; let c = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }; (c * 255.0).round().clamp(0.0, 255.0) as u8 };
+            let tone = [enc(acc[0]), enc(acc[1]), enc(acc[2])];
+            params.ground = Some(tone);
+            println!("{}  new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", style("·").dim(), tone[0], tone[1], tone[2]);
+        }
+        // ARMATURE FIDELITY IS INDEPENDENT OF CANVAS COVERAGE (RFC §5.2): a figure is read at 96 px and a face
+        // at 64 px across ITS OWN extent, whatever share of the sheet it takes — a small face in a wide scene
+        // keeps its structure, a face that fills the frame is not over-resolved. The background keeps its tier.
+        let short = w.min(h) as f32;
+        let bg_side = a.armature.unwrap_or(96);
+        let tier = |across: f32, extent: Option<f32>, lo: u32| extent.map(|e| ((across * short / e.max(8.0)).round() as u32).clamp(lo, (short / 2.0) as u32));
+        if let Some(side) = tier(96.0, params.subject_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)), bg_side) {
+            params.armature_body_side = Some(side);
+        }
+        let body_side = params.armature_body_side.unwrap_or(bg_side);
+        // A face's extent is the detector's own box (heads standing close merge into one region of a mask).
+        let face_extent = face_extent.or_else(|| params.face_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)));
+        if let Some(side) = tier(64.0, face_extent, body_side) {
+            params.armature_face_side = Some(side);
+        }
+        // The figure's silhouette is a SEAM (RFC §7): strokes end at it, so the figure stands against its ground.
+        if params.region_mask.is_none() {
+            params.region_mask = params.subject_mask.as_ref().map(|m| m.iter().map(|v| *v > 0.5).collect());
+        }
+        let sides = (bg_side, params.armature_body_side, params.armature_face_side);
+        if !budget_explicit && !params.density {
+            // …and the budget is the coverage of the planes as found.
+            let floor = painter::plane_floor_field(w, h, params.min_brush, sides, params.subject_mask.as_deref(), params.face_mask.as_deref());
+            let b = painter::from_scratch_budget(w, h, &params.brush_sizes, params.min_brush, &floor);
+            params.budget = b;
+            a.budget = b;
+        }
+        let (bg, body, focal) = painter::plane_floors(w, h, params.min_brush, sides);
+        println!(
+            "{}  new painting: armature {}px background · {}px figure · {}px faces — minimum brush {:.0} / {:.0} / {:.0} px · budget {} strokes (coverage)",
+            style("·").dim(),
+            bg_side,
+            sides.1.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+            sides.2.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+            bg,
+            body,
+            focal,
+            params.budget
+        );
     }
     // COMMIT SHADOWS (RFC §3.3): paint the dark masses decisively (see the painter). Computed from the value-keyed,
     // family-split reference so it targets the real shadow structure.
@@ -2024,4 +2134,17 @@ fn run_palette(a: PaletteArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod focal_tier_tests {
+    use super::main_face_extent;
+
+    #[test]
+    fn the_focal_tier_is_sized_by_the_smallest_main_face() {
+        // Three heads close together: the tier resolves the smallest of them; a distant passer-by is ignored.
+        assert_eq!(main_face_extent(&[300.0, 220.0, 240.0, 40.0]), Some(220.0));
+        assert_eq!(main_face_extent(&[120.0]), Some(120.0));
+        assert_eq!(main_face_extent(&[]), None);
+    }
 }

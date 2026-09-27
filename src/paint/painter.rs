@@ -212,6 +212,13 @@ pub struct PaintParams {
     /// One painter lays the strokes in the classic order whatever the count — the thread count never changes
     /// the picture. (Mixing was 99% of a stroke's cost; the brush itself is under 1%.)
     pub threads: usize,
+    /// NEW PAINTING (`--new`, default false): paint FROM SCRATCH (RFC PAINT-1 §1.1-1.2). The reference is a
+    /// genuinely LOW-RESOLUTION armature — structure with no detail to trace — nothing reads the source again
+    /// (no texture restate; washes and lines read the armature), and every plane has a MINIMUM BRUSH that grows
+    /// with depth (RFC §9): the background never receives a fine brush, the figure a medium one, the finest
+    /// rungs fire on the focal plane alone. The surface is invented by the brushwork. Off = the default path,
+    /// which tracks its source closely (a painterly rendering of the image).
+    pub from_scratch: bool,
     /// FILL (0..1, default 0 = auto): a density floor. When the gates stop the painting below this share of
     /// the budget, the finest pass is repeated with its restate floor halved each round (up to six) until the
     /// share is spent or a round adds almost nothing. More worked and denser on demand; never more detail
@@ -338,7 +345,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -834,6 +841,122 @@ pub fn ramp_field(img: &RgbImage, r: usize, levels: u32) -> Vec<f32> {
     smooth_field.iter().zip(&raw).map(|(sm, rw)| sm * rw.clamp(0.0, 1.0)).collect()
 }
 
+/// The ARMATURE of a from-scratch painting (RFC §1.1): the picture at `side` px on its short side — structure
+/// with no detail to trace — its values snapped into masses at that resolution, brought back to canvas size.
+/// (`structure_armature` smooths at full resolution with a radius capped at 16 px, so on a large sheet it can
+/// never be coarse: the painter tracked the source through it.)
+pub fn coarse_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
+    let (w, h) = img.dimensions();
+    let short = w.min(h).max(1);
+    let side = side.clamp(8, short);
+    let scale = side as f32 / short as f32;
+    let (sw, sh) = (((w as f32 * scale).round() as u32).max(1), ((h as f32 * scale).round() as u32).max(1));
+    let small = imageops::resize(img, sw, sh, imageops::FilterType::Triangle);
+    let up = imageops::resize(&small, w, h, imageops::FilterType::CatmullRom);
+    // The DRAWING of a painting is its masses' contours. The upsampled field is smooth, so its value contours
+    // are clean curves: snap the values into masses where a boundary runs (the edge-gated snap), and the
+    // masses meet along firm edges — the block-in shapes — with nothing inside them to trace. (Left soft,
+    // every edge was a blur and no stroke had a boundary to stop at: the picture lost its drawing.)
+    structure_armature(&up, side.max(short / 16), levels, 0.0)
+}
+
+/// The per-plane MINIMUM BRUSH radius of a from-scratch painting (RFC §9), as (background, figure, focal):
+/// each plane's brush stops at the size of ITS armature's pixel (`short / side`, a little under), so structure
+/// and surface never meet at the same scale (§1.1) and the floor grows with depth as the tiers coarsen.
+/// `sides` = the (background, figure, face) armature resolutions; a missing tier takes the one behind it.
+pub fn plane_floors(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32>, Option<u32>)) -> (f32, f32, f32) {
+    let short = w.min(h) as f32;
+    let floor = |side: u32| (0.85 * short / side.max(1) as f32).max(min_brush * 0.5);
+    let bg = sides.0;
+    let body = sides.1.unwrap_or(bg).max(bg);
+    let face = sides.2.unwrap_or(body).max(body);
+    (floor(bg), floor(body), floor(face))
+}
+
+/// The characteristic EXTENT (px) of the things a mask marks: the median, over its MAIN connected regions
+/// (those at least a quarter the area of the largest — stray fragments of a matte do not count), of each
+/// region's smaller bounding-box side. A face mask's extent is a face's width; a matte's, a figure's.
+/// Measured on a quarter-scale grid. `None` when the mask marks nothing.
+pub fn region_extent(mask: &[f32], w: u32, h: u32) -> Option<f32> {
+    let (w, h) = (w as usize, h as usize);
+    if mask.len() != w * h {
+        return None;
+    }
+    let q = 4usize;
+    let (gw, gh) = (w.div_ceil(q), h.div_ceil(q));
+    let on: Vec<bool> = (0..gw * gh).map(|i| mask[((i / gw) * q).min(h - 1) * w + ((i % gw) * q).min(w - 1)] > 0.5).collect();
+    let mut seen = vec![false; gw * gh];
+    let mut regions: Vec<(usize, f32)> = Vec::new();
+    let min_cells = ((gw * gh) as f32 * 0.0005).max(4.0) as usize;
+    for start in 0..gw * gh {
+        if !on[start] || seen[start] {
+            continue;
+        }
+        let (mut x0, mut y0, mut x1, mut y1, mut n) = (usize::MAX, usize::MAX, 0usize, 0usize, 0usize);
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            let (x, y) = (i % gw, i / gw);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+            n += 1;
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 || nx >= gw as i64 || ny >= gh as i64 {
+                    continue;
+                }
+                let j = ny as usize * gw + nx as usize;
+                if on[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        if n >= min_cells {
+            regions.push((n, ((x1 - x0 + 1).min(y1 - y0 + 1) * q) as f32));
+        }
+    }
+    let largest = regions.iter().map(|r| r.0).max()?;
+    let mut extents: Vec<f32> = regions.iter().filter(|r| r.0 * 4 >= largest).map(|r| r.1).collect();
+    extents.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(extents[extents.len() / 2])
+}
+
+/// The minimum brush at every pixel: the focal floor inside the face mask, the figure floor inside the subject
+/// matte (or everywhere, when no subject was found — the picture itself is the subject), else the background's.
+pub fn plane_floor_field(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32>, Option<u32>), subject: Option<&[f32]>, face: Option<&[f32]>) -> Vec<f32> {
+    let (bg, body, focal) = plane_floors(w, h, min_brush, sides);
+    let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0);
+    (0..(w as usize * h as usize))
+        .map(|i| {
+            if at(face, i) > 0.5 {
+                focal
+            } else if subject.is_none() || at(subject, i) > 0.5 {
+                body
+            } else {
+                bg
+            }
+        })
+        .collect()
+}
+
+/// The COVERAGE budget of a from-scratch painting: for each rung of the brush ladder, the seed cells of the
+/// planes that rung may touch, summed, with half again for the restatements. A count of marks needed to cover
+/// and restate — not a density of marks per pixel.
+pub fn from_scratch_budget(w: u32, h: u32, brush_sizes: &[f32], min_brush: f32, floor: &[f32]) -> usize {
+    let n = floor.len().max(1) as f64;
+    let mut total = 0.0f64;
+    for &r in brush_sizes {
+        let r = r.max(min_brush);
+        let open = floor.iter().filter(|&&f| r >= f).count() as f64 / n;
+        let grid = (r * 0.9).max(1.5) as f64;
+        total += (w as f64 / grid).ceil() * (h as f64 / grid).ceil() * open;
+    }
+    ((total * 1.5) as usize).max(500)
+}
+
 /// Local value RANGE (max − min) of a luma field over a square window of half-width `r` — a cheap "is there an
 /// edge nearby" measure. Separable (row max/min then column max/min), so it costs O(w·h·r).
 fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
@@ -1005,9 +1128,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             tiers.sort_by_key(|(_, side)| *side); // coarse → fine, so the finest region is laid last and wins
             // STRUCTURE-PRESERVING armature (not a blur): value masses with sharp edges, per region resolution.
             let levels = p.armature_levels.max(2);
-            let mut arm = structure_armature(input, s, levels, p.gradation);
+            // A from-scratch painting reads a genuinely LOW-RESOLUTION armature (see `coarse_armature`).
+            let build = |side: u32, gradation: f32| if p.from_scratch { coarse_armature(input, side, levels) } else { structure_armature(input, side, levels, gradation) };
+            let mut arm = build(s, p.gradation);
             for (mask, side) in tiers {
-                let lvl = structure_armature(input, side, levels, 0.0);
+                let lvl = build(side, 0.0);
                 arm = blend_by_mask(&arm, &lvl, mask, w, h);
             }
             armature_owned = arm;
@@ -1015,6 +1140,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         None => input,
     };
+    // FROM SCRATCH: the armature is all the painter ever sees. Whatever reads `source` further down — the
+    // fine layers' texture, a wash medium's masses, a drawn line — reads the armature instead.
+    let source: &RgbImage = if p.from_scratch { input } else { source };
     // AERIAL PERSPECTIVE (§5.5): condition the reference by depth so the background recedes and the foreground
     // advances — this is what gives the painting foreground/background "layers" rather than one flat plane.
     let receded_owned;
@@ -1076,6 +1204,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let passes: Vec<PassSpec> = p.passes.clone().unwrap_or_else(|| {
         sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { format!("restate-{i}") } }).collect()
     });
+    // FROM SCRATCH: the minimum brush of every plane (RFC §9). A rung below the focal floor touches nothing, so
+    // it is not a pass of this painting at all.
+    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(96), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref()));
+    let passes: Vec<PassSpec> = match &plane_floor {
+        Some(fl) => {
+            let finest = fl.iter().copied().fold(f32::INFINITY, f32::min);
+            passes.into_iter().filter(|q| q.radius.max(p.min_brush) >= finest).collect()
+        }
+        None => passes,
+    };
     // The schedule goes into the score so a replay crosses every pass boundary the paint crossed — a pass that
     // lays no stroke included. Density media run no passes (the drawing is laid by `ink_drawing`).
     // A luminous medium: the washes (one stage per level), then the two finest brush passes at a fraction of
@@ -1333,6 +1471,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     return None;
                 }
                 let (ix, iy) = (cx as u32, cy as u32);
+                // FROM SCRATCH: this plane's minimum brush — a finer rung does not touch it (RFC §9).
+                if let Some(fl) = &plane_floor {
+                    if radius < fl[iy as usize * w as usize + ix as usize] {
+                        return None;
+                    }
+                }
                 // COMPOSITION LAYER: only seed inside this element's footprint (so it paints its own region and
                 // leaves the rest of the accumulated canvas untouched).
                 if let Some(mask) = &p.paint_mask {
@@ -1514,6 +1658,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed, kk.wrapping_add(1)) * grid;
                 if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
                     continue;
+                }
+                if let Some(fl) = &plane_floor {
+                    if radius < fl[cy as usize * w as usize + cx as usize] {
+                        continue;
+                    }
                 }
                 let target = reference.get_pixel(cx as u32, cy as u32).0;
                 let t = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, kk) } else { target };
@@ -2794,6 +2943,9 @@ mod tests {
         for g in [0.0f32, 1.0] {
             structure_armature(&img, 210, 8, g).save(format!("{out}/armature_g{g}.png")).unwrap();
         }
+        for side in [64u32, 96, 200, 470] {
+            coarse_armature(&img, side, 8).save(format!("{out}/coarse_{side}.png")).unwrap();
+        }
     }
 
     #[test]
@@ -2853,6 +3005,73 @@ mod tests {
         let painted = filled.canvas.to_image().into_raw();
         assert_eq!(filled.score.replay(96, 64).unwrap().to_image().into_raw(), painted, "a filled paint replays byte-exact");
         assert!(filled.score.header.stages.as_ref().map(|st| st.len()).unwrap_or(0) == 3, "fill adds no stage of its own");
+    }
+
+    #[test]
+    fn a_coarse_armature_has_no_detail_to_trace() {
+        // Pixel-scale detail (a checker texture over a ramp) is gone from the armature; the ramp's structure stays.
+        let img = RgbImage::from_fn(256, 256, |x, y| {
+            let base = 60.0 + 120.0 * (x as f32 / 256.0);
+            let tex = if (x + y) % 2 == 0 { 30.0 } else { -30.0 };
+            let v = (base + tex).clamp(0.0, 255.0) as u8;
+            image::Rgb([v, v, v])
+        });
+        let arm = coarse_armature(&img, 32, 8);
+        let lap = |im: &RgbImage| {
+            let mut acc = 0.0f64;
+            for y in 1..255u32 {
+                for x in 1..255u32 {
+                    let c = im.get_pixel(x, y).0[0] as f64;
+                    let nb = im.get_pixel(x - 1, y).0[0] as f64 + im.get_pixel(x + 1, y).0[0] as f64 + im.get_pixel(x, y - 1).0[0] as f64 + im.get_pixel(x, y + 1).0[0] as f64;
+                    acc += (4.0 * c - nb).abs();
+                }
+            }
+            acc / (254.0 * 254.0)
+        };
+        assert!(lap(&arm) < lap(&img) * 0.05, "the texture is gone: {} vs {}", lap(&arm), lap(&img));
+        let (l, r) = (arm.get_pixel(20, 128).0[0] as i32, arm.get_pixel(236, 128).0[0] as i32);
+        assert!(r - l > 60, "the ramp survives as structure: {l} → {r}");
+    }
+
+    #[test]
+    fn a_from_scratch_painting_keeps_fine_brushes_on_the_focal_plane_and_replays_byte_exact() {
+        let img = gradient_img(200, 160);
+        let mut p = PaintParams::new(palette::EARTH, 6000);
+        p.brush_sizes = vec![12.0, 6.0, 3.0, 1.5];
+        p.min_brush = 1.0;
+        p.armature_side = Some(12);
+        p.armature_body_side = Some(24);
+        p.armature_face_side = Some(64);
+        p.from_scratch = true;
+        // A figure in the left half, a face in its top-left corner; the right half is background.
+        let subject: Vec<f32> = (0..200 * 160).map(|i| if i % 200 < 100 { 1.0 } else { 0.0 }).collect();
+        let face: Vec<f32> = (0..200 * 160).map(|i| if i % 200 < 40 && i / 200 < 40 { 1.0 } else { 0.0 }).collect();
+        p.subject_mask = Some(subject);
+        p.face_mask = Some(face);
+        let (bg, body, focal) = plane_floors(200, 160, p.min_brush, (12, Some(24), Some(64)));
+        assert_eq!(region_extent(p.face_mask.as_deref().unwrap(), 200, 160), Some(40.0), "a 40 px face");
+        assert!(bg > body && body > focal, "the minimum brush grows with depth: {bg} > {body} > {focal}");
+        let r = paint_from_image(&img, &p);
+        assert!(r.strokes > 50, "it paints ({} strokes)", r.strokes);
+        // Every recorded mark respects its plane's floor (w0 is the mark's own width ≥ 0.8 × its pass radius…
+        // so test by where fine-stage marks START).
+        let stages: Vec<String> = r.score.header.stages.clone().unwrap_or_default();
+        for rec in r.score.strokes.iter().filter(|s| !s.wash) {
+            let Some(idx) = stages.iter().position(|st| st == &rec.stage) else { continue };
+            let radius = [12.0f32, 6.0, 3.0, 1.5].into_iter().filter(|q| *q >= focal).nth(idx).unwrap_or(12.0);
+            // the seed is mid-path; a mark of a rung finer than the background floor must sit in the figure
+            let mid = rec.spline[rec.spline.len() / 2];
+            if radius < bg {
+                assert!(mid[0] < 100.0 + 2.0 * radius + 12.0, "a {radius}px mark at x={} is in the background", mid[0]);
+            }
+        }
+        let painted = r.canvas.to_image().into_raw();
+        assert_eq!(r.score.replay(200, 160).unwrap().to_image().into_raw(), painted, "a from-scratch painting replays byte-exact");
+        // …and it is a painting of few marks: the same sheet on the default path lays many more.
+        let mut d = p.clone();
+        d.from_scratch = false;
+        let dflt = paint_from_image(&img, &d);
+        assert!(r.strokes < dflt.strokes, "from scratch {} < default {}", r.strokes, dflt.strokes);
     }
 
     #[test]
