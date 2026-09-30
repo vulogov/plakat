@@ -8,6 +8,73 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.0.0 — `plakat paint --new`: a painting from scratch
+
+By default `paint` tracks its source closely: a painterly rendering of the image in front of it.
+**`--new`** (hjson `new: true`) paints the way RFC PAINT-1 specifies instead — structure is
+low-resolution and model-derived, surface is full-resolution and stroke-derived, and the two never
+meet at the same scale (§1.1).
+
+### The new painting
+
+- The picture is read **once**, into a **reduced armature**: downsampled to the tier's resolution and
+  snapped into value masses with firm contours, then never looked at again. The things in the picture
+  survive — a spoon on a shelf, a pencil on a table — and none of its texture does. The brushwork
+  invents every surface.
+- **Each plane is read at its own extent, not the canvas's** (§5.2): 384 px across the background
+  (512 px when the picture has no faces), 384 px across each figure, 256 px across each face. A small
+  face in a wide scene keeps its structure; a face that fills the frame is not over-resolved. The
+  focal tier is sized from the **smallest main face** the detector finds, measured on its boxes —
+  heads standing close merge into one region of a mask, and the merged blob is no face's width.
+- **A minimum brush per plane** (§9), the size of its armature's pixel: broad in the background,
+  finest on faces alone. Passes below the finest floor are dropped rather than run.
+- The figure's silhouette is a **seam** strokes end at, so the figure stands against its ground.
+- The budget is a **coverage count**, set once the planes are known.
+- An opaque medium begins on a **toned ground** mixed from the picture's own mean colour in linear
+  light, so a gap between two broad marks reads as the picture's tone and never as a fleck of white
+  priming. A transparent medium keeps its paper: the paper is its light.
+- **`--armature N` is the detail dial**: it names the background tier and the figure and face tiers
+  follow in ratio. 576 keeps more, 192 is looser.
+
+The default painting path is **byte-identical** to 6.37.0 — all 11 accepted regression references
+reproduce at DSSIM 0.
+
+### The stroke score replays exactly
+
+The score is the canonical artefact (§11.2), and it lives on disk as text: replaying it must
+reproduce the painting the run saved. It did not, on any medium. Two causes, both invisible to the
+test suite because every replay test replayed the score held in **memory** — nothing ever wrote the
+text and read it back.
+
+- **Precision.** Floats were written with four decimals, truncating spline coordinates and mixture
+  ratios, so each replayed stroke landed a little off its original. They now use the shortest decimal
+  that parses back to the very same `f32`: exact, and about as compact.
+- **The drawn line's tool.** A contour or pen line is made with a different brush from the one that
+  paints the masses — a pen is one stiff point, a sumi tuft is eleven — and while a stroke already
+  recorded its own streak, roundness and pickup, its **bristle count** was not in the record. Replay
+  rebuilt every drawn line with the header's seven-bristle painting brush, redrawing each contour as
+  a rake. Strokes now carry their own count, written only when it differs from the header, so old
+  scores still parse and ordinary painted strokes cost no bytes.
+
+Measured at 1024², painted versus replayed:
+
+| medium | before | after |
+|---|---|---|
+| oil-direct | 0.67% error, 83% of pixels | exact |
+| watercolour | 0.50% error, 64% of pixels | exact |
+| pen-ink | 14.6% error, 38% of pixels | exact |
+
+All **16 media** now replay with zero differing pixels, as does a 2048² `--new` painting. A
+round-trip test writes the score, parses it back, replays both and demands the same pixels; it fails
+on either old behaviour.
+
+### Fixes
+
+- `img2img --etch` writes its provenance etching and metadata sidecar again — both were silently
+  dropped, so `plakat doctor --if-plakat` reported no evidence on an image that asked to be etched.
+- `PLAKAT_PAINT_MASKS=<dir>` dumps the focal (face) mask and subject matte as grey PNGs before
+  painting, to see where a plane's edge falls. Diagnostic only; it never changes a painting.
+
 ## What's new in 6.37.0 — `plakat paint`: the quality release
 
 A full cycle of measured work on the stroke engine, judged crop by crop against real paintings.

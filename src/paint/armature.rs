@@ -382,8 +382,8 @@ mod tests {
     #[test]
     fn merged_reference_applies_recession_and_palette() {
         // Two vertical planes via the proxy? Use explicit depth: top row far, bottom row near.
-        let w = 4;
-        let h = 2;
+        let _w = 4;
+        let _h = 2;
         // Colours: high-contrast pair on each row.
         let colour = vec![[10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240], [10, 10, 10], [240, 240, 240]];
         let depth = vec![0.1, 0.1, 0.1, 0.1, 0.9, 0.9, 0.9, 0.9]; // top far, bottom near

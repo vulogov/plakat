@@ -251,7 +251,32 @@ pub async fn run_with_pipeline_hooked(
         let new_latents = denoised.with_context(|| format!("denoise (seed {seed})"))?;
 
         let out_path = output_path(&req.out_dir, mode_tag, seed);
-        pipeline.save_image(&new_latents, &out_path)?;
+        // This render's provenance + parameters (6.38): img2img used to save plain, so the global
+        // `--etch` flag was accepted and ignored and the output carried no sidecar either.
+        let mut meta = crate::imaging::metadata::GenerationMetadata::new(
+            req.prompt.clone(),
+            req.model.clone(),
+            seed,
+            req.steps,
+            req.guidance,
+            format!("{:?}", req.scheduler).to_lowercase(),
+            req.width,
+            req.height,
+        );
+        meta.negative = req.negative.clone();
+        meta.mode = Some(mode_tag.to_string());
+        meta.strength = Some(req.strength);
+        if !req.loras.is_empty() {
+            meta.loras = req.loras.iter().map(|l| format!("{l:?}")).collect();
+            meta.lora_scale = Some(req.lora_scale);
+        }
+        if !control_reqs.is_empty() {
+            meta.controls = control_reqs
+                .iter()
+                .map(|c| format!("strength={:.2} start={:.2} end={:.2}", c.strength, c.start, c.end))
+                .collect();
+        }
+        pipeline.save_image_with_metadata(&new_latents, &out_path, Some(&meta))?;
     }
 
     Ok(())

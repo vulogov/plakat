@@ -102,6 +102,12 @@ pub struct StrokeRecord {
     /// is laid nearly clean so it defines a feature instead of smearing the mass beneath. `None` = the header's
     /// `k_pickup` (old scores, and every non-detail stroke), so replay reproduces the paint exactly.
     pub pickup: Option<f32>,
+    /// This stroke's own BRISTLE COUNT, when it differs from the score's base brush. A drawn line is made with
+    /// a different tool from the one that paints the masses: a pen is ONE stiff point, a sumi brush a loaded
+    /// tuft. Replaying a one-bristle pen line with the header's seven-bristle painting brush redrew every
+    /// contour as a rake — the whole reason `pen-ink` and `line-and-wash` did not replay. `None` = the
+    /// header's `bristles` (old scores, and every ordinary painted stroke).
+    pub bristles: Option<usize>,
 }
 
 impl ScoreHeader {
@@ -131,17 +137,22 @@ pub struct StrokeScore {
 }
 
 fn fmt_f(v: f32) -> String {
-    // Compact, round-trippable, locale-free. (A wash's ring separator is NaN.)
+    // EXACTLY round-trippable, compact, locale-free. (A wash's ring separator is NaN.)
+    //
+    // The score is the CANONICAL artefact (RFC PAINT-1): replaying it must reproduce the painting the run
+    // saved. `{:.4}` did not — it TRUNCATED spline coordinates and mixture ratios, so every replayed stroke
+    // landed a little off its original. Measured at 1024²: 0.67% RMSE on an oil (83% of pixels differing),
+    // and 14.6% on pen-ink, whose thin marks amplify a fraction of a pixel into a visibly different line.
+    // The engine's replay test could not see it — it replays the score held in MEMORY, and nothing wrote the
+    // text and read it back (see `a_score_round_trips_through_text_exactly`).
+    //
+    // Rust's `{}` prints the SHORTEST decimal that parses back to the very same f32, so the text round-trips
+    // bit-for-bit and stays about as compact as the old truncation. It never uses exponent notation, and a
+    // stroke's numbers (pixel coordinates, widths, 0..1 ratios) are bounded, so lines cannot blow up.
     if v.is_nan() {
         return "NaN".into();
     }
-    let s = format!("{v:.4}");
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() || s == "-" {
-        "0".into()
-    } else {
-        s.to_string()
-    }
+    format!("{v}")
 }
 
 impl StrokeScore {
@@ -168,7 +179,7 @@ impl StrokeScore {
             let spline = s.spline.iter().map(|p| format!("{},{}", fmt_f(p[0]), fmt_f(p[1]))).collect::<Vec<_>>().join(";");
             let mix = s.mix.iter().map(|(n, v)| format!("{n}:{}", fmt_f(*v))).collect::<Vec<_>>().join(",");
             o.push_str(&format!(
-                "{} {} stage={} spline={} w0={} w1={} taper={} mix={} wet={} press={} streak={} round={}{}\n",
+                "{} {} stage={} spline={} w0={} w1={} taper={} mix={} wet={} press={} streak={} round={}{}{}\n",
                 if s.wash { "A" } else if s.wipe { "W" } else { "S" },
                 s.id,
                 s.stage,
@@ -182,6 +193,7 @@ impl StrokeScore {
                 fmt_f(s.streak),
                 fmt_f(s.round),
                 s.pickup.map(|v| format!(" pickup={}", fmt_f(v))).unwrap_or_default(),
+                s.bristles.map(|v| format!(" bristles={v}")).unwrap_or_default(),
             ));
         }
         o
@@ -276,6 +288,7 @@ impl StrokeScore {
                         streak: get("streak").parse().unwrap_or(0.6),
                         round: get("round").parse().unwrap_or(0.7),
                         pickup: get("pickup").parse().ok(),
+                        bristles: get("bristles").parse().ok(),
                     });
                 }
                 "P" => {
@@ -363,7 +376,7 @@ impl StrokeScore {
             }
             let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
             // This stroke's own brush character (a flat, a round, …) over the score's base brush physics.
-            let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), ..brush };
+            let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), ..brush };
             s.rasterize(&mut canvas, &sb);
         }
         // The remaining pass boundaries (the last pass's own bleed, any trailing empty pass), then the light
@@ -451,7 +464,7 @@ impl StrokeScore {
                     continue;
                 }
                 let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
-                let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), ..brush };
+                let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), ..brush };
                 s.rasterize(&mut canvas, &sb);
                 laid += 1;
                 if laid % every == 0 {
@@ -503,8 +516,8 @@ mod tests {
         StrokeScore {
             header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
             strokes: vec![
-                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None },
-                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None },
+                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None },
+                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None },
             ],
         }
     }
@@ -574,9 +587,9 @@ mod tests {
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
         let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
-        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
+        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
-        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None };
+        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None };
         let with_wipe = StrokeScore { header: base, strokes: vec![stroke, wipe] };
         let a = no_wipe.replay(40, 20).unwrap();
         let b = with_wipe.replay(40, 20).unwrap();
