@@ -939,16 +939,22 @@ pub fn region_extent(mask: &[f32], w: u32, h: u32) -> Option<f32> {
 /// matte (or everywhere, when no subject was found — the picture itself is the subject), else the background's.
 pub fn plane_floor_field(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32>, Option<u32>), subject: Option<&[f32]>, face: Option<&[f32]>) -> Vec<f32> {
     let (bg, body, focal) = plane_floors(w, h, min_brush, sides);
-    let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0);
+    let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0).clamp(0.0, 1.0);
+    // The planes meet along a RAMP, not a step. Thresholding each mask at 0.5 put a hard line through
+    // anything that crossed a plane boundary: the focal region is a detector's box, so a long beard was
+    // painted with a 2 px brush above the chin and an 8 px brush below it, and the seam between them read
+    // as a cut straight across the face. The masks are already feathered and the armature already blends
+    // through them (`blend_by_mask`); only the minimum brush was stepping.
+    //
+    // The blend is GEOMETRIC because a brush ladder is: each pass halves its predecessor, so a linear ramp
+    // from 2 px to 8 px would spend most of its width in the coarse half and still read as an edge. A
+    // geometric ramp crosses the octaves evenly.
+    let glerp = |a: f32, b: f32, t: f32| if t <= 0.0 { a } else if t >= 1.0 { b } else { a * (b / a).powf(t) };
     (0..(w as usize * h as usize))
         .map(|i| {
-            if at(face, i) > 0.5 {
-                focal
-            } else if subject.is_none() || at(subject, i) > 0.5 {
-                body
-            } else {
-                bg
-            }
+            // No subject found = the picture itself is the subject, so the body floor holds everywhere.
+            let s = if subject.is_none() { 1.0 } else { at(subject, i) };
+            glerp(glerp(bg, body, s), focal, at(face, i))
         })
         .collect()
 }
@@ -3044,6 +3050,31 @@ mod tests {
         assert!(lap(&arm) < lap(&img) * 0.05, "the texture is gone: {} vs {}", lap(&arm), lap(&img));
         let (l, r) = (arm.get_pixel(20, 128).0[0] as i32, arm.get_pixel(236, 128).0[0] as i32);
         assert!(r - l > 60, "the ramp survives as structure: {l} → {r}");
+    }
+
+    #[test]
+    fn the_planes_meet_along_a_ramp_not_a_step() {
+        // A focal region is a face DETECTOR'S BOX, and a long beard runs straight out of the bottom of it.
+        // While the minimum brush stepped at the mask's midpoint, that beard was painted with a fine brush
+        // above the chin and a coarse one below, and the boundary read as a cut across the face. Through a
+        // feathered mask the floor must CHANGE GRADUALLY.
+        let (w, h) = (256u32, 256u32);
+        // A 32 px feather centred on the middle row — the shape `build_face_mask`'s blur leaves.
+        let face: Vec<f32> = (0..(w * h)).map(|i| (((128.0 - (i / w) as f32) / 32.0) + 0.5).clamp(0.0, 1.0)).collect();
+        let subject = vec![1.0f32; (w * h) as usize];
+        let field = plane_floor_field(w, h, 1.0, (32, Some(64), Some(128)), Some(&subject), Some(&face));
+
+        let col: Vec<f32> = (0..h).map(|y| field[(y * w + 128) as usize]).collect();
+        let (lo, hi) = col.iter().fold((f32::MAX, 0.0f32), |(l, g), &v| (l.min(v), g.max(v)));
+        assert!(hi - lo > 1.0, "the two planes really do differ ({lo:.2}..{hi:.2} px)");
+        let worst = col.windows(2).map(|p| (p[0] - p[1]).abs()).fold(0.0f32, f32::max);
+        assert!(
+            worst < (hi - lo) * 0.2,
+            "no single row may carry the whole change: worst step {worst:.3} px of a {:.3} px range",
+            hi - lo
+        );
+        // The ends still reach their own plane's floor — softening must not blunt the focal plane itself.
+        assert!((col[0] - lo).abs() < 1e-3 && (col[(h - 1) as usize] - hi).abs() < 1e-3, "each end sits at its plane's floor");
     }
 
     #[test]
