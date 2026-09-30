@@ -425,6 +425,102 @@ fn box_blur(src: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
     out
 }
 
+/// The HAIR FLOW FIELD: which way hair actually GROWS, as a unit direction per pixel plus how confidently.
+///
+/// Every other direction in the painter comes from the armature's isophotes, and the armature is structure with
+/// the texture taken out — so under `--new` a strand has no direction of its own and borrows the shape of the
+/// value mass it sits in. That is why a mane gained fibres from the strand tool but still combed the wrong way,
+/// and why curls resisted entirely: a ringlet's direction is not in the armature at all.
+///
+/// This reads the SOURCE, and the reduction is what keeps that honest (RFC §1.1: structure is low-resolution
+/// and model-derived). The structure tensor is built at full resolution, then its components are averaged down
+/// to `side` across the short edge and brought back — so what survives is an ANGLE PER ARMATURE CELL, the same
+/// order of information the armature itself carries, not the picture's texture. No pigment, value or edge
+/// crosses over; only which way the cell runs.
+///
+/// Orientation is mod π, so the components are averaged as the DOUBLE-ANGLE pair (Jxx−Jyy, 2Jxy) — averaging
+/// angles directly makes strands at +80° and −80° cancel into nothing instead of agreeing.
+///
+/// Returns `(dx, dy, coherence)`: the direction structure RUNS (along a strand, perpendicular to the gradient)
+/// and the tensor's anisotropy in 0..1, which is near zero on skin or cloth and high on hair, fur and grass.
+pub struct HairFlow {
+    /// Unit direction the structure RUNS (along a strand).
+    pub dx: Vec<f32>,
+    pub dy: Vec<f32>,
+    /// Tensor anisotropy 0..1 — how much the neighbourhood agrees on one orientation.
+    pub coherence: Vec<f32>,
+    /// STRANDNESS: coherence gated by fine-scale contrast. Coherence ALONE does not tell hair from cloth — a
+    /// sleeve's folds are strongly oriented too, and a flood that trusted coherence ran straight out of a
+    /// beard and claimed both men's shirts and trousers. What separates them is SCALE: hair is oriented AND
+    /// busy at strand scale, while a fold is oriented and SMOOTH between its edges. This is the measure to
+    /// grow a hair region by.
+    pub strandness: Vec<f32>,
+}
+
+pub fn hair_flow_field(src: &RgbImage, side: u32) -> HairFlow {
+    let (w, h) = src.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    let n = wu * hu;
+    let luma = luma_map(src);
+    let (gx, gy) = sobel(&luma, w, h);
+    // The tensor, at the scale of a strand: small enough that a lock keeps its own direction, large enough
+    // that single-pixel noise does not set it.
+    let sigma = ((w.min(h) as f32) / 512.0).round().clamp(2.0, 6.0) as i32;
+    let mut c = vec![0f32; n]; // Jxx − Jyy
+    let mut sxy = vec![0f32; n]; // 2·Jxy
+    let mut energy = vec![0f32; n]; // Jxx + Jyy
+    for i in 0..n {
+        c[i] = gx[i] * gx[i] - gy[i] * gy[i];
+        sxy[i] = 2.0 * gx[i] * gy[i];
+        energy[i] = gx[i] * gx[i] + gy[i] * gy[i];
+    }
+    let c = box_blur(&c, w, h, sigma);
+    let sxy = box_blur(&sxy, w, h, sigma);
+    let energy = box_blur(&energy, w, h, sigma);
+    // THE REDUCTION: average the double-angle components down to the armature's grid and back. Whatever
+    // finer-than-armature detail the tensor saw is gone after this; an angle per cell is all that survives.
+    let short = w.min(h).max(1);
+    let side = side.clamp(8, short);
+    let scale = side as f32 / short as f32;
+    let (sw, sh) = (((w as f32 * scale).round() as u32).max(1), ((h as f32 * scale).round() as u32).max(1));
+    let shrink = |v: &[f32]| -> Vec<f32> {
+        let img = image::GrayImage::from_fn(w, h, |x, y| {
+            // Carry the sign through an unsigned byte image: 0.5 is zero.
+            image::Luma([((v[(y * w + x) as usize] * 0.5 + 0.5).clamp(0.0, 1.0) * 255.0) as u8])
+        });
+        let small = imageops::resize(&img, sw, sh, imageops::FilterType::Triangle);
+        let back = imageops::resize(&small, w, h, imageops::FilterType::Triangle);
+        back.pixels().map(|p| (p.0[0] as f32 / 255.0 - 0.5) * 2.0).collect()
+    };
+    // Normalise by the local energy first, so the reduction averages ORIENTATIONS rather than being dominated
+    // by whichever cell happened to have the strongest contrast.
+    let (mut cn, mut sn) = (vec![0f32; n], vec![0f32; n]);
+    for i in 0..n {
+        let e = energy[i] + 1e-6;
+        cn[i] = (c[i] / e).clamp(-1.0, 1.0);
+        sn[i] = (sxy[i] / e).clamp(-1.0, 1.0);
+    }
+    cn = shrink(&cn);
+    sn = shrink(&sn);
+    // Fine-scale contrast: how BUSY the picture is at strand scale. Hair is busy; a fold is smooth.
+    let fine = local_range(&luma, wu, hu, sigma.max(2) as usize);
+    let (mut dx, mut dy, mut coh, mut strand) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    for i in 0..n {
+        // The magnitude of the double-angle vector IS the coherence: 1 when every gradient in the cell agrees
+        // on an orientation (a lock of hair), 0 when they point every way (skin, flat cloth).
+        let mag = (cn[i] * cn[i] + sn[i] * sn[i]).sqrt();
+        coh[i] = mag.clamp(0.0, 1.0);
+        // Dominant GRADIENT angle, then a quarter turn to lie ALONG the strand.
+        let theta = 0.5 * sn[i].atan2(cn[i]);
+        dx[i] = -theta.sin();
+        dy[i] = theta.cos();
+        // 0.06 of the value range across a strand-width window is about where a head of hair sits and a lit
+        // sleeve does not; it is a contrast fact of the picture, not a number tuned to one of them.
+        strand[i] = coh[i] * (fine[i] / 0.06).clamp(0.0, 1.0);
+    }
+    HairFlow { dx, dy, coherence: coh, strandness: strand }
+}
+
 /// A COHERENT flow field via the structure tensor (Kang/Hertzmann coherence-enhancing painterly rendering).
 /// Raw per-pixel Sobel swirls on a smoothed armature — the direction jitters between neighbours, so strokes
 /// wander and the painting reads as noise. Instead we build the tensor J = [[gx², gxgy],[gxgy, gy²]], blur it
@@ -1129,6 +1225,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let lap = |name: &'static str, acc: &mut Vec<(&'static str, f64)>, t: &mut std::time::Instant| { if prof_on { acc.push((name, t.elapsed().as_secs_f64())); *t = std::time::Instant::now(); } };
     // The subject as given, before it is reduced to an armature: the fine layers look at it for TEXTURE.
     let source: &RgbImage = input;
+    // HAIR FLOW (see `hair_flow_field`): which way hair GROWS, as one angle per armature cell. Built here,
+    // from the picture as given, because two lines below `input` becomes the armature and the growth
+    // direction is precisely what the armature has thrown away. Only computed where there is hair to paint.
+    let hair_flow: Option<HairFlow> = p.hair_mask.as_ref().filter(|m| m.len() == (w * h) as usize).map(|_| {
+        let side = p.armature_face_side.or(p.armature_body_side).unwrap_or(NEW_BACKGROUND_SIDE);
+        hair_flow_field(source, side)
+    });
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
     // canvas stays full size; only the thing being painted FROM is coarsened.
     let armature_owned;
@@ -1438,6 +1541,32 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             (gx.iter().zip(&gy).map(|(x, y)| x * cs - y * sn).collect::<Vec<f32>>(), gx.iter().zip(&gy).map(|(x, y)| x * sn + y * cs).collect::<Vec<f32>>())
         } else {
             (gx, gy)
+        };
+        // HAIR grows its own way. Everywhere else the direction is the armature's isophote — the shape of the
+        // value mass — which is why the strand tool combed a mane along its lighting rather than along its
+        // hair. Where the mask says hair AND the field is coherent, rotate the flow onto the growth direction.
+        // The pass's own MAGNITUDE is kept: it feeds the detail gate, and swapping it here would silently
+        // change which marks are allowed, not just which way they point.
+        let (gx, gy) = match (&hair_flow, p.hair_mask.as_deref()) {
+            (Some(hf), Some(hm)) => {
+                let (hx, hy, hc) = (&hf.dx, &hf.dy, &hf.coherence);
+                let (mut gx, mut gy) = (gx, gy);
+                for i in 0..gx.len() {
+                    let t = hm[i].clamp(0.0, 1.0) * hc[i];
+                    if t <= 1e-3 {
+                        continue;
+                    }
+                    let m = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
+                    // A growth direction is an ORIENTATION, not an arrow: flip it into the same half-plane as
+                    // the pass flow first, or blending a strand at +80° with one at −80° cancels to nothing.
+                    let (ux, uy) = (-hy[i], hx[i]); // the "gradient" whose perpendicular is the strand
+                    let (ux, uy) = if ux * gx[i] + uy * gy[i] < 0.0 { (-ux, -uy) } else { (ux, uy) };
+                    gx[i] += (ux * m - gx[i]) * t;
+                    gy[i] += (uy * m - gy[i]) * t;
+                }
+                (gx, gy)
+            }
+            _ => (gx, gy),
         };
         // BRUSH for this pass: the composition layer's `layer_brush` if set, else the intelligent per-role
         // default. HIGH-FIDELITY uses a clean, low-waver, short-tracking brush at every pass so strokes lie down
@@ -3086,6 +3215,29 @@ mod tests {
         assert!(lap(&arm) < lap(&img) * 0.05, "the texture is gone: {} vs {}", lap(&arm), lap(&img));
         let (l, r) = (arm.get_pixel(20, 128).0[0] as i32, arm.get_pixel(236, 128).0[0] as i32);
         assert!(r - l > 60, "the ramp survives as structure: {l} → {r}");
+    }
+
+    #[test]
+    fn the_hair_flow_field_finds_the_direction_structure_runs() {
+        // Diagonal stripes at 45°: the field must report the direction ALONG them (not across), and say it is
+        // confident. A flat field has no direction to find and must say so — otherwise strokes would follow
+        // noise wherever the picture is smooth.
+        let stripes = image::RgbImage::from_fn(128, 128, |x, y| {
+            let v = if ((x + y) / 4) % 2 == 0 { 30u8 } else { 220 };
+            image::Rgb([v, v, v])
+        });
+        let f = hair_flow_field(&stripes, 64);
+        let mid = 64 * 128 + 64;
+        // Stripes of constant (x+y) run along (1,−1)/√2; orientation is mod π, so either sign will do.
+        let along = (f.dx[mid] * 0.70710678 + f.dy[mid] * -0.70710678).abs();
+        assert!(along > 0.9, "the field runs along the stripes, not across them (|cos| = {along:.3})");
+        assert!(f.coherence[mid] > 0.7, "and says it is confident ({:.2})", f.coherence[mid]);
+        assert!(f.strandness[mid] > 0.5, "stripes at strand scale are strandy ({:.2})", f.strandness[mid]);
+
+        let flat = image::RgbImage::from_pixel(128, 128, image::Rgb([128, 128, 128]));
+        let g = hair_flow_field(&flat, 64);
+        assert!(g.coherence[mid] < 0.3, "a flat field has no direction to find ({:.2})", g.coherence[mid]);
+        assert!(g.strandness[mid] < 0.1, "and nothing strand-like in it ({:.2})", g.strandness[mid]);
     }
 
     #[test]

@@ -1859,7 +1859,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         // matte (not the ground showing through the box) and OUTSIDE the face (a muzzle, an eye and a nose are
         // smooth form — painting them with the strand tool would rake the features into fur).
         if a.new_painting {
-            params.hair_mask = hair.map(|mut hm| {
+            params.hair_mask = if let Some(mut hm) = hair {
                 for (i, v) in hm.iter_mut().enumerate() {
                     if let Some(sm) = params.subject_mask.as_deref() {
                         *v *= sm.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
@@ -1868,10 +1868,19 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                         *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
                     }
                 }
+                // NOTE: the hair region is only as large as the detector's boxes. Two ways of extending it
+                // to a long beard's full fall were tried and MEASURED, and neither works — see the commit and
+                // `reference_hair_fur_tool`. Until one does, the region is whatever was named.
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(hm[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("mask_hair.png"));
+                }
                 let cov = hm.iter().filter(|&&v| v > 0.5).count();
                 println!("{}  hair/fur: the strand tool over {}% of the frame (finer floor · raked lanes · no pickup · strands break the silhouette)", style("·").dim(), cov * 100 / hm.len().max(1));
-                hm
-            });
+                Some(hm)
+            } else {
+                None
+            };
         }
         if let Some(cloth) = clothing {
             // Union the clothing into the subject mask so the reserve treats the shirt as subject, not background.
