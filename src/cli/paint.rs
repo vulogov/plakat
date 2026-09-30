@@ -852,34 +852,62 @@ fn boxes_to_mask(boxes: &[(f32, f32, f32, f32)], iw: u32, ih: u32, w: u32, h: u3
 /// - hair/beard → a COARSE wash armature tier (kept softer than the body);
 /// - clothing/shoulders → a mask to EXTEND the subject fact, so a light shirt is painted, not reserved to paper.
 /// Both are open-vocab detections; a model-free empty result if nothing is found.
-async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32, face: u32) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>)> {
+async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32, face: u32, fine_hair: bool) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>, Option<Vec<f32>>)> {
     let device = crate::device::select("auto")?;
     let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
     let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
+    // `PLAKAT_PAINT_SEMANTIC=1` prints what each query actually scored. A part that is never detected is
+    // silent otherwise, and a silent miss looks exactly like a part the picture does not contain.
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
     let detect = |queries: &[&str], thr: f32| -> Vec<(f32, f32, f32, f32)> {
         let mut boxes = Vec::new();
         for q in queries {
-            for d in owl.detect_all(path, q, thr, 4).unwrap_or_default() {
+            let hits = owl.detect_all(path, q, if loud { 0.0 } else { thr }, 4).unwrap_or_default();
+            if loud {
+                let best = hits.iter().map(|d| d.score).fold(0.0f32, f32::max);
+                println!("{}  semantic probe: {:?} best score {:.3} (threshold {thr:.2}) → {} box(es)", style("·").dim(), q, best, hits.iter().filter(|d| d.score >= thr).count());
+            }
+            for d in hits.into_iter().filter(|d| d.score >= thr) {
                 boxes.push((d.x0, d.y0, d.x1, d.y1));
             }
         }
         boxes
     };
     let mut tiers = Vec::new();
+    let mut hair_mask: Option<Vec<f32>> = None;
     // A named part → its armature-resolution ROLE, derived from the plan's own tiers (not image-tuned):
-    //   hair/beard = COARSE wash · skin = MID smooth form · hands = FINE (structure, a secondary focal).
-    let hair_res = (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6));
+    //   skin = MID smooth form · hands = FINE (structure, a secondary focal).
+    // HAIR was a COARSE wash, softer than the body. That is backwards: hair is the finest structure on a figure
+    // after the features, and softening it is why a mane and a beard came out as a lumpy mass. A new painting
+    // reads it BETWEEN the body and the face, where a lock of hair is a thing with a shape. (The old tier is
+    // kept for the path that tracks its source, whose renders are already accepted.)
+    let hair_res = if fine_hair {
+        ((body + face) / 2).clamp(body, face)
+    } else {
+        (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6))
+    };
     let skin_res = (body + (face.saturating_sub(body)) / 4).clamp(body, face);
     let hands_res = ((body + face) / 2).clamp(body, face);
     for (label, queries, thr, res) in [
-        ("hair/beard", &["a beard", "long hair", "hair", "a moustache"][..], 0.12_f32, hair_res),
+        // FUR too: the queries were human-only, so a lion's mane matched nothing at all and the whole hair
+        // path never ran on an animal.
+        // Part-level words find a human's hair. They do NOT find an animal's coat: on a picture that is half
+        // lion, "fur" and "a mane" both scored under 0.06 while every part query sat at noise. So name the
+        // ANIMAL as well — on an animal the coat IS the body, and the region is then the animal's box narrowed
+        // by the subject matte (below).
+        ("hair/beard/fur", &["a beard", "long hair", "hair", "a moustache", "fur", "a mane",
+                             "a lion", "a dog", "a cat", "a horse", "a bear", "a wolf", "a furry animal"][..], 0.12_f32, hair_res),
         ("skin", &["skin", "a neck", "a bald head", "a forehead"][..], 0.11, skin_res),
         ("hands", &["a hand", "hands", "fingers"][..], 0.11, hands_res),
     ] {
         let boxes = detect(queries, thr);
         if !boxes.is_empty() {
             println!("{}  semantic: {} {label} region(s) → armature tier {res}px", style("·").dim(), boxes.len());
-            tiers.push((boxes_to_mask(&boxes, iw, ih, w, h), res));
+            let m = boxes_to_mask(&boxes, iw, ih, w, h);
+            if label.starts_with("hair") {
+                hair_mask = Some(m.clone());
+            }
+            tiers.push((m, res));
         }
     }
     // CLOTHING / SHOULDERS → extend the subject so a light shirt is PAINTED, not reserved to blank paper.
@@ -891,7 +919,7 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
         println!("{}  semantic: {} clothing region(s) → extend the subject (paint the shirt)", style("·").dim(), clothing.len());
         Some(boxes_to_mask(&clothing, iw, ih, w, h))
     };
-    Ok((tiers, clothing_mask))
+    Ok((tiers, clothing_mask, hair_mask))
 }
 
 /// Detect the primary (largest, highest-score) face box `[x0,y0,x1,y1]` in original-image pixels, via SCRFD.
@@ -1824,8 +1852,27 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let coarse = a.armature.unwrap_or(72);
         let body = a.armature_body.unwrap_or(coarse + 40);
         let face = a.armature_face.unwrap_or(body + 96);
-        let (tiers, clothing) = build_semantic_regions(&a.input, w, h, coarse, body, face).await?;
+        let (tiers, clothing, hair) = build_semantic_regions(&a.input, w, h, coarse, body, face, a.new_painting).await?;
         params.region_tiers = tiers;
+        // Hand the painter the hair/fur region so it changes TOOL there (see `PaintParams::hair_mask`).
+        // An ANIMAL query returns the whole animal, so narrow it to what is actually coat: inside the subject
+        // matte (not the ground showing through the box) and OUTSIDE the face (a muzzle, an eye and a nose are
+        // smooth form — painting them with the strand tool would rake the features into fur).
+        if a.new_painting {
+            params.hair_mask = hair.map(|mut hm| {
+                for (i, v) in hm.iter_mut().enumerate() {
+                    if let Some(sm) = params.subject_mask.as_deref() {
+                        *v *= sm.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+                    }
+                    if let Some(fm) = params.face_mask.as_deref() {
+                        *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    }
+                }
+                let cov = hm.iter().filter(|&&v| v > 0.5).count();
+                println!("{}  hair/fur: the strand tool over {}% of the frame (finer floor · raked lanes · no pickup · strands break the silhouette)", style("·").dim(), cov * 100 / hm.len().max(1));
+                hm
+            });
+        }
         if let Some(cloth) = clothing {
             // Union the clothing into the subject mask so the reserve treats the shirt as subject, not background.
             match params.subject_mask.as_mut() {
@@ -1997,7 +2044,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let sides = (bg_side, params.armature_body_side, params.armature_face_side);
         if !budget_explicit && !params.density {
             // …and the budget is the coverage of the planes as found.
-            let floor = painter::plane_floor_field(w, h, params.min_brush, sides, params.subject_mask.as_deref(), params.face_mask.as_deref());
+            let floor = painter::plane_floor_field(w, h, params.min_brush, sides, params.subject_mask.as_deref(), params.face_mask.as_deref(), params.hair_mask.as_deref());
             let b = painter::from_scratch_budget(w, h, &params.brush_sizes, params.min_brush, &floor);
             params.budget = b;
             a.budget = b;

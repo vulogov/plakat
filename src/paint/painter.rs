@@ -174,6 +174,13 @@ pub struct PaintParams {
     /// crosses the subject/background boundary, so the subject stays crisp against the ground instead of
     /// smearing across the seam. `None` = strokes cross freely (soft everywhere).
     pub region_mask: Option<Vec<bool>>,
+    /// HAIR / BEARD / FUR (0..1, canvas-sized). Hair is high-frequency DIRECTIONAL texture, and the armature is
+    /// structure with the texture taken out — so a from-scratch painting has, by construction, nothing to paint
+    /// hair FROM, and a mane came out a lumpy mass. Where this mask is set the painter changes TOOL rather than
+    /// reference: a finer floor, more bristle lanes with a rakier streak (the lanes ARE the strands), almost no
+    /// pickup so strands stay distinct instead of smearing into mud, longer and narrower marks tapering to a
+    /// point, and a minority of marks allowed to break the silhouette (see the seam below).
+    pub hair_mask: Option<Vec<f32>>,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -345,7 +352,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -937,7 +944,7 @@ pub fn region_extent(mask: &[f32], w: u32, h: u32) -> Option<f32> {
 
 /// The minimum brush at every pixel: the focal floor inside the face mask, the figure floor inside the subject
 /// matte (or everywhere, when no subject was found — the picture itself is the subject), else the background's.
-pub fn plane_floor_field(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32>, Option<u32>), subject: Option<&[f32]>, face: Option<&[f32]>) -> Vec<f32> {
+pub fn plane_floor_field(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32>, Option<u32>), subject: Option<&[f32]>, face: Option<&[f32]>, hair: Option<&[f32]>) -> Vec<f32> {
     let (bg, body, focal) = plane_floors(w, h, min_brush, sides);
     let at = |m: Option<&[f32]>, i: usize| m.and_then(|m| m.get(i).copied()).unwrap_or(0.0).clamp(0.0, 1.0);
     // The planes meet along a RAMP, not a step. Thresholding each mask at 0.5 put a hard line through
@@ -954,7 +961,12 @@ pub fn plane_floor_field(w: u32, h: u32, min_brush: f32, sides: (u32, Option<u32
         .map(|i| {
             // No subject found = the picture itself is the subject, so the body floor holds everywhere.
             let s = if subject.is_none() { 1.0 } else { at(subject, i) };
-            glerp(glerp(bg, body, s), focal, at(face, i))
+            // HAIR sits between the body and the focal plane: it is the finest structure on a figure after the
+            // features, and the semantic pass used to call it a "coarse wash" — softer than the body — which is
+            // backwards for anything with a mane or a beard. Applied BEFORE the face so a beard inside the face
+            // box still gets the focal floor, never coarsened back up by its own mask.
+            let hairy = glerp(glerp(bg, body, s), (body * focal).sqrt(), at(hair, i));
+            glerp(hairy, focal, at(face, i))
         })
         .collect()
 }
@@ -1223,7 +1235,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     });
     // FROM SCRATCH: the minimum brush of every plane (RFC §9). A rung below the focal floor touches nothing, so
     // it is not a pass of this painting at all.
-    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref()));
+    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref(), p.hair_mask.as_deref()));
     let passes: Vec<PassSpec> = match &plane_floor {
         Some(fl) => {
             let finest = fl.iter().copied().fold(f32::INFINITY, f32::min);
@@ -1581,8 +1593,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
+                // HAIR / FUR: how much this mark is a strand rather than a mass (see `PaintParams::hair_mask`).
+                let hair = p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0).clamp(0.0, 1.0);
+                // SILHOUETTE STRANDS: hair reads as hair at its EDGE — a few strands escape the mass — but the
+                // subject silhouette is a seam that strokes TERMINATE at, which is exactly wrong for a mane and
+                // left every head and beard with a soft rounded outline. A MINORITY of hair marks (about a
+                // third, chosen by the stroke's own hash so replay is exact) may cross it; they are narrow and
+                // taper to a point, so what escapes is a filament, not a bulge. Letting them all cross turned
+                // the outline into a fuzzy blob — the discipline is that most strands still stop at the seam.
+                let strand_out = hair > 0.35 && jitter(p.seed ^ 0x9E37_79B9, k.wrapping_add(11)) + 0.5 < 0.35;
                 let region = if let Some(m) = p.paint_mask.as_deref() {
                     Some((m, true))
+                } else if strand_out {
+                    None
                 } else {
                     p.region_mask.as_deref().map(|m| (m, m.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false)))
                 };
@@ -1593,8 +1616,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let wvar = 1.0 + 0.15 * jitter(p.seed ^ 0x5B57, k);
                 let lvar = 1.0 + 0.18 * jitter(p.seed ^ 0x91E3, k.wrapping_add(7));
                 let pvar = 0.85 + 0.15 * (jitter(p.seed ^ 0x2C7D, k.wrapping_add(3)) + 0.5);
-                let rw = (radius * profile.radius_scale * p.stroke_width * wvar).max(p.min_brush * 0.8);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar).max(0.2), STOP_TOL * (1.0 - 0.6 * soft));
+                // A strand is LONGER and NARROWER than a mass mark: a lock of hair is drawn in one gesture.
+                let rw = (radius * profile.radius_scale * p.stroke_width * wvar * (1.0 - 0.35 * hair)).max(p.min_brush * 0.8);
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair)).max(0.2), STOP_TOL * (1.0 - 0.6 * soft));
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
@@ -1630,7 +1654,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 stroke_brush.streak = s_streak;
                 stroke_brush.round = s_round;
-                let s = Stroke { path, width0: rw, width1: (rw * 0.55).max(p.min_brush * 0.5), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
+                // THE HAIR TOOL. A stroke is already a bundle of bristle LANES, each carrying its own load, and
+                // `streak` is how unevenly they are loaded — so a raked, many-laned, narrow mark already draws a
+                // LOCK of hair. What it needed was to stop behaving like a mass mark: more lanes than the width
+                // alone would give, a rakier streak so the lanes read as separate strands, and almost no pickup,
+                // because a strand that smears the wet paint under it becomes the mud a mane kept coming out as.
+                let s_streak = if hair > 0.0 { (s_streak + 0.4 * hair).clamp(0.0, 1.0) } else { s_streak };
+                if hair > 0.0 {
+                    stroke_brush.streak = s_streak;
+                    stroke_brush.bristles = ((stroke_brush.bristles as f32) * (1.0 + 1.4 * hair)).round().clamp(1.0, 256.0) as usize;
+                    stroke_brush.k_pickup *= 1.0 - 0.85 * hair;
+                }
+                // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
+                let s = Stroke { path, width0: rw, width1: (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair)), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
                 s.rasterize(cv, &stroke_brush);
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
@@ -1641,15 +1677,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     spline: s.path,
                     w0: s.width0,
                     w1: s.width1,
-                    taper: 0.4,
+                    taper: 0.4 + 0.45 * hair,
                     mix,
                     wet: s.wetness,
                     press: s.pressure,
                     streak: s_streak,
                     round: s_round,
                     // A detail accent's near-clean pickup is part of how it was laid — record it so replay is exact.
-                    pickup: if detail { Some(stroke_brush.k_pickup) } else { None },
-                    bristles: None,
+                    pickup: if detail || hair > 0.0 { Some(stroke_brush.k_pickup) } else { None },
+                    bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                 })
             }
         };
@@ -3053,6 +3089,40 @@ mod tests {
     }
 
     #[test]
+    fn the_hair_mask_changes_the_tool_and_still_replays_byte_exact() {
+        // Hair is high-frequency DIRECTIONAL texture and the armature is structure with the texture taken out,
+        // so a from-scratch painting has nothing to paint hair FROM and a mane came out a lumpy mass. Where the
+        // hair mask is set the painter changes TOOL: more bristle lanes (the lanes ARE the strands), a rakier
+        // streak, almost no pickup so strands stay distinct, and a mark that tapers to a point.
+        let img = gradient_img(96, 64);
+        let mut p = PaintParams::new(palette::EARTH, 900);
+        p.brush_sizes = vec![16.0, 8.0, 4.0];
+        p.min_brush = 3.0;
+        p.from_scratch = true;
+        p.armature_side = Some(48);
+        // The left half is hair, the right half is not.
+        p.hair_mask = Some((0..96 * 64).map(|i| if i % 96 < 48 { 1.0 } else { 0.0 }).collect());
+        let r = paint_from_image(&img, &p);
+
+        let strand: Vec<_> = r.score.strokes.iter().filter(|s| s.bristles.is_some()).collect();
+        let mass: Vec<_> = r.score.strokes.iter().filter(|s| s.bristles.is_none()).collect();
+        assert!(!strand.is_empty() && !mass.is_empty(), "both tools were used: {} strand, {} mass", strand.len(), mass.len());
+        // A strand carries its own tool, so replay cannot fall back on the header's painting brush.
+        assert!(strand.iter().all(|s| s.pickup.is_some()), "a strand records its near-zero pickup");
+        assert!(strand.iter().all(|s| s.bristles.unwrap() > p.brush.bristles), "a strand has more lanes than the painting brush");
+        let tap_s = strand.iter().map(|s| s.taper).sum::<f32>() / strand.len() as f32;
+        let tap_m = mass.iter().map(|s| s.taper).sum::<f32>() / mass.len() as f32;
+        assert!(tap_s > tap_m + 0.2, "a strand ends in a point, a mass mark lifts off ({tap_s:.2} vs {tap_m:.2})");
+
+        // The whole point of recording the tool: the score still reproduces the painting exactly.
+        let painted = r.canvas.to_image().into_raw();
+        assert_eq!(r.score.replay(96, 64).unwrap().to_image().into_raw(), painted, "replays byte-exact in memory");
+        let text = r.score.to_text();
+        let parsed = crate::paint::score::StrokeScore::parse(&text).expect("the score parses back");
+        assert_eq!(parsed.replay(96, 64).unwrap().to_image().into_raw(), painted, "and through the text");
+    }
+
+    #[test]
     fn the_planes_meet_along_a_ramp_not_a_step() {
         // A focal region is a face DETECTOR'S BOX, and a long beard runs straight out of the bottom of it.
         // While the minimum brush stepped at the mask's midpoint, that beard was painted with a fine brush
@@ -3062,7 +3132,7 @@ mod tests {
         // A 32 px feather centred on the middle row — the shape `build_face_mask`'s blur leaves.
         let face: Vec<f32> = (0..(w * h)).map(|i| (((128.0 - (i / w) as f32) / 32.0) + 0.5).clamp(0.0, 1.0)).collect();
         let subject = vec![1.0f32; (w * h) as usize];
-        let field = plane_floor_field(w, h, 1.0, (32, Some(64), Some(128)), Some(&subject), Some(&face));
+        let field = plane_floor_field(w, h, 1.0, (32, Some(64), Some(128)), Some(&subject), Some(&face), None);
 
         let col: Vec<f32> = (0..h).map(|y| field[(y * w + 128) as usize]).collect();
         let (lo, hi) = col.iter().fold((f32::MAX, 0.0f32), |(l, g), &v| (l.min(v), g.max(v)));
