@@ -524,6 +524,14 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// HAIR MASK: a grey PNG, white where hair / beard / fur is. Those passages are painted with the STRAND
+    /// tool — many raked bristle lanes, almost no pickup, long narrow marks tapering to a point, following the
+    /// picture's own growth direction, and a minority of strands breaking the silhouette. Given, it REPLACES
+    /// the part detector, which boxes only the hair it can name: a long beard came out strands at the top and
+    /// a smooth mass at its fall, and no automatic region has yet managed the whole of one. Make one with
+    /// `plakat segment` or `plakat remove --what`. Resized to the painting; white = hair.
+    #[arg(long, value_name = "PNG")]
+    pub hair_mask: Option<std::path::PathBuf>,
     /// NEW PAINTING (default false; `--new` or `--new true`): paint FROM SCRATCH, as RFC PAINT-1 specifies — the
     /// picture is read once into a REDUCED armature (its things, none of its texture) and painted with
     /// the medium's strokes: a minimum brush per plane (broad in the background, finer on the figure, finest
@@ -981,6 +989,19 @@ async fn sam_regions(path: &std::path::Path, w: u32, h: u32) -> Result<(Option<V
         mask_to_vec(blurred)
     });
     Ok((subject, face_mask))
+}
+
+/// Load a HAIR MASK png (white = hair) and fit it to the painting. A hand-drawn mask has a hard edge, and a
+/// hard edge in this mask is a hard edge in the TOOL — the boundary between strand-painted and mass-painted
+/// passages reads as a defect, which is the whole complaint the mask exists to answer. So it is feathered a
+/// little: a few pixels, enough to hide the switch, far too few to blur which side of the beard's silhouette
+/// a pixel is on.
+fn load_hair_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Vec<f32>> {
+    let m = image::open(path).with_context(|| format!("opening the hair mask {}", path.display()))?.to_luma8();
+    let feather = ((w.min(h) as f32) / 400.0).clamp(2.0, 16.0);
+    let blurred = image::imageops::blur(&m, feather);
+    let scaled = image::imageops::resize(&blurred, w, h, image::imageops::FilterType::Triangle);
+    Ok(scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect())
 }
 
 /// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
@@ -1531,6 +1552,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if plan.from_scratch {
             a.new_painting = true;
         }
+        if a.hair_mask.is_none() {
+            a.hair_mask = plan.hair_mask.as_ref().map(std::path::PathBuf::from);
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -1997,10 +2021,26 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         println!("{}  families: light/shadow split · invariant enforced (solid masses)", style("·").dim());
     }
+    // An EXPLICIT hair mask wins outright over anything the part detector found. It is the instrument for the
+    // one thing automatic detection keeps getting wrong — a long beard's full fall — and it is deliberately
+    // not gated on `--new`: the strand tool and the growth-direction field both work from the mask alone, so
+    // naming a region is enough to paint hair with hair's tool on either path. (A new painting additionally
+    // gives that region a finer minimum brush, which is a plane decision and stays with the planes.)
+    if let Some(hp) = a.hair_mask.clone() {
+        let m = load_hair_mask(&hp, w, h)?;
+        let cov = m.iter().filter(|&&v| v > 0.5).count();
+        if cov == 0 {
+            println!("{}  hair mask {} is empty — nothing will be painted with the strand tool", style("·").yellow(), hp.display());
+        } else {
+            println!("{}  hair mask {} → the strand tool over {}% of the frame (replaces the part detector)", style("·").dim(), hp.display(), cov * 100 / m.len().max(1));
+        }
+        params.hair_mask = Some(m);
+    }
+
     // DIAGNOSTIC (`PLAKAT_PAINT_MASKS=<dir>`): write the planes as found — the focal (face) mask and the subject
     // matte — as grey PNGs, to see WHERE a plane ends when a picture shows its edge. Never changes the painting.
     if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
-        for (name, m) in [("face", params.face_mask.as_deref()), ("subject", params.subject_mask.as_deref())] {
+        for (name, m) in [("face", params.face_mask.as_deref()), ("subject", params.subject_mask.as_deref()), ("hair", params.hair_mask.as_deref())] {
             if let Some(m) = m.filter(|m| m.len() == (w * h) as usize) {
                 let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
                 let _ = g.save(std::path::Path::new(&dir).join(format!("mask_{name}.png")));
@@ -2209,6 +2249,26 @@ fn run_palette(a: PaletteArgs) -> Result<()> {
 #[cfg(test)]
 mod focal_tier_tests {
     use super::main_face_extent;
+
+    #[test]
+    fn a_hair_mask_loads_white_as_hair_and_softens_its_own_edge() {
+        // White is hair, black is not, and the switch between the two tools is feathered — a hard edge in the
+        // mask is a hard edge in the TOOL, and that boundary reads as exactly the defect the mask exists to fix.
+        let dir = std::env::temp_dir().join("plakat_hair_mask_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.png");
+        let img = image::GrayImage::from_fn(64, 64, |x, _| image::Luma([if x < 32 { 255 } else { 0 }]));
+        img.save(&path).unwrap();
+
+        let m = super::load_hair_mask(&path, 64, 64).unwrap();
+        assert_eq!(m.len(), 64 * 64);
+        assert!(m[32 * 64 + 4] > 0.9, "the white half is hair");
+        assert!(m[32 * 64 + 60] < 0.1, "the black half is not");
+        // Across the boundary the value must pass through the middle rather than jump.
+        let mid: Vec<f32> = (24..40).map(|x| m[32 * 64 + x]).collect();
+        assert!(mid.iter().any(|v| (0.2..0.8).contains(v)), "the edge is feathered, not a step: {mid:?}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn the_focal_tier_is_sized_by_the_smallest_main_face() {

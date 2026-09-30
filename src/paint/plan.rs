@@ -75,6 +75,12 @@ pub struct PaintPlan {
     /// coverage budget, a toned ground under an opaque medium. `false` (default) = the path that tracks its source.
     #[serde(default, rename = "new")]
     pub from_scratch: bool,
+    /// HAIR MASK: a grey PNG, white where hair / beard / fur is, for the strand tool to work over. Given, it
+    /// REPLACES what the part detector found — the detector boxes only the hair it can name, so a long beard
+    /// came out strands at the top and a smooth mass at its fall, and no automatic region has managed the
+    /// whole of one yet. `plakat segment` and `plakat remove --what` both write masks of this shape.
+    #[serde(default)]
+    pub hair_mask: Option<String>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -126,6 +132,7 @@ impl Default for PaintPlan {
             reserve: None,
             budget: None,
             from_scratch: false,
+            hair_mask: None,
             notes: Vec::new(),
         }
     }
@@ -159,6 +166,9 @@ impl PaintPlan {
         }
         if self.from_scratch {
             o.push_str("new: true\n");
+        }
+        if let Some(hm) = &self.hair_mask {
+            o.push_str(&format!("hair_mask: {hm}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -413,6 +423,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         reserve,
         budget: Some(budget),
         from_scratch: a.from_scratch,
+        // The planner cannot know a hair region; it is named on the command line or in a hand-written plan.
+        hair_mask: None,
         notes,
     }
 }
