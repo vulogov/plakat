@@ -1941,6 +1941,16 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         println!("{}  families: light/shadow split · invariant enforced (solid masses)", style("·").dim());
     }
+    // DIAGNOSTIC (`PLAKAT_PAINT_MASKS=<dir>`): write the planes as found — the focal (face) mask and the subject
+    // matte — as grey PNGs, to see WHERE a plane ends when a picture shows its edge. Never changes the painting.
+    if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+        for (name, m) in [("face", params.face_mask.as_deref()), ("subject", params.subject_mask.as_deref())] {
+            if let Some(m) = m.filter(|m| m.len() == (w * h) as usize) {
+                let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                let _ = g.save(std::path::Path::new(&dir).join(format!("mask_{name}.png")));
+            }
+        }
+    }
     if params.from_scratch {
         // Nothing restates the source's texture.
         params.detail_texture = 0.0;
