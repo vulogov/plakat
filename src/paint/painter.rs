@@ -1643,6 +1643,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     round: s_round,
                     // A detail accent's near-clean pickup is part of how it was laid — record it so replay is exact.
                     pickup: if detail { Some(stroke_brush.k_pickup) } else { None },
+                    bristles: None,
                 })
             }
         };
@@ -1947,7 +1948,7 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None,
+                round: brush.round, pickup: None, bristles: None,
             });
         }
     }
@@ -2034,7 +2035,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None,
+                round: brush.round, pickup: None, bristles: None,
             });
         }
     }
@@ -2116,7 +2117,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None,
+                round: 1.0, pickup: None, bristles: None,
             });
         } else {
             let mut load = vec![0f32; np];
@@ -2137,7 +2138,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet: s.wetness,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None,
+                round: 1.0, pickup: None, bristles: None,
             });
         }
     }
@@ -2286,7 +2287,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             let s = Stroke { path, width0: ir * 1.5, width1: ir * 0.6, load, pressure: 1.0, wetness: 0.15 };
             s.rasterize(canvas, &dry);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0) });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0), bristles: Some(dry.bristles) });
             if let Some(pr) = progress { if *placed % 64 == 0 { pr(PaintProgress::Placed(*placed)); } }
         }
     }
@@ -2449,7 +2450,7 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
                 pr(PaintProgress::Placed(*placed));
             }
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0) });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None });
         }
         // The pass boundary, as the stroke passes cross it (and as the replay reproduces it).
         // The pass boundary as the replay reproduces it: the taper over EVERY stage of the painting (the washes
@@ -2627,7 +2628,7 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
         let s = Stroke { path, width0: width, width1: width, load: load_here, pressure: 0.9, wetness: wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0) });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles) });
     }
 }
 
@@ -2688,6 +2689,7 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
             streak: brush.streak,
             round: brush.round,
             pickup: None,
+            bristles: Some(brush.bristles),
         });
     }
 }
@@ -3099,6 +3101,37 @@ mod tests {
         let replayed = result.score.replay(64, 48).unwrap().to_image().into_raw();
         assert_eq!(painted, replayed, "per-pass bleed + drying replay byte-for-byte");
         assert!(result.score.strokes.iter().any(|r| r.stage == "restate-2"), "every pass has its own stage name");
+    }
+
+    #[test]
+    fn a_score_round_trips_through_text_exactly() {
+        // The score is the CANONICAL artefact (RFC PAINT-1), and it lives on DISK as text: `paint replay
+        // <score>` must reproduce the painting the run saved. Every other replay test compares the score held
+        // in MEMORY, so none of them could see a serialisation that lost precision — and `{:.4}` did, by
+        // truncating spline coordinates and mixture ratios (0.67% RMSE on an oil, 14.6% on pen-ink).
+        //
+        // A wet, multi-pass, many-pigment painting: splines, per-stroke widths, tapers and mixture ratios all
+        // travel through the text. Write it, parse it back, replay BOTH, and demand the same pixels.
+        let img = gradient_img(72, 56);
+        let mut p = PaintParams::new(palette::EARTH, 500);
+        p.brush_sizes = vec![16.0, 8.0, 4.0];
+        p.min_brush = 3.0;
+        p.bleed = 0.4;
+        p.dry = 0.5;
+        let result = paint_from_image(&img, &p);
+        assert!(result.score.strokes.len() > 50, "a score with enough strokes to expose rounding");
+
+        let text = result.score.to_text();
+        let parsed = crate::paint::score::StrokeScore::parse(&text).expect("the written score parses back");
+        assert_eq!(parsed.strokes.len(), result.score.strokes.len(), "no stroke lost in the text");
+
+        let from_memory = result.score.replay(72, 56).unwrap().to_image().into_raw();
+        let from_text = parsed.replay(72, 56).unwrap().to_image().into_raw();
+        assert_eq!(from_text, from_memory, "a score written to text and read back replays byte-for-byte");
+
+        // And the text itself is stable: serialising the parsed score reproduces the same bytes, so a score
+        // that survives one round trip survives any number of them.
+        assert_eq!(parsed.to_text(), text, "serialisation is idempotent");
     }
 
     #[test]
