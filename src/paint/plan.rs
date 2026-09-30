@@ -71,6 +71,10 @@ pub struct PaintPlan {
     /// Stroke budget, or `null` for the size-derived default.
     #[serde(default)]
     pub budget: Option<usize>,
+    /// NEW PAINTING: paint from scratch (RFC §1.1) — a low-resolution armature, a per-plane minimum brush, a
+    /// coverage budget, a toned ground under an opaque medium. `false` (default) = the path that tracks its source.
+    #[serde(default, rename = "new")]
+    pub from_scratch: bool,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -121,6 +125,7 @@ impl Default for PaintPlan {
             detail_len: 1.0,
             reserve: None,
             budget: None,
+            from_scratch: false,
             notes: Vec::new(),
         }
     }
@@ -151,6 +156,9 @@ impl PaintPlan {
         }
         if self.recede > 1e-3 {
             o.push_str(&format!("recede: {:.2}\n", self.recede));
+        }
+        if self.from_scratch {
+            o.push_str("new: true\n");
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -200,6 +208,8 @@ pub struct Analysis {
     pub long_side: u32,
     /// Whether the medium reserves the paper white (watercolour / ink).
     pub surface_white: bool,
+    /// Whether a NEW painting (from scratch, RFC §1.1) was asked for — the plan then chooses the coarse tiers.
+    pub from_scratch: bool,
     /// STRUCTURE: the standard deviation of the 8-neighbour Laplacian of the luma (in [0,1] units) — how much
     /// pixel-scale detail the picture carries (a flat portrait ~0.2, a busy street or foliage ~0.5). Scales the
     /// stroke budget: a complex picture needs more marks per pixel to be restated than a plain one.
@@ -253,13 +263,22 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // The base armature (structure resolution). With the STRUCTURE-PRESERVING armature (edge-preserving + value
     // masses, not a blur) this can be fairly FINE without tracing — finer retains modelling, and density comes
     // from the budget, not from over-coarsening. (The background goes a bit coarser when a subject is present.)
-    let armature = if a.short_side >= 900 { 150 } else { 120 };
-    notes.push("structure-preserving armature (value masses + edges), fine enough to keep modelling".into());
+    // A NEW painting (RFC §1.1, §5.2) reads a REDUCED armature: the things in the picture, none of its texture.
+    let armature = if a.from_scratch { if a.faces > 0 { crate::paint::painter::NEW_BACKGROUND_SIDE } else { crate::paint::painter::NEW_BACKGROUND_SIDE_PLAIN } } else if a.short_side >= 900 { 150 } else { 120 };
+    if a.from_scratch {
+        notes.push("new painting: a reduced armature — the things in the picture, none of its texture; the brushwork invents the surface (RFC §1.1)".into());
+    } else {
+        notes.push("structure-preserving armature (value masses + edges), fine enough to keep modelling".into());
+    }
 
     // A detected FACE is the focal region: give it a FINE armature so features stay crisp while the beard / hair /
     // background become washes (RFC §5.2). With a subject present, use a THREE-TIER plan — a coarser background, a
     // mid subject body, and the fine face — plus a touch of aerial recession so the subject advances.
-    let (armature_face, armature_body, recede, armature) = if a.faces > 0 {
+    let (armature_face, armature_body, recede, armature) = if a.faces > 0 && a.from_scratch {
+        notes.push(format!("{} face(s) → three-tier armature: background {armature}px · figure {}px and face {}px ACROSS THEIR OWN EXTENT (RFC §5.2), set once they are found; the finest brushes on the focal plane only", a.faces, crate::paint::painter::NEW_FIGURE_ACROSS as u32, crate::paint::painter::NEW_FACE_ACROSS as u32));
+        notes.push("subject matte (U2Net) + SAM masks → the planes and their minimum brush".into());
+        (Some(armature * 2), Some(armature), 0.0, armature)
+    } else if a.faces > 0 {
         notes.push(format!("{} face(s) → three-tier armature: background {}px · body 210px · face 300px", a.faces, (armature as f32 * 0.85).round().max(90.0) as u32));
         notes.push("subject matte (U2Net) → body/background split; background recedes (aerial perspective)".into());
         // The background can go coarser than the default when the body/face carry the structure — a calmer ground.
@@ -356,6 +375,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
     // the same number of marks — the street's detail must be restated mark by mark, the portrait's masses are
     // covered by a few. So the painted budget is area/10 × a COMPLEXITY factor read from the picture's own
     // structure (Laplacian σ, see `structure_factor`), ×1 for the pictures the density was accepted on.
+    if a.from_scratch {
+        notes.push("new painting: the budget is a COVERAGE count, set once the planes are known".into());
+    }
     let factor = structure_factor(a.structure);
     let budget = if drawing { ((area / 10) as usize).clamp(12000, 120000) } else { (((area / 10) as f64 * factor as f64) as usize).max(12000) };
     notes.push(if drawing {
@@ -390,6 +412,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         detail_len,
         reserve,
         budget: Some(budget),
+        from_scratch: a.from_scratch,
         notes,
     }
 }
@@ -400,7 +423,7 @@ mod tests {
 
     #[test]
     fn flat_reference_gets_more_value_key_than_punchy() {
-        let base = Analysis { faces: 1, luma_stddev: 0.12, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
+        let base = Analysis { faces: 1, luma_stddev: 0.12, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM, from_scratch: false };
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, luma_mean: 0.5, ..base_like(&base) });
         assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
@@ -414,7 +437,7 @@ mod tests {
 
     #[test]
     fn no_face_means_uniform_armature() {
-        let a = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false, structure: STRUCTURE_NORM };
+        let a = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "zorn".into(), short_side: 512, long_side: 512, surface_white: false, structure: STRUCTURE_NORM, from_scratch: false };
         let plan = plan_from(&a);
         assert_eq!(plan.armature_face, None);
         assert_eq!(plan.armature_body, None, "no subject → no body tier");
@@ -423,7 +446,7 @@ mod tests {
 
     #[test]
     fn hjson_round_trips() {
-        let a = Analysis { faces: 1, luma_stddev: 0.15, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM };
+        let a = Analysis { faces: 1, luma_stddev: 0.15, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM, from_scratch: false };
         let plan = plan_from(&a);
         let parsed = PaintPlan::parse(&plan.to_hjson()).expect("parses");
         assert_eq!(parsed.armature, plan.armature);
@@ -433,7 +456,7 @@ mod tests {
 
     #[test]
     fn budget_scales_with_size_and_complexity() {
-        let plain = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM };
+        let plain = Analysis { faces: 0, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM, from_scratch: false };
         let b1 = plan_from(&plain).budget.unwrap();
         assert_eq!(b1, 1024 * 1024 / 10, "the accepted density at the norm structure: area/10");
         let busy = Analysis { structure: STRUCTURE_NORM * 1.4, ..base_like(&plain) };
@@ -454,7 +477,19 @@ mod tests {
         assert!(structure_of(&chk) > 1.0);
     }
 
+    #[test]
+    fn a_new_painting_plans_reduced_tiers() {
+        let a = Analysis { faces: 1, luma_stddev: 0.2, luma_mean: 0.5, medium: "oil-direct".into(), palette: "image".into(), short_side: 1024, long_side: 1024, surface_white: false, structure: STRUCTURE_NORM, from_scratch: true };
+        let p = plan_from(&a);
+        assert!(p.from_scratch);
+        assert_eq!((p.armature, p.armature_body, p.armature_face), (384, Some(384), Some(768)), "the reduced tiers (nominal: the figure and face tiers are set at their own extent once found)");
+        assert!(p.to_hjson().contains("new: true"));
+        assert!(PaintPlan::parse(&p.to_hjson()).unwrap().from_scratch, "the plan round-trips `new`");
+        let d = plan_from(&Analysis { from_scratch: false, ..base_like(&a) });
+        assert!(d.armature < 384 && !d.from_scratch, "the default plan is untouched");
+    }
+
     fn base_like(a: &Analysis) -> Analysis {
-        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, luma_mean: a.luma_mean, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white, structure: a.structure }
+        Analysis { faces: a.faces, luma_stddev: a.luma_stddev, luma_mean: a.luma_mean, medium: a.medium.clone(), palette: a.palette.clone(), short_side: a.short_side, long_side: a.long_side, surface_white: a.surface_white, structure: a.structure, from_scratch: a.from_scratch }
     }
 }
