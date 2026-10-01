@@ -301,6 +301,10 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
         hatch_angle: 0.0,
         monochrome: false,
         engrave: false,
+        // ECONOMY — how few marks, and how broad — is the heart of the technique, but it does NOT belong
+        // here. Cutting the fine brushes in the medium left every lit face as bare reserved paper, because
+        // nothing was left to paint over the reserve. It is a decision about a picture: how much paper this
+        // one can afford to keep. So it lives in the plan, where it can be judged per image.
         budget_scale: 1.0,
         levels: Some(12),
         reserve: None,

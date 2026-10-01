@@ -95,6 +95,20 @@ pub struct PaintPlan {
     /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
     #[serde(default)]
     pub technique: Option<String>,
+    /// SPLATTER (0..1): flicked drops off the brush. A watercolour tell; the plan can ask for more or none.
+    #[serde(default)]
+    pub splatter: Option<f32>,
+    /// EDGE POOL (0..1): the darker pigment rim where a wash dried — the cauliflower edge.
+    #[serde(default)]
+    pub edge_pool: Option<f32>,
+    /// GRANULATE (0..1): pigment settling into the paper's tooth.
+    #[serde(default)]
+    pub granulate: Option<f32>,
+    /// BRUSH LADDER: keep only this many of the COARSEST brushes. A watercolour is broad decisive washes and
+    /// a few darks, not a fine brush going back over them — but how far to cut is a judgement about the
+    /// picture (cut too hard and a lit face is left as bare reserved paper), so it lives here.
+    #[serde(default)]
+    pub ladder_keep: Option<usize>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -151,6 +165,10 @@ impl Default for PaintPlan {
             rigger: None,
             hotspot: None,
             technique: None,
+            splatter: None,
+            edge_pool: None,
+            granulate: None,
+            ladder_keep: None,
             notes: Vec::new(),
         }
     }
@@ -199,6 +217,14 @@ impl PaintPlan {
         }
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
+        }
+        for (k, v) in [("splatter", self.splatter), ("edge_pool", self.edge_pool), ("granulate", self.granulate)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
+        }
+        if let Some(n) = self.ladder_keep {
+            o.push_str(&format!("ladder_keep: {n}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -459,6 +485,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             rigger: None,
             hotspot: None,
             technique: None,
+            splatter: None,
+            edge_pool: None,
+            granulate: None,
+            ladder_keep: None,
         notes,
     }
 }

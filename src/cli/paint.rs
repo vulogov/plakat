@@ -1699,6 +1699,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // unset flags leave open — the art director hands the technique a plan. Explicit flags always win.
     // Whether the background armature tier came from the plan (adjustable by the matte below) or the user.
     let mut armature_from_plan = false;
+    // The plan's brush-ladder cut, applied after the medium has built its ladder (see `PaintPlan::ladder_keep`).
+    let mut plan_ladder_keep: Option<usize> = None;
     // Whether the stroke budget was named on the command line (a new painting otherwise counts its own).
     let budget_explicit = a.budget != 1500;
     if let Some(spec) = a.plan.clone() {
@@ -1731,6 +1733,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
+        }
+        if a.splatter.is_none() {
+            a.splatter = plan.splatter;
+        }
+        if a.edge_pool.is_none() {
+            a.edge_pool = plan.edge_pool;
+        }
+        if a.granulate.is_none() {
+            a.granulate = plan.granulate;
+        }
+        if let Some(n) = plan.ladder_keep {
+            plan_ladder_keep = Some(n);
         }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
@@ -2266,6 +2280,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             }
         }
     }
+    // The PLAN's ladder cut, last, so it overrides whatever the medium chose.
+    if let Some(n) = plan_ladder_keep {
+        params.brush_sizes.truncate(n.max(1));
+        println!("{}  plan: brush ladder cut to the {} coarsest ({:?})", style("·").dim(), n, params.brush_sizes.iter().map(|r| r.round() as u32).collect::<Vec<_>>());
+    }
+
     if params.from_scratch {
         // Nothing restates the source's texture.
         params.detail_texture = 0.0;
