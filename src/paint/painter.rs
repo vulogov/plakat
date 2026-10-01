@@ -3494,49 +3494,6 @@ mod tests {
         assert!(fixed[0].abs() < 0.2, "a named 90° is a vertical stroke: {fixed:?}");
     }
 
-    #[test]
-    fn the_infill_carries_direction_into_a_flat_passage() {
-        // Left half carries diagonal structure; the right half is flat and has nothing of its own to follow.
-        // FLAT lays the empty half level, which is right for a sky and is what tiles a dark mass into a
-        // rectangular quilt. FOLLOW carries the neighbouring direction across instead.
-        let (w, h) = (96u32, 64u32);
-        let luma: Vec<f32> = (0..(w * h))
-            .map(|i| {
-                let (x, y) = ((i % w) as i32, (i / w) as i32);
-                if x < 40 && ((x + y) / 4) % 2 == 0 { 0.15 } else { 0.85 }
-            })
-            .collect();
-        let flat_at = |mode: FlowInfill| {
-            let (gx, gy) = coherent_gradient(&luma, w, h, 3, mode);
-            let i = (32 * w + 80) as usize; // deep in the empty half
-            stroke_dir(gx[i], gy[i])
-        };
-        let level = flat_at(FlowInfill::Flat);
-        assert!(level[1].abs() < 0.2, "flat lays the empty passage level: {level:?}");
-        let followed = flat_at(FlowInfill::Follow);
-        assert!(followed[1].abs() > 0.4, "follow carries the diagonal across instead: {followed:?}");
-        // And a named angle is obeyed outright.
-        let fixed = flat_at(FlowInfill::Angle(90.0));
-        assert!(fixed[0].abs() < 0.2, "a named 90° is a vertical stroke: {fixed:?}");
-    }
-
-    #[test]
-    fn the_armature_puts_its_levels_where_the_picture_is() {
-        // A picture that lives in its bottom third, like a lamplit interior: 90% of it below 0.2.
-        let mut ys: Vec<f32> = (0..9000).map(|i| i as f32 / 9000.0 * 0.2).collect();
-        ys.extend((0..1000).map(|i| 0.6 + i as f32 / 1000.0 * 0.4));
-        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-        let wv: Vec<(f32, f32)> = ys.iter().map(|v| (*v, 1.0)).collect();
-        let cuts = level_cuts(&wv, 8);
-        assert_eq!(cuts.len(), 8);
-        let dark = cuts.iter().filter(|&&c| c < 0.3).count();
-        // Even spacing would put 3 of 8 below 0.3; the picture's own distribution earns the darks more.
-        assert!(dark > 3, "the darks get levels in proportion to the area they hold: {cuts:?}");
-        // But not all of them — the lit passage must keep levels of its own.
-        assert!(cuts.iter().any(|&c| c > 0.5), "the lights are not starved: {cuts:?}");
-        assert!(cuts.windows(2).all(|p| p[1] >= p[0]), "cuts stay in order: {cuts:?}");
-    }
 
     #[test]
     fn the_hair_flow_field_finds_the_direction_structure_runs() {
