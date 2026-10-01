@@ -2281,6 +2281,11 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
     let max_area = (n / 400).max(64);
     let mut seen = vec![false; n];
     let mut laid = 0usize;
+    let mut cands: Vec<(f32, usize, f64, f64, f32, f32, f32)> = Vec::new();
+    // ONE mixture cache for the pass. A fresh cache per mark means every mark solves its pigments from
+    // scratch, which is the 99%-of-cost path the solver work removed — it made this pass take longer than
+    // the whole painting.
+    let mut mix_cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
     for start in 0..n {
         if !seed[start] || seen[start] || *placed >= p.budget {
             continue;
@@ -2360,15 +2365,64 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
         if plateau < 0.30 {
             continue;
         }
-        // THE DOME. Full brightness only at the very centre, easing to the rim's value at the edge — a
-        // cosine falloff, which is what a round form under a light actually does.
-        for &i in &region {
-            if *placed >= p.budget {
-                return;
+        cands.push((core - rim, region.len(), cx, cy, radius, core, rim));
+        let _ = plateau;
+        continue;
+    }
+
+    // THE FEW THAT MATTER. A lit picture has bright passages everywhere, and re-modelling all of them spent
+    // 680k marks — most of a whole painting's budget on a finish touch. A painter polishes the handful of
+    // highlights that actually read, so the candidates are ranked by how badly each one steps (how far its
+    // peak sits above its rim, weighted by how big it is) and only the top few are touched.
+    cands.sort_by(|a, b| (b.0 * b.1 as f32).partial_cmp(&(a.0 * a.1 as f32)).unwrap_or(std::cmp::Ordering::Equal));
+    cands.truncate(12);
+    // And a hard ceiling on the pass, as the rigger has. A finish touch must never be able to cost what the
+    // painting costs: at one mark per pixel over a halo this ran to 680k marks, most of a whole budget.
+    let ceiling = (*placed + (p.budget / 200).max(400)).min(p.budget);
+
+    for (_, _, cx, cy, radius, core, rim) in cands {
+        // THE DOME, laid OUTWARD. Easing from the peak to the rim across the patch itself is what a first
+        // build did, and it is wrong in the one way that matters: it darkens the patch's own edge down to the
+        // surroundings, so the highlight shrinks to a small hard core with a ring round it — a worse hole
+        // than the plateau it replaced.
+        //
+        // The hard rim is a STEP, and a step is softened by spreading it, not by steepening what is inside
+        // it. So the dome holds full strength across the patch and eases over a HALO beyond it, turning the
+        // step into a ramp. The highlight keeps its size and its brightness; what changes is how it meets
+        // the form around it.
+        let reach = radius * 1.6;
+        // Stepped at the brush's own spacing: a mark covers its own radius, so one per pixel lays the same
+        // paint tens of times over and costs the score tens of thousands of records for it.
+        let rr = (p.min_brush * 0.8).max(1.0);
+        let band = {
+            let r = reach.ceil() as i64;
+            let (ix, iy) = (cx as i64, cy as i64);
+            // At least a couple of pixels: a mark covers its own radius, and `min_brush` can be 1 on a
+            // focal plane, which silently turns this back into one mark per pixel.
+            let step = (rr.max(2.0)) as i64;
+            let mut v = Vec::new();
+            let mut y = (iy - r).max(0);
+            while y <= (iy + r).min(hu as i64 - 1) {
+                let mut x = (ix - r).max(0);
+                while x <= (ix + r).min(wu as i64 - 1) {
+                    let (dx, dy) = (x as f64 - cx, y as f64 - cy);
+                    if (dx * dx + dy * dy).sqrt() <= reach as f64 {
+                        v.push(y as usize * wu + x as usize);
+                    }
+                    x += step;
+                }
+                y += step;
+            }
+            v
+        };
+        for &i in &band {
+            if *placed >= ceiling {
+                break;
             }
             let (x, y) = ((i % wu) as f32, (i / wu) as f32);
-            let d = (((x - cx as f32).powi(2) + (y - cy as f32).powi(2)).sqrt() / radius).clamp(0.0, 1.0);
-            let dome = 0.5 * (1.0 + (d * std::f32::consts::PI).cos());
+            let t = (((x - cx as f32).powi(2) + (y - cy as f32).powi(2)).sqrt() / reach).clamp(0.0, 1.0);
+            // Flat out to the patch's own edge, then a cosine ease across the halo.
+            let dome = if t <= 0.6 { 1.0 } else { 0.5 * (1.0 + (((t - 0.6) / 0.4) * std::f32::consts::PI).cos()) };
             let want = rim + (core - rim) * dome;
             let have = l[i];
             // `strength` is how far the flat plateau is taken toward that dome. At 0 it is left alone; the
@@ -2379,15 +2433,14 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
             }
             // Keep the hue, move the value: a specular highlight is a lightness event.
             let c = img.get_pixel(x as u32, y as u32).0;
-            let scale = (target / have.max(1e-3)).clamp(0.0, 4.0);
+            let scale = (target / have.max(1e-3)).clamp(0.0, 1.8);
             let tint: Srgb = [
                 (c[0] as f32 * scale).clamp(0.0, 255.0) as u8,
                 (c[1] as f32 * scale).clamp(0.0, 255.0) as u8,
                 (c[2] as f32 * scale).clamp(0.0, 255.0) as u8,
             ];
             *k += 1;
-            let load = mixture_cached(&mut std::collections::HashMap::new(), tint, &p.palette, p.charge, p.palette.pigments.len());
-            let rr = (p.min_brush * 0.8).max(1.0);
+            let load = mixture_cached(&mut mix_cache, tint, &p.palette, p.charge, p.palette.pigments.len());
             let path = vec![[x, y], [x + 0.6, y + 0.2]];
             let st = Stroke { path, width0: rr, width1: rr * 0.8, load, pressure: 0.8, wetness: 0.5 };
             st.rasterize(canvas, &p.brush);
@@ -2494,6 +2547,7 @@ fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
     let cols = ((w as f32) / grid).ceil() as u32;
     let rows = ((h as f32) / grid).ceil() as u32;
     let trace = (w.max(h) as f32 * 0.03 / (2.2 * radius)).max(1.0);
+    let mut mix_cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
     for gyi in 0..rows {
         for gxi in 0..cols {
             if *placed >= cap {
@@ -2544,7 +2598,7 @@ fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
             // Its OWN colour, not ink: a pale stem over a dark shelf is light, and drawing it dark would put a
             // different object there.
             let c = input.get_pixel(cx as u32, cy as u32).0;
-            let load = mixture_cached(&mut std::collections::HashMap::new(), c, &p.palette, p.charge, p.palette.pigments.len());
+            let load = mixture_cached(&mut mix_cache, c, &p.palette, p.charge, p.palette.pigments.len());
             let path = grow_path(cx, cy, radius, &gx, &gy, input, c, protect, None, None, trace, STOP_TOL);
             if path.len() < 2 {
                 continue;
