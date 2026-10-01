@@ -268,9 +268,10 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bleed: 0.55,
     body: 0.45,
     impasto: 0.0,
-    // Transparent pigment over white paper reads VIVID, not grey: 0.92 was desaturating the one medium
-    // whose whole character is clean colour. A watercolour goes muddy by overworking, never by being bright.
-    chroma: 1.25,
+    // NOT a place to express a colour preference. This was raised to 1.25 by comparing against one
+    // reference painting's vividness — a judgement about that picture, pinned into every picture. The
+    // palette is derived from each image's own pixels and the medium must not overrule it.
+    chroma: 0.92,
     dry_shift: 0.08,
     // Pigment SETTLES into the paper's tooth — the mottle is a watercolour tell, and 0.18 barely showed.
     granulate: 0.35,
