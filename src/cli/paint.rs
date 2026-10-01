@@ -848,6 +848,31 @@ async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<O
     Ok(Some((mask, extent)))
 }
 
+/// What the run cost, per pass and in total. A pass's rate is what tells a wide block-in from a fine
+/// restatement: the same budget of marks costs very differently depending on the brush laying them.
+fn print_paint_stats(stats: &[crate::paint::painter::PassStat], total_strokes: usize, seconds: f64) {
+    if stats.is_empty() {
+        return;
+    }
+    let mins = (seconds / 60.0).floor() as u64;
+    let secs = seconds - (mins as f64) * 60.0;
+    let when = if mins > 0 { format!("{mins}m {secs:04.1}s") } else { format!("{secs:.1}s") };
+    println!("{}  painted in {when} · {} strokes · {:.0}/s overall", style("·").dim(), total_strokes, total_strokes as f64 / seconds.max(1e-6));
+    for st in stats {
+        if st.strokes == 0 && st.seconds < 0.05 {
+            continue;
+        }
+        println!(
+            "     {:<14} {:>5.0}px {:>9} strokes {:>8.1}/s {:>7.1}s",
+            st.stage,
+            st.radius,
+            st.strokes,
+            st.strokes as f64 / st.seconds.max(1e-6),
+            st.seconds
+        );
+    }
+}
+
 /// Human summary of the stroke count against the budget. The budget is a CEILING, not a quota: the gates
 /// (saliency / reserve / focus / preserve-face / restate) can exhaust the eligible cells before it is reached,
 /// so when fewer strokes were laid we say so explicitly instead of silently reporting a number below the budget.
@@ -1513,6 +1538,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     );
     std::fs::write(&sidecar, recipe).ok();
 
+    print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}  ·  recipe → {}", style("✓").green(), stroke_summary(result.strokes, plan.budget), out.display(), score_path.display(), sidecar.display());
     if a.report {
         let tr = painter::traceability(&image_out, &reference);
@@ -2294,6 +2320,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let score_path = a.out.with_extension("strokes");
     std::fs::write(&score_path, result.score.to_text()).with_context(|| format!("writing {}", score_path.display()))?;
 
+    print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}", style("✓").green(), stroke_summary(result.strokes, a.budget), a.out.display(), score_path.display());
     if a.report {
         let tr = painter::traceability(&out, &img);

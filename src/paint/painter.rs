@@ -377,6 +377,21 @@ pub struct PaintResult {
     pub score: StrokeScore,
     /// Stages the critic rejected (rolled back) — empty without a critic.
     pub rejected: Vec<String>,
+    /// What each pass cost: its stage, the brush it used, how many marks it laid and how long it took.
+    /// Gathered always, not only under the profiler, so a run can report where its time actually went.
+    pub stats: Vec<PassStat>,
+    /// Wall time inside the painter.
+    pub seconds: f64,
+}
+
+/// One pass's cost (see [`PaintResult::stats`]).
+#[derive(Clone, Debug)]
+pub struct PassStat {
+    pub stage: String,
+    /// The brush radius in pixels, which is what makes one pass slower per mark than another.
+    pub radius: f32,
+    pub strokes: usize,
+    pub seconds: f64,
 }
 
 fn luma_map(img: &RgbImage) -> Vec<f32> {
@@ -559,6 +574,46 @@ pub enum FlowInfill {
 /// as far as it must and no further. Orientation is mod π, hence the double angle: averaged as raw angles,
 /// structure at +80° and −80° would cancel instead of agreeing.
 fn infill_orientation(cw: &[f32], sw: &[f32], wt: &[f32], w: u32, h: u32) -> (Vec<f32>, Vec<f32>) {
+    // ON A COARSE GRID. Carrying a direction across a flat passage is by its nature LOW-FREQUENCY work — the
+    // answer varies over hundreds of pixels — and doing it at full resolution means box blurs at radii up to
+    // the sheet's own width. Measured: it turned a 43 s painting into 243 s, the flow field alone going from
+    // 5 s to 206 s, which is the whole of why a new painting became slow.
+    //
+    // An eighth of the resolution keeps every radius and so every reach, at a sixty-fourth of the pixels.
+    const D: u32 = 8;
+    if w > D * 4 && h > D * 4 {
+        let (sw2, sh2) = (w.div_ceil(D), h.div_ceil(D));
+        let shrink = |v: &[f32]| -> Vec<f32> {
+            let mut out = vec![0f32; (sw2 * sh2) as usize];
+            let mut cnt = vec![0f32; (sw2 * sh2) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let j = ((y / D) * sw2 + (x / D)) as usize;
+                    out[j] += v[(y * w + x) as usize];
+                    cnt[j] += 1.0;
+                }
+            }
+            for (o, c) in out.iter_mut().zip(&cnt) {
+                *o /= c.max(1.0);
+            }
+            out
+        };
+        let (c2, s2, w2) = (shrink(cw), shrink(sw), shrink(wt));
+        let (oc2, os2) = infill_orientation_at(&c2, &s2, &w2, sw2, sh2);
+        let grow = |v: &[f32]| -> Vec<f32> {
+            (0..(w * h) as usize)
+                .map(|i| {
+                    let (x, y) = ((i as u32 % w) / D, (i as u32 / w) / D);
+                    v[(y.min(sh2 - 1) * sw2 + x.min(sw2 - 1)) as usize]
+                })
+                .collect()
+        };
+        return (grow(&oc2), grow(&os2));
+    }
+    infill_orientation_at(cw, sw, wt, w, h)
+}
+
+fn infill_orientation_at(cw: &[f32], sw: &[f32], wt: &[f32], w: u32, h: u32) -> (Vec<f32>, Vec<f32>) {
     let n = cw.len();
     let (mut oc, mut os) = (vec![0f32; n], vec![0f32; n]);
     let mut got = vec![false; n];
@@ -1172,31 +1227,79 @@ pub fn from_scratch_budget(w: u32, h: u32, brush_sizes: &[f32], min_brush: f32, 
 /// Local value RANGE (max − min) of a luma field over a square window of half-width `r` — a cheap "is there an
 /// edge nearby" measure. Separable (row max/min then column max/min), so it costs O(w·h·r).
 fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    // A SLIDING min and max, not a re-scan per pixel. The old form was separable but still walked the whole
+    // window at every pixel — O(radius) each — and the flow field asks for radii up to ~72 on a 2048² sheet,
+    // which made this ONE function 93% of a watercolour's paint time (330 s of 352). A monotonic deque gives
+    // the same answer in amortised O(1): each index is pushed and popped once per line. Bit-identical by
+    // construction, because the front of the deque IS the window's extreme.
     let mut row_max = vec![0f32; w * h];
     let mut row_min = vec![0f32; w * h];
+    let mut dmax: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+    let mut dmin: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
     for y in 0..h {
-        for x in 0..w {
-            let (x0, x1) = (x.saturating_sub(r), (x + r).min(w - 1));
-            let (mut mx, mut mn) = (f32::MIN, f32::MAX);
-            for xx in x0..=x1 {
-                let v = luma[y * w + xx];
-                mx = mx.max(v);
-                mn = mn.min(v);
+        let base = y * w;
+        dmax.clear();
+        dmin.clear();
+        let mut emit = |i: usize, dmax: &mut std::collections::VecDeque<usize>, dmin: &mut std::collections::VecDeque<usize>| {
+            let lo = i.saturating_sub(r);
+            while dmax.front().is_some_and(|&f| f < lo) {
+                dmax.pop_front();
             }
-            row_max[y * w + x] = mx;
-            row_min[y * w + x] = mn;
+            while dmin.front().is_some_and(|&f| f < lo) {
+                dmin.pop_front();
+            }
+            row_max[base + i] = luma[base + *dmax.front().unwrap()];
+            row_min[base + i] = luma[base + *dmin.front().unwrap()];
+        };
+        for x in 0..w {
+            let v = luma[base + x];
+            while dmax.back().is_some_and(|&b| luma[base + b] <= v) {
+                dmax.pop_back();
+            }
+            dmax.push_back(x);
+            while dmin.back().is_some_and(|&b| luma[base + b] >= v) {
+                dmin.pop_back();
+            }
+            dmin.push_back(x);
+            if x >= r {
+                emit(x - r, &mut dmax, &mut dmin);
+            }
+        }
+        // The last `r` windows are clipped by the right edge, so they are finished after the scan.
+        for i in w.saturating_sub(r)..w {
+            emit(i, &mut dmax, &mut dmin);
         }
     }
     let mut out = vec![0f32; w * h];
-    for y in 0..h {
-        let (y0, y1) = (y.saturating_sub(r), (y + r).min(h - 1));
-        for x in 0..w {
-            let (mut mx, mut mn) = (f32::MIN, f32::MAX);
-            for yy in y0..=y1 {
-                mx = mx.max(row_max[yy * w + x]);
-                mn = mn.min(row_min[yy * w + x]);
+    for x in 0..w {
+        dmax.clear();
+        dmin.clear();
+        let mut emit = |i: usize, dmax: &mut std::collections::VecDeque<usize>, dmin: &mut std::collections::VecDeque<usize>| {
+            let lo = i.saturating_sub(r);
+            while dmax.front().is_some_and(|&f| f < lo) {
+                dmax.pop_front();
             }
-            out[y * w + x] = mx - mn;
+            while dmin.front().is_some_and(|&f| f < lo) {
+                dmin.pop_front();
+            }
+            out[i * w + x] = row_max[*dmax.front().unwrap() * w + x] - row_min[*dmin.front().unwrap() * w + x];
+        };
+        for y in 0..h {
+            let (vx, vn) = (row_max[y * w + x], row_min[y * w + x]);
+            while dmax.back().is_some_and(|&b| row_max[b * w + x] <= vx) {
+                dmax.pop_back();
+            }
+            dmax.push_back(y);
+            while dmin.back().is_some_and(|&b| row_min[b * w + x] >= vn) {
+                dmin.pop_back();
+            }
+            dmin.push_back(y);
+            if y >= r {
+                emit(y - r, &mut dmax, &mut dmin);
+            }
+        }
+        for i in h.saturating_sub(r)..h {
+            emit(i, &mut dmax, &mut dmin);
         }
     }
     out
@@ -1306,6 +1409,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let (w, h) = (input.width(), input.height());
     // PROFILE (`PLAKAT_PAINT_PROFILE=1`): per-stage and per-pass wall-clock times, printed to stderr at the end.
     // This is how the stroke cost was found to be the mixture solver, not the brush — keep it.
+    let started = std::time::Instant::now();
+    let mut stats: Vec<PassStat> = Vec::new();
     let prof_on = std::env::var("PLAKAT_PAINT_PROFILE").is_ok();
     let mut prof_acc: Vec<(&'static str, f64)> = Vec::new();
     let mut prof_t = std::time::Instant::now();
@@ -2045,6 +2150,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             canvas.dry(1.0 - p.dry);
         }
         lap("pass:bleed+dry", &mut prof_acc, &mut prof_t);
+        stats.push(PassStat { stage: pass.stage.clone(), radius, strokes: in_pass, seconds: pass_t0.elapsed().as_secs_f64() });
         if prof_on { eprintln!("PROFILE pass {layer} r={radius:.1} strokes={in_pass} {:.2}s", pass_t0.elapsed().as_secs_f64()); }
     }
     if !rejected.is_empty() {
@@ -2106,7 +2212,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         for (n, t) in &agg { eprintln!("PROFILE {:<40} {:7.2}s {:5.1}%", n, t, 100.0 * t / total.max(1e-9)); }
         eprintln!("PROFILE {:<40} {:7.2}s", "TOTAL paint_inner", total);
     }
-    PaintResult { canvas, strokes: placed, score, rejected }
+    PaintResult { canvas, strokes: placed, score, rejected, stats, seconds: started.elapsed().as_secs_f64() }
 }
 
 /// The fraction of the medium's bleed applied after pass `layer` of `n`: full on the block-in, none on the
@@ -3762,6 +3868,35 @@ mod tests {
         let (dome_off, _) = { p.hotspot = 0.0; spread(&disc(false), &p) };
         let (dome_on, _) = { p.hotspot = 1.0; spread(&disc(false), &p) };
         assert!((dome_on - dome_off).abs() < flat_on - flat_off, "a modelled highlight is barely touched ({dome_off:.1} → {dome_on:.1})");
+    }
+
+    #[test]
+    fn the_sliding_local_range_matches_a_plain_rescan() {
+        // The deque form must be the SAME answer, not merely a close one: the flow field, the detail gate and
+        // the posterise edge test all read it, so any drift here moves every stroke in the picture.
+        fn naive(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+            let mut out = vec![0f32; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let (mut mx, mut mn) = (f32::MIN, f32::MAX);
+                    for yy in y.saturating_sub(r)..=(y + r).min(h - 1) {
+                        for xx in x.saturating_sub(r)..=(x + r).min(w - 1) {
+                            let v = luma[yy * w + xx];
+                            mx = mx.max(v);
+                            mn = mn.min(v);
+                        }
+                    }
+                    out[y * w + x] = mx - mn;
+                }
+            }
+            out
+        }
+        let (w, h) = (37usize, 23usize);
+        let luma: Vec<f32> = (0..w * h).map(|i| jitter(0xA5A5, i as u64) + 0.5).collect();
+        // Radii either side of the dimensions, so the clipped ends and the whole-line case are both covered.
+        for r in [0usize, 1, 3, 11, 22, 40] {
+            assert_eq!(local_range(&luma, w, h, r), naive(&luma, w, h, r), "radius {r}");
+        }
     }
 
     #[test]
