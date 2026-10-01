@@ -188,6 +188,11 @@ pub struct PaintParams {
     /// stem, a spoon handle, the line of a shelf. See [`rigger_pass`]; rationed hard, because a wiry picture is
     /// worse than a missing stem.
     pub rigger: f32,
+    /// HOTSPOTS (0..1): how far a flat, blown specular highlight is re-modelled into a dome with a falloff.
+    /// 0 leaves it as the plateau it is. The default softens the plateau and its rim while keeping the
+    /// highlight — it is where the light is, and the picture wants it; what it lacks is its falloff. 1 models
+    /// it fully. See [`hotspot_pass`].
+    pub hotspot: f32,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -359,7 +364,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -2067,6 +2072,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         rigger_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k);
     }
 
+    // HOTSPOTS: flat blown highlights re-modelled into form (see `hotspot_pass`). After the rigger, so it
+    // judges the canvas as finally painted.
+    if p.hotspot > 0.0 && placed < p.budget {
+        hotspot_pass(&mut canvas, &mut score, p, protect_all.as_deref(), &mut placed, &mut k);
+    }
+
     // SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary so shoulders/collar read by their
     // contour against a light ground. Laid before the bleed so a wet medium softens the line.
     if p.silhouette > 0.0 && p.subject_mask.is_some() && placed < p.budget {
@@ -2233,6 +2244,180 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
 /// Rationed hard: too many thin lines is a wiry, over-drawn picture, which is worse than the missing stems and
 /// far harder to walk back.
 #[allow(clippy::too_many_arguments)]
+/// HOTSPOTS. A specular highlight — the shine on a bald head, on a glazed pot, on wet stone — arrives at the
+/// painter as a small bright region with a soft falloff, and the armature snaps it into ONE value mass. The
+/// brush then fills that mass flat, and what should be a turning form reads as a hole cut in the picture: a
+/// pale plateau with a hard rim.
+///
+/// The fix is not to remove it. A highlight is where the light is and the picture wants it; what it lacks is
+/// its FALLOFF. So the plateau is re-modelled into a dome: brightest at its own centre, easing to the value
+/// its rim already sits against, over the shape's own extent.
+///
+/// The gradient is INVENTED, not copied. Nothing here reads the source — a painter does not trace a highlight,
+/// they know it has a soft edge and put one there. The dome comes from the spot's own geometry and the values
+/// already on the canvas around it, so this stays brushwork inventing a surface (RFC §1.1).
+///
+/// Only the VALUE is re-modelled; each stroke keeps the hue already in that place, because a specular
+/// highlight is a lightness event and shifting its colour would put a different material there.
+#[allow(clippy::too_many_arguments)]
+fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
+    let strength = p.hotspot.clamp(0.0, 1.0);
+    if strength <= 0.0 || *placed >= p.budget {
+        return;
+    }
+    let img = canvas.to_image();
+    let (w, h) = img.dimensions();
+    let (wu, hu) = (w as usize, h as usize);
+    let n = wu * hu;
+    let l = luma_map(&img);
+    // Find what is BRIGHT against its surroundings first, and only then ask whether it is a plateau. Testing
+    // flatness per pixel cannot work: a window wide enough to see a highlight is as wide as the highlight, so
+    // it always straddles the rim and every pixel reads as steep. Plateau-ness is a property of the REGION.
+    let r_wide = ((w.min(h) as f32) / 40.0).round().clamp(4.0, 64.0) as i32;
+    let wide = box_blur(&l, w, h, r_wide);
+    let seed: Vec<bool> = (0..n).map(|i| l[i] - wide[i] > 0.10).collect();
+
+    // Each plateau as its own region, and only ones small enough to BE a highlight: a lit wall is not one.
+    let max_area = (n / 400).max(64);
+    let mut seen = vec![false; n];
+    let mut laid = 0usize;
+    for start in 0..n {
+        if !seed[start] || seen[start] || *placed >= p.budget {
+            continue;
+        }
+        let mut region = Vec::new();
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut bail = false;
+        while let Some(i) = stack.pop() {
+            region.push(i);
+            if region.len() > max_area {
+                bail = true;
+                break;
+            }
+            let (x, y) = (i % wu, i / wu);
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+                if nx < 0 || ny < 0 || nx >= wu as i64 || ny >= hu as i64 {
+                    continue;
+                }
+                let j = ny as usize * wu + nx as usize;
+                if seed[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+        if bail || region.len() < 24 {
+            continue;
+        }
+        if let Some(m) = protect {
+            if region.iter().any(|&i| m.get(i).copied().unwrap_or(false)) {
+                continue;
+            }
+        }
+        // Its centre, its reach, and the value it has to ease INTO — the canvas just outside its own rim.
+        let (mut cx, mut cy) = (0f64, 0f64);
+        for &i in &region {
+            cx += (i % wu) as f64;
+            cy += (i / wu) as f64;
+        }
+        cx /= region.len() as f64;
+        cy /= region.len() as f64;
+        let radius = region
+            .iter()
+            .map(|&i| {
+                let (dx, dy) = ((i % wu) as f64 - cx, (i / wu) as f64 - cy);
+                (dx * dx + dy * dy).sqrt()
+            })
+            .fold(0.0f64, f64::max)
+            .max(1.0) as f32;
+        let core = region.iter().map(|&i| l[i]).fold(0.0f32, f32::max);
+        let rim = {
+            let ring: Vec<f32> = region
+                .iter()
+                .filter_map(|&i| {
+                    let (x, y) = ((i % wu) as f32, (i / wu) as f32);
+                    let (dx, dy) = (x - cx as f32, y - cy as f32);
+                    let d = (dx * dx + dy * dy).sqrt().max(1e-3);
+                    let (sx, sy) = (x + dx / d * radius * 0.45, y + dy / d * radius * 0.45);
+                    (sx >= 0.0 && sy >= 0.0 && sx < w as f32 && sy < h as f32).then(|| wide[sy as usize * wu + sx as usize])
+                })
+                .collect();
+            if ring.is_empty() {
+                continue;
+            }
+            ring.iter().sum::<f32>() / ring.len() as f32
+        };
+        if core - rim < 0.04 {
+            continue;
+        }
+        // PLATEAU, OR ALREADY A DOME? Over a dome the top value belongs to the centre alone; over a blown
+        // plateau most of the region sits up at it. That share is the whole test, and it is why a highlight
+        // the brushwork modelled properly is left untouched.
+        let high = rim + 0.8 * (core - rim);
+        let plateau = region.iter().filter(|&&i| l[i] >= high).count() as f32 / region.len() as f32;
+        if plateau < 0.30 {
+            continue;
+        }
+        // THE DOME. Full brightness only at the very centre, easing to the rim's value at the edge — a
+        // cosine falloff, which is what a round form under a light actually does.
+        for &i in &region {
+            if *placed >= p.budget {
+                return;
+            }
+            let (x, y) = ((i % wu) as f32, (i / wu) as f32);
+            let d = (((x - cx as f32).powi(2) + (y - cy as f32).powi(2)).sqrt() / radius).clamp(0.0, 1.0);
+            let dome = 0.5 * (1.0 + (d * std::f32::consts::PI).cos());
+            let want = rim + (core - rim) * dome;
+            let have = l[i];
+            // `strength` is how far the flat plateau is taken toward that dome. At 0 it is left alone; the
+            // default softens it; at 1 the highlight is fully modelled form.
+            let target = have + (want - have) * strength;
+            if (target - have).abs() < 0.004 {
+                continue;
+            }
+            // Keep the hue, move the value: a specular highlight is a lightness event.
+            let c = img.get_pixel(x as u32, y as u32).0;
+            let scale = (target / have.max(1e-3)).clamp(0.0, 4.0);
+            let tint: Srgb = [
+                (c[0] as f32 * scale).clamp(0.0, 255.0) as u8,
+                (c[1] as f32 * scale).clamp(0.0, 255.0) as u8,
+                (c[2] as f32 * scale).clamp(0.0, 255.0) as u8,
+            ];
+            *k += 1;
+            let load = mixture_cached(&mut std::collections::HashMap::new(), tint, &p.palette, p.charge, p.palette.pigments.len());
+            let rr = (p.min_brush * 0.8).max(1.0);
+            let path = vec![[x, y], [x + 0.6, y + 0.2]];
+            let st = Stroke { path, width0: rr, width1: rr * 0.8, load, pressure: 0.8, wetness: 0.5 };
+            st.rasterize(canvas, &p.brush);
+            let mix: Vec<(String, f32)> = st.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            *placed += 1;
+            laid += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: false,
+                wash: false,
+                stage: "hotspot".into(),
+                spline: st.path,
+                w0: st.width0,
+                w1: st.width1,
+                taper: 0.3,
+                mix,
+                wet: st.wetness,
+                press: 0.8,
+                streak: p.brush.streak,
+                round: p.brush.round,
+                pickup: None,
+                bristles: None,
+            });
+        }
+    }
+    if laid > 0 {
+        tracing::info!(target: "plakat", "hotspots: {laid} marks re-modelling flat highlights (strength {strength:.2})");
+    }
+}
+
 fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
     let (w, h) = (input.width(), input.height());
     let n = (w * h) as usize;
@@ -3477,6 +3662,52 @@ mod tests {
         assert!(lap(&arm) < lap(&img) * 0.05, "the texture is gone: {} vs {}", lap(&arm), lap(&img));
         let (l, r) = (arm.get_pixel(20, 128).0[0] as i32, arm.get_pixel(236, 128).0[0] as i32);
         assert!(r - l > 60, "the ramp survives as structure: {l} → {r}");
+    }
+
+    #[test]
+    fn a_blown_highlight_is_re_modelled_into_a_dome_and_a_good_one_is_left_alone() {
+        // A flat bright disc on a mid ground — the shape the armature leaves of a specular highlight, and
+        // what reads as a hole cut in the picture. The pass must give it a falloff while KEEPING it bright:
+        // the highlight is where the light is.
+        let disc = |flat: bool| {
+            image::RgbImage::from_fn(128, 128, |x, y| {
+                let d = (((x as f32 - 64.0).powi(2) + (y as f32 - 64.0).powi(2)).sqrt() / 22.0).min(1.0);
+                let v = if d >= 1.0 {
+                    90.0
+                } else if flat {
+                    245.0
+                } else {
+                    // Already modelled: a cosine dome from the same peak to the same ground.
+                    90.0 + 155.0 * 0.5 * (1.0 + (d * std::f32::consts::PI).cos())
+                };
+                image::Rgb([v as u8, v as u8, v as u8])
+            })
+        };
+        let spread = |img: &image::RgbImage, p: &PaintParams| {
+            let out = paint_from_image(img, p).canvas.to_image();
+            let v: Vec<f32> = (0..128u32)
+                .flat_map(|y| (0..128u32).map(move |x| (x, y)))
+                .filter(|(x, y)| ((*x as f32 - 64.0).powi(2) + (*y as f32 - 64.0).powi(2)).sqrt() < 20.0)
+                .map(|(x, y)| out.get_pixel(x, y).0[0] as f32)
+                .collect();
+            let m = v.iter().sum::<f32>() / v.len() as f32;
+            ((v.iter().map(|a| (a - m).powi(2)).sum::<f32>() / v.len() as f32).sqrt(), m)
+        };
+        let mut p = PaintParams::new(palette::EARTH, 30_000);
+        p.brush_sizes = vec![16.0, 8.0, 4.0];
+        p.min_brush = 3.0;
+        let (flat_off, mean_off) = spread(&disc(true), &p);
+        p.hotspot = 1.0;
+        let (flat_on, mean_on) = spread(&disc(true), &p);
+        // Measured at ~12.2 → ~14.6 on this disc. The brushwork already varies a plateau a little, so the
+        // pass adds to a non-zero floor rather than creating the whole falloff.
+        assert!(flat_on > flat_off + 1.5, "the plateau gains a falloff ({flat_off:.1} → {flat_on:.1})");
+        assert!(mean_on > 110.0, "and stays a highlight, not a hole ({mean_on:.0})");
+
+        // A highlight the brushwork already modelled is not a plateau, and must be left as it is.
+        let (dome_off, _) = { p.hotspot = 0.0; spread(&disc(false), &p) };
+        let (dome_on, _) = { p.hotspot = 1.0; spread(&disc(false), &p) };
+        assert!((dome_on - dome_off).abs() < flat_on - flat_off, "a modelled highlight is barely touched ({dome_off:.1} → {dome_on:.1})");
     }
 
     #[test]

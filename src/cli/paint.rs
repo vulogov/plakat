@@ -524,6 +524,16 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// HOTSPOT (0..1): polish flat, blown specular highlights — the shine on a bald head, a glazed pot, wet
+    /// stone. The armature snaps such a highlight into ONE value mass and the brush fills it flat, so what
+    /// should be a turning form reads as a hole cut in the picture: a pale plateau with a hard rim. This
+    /// re-models it as a DOME, brightest at its own centre and easing to the value its rim sits against. The
+    /// gradient is invented from the shape's geometry, never copied from the source, and only the value moves
+    /// — the hue stays, because a highlight is a lightness event. 0 leaves the plateau alone; the default
+    /// softens it while KEEPING the highlight, which is where the light is; 1 models it fully.
+    /// Default: 0.4 for a new painting, 0 otherwise.
+    #[arg(long)]
+    pub hotspot: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
     /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
     /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
@@ -1666,6 +1676,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.rigger.is_none() {
             a.rigger = plan.rigger;
         }
+        if a.hotspot.is_none() {
+            a.hotspot = plan.hotspot;
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -1780,6 +1793,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
     // stay exactly as they are. Either can be overridden outright.
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
+    params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.4 } else { 0.0 }).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,

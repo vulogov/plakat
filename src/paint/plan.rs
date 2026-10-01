@@ -88,6 +88,10 @@ pub struct PaintPlan {
     /// RIGGER (0..1): put back the few shapes too thin for the brush ladder. Absent = 0.35 for a new painting.
     #[serde(default)]
     pub rigger: Option<f32>,
+    /// HOTSPOT (0..1): how far a flat blown specular highlight is re-modelled into a dome. Absent = 0.4 for a
+    /// new painting, 0 otherwise.
+    #[serde(default)]
+    pub hotspot: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -142,6 +146,7 @@ impl Default for PaintPlan {
             hair_mask: None,
             infill: None,
             rigger: None,
+            hotspot: None,
             notes: Vec::new(),
         }
     }
@@ -184,6 +189,9 @@ impl PaintPlan {
         }
         if let Some(rg) = self.rigger {
             o.push_str(&format!("rigger: {rg:.2}\n"));
+        }
+        if let Some(hs) = self.hotspot {
+            o.push_str(&format!("hotspot: {hs:.2}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -442,6 +450,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         hair_mask: None,
             infill: None,
             rigger: None,
+            hotspot: None,
         notes,
     }
 }
