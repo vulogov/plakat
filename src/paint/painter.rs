@@ -2345,6 +2345,17 @@ fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
             if protect.map(|m| m.get(i).copied().unwrap_or(false)).unwrap_or(false) {
                 continue;
             }
+            // NOT OVER HAIR, AND NOT OVER A FACE. A rigger is for the few things the brushwork could not lay
+            // at all. A beard has already been painted strand by strand with its own tool, and a face is
+            // modelled form; drawing lines over either adds a faint tracery across exactly the passages the
+            // picture is about. Measured as a difference map, that tracery was most of what this pass was
+            // putting down outside the shelf it was built for.
+            if p.hair_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.25 {
+                continue;
+            }
+            if p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.25 {
+                continue;
+            }
             // Its OWN colour, not ink: a pale stem over a dark shelf is light, and drawing it dark would put a
             // different object there.
             let c = input.get_pixel(cx as u32, cy as u32).0;
