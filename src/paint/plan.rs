@@ -88,7 +88,7 @@ pub struct PaintPlan {
     /// RIGGER (0..1): put back the few shapes too thin for the brush ladder. Absent = 0.35 for a new painting.
     #[serde(default)]
     pub rigger: Option<f32>,
-    /// HOTSPOT (0..1): how far a flat blown specular highlight is re-modelled into a dome. Absent = 0.4 for a
+    /// HOTSPOT (0..1): how far a flat blown specular highlight is re-modelled into a dome. Absent = 0.5 for a
     /// new painting, 0 otherwise.
     #[serde(default)]
     pub hotspot: Option<f32>,

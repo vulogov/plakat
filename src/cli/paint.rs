@@ -531,7 +531,7 @@ pub struct FromArgs {
     /// gradient is invented from the shape's geometry, never copied from the source, and only the value moves
     /// — the hue stays, because a highlight is a lightness event. 0 leaves the plateau alone; the default
     /// softens it while KEEPING the highlight, which is where the light is; 1 models it fully.
-    /// Default: 0.4 for a new painting, 0 otherwise.
+    /// Default: 0.5 for a new painting, 0 otherwise.
     #[arg(long)]
     pub hotspot: Option<f32>,
     /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
@@ -1793,7 +1793,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
     // stay exactly as they are. Either can be overridden outright.
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
-    params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.4 } else { 0.0 }).clamp(0.0, 1.0);
+    params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,
