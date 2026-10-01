@@ -268,9 +268,12 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bleed: 0.55,
     body: 0.45,
     impasto: 0.0,
-    chroma: 0.92,
+    // Transparent pigment over white paper reads VIVID, not grey: 0.92 was desaturating the one medium
+    // whose whole character is clean colour. A watercolour goes muddy by overworking, never by being bright.
+    chroma: 1.25,
     dry_shift: 0.08,
-    granulate: 0.18,
+    // Pigment SETTLES into the paper's tooth — the mottle is a watercolour tell, and 0.18 barely showed.
+    granulate: 0.35,
     sheen: 0.0,
     lift: 0.2,
     default_palette: "limited-landscape",
@@ -279,7 +282,36 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
-    mark: MarkCharacter::BRUSH,
+    // WATERCOLOUR'S OWN MARK. It carried `BRUSH`, which is oil's mark, so the medium was oil physics with a
+    // different palette: no washes, no pools, no splatter, and paper showing between strokes as white specks.
+    // The wash machinery, the edge bloom and the splatter are all gated on `luminous`, so this is what turns
+    // watercolour into watercolour.
+    //
+    // NOT line-and-wash, which is the other luminous medium and reads as an illustration: that one glazes
+    // flat masses and does the drawing with an ink line (`draw_contours`). A painted watercolour has no line
+    // at all — the drawing is in the washes — and it models WITHIN them, so it keeps a wider ladder of
+    // brushes (`ladder_keep: None`) and a fuller charge. Twelve levels rather than eight, because a
+    // watercolour's washes carry its modelling and eight steps read as flat paper cut-outs.
+    mark: MarkCharacter {
+        role: None,
+        stroke_len: 1.0,
+        stroke_width: 1.1,
+        charge: 1.0,
+        hatch_angle: 0.0,
+        monochrome: false,
+        engrave: false,
+        budget_scale: 1.0,
+        levels: Some(12),
+        reserve: None,
+        ladder_keep: None,
+        contrast: 1.0,
+        coverage: 1.0,
+        draw_contours: false,
+        brush_drawing: false,
+        sumi: false,
+        luminous: true,
+        book: false,
+    },
     finish_policy: FinishPolicy::BackToFront,
 };
 

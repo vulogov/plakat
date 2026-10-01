@@ -524,6 +524,15 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// TECHNIQUE: how wet the paper is when each layer goes down — the decision that makes a watercolour look
+    /// the way it does. `wet-on-wet` floods one wash into the next: soft blooms, colours running together, no
+    /// hard edges anywhere. `wet-on-dry` lets each wash SET before the next: crisp wash boundaries with the
+    /// dark pigment rim where they dried, soft modelling within — the classic watercolour, and the default
+    /// for a wet medium. `dry-on-dry` drags a barely-loaded brush over dry paper: no bleeding, the paper's
+    /// tooth breaking every stroke, pigment granulating in the hollows. Sets drying, bleed, edge pooling and
+    /// granulation together, so it is one decision rather than four.
+    #[arg(long, value_name = "wet-on-wet|wet-on-dry|dry-on-dry")]
+    pub technique: Option<String>,
     /// HOTSPOT (0..1): polish flat, blown specular highlights — the shine on a bald head, a glazed pot, wet
     /// stone. The armature snaps such a highlight into ONE value mass and the brush fills it flat, so what
     /// should be a turning form reads as a hole cut in the picture: a pale plateau with a hard rim. This
@@ -1120,6 +1129,21 @@ async fn sam_hair_extent(path: &std::path::Path, w: u32, h: u32, seed: &[f32]) -
     }
 }
 
+/// The wet technique presets (see `--technique`). Returns multipliers and settings applied over the medium's
+/// own physics: `(dry, bleed_mul, edge_pool_mul, granulate_mul, splatter_mul)`.
+fn technique_of(v: &str) -> Result<(f32, f32, f32, f32, f32)> {
+    Ok(match v.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        // The paper never dries, so every wash blooms into its neighbour and no edge can set hard.
+        "wet-on-wet" | "wet" => (0.12, 1.5, 0.35, 1.0, 1.3),
+        // Each wash SETS first: hard boundaries with the pigment rim where they dried. The classic.
+        "wet-on-dry" | "classic" => (1.0, 1.0, 1.6, 1.0, 1.0),
+        // A barely-loaded brush on dry paper: nothing bleeds, the tooth breaks every stroke, pigment
+        // granulates in the hollows.
+        "dry-on-dry" | "dry" | "drybrush" => (1.0, 0.2, 0.25, 1.9, 0.5),
+        other => anyhow::bail!("--technique expects wet-on-wet, wet-on-dry or dry-on-dry — got {other:?}"),
+    })
+}
+
 /// `follow` / `flat` / a stroke angle in degrees.
 fn parse_infill(v: &str) -> Result<crate::paint::painter::FlowInfill> {
     use crate::paint::painter::FlowInfill;
@@ -1705,6 +1729,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.hotspot.is_none() {
             a.hotspot = plan.hotspot;
         }
+        if a.technique.is_none() {
+            a.technique = plan.technique.clone();
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -2175,6 +2202,29 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             params.reserve = Some(q.clamp(lo, 0.9));
             println!("{}  luminous medium → paper reserved above luma {:.2} (the lightest ~15% of the keyed picture)", style("·").dim(), params.reserve.unwrap_or(0.0));
         }
+    }
+
+    // TECHNIQUE: one decision that sets drying, bleed, edge pooling and granulation together (see the flag).
+    // Applied after the medium and its luminous defaults, so it shapes what the medium brought rather than
+    // replacing it; an explicit `--dry` / `--bleed` / `--edge-pool` still wins, as the flags always do.
+    if let Some(t) = a.technique.as_deref() {
+        let (dry, bl, ep, gr, sp) = technique_of(t)?;
+        if (a.dry - 0.5).abs() < 1e-6 {
+            params.dry = dry;
+        }
+        if a.bleed.is_none() {
+            params.bleed = (params.bleed * bl).clamp(0.0, 1.0);
+        }
+        if a.edge_pool.is_none() {
+            params.edge_pool = (params.edge_pool * ep).clamp(0.0, 1.0);
+        }
+        if a.granulate.is_none() {
+            params.granulate = (params.granulate * gr).clamp(0.0, 1.0);
+        }
+        if a.splatter.is_none() {
+            params.splatter = (params.splatter * sp).clamp(0.0, 1.0);
+        }
+        println!("{}  technique {t}: dry {:.2} · bleed {:.2} · edge-pool {:.2} · granulate {:.2} · splatter {:.2}", style("·").dim(), params.dry, params.bleed, params.edge_pool, params.granulate, params.splatter);
     }
 
     // FAMILY SEPARATION (RFC §3.3): partition light/shadow families and enforce the invariant, so masses read

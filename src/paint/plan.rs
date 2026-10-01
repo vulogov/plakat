@@ -92,6 +92,9 @@ pub struct PaintPlan {
     /// new painting, 0 otherwise.
     #[serde(default)]
     pub hotspot: Option<f32>,
+    /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
+    #[serde(default)]
+    pub technique: Option<String>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -147,6 +150,7 @@ impl Default for PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            technique: None,
             notes: Vec::new(),
         }
     }
@@ -192,6 +196,9 @@ impl PaintPlan {
         }
         if let Some(hs) = self.hotspot {
             o.push_str(&format!("hotspot: {hs:.2}\n"));
+        }
+        if let Some(t) = &self.technique {
+            o.push_str(&format!("technique: {t}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -451,6 +458,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             infill: None,
             rigger: None,
             hotspot: None,
+            technique: None,
         notes,
     }
 }
