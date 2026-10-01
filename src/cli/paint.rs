@@ -524,6 +524,13 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// LEAKS (0..1, 0 = none): runs of pigment that drip down out of the wet washes under gravity, tapering to
+    /// a drop where they dried — the mark that says "this was liquid" more than any other. Only the big wet
+    /// masses leak, from their lower edge, in their own pigment; wet-on-wet runs further, dry-on-dry never
+    /// leaks, and a run is never started across a face. A watercolourist courts it or guards against it, so
+    /// it is yours: nothing leaks unless asked.
+    #[arg(long)]
+    pub leak: Option<f32>,
     /// TECHNIQUE: how wet the paper is when each layer goes down — the decision that makes a watercolour look
     /// the way it does. `wet-on-wet` floods one wash into the next: soft blooms, colours running together, no
     /// hard edges anywhere. `wet-on-dry` lets each wash SET before the next: crisp wash boundaries with the
@@ -1700,7 +1707,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // The plan's brush-ladder cut, applied after the medium has built its ladder (see `PaintPlan::ladder_keep`).
     let mut plan_ladder_keep: Option<usize> = None;
     // Whether the stroke budget was named on the command line (a new painting otherwise counts its own).
-    let budget_explicit = a.budget != 1500;
+    let mut budget_explicit = a.budget != 1500;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;
@@ -1731,6 +1738,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         if a.technique.is_none() {
             a.technique = plan.technique.clone();
+        }
+        if a.leak.is_none() {
+            a.leak = plan.leak;
+        }
+        if a.armature_levels.is_none() {
+            a.armature_levels = plan.levels;
         }
         if a.splatter.is_none() {
             a.splatter = plan.splatter;
@@ -1799,6 +1812,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.budget == 1500 {
             if let Some(b) = plan.budget {
                 a.budget = b;
+                // A budget the plan names is as explicit as one on the command line: the coverage count a
+                // new painting works out for itself must not overrule it.
+                budget_explicit = true;
             }
         }
         if a.detail_length.is_none() {
@@ -1858,6 +1874,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
     // stay exactly as they are. Either can be overridden outright.
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
+    params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
     params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
@@ -2019,7 +2036,11 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     params.armature_face_side = a.armature_face;
     let mut face_extent: Option<f32> = None;
-    if a.preserve_face.is_some() || a.armature_face.is_some() {
+    // A wash medium painted from scratch always finds its faces: the shape-aware reserve must know where NOT to
+    // leave paper, and the fine brushes it keeps are for the face alone. (The focal PLANE still only runs when
+    // `armature_face` asks for it — a beard is not cut by this.)
+    let luminous_new = a.new_painting && a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
+    if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new {
         if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
             params.face_mask = Some(m);
             face_extent = Some(e);
@@ -2293,8 +2314,16 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     // The PLAN's ladder cut, last, so it overrides whatever the medium chose.
     if let Some(n) = plan_ladder_keep {
-        params.brush_sizes.truncate(n.max(1));
-        println!("{}  plan: brush ladder cut to the {} coarsest ({:?})", style("·").dim(), n, params.brush_sizes.iter().map(|r| r.round() as u32).collect::<Vec<_>>());
+        let n = n.max(1).min(params.brush_sizes.len());
+        if params.face_mask.is_some() && n < params.brush_sizes.len() {
+            // The cut brushes are kept, for the face alone: a face painted with nothing finer than a wash
+            // is not a face, and the user's one hard line here is that faces stay recognisable.
+            params.face_ladder_from = Some(n);
+            println!("{}  plan: brush ladder cut to the {} coarsest for the sheet ({:?}); the finer {} kept for the face", style("·").dim(), n, params.brush_sizes[..n].iter().map(|r| r.round() as u32).collect::<Vec<_>>(), params.brush_sizes.len() - n);
+        } else {
+            params.brush_sizes.truncate(n);
+            println!("{}  plan: brush ladder cut to the {} coarsest ({:?})", style("·").dim(), n, params.brush_sizes.iter().map(|r| r.round() as u32).collect::<Vec<_>>());
+        }
     }
 
     if params.from_scratch {

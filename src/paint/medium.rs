@@ -306,7 +306,11 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
         // nothing was left to paint over the reserve. It is a decision about a picture: how much paper this
         // one can afford to keep. So it lives in the plan, where it can be judged per image.
         budget_scale: 1.0,
-        levels: Some(12),
+        // FIVE glazes, not twelve. Under a technique the washes are glazed — each laid over everything darker
+        // — and every level is another transparent layer on the stack. Twelve layers of mid-tones over each
+        // other is mud, whatever the colours; a watercolour is built from a handful of clean glazes. The plan's
+        // `levels` key tunes it per picture.
+        levels: Some(5),
         reserve: None,
         ladder_keep: None,
         contrast: 1.0,

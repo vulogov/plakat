@@ -109,6 +109,13 @@ pub struct PaintPlan {
     /// picture (cut too hard and a lit face is left as bare reserved paper), so it lives here.
     #[serde(default)]
     pub ladder_keep: Option<usize>,
+    /// LEAKS (0..1): runs of pigment dripping out of the wet washes. Nothing leaks unless asked.
+    #[serde(default)]
+    pub leak: Option<f32>,
+    /// LEVELS: how many value masses the armature is cut into — for a wash medium, how many glazes the picture
+    /// is built from. Few and clean; many stacked transparent layers are mud.
+    #[serde(default)]
+    pub levels: Option<u32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -169,6 +176,8 @@ impl Default for PaintPlan {
             edge_pool: None,
             granulate: None,
             ladder_keep: None,
+            leak: None,
+            levels: None,
             notes: Vec::new(),
         }
     }
@@ -225,6 +234,12 @@ impl PaintPlan {
         }
         if let Some(n) = self.ladder_keep {
             o.push_str(&format!("ladder_keep: {n}\n"));
+        }
+        if let Some(l) = self.leak {
+            o.push_str(&format!("leak: {l:.2}\n"));
+        }
+        if let Some(n) = self.levels {
+            o.push_str(&format!("levels: {n}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -489,6 +504,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             edge_pool: None,
             granulate: None,
             ladder_keep: None,
+            leak: None,
+            levels: None,
         notes,
     }
 }

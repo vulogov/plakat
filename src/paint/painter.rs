@@ -26,6 +26,10 @@ pub struct PassSpec {
     pub radius: f32,
     pub budget: usize,
     pub stage: String,
+    /// This pass may lay marks only where the FACE is. A wash medium keeps its sheet to a few broad brushes
+    /// — economy is its technique — but a face painted with nothing finer than a wash is not a face. So the
+    /// brushes cut from the ladder are kept for the focal plane alone.
+    pub face_only: bool,
 }
 
 /// A BRUSH from the vocabulary (RFC brush vocabulary): the FORM of a mark — size, length, bristle streak,
@@ -195,6 +199,12 @@ pub struct PaintParams {
     pub hotspot: f32,
     /// See [`WetTechnique`]. `None` keeps every medium exactly as it was.
     pub technique: WetTechnique,
+    /// From this index on, the brush ladder is for the FACE only (see `PassSpec::face_only`). `None` = the
+    /// whole ladder paints the whole sheet.
+    pub face_ladder_from: Option<usize>,
+    /// LEAKS (0..1, 0 = none): runs of pigment that drip down from the bottom of a wet wash and end in a
+    /// drop — a gravity mark, and the one that says "this was liquid" more than any other. See `leak_pass`.
+    pub leak: f32,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -366,7 +376,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -625,7 +635,7 @@ fn keep_large_regions(src: &[bool], w: usize, h: usize, min_area: usize) -> Vec<
 /// exactly; laid last, so no restate pass can read it as an error and paint it back out.
 fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, placed: &mut usize, k: &mut u64) {
     let strength = p.edge_pool.clamp(0.0, 1.0);
-    if strength <= 0.0 || *placed >= p.budget {
+    if strength <= 0.0 {
         return;
     }
     let (w, h) = (canvas.w, canvas.h);
@@ -649,15 +659,17 @@ fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
     if washes.is_empty() {
         return;
     }
-    let width = (short * 0.002).max(1.5) * (0.6 + 0.6 * strength);
+    // A rim, not an outline. At full strength this was a hard dark line round every mass and the picture read
+    // as line-and-wash; the dried edge of a wash is a narrow band only a little deeper than the wash itself.
+    let width = (short * 0.0016).max(1.2) * (0.6 + 0.5 * strength);
     let mut brush = p.brush;
     brush.k_pickup = 0.0;
     brush.streak = 0.1;
     brush.round = 0.95;
     for (rings, load) in washes {
-        let load: Vec<f32> = load.iter().map(|v| v * (1.0 + 1.2 * strength)).collect();
+        let load: Vec<f32> = load.iter().map(|v| v * (0.5 + 0.7 * strength)).collect();
         for ring in rings.split(|pt| pt[0].is_nan()) {
-            if ring.len() < 3 || *placed >= p.budget {
+            if ring.len() < 3 {
                 continue;
             }
             *k += 1;
@@ -685,6 +697,126 @@ fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 bristles: None,
             });
         }
+    }
+}
+
+/// LEAKS. Where a wash is wet enough, pigment runs out of its lower edge under gravity: a thin trail down the
+/// paper that tapers and ends in a drop where it finally dried. It is the mark that says "this was liquid"
+/// more plainly than any other, and a watercolourist either courts it or guards against it — which is why
+/// it is a control and not a default.
+///
+/// Only the big wet masses leak, from points along their bottom edge; the trail carries the wash's own
+/// pigment, a little concentrated (a run collects what it passes over). Wet-on-wet runs further; the dry
+/// brush had no water to run and leaks nothing. Recorded strokes, laid after the rims and under the spatter.
+fn leak_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let strength = p.leak.clamp(0.0, 1.0);
+    if strength <= 0.0 || p.technique == WetTechnique::DryOnDry {
+        return;
+    }
+    let (w, h) = (canvas.w, canvas.h);
+    let unit = (w.min(h) as f32 / 1024.0).max(0.5);
+    let np = p.palette.pigments.len();
+    let run_mul = if p.technique == WetTechnique::WetOnWet { 1.5 } else { 1.0 };
+    // The washes, largest first: the big masses are the wet ones.
+    let mut washes: Vec<(usize, Vec<[f32; 2]>, Vec<f32>)> = score
+        .strokes
+        .iter()
+        .filter(|r| r.wash)
+        .map(|r| {
+            let mut load = vec![0f32; np];
+            for (name, v) in &r.mix {
+                if let Some(idx) = p.palette.pigments.iter().position(|pg| pg.name == name) {
+                    load[idx] = *v;
+                }
+            }
+            (r.spline.iter().filter(|pt| !pt[0].is_nan()).count(), r.spline.clone(), load)
+        })
+        .collect();
+    washes.sort_by(|a, b| b.0.cmp(&a.0));
+    let max_leaks = (8.0 + 48.0 * strength) as usize;
+    let mut laid = 0usize;
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.05;
+    brush.round = 1.0;
+    for (_, rings, load) in washes.iter().take(max_leaks * 2) {
+        if laid >= max_leaks {
+            break;
+        }
+        // Only the OUTER ring (the first) can leak; holes do not have a bottom edge on the paper.
+        let Some(ring) = rings.split(|pt| pt[0].is_nan()).next() else { continue };
+        if ring.len() < 4 {
+            continue;
+        }
+        let (ymin, ymax) = ring.iter().fold((f32::MAX, f32::MIN), |(a, b), pt| (a.min(pt[1]), b.max(pt[1])));
+        if ymax - ymin < 12.0 * unit {
+            continue;
+        }
+        *k += 1;
+        // Does this wash leak at all? At full strength every big wet mass does; the wetter the technique,
+        // the further down the list it reaches.
+        if jitter(p.seed ^ 0x1EA7, *k) + 0.5 > (strength * run_mul).min(1.0) {
+            continue;
+        }
+        // Where along its bottom edge: a point in the lowest sixth of the mass.
+        let band = ymax - (ymax - ymin) * 0.16;
+        let bottom: Vec<[f32; 2]> = ring.iter().copied().filter(|pt| pt[1] >= band).collect();
+        if bottom.is_empty() {
+            continue;
+        }
+        let pick = ((jitter(p.seed ^ 0x1EA8, k.wrapping_add(1)) + 0.5) * bottom.len() as f32) as usize;
+        let [x0, y0] = bottom[pick.min(bottom.len() - 1)];
+        let x0 = x0.clamp(1.0, w as f32 - 2.0);
+        let y0 = y0.clamp(1.0, h as f32 - 2.0);
+        // A run must READ against whatever it crosses, because a picture can be anything. Over a light or
+        // mid ground it is concentrated pigment, plainly darker than the wash it left. Over a ground already
+        // darker than its own pigment, a drip of water re-wets the dried wash and LIFTS it, leaving a pale
+        // run — the same rule the spatter follows. Decided from the canvas below the start, not assumed.
+        let below_l = color::linear_luma(color::srgb_to_linear(canvas.color_at(x0 as u32, (y0 + 10.0 * unit).min(h as f32 - 1.0) as u32)));
+        let run_l = {
+            let c = canvas.color_at(x0 as u32, (y0 - 1.0).max(0.0) as u32);
+            color::linear_luma(color::srgb_to_linear(c)) * 0.55
+        };
+        // A dark run on a dark ground is invisible whatever its pigment — on a night scene, a run that reads
+        // is a pale one. So the ground below decides: dark in absolute terms, or darker than the run would
+        // be, and the drip lifts; otherwise it carries pigment.
+        let lifts = below_l < 0.18 || below_l < run_l;
+        // Never a run across a face.
+        if p.face_mask.as_deref().and_then(|m| m.get(y0 as usize * w as usize + x0 as usize)).copied().unwrap_or(0.0) > 0.3 {
+            continue;
+        }
+        let len = unit * (25.0 + 110.0 * strength * (jitter(p.seed ^ 0x1EA9, k.wrapping_add(2)) + 0.5)) * run_mul;
+        let width = unit * (1.6 + 1.8 * (jitter(p.seed ^ 0x1EAA, k.wrapping_add(3)) + 0.5));
+        let y1 = (y0 + len).min(h as f32 - 2.0);
+        if y1 - y0 < 6.0 {
+            continue;
+        }
+        let wobble = 1.5 * unit * jitter(p.seed ^ 0x1EAB, k.wrapping_add(4));
+        let wet = if p.technique == WetTechnique::WetOnWet { 0.9 } else { 0.7 };
+        // The run: a thin tapering trail straight down, and the drop where it dried.
+        let path = vec![[x0, y0], [x0 + wobble, (y0 + y1) * 0.5], [x0, y1]];
+        let drop = vec![[x0, y1], [x0 + 0.5, y1 + 1.5]];
+        if lifts {
+            // A pale run: water lifting the dried wash. Applied at wet*lift, the formula replay uses.
+            let lw = 1.6_f32;
+            for (pth, w0, w1) in [(path, width, width * 0.5), (drop, width * 1.7, width * 1.7)] {
+                let s = Stroke { path: pth, width0: w0, width1: w1, load: vec![0.0; np], pressure: 1.0, wetness: lw };
+                s.wipe(canvas, &brush, lw * p.lift);
+                *placed += 1;
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix: Vec::new(), wet: lw, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: None });
+            }
+        } else {
+            // A dark run: the pigment a drip collects on its way down, well above the wash's own charge.
+            let load: Vec<f32> = load.iter().map(|v| v * 2.0).collect();
+            for (pth, w0, w1, pr) in [(path, width, width * 0.5, 0.9), (drop, width * 1.7, width * 1.7, 1.0)] {
+                let s = Stroke { path: pth, width0: w0, width1: w1, load: load.clone(), pressure: pr, wetness: wet };
+                s.rasterize(canvas, &brush);
+                let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+                *placed += 1;
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix, wet, press: pr, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: None });
+            }
+        }
+        laid += 1;
     }
 }
 
@@ -1683,7 +1815,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // The passes to run: an explicit plan (P1.3), else coarse→fine from brush_sizes (P0).
     let sizes: Vec<f32> = p.brush_sizes.iter().copied().filter(|&r| r >= p.min_brush).collect();
     let passes: Vec<PassSpec> = p.passes.clone().unwrap_or_else(|| {
-        sizes.iter().enumerate().map(|(i, &r)| PassSpec { radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { format!("restate-{i}") } }).collect()
+        sizes.iter().enumerate().map(|(i, &r)| PassSpec { face_only: p.face_ladder_from.is_some_and(|n| i >= n), radius: r, budget: p.budget, stage: if i == 0 { "block-in".into() } else { format!("restate-{i}") } }).collect()
     });
     // FROM SCRATCH: the minimum brush of every plane (RFC §9). A rung below the focal floor touches nothing, so
     // it is not a pass of this painting at all.
@@ -2026,6 +2158,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // always land, drop the restate floor so they build to full depth, and boost the pigment charge so
                 // they read as committed paint, not a thin wash. `sh` in [0,1] is the shadow strength here.
                 let region_i = iy as usize * w as usize + ix as usize;
+                // A face-only pass lays nothing off the face.
+                if pass.face_only && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
+                    return None;
+                }
                 let soft = ramp_soft.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
                 let sh = shadow.as_ref().map(|s| s[region_i] * p.commit_shadows).unwrap_or(0.0);
                 // RESERVE is a fact about the BACKGROUND, not the subject: bright cells keep the paper only OUTSIDE
@@ -2397,10 +2533,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // POOLS: the dried rim of every wash, painted last (see `pool_pass`). Under the spatter.
     // A rim needs an edge that SET: wet-on-wet never has one, and the dry brush had no water to pool.
     let rims_form = matches!(p.technique, WetTechnique::None | WetTechnique::WetOnDry);
-    if p.luminous && p.edge_pool > 0.0 && rims_form && placed < p.budget {
+    // A wash medium's rims and spatter are its own marks, not part of the stroke economy: a plan that asks
+    // for six hundred washes and nothing else must still get them, where "placed < budget" starved both.
+    let finish_ok = placed < p.budget || p.luminous;
+    if p.luminous && p.edge_pool > 0.0 && rims_form && finish_ok {
         pool_pass(&mut canvas, &mut score, p, &mut placed, &mut k);
     }
-    if p.splatter > 0.0 && placed < p.budget {
+    // LEAKS: runs out of the wet washes (see `leak_pass`), after the rims, under the spatter.
+    if p.luminous && p.leak > 0.0 && finish_ok {
+        leak_pass(&mut canvas, &mut score, p, &mut placed, &mut k);
+    }
+    if p.splatter > 0.0 && finish_ok {
         splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
@@ -3043,7 +3186,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
     // accent nobody could see. The references spatter in the hundreds of visible drops; this is still a
     // small share of any budget.
     let want = (w as f32 * h as f32 / 600.0 * strength) as usize;
-    let n = want.min(p.budget.saturating_sub(*placed)).min(20000);
+    let n = if p.luminous { want.min(20000) } else { want.min(p.budget.saturating_sub(*placed)).min(20000) };
     // Sizes scale with the sheet, so a drop on a 2048 sheet is a drop and not a pixel.
     let unit = (w.min(h) as f32 / 1024.0).max(0.5);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
@@ -3345,9 +3488,15 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
     // too (its masses are pixel-scale, but its paper must be AREAS: a pixel-scale reserve peppered the print
     // with white specks; an occasional fleck belongs to the style, a rash of them does not).
     let paper_luma: Vec<f32> = if p.book { luma_map(&imageops::blur(input, (w.max(h) as f32 * 0.004).max(1.5))) } else { luma.clone() };
-    let paper = |i: usize| match p.reserve {
-        Some(rt) => paper_luma[i] > rt,
-        None => protect.map(|m| m.get(i).copied().unwrap_or(false)).unwrap_or(false),
+    // The paper the WASHES leave is the same paper the strokes leave. The pass used to test each pixel against
+    // the reserve luma on its own, so the shape-aware reserve — no flecks, never the face — governed the brush
+    // marks while the washes still left every lit face and lamp as bare paper. Where the painter has built a
+    // protect (a new painting always has), that is the paper; the luma test remains for the older path.
+    let paper = |i: usize| match (protect, p.reserve, p.from_scratch) {
+        (Some(m), _, true) => m.get(i).copied().unwrap_or(false),
+        (_, Some(rt), _) => paper_luma[i] > rt,
+        (Some(m), None, _) => m.get(i).copied().unwrap_or(false),
+        (None, None, _) => false,
     };
     let level: Vec<u16> = (0..w * h)
         .map(|i| if paper(i) { levels as u16 } else { ((norm(luma[i]) / step).round() as usize).min(levels - 1) as u16 })
@@ -3369,7 +3518,15 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
     // Each mass is washed ONCE, with its own colour (stacking every lighter level's glaze under a darker mass
     // mixed a sky's blue-grey under a wall's brown — mud); the light-to-dark order still lets a darker wash
     // bloom over a lighter neighbour's edge. A mass is one level and one hue family.
-    let in_pass = |i: usize, lv: usize| if p.book { (level[i] as usize) <= lv } else { (level[i] as usize) == lv };
+    // GLAZING. A technique lays washes the way a watercolourist does: each wash over everything DARKER than
+    // it, so a pixel two steps below the paper carries two transparent layers and the darks are built by the
+    // stack. Two things this buys that washing each mass once could not: there are NO GAPS — the lightest
+    // glaze of a hue family covers that family's whole region, and the white slivers between neighbouring
+    // masses, which were the medium's "white specks", cannot exist — and every wash boundary is a hard edge
+    // on dry paper, the drawing of the picture. The mud the `==` form was chosen to avoid came from stacking
+    // a sky's grey-blue under a wall's brown; the hue families now keep each family's glazes under its own.
+    let glaze = p.book || p.technique != WetTechnique::None;
+    let in_pass = |i: usize, lv: usize| if glaze { (level[i] as usize) <= lv } else { (level[i] as usize) == lv };
     let same = |i: usize, j: usize, lv: usize| in_pass(i, lv) && in_pass(j, lv) && hue_bin[i] == hue_bin[j];
     // Every mass is washed, however small: a mass below a size threshold was skipped, and its pixels — a
     // window pane, a fleck of light on a face, a hue island the hue split cut off — stayed bare paper: the
@@ -3429,6 +3586,10 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
             for &i in px {
                 mask[i] = true;
             }
+            // Neighbouring washes TOUCH. Two masses traced exactly leave a hairline of paper between them at
+            // every family boundary; a watercolourist lets the edge of one wash run into the next, so each
+            // mass is grown a couple of pixels before its rings are traced.
+            let mask = if glaze { dilate_bool(&mask, w, h, 2) } else { mask };
             let rings = mask_rings(&mask, w, h, 1.2);
             if rings.is_empty() {
                 continue;
@@ -3438,7 +3599,8 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
             // so a night sky washed at a light mass's charge came out grey-blue hatch; a painter floods the
             // darks (several passes of the same colour) and barely tints the lights.
             let darkness = 1.0 - (lv as f32 / (n_levels - 1) as f32);
-            let charge = if p.book { 0.2 } else { 0.4 + 2.4 * darkness * darkness };
+            // A glaze is thin: the darks come from the stack, not from any one layer flooding.
+            let charge = if p.book { 0.2 } else if glaze { 0.22 + 0.45 * darkness } else { 0.4 + 2.4 * darkness * darkness };
             let load = mixture_cached(&mut cache, mean, &p.palette, p.charge * charge, n);
             // A wash's wetness and its wet edge are the technique: flooded and wide-edged on wet paper, a set
             // wash with a rim's worth of edge on dry paper, and nearly dry with no wet edge at all for the
@@ -4153,6 +4315,84 @@ mod tests {
         assert!(!kept[80 * w + 80], "the fleck is dropped");
         let area = kept.iter().filter(|&&b| b).count();
         assert!((1400..=1600).contains(&area), "the block keeps its size, not more and not less: {area}");
+    }
+
+    #[test]
+    fn leaks_run_downward_from_a_wet_wash_and_replay_byte_exact() {
+        // One dark mass on paper, leaking: the runs must start on the mass's lower edge and go DOWN, and the
+        // dry brush must leak nothing because it had no water to run.
+        let img = image::RgbImage::from_fn(96, 96, |x, y| {
+            let inside = (20..76).contains(&x) && (16..52).contains(&y);
+            let v = if inside { 60u8 } else { 235 };
+            image::Rgb([v, v / 2 + 20, v])
+        });
+        let run = |t: WetTechnique| {
+            let mut p = PaintParams::new(palette::EARTH, 400);
+            p.brush_sizes = vec![12.0];
+            p.min_brush = 4.0;
+            p.luminous = true;
+            p.armature_levels = 3;
+            p.reserve = Some(0.8);
+            p.bleed = 0.0;
+            p.dry = 1.0;
+            p.draw_contours = false;
+            p.splatter = 0.0;
+            p.edge_pool = 0.0;
+            p.leak = 1.0;
+            p.technique = t;
+            let r = paint_from_image(&img, &p);
+            let painted = r.canvas.to_image().into_raw();
+            let text = r.score.to_text();
+            let back = crate::paint::score::StrokeScore::parse(&text).unwrap().replay(96, 96).unwrap().to_image().into_raw();
+            assert_eq!(back, painted, "{t:?} replays byte-exact through the text");
+            r.score.strokes.into_iter().filter(|s| s.stage == "leak").collect::<Vec<_>>()
+        };
+        let leaks = run(WetTechnique::WetOnDry);
+        assert!(!leaks.is_empty(), "a wet wash leaks");
+        for l in leaks.iter().filter(|l| l.spline.len() == 3) {
+            assert!(l.spline[2][1] > l.spline[0][1] + 5.0, "a run goes DOWN the paper: {:?}", l.spline);
+            assert!(l.spline[0][1] > 40.0, "and starts near the mass's lower edge: {:?}", l.spline[0]);
+        }
+        assert!(run(WetTechnique::DryOnDry).is_empty(), "the dry brush leaks nothing");
+    }
+
+    #[test]
+    fn glazed_washes_leave_no_paper_between_neighbouring_masses() {
+        // Three vertical bands of one hue at three values, on a sheet with no reserve. Washed once each, the
+        // bands met along hairlines of bare paper — the medium's "white specks". Glazed, the lightest wash
+        // covers the whole family and the darker ones stack inside it, so inside the painted region no pixel
+        // is left at the ground.
+        // The real gap mechanism: an ISLAND of a darker value too small to be a wash of its own. Washed once
+        // per mass, it is skipped and left as bare ground — the white speck. Glazed, the band's lighter wash
+        // covers everything darker, the island included. A sprinkling of 2×2 islands inside the lightest band.
+        let img = image::RgbImage::from_fn(96, 48, |x, y| {
+            let island = x >= 68 && (x % 12) < 4 && (y % 12) < 4;
+            let v = if x < 32 { 70u8 } else if x < 64 { 130 } else if island { 70 } else { 190 };
+            image::Rgb([v / 2, v / 2 + 10, v])
+        });
+        let run = |t: WetTechnique| {
+            let mut p = PaintParams::new(palette::EARTH, 400);
+            p.brush_sizes = vec![12.0];
+            p.min_brush = 4.0;
+            p.luminous = true;
+            p.armature_levels = 3;
+            p.reserve = None;
+            p.bleed = 0.0;
+            p.dry = 1.0;
+            p.draw_contours = false;
+            p.splatter = 0.0;
+            p.edge_pool = 0.0;
+            p.technique = t;
+            let r = paint_from_image(&img, &p);
+            let ground = Canvas::white(1, 1, palette::EARTH, 0.85).color_at(0, 0);
+            let out = r.canvas.to_image();
+            // Count bare-ground pixels well inside the sheet (the edges can legitimately feather).
+            (6..90u32).flat_map(|x| (6..42u32).map(move |y| (x, y))).filter(|&(x, y)| out.get_pixel(x, y).0 == ground).count()
+        };
+        let once = run(WetTechnique::None);
+        let glazed = run(WetTechnique::WetOnDry);
+        assert_eq!(glazed, 0, "glazing leaves no bare ground inside the washes ({glazed} px)");
+        assert!(once > glazed, "and the single-wash form did ({once} px) — otherwise this test proves nothing");
     }
 
     #[test]
