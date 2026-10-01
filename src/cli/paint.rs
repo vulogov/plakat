@@ -991,6 +991,83 @@ async fn sam_regions(path: &std::path::Path, w: u32, h: u32) -> Result<(Option<V
     Ok((subject, face_mask))
 }
 
+/// Which of SAM's candidate masks is the PART the prompt sits in, by area alone.
+///
+/// SAM answers one point with three masks — roughly a subpart, a part, and the whole object. Reject the whole
+/// object by SIZE: a beard is not several times the region a detector named for it, nor a large share of the
+/// frame. Of what remains take the LARGEST, which reaches furthest down the hair rather than catching a
+/// fragment of it. `None` when nothing is believable.
+fn choose_part_scale(areas: &[usize], seed_area: usize, frame: usize) -> Option<usize> {
+    areas
+        .iter()
+        .enumerate()
+        .filter(|&(_, &a)| a <= (seed_area * 3).max(frame / 20) && a * 4 >= seed_area)
+        .max_by_key(|&(_, &a)| a)
+        .map(|(i, _)| i)
+}
+
+/// The hair's own extent, from SAM's PART-scale mask.
+///
+/// A detector boxes the hair it can name — the head, the top of a beard — and stops, so the strand tool ran
+/// down to where the box ended and the rest was painted as a smooth mass. SAM knows where the beard ends; the
+/// trick is asking it the right question. Prompted with a point it returns three masks (roughly a subpart, a
+/// part, and the whole object), and taking the highest predicted IoU takes the WHOLE OBJECT — a point inside
+/// a beard came back as the entire seated man. So choose by SCALE instead: the SMALLEST candidate that still
+/// covers most of the named seed. That is the part the prompt is inside of.
+///
+/// `None` when there is no seed, or when every candidate is implausible as hair.
+async fn sam_hair_extent(path: &std::path::Path, w: u32, h: u32, seed: &[f32]) -> Result<Option<Vec<f32>>> {
+    use crate::pipelines::sam::{build_selection_masks, PointPrompt};
+    let (iw, ih) = image::image_dimensions(path)?;
+    let seeded: Vec<usize> = (0..seed.len()).filter(|&i| seed[i] > 0.5).collect();
+    if seeded.len() < 64 {
+        return Ok(None);
+    }
+    let (mut sx, mut sy) = (0f64, 0f64);
+    for &i in &seeded {
+        sx += (i % w as usize) as f64;
+        sy += (i / w as usize) as f64;
+    }
+    let n = seeded.len() as f64;
+    let sc = (iw as f64 / w as f64, ih as f64 / h as f64);
+    // ONE point, at the seed's centre of mass. Two points spread down the beard seemed the safer prompt and
+    // is the opposite: SAM answers several points with an object CONTAINING them all, so every candidate came
+    // back a torso. Asked at one place it offers the part that place is in.
+    let pts = vec![PointPrompt { x: sx / n * sc.0, y: sy / n * sc.1, foreground: true }];
+    let device = crate::device::select("auto")?;
+    let Ok((masks, _)) = build_selection_masks(path, &pts, &device).await else { return Ok(None) };
+
+    let dump = std::env::var("PLAKAT_PAINT_MASKS").ok();
+    let mut cands: Vec<(usize, Vec<f32>)> = Vec::new();
+    for (mi, m) in masks.into_iter().enumerate() {
+        let scaled = image::imageops::resize(&m, w, h, image::imageops::FilterType::Triangle);
+        let v: Vec<f32> = scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+        let area = v.iter().filter(|&&x| x > 0.5).count();
+        if let Some(d) = &dump {
+            let _ = scaled.save(std::path::Path::new(d).join(format!("sam_cand{mi}.png")));
+            let cov = seeded.iter().filter(|&&i| v[i] > 0.5).count();
+            println!("{}  sam candidate {mi}: area {}% · covers {}% of the named seed", style("·").dim(), area * 100 / v.len().max(1), cov * 100 / seeded.len().max(1));
+        }
+        // Reject the WHOLE-OBJECT candidate by size: a part that is several times the hair the detector
+        // named, or a large share of the frame, is the person, not their beard. Of what is left take the
+        // LARGEST — the fullest reach down the beard, rather than a fragment of it. Seed coverage is NOT a
+        // test: the seed also holds the hair behind an ear, which a beard-only mask rightly does not contain.
+        cands.push((area, v));
+    }
+    let areas: Vec<usize> = cands.iter().map(|(a, _)| *a).collect();
+    let frame = (w as usize) * (h as usize);
+    match choose_part_scale(&areas, seeded.len(), frame).map(|i| cands.swap_remove(i)) {
+        Some((area, v)) => {
+            println!("{}  hair/fur: SAM's part-scale extent over {}% of the frame (the detector named {}%)", style("·").dim(), area * 100 / v.len().max(1), seeded.len() * 100 / v.len().max(1));
+            Ok(Some(v))
+        }
+        None => {
+            println!("{}  hair/fur: no SAM candidate was believable as the named hair — keeping the detector's boxes", style("·").yellow());
+            Ok(None)
+        }
+    }
+}
+
 /// Load a HAIR MASK png (white = hair) and fit it to the painting. A hand-drawn mask has a hard edge, and a
 /// hard edge in this mask is a hard edge in the TOOL — the boundary between strand-painted and mass-painted
 /// passages reads as a defect, which is the whole complaint the mask exists to answer. So it is feathered a
@@ -1892,9 +1969,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                         *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
                     }
                 }
-                // NOTE: the hair region is only as large as the detector's boxes. Two ways of extending it
-                // to a long beard's full fall were tried and MEASURED, and neither works — see the commit and
-                // `reference_hair_fur_tool`. Until one does, the region is whatever was named.
+                // The detector named WHERE hair is; SAM says how far it goes (see `sam_hair_extent`). The
+                // face is smooth form however the segmenter drew the object, so it comes back out either way.
+                if let Ok(Some(ext)) = sam_hair_extent(&a.input, w, h, &hm).await {
+                    for (v, e) in hm.iter_mut().zip(&ext) {
+                        *v = v.max(*e);
+                    }
+                    if let Some(fm) = params.face_mask.as_deref() {
+                        for (i, v) in hm.iter_mut().enumerate() {
+                            *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                        }
+                    }
+                }
                 if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
                     let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(hm[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
                     let _ = g.save(std::path::Path::new(&dir).join("mask_hair.png"));
@@ -2249,6 +2335,20 @@ fn run_palette(a: PaletteArgs) -> Result<()> {
 #[cfg(test)]
 mod focal_tier_tests {
     use super::main_face_extent;
+
+    #[test]
+    fn the_part_scale_choice_rejects_the_whole_object() {
+        let frame = 1_000_000usize;
+        let seed = 20_000; // 2% of the frame, the sort of region a part detector names for a beard
+        // SAM's three: a fragment, the beard, the whole man. Take the beard — the largest that is not the man.
+        assert_eq!(super::choose_part_scale(&[6_000, 40_000, 230_000], seed, frame), Some(1));
+        // Nothing believable: every candidate is the person.
+        assert_eq!(super::choose_part_scale(&[230_000, 260_000], seed, frame), None);
+        // A fragment far smaller than what was named is not the hair either.
+        assert_eq!(super::choose_part_scale(&[900], seed, frame), None);
+        // On a picture that is mostly animal, a coat IS most of the subject — the frame share must not veto it.
+        assert_eq!(super::choose_part_scale(&[210_000], 220_000, frame), Some(0));
+    }
 
     #[test]
     fn a_hair_mask_loads_white_as_hair_and_softens_its_own_edge() {
