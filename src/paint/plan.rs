@@ -81,6 +81,10 @@ pub struct PaintPlan {
     /// whole of one yet. `plakat segment` and `plakat remove --what` both write masks of this shape.
     #[serde(default)]
     pub hair_mask: Option<String>,
+    /// INFILL: what a stroke follows where the picture has no structure — `follow`, `flat`, or an angle in
+    /// degrees. Absent = `follow` for a new painting, `flat` otherwise.
+    #[serde(default)]
+    pub infill: Option<String>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -133,6 +137,7 @@ impl Default for PaintPlan {
             budget: None,
             from_scratch: false,
             hair_mask: None,
+            infill: None,
             notes: Vec::new(),
         }
     }
@@ -169,6 +174,9 @@ impl PaintPlan {
         }
         if let Some(hm) = &self.hair_mask {
             o.push_str(&format!("hair_mask: {hm}\n"));
+        }
+        if let Some(inf) = &self.infill {
+            o.push_str(&format!("infill: {inf}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -425,6 +433,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         from_scratch: a.from_scratch,
         // The planner cannot know a hair region; it is named on the command line or in a hand-written plan.
         hair_mask: None,
+            infill: None,
         notes,
     }
 }

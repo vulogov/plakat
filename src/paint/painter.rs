@@ -181,6 +181,9 @@ pub struct PaintParams {
     /// pickup so strands stay distinct instead of smearing into mud, longer and narrower marks tapering to a
     /// point, and a minority of marks allowed to break the silhouette (see the seam below).
     pub hair_mask: Option<Vec<f32>>,
+    /// What a stroke follows where the picture gives it nothing to follow. See [`FlowInfill`]; `Flat` is the
+    /// long-standing behaviour and the default.
+    pub infill: FlowInfill,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -352,7 +355,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -528,7 +531,50 @@ pub fn hair_flow_field(src: &RgbImage, side: u32) -> HairFlow {
 /// per pixel: direction = the tensor's dominant eigenvector (θ = ½·atan2(2Jxy, Jxx−Jyy)), magnitude = the
 /// coherence (how anisotropic the neighbourhood is). `stroke_dir` takes the perpendicular of this, giving a
 /// smooth, form-following stroke direction that only wavers where the image genuinely has no structure.
-fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32) -> (Vec<f32>, Vec<f32>) {
+/// What a stroke should follow where the picture gives it NOTHING to follow — a flat passage, which in a
+/// dark interior is most of the canvas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FlowInfill {
+    /// Lay it FLAT: long level marks, the way a painter blends a sky. Right for atmosphere and wrong for a
+    /// dark mass, where every stroke then runs horizontally and the passage tiles into a rectangular quilt.
+    Flat,
+    /// FOLLOW the structure around it: the direction is carried inward from the nearest passage that has one,
+    /// so a dark mass is stroked along the shelf edge or silhouette that bounds it instead of along the frame.
+    Follow,
+    /// A fixed STROKE angle in degrees, measured from horizontal. The painter's own decision about a passage.
+    Angle(f32),
+}
+
+/// Carry an orientation inward from wherever the picture has one. The weighted double-angle field is blurred
+/// at growing radii and each pixel takes the FIRST radius that reaches real structure, so a direction travels
+/// as far as it must and no further. Orientation is mod π, hence the double angle: averaged as raw angles,
+/// structure at +80° and −80° would cancel instead of agreeing.
+fn infill_orientation(cw: &[f32], sw: &[f32], wt: &[f32], w: u32, h: u32) -> (Vec<f32>, Vec<f32>) {
+    let n = cw.len();
+    let (mut oc, mut os) = (vec![0f32; n], vec![0f32; n]);
+    let mut got = vec![false; n];
+    let short = w.min(h).max(1) as i32;
+    let mut r = 3i32;
+    while r < short {
+        let (bc, bs, bw) = (box_blur(cw, w, h, r), box_blur(sw, w, h, r), box_blur(wt, w, h, r));
+        let mut any = false;
+        for i in 0..n {
+            if !got[i] && bw[i] > 1e-3 {
+                oc[i] = bc[i] / bw[i];
+                os[i] = bs[i] / bw[i];
+                got[i] = true;
+            }
+            any |= !got[i];
+        }
+        if !any {
+            break;
+        }
+        r *= 3;
+    }
+    (oc, os)
+}
+
+fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32, infill: FlowInfill) -> (Vec<f32>, Vec<f32>) {
     let (gx, gy) = sobel(luma, w, h);
     let n = luma.len();
     let (mut jxx, mut jyy, mut jxy) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
@@ -552,6 +598,22 @@ fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32) -> (Vec<f32>, Vec
     let s_small = sigma.max(2) as usize;
     let range_s = local_range(luma, w as usize, h as usize, s_small);
     let range_l = local_range(luma, w as usize, h as usize, s_small * 3);
+    // FOLLOW needs the confident directions gathered before any pixel is written, so build the weighted
+    // double-angle field first and carry it inward.
+    let follow = (infill == FlowInfill::Follow).then(|| {
+        let (mut cw, mut sw, mut wt) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+        for i in 0..n {
+            let disc = ((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]).sqrt();
+            let coh = (disc / (jxx[i] + jyy[i] + 1e-6)).clamp(0.0, 1.0);
+            let ratio = range_s[i] / (range_l[i] + 1e-4);
+            let conf = coh * ((ratio - 0.35) / 0.4).clamp(0.0, 1.0) * (range_s[i] / 0.02).clamp(0.0, 1.0);
+            let th = 0.5 * (2.0 * jxy[i]).atan2(jxx[i] - jyy[i]);
+            cw[i] = (2.0 * th).cos() * conf;
+            sw[i] = (2.0 * th).sin() * conf;
+            wt[i] = conf;
+        }
+        infill_orientation(&cw, &sw, &wt, w, h)
+    });
     let (mut ox, mut oy) = (vec![0f32; n], vec![0f32; n]);
     for i in 0..n {
         // Dominant-eigenvector orientation of the smoothed 2×2 tensor.
@@ -569,8 +631,24 @@ fn coherent_gradient(luma: &[f32], w: u32, h: u32, sigma: i32) -> (Vec<f32>, Vec
         edge = edge.max(1.0 - flat);
         // Form: the local tensor at full magnitude. Atmosphere: a vertical "gradient" (= a horizontal stroke) at a
         // low magnitude, so the direction is defined but the detail gate (which reads this magnitude) does not fire.
-        ox[i] = theta.cos() * coh * edge;
-        oy[i] = theta.sin() * coh * edge + 0.05 * (1.0 - edge);
+        // Where the picture HAS form, the local tensor at full magnitude. Where it has none, a direction at a
+        // low magnitude — defined, but too weak to fire the detail gate, so the infill decides where strokes
+        // POINT and never which marks are allowed.
+        let (fx, fy) = match (&follow, infill) {
+            (Some((oc, os)), _) => {
+                let th = 0.5 * os[i].atan2(oc[i]);
+                (th.cos(), th.sin())
+            }
+            // A named STROKE angle; the field here is a gradient, so a quarter turn off it.
+            (None, FlowInfill::Angle(deg)) => {
+                let g = deg.to_radians() + std::f32::consts::FRAC_PI_2;
+                (g.cos(), g.sin())
+            }
+            // FLAT: a gradient straight down the frame, which is a level stroke across it.
+            _ => (0.0, 1.0),
+        };
+        ox[i] = theta.cos() * coh * edge + fx * 0.05 * (1.0 - edge);
+        oy[i] = theta.sin() * coh * edge + fy * 0.05 * (1.0 - edge);
     }
     (ox, oy)
 }
@@ -826,7 +904,31 @@ fn blend_by_mask(coarse: &RgbImage, fine: &RgbImage, mask: &[f32], w: u32, h: u3
 /// but SHARP in structure — the beard is a dark mass with a defined edge, the face a light mass, the eyes dark
 /// accents — so the strokes paint recognizable form instead of averaging blurry colour. `side` is the structure
 /// resolution (LARGER = more structure retained → smaller smoothing radius); `levels` = number of value masses.
-fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32) -> RgbImage {
+/// Where the armature's value levels go, given the picture's own sorted luminances.
+///
+/// Spacing them evenly across the range spends them where the picture is not: a lamplit interior lives in its
+/// bottom third, so every bowl, jug and shelf in the dark falls into ONE mass and vanishes before a stroke is
+/// laid — not softened, gone. Placing them at the picture's own quantiles gives a passage levels in proportion
+/// to the area it occupies.
+///
+/// Half way, not all the way. Full equalisation is the opposite failure: on a dark picture it hands almost
+/// every level to the shadows and flattens the lit passage the painting is actually about. The midpoint keeps
+/// both ends readable.
+fn level_cuts(sorted_luma: &[f32], levels: u32) -> Vec<f32> {
+    let step = 1.0 / (levels.max(2) - 1) as f32;
+    if sorted_luma.len() < levels as usize || levels < 2 {
+        return (0..levels).map(|k| k as f32 * step).collect();
+    }
+    (0..levels)
+        .map(|k| {
+            let even = k as f32 * step;
+            let q = sorted_luma[(k as usize * (sorted_luma.len() - 1)) / (levels as usize - 1)];
+            0.5 * even + 0.5 * q
+        })
+        .collect()
+}
+
+fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32, by_area: bool) -> RgbImage {
     let (w, h) = img.dimensions();
     // Structure resolution → spatial radius: a coarser armature removes more texture (bigger radius).
     let r = ((w.min(h) as f32 / side.max(1) as f32).round() as i32).clamp(1, 16);
@@ -882,6 +984,19 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32) ->
     }
     if levels >= 2 {
         let step = 1.0 / (levels - 1) as f32;
+        // WHERE THE LEVELS GO. Spacing them evenly across the value range spends them where the picture is
+        // not: a lamplit interior lives in its bottom third, so every bowl, jug and shelf in the dark fell
+        // into ONE mass and vanished before a stroke was laid — not softened, gone. Place them instead at the
+        // picture's own value quantiles, so a passage gets levels in proportion to the area it occupies.
+        //
+        // Half way, not all the way. Full equalisation is the opposite failure: on a dark picture it hands
+        // almost every level to the shadows and flattens the lit passage that the painting is actually about.
+        // The midpoint between an even spacing and the picture's own distribution keeps both ends readable.
+        let cuts: Option<Vec<f32>> = by_area.then(|| {
+            let mut ys: Vec<f32> = luma_map(&out).into_iter().filter(|v| *v > 1e-4).collect();
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            level_cuts(&ys, levels)
+        });
         // Quantise only where there is an EDGE to make crisp. A value mass is flat, but a painter keeps a smooth
         // GRADIENT smooth — a sunset sky, a field falling off into haze — while posterising it snaps a wide, slow
         // gradient into flat bands with jagged contour edges the painting then faithfully copies (the tell on
@@ -899,8 +1014,23 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32) ->
                 // Snap to the nearest value level, but FLOOR the bottom bin at step/2: plain rounding sent every
                 // value below step/2 to exactly 0 — a black hole that turned dark grass and shadow masses PURE
                 // BLACK before a stroke was laid. A shadow mass is a solid dark, never black (RFC §3.3).
-                let snapped = ((y / step).round() * step).max(0.5 * step);
-                let mut edge = ((range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
+                // `cuts` are not evenly spaced, so the level this value belongs to — and how wide that level
+                // is — are both found by looking, and the edge test uses the LOCAL width.
+                let (snapped, local) = match &cuts {
+                    Some(cs) => {
+                        let mut bi = 0usize;
+                        for (j, c) in cs.iter().enumerate() {
+                            if (y - c).abs() < (y - cs[bi]).abs() {
+                                bi = j;
+                            }
+                        }
+                        let lo = if bi > 0 { cs[bi] - cs[bi - 1] } else { f32::MAX };
+                        let hi = if bi + 1 < cs.len() { cs[bi + 1] - cs[bi] } else { f32::MAX };
+                        (cs[bi].max(0.5 * step), lo.min(hi).clamp(0.02, 1.0))
+                    }
+                    None => (((y / step).round() * step).max(0.5 * step), step),
+                };
+                let mut edge = ((range[i] - 0.35 * local) / (0.5 * local)).clamp(0.0, 1.0);
                 if let Some(rp) = &ramp {
                     edge *= 1.0 - rp[i];
                 }
@@ -971,7 +1101,7 @@ pub fn coarse_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     // are clean curves: snap the values into masses where a boundary runs (the edge-gated snap), and the
     // masses meet along firm edges — the block-in shapes — with nothing inside them to trace. (Left soft,
     // every edge was a blur and no stroke had a boundary to stop at: the picture lost its drawing.)
-    structure_armature(&up, side.max(short / 16), levels, 0.0)
+    structure_armature(&up, side.max(short / 16), levels, 0.0, true)
 }
 
 /// The per-plane MINIMUM BRUSH radius of a from-scratch painting (RFC §9), as (background, figure, focal):
@@ -1261,7 +1391,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // STRUCTURE-PRESERVING armature (not a blur): value masses with sharp edges, per region resolution.
             let levels = p.armature_levels.max(2);
             // A from-scratch painting reads a genuinely LOW-RESOLUTION armature (see `coarse_armature`).
-            let build = |side: u32, gradation: f32| if p.from_scratch { coarse_armature(input, side, levels) } else { structure_armature(input, side, levels, gradation) };
+            let build = |side: u32, gradation: f32| if p.from_scratch { coarse_armature(input, side, levels) } else { structure_armature(input, side, levels, gradation, false) };
             let mut arm = build(s, p.gradation);
             for (mask, side) in tiers {
                 let lvl = build(side, 0.0);
@@ -1533,7 +1663,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // Coherent flow (structure tensor). Fidelity + detail keep it TIGHT (small sigma) so strokes hug local
         // edges; coarse legible passes smooth it so masses follow gross form.
         let sigma = if detail || fidelity { 2 } else { (radius * 0.9).round().clamp(2.0, 24.0) as i32 };
-        let (gx, gy) = coherent_gradient(&luma, w, h, sigma);
+        let (gx, gy) = coherent_gradient(&luma, w, h, sigma, p.infill);
         // CROSS-HATCH: rotate this pass's flow by the medium's hatch angle × layer, so successive restatements
         // cross the form at the classic angles instead of all lying along it (tempera's woven net).
         let (gx, gy) = if p.hatch_angle.abs() > 1e-3 && !block_in {
@@ -2422,7 +2552,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
     let ink_t = sorted[((sorted.len() as f32 - 1.0) * 0.12) as usize].min(0.10);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let n = p.palette.pigments.len();
-    let (fgx, fgy) = coherent_gradient(&fluma, w, h, (long / 200.0).max(2.0) as i32);
+    let (fgx, fgy) = coherent_gradient(&fluma, w, h, (long / 200.0).max(2.0) as i32, FlowInfill::Flat);
     let mut dry = p.brush;
     dry.k_pickup = 0.0;
     dry.bristles = 11;
@@ -2489,7 +2619,7 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
         reference
     } else {
         let r_wash = (w.max(h) as f32 * 0.007).max(2.0);
-        smoothed = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
+        smoothed = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0, false);
         &smoothed
     };
     let luma = luma_map(input);
@@ -3125,7 +3255,7 @@ mod tests {
         let (Ok(inp), Ok(out)) = (std::env::var("PLAKAT_DIAG_IMG"), std::env::var("PLAKAT_DIAG_OUT")) else { return };
         let img = image::open(inp).unwrap().to_rgb8();
         for g in [0.0f32, 1.0] {
-            structure_armature(&img, 210, 8, g).save(format!("{out}/armature_g{g}.png")).unwrap();
+            structure_armature(&img, 210, 8, g, false).save(format!("{out}/armature_g{g}.png")).unwrap();
         }
         for side in [64u32, 96, 200, 470] {
             coarse_armature(&img, side, 8).save(format!("{out}/coarse_{side}.png")).unwrap();
@@ -3215,6 +3345,49 @@ mod tests {
         assert!(lap(&arm) < lap(&img) * 0.05, "the texture is gone: {} vs {}", lap(&arm), lap(&img));
         let (l, r) = (arm.get_pixel(20, 128).0[0] as i32, arm.get_pixel(236, 128).0[0] as i32);
         assert!(r - l > 60, "the ramp survives as structure: {l} → {r}");
+    }
+
+    #[test]
+    fn the_infill_carries_direction_into_a_flat_passage() {
+        // Left half carries diagonal structure; the right half is flat and has nothing of its own to follow.
+        // FLAT lays the empty half level, which is right for a sky and is what tiles a dark mass into a
+        // rectangular quilt. FOLLOW carries the neighbouring direction across instead.
+        let (w, h) = (96u32, 64u32);
+        let luma: Vec<f32> = (0..(w * h))
+            .map(|i| {
+                let (x, y) = ((i % w) as i32, (i / w) as i32);
+                if x < 40 && ((x + y) / 4) % 2 == 0 { 0.15 } else { 0.85 }
+            })
+            .collect();
+        let flat_at = |mode: FlowInfill| {
+            let (gx, gy) = coherent_gradient(&luma, w, h, 3, mode);
+            let i = (32 * w + 80) as usize; // deep in the empty half
+            stroke_dir(gx[i], gy[i])
+        };
+        let level = flat_at(FlowInfill::Flat);
+        assert!(level[1].abs() < 0.2, "flat lays the empty passage level: {level:?}");
+        let followed = flat_at(FlowInfill::Follow);
+        assert!(followed[1].abs() > 0.4, "follow carries the diagonal across instead: {followed:?}");
+        // And a named angle is obeyed outright.
+        let fixed = flat_at(FlowInfill::Angle(90.0));
+        assert!(fixed[0].abs() < 0.2, "a named 90° is a vertical stroke: {fixed:?}");
+    }
+
+    #[test]
+    fn the_armature_puts_its_levels_where_the_picture_is() {
+        // A picture that lives in its bottom third, like a lamplit interior: 90% of it below 0.2.
+        let mut ys: Vec<f32> = (0..9000).map(|i| i as f32 / 9000.0 * 0.2).collect();
+        ys.extend((0..1000).map(|i| 0.6 + i as f32 / 1000.0 * 0.4));
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let cuts = level_cuts(&ys, 8);
+        assert_eq!(cuts.len(), 8);
+        let dark = cuts.iter().filter(|&&c| c < 0.3).count();
+        // Even spacing would put 3 of 8 below 0.3; the picture's own distribution earns the darks more.
+        assert!(dark > 3, "the darks get levels in proportion to the area they hold: {cuts:?}");
+        // But not all of them — the lit passage must keep levels of its own.
+        assert!(cuts.iter().any(|&c| c > 0.5), "the lights are not starved: {cuts:?}");
+        assert!(cuts.windows(2).all(|p| p[1] >= p[0]), "cuts stay in order: {cuts:?}");
     }
 
     #[test]

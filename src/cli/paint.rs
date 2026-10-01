@@ -524,6 +524,15 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// INFILL: what a stroke follows where the picture gives it NOTHING to follow — a flat passage, which in
+    /// a dark interior is most of the canvas. `flat` lays long level marks, the way a painter blends a sky;
+    /// it is right for atmosphere and wrong for a dark mass, where every stroke runs horizontally and the
+    /// passage tiles into a rectangular quilt. `follow` carries the direction inward from the nearest
+    /// structure, so a dark mass is stroked along the shelf edge or silhouette that bounds it. A NUMBER is a
+    /// fixed stroke angle in degrees from horizontal — the painter's own decision about a passage.
+    /// Default: `follow` for a new painting, `flat` otherwise (the path whose renders are already accepted).
+    #[arg(long, value_name = "follow|flat|DEGREES")]
+    pub infill: Option<String>,
     /// HAIR MASK: a grey PNG, white where hair / beard / fur is. Those passages are painted with the STRAND
     /// tool — many raked bristle lanes, almost no pickup, long narrow marks tapering to a point, following the
     /// picture's own growth direction, and a minority of strands breaking the silhouette. Given, it REPLACES
@@ -1066,6 +1075,17 @@ async fn sam_hair_extent(path: &std::path::Path, w: u32, h: u32, seed: &[f32]) -
             Ok(None)
         }
     }
+}
+
+/// `follow` / `flat` / a stroke angle in degrees.
+fn parse_infill(v: &str) -> Result<crate::paint::painter::FlowInfill> {
+    use crate::paint::painter::FlowInfill;
+    let t = v.trim();
+    Ok(match t.to_ascii_lowercase().as_str() {
+        "follow" | "structure" => FlowInfill::Follow,
+        "flat" | "level" => FlowInfill::Flat,
+        _ => FlowInfill::Angle(t.parse::<f32>().with_context(|| format!("--infill expects follow, flat, or an angle in degrees — got {t:?}"))?),
+    })
 }
 
 /// Load a HAIR MASK png (white = hair) and fit it to the painting. A hand-drawn mask has a hard edge, and a
@@ -1632,6 +1652,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.hair_mask.is_none() {
             a.hair_mask = plan.hair_mask.as_ref().map(std::path::PathBuf::from);
         }
+        if a.infill.is_none() {
+            a.infill = plan.infill.clone();
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -1742,6 +1765,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     let mut params = PaintParams::new(palette, a.budget);
     params.from_scratch = a.new_painting;
+    // A new painting FOLLOWS by default: it is the path being judged, and the quilt is its most visible
+    // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
+    // stay exactly as they are. Either can be overridden outright.
+    params.infill = match a.infill.as_deref() {
+        Some(v) => parse_infill(v)?,
+        None if a.new_painting => painter::FlowInfill::Follow,
+        None => painter::FlowInfill::Flat,
+    };
     // MEDIUM: apply the full technique behaviour (as the spec path does); the flags below still override.
     // The medium's MARK character (its brush, stroke proportions, charge, hatching, own grey) — applied AFTER
     // the flags below so it multiplies what the user asked for.
