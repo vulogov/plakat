@@ -193,6 +193,8 @@ pub struct PaintParams {
     /// highlight — it is where the light is, and the picture wants it; what it lacks is its falloff. 1 models
     /// it fully. See [`hotspot_pass`].
     pub hotspot: f32,
+    /// See [`WetTechnique`]. `None` keeps every medium exactly as it was.
+    pub technique: WetTechnique,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -364,7 +366,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -548,6 +550,144 @@ pub fn hair_flow_field(src: &RgbImage, side: u32) -> HairFlow {
     HairFlow { dx, dy, coherence: coh, strandness: strand }
 }
 
+/// How many `true` cells each (2r+1)² window holds, clipped at the edges — one 2-D prefix sum, O(1) a pixel.
+fn box_count(src: &[bool], w: usize, h: usize, r: usize) -> (Vec<u32>, Vec<u32>) {
+    let mut ps = vec![0u32; (w + 1) * (h + 1)];
+    for y in 0..h {
+        let mut row = 0u32;
+        for x in 0..w {
+            row += src[y * w + x] as u32;
+            ps[(y + 1) * (w + 1) + (x + 1)] = ps[y * (w + 1) + (x + 1)] + row;
+        }
+    }
+    let mut cnt = vec![0u32; w * h];
+    let mut area = vec![0u32; w * h];
+    for y in 0..h {
+        let (y0, y1) = (y.saturating_sub(r), (y + r + 1).min(h));
+        for x in 0..w {
+            let (x0, x1) = (x.saturating_sub(r), (x + r + 1).min(w));
+            let s = ps[y1 * (w + 1) + x1] + ps[y0 * (w + 1) + x0] - ps[y0 * (w + 1) + x1] - ps[y1 * (w + 1) + x0];
+            cnt[y * w + x] = s;
+            area[y * w + x] = ((y1 - y0) * (x1 - x0)) as u32;
+        }
+    }
+    (cnt, area)
+}
+
+fn erode_bool(src: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
+    let (cnt, area) = box_count(src, w, h, r);
+    cnt.iter().zip(&area).map(|(c, a)| c == a).collect()
+}
+
+fn dilate_bool(src: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
+    let (cnt, _) = box_count(src, w, h, r);
+    cnt.iter().map(|c| *c > 0).collect()
+}
+
+/// Keep only the connected regions of at least `min_area` cells.
+fn keep_large_regions(src: &[bool], w: usize, h: usize, min_area: usize) -> Vec<bool> {
+    let n = w * h;
+    let mut out = vec![false; n];
+    let mut seen = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut region: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if !src[start] || seen[start] {
+            continue;
+        }
+        region.clear();
+        stack.push(start);
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            region.push(i);
+            let (x, y) = (i % w, i / w);
+            if x > 0 && src[i - 1] && !seen[i - 1] { seen[i - 1] = true; stack.push(i - 1); }
+            if x + 1 < w && src[i + 1] && !seen[i + 1] { seen[i + 1] = true; stack.push(i + 1); }
+            if y > 0 && src[i - w] && !seen[i - w] { seen[i - w] = true; stack.push(i - w); }
+            if y + 1 < h && src[i + w] && !seen[i + w] { seen[i + w] = true; stack.push(i + w); }
+        }
+        if region.len() >= min_area {
+            for &i in &region {
+                out[i] = true;
+            }
+        }
+    }
+    out
+}
+
+/// POOLS. As a wash dries its pigment migrates to the edge and settles there, and the dark rim it leaves
+/// — the cauliflower edge — is the mark that says "watercolour" more than any other. The output-time edge
+/// pooling reads the paint-amount gradient, and by the time the modelling passes have been over the washes
+/// that gradient is gone, which is why `edge_pool` could be set to anything and show nothing.
+///
+/// So the rim is PAINTED, as a finish stage after the modelling, along the rings every wash recorded: the
+/// wash's own pigment, more concentrated, in a thin line on its boundary. A recorded stroke, so it replays
+/// exactly; laid last, so no restate pass can read it as an error and paint it back out.
+fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+    let strength = p.edge_pool.clamp(0.0, 1.0);
+    if strength <= 0.0 || *placed >= p.budget {
+        return;
+    }
+    let (w, h) = (canvas.w, canvas.h);
+    let short = w.min(h) as f32;
+    let np = p.palette.pigments.len();
+    // Every wash's rings and mixture, gathered first: the records are about to grow.
+    let washes: Vec<(Vec<[f32; 2]>, Vec<f32>)> = score
+        .strokes
+        .iter()
+        .filter(|r| r.wash)
+        .map(|r| {
+            let mut load = vec![0f32; np];
+            for (name, v) in &r.mix {
+                if let Some(idx) = p.palette.pigments.iter().position(|pg| pg.name == name) {
+                    load[idx] = *v;
+                }
+            }
+            (r.spline.clone(), load)
+        })
+        .collect();
+    if washes.is_empty() {
+        return;
+    }
+    let width = (short * 0.002).max(1.5) * (0.6 + 0.6 * strength);
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.1;
+    brush.round = 0.95;
+    for (rings, load) in washes {
+        let load: Vec<f32> = load.iter().map(|v| v * (1.0 + 1.2 * strength)).collect();
+        for ring in rings.split(|pt| pt[0].is_nan()) {
+            if ring.len() < 3 || *placed >= p.budget {
+                continue;
+            }
+            *k += 1;
+            let mut path = ring.to_vec();
+            path.push(ring[0]); // close it
+            let s = Stroke { path, width0: width, width1: width, load: load.clone(), pressure: 0.9, wetness: 0.35 };
+            s.rasterize(canvas, &brush);
+            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: false,
+                wash: false,
+                stage: "pool".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.0,
+                mix,
+                wet: s.wetness,
+                press: 0.9,
+                streak: brush.streak,
+                round: brush.round,
+                pickup: Some(0.0),
+                bristles: None,
+            });
+        }
+    }
+}
+
 /// A COHERENT flow field via the structure tensor (Kang/Hertzmann coherence-enhancing painterly rendering).
 /// Raw per-pixel Sobel swirls on a smoothed armature — the direction jitters between neighbours, so strokes
 /// wander and the painting reads as noise. Instead we build the tensor J = [[gx², gxgy],[gxgy, gy²]], blur it
@@ -555,6 +695,23 @@ pub fn hair_flow_field(src: &RgbImage, side: u32) -> HairFlow {
 /// per pixel: direction = the tensor's dominant eigenvector (θ = ½·atan2(2Jxy, Jxx−Jyy)), magnitude = the
 /// coherence (how anisotropic the neighbourhood is). `stroke_dir` takes the perpendicular of this, giving a
 /// smooth, form-following stroke direction that only wavers where the image genuinely has no structure.
+/// HOW WET THE PAPER IS when pigment lands — the decision that makes a watercolour look the way it does,
+/// expressed as what the PIGMENT does, not as a set of finish amounts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WetTechnique {
+    /// The medium's own behaviour, unchanged.
+    None,
+    /// Pigment lands in standing water: a stroke goes down flooded and spreads, washes bloom into each
+    /// other, nothing dries between layers, and no edge ever sets hard enough for a rim to form.
+    WetOnWet,
+    /// A loaded brush on dry paper: a wash lands where it is put and blooms only within itself, each layer
+    /// SETS before the next, and as it dries its pigment migrates to the boundary and leaves the rim.
+    WetOnDry,
+    /// A barely-loaded brush dragged over dry paper: little pigment, laid raked, skipping on the tooth;
+    /// nothing bleeds, nothing pools, and what pigment there is granulates into the hollows.
+    DryOnDry,
+}
+
 /// What a stroke should follow where the picture gives it NOTHING to follow — a flat passage, which in a
 /// dark interior is most of the canvas.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1605,6 +1762,29 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     l > rt && sh < 0.35 && subj < 0.5
                 })
                 .collect();
+            // SHAPE-AWARE, for a new painting. A per-pixel threshold reserves every bright pixel wherever it
+            // falls — a fleck on a lamp, a glint in hair, the bead on a window frame — and the paper comes out
+            // as scattered white holes, growing with every push of the threshold. A watercolourist reserves
+            // SHAPES: the few large, simple, light areas the picture is built around, and never the face. So
+            // the candidate is opened (ragged edges off), split into connected regions, and only regions at
+            // least a thirty-second of the sheet across are kept.
+            if p.from_scratch {
+                let (wu, hu) = (w as usize, h as usize);
+                let short = w.min(h) as usize;
+                if let Some(fm) = p.face_mask.as_deref() {
+                    for (a, &f) in m.iter_mut().zip(fm) {
+                        if f > 0.3 {
+                            *a = false;
+                        }
+                    }
+                }
+                let r = (short / 400).max(2);
+                let opened = dilate_bool(&erode_bool(&m, wu, hu, r), wu, hu, r);
+                // A sixty-fourth of the sheet across — a lit window pane is a shape worth reserving; the
+                // opening above has already removed anything thinner than a few pixels.
+                let min_side = (short / 64).max(6);
+                m = keep_large_regions(&opened, wu, hu, min_side * min_side);
+            }
             if let Some(pm) = p.protect.as_deref() {
                 for (a, &b) in m.iter_mut().zip(pm) {
                     *a |= b;
@@ -1986,6 +2166,25 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.bristles = ((stroke_brush.bristles as f32) * (1.0 + 1.4 * hair)).round().clamp(1.0, 256.0) as usize;
                     stroke_brush.k_pickup *= 1.0 - 0.85 * hair;
                 }
+                // THE TECHNIQUE, as what the pigment does on this stroke. Wet-on-wet lands flooded. Wet-on-dry
+                // lands as a loaded wash, moderately wet, and relies on drying between layers. Dry-on-dry
+                // carries little pigment and goes down raked, so the bristles skip and the paper's tooth
+                // breaks the mark — the dry-brush drag.
+                let (wet, load, s_streak) = match p.technique {
+                    WetTechnique::WetOnWet => (wet.max(0.9), load, s_streak),
+                    WetTechnique::WetOnDry => (wet.clamp(0.45, 0.7), load, s_streak),
+                    WetTechnique::DryOnDry => {
+                        let thin: Vec<f32> = load.iter().map(|v| v * 0.55).collect();
+                        (wet.min(0.15), thin, s_streak.max(0.8))
+                    }
+                    WetTechnique::None => (wet, load, s_streak),
+                };
+                if p.technique != WetTechnique::None {
+                    stroke_brush.streak = s_streak;
+                    if p.technique == WetTechnique::DryOnDry {
+                        stroke_brush.k_pickup = 0.0;
+                    }
+                }
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
                 let s = Stroke { path, width0: rw, width1: (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair)), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
                 s.rasterize(cv, &stroke_brush);
@@ -2005,7 +2204,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     streak: s_streak,
                     round: s_round,
                     // A detail accent's near-clean pickup is part of how it was laid — record it so replay is exact.
-                    pickup: if detail || hair > 0.0 { Some(stroke_brush.k_pickup) } else { None },
+                    // A pickup the stroke's own brush differs in from the header's is part of how it was laid.
+                    // The dry brush zeroes it; left unrecorded, replay rebuilt every dry-brush mark with the
+                    // header's pickup and drifted — the unrecorded-bristles bug again.
+                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                 })
             }
@@ -2192,6 +2394,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
 
     // SPLATTER pass (watercolour / ink): flick droplets across the painting — the signature spatter. Laid before
     // the bleed so wet media soften a few of the spots into little blooms.
+    // POOLS: the dried rim of every wash, painted last (see `pool_pass`). Under the spatter.
+    // A rim needs an edge that SET: wet-on-wet never has one, and the dry brush had no water to pool.
+    let rims_form = matches!(p.technique, WetTechnique::None | WetTechnique::WetOnDry);
+    if p.luminous && p.edge_pool > 0.0 && rims_form && placed < p.budget {
+        pool_pass(&mut canvas, &mut score, p, &mut placed, &mut k);
+    }
     if p.splatter > 0.0 && placed < p.budget {
         splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
@@ -2831,9 +3039,13 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
     if strength <= 0.0 {
         return;
     }
-    // One droplet per ~1400 px at full strength; capped well under the budget so spatter never dominates.
-    let want = (w as f32 * h as f32 / 1400.0 * strength) as usize;
-    let n = want.min(p.budget.saturating_sub(*placed)).min(8000);
+    // Enough to READ. One droplet per 1400 px laid 905 marks among 88,000 on a 2048² sheet — a tasteful
+    // accent nobody could see. The references spatter in the hundreds of visible drops; this is still a
+    // small share of any budget.
+    let want = (w as f32 * h as f32 / 600.0 * strength) as usize;
+    let n = want.min(p.budget.saturating_sub(*placed)).min(20000);
+    // Sizes scale with the sheet, so a drop on a 2048 sheet is a drop and not a pixel.
+    let unit = (w.min(h) as f32 / 1024.0).max(0.5);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let np = p.palette.pigments.len();
     let can_lift = p.reserve.is_some() && p.lift > 1e-3;
@@ -2872,10 +3084,20 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
             continue;
         }
         let rr = (jitter(p.seed ^ 0x2AE7, k.wrapping_add(3)) + 0.5).clamp(0.0, 1.0);
-        // Mostly fine (sub-pixel to ~2px); a short tail of coarser blobs.
-        let radius = if rr > 0.94 { 2.0 + 3.0 * (rr - 0.94) / 0.06 } else { 0.6 + 1.2 * rr };
+        // Mostly fine; a tail of coarser blobs, the biggest a few brush widths — the drop that flew furthest.
+        let radius = unit * if rr > 0.9 { 2.0 + 5.0 * (rr - 0.9) / 0.1 } else { 0.6 + 1.4 * rr };
+        // A drop on wet paper blooms wide and soft; on dry paper it is a hard dot.
+        let (radius, drop_wet) = match p.technique {
+            WetTechnique::WetOnWet => (radius * 1.5, 0.9),
+            WetTechnique::DryOnDry => (radius * 0.8, 0.15),
+            _ => (radius, 0.5),
+        };
         let path = vec![[cx, cy], [cx + 0.6, cy + 0.4]];
-        let lift = can_lift && (jitter(p.seed ^ 0x71C3, k.wrapping_add(5)) + 0.5) < 0.22 * strength;
+        // A drop READS by contrast: on dark paint it is the paper showing through (a lift), on light paint it
+        // is pigment. Decided from the canvas as it stands at this spot — a fact of the picture, not a setting.
+        let here = canvas.color_at(cx as u32, cy as u32);
+        let dark_here = 1.0 - color::linear_luma(color::srgb_to_linear(here));
+        let lift = can_lift && (jitter(p.seed ^ 0x71C3, k.wrapping_add(5)) + 0.5) < (0.15 + 0.6 * dark_here) * strength;
         if lift {
             // Bright droplet: scrape to the paper. Apply at wet*lift so replay (same formula) matches exactly.
             let wet = 1.6_f32;
@@ -2900,7 +3122,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
         } else {
             let mut load = vec![0f32; np];
             load[ink] = p.charge * (0.45 + 0.55 * rr);
-            let s = Stroke { path, width0: radius, width1: radius, load, pressure: 1.0, wetness: 0.5 };
+            let s = Stroke { path, width0: radius, width1: radius, load, pressure: 1.0, wetness: drop_wet };
             s.rasterize(canvas, &brush);
             let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
             *placed += 1;
@@ -3218,9 +3440,17 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
             let darkness = 1.0 - (lv as f32 / (n_levels - 1) as f32);
             let charge = if p.book { 0.2 } else { 0.4 + 2.4 * darkness * darkness };
             let load = mixture_cached(&mut cache, mean, &p.palette, p.charge * charge, n);
-            let wet = 0.75;
+            // A wash's wetness and its wet edge are the technique: flooded and wide-edged on wet paper, a set
+            // wash with a rim's worth of edge on dry paper, and nearly dry with no wet edge at all for the
+            // dry-brush — there is no standing water for an edge to be made of.
+            let (wet, edge_mul) = match p.technique {
+                WetTechnique::WetOnWet => (0.95, 2.2),
+                WetTechnique::WetOnDry => (0.75, 1.0),
+                WetTechnique::DryOnDry => (0.45, 0.0),
+                WetTechnique::None => (0.75, 1.0),
+            };
             // The wet edge: ~0.3% of the long side (6 px on a 2048 sheet), so a wash meets the next with a rim.
-            let feather = (w.max(h) as f32 * 0.002).max(1.0).round();
+            let feather = ((w.max(h) as f32 * 0.002).max(1.0) * edge_mul).round();
             canvas.fill_rings(&rings, &load, wet, feather);
             *k += 1;
             *placed += 1;
@@ -3897,6 +4127,69 @@ mod tests {
         for r in [0usize, 1, 3, 11, 22, 40] {
             assert_eq!(local_range(&luma, w, h, r), naive(&luma, w, h, r), "radius {r}");
         }
+    }
+
+    #[test]
+    fn the_reserve_keeps_shapes_and_drops_flecks() {
+        // A watercolourist reserves SHAPES — the few large simple light areas — never scattered bright pixels.
+        // One big light block, one 2-px fleck, and a ragged 1-px spur on the block: the block survives with
+        // its spur cleaned off, the fleck is gone.
+        let (w, h) = (96usize, 96usize);
+        let mut m = vec![false; w * h];
+        for y in 20..60 {
+            for x in 20..60 {
+                m[y * w + x] = true;
+            }
+        }
+        for x in 60..75 {
+            m[40 * w + x] = true; // the spur, one pixel tall
+        }
+        m[80 * w + 80] = true; // the fleck
+        m[80 * w + 81] = true;
+        let opened = dilate_bool(&erode_bool(&m, w, h, 2), w, h, 2);
+        let kept = keep_large_regions(&opened, w, h, 12 * 12);
+        assert!(kept[40 * w + 40], "the block is kept");
+        assert!(!kept[40 * w + 70], "the one-pixel spur is opened off");
+        assert!(!kept[80 * w + 80], "the fleck is dropped");
+        let area = kept.iter().filter(|&&b| b).count();
+        assert!((1400..=1600).contains(&area), "the block keeps its size, not more and not less: {area}");
+    }
+
+    #[test]
+    fn the_techniques_lay_pigment_differently_and_each_replays_byte_exact() {
+        // Three techniques, one picture: the dry brush must carry LESS pigment and go down RAKED; the wet one
+        // must land WETTER. And each is an ordinary recorded painting, so each must replay exactly.
+        let img = gradient_img(96, 64);
+        let run = |t: WetTechnique| {
+            let mut p = PaintParams::new(palette::EARTH, 2500);
+            p.brush_sizes = vec![14.0, 7.0, 4.0];
+            p.min_brush = 3.0;
+            p.luminous = true;
+            p.armature_levels = 4;
+            p.bleed = 0.3;
+            p.dry = 1.0;
+            p.draw_contours = false;
+            p.technique = t;
+            let r = paint_from_image(&img, &p);
+            let strokes: Vec<_> = r.score.strokes.iter().filter(|s| !s.wash && s.stage != "splatter" && s.stage != "pool").collect();
+            let mean = |f: &dyn Fn(&StrokeRecord) -> f32| strokes.iter().map(|s| f(s)).sum::<f32>() / strokes.len().max(1) as f32;
+            let load = mean(&|s| s.mix.iter().map(|(_, v)| *v).sum::<f32>());
+            let wet = mean(&|s| s.wet);
+            let streak = mean(&|s| s.streak);
+            let painted = r.canvas.to_image().into_raw();
+            let text = r.score.to_text();
+            let back = crate::paint::score::StrokeScore::parse(&text).unwrap().replay(96, 64).unwrap().to_image().into_raw();
+            assert_eq!(back, painted, "{t:?} replays byte-exact through the text");
+            (load, wet, streak)
+        };
+        let (l_wet, w_wet, _) = run(WetTechnique::WetOnWet);
+        let (l_dry, w_dry, k_dry) = run(WetTechnique::DryOnDry);
+        let (_, w_set, k_set) = run(WetTechnique::WetOnDry);
+        assert!(l_dry < l_wet * 0.75, "the dry brush carries less pigment ({l_dry:.3} vs {l_wet:.3})");
+        assert!(w_wet > w_set && w_set > w_dry, "wetness orders wet-on-wet > wet-on-dry > dry-on-dry ({w_wet:.2} / {w_set:.2} / {w_dry:.2})");
+        // The dry brush is held at the raked floor (0.8); a wet mark keeps the medium's own streak, which on
+        // this palette's brush already sits near 0.7, so the gap is real but not large. Measured 0.80 vs 0.69.
+        assert!(k_dry >= 0.79 && k_dry > k_set, "the dry brush is raked ({k_dry:.2} vs {k_set:.2})");
     }
 
     #[test]
