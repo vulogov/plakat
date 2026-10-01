@@ -524,6 +524,14 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
+    /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
+    /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
+    /// is lighter or darker than BOTH its sides, so an edge detector fires beside it and never on it), in the
+    /// shape's own colour, and only where the painting LOST one. Rationed hard — a wiry picture is worse than
+    /// a missing stem. Default: 0.35 for a new painting, 0 otherwise.
+    #[arg(long)]
+    pub rigger: Option<f32>,
     /// INFILL: what a stroke follows where the picture gives it NOTHING to follow — a flat passage, which in
     /// a dark interior is most of the canvas. `flat` lays long level marks, the way a painter blends a sky;
     /// it is right for atmosphere and wrong for a dark mass, where every stroke runs horizontally and the
@@ -1655,6 +1663,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.infill.is_none() {
             a.infill = plan.infill.clone();
         }
+        if a.rigger.is_none() {
+            a.rigger = plan.rigger;
+        }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
         }
@@ -1768,6 +1779,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // A new painting FOLLOWS by default: it is the path being judged, and the quilt is its most visible
     // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
     // stay exactly as they are. Either can be overridden outright.
+    params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
         None if a.new_painting => painter::FlowInfill::Follow,

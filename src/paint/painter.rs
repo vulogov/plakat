@@ -184,6 +184,10 @@ pub struct PaintParams {
     /// What a stroke follows where the picture gives it nothing to follow. See [`FlowInfill`]; `Flat` is the
     /// long-standing behaviour and the default.
     pub infill: FlowInfill,
+    /// THE RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a
+    /// stem, a spoon handle, the line of a shelf. See [`rigger_pass`]; rationed hard, because a wiry picture is
+    /// worse than a missing stem.
+    pub rigger: f32,
     pub seed: u64,
     pub brush: BrushConfig,
     /// COMPOSITION LAYER (per-element painting): only seed strokes where `paint_mask` is true — the element's
@@ -355,7 +359,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -904,31 +908,7 @@ fn blend_by_mask(coarse: &RgbImage, fine: &RgbImage, mask: &[f32], w: u32, h: u3
 /// but SHARP in structure — the beard is a dark mass with a defined edge, the face a light mass, the eyes dark
 /// accents — so the strokes paint recognizable form instead of averaging blurry colour. `side` is the structure
 /// resolution (LARGER = more structure retained → smaller smoothing radius); `levels` = number of value masses.
-/// Where the armature's value levels go, given the picture's own sorted luminances.
-///
-/// Spacing them evenly across the range spends them where the picture is not: a lamplit interior lives in its
-/// bottom third, so every bowl, jug and shelf in the dark falls into ONE mass and vanishes before a stroke is
-/// laid — not softened, gone. Placing them at the picture's own quantiles gives a passage levels in proportion
-/// to the area it occupies.
-///
-/// Half way, not all the way. Full equalisation is the opposite failure: on a dark picture it hands almost
-/// every level to the shadows and flattens the lit passage the painting is actually about. The midpoint keeps
-/// both ends readable.
-fn level_cuts(sorted_luma: &[f32], levels: u32) -> Vec<f32> {
-    let step = 1.0 / (levels.max(2) - 1) as f32;
-    if sorted_luma.len() < levels as usize || levels < 2 {
-        return (0..levels).map(|k| k as f32 * step).collect();
-    }
-    (0..levels)
-        .map(|k| {
-            let even = k as f32 * step;
-            let q = sorted_luma[(k as usize * (sorted_luma.len() - 1)) / (levels as usize - 1)];
-            0.5 * even + 0.5 * q
-        })
-        .collect()
-}
-
-fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32, by_area: bool) -> RgbImage {
+fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32) -> RgbImage {
     let (w, h) = img.dimensions();
     // Structure resolution → spatial radius: a coarser armature removes more texture (bigger radius).
     let r = ((w.min(h) as f32 / side.max(1) as f32).round() as i32).clamp(1, 16);
@@ -984,19 +964,6 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32, by
     }
     if levels >= 2 {
         let step = 1.0 / (levels - 1) as f32;
-        // WHERE THE LEVELS GO. Spacing them evenly across the value range spends them where the picture is
-        // not: a lamplit interior lives in its bottom third, so every bowl, jug and shelf in the dark fell
-        // into ONE mass and vanished before a stroke was laid — not softened, gone. Place them instead at the
-        // picture's own value quantiles, so a passage gets levels in proportion to the area it occupies.
-        //
-        // Half way, not all the way. Full equalisation is the opposite failure: on a dark picture it hands
-        // almost every level to the shadows and flattens the lit passage that the painting is actually about.
-        // The midpoint between an even spacing and the picture's own distribution keeps both ends readable.
-        let cuts: Option<Vec<f32>> = by_area.then(|| {
-            let mut ys: Vec<f32> = luma_map(&out).into_iter().filter(|v| *v > 1e-4).collect();
-            ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            level_cuts(&ys, levels)
-        });
         // Quantise only where there is an EDGE to make crisp. A value mass is flat, but a painter keeps a smooth
         // GRADIENT smooth — a sunset sky, a field falling off into haze — while posterising it snaps a wide, slow
         // gradient into flat bands with jagged contour edges the painting then faithfully copies (the tell on
@@ -1014,23 +981,8 @@ fn structure_armature(img: &RgbImage, side: u32, levels: u32, gradation: f32, by
                 // Snap to the nearest value level, but FLOOR the bottom bin at step/2: plain rounding sent every
                 // value below step/2 to exactly 0 — a black hole that turned dark grass and shadow masses PURE
                 // BLACK before a stroke was laid. A shadow mass is a solid dark, never black (RFC §3.3).
-                // `cuts` are not evenly spaced, so the level this value belongs to — and how wide that level
-                // is — are both found by looking, and the edge test uses the LOCAL width.
-                let (snapped, local) = match &cuts {
-                    Some(cs) => {
-                        let mut bi = 0usize;
-                        for (j, c) in cs.iter().enumerate() {
-                            if (y - c).abs() < (y - cs[bi]).abs() {
-                                bi = j;
-                            }
-                        }
-                        let lo = if bi > 0 { cs[bi] - cs[bi - 1] } else { f32::MAX };
-                        let hi = if bi + 1 < cs.len() { cs[bi + 1] - cs[bi] } else { f32::MAX };
-                        (cs[bi].max(0.5 * step), lo.min(hi).clamp(0.02, 1.0))
-                    }
-                    None => (((y / step).round() * step).max(0.5 * step), step),
-                };
-                let mut edge = ((range[i] - 0.35 * local) / (0.5 * local)).clamp(0.0, 1.0);
+                let snapped = ((y / step).round() * step).max(0.5 * step);
+                let mut edge = ((range[i] - 0.35 * step) / (0.5 * step)).clamp(0.0, 1.0);
                 if let Some(rp) = &ramp {
                     edge *= 1.0 - rp[i];
                 }
@@ -1101,7 +1053,7 @@ pub fn coarse_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
     // are clean curves: snap the values into masses where a boundary runs (the edge-gated snap), and the
     // masses meet along firm edges — the block-in shapes — with nothing inside them to trace. (Left soft,
     // every edge was a blur and no stroke had a boundary to stop at: the picture lost its drawing.)
-    structure_armature(&up, side.max(short / 16), levels, 0.0, true)
+    structure_armature(&up, side.max(short / 16), levels, 0.0)
 }
 
 /// The per-plane MINIMUM BRUSH radius of a from-scratch painting (RFC §9), as (background, figure, focal):
@@ -1391,7 +1343,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // STRUCTURE-PRESERVING armature (not a blur): value masses with sharp edges, per region resolution.
             let levels = p.armature_levels.max(2);
             // A from-scratch painting reads a genuinely LOW-RESOLUTION armature (see `coarse_armature`).
-            let build = |side: u32, gradation: f32| if p.from_scratch { coarse_armature(input, side, levels) } else { structure_armature(input, side, levels, gradation, false) };
+            let build = |side: u32, gradation: f32| if p.from_scratch { coarse_armature(input, side, levels) } else { structure_armature(input, side, levels, gradation) };
             let mut arm = build(s, p.gradation);
             for (mask, side) in tiers {
                 let lvl = build(side, 0.0);
@@ -2109,6 +2061,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
 
+    // THE RIGGER: the few shapes too thin for the ladder to have laid at all (see `rigger_pass`). Last, so it
+    // can see what the brushwork actually carried and restore only what was lost.
+    if p.rigger > 0.0 && placed < p.budget {
+        rigger_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), &mut placed, &mut k);
+    }
+
     // SILHOUETTE pass: draw a soft edge along the detected SUBJECT boundary so shoulders/collar read by their
     // contour against a light ground. Laid before the bleed so a wet medium softens the line.
     if p.silhouette > 0.0 && p.subject_mask.is_some() && placed < p.budget {
@@ -2258,6 +2216,169 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
 /// The CONTOUR / line pass: draw the reference's strongest edges as clean dark lines that follow the edge
 /// tangent — the drawn linework of pen, pencil and charcoal (the boat, the figure, the tree outlines). Strokes
 /// are thin, low-waver, no-pickup, in the local dark colour, recorded into the score like any other stroke.
+/// THE RIGGER. A stem, a spoon handle, the line of a shelf: anything NARROWER than the minimum brush cannot be
+/// laid by the brush ladder at all, so it does not soften — it disappears. A painter finishes with a rigger,
+/// one long thin decisive stroke, and puts those few things back.
+///
+/// It draws RIDGES, not edges. A contour follows a boundary between two masses; a thin shape is lighter or
+/// darker than BOTH its sides, so an edge detector fires twice beside it and never on it. The ridge map is the
+/// difference between a blur at the thin scale and a blur well above it, which responds to exactly the band of
+/// sizes the ladder cannot reach.
+///
+/// And it only restores what the painting LOST: the same ridge map is measured on the canvas as painted, and a
+/// mark is spent only where the picture has a ridge and the canvas no longer does. That is what keeps the pass
+/// honest — a shape the brushwork already carried is left alone — and it is self-limiting, because every
+/// stroke it lays removes its own reason to lay another.
+///
+/// Rationed hard: too many thin lines is a wiry, over-drawn picture, which is worse than the missing stems and
+/// far harder to walk back.
+#[allow(clippy::too_many_arguments)]
+fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    let n = (w * h) as usize;
+    let strength = p.rigger.clamp(0.0, 1.0);
+    if strength <= 0.0 || *placed >= p.budget {
+        return;
+    }
+    // The band of sizes the brush ladder cannot reach: narrower than its finest mark.
+    let r_thin = (p.min_brush * 0.5).round().max(1.0) as i32;
+    let r_wide = (p.min_brush * 2.5).round().max(3.0) as i32;
+    let ridge_of = |img: &RgbImage| -> Vec<f32> {
+        let l = luma_map(img);
+        let a = box_blur(&l, w, h, r_thin);
+        let b = box_blur(&l, w, h, r_wide);
+        a.iter().zip(&b).map(|(x, y)| x - y).collect()
+    };
+    let want = ridge_of(input);
+    let have = ridge_of(&canvas.to_image());
+    // What the picture has and the canvas has lost. Sign matters: a light stem restored as a dark one is not
+    // the same shape, so the two must agree in direction as well as presence.
+    let missed: Vec<f32> = (0..n)
+        .map(|i| {
+            if want[i].signum() != have[i].signum() {
+                want[i].abs()
+            } else {
+                (want[i].abs() - have[i].abs()).max(0.0)
+            }
+        })
+        .collect();
+    let mut sorted: Vec<f32> = missed.iter().copied().filter(|v| *v > 1e-4).collect();
+    if sorted.len() < 32 {
+        return;
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Even at full strength this is the top few percent of what was lost — the few things worth a rigger.
+    let keep = 0.01 + 0.05 * strength;
+    let thr = sorted[((1.0 - keep) * (sorted.len() as f32 - 1.0)) as usize].max(1e-3);
+
+    // Along the ridge, which is across its own gradient.
+    let luma = luma_map(input);
+    let (gx, gy) = coherent_gradient(&luma, w, h, r_thin.max(2), FlowInfill::Flat);
+    // IS IT A LINE AT ALL? A ridge map answers "brighter than its surroundings", and a round highlight
+    // answers yes — so the first build drew concentric rings around every onion, tracing each blob's isophote
+    // into a target. A stem is a LINE: its structure tensor is strongly oriented. A blob's is isotropic. So
+    // the rigger draws only where the neighbourhood agrees on a direction, which is what makes a thin shape
+    // thin in the first place.
+    let linear: Vec<f32> = {
+        let (sx, sy) = sobel(&luma, w, h);
+        let (mut jxx, mut jyy, mut jxy) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+        for i in 0..n {
+            jxx[i] = sx[i] * sx[i];
+            jyy[i] = sy[i] * sy[i];
+            jxy[i] = sx[i] * sy[i];
+        }
+        let r = r_thin.max(2);
+        let (jxx, jyy, jxy) = (box_blur(&jxx, w, h, r), box_blur(&jyy, w, h, r), box_blur(&jxy, w, h, r));
+        (0..n)
+            .map(|i| {
+                let disc = ((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]).sqrt();
+                (disc / (jxx[i] + jyy[i] + 1e-6)).clamp(0.0, 1.0)
+            })
+            .collect()
+    };
+    let radius = (p.min_brush * 0.55).max(1.0);
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.bristles = 1;
+    brush.streak = 0.05;
+    brush.round = 0.95;
+    // A hard ration, and never more than a small share of the sheet however much budget is left over.
+    let room = (p.budget - *placed) as f32 * (0.02 + 0.06 * strength);
+    let cap = (*placed + (room.min(n as f32 * 0.0008 * (0.5 + strength)) as usize)).min(p.budget);
+    let grid = (radius * 3.0).max(3.0);
+    let cols = ((w as f32) / grid).ceil() as u32;
+    let rows = ((h as f32) / grid).ceil() as u32;
+    let trace = (w.max(h) as f32 * 0.03 / (2.2 * radius)).max(1.0);
+    for gyi in 0..rows {
+        for gxi in 0..cols {
+            if *placed >= cap {
+                return;
+            }
+            *k += 1;
+            let cx = (gxi as f32 + 0.5) * grid + jitter(p.seed ^ 0x81D6, *k) * grid;
+            let cy = (gyi as f32 + 0.5) * grid + jitter(p.seed ^ 0x81D7, k.wrapping_add(1)) * grid;
+            if cx < 1.0 || cy < 1.0 || cx >= w as f32 - 1.0 || cy >= h as f32 - 1.0 {
+                continue;
+            }
+            let i = cy as usize * w as usize + cx as usize;
+            if missed[i] < thr || linear[i] < 0.6 {
+                continue;
+            }
+            // IS IT A LINE, OR THE EDGE OF SOMETHING BIG? Linearity alone cannot tell: a ring is linear at
+            // every point along it, so the first build with that gate still drew each onion's highlight rim
+            // as a target of concentric circles. A true thin shape is a local EXTREMUM ACROSS its width —
+            // step off either side and the value falls the same way both times. An edge or a rim is a step:
+            // one side is darker, the other lighter. So look at both sides and require them to agree.
+            let gnorm = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt().max(1e-6);
+            let (nx, ny) = (gx[i] / gnorm, gy[i] / gnorm);
+            let off = (p.min_brush * 1.2).max(2.0);
+            let at = |sx: f32, sy: f32| -> f32 {
+                let px = (cx + sx).clamp(0.0, w as f32 - 1.0) as usize;
+                let py = (cy + sy).clamp(0.0, h as f32 - 1.0) as usize;
+                luma[py * w as usize + px]
+            };
+            let here = luma[i];
+            let (a_side, b_side) = (at(nx * off, ny * off) - here, at(-nx * off, -ny * off) - here);
+            if a_side.signum() != b_side.signum() || a_side.abs().min(b_side.abs()) < 0.02 {
+                continue;
+            }
+            if protect.map(|m| m.get(i).copied().unwrap_or(false)).unwrap_or(false) {
+                continue;
+            }
+            // Its OWN colour, not ink: a pale stem over a dark shelf is light, and drawing it dark would put a
+            // different object there.
+            let c = input.get_pixel(cx as u32, cy as u32).0;
+            let load = mixture_cached(&mut std::collections::HashMap::new(), c, &p.palette, p.charge, p.palette.pigments.len());
+            let path = grow_path(cx, cy, radius, &gx, &gy, input, c, protect, None, None, trace, STOP_TOL);
+            if path.len() < 2 {
+                continue;
+            }
+            let path = waver_path(&path, 0.05 * radius, p.seed, *k);
+            let s = Stroke { path, width0: radius, width1: (radius * 0.45).max(0.6), load, pressure: 1.0, wetness: 0.35 };
+            s.rasterize(canvas, &brush);
+            let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
+            *placed += 1;
+            score.strokes.push(StrokeRecord {
+                id: *placed as u32,
+                wipe: false,
+                wash: false,
+                stage: "rigger".into(),
+                spline: s.path,
+                w0: s.width0,
+                w1: s.width1,
+                taper: 0.6,
+                mix,
+                wet: s.wetness,
+                press: 1.0,
+                streak: brush.streak,
+                round: brush.round,
+                pickup: Some(0.0),
+                bristles: Some(1),
+            });
+        }
+    }
+}
+
 fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
     let (w, h) = (input.width(), input.height());
     let sharp = imageops::unsharpen(input, 1.0, 1);
@@ -2619,7 +2740,7 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
         reference
     } else {
         let r_wash = (w.max(h) as f32 * 0.007).max(2.0);
-        smoothed = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0, false);
+        smoothed = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
         &smoothed
     };
     let luma = luma_map(input);
@@ -3255,7 +3376,7 @@ mod tests {
         let (Ok(inp), Ok(out)) = (std::env::var("PLAKAT_DIAG_IMG"), std::env::var("PLAKAT_DIAG_OUT")) else { return };
         let img = image::open(inp).unwrap().to_rgb8();
         for g in [0.0f32, 1.0] {
-            structure_armature(&img, 210, 8, g, false).save(format!("{out}/armature_g{g}.png")).unwrap();
+            structure_armature(&img, 210, 8, g).save(format!("{out}/armature_g{g}.png")).unwrap();
         }
         for side in [64u32, 96, 200, 470] {
             coarse_armature(&img, side, 8).save(format!("{out}/coarse_{side}.png")).unwrap();
@@ -3374,13 +3495,40 @@ mod tests {
     }
 
     #[test]
+    fn the_infill_carries_direction_into_a_flat_passage() {
+        // Left half carries diagonal structure; the right half is flat and has nothing of its own to follow.
+        // FLAT lays the empty half level, which is right for a sky and is what tiles a dark mass into a
+        // rectangular quilt. FOLLOW carries the neighbouring direction across instead.
+        let (w, h) = (96u32, 64u32);
+        let luma: Vec<f32> = (0..(w * h))
+            .map(|i| {
+                let (x, y) = ((i % w) as i32, (i / w) as i32);
+                if x < 40 && ((x + y) / 4) % 2 == 0 { 0.15 } else { 0.85 }
+            })
+            .collect();
+        let flat_at = |mode: FlowInfill| {
+            let (gx, gy) = coherent_gradient(&luma, w, h, 3, mode);
+            let i = (32 * w + 80) as usize; // deep in the empty half
+            stroke_dir(gx[i], gy[i])
+        };
+        let level = flat_at(FlowInfill::Flat);
+        assert!(level[1].abs() < 0.2, "flat lays the empty passage level: {level:?}");
+        let followed = flat_at(FlowInfill::Follow);
+        assert!(followed[1].abs() > 0.4, "follow carries the diagonal across instead: {followed:?}");
+        // And a named angle is obeyed outright.
+        let fixed = flat_at(FlowInfill::Angle(90.0));
+        assert!(fixed[0].abs() < 0.2, "a named 90° is a vertical stroke: {fixed:?}");
+    }
+
+    #[test]
     fn the_armature_puts_its_levels_where_the_picture_is() {
         // A picture that lives in its bottom third, like a lamplit interior: 90% of it below 0.2.
         let mut ys: Vec<f32> = (0..9000).map(|i| i as f32 / 9000.0 * 0.2).collect();
         ys.extend((0..1000).map(|i| 0.6 + i as f32 / 1000.0 * 0.4));
         ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-        let cuts = level_cuts(&ys, 8);
+        let wv: Vec<(f32, f32)> = ys.iter().map(|v| (*v, 1.0)).collect();
+        let cuts = level_cuts(&wv, 8);
         assert_eq!(cuts.len(), 8);
         let dark = cuts.iter().filter(|&&c| c < 0.3).count();
         // Even spacing would put 3 of 8 below 0.3; the picture's own distribution earns the darks more.

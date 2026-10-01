@@ -85,6 +85,9 @@ pub struct PaintPlan {
     /// degrees. Absent = `follow` for a new painting, `flat` otherwise.
     #[serde(default)]
     pub infill: Option<String>,
+    /// RIGGER (0..1): put back the few shapes too thin for the brush ladder. Absent = 0.35 for a new painting.
+    #[serde(default)]
+    pub rigger: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -138,6 +141,7 @@ impl Default for PaintPlan {
             from_scratch: false,
             hair_mask: None,
             infill: None,
+            rigger: None,
             notes: Vec::new(),
         }
     }
@@ -177,6 +181,9 @@ impl PaintPlan {
         }
         if let Some(inf) = &self.infill {
             o.push_str(&format!("infill: {inf}\n"));
+        }
+        if let Some(rg) = self.rigger {
+            o.push_str(&format!("rigger: {rg:.2}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -434,6 +441,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         // The planner cannot know a hair region; it is named on the command line or in a hand-written plan.
         hair_mask: None,
             infill: None,
+            rigger: None,
         notes,
     }
 }
