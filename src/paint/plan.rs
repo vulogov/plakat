@@ -472,7 +472,14 @@ mod tests {
         let base = Analysis { faces: 1, luma_stddev: 0.12, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM, from_scratch: false };
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, luma_mean: 0.5, ..base_like(&base) });
-        assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
+        // The key reads the reference's CONTRAST — but only for a medium that builds its values with paint.
+        // A LUMINOUS one takes a mild fixed key instead, because its lights are the paper and keying them
+        // harder only lifts the picture off it. Watercolour became luminous when it gained its washes, so the
+        // contrast relationship is checked on an opaque medium and the fixed key is checked on watercolour.
+        let opaque = |sd: f32| plan_from(&Analysis { luma_stddev: sd, medium: "oil-direct".into(), ..base_like(&base) }).value_key;
+        assert!(opaque(0.12) > opaque(0.26), "a flat reference is keyed harder ({} vs {})", opaque(0.12), opaque(0.26));
+        assert_eq!(flat.value_key, punchy.value_key, "a luminous medium takes the same mild key either way");
+        assert!(flat.value_key > 0.0 && flat.value_key < 0.6, "and it is mild ({})", flat.value_key);
         assert_eq!(flat.armature_face, Some(300), "a detected face gets a fine focal armature (SAM precise focal)");
         assert_eq!(flat.armature_body, Some(210), "a subject gets a mid body armature (three-tier)");
         // No aerial veil by default (measured: it lifted mean luma +0.04 and hurt structural agreement with the
