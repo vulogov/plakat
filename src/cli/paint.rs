@@ -814,7 +814,7 @@ const SCAFFOLD: &str = r#"{
 /// expanded a little (brow/chin) and the edges feathered, so the crisp detail tier fades into the loose masses
 /// rather than leaving a hard rectangle. Detects at native resolution, then resizes the mask to the paint size.
 async fn build_face_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
-    Ok(build_face_mask_ext(path, w, h).await?.map(|(m, _)| m))
+    Ok(build_face_mask_ext(path, w, h).await?.map(|(m, _, _)| m))
 }
 
 /// The EXTENT (px, at paint size) a focal tier must resolve: the smaller box side of the SMALLEST main face —
@@ -826,8 +826,9 @@ fn main_face_extent(sides: &[f32]) -> Option<f32> {
     sides.iter().copied().filter(|s| *s > 0.0 && *s >= largest * 0.5).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |v| v.min(s))))
 }
 
-/// [`build_face_mask`] plus the main faces' extent at paint size (see [`main_face_extent`]).
-async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<Option<(Vec<f32>, f32)>> {
+/// [`build_face_mask`] plus the main faces' extent at paint size (see [`main_face_extent`]) and the detector's
+/// own boxes at paint size (ungrown — the shape a watercolour face's planes are cut from).
+async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<Option<(Vec<f32>, f32, Vec<[f32; 4]>)>> {
     use candle_core::DType;
     let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
     let device = crate::device::select("auto")?;
@@ -861,7 +862,9 @@ async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<O
     let sides: Vec<f32> = faces.iter().map(|f| (f.bbox[2] - f.bbox[0]).min(f.bbox[3] - f.bbox[1]) * 1.24).collect();
     let scale = (w as f32 / iw.max(1) as f32).min(h as f32 / ih.max(1) as f32);
     let extent = main_face_extent(&sides).unwrap_or(mean_face) * scale;
-    Ok(Some((mask, extent)))
+    let (sx, sy) = (w as f32 / iw.max(1) as f32, h as f32 / ih.max(1) as f32);
+    let boxes: Vec<[f32; 4]> = faces.iter().map(|f| [f.bbox[0] * sx, f.bbox[1] * sy, f.bbox[2] * sx, f.bbox[3] * sy]).collect();
+    Ok(Some((mask, extent, boxes)))
 }
 
 /// What the run cost, per pass and in total. A pass's rate is what tells a wide block-in from a fine
@@ -2041,8 +2044,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // `armature_face` asks for it — a beard is not cut by this.)
     let luminous_new = a.new_painting && a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
     if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new {
-        if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
+        if let Some((m, e, boxes)) = build_face_mask_ext(&a.input, w, h).await? {
             params.face_mask = Some(m);
+            params.face_boxes = boxes;
             face_extent = Some(e);
         }
         if params.face_mask.is_none() {
