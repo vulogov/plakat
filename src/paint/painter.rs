@@ -1914,13 +1914,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_depth = env_f("PLAKAT_WCB_DEPTH", if wc_wash { 0.8 } else { 0.9 });
     let wcb_gamma = env_f("PLAKAT_WCB_GAMMA", if wc_wash { 1.6 } else { 2.6 });
     let wcb_env = env_f("PLAKAT_WCB_ENV", if wc_wash { 0.8 } else { 0.0 });
+    // The fine passes' reference: the source, blurred at this fraction of the brush (0 = the armature path).
+    let wcb_src = env_f("PLAKAT_WCB_SRC", if wc_wash { 0.25 } else { 0.0 });
     let wcb_faceonly = env_f("PLAKAT_WCB_FACEONLY", if wc_wash { 0.0 } else { 4.5 });
     let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 1.0 } else { 2.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
     let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
     let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", if wc_wash { 0.5 } else { 1.0 });
-    let wcb_finest = env_f("PLAKAT_WCB_FINEST", 0.0);
+    let wcb_finest = env_f("PLAKAT_WCB_FINEST", if wc_wash { 3.0 } else { 0.0 });
     let wcb_cap = env_f("PLAKAT_WCB_CAP", if wc_wash { 1.0 } else { 2.0 });
     let wcb_streak = env_f("PLAKAT_WCB_STREAK", 0.05);
     let wcb_round = env_f("PLAKAT_WCB_ROUND", if wc_wash { 0.6 } else { 0.0 });
@@ -1947,7 +1949,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // in LOG space for the densities that take the canvas from what is there to the target (the residual
     // glaze), with `wcb_hits` the lane hits a stroke lays per pixel (the calibration from flat patches).
     let wcb_trans = wc_brush && env_f("PLAKAT_WCB_TRANS", if wc_wash { 1.0 } else { 0.0 }) > 0.0;
-    let wcb_hits = env_f("PLAKAT_WCB_HITS", 1.5);
+    let wcb_hits = env_f("PLAKAT_WCB_HITS", if wc_wash { 0.5 } else { 1.5 });
+    // The broad passes drag a seed's dose across a whole swath: they carry it at this many hits instead.
+    let wcb_hits_broad = env_f("PLAKAT_WCB_HITSBROAD", if wc_wash { 1.2 } else { wcb_hits });
     if wcb_trans {
         canvas = canvas.with_transmittance(true);
         score.header.transmittance = true;
@@ -2014,6 +2018,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let mut l = luma_map(input);
         l.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Some(l[((l.len() as f32 - 1.0) * (1.0 - wcb_paper.clamp(0.005, 0.6))) as usize])
+    } else if wc_wash {
+        // No reserve at all: on the transmittance film the lights need no protecting — nothing darkens them
+        // but a glaze the picture asked for — and a reserve blocked every stroke on the stained-glass
+        // windows, which came out as bare paper.
+        None
     } else {
         p.reserve
     };
@@ -2173,7 +2182,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // The reference this pass paints from. Fidelity paints from a SHARP reference at every scale (it tracks
         // real structure, doesn't invent) — a touch of unsharp even on the block-in. Legible blurs the masses and
         // sharpens only for detail.
-        let reference = if fidelity {
+        let reference = if wc_wash && wcb_src > 0.0 && detail {
+            // The watercolour's fine passes read the SOURCE: the armature averages a stained-glass pane with
+            // its mullions, and a glaze of that average is a washed-out window.
+            imageops::blur(source, (radius * wcb_src).max(0.5))
+        } else if fidelity {
             imageops::unsharpen(input, (radius * 0.22).max(0.5), 1)
         } else if detail {
             // Fine layers read the armature, plus the subject's own texture inside the flat masses (see
@@ -2196,7 +2209,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // LIGHT TO DARK. A transparent film can only darken, so a broad pass must never go darker than
                 // the lightest thing inside its footprint: it paints toward the picture's LIGHT ENVELOPE at
                 // its own scale, and the finer passes glaze the darks down into it.
-                light_envelope(input, radius * wcb_env)
+                light_envelope(if wc_wash && wcb_src > 0.0 { source } else { input }, radius * wcb_env)
             } else {
                 imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
             }
@@ -2340,7 +2353,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 // Under the wash recipe the sweeps ARE the block-in: a second block-in over them in another
                 // direction was the stroke mess.
-                if wc_wash && block_in {
+                if wcb_sweep && block_in {
                     return None;
                 }
                 // Economy by PLANE: the background takes only the broad brushes (a wash is a wash), the
@@ -2382,7 +2395,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // (The block-in too: its strokes overlap several deep, and ungated every one landed at full
                     // charge over the last — ten charges of different pigments in one film is mud.)
                     let u = color::linear_luma(color::srgb_to_linear(cv.color_at(ix, iy))).max(0.02);
-                    if u <= tluma * (1.0 + wcb_tol) {
+                    // "Already as dark as asked" is judged PER CHANNEL: a pale yellow over white paper is
+                    // the same luma and a different colour, and a luma test skipped every such glaze.
+                    let needs = match under_lin {
+                        Some(ul) => {
+                            let t = color::srgb_to_linear(target);
+                            (0..3).any(|c| t[c] < ul[c] * (1.0 - wcb_tol))
+                        }
+                        None => u > tluma * (1.0 + wcb_tol),
+                    };
+                    if !needs {
                         return None;
                     }
                     Some(u)
@@ -2395,7 +2417,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // tell. Skip them; leave that area as the smooth mass the coarse passes laid.
                 // (High-fidelity tracks EVERYTHING closely, so it doesn't gate on coherence — it restates flat
                 // areas too. The gate is a Legible anti-speckle measure.)
-                if detail && !fidelity {
+                // (Not for the watercolour: a flat pane of stained glass is exactly a low-coherence cell off
+                // the subject, and the gate left every window pale.)
+                if detail && !fidelity && !wc_wash {
                     let seed_i = iy as usize * w as usize + ix as usize;
                     let coh = (gx[seed_i] * gx[seed_i] + gy[seed_i] * gy[seed_i]).sqrt();
                     // SUBJECT-AWARE bar: the subject keeps its detail (a smooth-lit face reads flat but still wants
@@ -2563,6 +2587,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 if wc_brush {
                     stroke_brush.k_pickup *= wcb_pickup;
                 }
+                // Every pass of the watercolour is capped at one dose per pixel: strokes piling up off their
+                // seeds (a canvas edge, a crowded passage) overshot to black at a dose that was right at the
+                // seed.
+                if wc_wash && wcb_cap > 0.0 {
+                    stroke_brush.film_cap = wcb_cap;
+                }
                 if wcb_broad {
                     // A WASH brush: even bristles, a flat section, laying its film quickly and only once.
                     stroke_brush.streak = wcb_streak;
@@ -2583,7 +2613,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         let key = ((want[0] * 40.0) as i16, (want[1] * 40.0) as i16, (want[2] * 40.0) as i16);
                         let dens = trans_cache.borrow_mut().entry(key).or_insert_with(|| trans_densities(cv.ln_reflectance(), want)).clone();
                         // A lane hit deposits `k_deposit × contact` of the load; `wcb_hits` hits land per pixel.
-                        let eff = (stroke_brush.k_deposit * 0.68 * wcb_hits).max(1e-3);
+                        let eff = (stroke_brush.k_deposit * 0.68 * if fine { wcb_hits } else { wcb_hits_broad }).max(1e-3);
                         dens.iter().map(|d| d / eff * (1.0 + 1.1 * sh)).collect::<Vec<f32>>()
                     }
                     _ => load,
@@ -2632,8 +2662,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // header's pickup and drifted — the unrecorded-bristles bug again.
                     pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
-                    kd: wcb_broad.then_some(stroke_brush.k_deposit),
-                    cap: (wcb_broad && stroke_brush.film_cap > 0.0).then_some(stroke_brush.film_cap),
+                    kd: (wcb_broad || wc_wash).then_some(stroke_brush.k_deposit),
+                    cap: ((wcb_broad || wc_wash) && stroke_brush.film_cap > 0.0).then_some(stroke_brush.film_cap),
                     flat: stroke_brush.flat_ends,
                     hold: stroke_brush.hold_charge,
                 })
@@ -4204,6 +4234,23 @@ fn trans_densities(ln_r: &[[f32; 3]], want: [f32; 3]) -> Vec<f32> {
     if usable.is_empty() || want.iter().all(|v| *v > -1e-4) {
         return out;
     }
+    // The search over triples is cubic in the palette: keep the eight pigments whose ln R points most nearly
+    // the way `want` does (a palette of thirty-two took twelve minutes on one pass).
+    let usable: Vec<usize> = if usable.len() > 8 {
+        let wn = (want[0] * want[0] + want[1] * want[1] + want[2] * want[2]).sqrt().max(1e-6);
+        let mut scored: Vec<(f32, usize)> = usable
+            .iter()
+            .map(|&i| {
+                let r = ln_r[i];
+                let rn = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt().max(1e-6);
+                ((r[0] * want[0] + r[1] * want[1] + r[2] * want[2]) / (rn * wn), i)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.iter().take(8).map(|s| s.1).collect()
+    } else {
+        usable
+    };
     let err = |idx: &[usize], a: &[f32]| -> f32 {
         let mut e = 0f32;
         for c in 0..3 {
@@ -4325,14 +4372,18 @@ fn light_envelope(img: &RgbImage, r: f32) -> RgbImage {
     let (sw, sh) = (((w as f32 / f).round() as u32).max(1), ((h as f32 / f).round() as u32).max(1));
     let small = if f > 1.0 { imageops::resize(img, sw, sh, imageops::FilterType::Triangle) } else { img.clone() };
     let rr = ((r / f).ceil() as i32).max(1);
-    // Separable max.
+    // Separable max BY LUMA, keeping the winning pixel's colour: a per-channel max turned a cluster of
+    // coloured panes into a white none of them has, and the fine passes could not glaze it back.
+    let lum = |c: [u8; 3]| 0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32;
     let mut tmp = small.clone();
     for y in 0..sh as i32 {
         for x in 0..sw as i32 {
             let mut m = [0u8; 3];
+            let mut ml = -1.0f32;
             for d in -rr..=rr {
                 let q = small.get_pixel((x + d).clamp(0, sw as i32 - 1) as u32, y as u32).0;
-                for c in 0..3 { m[c] = m[c].max(q[c]); }
+                let l = lum(q);
+                if l > ml { ml = l; m = q; }
             }
             tmp.put_pixel(x as u32, y as u32, image::Rgb(m));
         }
@@ -4341,9 +4392,11 @@ fn light_envelope(img: &RgbImage, r: f32) -> RgbImage {
     for y in 0..sh as i32 {
         for x in 0..sw as i32 {
             let mut m = [0u8; 3];
+            let mut ml = -1.0f32;
             for d in -rr..=rr {
                 let q = tmp.get_pixel(x as u32, (y + d).clamp(0, sh as i32 - 1) as u32).0;
-                for c in 0..3 { m[c] = m[c].max(q[c]); }
+                let l = lum(q);
+                if l > ml { ml = l; m = q; }
             }
             out.put_pixel(x as u32, y as u32, image::Rgb(m));
         }

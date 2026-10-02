@@ -336,6 +336,59 @@ fn kmeans_rgb(px: &[[f32; 3]], k: usize, iters: usize) -> Vec<[f32; 3]> {
     cents
 }
 
+/// The WATERCOLOUR's palette from the picture: k-means in CIELAB seeded by FARTHEST POINT (k-means++), so a
+/// small vivid passage — a stained-glass pane, a flower box — gets a pigment of its own instead of the
+/// strided seeding's duplicates of the biggest mass; each cluster's pigment is its chroma extreme; near
+/// duplicates (ΔE < 6) dropped. Only the brush watercolour uses it (the other media keep `palette_from_image`
+/// byte for byte).
+fn palette_for_watercolour(img: &image::RgbImage, k: usize) -> crate::paint::palette::Palette {
+    use crate::paint::pigment::Pigment;
+    let small = image::imageops::resize(img, 160, 160, image::imageops::FilterType::Nearest);
+    let srgbs: Vec<crate::paint::color::Srgb> = small.pixels().map(|p| p.0).collect();
+    let lab: Vec<[f32; 3]> = srgbs.iter().map(|&c| { let l = crate::paint::color::srgb_to_lab(c); [l.l, l.a, l.b] }).collect();
+    let d2 = |a: &[f32; 3], b: &[f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+    // Farthest-point seeding, then Lloyd iterations.
+    let kk = k.saturating_sub(2).max(4);
+    let mut cents: Vec<[f32; 3]> = vec![lab[lab.len() / 2]];
+    let mut dist: Vec<f32> = lab.iter().map(|p| d2(p, &cents[0])).collect();
+    while cents.len() < kk {
+        let (i, _) = dist.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+        cents.push(lab[i]);
+        for (j, p) in lab.iter().enumerate() {
+            dist[j] = dist[j].min(d2(p, &lab[i]));
+        }
+    }
+    let mut assign = vec![0usize; lab.len()];
+    for _ in 0..12 {
+        for (i, p) in lab.iter().enumerate() {
+            assign[i] = (0..cents.len()).min_by(|&a, &b| d2(p, &cents[a]).partial_cmp(&d2(p, &cents[b])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        }
+        let mut sum = vec![[0f32; 3]; cents.len()];
+        let mut cnt = vec![0usize; cents.len()];
+        for (i, p) in lab.iter().enumerate() {
+            for j in 0..3 { sum[assign[i]][j] += p[j]; }
+            cnt[assign[i]] += 1;
+        }
+        for (ci, cent) in cents.iter_mut().enumerate() {
+            if cnt[ci] > 0 { for j in 0..3 { cent[j] = sum[ci][j] / cnt[ci] as f32; } }
+        }
+    }
+    let chroma = |pi: usize| (lab[pi][1].powi(2) + lab[pi][2].powi(2)).sqrt();
+    let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
+    let mut picked: Vec<[f32; 3]> = Vec::new();
+    for ci in 0..cents.len() {
+        let mut m: Vec<usize> = (0..lab.len()).filter(|&i| assign[i] == ci).collect();
+        if m.is_empty() { continue; }
+        m.sort_by(|&a, &b| chroma(a).partial_cmp(&chroma(b)).unwrap_or(std::cmp::Ordering::Equal));
+        let pi = m[(m.len() - 1) * 85 / 100];
+        if picked.iter().any(|q| d2(q, &lab[pi]) < 36.0) { continue; }
+        picked.push(lab[pi]);
+        cols.push(srgbs[pi]);
+    }
+    let pigments: Vec<Pigment> = cols.iter().enumerate().map(|(i, c)| Pigment { name: Box::leak(format!("img-{i}").into_boxed_str()), masstone: *c }).collect();
+    crate::paint::palette::Palette { name: "image", pigments: Box::leak(pigments.into_boxed_slice()) }
+}
+
 /// Build a PALETTE FROM the reference IMAGE: cluster its dominant colours into pigments (plus a near-white and
 /// near-black so the value range and ground are covered), so any photo repaints cleanly in any medium instead
 /// of being forced through a fixed palette that can't represent its colours. The pigments are leaked to
@@ -1886,7 +1939,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
         "image" | "auto" => {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let p = palette_from_image(&img_for_palette, 16);
+            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if std::env::var_os("PLAKAT_WC_WASH").is_some() { 24 } else { 16 });
+            let p = if std::env::var_os("PLAKAT_WC_WASH").is_some() { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
             let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
             let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
