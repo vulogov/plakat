@@ -1833,18 +1833,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // the budget (the modelling within the washes).
     // EXPERIMENT (PLAKAT_WC_BRUSH): a new watercolour painted with the BRUSH alone — no wash fills, the
     // whole ladder on white paper behind the reserve, watercolour pigment physics.
-    // THE WASH WATERCOLOUR (`PLAKAT_WC_WASH=1`): the recipe that paints a new watercolour as wash STROKES —
-    // the transmittance film, the picture re-keyed in Lab, its colour masses each swept with a loaded wash
-    // brush as its own stage, then the brush ladder over the subject. One switch; every `PLAKAT_WCB_*`
-    // knob still overrides its part.
+    // THE WATERCOLOUR (`PLAKAT_WC_WASH=1`): the recipe that paints a new watercolour with the brush — the
+    // transmittance film, the picture's OWN values and colours (no re-key), the whole ladder everywhere,
+    // each broad pass toward the picture's light envelope so the film darkens light-to-dark, the fine passes
+    // reading the source. (The sweep/mass route is still here under its own knobs — it lost the picture.)
+    // One switch; every `PLAKAT_WCB_*` knob still overrides its part.
     let wc_wash = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some();
     let wc_brush = wc_wash || (p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_BRUSH").is_some());
     let env_or = |name: &str, d: f32| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
-    let wcb_fill = wc_brush && env_or("PLAKAT_WCB_FILL", if wc_wash { 1.0 } else { 0.0 }) > 0.0;
+    let wcb_fill = wc_brush && env_or("PLAKAT_WCB_FILL", 0.0) > 0.0;
     // WASH STROKES: every mass is a STAGE of its own (the wash brush's film cap counts from the stage mark,
     // and each wash dries before the next, as wet-on-dry does), so the stage list is one per mass.
-    let wcb_sweep = wcb_fill && env_or("PLAKAT_WCB_SWEEP", if wc_wash { 1.0 } else { 0.0 }) > 0.0;
-    let wcb_mass_count = env_or("PLAKAT_WCB_MASSES", if wc_wash { 12.0 } else { 0.0 }).max(0.0) as usize;
+    let wcb_sweep = wcb_fill && env_or("PLAKAT_WCB_SWEEP", 0.0) > 0.0;
+    let wcb_mass_count = env_or("PLAKAT_WCB_MASSES", 0.0).max(0.0) as usize;
     let luminous_passes: Vec<PassSpec> = if wc_brush {
         passes.clone()
     } else if p.luminous && !p.book {
@@ -1912,17 +1913,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_pickup = env_f("PLAKAT_WCB_PICKUP", 0.0);
     let wcb_depth = env_f("PLAKAT_WCB_DEPTH", if wc_wash { 0.8 } else { 0.9 });
     let wcb_gamma = env_f("PLAKAT_WCB_GAMMA", if wc_wash { 1.6 } else { 2.6 });
-    let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 4.0 } else { 2.0 });
+    let wcb_env = env_f("PLAKAT_WCB_ENV", if wc_wash { 0.8 } else { 0.0 });
+    let wcb_faceonly = env_f("PLAKAT_WCB_FACEONLY", if wc_wash { 0.0 } else { 4.5 });
+    let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 1.0 } else { 2.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
-    let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", if wc_wash { 0.0 } else { 1.0 });
-    let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", if wc_wash { 0.3 } else { 1.0 });
+    let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
+    let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", if wc_wash { 0.5 } else { 1.0 });
     let wcb_finest = env_f("PLAKAT_WCB_FINEST", 0.0);
     let wcb_cap = env_f("PLAKAT_WCB_CAP", if wc_wash { 1.0 } else { 2.0 });
     let wcb_streak = env_f("PLAKAT_WCB_STREAK", 0.05);
     let wcb_round = env_f("PLAKAT_WCB_ROUND", if wc_wash { 0.6 } else { 0.0 });
     let wcb_flat = env_f("PLAKAT_WCB_FLAT", 0.0);
-    let wcb_subj_from = env_f("PLAKAT_WCB_SUBJ", if wc_wash { 10000.0 } else { 0.0 });
+    let wcb_subj_from = env_f("PLAKAT_WCB_SUBJ", 0.0);
     let wcb_stop = env_f("PLAKAT_WCB_STOP", 1.0);
     // A watercolourist mixes TWO pigments, three at most: sixteen in one puddle is grey.
     let wcb_pig = env_f("PLAKAT_WCB_PIG", 0.0) as usize;
@@ -1976,14 +1979,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_bleed = env_f("PLAKAT_WCB_BLEED", 0.0);
     let wcb_dark = env_f("PLAKAT_WCB_DARK", if wc_wash { 0.0 } else { 1.2 });
     let wcb_light = env_f("PLAKAT_WCB_LIGHT", if wc_wash { 1.0 } else { 0.4 });
-    let wcb_paper = env_f("PLAKAT_WCB_PAPER", 0.08);
+    let wcb_paper = env_f("PLAKAT_WCB_PAPER", if wc_wash { 0.0 } else { 0.08 });
     // THE KEY. A watercolour paints toward a picture re-keyed to the paper: paper at the top of the picture's
     // range, the darkest wash `depth` below it, in perceptual value, chromaticity kept — a night's near-black
     // brown becomes a brown the mixer can find pigment for. Every pass paints toward the keyed picture, so
     // the restate gates agree with the strokes.
     let keyed_input;
     let keyed_source;
-    let (input, source): (&RgbImage, &RgbImage) = if wc_brush {
+    let (input, source): (&RgbImage, &RgbImage) = if wc_brush && std::env::var_os("PLAKAT_WCB_NOKEY").is_none() && !(wc_wash && std::env::var_os("PLAKAT_WCB_KEY").is_none()) {
         keyed_input = key_image(input, input, wcb_depth, wcb_gamma, wcb_hi);
         keyed_source = key_image(source, input, wcb_depth, wcb_gamma, wcb_hi);
         if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
@@ -2007,10 +2010,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     }
     // The PAPER of a brush watercolour: the keyed picture's lightest `wcb_paper` share, as shapes (the
     // shape-aware reserve below does the shaping). The plan's reserve luma is for the other media.
-    let reserve_eff: Option<f32> = if wc_brush {
+    let reserve_eff: Option<f32> = if wc_brush && wcb_paper > 0.0 {
         let mut l = luma_map(input);
         l.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        Some(l[((l.len() as f32 - 1.0) * (1.0 - wcb_paper.clamp(0.02, 0.6))) as usize])
+        Some(l[((l.len() as f32 - 1.0) * (1.0 - wcb_paper.clamp(0.005, 0.6))) as usize])
     } else {
         p.reserve
     };
@@ -2189,7 +2192,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // Coarse passes lay masses from a softened reference — but a radius×0.5 blur erases the structure
             // (object edges, value boundaries) before a stroke is placed, so strokes see no boundary to stop at
             // and smear. A gentler blur keeps the masses' EDGES while still dropping texture.
-            imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
+            if wcb_trans && wcb_env > 0.0 {
+                // LIGHT TO DARK. A transparent film can only darken, so a broad pass must never go darker than
+                // the lightest thing inside its footprint: it paints toward the picture's LIGHT ENVELOPE at
+                // its own scale, and the finer passes glaze the darks down into it.
+                light_envelope(input, radius * wcb_env)
+            } else {
+                imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
+            }
         };
         lap("pass:reference", &mut prof_acc, &mut prof_t);
         let luma = luma_map(&reference);
@@ -2324,7 +2334,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // A face-only pass lays nothing off the face.
                 // (The brush watercolour gives the sheet the whole ladder, but its two finest brushes — the
                 // ones that stippled every wash — stay for the face.)
-                let face_only_here = if wc_brush { radius <= 4.5 } else { pass.face_only };
+                let face_only_here = if wc_brush { radius <= wcb_faceonly } else { pass.face_only };
                 if face_only_here && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
                     return None;
                 }
@@ -4305,6 +4315,41 @@ fn wc_mass_colours(img: &RgbImage, k: usize, seed: u64) -> (Vec<u16>, Vec<Srgb>)
     }
     let means: Vec<Srgb> = (0..k).map(|c| if cnt[c] > 0 { color::linear_to_srgb([(sum[c][0] / cnt[c] as f64) as f32, (sum[c][1] / cnt[c] as f64) as f32, (sum[c][2] / cnt[c] as f64) as f32]) } else { [255, 255, 255] }).collect();
     (labels, means)
+}
+
+/// The LIGHT ENVELOPE of a picture at scale `r` px: per channel, the lightest value within `r` (a max filter,
+/// run on a reduced copy and lightly smoothed).
+fn light_envelope(img: &RgbImage, r: f32) -> RgbImage {
+    let (w, h) = (img.width(), img.height());
+    let f = (r / 4.0).max(1.0);
+    let (sw, sh) = (((w as f32 / f).round() as u32).max(1), ((h as f32 / f).round() as u32).max(1));
+    let small = if f > 1.0 { imageops::resize(img, sw, sh, imageops::FilterType::Triangle) } else { img.clone() };
+    let rr = ((r / f).ceil() as i32).max(1);
+    // Separable max.
+    let mut tmp = small.clone();
+    for y in 0..sh as i32 {
+        for x in 0..sw as i32 {
+            let mut m = [0u8; 3];
+            for d in -rr..=rr {
+                let q = small.get_pixel((x + d).clamp(0, sw as i32 - 1) as u32, y as u32).0;
+                for c in 0..3 { m[c] = m[c].max(q[c]); }
+            }
+            tmp.put_pixel(x as u32, y as u32, image::Rgb(m));
+        }
+    }
+    let mut out = tmp.clone();
+    for y in 0..sh as i32 {
+        for x in 0..sw as i32 {
+            let mut m = [0u8; 3];
+            for d in -rr..=rr {
+                let q = tmp.get_pixel(x as u32, (y + d).clamp(0, sh as i32 - 1) as u32).0;
+                for c in 0..3 { m[c] = m[c].max(q[c]); }
+            }
+            out.put_pixel(x as u32, y as u32, image::Rgb(m));
+        }
+    }
+    let up = if f > 1.0 { imageops::resize(&out, w, h, imageops::FilterType::Triangle) } else { out };
+    imageops::blur(&up, (r * 0.3).max(0.6))
 }
 
 /// Re-key `img` to the paper (see the brush watercolour): the range is measured on `measure` (the armature;

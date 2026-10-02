@@ -1830,7 +1830,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // pigments are derived from the keyed picture — a night scene's own pigments hold no light warm colour,
     // and keyed-up skin was mixed from the lamp glow's pale blue (teal patches on every lit face).
     let wc_brush_cli = a.new_painting && a.medium.as_deref() == Some("watercolour") && (std::env::var_os("PLAKAT_WC_BRUSH").is_some() || std::env::var_os("PLAKAT_WC_WASH").is_some());
-    let img_for_palette: image::RgbImage = if wc_brush_cli {
+    let img_for_palette: image::RgbImage = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_NOKEY").is_none() && !(std::env::var_os("PLAKAT_WC_WASH").is_some() && std::env::var_os("PLAKAT_WCB_KEY").is_none()) {
         let envf = |n: &str, d: f32| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
         crate::paint::painter::key_image(&img, &img, envf("PLAKAT_WCB_DEPTH", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.8 } else { 0.9 }), envf("PLAKAT_WCB_GAMMA", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 1.6 } else { 2.6 }), envf("PLAKAT_WCB_HI", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.985 } else { 0.95 }))
     } else {
