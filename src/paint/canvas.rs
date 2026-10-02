@@ -55,6 +55,12 @@ pub struct Canvas {
     /// Hiding power (the film-build's `OPACITY_K`). Measured: a full block-in already hides 96% of the ground at
     /// the default, so this is NOT the lever for a light/grey painting (that was the palette gamut).
     opacity_k: f32,
+    /// TRANSMITTANCE film (transparent media): the film is a stack of pigment densities and the colour is the
+    /// ground seen through it — `ground × Π R_i^(density_i)` (Beer–Lambert) — so a dark is the SAME hue at a
+    /// higher density, a tint keeps its hue, and two glazes multiply. Off: the covering film-build model.
+    transmittance: bool,
+    /// `ln R_i` per pigment (linear reflectance), filled when `transmittance` is on.
+    ln_r: Vec<[f32; 3]>,
     n: usize,
 }
 
@@ -105,7 +111,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -120,6 +126,39 @@ impl Canvas {
             acc += (1.0 - (-self.opacity_k * self.opacity * total.max(0.0)).exp()) as f64;
         }
         (acc / px as f64) as f32
+    }
+
+    /// Switch the TRANSMITTANCE film on (see the field). Builder-style.
+    pub fn with_transmittance(mut self, on: bool) -> Self {
+        self.transmittance = on;
+        self.ln_r = if on {
+            self.palette
+                .pigments
+                .iter()
+                .map(|p| {
+                    let r = color::srgb_to_linear(p.masstone);
+                    [r[0].clamp(0.004, 1.0).ln(), r[1].clamp(0.004, 1.0).ln(), r[2].clamp(0.004, 1.0).ln()]
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self
+    }
+
+    /// Whether the transmittance film is on.
+    pub fn is_transmittance(&self) -> bool {
+        self.transmittance
+    }
+
+    /// `ln R` per pigment, for the transmittance solver (empty unless the film is on).
+    pub fn ln_reflectance(&self) -> &[[f32; 3]] {
+        &self.ln_r
+    }
+
+    /// The linear reflectance of a pixel.
+    pub fn linear_at(&self, x: u32, y: u32) -> LinRgb {
+        color::srgb_to_linear(self.color_at(x, y))
     }
 
     /// Set the BODY / opacity multiplier (1 = opaque; lower = transparent). Builder-style.
@@ -185,9 +224,16 @@ impl Canvas {
     pub fn deposit(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
         let i = self.idx(x, y);
         let amount: f32 = delta.iter().take(self.n).map(|d| d.max(0.0)).sum();
-        let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
-        for c in 0..self.n {
-            self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
+        if self.transmittance {
+            // Densities ADD: a glaze over a glaze is both.
+            for c in 0..self.n {
+                self.conc[i + c] += delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            }
+        } else {
+            let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
+            for c in 0..self.n {
+                self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            }
         }
         let p = y as usize * self.w as usize + x as usize;
         self.film[p] += amount;
@@ -522,6 +568,18 @@ impl Canvas {
         let total = self.film[y as usize * self.w as usize + x as usize].max(0.0);
         if total <= 1e-4 {
             return color::linear_to_srgb(self.ground_lin);
+        }
+        if self.transmittance {
+            let mut out = self.ground_lin;
+            for (i, r) in self.ln_r.iter().enumerate() {
+                let d = conc.get(i).copied().unwrap_or(0.0).max(0.0);
+                if d > 0.0 {
+                    for c in 0..3 {
+                        out[c] *= (d * r[c]).exp();
+                    }
+                }
+            }
+            return color::linear_to_srgb(out);
         }
         let paint = pigment::mix_linear(self.palette.pigments, conc);
         let alpha = 1.0 - (-self.opacity_k * self.opacity * total).exp();

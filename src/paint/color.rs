@@ -88,6 +88,25 @@ pub fn delta_e76(a: Lab, b: Lab) -> f32 {
     (dl * dl + da * da + db * db).sqrt()
 }
 
+/// CIELAB → linear RGB (the inverse of [`linear_to_lab`]; out-of-gamut values are clamped).
+pub fn lab_to_linear(lab: Lab) -> LinRgb {
+    const D: f32 = 6.0 / 29.0;
+    let finv = |t: f32| if t > D { t * t * t } else { 3.0 * D * D * (t - 4.0 / 29.0) };
+    let fy = (lab.l + 16.0) / 116.0;
+    let fx = fy + lab.a / 500.0;
+    let fz = fy - lab.b / 200.0;
+    let (x, y, z) = (XN * finv(fx), YN * finv(fy), ZN * finv(fz));
+    let r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
+    let g = -0.9692660 * x + 1.8760108 * y + 0.0415560 * z;
+    let b = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
+    [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+}
+
+/// CIELAB → sRGB.
+pub fn lab_to_srgb(lab: Lab) -> Srgb {
+    linear_to_srgb(lab_to_linear(lab))
+}
+
 /// Rec.601 relative luminance of a linear-RGB triple `[0,1]` — used for value (notan) work.
 pub fn linear_luma(rgb: LinRgb) -> f32 {
     0.2126729 * rgb[0] + 0.7151522 * rgb[1] + 0.0721750 * rgb[2]

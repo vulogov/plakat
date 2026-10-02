@@ -73,6 +73,8 @@ pub struct ScoreHeader {
     pub clarity: f32,
     /// LIFT — wipe removability (staining), applied during painting.
     pub lift: f32,
+    /// The TRANSMITTANCE film (see `Canvas::with_transmittance`): a transparent medium's glazes multiply.
+    pub transmittance: bool,
 }
 
 /// One recorded stroke.
@@ -108,6 +110,10 @@ pub struct StrokeRecord {
     /// contour as a rake — the whole reason `pen-ink` and `line-and-wash` did not replay. `None` = the
     /// header's `bristles` (old scores, and every ordinary painted stroke).
     pub bristles: Option<usize>,
+    /// This stroke's deposit rate, when it differs from the header's (a wash brush lays its film faster).
+    pub kd: Option<f32>,
+    /// This stroke's film cap (see `BrushConfig::film_cap`); `None` = no cap.
+    pub cap: Option<f32>,
 }
 
 impl ScoreHeader {
@@ -167,6 +173,7 @@ impl StrokeScore {
             Some(st) => format!("{ground} stages={}", st.iter().map(|x| x.replace(' ', "_")).collect::<Vec<_>>().join(",")),
             None => ground,
         };
+        let ground = if h.transmittance { format!("{ground} trans=1") } else { ground };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}\n",
             h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), ground,
@@ -193,7 +200,7 @@ impl StrokeScore {
                 fmt_f(s.streak),
                 fmt_f(s.round),
                 s.pickup.map(|v| format!(" pickup={}", fmt_f(v))).unwrap_or_default(),
-                s.bristles.map(|v| format!(" bristles={v}")).unwrap_or_default(),
+                s.bristles.map(|v| format!(" bristles={v}")).unwrap_or_default() + &s.kd.map(|v| format!(" kd={}", fmt_f(v))).unwrap_or_default() + &s.cap.map(|v| format!(" cap={}", fmt_f(v))).unwrap_or_default(),
             ));
         }
         o
@@ -248,6 +255,7 @@ impl StrokeScore {
                         warmth: get("warmth").parse().unwrap_or(0.0),
                         clarity: get("clarity").parse().unwrap_or(0.0),
                         lift: get("lift").parse().unwrap_or(1.0),
+                        transmittance: m.get("trans").map(|v| v == "1").unwrap_or(false),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -291,6 +299,8 @@ impl StrokeScore {
                         round: get("round").parse().unwrap_or(0.7),
                         pickup: get("pickup").parse().ok(),
                         bristles: get("bristles").parse().ok(),
+                        kd: get("kd").parse().ok(),
+                        cap: get("cap").parse().ok(),
                     });
                 }
                 "P" => {
@@ -333,7 +343,8 @@ impl StrokeScore {
             Some(g) => Canvas::toned(out_w, out_h, palette, g, self.header.tooth),
             None => Canvas::white(out_w, out_h, palette, self.header.tooth),
         }
-        .with_opacity(self.header.opacity);
+        .with_opacity(self.header.opacity)
+        .with_transmittance(self.header.transmittance);
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let full = |k: &dyn Fn(&StrokeRecord) -> bool| self.strokes.iter().all(|r| k(r));
         // The pass schedule the paint ran (recorded, or the stage names present). Each pass boundary bled
@@ -378,7 +389,7 @@ impl StrokeScore {
             }
             let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
             // This stroke's own brush character (a flat, a round, …) over the score's base brush physics.
-            let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), ..brush };
+            let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), k_deposit: rec.kd.unwrap_or(brush.k_deposit), film_cap: rec.cap.unwrap_or(0.0), ..brush };
             s.rasterize(&mut canvas, &sb);
         }
         // The remaining pass boundaries (the last pass's own bleed, any trailing empty pass), then the light
@@ -412,6 +423,8 @@ impl StrokeScore {
             if self.header.dry > 0.0 && idx + 1 < n {
                 canvas.dry(1.0 - self.header.dry);
             }
+            // The next pass starts: a wash brush's film cap counts from here (a no-op for every other brush).
+            canvas.mark_film();
         }
     }
 
@@ -435,7 +448,8 @@ impl StrokeScore {
             Some(g) => Canvas::toned(out_w, out_h, palette, g, self.header.tooth),
             None => Canvas::white(out_w, out_h, palette, self.header.tooth),
         }
-        .with_opacity(self.header.opacity);
+        .with_opacity(self.header.opacity)
+        .with_transmittance(self.header.transmittance);
         let index_of = |name: &str| palette.pigments.iter().position(|p| p.name.eq_ignore_ascii_case(name));
         let every = every.max(1);
         let mut frames = Vec::new();
@@ -466,7 +480,7 @@ impl StrokeScore {
                     continue;
                 }
                 let s = Stroke { path, width0: rec.w0 * ss, width1: rec.w1 * ss, load, pressure: rec.press, wetness: rec.wet };
-                let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), ..brush };
+                let sb = BrushConfig { streak: rec.streak, round: rec.round, k_pickup: rec.pickup.unwrap_or(brush.k_pickup), bristles: rec.bristles.unwrap_or(brush.bristles), k_deposit: rec.kd.unwrap_or(brush.k_deposit), film_cap: rec.cap.unwrap_or(0.0), ..brush };
                 s.rasterize(&mut canvas, &sb);
                 laid += 1;
                 if laid % every == 0 {
@@ -516,10 +530,10 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false },
             strokes: vec![
-                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None },
-                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None },
+                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None },
+                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None },
             ],
         }
     }
@@ -588,10 +602,10 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0 };
-        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false };
+        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
-        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None };
+        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None };
         let with_wipe = StrokeScore { header: base, strokes: vec![stroke, wipe] };
         let a = no_wipe.replay(40, 20).unwrap();
         let b = with_wipe.replay(40, 20).unwrap();
