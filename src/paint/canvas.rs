@@ -156,6 +156,11 @@ impl Canvas {
         &self.ln_r
     }
 
+    /// The ground's linear reflectance (the paper, or the toned priming).
+    pub fn ground_linear(&self) -> LinRgb {
+        self.ground_lin
+    }
+
     /// The linear reflectance of a pixel.
     pub fn linear_at(&self, x: u32, y: u32) -> LinRgb {
         color::srgb_to_linear(self.color_at(x, y))

@@ -35,9 +35,13 @@ pub struct BrushConfig {
     /// any pixel since the canvas's last `mark_film`, so overlapping strokes of one wash pass build ONE film —
     /// the water evens the pigment out — rather than doubling where they cross.
     pub film_cap: f32,
-    /// A WASH brush lays its full film to the very ends of the mark (no end taper): strokes overlap into one
-    /// flat wash whose only edges are where the wash stops. Off for every brush mark.
+    /// A WASH brush: loaded with water, it lays its full film to the very ends of the mark (no end taper) and
+    /// its charge does not run out along the stroke (no dry-brush tail), so strokes overlap into one flat
+    /// wash whose only edges are where the wash stops. Off for every brush mark.
     pub flat_ends: bool,
+    /// A loaded WASH brush holds its charge along the whole stroke (no dry-brush tail) — with or without
+    /// the end taper.
+    pub hold_charge: bool,
 }
 
 impl Default for BrushConfig {
@@ -46,7 +50,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false }
     }
 }
 
@@ -126,7 +130,10 @@ impl Stroke {
         // brush). Each lane still keeps its own evolving load along the whole stroke, so dirty-brush pickup and
         // stroke-order harmonisation survive. Capped so a very wide stroke can't explode the inner loop.
         let maxw = self.width0.max(self.width1).max(1.0);
-        let nb = (maxw.ceil() as usize).max(brush.bristles).clamp(1, 256);
+        // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
+        // untouched (the rounding), and a wash came out as a dotted screen.
+        let dense = brush.flat_ends || brush.hold_charge;
+        let nb = ((if dense { maxw * 2.0 } else { maxw }).ceil() as usize).max(brush.bristles).clamp(1, 256);
         // BRISTLE STREAKS (naturalness): a real brush is uneven — some bristles carry more paint than others, so
         // a stroke shows drybrush streaks along its length, not a uniform blob. Give each lane a slightly
         // different starting load (deterministic from the stroke's origin, so replay is exact). A few lanes run
@@ -145,7 +152,7 @@ impl Stroke {
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
         // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
         // fraction of what it deposits, so a long stroke lays paint along its whole travel.
-        let deplete = (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0);
+        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) };
 
         for i in 0..pts.len() {
             let p = pts[i];
@@ -189,7 +196,11 @@ impl Stroke {
                 // Cross-section falloff by brush ROUNDNESS: a round brush feathers gently to the edge (soft
                 // mark); a flat brush holds a flatter top and drops sharper (a squarer edge). `round` in [0,1]
                 // interpolates between them.
-                let edge = {
+                // A wash brush lays its film evenly across its whole width: the water, not the bristles,
+                // sets the film (a cross-section falloff left a third-strength rim along every stroke).
+                let edge = if dense {
+                    1.0
+                } else {
                     let d = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
                     let rnd = brush.round.clamp(0.0, 1.0);
                     let pw = 2.0 + (1.0 - rnd) * 6.0; // round → parabola, flat → flatter top
