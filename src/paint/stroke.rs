@@ -249,6 +249,9 @@ impl Stroke {
     #[allow(clippy::too_many_arguments)]
     fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>) {
         let p = py as usize * canvas.w as usize + px as usize;
+        if canvas.clipped(p) {
+            return;
+        }
         let tooth = canvas.tooth[p];
         let contact = (self.pressure * cover.clamp(0.0, 1.0) * tooth).clamp(0.0, 1.0);
         let sat = (canvas.saturation_at(px, py) / SAT_FULL).clamp(0.0, 1.0);

@@ -88,18 +88,30 @@ pub fn delta_e76(a: Lab, b: Lab) -> f32 {
     (dl * dl + da * da + db * db).sqrt()
 }
 
-/// CIELAB → linear RGB (the inverse of [`linear_to_lab`]; out-of-gamut values are clamped).
+/// CIELAB → linear RGB (the inverse of [`linear_to_lab`]). Out of gamut, the CHROMA is scaled down (a*, b*
+/// together, L* kept) until the colour fits — never a channel clipped (clipping turned near-whites yellow)
+/// and never a pull toward a luma grey (it tinted them green).
 pub fn lab_to_linear(lab: Lab) -> LinRgb {
     const D: f32 = 6.0 / 29.0;
     let finv = |t: f32| if t > D { t * t * t } else { 3.0 * D * D * (t - 4.0 / 29.0) };
-    let fy = (lab.l + 16.0) / 116.0;
-    let fx = fy + lab.a / 500.0;
-    let fz = fy - lab.b / 200.0;
-    let (x, y, z) = (XN * finv(fx), YN * finv(fy), ZN * finv(fz));
-    let r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
-    let g = -0.9692660 * x + 1.8760108 * y + 0.0415560 * z;
-    let b = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
-    [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+    let raw = |k: f32| -> [f32; 3] {
+        let fy = (lab.l + 16.0) / 116.0;
+        let fx = fy + lab.a * k / 500.0;
+        let fz = fy - lab.b * k / 200.0;
+        let (x, y, z) = (XN * finv(fx), YN * finv(fy), ZN * finv(fz));
+        [3.2404542 * x - 1.5371385 * y - 0.4985314 * z, -0.9692660 * x + 1.8760108 * y + 0.0415560 * z, 0.0556434 * x - 0.2040259 * y + 1.0572252 * z]
+    };
+    let fits = |v: [f32; 3]| v.iter().all(|c| (-0.0005..=1.0005).contains(c));
+    let mut v = raw(1.0);
+    if !fits(v) {
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..12 {
+            let mid = (lo + hi) * 0.5;
+            if fits(raw(mid)) { lo = mid } else { hi = mid }
+        }
+        v = raw(lo);
+    }
+    [v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0)]
 }
 
 /// CIELAB → sRGB.

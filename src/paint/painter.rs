@@ -1911,18 +1911,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_len = env_f("PLAKAT_WCB_LEN", 2.5);
     let wcb_pickup = env_f("PLAKAT_WCB_PICKUP", 0.0);
     let wcb_depth = env_f("PLAKAT_WCB_DEPTH", if wc_wash { 0.8 } else { 0.9 });
-    let wcb_gamma = env_f("PLAKAT_WCB_GAMMA", 2.6);
+    let wcb_gamma = env_f("PLAKAT_WCB_GAMMA", if wc_wash { 1.6 } else { 2.6 });
     let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 4.0 } else { 2.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
     let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", if wc_wash { 0.0 } else { 1.0 });
-    let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", 1.0);
+    let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", if wc_wash { 0.3 } else { 1.0 });
     let wcb_finest = env_f("PLAKAT_WCB_FINEST", 0.0);
     let wcb_cap = env_f("PLAKAT_WCB_CAP", if wc_wash { 1.0 } else { 2.0 });
     let wcb_streak = env_f("PLAKAT_WCB_STREAK", 0.05);
     let wcb_round = env_f("PLAKAT_WCB_ROUND", if wc_wash { 0.6 } else { 0.0 });
     let wcb_flat = env_f("PLAKAT_WCB_FLAT", 0.0);
-    let wcb_subj_from = env_f("PLAKAT_WCB_SUBJ", if wc_wash { 28.0 } else { 0.0 });
+    let wcb_subj_from = env_f("PLAKAT_WCB_SUBJ", if wc_wash { 10000.0 } else { 0.0 });
     let wcb_stop = env_f("PLAKAT_WCB_STOP", 1.0);
     // A watercolourist mixes TWO pigments, three at most: sixteen in one puddle is grey.
     let wcb_pig = env_f("PLAKAT_WCB_PIG", 0.0) as usize;
@@ -2114,7 +2114,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             wash_passes(&mut canvas, &mut score, input, source, n_stages_total, p, protect_all.as_deref(), &mut placed, &mut k, progress);
         }
         if let (Some((labels, means)), true) = (&wc_mass, wc_brush && wcb_fill) {
-            wc_fill_masses(&mut canvas, &mut score, labels, means, w as usize, h as usize, protect_all.as_deref(), p, (w.max(h) as f32 * wcb_fill_feather).max(1.0), wcb_fill_wet, if wcb_sweep { Some((bleed_eff, n_stages_total)) } else { None }, &mut placed, &mut k);
+            wc_fill_masses(&mut canvas, &mut score, labels, means, w as usize, h as usize, protect_all.as_deref(), p, (w.max(h) as f32 * wcb_fill_feather).max(1.0), wcb_fill_wet, if wcb_sweep { Some((bleed_eff, n_stages_total)) } else { None }, input, &mut placed, &mut k);
             // Stage 0 ends as every stage does (and as the replay reproduces it). (The sweeps cross their own
             // stages, one per mass.)
             if !wcb_sweep {
@@ -2328,6 +2328,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 if face_only_here && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
                     return None;
                 }
+                // Under the wash recipe the sweeps ARE the block-in: a second block-in over them in another
+                // direction was the stroke mess.
+                if wc_wash && block_in {
+                    return None;
+                }
                 // Economy by PLANE: the background takes only the broad brushes (a wash is a wash), the
                 // subject the middle ones, the face the finest.
                 if wc_brush && wcb_subj_from > 0.0 && radius < wcb_subj_from && (!block_in || wcb_fill) && p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.5 && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
@@ -2354,7 +2359,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // A watercolour's ECONOMY: the fine brushes restate only what is plainly wrong — off the face a
                 // wash that is nearly right is left alone (a thousand small corrections are the stipple).
                 let on_face = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35;
-                let restate_floor = if wc_brush && !block_in && !on_face { restate_floor * wcb_restate } else { restate_floor };
+                let on_subject = p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.5;
+                let restate_floor = if wc_brush && !block_in && !on_face && !on_subject { restate_floor * wcb_restate } else { restate_floor };
                 if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
@@ -3785,6 +3791,16 @@ fn charge_for(cache: &mut std::collections::HashMap<(u32, u16), f32>, palette: &
 /// flat wash in its own colour, lightest first so a darker wash blooms over a lighter neighbour's edge,
 /// each tested on scrap paper so it reads its colour, with a wet edge sized by the mass. The brush ladder
 /// then models the subject and the faces over them.
+/// The value at quantile `q` (0..1) of `v`.
+fn quantile(v: &[f32], q: f32) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    s[((s.len() as f32 - 1.0) * q.clamp(0.0, 1.0)).round() as usize]
+}
+
 /// WASH STROKES (`PLAKAT_WCB_SWEEP`): a mass is not filled, it is PAINTED — a few long parallel strokes of a
 /// wide wet brush swept across it along its own axis, each overlapping the last by a quarter so the overlaps
 /// read a shade deeper (the wash-stroke tell), their ends breaking at the mass's edge with a little
@@ -3793,7 +3809,7 @@ fn charge_for(cache: &mut std::collections::HashMap<(u32, u16), f32>, palette: &
 /// that takes the paper to the mass's colour over one hit, so a stroke alone reads right and the overlaps
 /// read as two.
 #[allow(clippy::too_many_arguments)]
-fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w: usize, h: usize, colour: Srgb, p: &PaintParams, brush: &BrushConfig, wet: f32, hits: f32, stage: &str, placed: &mut usize, k: &mut u64) -> usize {
+fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w: usize, h: usize, colour: Srgb, p: &PaintParams, brush: &BrushConfig, wet: f32, hits: f32, light: f32, single: bool, stage: &str, placed: &mut usize, k: &mut u64) -> usize {
     let area = mask.iter().filter(|&&b| b).count();
     if area < 16 {
         return 0;
@@ -3817,12 +3833,20 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             xy += dx * dy;
         }
     }
-    let theta = 0.5 * (2.0 * xy).atan2(xx - yy);
+    // THE DIRECTION OF A WASH is the board's, not the shape's: a watercolourist tilts the board and sweeps
+    // across, so every big wash runs the same way (a little off, hand to hand) and the sheet reads as one
+    // painting, not a crosshatch of each shape's own axis. `PLAKAT_WCB_SWEEPANGLE` = degrees (default 0,
+    // horizontal) or `axis` for the shape's own.
+    let axis_mode = std::env::var("PLAKAT_WCB_SWEEPANGLE").unwrap_or_else(|_| "axis".into());
+    let theta = if axis_mode == "axis" {
+        0.5 * (2.0 * xy).atan2(xx - yy)
+    } else {
+        let base = axis_mode.parse::<f32>().unwrap_or(0.0).to_radians() as f64;
+        base + (jitter(p.seed ^ 0x5A17, (cx as u64) ^ ((cy as u64) << 20)) * 16.0f32).to_radians() as f64
+    };
     let (ax, ay) = (theta.cos() as f32, theta.sin() as f32);
     let (px_, py_) = (-ay, ax);
     // The brush: wider for a bigger mass (a painter picks the brush for the shape), between the limits.
-    let width = ((area as f32).sqrt() / 5.0).clamp(short / 100.0, short / 22.0);
-    let spacing = width * std::env::var("PLAKAT_WCB_SWEEPSPACE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.5);
     // The extent along the perpendicular.
     let (mut tmin, mut tmax) = (f32::MAX, f32::MIN);
     let (mut umin, mut umax) = (f32::MAX, f32::MIN);
@@ -3837,6 +3861,9 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             umax = umax.max(u);
         }
     }
+    // A SMALL shape is ONE mark of a small brush along its axis, as wide as it is across; a big one is swept.
+    let width = if single { (tmax - tmin).clamp(short / 150.0, short / 30.0) } else { ((area as f32).sqrt() / 4.0).clamp(short / 60.0, short / 12.0) };
+    let spacing = if single { f32::MAX } else { width * std::env::var("PLAKAT_WCB_SWEEPSPACE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.5) };
     // The glaze that takes the paper to the colour in one hit.
     let g = canvas.ground_linear();
     let t = color::srgb_to_linear(colour);
@@ -3844,14 +3871,24 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
     let dens = trans_densities(canvas.ln_reflectance(), want);
     // One full-contact hit lays the whole film (the cap keeps further hits from doubling it).
     let eff = (brush.k_deposit * hits).max(1e-3);
-    let load: Vec<f32> = dens.iter().map(|d| d / eff).collect();
+    let load: Vec<f32> = dens.iter().map(|d| d / eff * light).collect();
     if load.iter().all(|v| *v <= 0.0) {
         return 0;
     }
     let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
     let inside = |x: f32, y: f32| x >= 0.0 && y >= 0.0 && (x as usize) < w && (y as usize) < h && mask[y as usize * w + x as usize];
+    // THE SHAPE IS EXACT, THE BRUSHWORK IS INSIDE IT: the strokes are clipped to the mass's own outline (a
+    // watercolourist cuts the edge of a shape with the brush's side and works freely within it). Recorded as a
+    // clip record so the replay clips the same strokes.
+    let clip_rings = mask_rings(mask, w, h, 1.2);
+    if clip_rings.len() < 3 {
+        return 0;
+    }
+    canvas.set_clip_rings(&clip_rings);
+    let clip_rec = |spline: Vec<[f32; 2]>, id: usize| StrokeRecord { id: id as u32, wipe: true, wash: true, stage: stage.into(), spline, w0: 0.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 0.0, streak: 0.0, round: 0.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false };
+    score.strokes.push(clip_rec(clip_rings, *placed));
     let mut laid = 0usize;
-    let mut tt = tmin + spacing * 0.5;
+    let mut tt = if single { (tmin + tmax) * 0.5 } else { tmin + spacing * 0.5 };
     let mut row = 0u64;
     while tt <= tmax {
         row += 1;
@@ -3861,9 +3898,13 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
         let mut gap = 0f32;
         let mut u = umin - width;
         while u <= umax + width {
-            let x = cx as f32 + ax * u + px_ * tt;
-            let y = cy as f32 + ay * u + py_ * tt;
-            if inside(x, y) {
+            // The stroke lands wherever ANY part of its width touches the mass (the clip keeps the edge): tested
+            // on the centre line alone, every limb narrower than the row spacing was missed and left as paper.
+            let touches = [-0.45f32, -0.225, 0.0, 0.225, 0.45].iter().any(|o| {
+                let t2 = tt + o * width;
+                inside(cx as f32 + ax * u + px_ * t2, cy as f32 + ay * u + py_ * t2)
+            });
+            if touches {
                 match cur {
                     Some((a, _)) => cur = Some((a, u)),
                     None => cur = Some((u, u)),
@@ -3883,7 +3924,7 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             runs.push(r);
         }
         for (a, b) in runs {
-            if b - a < width * 0.5 || *placed >= p.budget {
+            if b - a < 2.0 || *placed >= p.budget {
                 continue;
             }
             *k += 1;
@@ -3906,14 +3947,21 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             laid += 1;
             score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: stage.into(), spline: s.path, w0: width, w1, taper: 0.3, mix: mix.clone(), wet, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(brush.k_pickup), bristles: Some(brush.bristles), kd: Some(brush.k_deposit), cap: (brush.film_cap > 0.0).then_some(brush.film_cap), flat: brush.flat_ends, hold: brush.hold_charge });
         }
+        if single {
+            break;
+        }
         tt += spacing;
     }
+    canvas.set_clip_rings(&[]);
+    score.strokes.push(clip_rec(vec![[0.0, 0.0]], *placed));
     laid
 }
 
-fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, sweep_stages: Option<(f32, usize)>, placed: &mut usize, k: &mut u64) {
+fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, sweep_stages: Option<(f32, usize)>, input_keyed: &RgbImage, placed: &mut usize, k: &mut u64) {
     let n = p.palette.pigments.len();
     let short = w.min(h);
+    // A piece smaller than a wash is not a wash and gets no strokes of its own: it JOINS its neighbour
+    // (the relabelling below). Under the wash recipe that is anything under a twelfth of the sheet across.
     let min_area = (short as f32 / std::env::var("PLAKAT_WCB_MINMASS").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(80.0)).max(3.0).powi(2) as usize;
     // FLECKS JOIN THEIR NEIGHBOUR. A region smaller than a wash is not dropped (dropped, it was a white
     // speck of bare paper): its pixels take the label of the nearest kept mass, by propagation.
@@ -4029,6 +4077,14 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
             brush.k_deposit = p.brush.k_deposit * 1.5;
             brush.film_cap = std::env::var("PLAKAT_WCB_SWEEPCAP").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.15);
             let stage = format!("wash-{}", mi + 1);
+            // Only the BIG pieces are washes: a window, a shadow under a bench, a face is not a wash — it is
+            // the small brush's. (Swept, every such piece was a stray dark rectangle.)
+            let sweep_min = (short as f32 / std::env::var("PLAKAT_WCB_SWEEPMIN").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(14.0)).powi(2) as usize;
+            // THE FIRST WASH IS LIGHT: a watercolourist floats the first wash well under the final value so
+            // the paper glows through, then deepens the shadow side with a second pass while the shape is
+            // still read as one. `light` = the fraction of the full glaze the first wash carries.
+            let light = std::env::var("PLAKAT_WCB_LIGHT1").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.7);
+            let luma_k = luma_map(input_keyed);
             // One sweep per connected piece.
             let mut seen = vec![false; w * h];
             for start in 0..w * h {
@@ -4049,7 +4105,45 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
                         }
                     }
                 }
-                wc_sweep_mass(canvas, score, &piece, w, h, colour, p, &brush, wet, hits, &stage, placed, k);
+                let piece_area = piece.iter().filter(|&&b| b).count();
+                if piece_area < sweep_min {
+                    // A small shape: one mark, at the full colour (a window, a lamp, a shadow under a bench).
+                    if piece_area >= sweep_min / 24 {
+                        wc_sweep_mass(canvas, score, &piece, w, h, colour, p, &brush, wet, hits, 1.0, true, &stage, placed, k);
+                    } else {
+                        // A SLIVER (the thin band of an in-between colour along a boundary): too small for a
+                        // mark, and skipped it was a white halo round every shape. It takes its colour as a
+                        // touch — an exact glaze over the paper, hard-edged.
+                        let rings = mask_rings(&piece, w, h, 1.0);
+                        if rings.len() >= 3 {
+                            let t = color::srgb_to_linear(colour);
+                            let g = canvas.ground_linear();
+                            let want = [(t[0].max(0.004) / g[0].max(0.004)).ln().min(0.0), (t[1].max(0.004) / g[1].max(0.004)).ln().min(0.0), (t[2].max(0.004) / g[2].max(0.004)).ln().min(0.0)];
+                            let load = trans_densities(canvas.ln_reflectance(), want);
+                            if load.iter().any(|v| *v > 0.0) {
+                                canvas.fill_rings(&rings, &load, 0.3, 0.0);
+                                *k += 1;
+                                *placed += 1;
+                                let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+                                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false });
+                            }
+                        }
+                    }
+                    continue;
+                }
+                wc_sweep_mass(canvas, score, &piece, w, h, colour, p, &brush, wet, hits, light, false, &stage, placed, k);
+                // The shadow side: the piece's pixels darker than its median, as the shapes they make, swept
+                // again with the rest of the glaze (so the dark side reaches the full colour and the light
+                // side keeps the first wash).
+                if light < 1.0 {
+                    let ls: Vec<f32> = (0..w * h).filter(|&i| piece[i]).map(|i| luma_k[i]).collect();
+                    let med = quantile(&ls, 0.5);
+                    let dark: Vec<bool> = (0..w * h).map(|i| piece[i] && luma_k[i] < med).collect();
+                    let dark = keep_large_regions(&dilate_bool(&erode_bool(&dark, w, h, 2), w, h, 2), w, h, sweep_min / 4);
+                    if dark.iter().any(|&b| b) {
+                        wc_sweep_mass(canvas, score, &dark, w, h, colour, p, &brush, wet, hits, 1.0 - light, false, &stage, placed, k);
+                    }
+                }
             }
             cross(canvas);
             continue;

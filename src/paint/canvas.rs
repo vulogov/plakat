@@ -61,6 +61,9 @@ pub struct Canvas {
     transmittance: bool,
     /// `ln R_i` per pigment (linear reflectance), filled when `transmittance` is on.
     ln_r: Vec<[f32; 3]>,
+    /// A CLIP: while set, strokes lay paint only where it is true (a wash brush working INSIDE a shape —
+    /// the shape's edge stays exact however the strokes overshoot). `None` = no clip.
+    clip: Option<Vec<bool>>,
     n: usize,
 }
 
@@ -111,7 +114,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -126,6 +129,67 @@ impl Canvas {
             acc += (1.0 - (-self.opacity_k * self.opacity * total.max(0.0)).exp()) as f64;
         }
         (acc / px as f64) as f32
+    }
+
+    /// Set the clip to the inside of `rings` (NaN-separated polygons, even-odd, pixel centres); fewer than
+    /// three points clears it.
+    pub fn set_clip_rings(&mut self, rings: &[[f32; 2]]) {
+        let (w, h) = (self.w as usize, self.h as usize);
+        let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
+        let mut ring: Vec<[f32; 2]> = Vec::new();
+        let flush = |ring: &mut Vec<[f32; 2]>, edges: &mut Vec<([f32; 2], [f32; 2])>| {
+            if ring.len() >= 3 {
+                for i in 0..ring.len() {
+                    edges.push((ring[i], ring[(i + 1) % ring.len()]));
+                }
+            }
+            ring.clear();
+        };
+        for pt in rings {
+            if pt[0].is_nan() || pt[1].is_nan() {
+                flush(&mut ring, &mut edges);
+            } else {
+                ring.push(*pt);
+            }
+        }
+        flush(&mut ring, &mut edges);
+        if edges.is_empty() {
+            self.clip = None;
+            return;
+        }
+        let mut mask = vec![false; w * h];
+        let mut xs: Vec<f32> = Vec::new();
+        for y in 0..h {
+            let yc = y as f32 + 0.5;
+            xs.clear();
+            for (a, b) in &edges {
+                let (ya, yb) = (a[1], b[1]);
+                if (ya <= yc && yb > yc) || (yb <= yc && ya > yc) {
+                    let t = (yc - ya) / (yb - ya);
+                    xs.push(a[0] + t * (b[0] - a[0]));
+                }
+            }
+            if xs.len() < 2 {
+                continue;
+            }
+            xs.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            for pair in xs.chunks(2) {
+                if pair.len() < 2 {
+                    break;
+                }
+                let xa = (pair[0] - 0.5).ceil().max(0.0) as i64;
+                let xb = (pair[1] - 0.5).floor().min(w as f32 - 1.0) as i64;
+                for x in xa..=xb {
+                    mask[y * w + x as usize] = true;
+                }
+            }
+        }
+        self.clip = Some(mask);
+    }
+
+    /// Whether row-major pixel `p` is outside the current clip (never, when no clip is set).
+    pub fn clipped(&self, p: usize) -> bool {
+        self.clip.as_ref().is_some_and(|c| !c[p])
     }
 
     /// Switch the TRANSMITTANCE film on (see the field). Builder-style.

@@ -191,7 +191,7 @@ impl StrokeScore {
             let mix = s.mix.iter().map(|(n, v)| format!("{n}:{}", fmt_f(*v))).collect::<Vec<_>>().join(",");
             o.push_str(&format!(
                 "{} {} stage={} spline={} w0={} w1={} taper={} mix={} wet={} press={} streak={} round={}{}{}\n",
-                if s.wash { "A" } else if s.wipe { "W" } else { "S" },
+                if s.wash && s.wipe { "K" } else if s.wash { "A" } else if s.wipe { "W" } else { "S" },
                 s.id,
                 s.stage,
                 spline,
@@ -274,7 +274,7 @@ impl StrokeScore {
                         },
                     });
                 }
-                "S" | "W" | "A" => {
+                "S" | "W" | "A" | "K" => {
                     let id: u32 = it.clone().next().and_then(|s| s.parse().ok()).unwrap_or(0);
                     let m = kv(it);
                     let get = |k: &str| m.get(k).cloned().unwrap_or_default();
@@ -290,8 +290,8 @@ impl StrokeScore {
                         .collect::<Vec<(String, f32)>>();
                     strokes.push(StrokeRecord {
                         id,
-                        wipe: tag == "W",
-                        wash: tag == "A",
+                        wipe: tag == "W" || tag == "K",
+                        wash: tag == "A" || tag == "K",
                         stage: get("stage"),
                         spline,
                         w0: get("w0").parse().unwrap_or(1.0),
@@ -371,6 +371,11 @@ impl StrokeScore {
                 cur = at;
             }
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+            // A CLIP record (`K`): strokes after it lay paint only inside its rings; a one-point record clears.
+            if rec.wash && rec.wipe {
+                canvas.set_clip_rings(&path);
+                continue;
+            }
             if rec.wash {
                 let mut load = vec![0f32; n];
                 for (name, val) in &rec.mix {
@@ -478,6 +483,10 @@ impl StrokeScore {
                     }
                 }
                 let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
+                if rec.wash && rec.wipe {
+                    canvas.set_clip_rings(&path);
+                    continue;
+                }
                 if rec.wash {
                     canvas.fill_rings(&path, &load, rec.wet, rec.w0 * ss);
                     laid += 1;
