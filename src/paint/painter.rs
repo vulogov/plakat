@@ -4227,8 +4227,9 @@ fn detail_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, 
     // Biggest first; a hard ration, by the sheet and by the strength.
     shapes.sort_by(|a, b| b.px.len().cmp(&a.px.len()));
     let cap = ((w * h) as f32 / 1200.0 * (0.4 + 1.2 * strength) * round.share) as usize;
-    // Too big for a mark: wider than a few marks across (on a small sheet, still a few pixels).
-    let big = ((short as f32 / 22.0).max(7.0)).powi(2) as usize;
+    // Too big for a mark: a twenty-eighth of the sheet across (on a small sheet, still a few pixels). Wider,
+    // and a shadow shape became one twenty-pixel bar across a face.
+    let big = (short / 28).max(7).pow(2);
     let n = p.palette.pigments.len();
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
     let mut probe: std::collections::HashMap<(u32, u16), f32> = std::collections::HashMap::new();
