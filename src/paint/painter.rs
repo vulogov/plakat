@@ -1831,7 +1831,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // lays no stroke included. Density media run no passes (the drawing is laid by `ink_drawing`).
     // A luminous medium: the washes (one stage per level), then the two finest brush passes at a fraction of
     // the budget (the modelling within the washes).
-    let luminous_passes: Vec<PassSpec> = if p.luminous && !p.book {
+    // EXPERIMENT (PLAKAT_WC_BRUSH): a new watercolour painted with the BRUSH alone — no wash fills, the
+    // whole ladder on white paper behind the reserve, watercolour pigment physics.
+    let wc_brush = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_BRUSH").is_some();
+    let luminous_passes: Vec<PassSpec> = if wc_brush {
+        passes.clone()
+    } else if p.luminous && !p.book {
         // The modelling passes keep the plan's budget for the fine brushes: the restate gate already confines
         // them to where the washes differ from the picture (a lit window, a machine, a face), so on a flat
         // wash they lay little and on a detailed passage they resolve it — a quarter share washed the detail
@@ -1843,9 +1848,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     } else {
         Vec::new()
     };
-    let n_stages_total = p.armature_levels.max(2) as usize + luminous_passes.len();
+    let wash_stages = if wc_brush { 0 } else { p.armature_levels.max(2) as usize };
+    let n_stages_total = wash_stages + luminous_passes.len();
     score.header.stages = Some(if p.density {
         Vec::new()
+    } else if wc_brush {
+        luminous_passes.iter().map(|q| q.stage.clone()).collect()
     } else if p.luminous {
         (1..=p.armature_levels.max(2)).map(|l| format!("wash-{l}")).chain(luminous_passes.iter().map(|q| q.stage.clone())).collect()
     } else {
@@ -1882,7 +1890,108 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // reserved cells instead — a fact-driven protect, and replay-exact (only the recorded path is shorter).
     // The rule mirrors the seed gate exactly (bright, not a committed shadow, not inside the subject); merged
     // with the negative-painting protect when one is set.
-    let protect_all: Option<Vec<bool>> = match p.reserve {
+    // EXPERIMENT knobs for the brush watercolour (see `wc_brush`): per-layer charge multipliers, the broad
+    // passes' wetness and width multiplier, and whether the brush lifts.
+    let env_f = |name: &str, d: f32| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+    let wcb_charge: Vec<f32> = std::env::var("PLAKAT_WCB_CHARGE").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_else(|| vec![0.8, 0.8, 0.7, 0.7, 0.9, 1.0, 1.0]);
+    let wcb_wet = env_f("PLAKAT_WCB_WET", 0.7);
+    let wcb_width = env_f("PLAKAT_WCB_WIDTH", 1.6);
+    let wcb_len = env_f("PLAKAT_WCB_LEN", 2.5);
+    let wcb_pickup = env_f("PLAKAT_WCB_PICKUP", 0.0);
+    let wcb_depth = env_f("PLAKAT_WCB_DEPTH", 0.9);
+    let wcb_gamma = env_f("PLAKAT_WCB_GAMMA", 2.6);
+    let wcb_restate = env_f("PLAKAT_WCB_RESTATE", 2.0);
+    let wcb_blur = env_f("PLAKAT_WCB_BLUR", 0.32);
+    let wcb_broken = env_f("PLAKAT_WCB_BROKEN", 1.0);
+    let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
+    let wcb_bleedmul = env_f("PLAKAT_WCB_BLEEDMUL", 1.0);
+    let wcb_finest = env_f("PLAKAT_WCB_FINEST", 0.0);
+    let wcb_cap = env_f("PLAKAT_WCB_CAP", 2.0);
+    let wcb_streak = env_f("PLAKAT_WCB_STREAK", 0.05);
+    let wcb_round = env_f("PLAKAT_WCB_ROUND", 0.0);
+    let wcb_flat = env_f("PLAKAT_WCB_FLAT", 0.0);
+    let wcb_subj_from = env_f("PLAKAT_WCB_SUBJ", 0.0);
+    let wcb_stop = env_f("PLAKAT_WCB_STOP", 1.0);
+    let wcb_masses = env_f("PLAKAT_WCB_MASSES", 0.0) as usize;
+    let wcb_fill = env_f("PLAKAT_WCB_FILL", 0.0) > 0.0;
+    // A watercolourist mixes TWO pigments, three at most: sixteen in one puddle is grey.
+    let wcb_pig = env_f("PLAKAT_WCB_PIG", 0.0) as usize;
+    // DARKS BY CONCENTRATION, never by black. The mixer reaches a dark target by adding black pigment, and
+    // the thin transparent film then tints that black-and-colour mix into grey-brown — measured on flat
+    // patches: a keyed orange at saturation 80 painted at 20. A watercolourist mixes the HUE at full
+    // strength and gets the value from how much pigment is in the water: the masstone of the target, at a
+    // charge found on scrap paper for the target's value.
+    let wcb_conc = env_f("PLAKAT_WCB_CONC", 0.0);
+    let wcb_tol = env_f("PLAKAT_WCB_TOL", 0.08);
+    let wcb_probe = env_f("PLAKAT_WCB_PROBE", 0.0);
+    let wcb_targetl = env_f("PLAKAT_WCB_TARGETL", 0.3);
+    let wcb_relit = std::env::var_os("PLAKAT_WCB_MASSTONE").is_some();
+    // CONFINE every stroke to its own colour mass: a stroke stops at the mass boundary, so a blue wash and an
+    // orange one lie side by side and never overlap into grey (a transparent film's hue is the proportion of
+    // every pigment ever laid on it — two complementary strokes crossing is mud).
+    let wcb_confine = env_f("PLAKAT_WCB_CONFINE", 0.0) > 0.0;
+    // The mixer's palette for the brush watercolour: the picture's pigments WITHOUT the paper white (a
+    // watercolourist has no white; the paper is the white), so a hue is matched by pigments alone and its
+    // value is set by the charge. `wc_pal_map[i]` is the full-palette index of sub-palette pigment `i`.
+    let (wc_pal, wc_pal_map): (Palette, Vec<usize>) = {
+        // (Only when the hue is re-lit to a fixed value; with the picture's own pigments a light target
+        // needs the white to be matched at all, and without it the mixer reached for three mid pigments —
+        // a grey.)
+        let keep: Vec<usize> = (0..p.palette.pigments.len()).filter(|&i| !wcb_relit || color::linear_luma(color::srgb_to_linear(p.palette.pigments[i].masstone)) < 0.7).collect();
+        let keep = if keep.len() >= 2 { keep } else { (0..p.palette.pigments.len()).collect() };
+        let pigs: Vec<crate::paint::pigment::Pigment> = keep.iter().map(|&i| p.palette.pigments[i]).collect();
+        (Palette { name: p.palette.name, pigments: Box::leak(pigs.into_boxed_slice()) }, keep)
+    };
+    let wc_mix_cache: std::cell::RefCell<std::collections::HashMap<u32, Vec<f32>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    let probe_cache: std::cell::RefCell<std::collections::HashMap<(u32, u16), f32>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    let wcb_fill_feather = env_f("PLAKAT_WCB_FEATHER", 0.004);
+    let wcb_fill_wet = env_f("PLAKAT_WCB_FILLWET", 0.75);
+    let wcb_fill_bleed = env_f("PLAKAT_WCB_FILLBLEED", 0.3);
+
+    let wcb_hi = env_f("PLAKAT_WCB_HI", 0.95);
+    let wcb_dep = env_f("PLAKAT_WCB_DEP", 1.5);
+    let wcb_bleed = env_f("PLAKAT_WCB_BLEED", 0.1);
+    let wcb_dark = env_f("PLAKAT_WCB_DARK", 1.2);
+    let wcb_light = env_f("PLAKAT_WCB_LIGHT", 0.4);
+    let wcb_paper = env_f("PLAKAT_WCB_PAPER", 0.08);
+    // THE KEY. A watercolour paints toward a picture re-keyed to the paper: paper at the top of the picture's
+    // range, the darkest wash `depth` below it, in perceptual value, chromaticity kept — a night's near-black
+    // brown becomes a brown the mixer can find pigment for. Every pass paints toward the keyed picture, so
+    // the restate gates agree with the strokes.
+    let keyed_input;
+    let keyed_source;
+    let (input, source): (&RgbImage, &RgbImage) = if wc_brush {
+        keyed_input = key_image(input, input, wcb_depth, wcb_gamma, wcb_hi);
+        keyed_source = key_image(source, input, wcb_depth, wcb_gamma, wcb_hi);
+        if let Some(dir) = std::env::var_os("PLAKAT_PAINT_MASKS") {
+            let _ = keyed_input.save(std::path::Path::new(&dir).join("wc_keyed_input.png"));
+        }
+        (&keyed_input, &keyed_source)
+    } else {
+        (input, source)
+    };
+    // THE MASSES: a wash is ONE colour over a shape. The broad passes paint each cell in its MASS's colour
+    // (k-means over the keyed picture at wash scale), so neighbouring strokes of one mass are the same
+    // colour and overlap invisibly into one flat wash, and the only edges are where masses meet.
+    let wc_mass: Option<(Vec<u16>, Vec<Srgb>)> = (wc_brush && wcb_masses >= 2).then(|| wc_mass_colours(input, wcb_masses, p.seed));
+    let wc_mass_masks: Vec<Vec<bool>> = match (&wc_mass, wcb_confine) {
+        (Some((labels, means)), true) => (0..means.len()).map(|m| labels.iter().map(|&l| l as usize == m).collect()).collect(),
+        _ => Vec::new(),
+    };
+    if let (Some((labels, means)), Some(dir)) = (&wc_mass, std::env::var_os("PLAKAT_PAINT_MASKS")) {
+        let g = RgbImage::from_fn(w, h, |x, y| image::Rgb(means[labels[y as usize * w as usize + x as usize] as usize]));
+        let _ = g.save(std::path::Path::new(&dir).join("wc_masses.png"));
+    }
+    // The PAPER of a brush watercolour: the keyed picture's lightest `wcb_paper` share, as shapes (the
+    // shape-aware reserve below does the shaping). The plan's reserve luma is for the other media.
+    let reserve_eff: Option<f32> = if wc_brush {
+        let mut l = luma_map(input);
+        l.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(l[((l.len() as f32 - 1.0) * (1.0 - wcb_paper.clamp(0.02, 0.6))) as usize])
+    } else {
+        p.reserve
+    };
+    let protect_all: Option<Vec<bool>> = match reserve_eff {
         Some(rt) => {
             let mut m: Vec<bool> = input
                 .pixels()
@@ -1910,11 +2019,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         }
                     }
                 }
-                let r = (short / 400).max(2);
+                // A brush watercolour reserves only BOLD shapes: opened wider and kept only from a
+                // twenty-fourth of the sheet across, so a sunlit façade's chips are washed, not left as flecks.
+                let r = if wc_brush { (short / 150).max(3) } else { (short / 400).max(2) };
                 let opened = dilate_bool(&erode_bool(&m, wu, hu, r), wu, hu, r);
                 // A sixty-fourth of the sheet across — a lit window pane is a shape worth reserving; the
                 // opening above has already removed anything thinner than a few pixels.
-                let min_side = (short / 64).max(6);
+                let min_side = if wc_brush { (short / 24).max(8) } else { (short / 64).max(6) };
                 m = keep_large_regions(&opened, wu, hu, min_side * min_side);
             }
             if let Some(pm) = p.protect.as_deref() {
@@ -1976,7 +2087,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // dried before the next (see `wash_passes`) — then MODELS within them with the two finest brushes only
         // (thin transparent touches from the source's texture: a wash is flat, a watercolour is not), at a
         // fraction of the budget. The line and the splatter follow.
-        wash_passes(&mut canvas, &mut score, input, source, n_stages_total, p, protect_all.as_deref(), &mut placed, &mut k, progress);
+        if !wc_brush {
+            wash_passes(&mut canvas, &mut score, input, source, n_stages_total, p, protect_all.as_deref(), &mut placed, &mut k, progress);
+        }
+        if let (Some((labels, means)), true) = (&wc_mass, wc_brush && wcb_fill) {
+            wc_fill_masses(&mut canvas, &mut score, labels, means, w as usize, h as usize, protect_all.as_deref(), p, (w.max(h) as f32 * wcb_fill_feather).max(1.0), wcb_fill_wet, &mut placed, &mut k);
+            if wcb_fill_bleed > 0.0 {
+                canvas.bleed_with(wcb_fill_bleed, 0.0);
+            }
+            canvas.dry(1.0 - p.dry);
+        }
         luminous_passes
     } else {
         passes
@@ -2007,6 +2127,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // even under a loose base register — but their strokes are gated to the FOCAL region below, so the masses
         // stay loose and only the eye's destination (eyes/glasses) gets crisp accents.
         let fine = radius <= p.min_brush * 2.5;
+        if wc_brush && wcb_finest > 0.0 && radius < wcb_finest {
+            continue;
+        }
+        let wcb_broad_pass = wc_brush && !fine;
+        if wcb_broad_pass {
+            canvas.mark_film();
+        }
         let detail = !block_in && (fidelity || (p.style == PaintStyle::Legible && fine) || (focus_on && fine));
         // The reference this pass paints from. Fidelity paints from a SHARP reference at every scale (it tracks
         // real structure, doesn't invent) — a touch of unsharp even on the block-in. Legible blurs the masses and
@@ -2018,7 +2145,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // `detail_texture`), unless a detail sharpen is asked for instead (see `detail_sharpen`).
             if p.detail_sharpen > 0.0 {
                 imageops::unsharpen(input, (radius * p.detail_sharpen).max(0.6), 1)
-            } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) {
+            } else if p.detail_texture > 0.0 && !std::ptr::eq(source, input) && !(wc_brush && wcb_texture <= 0.0) {
                 // (The luminous media too: their modelling passes read the armature, which the washes already
                 // match, so without the source's texture the restate gate found nothing to resolve — a night
                 // scene's lamps and machine washed out. The residual greyed only the old cumulative mud washes.)
@@ -2030,7 +2157,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // Coarse passes lay masses from a softened reference — but a radius×0.5 blur erases the structure
             // (object edges, value boundaries) before a stroke is placed, so strokes see no boundary to stop at
             // and smear. A gentler blur keeps the masses' EDGES while still dropping texture.
-            imageops::blur(input, (radius * 0.32).max(0.6))
+            imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
         };
         lap("pass:reference", &mut prof_acc, &mut prof_t);
         let luma = luma_map(&reference);
@@ -2153,13 +2280,25 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                 }
                 let target = reference.get_pixel(ix, iy).0;
+                let target = match (&wc_mass, wc_brush && !fine) {
+                    (Some((labels, means)), true) => means[labels[iy as usize * w as usize + ix as usize] as usize],
+                    _ => target,
+                };
                 let tluma = color::linear_luma(color::srgb_to_linear(target));
                 // COMMIT SHADOWS (RFC §3.3): in the dark value masses, paint DECISIVELY — lift the reserve so darks
                 // always land, drop the restate floor so they build to full depth, and boost the pigment charge so
                 // they read as committed paint, not a thin wash. `sh` in [0,1] is the shadow strength here.
                 let region_i = iy as usize * w as usize + ix as usize;
                 // A face-only pass lays nothing off the face.
-                if pass.face_only && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
+                // (The brush watercolour gives the sheet the whole ladder, but its two finest brushes — the
+                // ones that stippled every wash — stay for the face.)
+                let face_only_here = if wc_brush { radius <= 4.5 } else { pass.face_only };
+                if face_only_here && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
+                    return None;
+                }
+                // Economy by PLANE: the background takes only the broad brushes (a wash is a wash), the
+                // subject the middle ones, the face the finest.
+                if wc_brush && wcb_subj_from > 0.0 && radius < wcb_subj_from && (!block_in || wcb_fill) && p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.5 && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
                     return None;
                 }
                 let soft = ramp_soft.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
@@ -2169,7 +2308,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // light mass — never reserved to blank paper (that is what made the shoulders vanish). And never
                 // reserve inside a committed shadow. Determined over the detected extents, not raw luma.
                 let subj = p.subject_mask.as_ref().map(|m| m[region_i]).unwrap_or(0.0);
-                if let Some(rt) = p.reserve {
+                if let Some(rt) = reserve_eff {
                     if tluma > rt && sh < 0.35 && subj < 0.5 {
                         return None;
                     }
@@ -2180,9 +2319,27 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // also gets a tighter floor so it BUILDS DENSITY (layers) instead of being covered once and
                 // skipped — the fix for a sparse, under-painted subject; the background stays sparse.
                 let restate_floor = (if detail { p.detail_restate } else { 0.06 }) * (1.0 - 0.85 * sh) * (1.0 - 0.55 * subj) * (1.0 - 0.8 * soft) * floor_mul.get();
+                // A watercolour's ECONOMY: the fine brushes restate only what is plainly wrong — off the face a
+                // wash that is nearly right is left alone (a thousand small corrections are the stipple).
+                let on_face = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35;
+                let restate_floor = if wc_brush && !block_in && !on_face { restate_floor * wcb_restate } else { restate_floor };
                 if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
+                // A watercolour stroke is a GLAZE over what is there: it never lands where the paper is already
+                // as dark as the picture asks (a watercolour cannot lighten), and its charge is for the
+                // residual — the value the glaze must read on white so that, over the canvas, it reads the target.
+                let wcb_under = if wc_brush && wcb_conc > 0.0 {
+                    // (The block-in too: its strokes overlap several deep, and ungated every one landed at full
+                    // charge over the last — ten charges of different pigments in one film is mud.)
+                    let u = color::linear_luma(color::srgb_to_linear(cv.color_at(ix, iy))).max(0.02);
+                    if u <= tluma * (1.0 + wcb_tol) {
+                        return None;
+                    }
+                    Some(u)
+                } else {
+                    None
+                };
                 // Detail passes only add marks where there is COHERENT structure to resolve. On an incoherent,
                 // structureless region (e.g. a tangled net the armature rendered as noise) the flow field has no
                 // dominant direction — dropping detail marks there reads as random blocky specks, an "AI filter"
@@ -2224,9 +2381,38 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                 }
                 // BROKEN COLOUR: vary this stroke's colour so neighbours optically mix (vibrancy).
-                let load_target = if p.broken > 0.0 { broken_color(target, p.broken, p.seed, k) } else { target };
+                let load_target = if p.broken > 0.0 && !(wc_brush && wcb_broken <= 0.0) { broken_color(target, p.broken, p.seed, k) } else { target };
                 // Committed shadows carry MORE pigment so the dark masses read solid, not a thin transparent wash.
-                let load = mixture_cached(cache, load_target, &p.palette, p.charge * (1.0 + 1.1 * sh), n);
+                // The HUE at the pigments' own masstone depth, so the mixer picks pigments and never white; the
+                // charge is found below, once the stroke's brush and wetness are known (a stroke deposits by its
+                // own rule, not a fill's).
+                let wcb_mass: Option<(Srgb, f32)> = (wc_brush && wcb_conc > 0.0).then(|| {
+                    let lin = color::srgb_to_linear(load_target);
+                    let l = color::linear_luma(lin).max(1e-4);
+                    // A light or mid passage is the pure hue, its value from the water; a DARK one is mixed
+                    // dark — a vivid pigment cannot reach a deep value on its own, and a painter adds the
+                    // dark pigment to it there.
+                    let sc = if wcb_relit { wcb_targetl.min(tluma.max(0.03)) / l } else { 1.0 };
+                    let mass = if wcb_relit { color::linear_to_srgb([(lin[0] * sc).min(1.0), (lin[1] * sc).min(1.0), (lin[2] * sc).min(1.0)]) } else { load_target };
+                    let need = (tluma / wcb_under.unwrap_or(1.0)).clamp(0.03, 0.99);
+                    (mass, need)
+                });
+                let load = if wc_brush && wcb_pig >= 1 {
+                    let m = mixer::solve_mixture(&p.palette, load_target, wcb_pig.min(n));
+                    let c = p.charge * (1.0 + 1.1 * sh);
+                    let mut v = vec![0f32; n];
+                    for (pi, wgt) in m.pigments.iter().zip(&m.weights) {
+                        v[*pi] += wgt * c;
+                    }
+                    v
+                } else {
+                    mixture_cached(cache, load_target, &p.palette, p.charge * (1.0 + 1.1 * sh), n)
+                };
+                // The brush watercolour: broad passes are WASHES — transparent (a fraction of the charge), flooded,
+                // wide and long so they overlap into one wet mass, and they never lift the layer beneath.
+                let wcb_broad = wc_brush && !fine;
+                // …and a painter FLOODS the darks: a dark target carries more pigment, a light one barely tints.
+                let load: Vec<f32> = if wc_brush { let m = wcb_charge.get(layer).copied().unwrap_or(1.0) * (wcb_light + wcb_dark * (1.0 - tluma.clamp(0.0, 1.0))); load.iter().map(|v| v * m).collect() } else { load };
                 // Stroke-growth boundary: a COMPOSITION layer keeps its strokes inside the element's footprint
                 // (they terminate at the mask edge, so the element doesn't bleed over its neighbours); otherwise
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
@@ -2241,6 +2427,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let strand_out = hair > 0.35 && jitter(p.seed ^ 0x9E37_79B9, k.wrapping_add(11)) + 0.5 < 0.35;
                 let region = if let Some(m) = p.paint_mask.as_deref() {
                     Some((m, true))
+                } else if !wc_mass_masks.is_empty() {
+                    let lbl = wc_mass.as_ref().map(|(l, _)| l[region_i] as usize).unwrap_or(0);
+                    Some((wc_mass_masks[lbl].as_slice(), true))
                 } else if strand_out {
                     None
                 } else {
@@ -2254,8 +2443,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let lvar = 1.0 + 0.18 * jitter(p.seed ^ 0x91E3, k.wrapping_add(7));
                 let pvar = 0.85 + 0.15 * (jitter(p.seed ^ 0x2C7D, k.wrapping_add(3)) + 0.5);
                 // A strand is LONGER and NARROWER than a mass mark: a lock of hair is drawn in one gesture.
-                let rw = (radius * profile.radius_scale * p.stroke_width * wvar * (1.0 - 0.35 * hair)).max(p.min_brush * 0.8);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair)).max(0.2), STOP_TOL * (1.0 - 0.6 * soft));
+                let rw = (radius * profile.radius_scale * p.stroke_width * wvar * (1.0 - 0.35 * hair) * if wcb_broad { wcb_width } else { 1.0 }).max(p.min_brush * 0.8);
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
@@ -2321,6 +2510,37 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         stroke_brush.k_pickup = 0.0;
                     }
                 }
+                let wet = if wcb_broad && wcb_wet > 0.0 { wcb_wet } else { wet };
+                if wc_brush {
+                    stroke_brush.k_pickup *= wcb_pickup;
+                }
+                if wcb_broad {
+                    // A WASH brush: even bristles, a flat section, laying its film quickly and only once.
+                    stroke_brush.streak = wcb_streak;
+                    stroke_brush.round = wcb_round;
+                    stroke_brush.k_deposit *= wcb_dep;
+                    stroke_brush.film_cap = wcb_cap;
+                    stroke_brush.flat_ends = wcb_flat > 0.0;
+                }
+                // Tested on scrap with THIS brush at THIS wetness: the charge that makes the stroke read `need`.
+                let load = match wcb_mass {
+                    Some((mass, need)) => {
+                        // Optical density: the film a glaze needs grows with the log of what it must take off
+                        // the canvas's value. `wcb_conc` is the pigment per unit density, calibrated on patches.
+                        let charge = if wcb_probe > 0.0 {
+                            charge_for(&mut probe_cache.borrow_mut(), &p.palette, 0.85, p.opacity, mass, need, wet, Some(&stroke_brush)) * wcb_conc
+                        } else {
+                            wcb_conc * (-(need.max(0.03).ln()))
+                        } * (1.0 + 1.1 * sh);
+                        let sub = mixture_cached(&mut wc_mix_cache.borrow_mut(), mass, &wc_pal, charge, wc_pal.pigments.len());
+                        let mut full = vec![0f32; n];
+                        for (i, v) in sub.iter().enumerate() {
+                            full[wc_pal_map[i]] = *v;
+                        }
+                        full
+                    }
+                    None => load,
+                };
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
                 let s = Stroke { path, width0: rw, width1: (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair)), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
                 s.rasterize(cv, &stroke_brush);
@@ -2343,7 +2563,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // A pickup the stroke's own brush differs in from the header's is part of how it was laid.
                     // The dry brush zeroes it; left unrecorded, replay rebuilt every dry-brush mark with the
                     // header's pickup and drifted — the unrecorded-bristles bug again.
-                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry { Some(stroke_brush.k_pickup) } else { None },
+                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                 })
             }
@@ -2480,15 +2700,21 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // whole sheet read as one blur). The same schedule is reproduced by the score replay at each stage
         // boundary, so the drawing stays byte-exact.
         // (A luminous paint's brush passes come after its wash stages: their taper index continues from them.)
-        let (b_idx, b_n) = if p.luminous { (p.armature_levels.max(2) as usize + layer, n_stages_total) } else { (layer, passes.len()) };
+        let (b_idx, b_n) = if p.luminous { (wash_stages + layer, n_stages_total) } else { (layer, passes.len()) };
         if p.bleed > 0.0 {
-            canvas.bleed_with(p.bleed * pass_bleed_taper(b_idx, b_n), p.diffuse);
+            canvas.bleed_with(p.bleed * pass_bleed_taper(b_idx, b_n) * if wc_brush { wcb_bleedmul } else { 1.0 }, p.diffuse);
+        }
+        if wcb_broad_pass && wcb_bleed > 0.0 {
+            canvas.bleed_with(wcb_bleed, 0.0);
         }
         if b_idx + 1 < b_n {
             canvas.dry(1.0 - p.dry);
         }
         lap("pass:bleed+dry", &mut prof_acc, &mut prof_t);
         stats.push(PassStat { stage: pass.stage.clone(), radius, strokes: in_pass, seconds: pass_t0.elapsed().as_secs_f64() });
+        if let Some(dir) = std::env::var_os("PLAKAT_WCB_DUMP") {
+            let _ = canvas.to_image().save(std::path::Path::new(&dir).join(format!("pass_{layer}.png")));
+        }
         if prof_on { eprintln!("PROFILE pass {layer} r={radius:.1} strokes={in_pass} {:.2}s", pass_t0.elapsed().as_secs_f64()); }
     }
     if !rejected.is_empty() {
@@ -3448,6 +3674,174 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
 /// a watercolour is light because its washes are THIN over white paper), mixed from the palette; the reserved
 /// paper (`protect`) is cut out of every mass as a hole, so the lights stay paper.
 #[allow(clippy::too_many_arguments)]
+/// SCRAP PAPER. A watercolourist tests the mix before it goes on the sheet: this is the pigment charge
+/// that brings `colour` to `luma` on white paper, found on an eight-pixel probe canvas by bisection. Fixed
+/// charges per layer were the first build's darkness — three glazes of a night's grey mean, each at a
+/// charge chosen blind, went nearly black and the three bands could not be told apart. A glaze over a wash
+/// of value U that must read T needs a glaze that reads T/U on white (transparent layers multiply), which is
+/// what the callers ask for. Cached by colour and target.
+fn charge_for(cache: &mut std::collections::HashMap<(u32, u16), f32>, palette: &Palette, tooth: f32, opacity: f32, colour: Srgb, luma: f32, wet: f32, brush: Option<&BrushConfig>) -> f32 {
+    let luma = luma.clamp(0.03, 0.99);
+    // A brush stroke deposits pigment by its own rule, not a fill's: a mark calibrated on a fill was invisible.
+    let key = (((colour[0] as u32) << 16) | ((colour[1] as u32) << 8) | colour[2] as u32, (luma * 1000.0) as u16 | if brush.is_some() { 0x8000 } else { 0 });
+    if let Some(c) = cache.get(&key) {
+        return *c;
+    }
+    let n = palette.pigments.len();
+    let base = mixture_for_key(mixture_key(colour), palette, n);
+    let ring: Vec<[f32; 2]> = vec![[0.0, 0.0], [8.0, 0.0], [8.0, 8.0], [0.0, 8.0]];
+    let read = |charge: f32| -> f32 {
+        let mut probe = Canvas::white(8, 8, *palette, tooth).with_opacity(opacity);
+        let load: Vec<f32> = base.iter().map(|v| v * charge).collect();
+        match brush {
+            Some(b) => Stroke { path: vec![[0.0, 4.0], [4.0, 4.0], [8.0, 4.0]], width0: 8.0, width1: 8.0, load, pressure: 1.0, wetness: wet }.rasterize(&mut probe, b),
+            None => probe.fill_rings(&ring, &load, wet, 0.0),
+        }
+        color::linear_luma(color::srgb_to_linear(probe.color_at(4, 4)))
+    };
+    // Monotone: more pigment, darker. Bisect on a log scale.
+    let (mut lo, mut hi) = (0.01f32, 40.0f32);
+    if read(lo) <= luma {
+        cache.insert(key, lo);
+        return lo;
+    }
+    if read(hi) >= luma {
+        cache.insert(key, hi);
+        return hi;
+    }
+    for _ in 0..14 {
+        let mid = (lo.ln() * 0.5 + hi.ln() * 0.5).exp();
+        if read(mid) > luma {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let c = (lo.ln() * 0.5 + hi.ln() * 0.5).exp();
+    cache.insert(key, c);
+    c
+}
+
+
+
+/// THE WASHES OF A BRUSH WATERCOLOUR (`PLAKAT_WCB_FILL`): each mass (see `wc_mass_colours`) laid as one
+/// flat wash in its own colour, lightest first so a darker wash blooms over a lighter neighbour's edge,
+/// each tested on scrap paper so it reads its colour, with a wet edge sized by the mass. The brush ladder
+/// then models the subject and the faces over them.
+fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, placed: &mut usize, k: &mut u64) {
+    let n = p.palette.pigments.len();
+    let short = w.min(h);
+    let min_area = (short / 80).max(3).pow(2);
+    let mut order: Vec<usize> = (0..means.len()).collect();
+    order.sort_by(|&a, &b| color::linear_luma(color::srgb_to_linear(means[b])).partial_cmp(&color::linear_luma(color::srgb_to_linear(means[a]))).unwrap_or(std::cmp::Ordering::Equal));
+    let mut probe: std::collections::HashMap<(u32, u16), f32> = std::collections::HashMap::new();
+    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
+    for &m in &order {
+        let colour = means[m];
+        let luma = color::linear_luma(color::srgb_to_linear(colour));
+        let mut mask: Vec<bool> = (0..w * h).map(|i| labels[i] as usize == m && !paper.map(|pp| pp[i]).unwrap_or(false)).collect();
+        // Flecks are not washes; and a wash is grown a pixel so neighbours touch, never over the paper.
+        mask = keep_large_regions(&mask, w, h, min_area);
+        let mut grown = dilate_bool(&mask, w, h, 1);
+        for (i, g) in grown.iter_mut().enumerate() {
+            if paper.map(|pp| pp[i]).unwrap_or(false) {
+                *g = false;
+            }
+        }
+        if !grown.iter().any(|&b| b) {
+            continue;
+        }
+        let rings = mask_rings(&grown, w, h, 1.2);
+        if rings.is_empty() {
+            continue;
+        }
+        let charge = charge_for(&mut probe, &p.palette, 0.85, p.opacity, colour, luma, wet, None);
+        let load = mixture_cached(&mut cache, colour, &p.palette, charge, n);
+        canvas.fill_rings(&rings, &load, wet, feather_px);
+        *k += 1;
+        *placed += 1;
+        let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "wash".into(), spline: rings, w0: feather_px, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None });
+    }
+}
+
+/// The picture's MASSES at wash scale: `k` colour centres by k-means in linear light over the picture blurred
+/// to wash scale, each pixel labelled with its nearest, and each centre's mean colour. Deterministic.
+fn wc_mass_colours(img: &RgbImage, k: usize, seed: u64) -> (Vec<u16>, Vec<Srgb>) {
+    let (w, h) = (img.width(), img.height());
+    let blurred = imageops::blur(img, (w.max(h) as f32 * 0.004).max(1.5));
+    let px: Vec<[f32; 3]> = blurred.pixels().map(|p| color::srgb_to_linear(p.0)).collect();
+    let n = px.len();
+    let k = k.clamp(2, 64);
+    let mut by_l: Vec<usize> = (0..n).step_by(11).collect();
+    by_l.sort_by(|&a, &b| color::linear_luma(px[a]).partial_cmp(&color::linear_luma(px[b])).unwrap_or(std::cmp::Ordering::Equal));
+    let mut centres: Vec<[f32; 3]> = (0..k)
+        .map(|c| {
+            let q = (c as f32 + 0.5 + 0.3 * jitter(seed ^ 0xC1A5, c as u64)) / k as f32;
+            px[by_l[((by_l.len() as f32 - 1.0) * q.clamp(0.0, 1.0)) as usize]]
+        })
+        .collect();
+    let dist = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+    let nearest = |p: [f32; 3], centres: &[[f32; 3]]| centres.iter().enumerate().map(|(i, c)| (i, dist(p, *c))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(i, _)| i).unwrap_or(0);
+    for _ in 0..12 {
+        let mut sum = vec![[0f64; 3]; k];
+        let mut cnt = vec![0usize; k];
+        for i in (0..n).step_by(5) {
+            let c = nearest(px[i], &centres);
+            for ch in 0..3 {
+                sum[c][ch] += px[i][ch] as f64;
+            }
+            cnt[c] += 1;
+        }
+        for c in 0..k {
+            if cnt[c] > 0 {
+                centres[c] = [(sum[c][0] / cnt[c] as f64) as f32, (sum[c][1] / cnt[c] as f64) as f32, (sum[c][2] / cnt[c] as f64) as f32];
+            }
+        }
+    }
+    let labels: Vec<u16> = px.iter().map(|&p| nearest(p, &centres) as u16).collect();
+    let means: Vec<Srgb> = centres.iter().map(|c| color::linear_to_srgb(*c)).collect();
+    (labels, means)
+}
+
+/// Re-key `img` to the paper (see the brush watercolour): the range is measured on `measure` (the armature;
+/// its 2nd..98th luma percentiles), paper at the top, `depth` × 0.72 of perceptual value below it at the
+/// bottom, chromaticity kept.
+pub fn key_image(img: &RgbImage, measure: &RgbImage, depth: f32, gamma: f32, hi_q: f32) -> RgbImage {
+    let l = luma_map(measure);
+    let mut sorted = l.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len().max(1);
+    let lo = sorted[n * 2 / 100];
+    // The top of the range is below the picture's brightest points: a nocturne's lamps are not its key.
+    let hi = sorted[(((n as f32) * hi_q.clamp(0.5, 0.995)) as usize).min(n - 1)].max(lo + 0.05);
+    let depth = depth.clamp(0.1, 1.0);
+    let mut out = img.clone();
+    for px in out.pixels_mut() {
+        let lin = color::srgb_to_linear(px.0);
+        let lum = color::linear_luma(lin).max(1e-4);
+        let t = ((lum - lo) / (hi - lo)).clamp(0.0, 1.0);
+        // Full depth: at `depth` 0.9 the darkest wash is a perceptual 0.10 — a real dark. (A 0.72 factor here
+        // lifted every shadow to a light grey and the sheet was fog.)
+        // A watercolour's value structure is HIGH-KEY WITH DEEP ACCENTS: the lights and mids stay near the
+        // paper and only the darkest quarter drops to the depth — `gamma` > 1 bends the curve that way.
+        let want = (1.0 - depth * (1.0 - t).powf(gamma)).powf(2.2);
+        let sc = (want / lum).min(40.0);
+        let mut v = [lin[0] * sc, lin[1] * sc, lin[2] * sc];
+        // Out of gamut at the top: desaturate toward the target grey, never clip a channel (clipping red
+        // first turned every lit face cyan).
+        let mx = v[0].max(v[1]).max(v[2]);
+        if mx > 1.0 {
+            let k = ((1.0 - want) / (mx - want).max(1e-4)).clamp(0.0, 1.0);
+            for c in v.iter_mut() {
+                *c = want + (*c - want) * k;
+            }
+        }
+        px.0 = color::linear_to_srgb([v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0)]);
+    }
+    out
+}
+
 fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImage, source: &RgbImage, n_stages_total: usize, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
     let (w, h) = (source.width() as usize, source.height() as usize);
     let levels = p.armature_levels.max(2) as usize;
@@ -4662,4 +5056,3 @@ mod tests {
         assert!(tr < 0.999, "not a pixel-perfect trace (corr {tr})");
     }
 }
-

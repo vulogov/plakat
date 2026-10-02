@@ -38,6 +38,8 @@ pub struct Canvas {
     /// over the ground and the tooth saturation; kept apart from `conc` so covering a light block-in with a
     /// dark restatement changes the film's colour without thinning it.
     film: Vec<f32>,
+    /// The film at the last `mark_film` (empty = never marked), for a wash brush's film cap.
+    film_mark: Vec<f32>,
     /// Per-pixel paint height (impasto), row-major.
     pub height: Vec<f32>,
     /// Per-pixel wet pigment available for pickup, row-major (0 = dry).
@@ -103,7 +105,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -190,6 +192,16 @@ impl Canvas {
         let p = y as usize * self.w as usize + x as usize;
         self.film[p] += amount;
         self.height[p] += height.max(0.0);
+    }
+
+    /// Remember the film as it is now (see `BrushConfig::film_cap`): the start of a wash pass.
+    pub fn mark_film(&mut self) {
+        self.film_mark = self.film.clone();
+    }
+
+    /// The film laid at row-major pixel `p` since the last `mark_film` (all of it when never marked).
+    pub fn film_since_mark(&self, p: usize) -> f32 {
+        self.film[p] - self.film_mark.get(p).copied().unwrap_or(0.0)
     }
 
     /// WIPE / scrape back at a pixel (RFC PAINT-1 §8.7): remove a `strength` fraction of the accumulated

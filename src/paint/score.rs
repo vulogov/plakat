@@ -256,6 +256,8 @@ impl StrokeScore {
                             load_max: get("loadmax").parse().unwrap_or(6.0),
                             streak: get("streak").parse().unwrap_or(0.6),
                             round: get("round").parse().unwrap_or(0.7),
+                            film_cap: 0.0,
+                            flat_ends: false,
                         },
                     });
                 }

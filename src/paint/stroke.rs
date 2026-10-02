@@ -31,6 +31,13 @@ pub struct BrushConfig {
     /// Cross-section ROUNDNESS (0..1): 1 = a round brush (soft feathered edges), 0 = a flat brush (harder,
     /// squarer edge across the width).
     pub round: f32,
+    /// A WASH brush (0 = off): the stroke lays at most this many times its own single-hit deposit of film at
+    /// any pixel since the canvas's last `mark_film`, so overlapping strokes of one wash pass build ONE film —
+    /// the water evens the pigment out — rather than doubling where they cross.
+    pub film_cap: f32,
+    /// A WASH brush lays its full film to the very ends of the mark (no end taper): strokes overlap into one
+    /// flat wash whose only edges are where the wash stops. Off for every brush mark.
+    pub flat_ends: bool,
 }
 
 impl Default for BrushConfig {
@@ -39,7 +46,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false }
     }
 }
 
@@ -156,7 +163,9 @@ impl Stroke {
 
             // Ends taper: the first/last ~22% of the stroke deposits less, so a mark has soft ROUND tips, not a
             // rectangular butt (the "blocky patch" tell). Deeper falloff = more organic marks.
-            let end = {
+            let end = if brush.flat_ends {
+                1.0
+            } else {
                 let e = (t.min(1.0 - t) / 0.22).clamp(0.0, 1.0);
                 0.15 + 0.85 * e * e
             };
@@ -235,7 +244,16 @@ impl Stroke {
 
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
-        let df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        let mut df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        if brush.film_cap > 0.0 {
+            let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
+            let laid = canvas.film_since_mark(p);
+            let room = (cap - laid).max(0.0);
+            let would = Self::load_norm(load) * df;
+            if would > room {
+                df *= room / would.max(1e-6);
+            }
+        }
         deposit.clear();
         deposit.resize(n, 0.0);
         let mut dep_total = 0.0;

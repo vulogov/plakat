@@ -1826,10 +1826,69 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
 
     // Palette: `image`/`auto` derives one from the reference; otherwise a named palette (defaulting to the
     // medium's own when a medium is given).
+    // EXPERIMENT (PLAKAT_WC_BRUSH): a brush watercolour paints the picture re-KEYED to the paper, so its
+    // pigments are derived from the keyed picture — a night scene's own pigments hold no light warm colour,
+    // and keyed-up skin was mixed from the lamp glow's pale blue (teal patches on every lit face).
+    let wc_brush_cli = a.new_painting && a.medium.as_deref() == Some("watercolour") && std::env::var_os("PLAKAT_WC_BRUSH").is_some();
+    let img_for_palette: image::RgbImage = if wc_brush_cli {
+        let envf = |n: &str, d: f32| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+        crate::paint::painter::key_image(&img, &img, envf("PLAKAT_WCB_DEPTH", 0.9), envf("PLAKAT_WCB_GAMMA", 2.6), envf("PLAKAT_WCB_HI", 0.95))
+    } else {
+        img.clone()
+    };
+    // A WATERCOLOUR PIGMENT IS DARK IN MASSTONE AND CLEAN IN TINT. A film of pigment can never be darker
+    // than the pigment itself, and a pigment taken straight from the picture is as light as the passage it
+    // came from — so every dark had to be mixed with black, and the tint of that mix is grey. The brush
+    // watercolour takes each image pigment's CHROMATICITY (the picture's hue, nothing named) and sets its
+    // masstone deep; the value of every wash then comes from concentration, as it does on paper.
+    let dark_masstones = |p: crate::paint::palette::Palette| -> crate::paint::palette::Palette {
+        use crate::paint::pigment::Pigment;
+        let depth = std::env::var("PLAKAT_WCB_MASSTONE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.05);
+        let pigs: Vec<Pigment> = p
+            .pigments
+            .iter()
+            .map(|pg| {
+                let lin = crate::paint::color::srgb_to_linear(pg.masstone);
+                let l = crate::paint::color::linear_luma(lin).max(1e-4);
+                let (mx, mn) = (lin[0].max(lin[1]).max(lin[2]), lin[0].min(lin[1]).min(lin[2]));
+                // Near-neutral pigments (the paper white, the dark) are left as they are.
+                if mx - mn < 0.02 * mx.max(0.02) || (depth < 1.0 && l < depth) {
+                    return *pg;
+                }
+                // `PLAKAT_WCB_MASSTONE` ≥ 1: the VIVID masstone instead — the hue at its brightest saturated
+                // form (a Kubelka-Munk tint of a deep masstone goes grey; of a vivid one stays clean).
+                let sc = if depth >= 1.0 { 1.0 / mx.max(1e-4) } else { depth / l };
+                Pigment { name: pg.name, masstone: crate::paint::color::linear_to_srgb([(lin[0] * sc).min(1.0), (lin[1] * sc).min(1.0), (lin[2] * sc).min(1.0)]) }
+            })
+            .collect();
+        crate::paint::palette::Palette { name: p.name, pigments: Box::leak(pigs.into_boxed_slice()) }
+    };
+    // CHROMA GAIN (calibration, not preference): a transparent film reads at well under its pigment's
+    // chroma (measured on flat patches: the film lands at roughly 60% of the chroma of the colour it was
+    // mixed for), so the brush watercolour's pigments are derived with their chroma raised by the gain that
+    // brings the film back to the picture's own chroma — every hue by the same factor, the picture's hues
+    // and nothing else, clipped to the gamut.
+    let chroma_gain = |p: crate::paint::palette::Palette, g: f32| -> crate::paint::palette::Palette {
+        use crate::paint::pigment::Pigment;
+        let pigs: Vec<Pigment> = p
+            .pigments
+            .iter()
+            .map(|pg| {
+                let lin = crate::paint::color::srgb_to_linear(pg.masstone);
+                let l = crate::paint::color::linear_luma(lin);
+                let v = [l + (lin[0] - l) * g, l + (lin[1] - l) * g, l + (lin[2] - l) * g];
+                Pigment { name: pg.name, masstone: crate::paint::color::linear_to_srgb([v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0)]) }
+            })
+            .collect();
+        crate::paint::palette::Palette { name: p.name, pigments: Box::leak(pigs.into_boxed_slice()) }
+    };
+    let wcb_gain = std::env::var("PLAKAT_WCB_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| wc_brush_cli);
     let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
         "image" | "auto" => {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let p = palette_from_image(&img, 16);
+            let p = palette_from_image(&img_for_palette, 16);
+            let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
+            let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
         }
