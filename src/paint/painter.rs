@@ -3957,6 +3957,32 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
     laid
 }
 
+/// WHAT THE BRUSH MISSED, A TOUCH COVERS. After a piece has been brushed, any of its pixels still bare paper
+/// (a ring-shaped piece whose one mark went through its hole, a limb between two rows) takes the piece's
+/// colour as an exact glaze. Without it every such miss was a white halo round a shape.
+fn wc_touch_up(canvas: &mut Canvas, score: &mut StrokeScore, piece: &[bool], w: usize, h: usize, colour: Srgb, p: &PaintParams, stage: &str, placed: &mut usize, k: &mut u64) {
+    let bare: Vec<bool> = (0..w * h).map(|i| piece[i] && canvas.saturation_at((i % w) as u32, (i / w) as u32) <= 1e-5).collect();
+    if !bare.iter().any(|&b| b) {
+        return;
+    }
+    let rings = mask_rings(&bare, w, h, 0.8);
+    if rings.len() < 3 {
+        return;
+    }
+    let t = color::srgb_to_linear(colour);
+    let g = canvas.ground_linear();
+    let want = [(t[0].max(0.004) / g[0].max(0.004)).ln().min(0.0), (t[1].max(0.004) / g[1].max(0.004)).ln().min(0.0), (t[2].max(0.004) / g[2].max(0.004)).ln().min(0.0)];
+    let load = trans_densities(canvas.ln_reflectance(), want);
+    if !load.iter().any(|v| *v > 0.0) {
+        return;
+    }
+    canvas.fill_rings(&rings, &load, 0.3, 0.0);
+    *k += 1;
+    *placed += 1;
+    let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.into(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false });
+}
+
 fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, sweep_stages: Option<(f32, usize)>, input_keyed: &RgbImage, placed: &mut usize, k: &mut u64) {
     let n = p.palette.pigments.len();
     let short = w.min(h);
@@ -4110,6 +4136,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
                     // A small shape: one mark, at the full colour (a window, a lamp, a shadow under a bench).
                     if piece_area >= sweep_min / 24 {
                         wc_sweep_mass(canvas, score, &piece, w, h, colour, p, &brush, wet, hits, 1.0, true, &stage, placed, k);
+                        wc_touch_up(canvas, score, &piece, w, h, colour, p, &stage, placed, k);
                     } else {
                         // A SLIVER (the thin band of an in-between colour along a boundary): too small for a
                         // mark, and skipped it was a white halo round every shape. It takes its colour as a
@@ -4144,6 +4171,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
                         wc_sweep_mass(canvas, score, &dark, w, h, colour, p, &brush, wet, hits, 1.0 - light, false, &stage, placed, k);
                     }
                 }
+                wc_touch_up(canvas, score, &piece, w, h, colour, p, &stage, placed, k);
             }
             cross(canvas);
             continue;
