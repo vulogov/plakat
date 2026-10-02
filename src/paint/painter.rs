@@ -1819,7 +1819,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     });
     // FROM SCRATCH: the minimum brush of every plane (RFC §9). A rung below the focal floor touches nothing, so
     // it is not a pass of this painting at all.
-    let plane_floor: Option<Vec<f32>> = p.from_scratch.then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref(), p.hair_mask.as_deref()));
+    // The watercolour paints the whole sheet with ONE ladder: a figure-plane floor gave the feet fine marks
+    // and the paving beside them a coarse one.
+    let wc_wash_early = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some();
+    let wc_planes = std::env::var("PLAKAT_WCB_PLANES").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if wc_wash_early { 0.0 } else { 1.0 }) > 0.0;
+    let plane_floor: Option<Vec<f32>> = (p.from_scratch && wc_planes).then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref(), p.hair_mask.as_deref()));
     let passes: Vec<PassSpec> = match &plane_floor {
         Some(fl) => {
             let finest = fl.iter().copied().fold(f32::INFINITY, f32::min);
@@ -1916,6 +1920,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_env = env_f("PLAKAT_WCB_ENV", if wc_wash { 0.8 } else { 0.0 });
     // The fine passes' reference: the source, blurred at this fraction of the brush (0 = the armature path).
     let wcb_src = env_f("PLAKAT_WCB_SRC", if wc_wash { 0.25 } else { 0.0 });
+    // …a floor of the sheet's short side over 300 (7 px on a 2048 sheet, 3.4 on a 1024 one: a flower box on
+    // the smaller sheet is forty pixels, and read at 7 its flowers and leaves averaged into one daub).
+    let wcb_src_floor = env_f("PLAKAT_WCB_SRCFLOOR", if wc_wash { (w.min(h) as f32 / 300.0).max(2.0) } else { 0.0 });
     let wcb_faceonly = env_f("PLAKAT_WCB_FACEONLY", if wc_wash { 0.0 } else { 4.5 });
     let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 1.0 } else { 2.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
@@ -2185,7 +2192,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let reference = if wc_wash && wcb_src > 0.0 && detail {
             // The watercolour's fine passes read the SOURCE: the armature averages a stained-glass pane with
             // its mullions, and a glaze of that average is a washed-out window.
-            imageops::blur(source, (radius * wcb_src).max(0.5))
+            // …at no finer a scale than the pass before: the finest brush restating a sharper picture drew
+            // every mortar line as a dark outline while the shoes beside them stayed as the wider brush left
+            // them — the "clear paving stones behind smudged feet".
+            imageops::blur(source, (radius.max(wcb_src_floor) * wcb_src).max(0.5))
         } else if fidelity {
             imageops::unsharpen(input, (radius * 0.22).max(0.5), 1)
         } else if detail {

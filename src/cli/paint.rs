@@ -376,6 +376,26 @@ fn palette_for_watercolour(img: &image::RgbImage, k: usize) -> crate::paint::pal
     let chroma = |pi: usize| (lab[pi][1].powi(2) + lab[pi][2].powi(2)).sqrt();
     let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
     let mut picked: Vec<[f32; 3]> = Vec::new();
+    // THE ACCENTS FIRST: the most chromatic pixels the picture has, in each hue sector, are pigments before
+    // the clusters are — a flower box or a stained-glass pane is a few hundred pixels of a 160² sample and
+    // no cluster of its own, and the palette had no pink for the flowers and no pastel for the panes.
+    // (The hue sectors are the picture's own colours; nothing here names one.)
+    let hue_of = |pi: usize| lab[pi][2].atan2(lab[pi][1]);
+    let mut by_hue: Vec<Vec<usize>> = vec![Vec::new(); 12];
+    for pi in 0..lab.len() {
+        if chroma(pi) > 28.0 {
+            let sector = (((hue_of(pi) + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * 12.0) as usize).min(11);
+            by_hue[sector].push(pi);
+        }
+    }
+    for sector in by_hue.iter_mut() {
+        if sector.len() < 12 { continue; }
+        sector.sort_by(|&a, &b| chroma(a).partial_cmp(&chroma(b)).unwrap_or(std::cmp::Ordering::Equal));
+        let pi = sector[(sector.len() - 1) * 85 / 100];
+        if picked.iter().any(|q| d2(q, &lab[pi]) < 36.0) { continue; }
+        picked.push(lab[pi]);
+        cols.push(srgbs[pi]);
+    }
     for ci in 0..cents.len() {
         let mut m: Vec<usize> = (0..lab.len()).filter(|&i| assign[i] == ci).collect();
         if m.is_empty() { continue; }
