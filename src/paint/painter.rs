@@ -4267,9 +4267,7 @@ fn detail_pass(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, 
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
         *k += 1;
         let on_paper = protect.map(|m| s.px.iter().filter(|&&i| m.get(i).copied().unwrap_or(false)).count() * 2 > s.px.len()).unwrap_or(false);
-        // The shadow round lays SHAPES, whatever their size (a shadow laid as one wide stroke was a bar
-        // across a forehead); the marks round lays marks.
-        if s.px.len() > big || round.washes {
+        if s.px.len() > big {
             // A small wash, not a mark — and never over the paper; the marks round leaves it alone.
             if on_paper || !round.washes {
                 continue;
