@@ -112,18 +112,6 @@ pub struct PaintPlan {
     /// LEAKS (0..1): runs of pigment dripping out of the wet washes. Nothing leaks unless asked.
     #[serde(default)]
     pub leak: Option<f32>,
-    /// PAPER (0..1, watercolour under `new`): the share of the sheet left as bare paper — the picture's
-    /// lightest fraction, whatever its key. A watercolour is painted on white: its lights are the paper.
-    #[serde(default)]
-    pub paper: Option<f32>,
-    /// DEPTH (0..1, watercolour under `new`): how dark the darkest wash goes. 1 = full depth, 0.5 = a
-    /// high-key sheet where even the darks are mid-tones.
-    #[serde(default)]
-    pub depth: Option<f32>,
-    /// DETAILS (0..1, watercolour under `new`): how much is restated with the thin brush — the small dark
-    /// shapes (an eye socket, a strap, a fold) painted as marks after the washes have dried.
-    #[serde(default)]
-    pub details: Option<f32>,
     /// LEVELS: how many value masses the armature is cut into — for a wash medium, how many glazes the picture
     /// is built from. Few and clean; many stacked transparent layers are mud.
     #[serde(default)]
@@ -189,9 +177,6 @@ impl Default for PaintPlan {
             granulate: None,
             ladder_keep: None,
             leak: None,
-            paper: None,
-            depth: None,
-            details: None,
             levels: None,
             notes: Vec::new(),
         }
@@ -252,15 +237,6 @@ impl PaintPlan {
         }
         if let Some(l) = self.leak {
             o.push_str(&format!("leak: {l:.2}\n"));
-        }
-        if let Some(v) = self.paper {
-            o.push_str(&format!("paper: {v:.2}\n"));
-        }
-        if let Some(v) = self.depth {
-            o.push_str(&format!("depth: {v:.2}\n"));
-        }
-        if let Some(v) = self.details {
-            o.push_str(&format!("details: {v:.2}\n"));
         }
         if let Some(n) = self.levels {
             o.push_str(&format!("levels: {n}\n"));
@@ -529,9 +505,6 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             granulate: None,
             ladder_keep: None,
             leak: None,
-            paper: None,
-            depth: None,
-            details: None,
             levels: None,
         notes,
     }
