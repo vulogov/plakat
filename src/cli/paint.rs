@@ -531,6 +531,17 @@ pub struct FromArgs {
     /// it is yours: nothing leaks unless asked.
     #[arg(long)]
     pub leak: Option<f32>,
+    /// PAPER (0..1, watercolour under `--new`): the share of the sheet left as bare paper — the picture's
+    /// lightest fraction, whatever its key. Default 0.30.
+    #[arg(long)]
+    pub paper: Option<f32>,
+    /// DEPTH (0..1, watercolour under `--new`): how dark the darkest wash goes. Default 0.9.
+    #[arg(long)]
+    pub depth: Option<f32>,
+    /// DETAILS (0..1, watercolour under `--new`): how much the thin brush restates after the washes — the
+    /// small dark shapes painted as marks. Default 0.6.
+    #[arg(long)]
+    pub details: Option<f32>,
     /// TECHNIQUE: how wet the paper is when each layer goes down — the decision that makes a watercolour look
     /// the way it does. `wet-on-wet` floods one wash into the next: soft blooms, colours running together, no
     /// hard edges anywhere. `wet-on-dry` lets each wash SET before the next: crisp wash boundaries with the
@@ -1745,6 +1756,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.leak.is_none() {
             a.leak = plan.leak;
         }
+        if a.paper.is_none() {
+            a.paper = plan.paper;
+        }
+        if a.depth.is_none() {
+            a.depth = plan.depth;
+        }
+        if a.details.is_none() {
+            a.details = plan.details;
+        }
         if a.armature_levels.is_none() {
             a.armature_levels = plan.levels;
         }
@@ -1878,6 +1898,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // stay exactly as they are. Either can be overridden outright.
     params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
     params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.paper = a.paper.unwrap_or(0.0).clamp(0.0, 0.9);
+    params.wash_depth = a.depth.unwrap_or(0.9).clamp(0.1, 1.0);
+    params.details = a.details.unwrap_or(0.6).clamp(0.0, 1.0);
     params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
     params.infill = match a.infill.as_deref() {
         Some(v) => parse_infill(v)?,
