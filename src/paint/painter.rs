@@ -3544,7 +3544,8 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
             pr(PaintProgress::Painting { pass: n_levels - lv, passes: n_levels, radius: 0.0 });
         }
         // Connected components (4-neighbour) of this level.
-        let mut comps: Vec<(Vec<usize>, [f64; 3])> = Vec::new();
+        // (pixels, colour sum over the whole component, colour sum over the pixels AT this level, their count)
+        let mut comps: Vec<(Vec<usize>, [f64; 3], [f64; 3], usize)> = Vec::new();
         for start in 0..w * h {
             if !in_pass(start, lv) || labels[start] != u32::MAX {
                 continue;
@@ -3552,6 +3553,8 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
             let id = comps.len() as u32;
             let mut px: Vec<usize> = Vec::new();
             let mut sum = [0f64; 3];
+            let mut own = [0f64; 3];
+            let mut own_n = 0usize;
             let mut stack = vec![start];
             labels[start] = id;
             while let Some(i) = stack.pop() {
@@ -3559,6 +3562,12 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
                 let c = input.get_pixel((i % w) as u32, (i / w) as u32).0;
                 for ch in 0..3 {
                     sum[ch] += c[ch] as f64;
+                }
+                if level[i] as usize == lv {
+                    for ch in 0..3 {
+                        own[ch] += c[ch] as f64;
+                    }
+                    own_n += 1;
                 }
                 let (x, y) = (i % w, i / w);
                 let mut nb = [usize::MAX; 4];
@@ -3573,15 +3582,20 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
                     }
                 }
             }
-            comps.push((px, sum));
+            comps.push((px, sum, own, own_n));
         }
         // Largest first (a big wash under, the small ones over it — the order the record replays in).
         comps.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
-        for (px, sum) in &comps {
+        for (px, sum, own, own_n) in &comps {
             if px.len() < min_area || *placed >= p.budget {
                 continue;
             }
-            let mean: Srgb = [(sum[0] / px.len() as f64) as u8, (sum[1] / px.len() as f64) as u8, (sum[2] / px.len() as f64) as u8];
+            // A GLAZE IS THE COLOUR OF ITS OWN LEVEL. Under glazing a component covers every darker pixel
+            // beneath it as well, and averaging over all of them dragged every glaze toward the darks' mean —
+            // grey over a sunlit wall, mud over a night. The pixels AT this level are what this layer is;
+            // the darker ones get their own, darker glaze on top.
+            let (csum, cn) = if glaze && *own_n > 0 { (own, *own_n) } else { (sum, px.len()) };
+            let mean: Srgb = [(csum[0] / cn as f64) as u8, (csum[1] / cn as f64) as u8, (csum[2] / cn as f64) as u8];
             let mut mask = vec![false; w * h];
             for &i in px {
                 mask[i] = true;
