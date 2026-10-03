@@ -474,8 +474,47 @@ impl Canvas {
         }
         // 2. Per wash: the pigment diffuses inside it (a blur confined to the wash: blur(fresh × mask) /
         //    blur(mask)), mixed in by `s × coverage`, and at the wash's edge — where its coverage falls —
-        //    the pigment the water carried out settles, deeper (the rim band: the wash's inner `r`/2).
+        //    the pigment the water carried out settles, deeper.
+        //    The rim is NOT a contour drawn round every wash: a tide line forms where the water meets a
+        //    DIFFERENT load — the lit window against the wall, a wash against dry paper — not between two
+        //    washes of the same weight laid together (they blend). So the band is weighted by the LOAD
+        //    CONTRAST across the edge, varies along it with the paper (a tide line is ragged, never a
+        //    uniform stroke), and pools heavier along a wash's LOWER edge — the water runs down.
         let k = rim.clamp(0.0, 1.0);
+        let load_b = Self::box_blur_f(&fresh_film, w, h, r);
+        let contrast: Vec<f32> = (0..px)
+            .map(|p| {
+                let (x, y) = (p % w, p / w);
+                if x == 0 || y == 0 || x + 1 >= w || y + 1 >= h { return 0.0; }
+                let gx = load_b[p + 1] - load_b[p - 1];
+                let gy = load_b[p + w] - load_b[p - w];
+                let g = (gx * gx + gy * gy).sqrt() * r as f32 * 0.5;
+                (g / (load_b[p] + 1e-4) * 1.5).clamp(0.0, 1.0)
+            })
+            .collect();
+        // Mobility: a staining dye travels in the water, an earth settles where it was laid — the pigments
+        // SEPARATE at a wash's edge instead of moving as one tint (read from the masstone's chroma).
+        let mobility: Vec<f32> = (0..n)
+            .map(|c| {
+                let m = self.palette.pigments.get(c).map(|pg| pg.masstone).unwrap_or([128, 128, 128]);
+                let (mx, mn) = (m[0].max(m[1]).max(m[2]) as f32, m[0].min(m[1]).min(m[2]) as f32);
+                let chroma = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+                0.7 + 0.6 * chroma
+            })
+            .collect();
+        // The rim weight at a pixel: the load contrast there (the band is the contrast's own width, ~r
+        // either side of the boundary), ragged with the paper, heavier where the water runs DOWN into it
+        // (the load falls going down: the wash's lower edge).
+        let edge: Vec<f32> = (0..px)
+            .map(|p| {
+                if k <= 0.0 || contrast[p] <= 0.0 { return 0.0; }
+                let (x, y) = (p % w, p / w);
+                let ragged = 0.4 + 1.2 * value_noise(x as f32 / (r as f32 * 1.5), y as f32 / (r as f32 * 1.5), 0x7ADE_11E5);
+                let below = if y + 1 < h && y > 0 { (load_b[p - w] - load_b[p + w]).max(0.0) * r as f32 / (load_b[p] + 1e-4) } else { 0.0 };
+                let run = 1.0 + 0.6 * below.min(1.0);
+                k * contrast[p].powf(1.5) * ragged * run
+            })
+            .collect();
         let mut mask = vec![0f32; px];
         let mut masked = vec![0f32; px];
         let mut out_film = fresh_film.clone();
@@ -486,16 +525,13 @@ impl Canvas {
             for p in 0..px { mask[p] = if lead[p] == c as i16 { any = true; 1.0 } else { 0.0 }; }
             if !any { continue; }
             let cov = Self::box_blur_f(&mask, w, h, r);
-            // The edge band: coverage below 3/4 inside the wash means the wash ends within r/2 — weight 1 at
-            // the edge (coverage 1/2 at a straight edge) falling to 0 at 3/4.
-            let edge = |p: usize| -> f32 { if k <= 0.0 { 0.0 } else { k * ((0.75 - cov[p]) / 0.25).clamp(0.0, 1.0) } };
             for p in 0..px { masked[p] = fresh_film[p] * mask[p]; }
             let num = Self::box_blur_f(&masked, w, h, r);
             for p in 0..px {
                 if mask[p] <= 0.0 { continue; }
                 let a = s * cov[p].min(1.0);
                 let d = num[p] / cov[p].max(1e-6);
-                out_film[p] = fresh_film[p] * (1.0 - a) + d * a * (1.0 + edge(p));
+                out_film[p] = fresh_film[p] * (1.0 - a) + d * a * (1.0 + edge[p]);
             }
             for cc in 0..n {
                 if !present[cc] { continue; }
@@ -503,12 +539,13 @@ impl Canvas {
                 for p in 0..px { masked[p] = fresh[p * n + cc] * mask[p]; any |= masked[p] > 0.0; }
                 if !any { continue; }
                 let num = Self::box_blur_f(&masked, w, h, r);
+                let mob = mobility[cc];
                 for p in 0..px {
                     if mask[p] <= 0.0 { continue; }
-                    let a = s * cov[p].min(1.0);
+                    let a = (s * cov[p].min(1.0) * mob).min(1.0);
                     let d = num[p] / cov[p].max(1e-6);
                     let i = p * n + cc;
-                    out[i] = fresh[i] * (1.0 - a) + d * a * (1.0 + edge(p));
+                    out[i] = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
                 }
             }
         }
@@ -1301,13 +1338,31 @@ mod flow_tests {
         let n = c.n;
         let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
         a[1] = 1.0;
-        b[3] = 1.0;
+        b[3] = 0.3;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
         c.flow(1.0, 4.0, 1.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
-        assert!(at(30, 16, 1) > at(8, 16, 1) * 1.2, "the blue is deeper at the meeting line: {} vs {}", at(30, 16, 1), at(8, 16, 1));
-        assert!(at(33, 16, 3) > at(56, 16, 3) * 1.2, "and so is the ochre: {} vs {}", at(33, 16, 3), at(56, 16, 3));
+        // (The heavy wash pushes a little way into the light one; the line sits at the push's edge.)
+        let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
+        assert!(line > at(8, 16, 1) * 1.1, "the heavy wash is deeper at the meeting line: {line} vs {}", at(8, 16, 1));
+    }
+
+    #[test]
+    fn two_washes_of_one_weight_blend_without_a_line() {
+        // The same two washes at the same load: no tide line forms between them (they were laid together,
+        // wet) — the rim is a fact of the load contrast, not a contour round every wash.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[1] = 1.0;
+        b[3] = 1.0;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        c.flow(1.0, 4.0, 1.0);
+        let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
+        let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
+        assert!(line < at(8, 16, 1) * 1.05, "no line between equal washes: {line} vs {}", at(8, 16, 1));
     }
 
     #[test]
