@@ -45,6 +45,11 @@ pub struct BrushConfig {
     /// BRISTLE RIDGES (0 = off): the paint a lane leaves stands as high as that lane was loaded relative to
     /// its neighbours, so a stroke's relief is striated across its width. The amount scales the striation.
     pub ridges: f32,
+    /// DRY-BRUSH SKIPPING (0 = off): a bristle with little water touches only the raised fibres of the
+    /// paper — the drier the bristle, the fewer fibres it reaches — so a dry mark is broken by the tooth
+    /// along its drag instead of printing as a solid, gritty band. The amount scales how high the fibres
+    /// stand. A loaded wet brush floods the hollows and is never broken.
+    pub skip: f32,
 }
 
 impl Default for BrushConfig {
@@ -53,7 +58,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, ridges: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, ridges: 0.0, skip: 0.0 }
     }
 }
 
@@ -272,6 +277,18 @@ impl Stroke {
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
         let mut df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        // The dry brush: below 0.6 wet the bristle no longer floods the hollows; the drier it is, the higher
+        // the fibre it must find to leave paint. The paper's relief is the same deterministic grain the
+        // granulation settles into, so the skips and the mottle share one tooth.
+        if brush.skip > 0.0 {
+            let dryness = ((0.6 - *bwet) / 0.6).clamp(0.0, 1.0);
+            if dryness > 0.0 {
+                let thr = brush.skip.clamp(0.0, 1.0) * dryness * 0.9;
+                let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+                let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
+                df *= t * t * (3.0 - 2.0 * t);
+            }
+        }
         if brush.film_cap > 0.0 {
             let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
             let laid = canvas.film_since_mark(p);
@@ -344,6 +361,27 @@ mod tests {
         let s = Stroke { path: vec![[3.0, 10.0], [56.0, 10.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: 1.0 };
         s.rasterize(&mut c, &BrushConfig::default());
         assert!(c.height[10 * 60 + 6] > c.height[10 * 60 + 52], "more paint near the loaded start than the dry end");
+    }
+
+    #[test]
+    fn a_dry_brush_skips_the_paper_and_a_wet_one_floods_it() {
+        // The same long mark laid nearly dry with `skip` on is BROKEN along its drag (bare and painted pixels
+        // alternate on the centre line); laid wet it is solid; and with `skip` off the dry mark is as solid as
+        // the default path always made it.
+        let mark = |wet: f32, skip: f32| -> Vec<f32> {
+            let mut c = Canvas::white(120, 16, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [116.0, 8.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: wet };
+            let brush = BrushConfig { skip, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            (6..114).map(|x| c.saturation_at(x as u32, 8)).collect()
+        };
+        let gaps = |m: &[f32]| m.iter().filter(|&&f| f < 1e-4).count();
+        let dry = mark(0.15, 1.0);
+        let wet = mark(0.9, 1.0);
+        let off = mark(0.15, 0.0);
+        assert!(gaps(&dry) > 10, "the dry mark is broken by the tooth ({} bare pixels of {})", gaps(&dry), dry.len());
+        assert_eq!(gaps(&wet), 0, "the wet mark floods the hollows");
+        assert_eq!(gaps(&off), 0, "with the dial off the dry mark is solid, as before");
     }
 
     #[test]

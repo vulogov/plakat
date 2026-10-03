@@ -1695,6 +1695,19 @@ pub fn paint_critiqued(input: &RgbImage, p: &PaintParams, critic: &PassCritic, m
 }
 
 fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, margin: f32, base: Option<Canvas>, progress: Option<&dyn Fn(PaintProgress)>) -> PaintResult {
+    // THE DRY BRUSH (see `BrushConfig::skip`): under the watercolour wash recipe the fine, drier marks are
+    // broken by the paper's tooth unless the caller set the dial — on the params the strokes AND the score
+    // header are built from, so the replay crosses the same paper.
+    let recipe_skip = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some() && p.brush.skip <= 0.0;
+    let p_skip: PaintParams;
+    let p: &PaintParams = if recipe_skip {
+        let mut q = p.clone();
+        q.brush.skip = std::env::var("PLAKAT_WCB_SKIP").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+        p_skip = q;
+        &p_skip
+    } else {
+        p
+    };
     let (w, h) = (input.width(), input.height());
     // PROFILE (`PLAKAT_PAINT_PROFILE=1`): per-stage and per-pass wall-clock times, printed to stderr at the end.
     // This is how the stroke cost was found to be the mixture solver, not the brush — keep it.
@@ -1910,6 +1923,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // EXPERIMENT knobs for the brush watercolour (see `wc_brush`): per-layer charge multipliers, the broad
     // passes' wetness and width multiplier, and whether the brush lifts.
     let env_f = |name: &str, d: f32| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+    // THE DRY BRUSH IS FOR TEXTURE: a watercolourist drags a dry brush over cobbles, a beard, a bench — and
+    // lays a face, a sky, a sleeve as a wash. Under the recipe a fine mark's wetness follows how BUSY the
+    // picture is at the mark's scale (the local value range, a contrast fact: 0.06 is about where texture
+    // begins), so the marks in a smooth passage flood the tooth and the marks in a textured one skip it.
+    let busy_field: Option<Vec<f32>> = if p.brush.skip > 0.0 && p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" {
+        let lm = luma_map(input);
+        let fine = local_range(&lm, w as usize, h as usize, (p.min_brush * 0.75).round().max(2.0) as usize);
+        Some(fine.iter().map(|&f| ((f - 0.04) / 0.08).clamp(0.0, 1.0)).collect())
+    } else {
+        None
+    };
     let wcb_charge: Vec<f32> = std::env::var("PLAKAT_WCB_CHARGE").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_else(|| vec![0.8, 0.8, 0.7, 0.7, 0.9, 1.0, 1.0]);
     let wcb_wet = env_f("PLAKAT_WCB_WET", if wc_wash { 0.0 } else { 0.7 });
     let wcb_width = env_f("PLAKAT_WCB_WIDTH", 1.6);
@@ -2612,6 +2636,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                 }
                 let wet = if wcb_broad && wcb_wet > 0.0 { wcb_wet } else { wet };
+                // A fine mark goes on dry only where the picture is textured (see `busy_field`); in a smooth
+                // passage it goes on wet enough to flood the tooth. Recorded per stroke: replay-exact.
+                let wet = match (&busy_field, wcb_broad) {
+                    (Some(bf), false) if wet < 0.62 => {
+                        let b = bf.get(region_i).copied().unwrap_or(0.0);
+                        wet * b + 0.62 * (1.0 - b)
+                    }
+                    _ => wet,
+                };
                 if wc_brush {
                     stroke_brush.k_pickup *= wcb_pickup;
                 }

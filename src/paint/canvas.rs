@@ -1146,6 +1146,13 @@ fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
 /// Deterministic paper-grain value in `[0,1]` at a pixel — the mottle granulation settles into. A LOW-FREQUENCY
 /// value noise at the paper-tooth scale (a coarse cell plus a finer octave), NOT a per-pixel hash: real
 /// granulation is pigment pooling in clusters across the tooth, so a per-pixel hash read as digital static.
+/// The paper's RELIEF at a pixel (0 = a hollow, 1 = a standing fibre): the grain a dry brush skips over
+/// (see `BrushConfig::skip`). One fixed seed — the sheet is the same sheet under every stroke and every
+/// replay.
+pub fn paper_relief(x: usize, y: usize) -> f32 {
+    paper_grain(x, y, 0x5A9E_7001)
+}
+
 fn paper_grain(x: usize, y: usize, seed: u64) -> f32 {
     let coarse = value_noise(x as f32 / 5.0, y as f32 / 5.0, seed);
     let fine = value_noise(x as f32 / 2.2, y as f32 / 2.2, seed ^ 0x9E37_79B9);

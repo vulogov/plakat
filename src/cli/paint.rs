@@ -613,6 +613,11 @@ pub struct FromArgs {
     /// impasto relight shows bristle marks rather than a smooth tube. Plan: `ridges`.
     #[arg(long)]
     pub ridges: Option<f32>,
+    /// DRY-BRUSH SKIPPING (0..1): a bristle with little water touches only the paper's standing fibres, so
+    /// a dry mark is broken by the tooth along its drag instead of printing as a solid gritty band. Plan:
+    /// `skip`. (The watercolour wash recipe turns it on by itself.)
+    #[arg(long)]
+    pub skip: Option<f32>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1833,6 +1838,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.ridges.is_none() {
             a.ridges = plan.ridges;
         }
+        if a.skip.is_none() {
+            a.skip = plan.skip;
+        }
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }
@@ -2159,6 +2167,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(rg) = a.ridges {
         params.brush.ridges = rg.clamp(0.0, 1.0);
+    }
+    if let Some(sk) = a.skip {
+        params.brush.skip = sk.clamp(0.0, 1.0);
     }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);

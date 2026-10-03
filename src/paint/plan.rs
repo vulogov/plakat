@@ -121,6 +121,10 @@ pub struct PaintPlan {
     /// height so one heavy crossing cannot flatten the sheet. 0 = off (the finish as before).
     #[serde(default)]
     pub ridges: Option<f32>,
+    /// DRY-BRUSH SKIPPING (0..1): a bristle with little water touches only the paper's standing fibres, so
+    /// a dry mark is broken by the tooth along its drag. 0 = off.
+    #[serde(default)]
+    pub skip: Option<f32>,
     /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
     /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
     #[serde(default)]
@@ -200,6 +204,7 @@ impl Default for PaintPlan {
             leak: None,
             hdr: None,
             ridges: None,
+            skip: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
@@ -271,6 +276,9 @@ impl PaintPlan {
         }
         if let Some(v) = self.ridges {
             o.push_str(&format!("ridges: {v:.2}\n"));
+        }
+        if let Some(v) = self.skip {
+            o.push_str(&format!("skip: {v:.2}\n"));
         }
         for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
             if let Some(v) = v {
@@ -549,6 +557,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             leak: None,
             hdr: None,
             ridges: None,
+            skip: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
