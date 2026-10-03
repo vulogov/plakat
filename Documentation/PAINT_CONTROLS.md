@@ -174,8 +174,12 @@ reserved paper.
 - **The fluid stage** (the wash recipe, `PLAKAT_WC_WASH=1`): after each **broad** pass the water the brush
   left is treated as a continuous film — the pass's own wet pigment (never the dried passes beneath) is split
   into **washes**, the regions where one pigment leads the mix, and inside each it diffuses and settles toward
-  the wash's edge as it dries: the **tide line** where two washes meet, the bloom against dry paper. The fine
-  passes are wet‑on‑dry and stay crisp. `--technique wet-on-wet` floods wider and softer, `dry-on-dry` has no
+  the wash's edge as it dries: the **tide line** where the water meets a different load (a lit window against
+  the wall, a wash against bare paper — two washes of one weight laid together blend without a line), ragged
+  with the paper and heavier along the wash's lower edge where the water runs down. A staining dye travels
+  further than an earth, so mixed washes separate at their edges; and `granulate` happens **in the water** —
+  the earths settle into the tooth where the wash pooled (the finish keeps only a trace of uniform grain).
+  The fine passes are wet‑on‑dry and stay crisp. `--technique wet-on-wet` floods wider and softer, `dry-on-dry` has no
   water to flow; the score records it (`flow=strength,radius,rim`) so a replay crosses the same water.
 
 ```hjson

@@ -75,8 +75,9 @@ pub struct ScoreHeader {
     pub lift: f32,
     /// The TRANSMITTANCE film (see `Canvas::with_transmittance`): a transparent medium's glazes multiply.
     pub transmittance: bool,
-    /// THE FLUID STAGE (see `Canvas::flow`) run after every pass: (strength, radius px, rim). None = off.
-    pub flow: Option<(f32, f32, f32)>,
+    /// THE FLUID STAGE (see `Canvas::flow`) run after every broad pass: (strength, radius px, rim, grain).
+    /// None = off.
+    pub flow: Option<(f32, f32, f32, f32)>,
 }
 
 /// One recorded stroke.
@@ -181,7 +182,7 @@ impl StrokeScore {
             None => ground,
         };
         let ground = if h.transmittance { format!("{ground} trans=1") } else { ground };
-        let ground = match h.flow { Some((s, r, m)) => format!("{ground} flow={},{},{}", fmt_f(s), fmt_f(r), fmt_f(m)), None => ground };
+        let ground = match h.flow { Some((s, r, m, g)) => format!("{ground} flow={},{},{},{}", fmt_f(s), fmt_f(r), fmt_f(m), fmt_f(g)), None => ground };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
             h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() }, ground,
@@ -264,7 +265,7 @@ impl StrokeScore {
                         clarity: get("clarity").parse().unwrap_or(0.0),
                         lift: get("lift").parse().unwrap_or(1.0),
                         transmittance: m.get("trans").map(|v| v == "1").unwrap_or(false),
-                        flow: m.get("flow").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 3).then(|| (p[0], p[1], p[2])) }),
+                        flow: m.get("flow").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 3 || p.len() == 4).then(|| (p[0], p[1], p[2], p.get(3).copied().unwrap_or(0.0))) }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
                             k_pickup: get("kp").parse().unwrap_or(0.6),
@@ -438,9 +439,9 @@ impl StrokeScore {
             if self.header.bleed > 0.0 {
                 canvas.bleed_with(self.header.bleed * crate::paint::painter::pass_bleed_taper(idx, n), self.header.diffuse);
             }
-            if let Some((s, r, m)) = self.header.flow {
+            if let Some((s, r, m, g)) = self.header.flow {
                 if let Some(t) = crate::paint::painter::flow_taper(idx, n) {
-                    canvas.flow(s * t, r, m);
+                    canvas.flow(s * t, r, m, g);
                 }
             }
             if self.header.dry > 0.0 && idx + 1 < n {
@@ -575,6 +576,17 @@ mod tests {
         assert_eq!(parsed.strokes[0].stage, "shadow-mass");
         assert_eq!(parsed.strokes[0].spline.len(), 3);
         assert_eq!(parsed.strokes[1].mix[0].0, "yellow-ochre");
+    }
+
+    #[test]
+    fn the_flow_header_round_trips_and_reads_the_older_three_value_form() {
+        let mut s = sample();
+        s.header.flow = Some((0.6, 10.24, 0.8, 0.12));
+        let parsed = StrokeScore::parse(&s.to_text()).expect("parses");
+        assert_eq!(parsed.header.flow, Some((0.6, 10.24, 0.8, 0.12)));
+        // A score written before the grain value: grain 0.
+        let old = s.to_text().replace("flow=0.6,10.24,0.8,0.12", "flow=0.6,10.24,0.8");
+        assert_eq!(StrokeScore::parse(&old).unwrap().header.flow, Some((0.6, 10.24, 0.8, 0.0)));
     }
 
     #[test]

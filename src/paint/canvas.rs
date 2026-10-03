@@ -433,9 +433,12 @@ impl Canvas {
     /// confined to the wash, so the lanes' gaps are filled: the plain bleed, run on the lanes' own wetness,
     /// diffused pigment in a lattice of wet cells over dry gaps and printed a honeycomb) and SETTLES toward
     /// the wash's edge as it dries, deeper there by `rim` (0..1): the tide line between two washes, the
-    /// cauliflower against the dry paper. Deterministic; a no-op at strength 0 or on a non-transmittance
-    /// canvas.
-    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32) {
+    /// cauliflower against the dry paper. And the pigment GRANULATES in the water by `grain` (0..1): a
+    /// granulating pigment (an earth; read from the masstone's chroma, a staining dye does not) settles
+    /// into the paper's tooth where the wash POOLED — the heavier the water, the heavier the mottle — so the
+    /// grain is a fact of the wash, not a uniform screen over the sheet. Deterministic; a no-op at strength
+    /// 0 or on a non-transmittance canvas.
+    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32, grain: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 || radius < 0.5 || !self.transmittance {
             return;
@@ -515,6 +518,16 @@ impl Canvas {
                 k * contrast[p].powf(1.5) * ragged * run
             })
             .collect();
+        // Where the water POOLED: the local load against the pass's mean wet load (0..2).
+        let gq = grain.clamp(0.0, 1.0);
+        let pool: Vec<f32> = if gq > 0.0 {
+            let (mut sum, mut cnt) = (0f32, 0usize);
+            for p in 0..px { if load_b[p] > 1e-5 { sum += load_b[p]; cnt += 1; } }
+            let mean = if cnt > 0 { sum / cnt as f32 } else { 1.0 };
+            (0..px).map(|p| (load_b[p] / mean.max(1e-6)).min(2.0)).collect()
+        } else {
+            Vec::new()
+        };
         let mut mask = vec![0f32; px];
         let mut masked = vec![0f32; px];
         let mut out_film = fresh_film.clone();
@@ -540,12 +553,19 @@ impl Canvas {
                 if !any { continue; }
                 let num = Self::box_blur_f(&masked, w, h, r);
                 let mob = mobility[cc];
+                // The granulating share: what does not travel settles.
+                let settle = gq * ((1.3 - mob) / 0.6).clamp(0.0, 1.0);
                 for p in 0..px {
                     if mask[p] <= 0.0 { continue; }
                     let a = (s * cov[p].min(1.0) * mob).min(1.0);
                     let d = num[p] / cov[p].max(1e-6);
                     let i = p * n + cc;
-                    out[i] = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
+                    let mut v = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
+                    if settle > 0.0 {
+                        let g = paper_grain(p % w, p / w, 0x6_1A1_0000) - 0.5;
+                        v *= (1.0 + settle * pool[p] * g * 2.4).max(0.0);
+                    }
+                    out[i] = v;
                 }
             }
         }
@@ -904,7 +924,7 @@ impl Canvas {
                     // darker) where paint sits, with NO net darkening (a centred grain), so it reads as texture,
                     // not grey noise.
                     if f.granulate > 1e-3 && paint > 0.05 {
-                        let d = f.granulate * paint * (grain(x, y, f.seed) - 0.5) * 0.7;
+                        let d = f.granulate * paint * (paper_grain(x, y, f.seed) - 0.5) * 0.7;
                         for v in c.iter_mut() {
                             *v = (*v * (1.0 - d)).clamp(0.0, 1.0);
                         }
@@ -1040,7 +1060,7 @@ impl Canvas {
                 for x in 0..w {
                     let d = x.min(w - 1 - x).min(y).min(h - 1 - y) as f32;
                     // Irregular inner boundary: the band width wobbles with a low-frequency hash of the position.
-                    let wob = 0.55 + 0.9 * grain(x / 3, y / 3, f.seed ^ 0x9E37);
+                    let wob = 0.55 + 0.9 * paper_grain(x / 3, y / 3, f.seed ^ 0x9E37);
                     let edge = band * wob;
                     if d >= edge {
                         continue;
@@ -1126,7 +1146,7 @@ fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
 /// Deterministic paper-grain value in `[0,1]` at a pixel — the mottle granulation settles into. A LOW-FREQUENCY
 /// value noise at the paper-tooth scale (a coarse cell plus a finer octave), NOT a per-pixel hash: real
 /// granulation is pigment pooling in clusters across the tooth, so a per-pixel hash read as digital static.
-fn grain(x: usize, y: usize, seed: u64) -> f32 {
+fn paper_grain(x: usize, y: usize, seed: u64) -> f32 {
     let coarse = value_noise(x as f32 / 5.0, y as f32 / 5.0, seed);
     let fine = value_noise(x as f32 / 2.2, y as f32 / 2.2, seed ^ 0x9E37_79B9);
     (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
@@ -1320,7 +1340,7 @@ mod flow_tests {
         load[3] = 1.5;
         for &x in &[20u32, 26] { c.deposit(x, 24, &load, 0.0); }
         let gap_before = c.saturation_at(23, 24);
-        c.flow(1.0, 4.0, 1.0);
+        c.flow(1.0, 4.0, 1.0, 0.0);
         let gap_after = c.saturation_at(23, 24);
         assert!(gap_before == 0.0 && gap_after > 0.0, "the gap is painted by the film: {gap_before} → {gap_after}");
         assert!(c.saturation_at(23, 24) > c.saturation_at(23, 40), "and the paper beyond the film stays bare");
@@ -1340,7 +1360,7 @@ mod flow_tests {
         a[1] = 1.0;
         b[3] = 0.3;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
-        c.flow(1.0, 4.0, 1.0);
+        c.flow(1.0, 4.0, 1.0, 0.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
         // (The heavy wash pushes a little way into the light one; the line sits at the push's edge.)
@@ -1359,10 +1379,35 @@ mod flow_tests {
         a[1] = 1.0;
         b[3] = 1.0;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
-        c.flow(1.0, 4.0, 1.0);
+        c.flow(1.0, 4.0, 1.0, 0.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
         assert!(line < at(8, 16, 1) * 1.05, "no line between equal washes: {line} vs {}", at(8, 16, 1));
+    }
+
+    #[test]
+    fn the_grain_settles_where_the_wash_pooled() {
+        // One earth pigment, a heavy wash on the left and a thin one on the right, granulating in the water:
+        // the heavy wash mottles (its pigment varies across the tooth), the thin one much less.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let earth = (0..n).min_by_key(|&k| { let m = pal.pigments[k].masstone; (m[0].max(m[1]).max(m[2]) as i32 - m[0].min(m[1]).min(m[2]) as i32) * 255 / m[0].max(m[1]).max(m[2]).max(1) as i32 }).unwrap();
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[earth] = 1.6;
+        b[earth] = 0.2;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        let mut plain = c.clone();
+        plain.flow(1.0, 3.0, 0.0, 0.0);
+        c.flow(1.0, 3.0, 0.0, 1.0);
+        let spread = |cv: &Canvas, x0: usize| -> f32 {
+            let vals: Vec<f32> = (8..24).flat_map(|y| (x0..x0 + 16).map(move |x| (x, y))).map(|(x, y)| cv.conc[(y * 64 + x) * n + earth]).collect();
+            let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+            (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt() / mean.max(1e-6)
+        };
+        assert!(spread(&plain, 8) < 0.01, "without grain the heavy wash is even: {}", spread(&plain, 8));
+        assert!(spread(&c, 8) > 0.1, "with grain it mottles: {}", spread(&c, 8));
+        assert!(spread(&c, 8) > spread(&c, 40) * 3.0, "and the thin wash far less: {} vs {}", spread(&c, 8), spread(&c, 40));
     }
 
     #[test]
@@ -1381,7 +1426,7 @@ mod flow_tests {
         let mut wash = vec![0f32; pal.pigments.len()];
         wash[3] = 1.0;
         for x in 30..40u32 { for y in 30..34u32 { c.deposit(x, y, &wash, 0.0); } }
-        c.flow(1.0, 3.0, 0.5);
+        c.flow(1.0, 3.0, 0.5, 0.0);
         let dot_after: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
         assert_eq!(dot_before, dot_after, "the dried dot does not move");
         assert_eq!(beside_before, c.saturation_at(11, 10), "nor does its edge soften");

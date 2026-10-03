@@ -1967,7 +1967,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_flow = env_f("PLAKAT_WCB_FLOW", if wc_wash { 1.0 } else { 0.0 });
     if wc_wash && wcb_flow > 0.0 && flow_s > 0.0 {
         let radius = (w.min(h) as f32 * env_f("PLAKAT_WCB_FLOWR", flow_r)).max(1.0);
-        score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m)));
+        // Granulation happens in the WATER: the granulating pigments settle into the tooth where the wash
+        // pooled (see `Canvas::flow`), so the finish's uniform grain is turned down to a trace of paper.
+        let grain = env_f("PLAKAT_WCB_FLOWGRAIN", p.granulate);
+        score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m), grain));
+        if grain > 0.0 {
+            score.header.granulate = p.granulate * 0.25;
+        }
     }
     // The broad passes drag a seed's dose across a whole swath: they carry it at this many hits instead.
     let wcb_hits_broad = env_f("PLAKAT_WCB_HITSBROAD", if wc_wash { 1.2 } else { wcb_hits });
@@ -2833,9 +2839,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // THE FLUID STAGE (see `Canvas::flow`): the water film the pass left, the pigment diffusing in it, the
         // rim where it dries — after every pass, tapering with the passes as the bleed does, and in the score
         // so the replay crosses the same water.
-        if let Some((fs, fr, fm)) = score.header.flow {
+        if let Some((fs, fr, fm, fg)) = score.header.flow {
             if let Some(t) = flow_taper(b_idx, b_n) {
-                canvas.flow(fs * t, fr, fm);
+                canvas.flow(fs * t, fr, fm, fg);
             }
         }
         if b_idx + 1 < b_n {
