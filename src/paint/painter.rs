@@ -4374,6 +4374,49 @@ fn wc_mass_colours(img: &RgbImage, k: usize, seed: u64) -> (Vec<u16>, Vec<Srgb>)
     (labels, means)
 }
 
+/// HDR TONE-MAPPING of the source before anything reads it (`--hdr`): a local operator — each pixel's
+/// luma is divided by a wide blur of the luma (its surround) and the ratio is compressed, so the lamps stop
+/// blowing out and the shadows lift to show what is in them, while the picture's chromaticity is kept
+/// exactly (a brown stays that brown, lighter). `amount` 0 = untouched, 1 = full compression: the surround
+/// is pulled toward the mean and local contrast is held, the way a painter re-lights a scene so the darks
+/// have something to paint and the lights are not a hole in the sheet. Nothing here is a colour choice.
+pub fn hdr_tone_map(img: &RgbImage, amount: f32) -> RgbImage {
+    let amount = amount.clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return img.clone();
+    }
+    let (w, h) = (img.width(), img.height());
+    let lum: Vec<f32> = img.pixels().map(|p| color::linear_luma(color::srgb_to_linear(p.0))).collect();
+    // The surround: the log-luma blurred at a twelfth of the sheet (log space so a lamp does not drag its
+    // whole street up with it).
+    let logl = image::GrayImage::from_fn(w, h, |x, y| image::Luma([((lum[(y * w + x) as usize].max(1e-4)).ln() * 20.0 + 160.0).clamp(0.0, 255.0) as u8]));
+    let sur = imageops::blur(&logl, (w.max(h) as f32 / 12.0).max(2.0));
+    // The anchor the surround is compressed toward: a mid-grey (linear 0.18) — so a dark surround comes UP
+    // and a blown one comes DOWN. (Toward the picture's own mean a nocturne only got darker.)
+    const MID: f32 = 0.18;
+    let mut out = img.clone();
+    for (i, px) in out.pixels_mut().enumerate() {
+        let lin = color::srgb_to_linear(px.0);
+        let l = lum[i].max(1e-4);
+        let s = ((sur.get_pixel((i as u32) % w, (i as u32) / w).0[0] as f32 - 160.0) / 20.0).exp().max(1e-4);
+        // Compress the surround toward mid-grey by `amount` (in log space); keep the local ratio, softened
+        // only in the lights (a lamp's blow-out), never in the darks (their detail is the point).
+        let s2 = s.powf(1.0 - 0.6 * amount) * MID.powf(0.6 * amount);
+        let ratio = l / s;
+        let ratio = if ratio > 1.0 { ratio.powf(1.0 - 0.45 * amount) } else { ratio };
+        let l2 = (s2 * ratio).clamp(0.0, 1.0);
+        let k = l2 / l;
+        let mut v = [lin[0] * k, lin[1] * k, lin[2] * k];
+        let mx = v[0].max(v[1]).max(v[2]);
+        if mx > 1.0 {
+            let g = (1.0 - l2) / (mx - l2).max(1e-6);
+            for c in v.iter_mut() { *c = l2 + (*c - l2) * g.clamp(0.0, 1.0); }
+        }
+        px.0 = color::linear_to_srgb([v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0)]);
+    }
+    out
+}
+
 /// The LIGHT ENVELOPE of a picture at scale `r` px: per channel, the lightest value within `r` (a max filter,
 /// run on a reduced copy and lightly smoothed).
 fn light_envelope(img: &RgbImage, r: f32) -> RgbImage {
@@ -5688,6 +5731,31 @@ mod tests {
         // structure far better. ~0.33 here; the filter-gate signal is "clearly positive, far below a trace".
         assert!(tr > 0.25, "structure survives (corr {tr})");
         assert!(tr < 0.999, "not a pixel-perfect trace (corr {tr})");
+    }
+}
+
+#[cfg(test)]
+mod hdr_tests {
+    use super::*;
+
+    #[test]
+    fn the_hdr_pass_lifts_the_darks_holds_the_lights_and_keeps_the_hue() {
+        // A dark sheet with one blown lamp and a dark brown passage: after the pass the brown is lighter and
+        // still brown (its chromaticity kept), the lamp is no lighter than it was, and amount 0 is a no-op.
+        let img = image::RgbImage::from_fn(256, 256, |x, y| {
+            if (x as i32 - 200).pow(2) + (y as i32 - 60).pow(2) < 400 { image::Rgb([255, 250, 230]) } else if x < 128 { image::Rgb([40, 28, 18]) } else { image::Rgb([30, 30, 36]) }
+        });
+        assert_eq!(hdr_tone_map(&img, 0.0).into_raw(), img.clone().into_raw(), "amount 0 changes nothing");
+        let out = hdr_tone_map(&img, 0.6);
+        let brown_in = img.get_pixel(40, 200).0;
+        let brown_out = out.get_pixel(40, 200).0;
+        let l = |c: [u8; 3]| color::linear_luma(color::srgb_to_linear(c));
+        assert!(l(brown_out) > l(brown_in) * 1.3, "the dark lifts: {brown_in:?} → {brown_out:?}");
+        let chrom = |c: [u8; 3]| { let s = c[0] as f32 + c[1] as f32 + c[2] as f32 + 1.0; [c[0] as f32 / s, c[1] as f32 / s] };
+        let (a, b) = (chrom(brown_in), chrom(brown_out));
+        assert!((a[0] - b[0]).abs() < 0.03 && (a[1] - b[1]).abs() < 0.03, "and stays its colour: {a:?} vs {b:?}");
+        assert!(l(out.get_pixel(200, 60).0) <= l(img.get_pixel(200, 60).0) + 0.001, "the lamp is not lifted");
+        assert!(l(brown_out) < l(out.get_pixel(200, 60).0), "and the order of values holds");
     }
 }
 

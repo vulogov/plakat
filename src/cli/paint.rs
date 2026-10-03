@@ -604,6 +604,14 @@ pub struct FromArgs {
     /// it is yours: nothing leaks unless asked.
     #[arg(long)]
     pub leak: Option<f32>,
+    /// HDR: tone-map the picture before painting (a local operator: lamps stop blowing out, shadows lift to
+    /// show what is in them, the picture's colours kept), so every stage paints the re-lit picture — the
+    /// darks have something to paint and the lights are not a hole in the sheet. Plan: `hdr: true`.
+    #[arg(long)]
+    pub hdr: Option<bool>,
+    /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
+    #[arg(long)]
+    pub hdr_amount: Option<f32>,
     /// TECHNIQUE: how wet the paper is when each layer goes down — the decision that makes a watercolour look
     /// the way it does. `wet-on-wet` floods one wash into the next: soft blooms, colours running together, no
     /// hard edges anywhere. `wet-on-dry` lets each wash SET before the next: crisp wash boundaries with the
@@ -1815,6 +1823,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.leak.is_none() {
             a.leak = plan.leak;
         }
+        if a.hdr.is_none() {
+            a.hdr = plan.hdr;
+        }
+        if a.hdr_amount.is_none() {
+            a.hdr_amount = plan.hdr_amount;
+        }
         if a.armature_levels.is_none() {
             a.armature_levels = plan.levels;
         }
@@ -1896,6 +1910,16 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     let mut img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
+    // HDR re-light before anything reads the picture (the palette, the armature, every pass); the
+    // detectors read the file and see the original.
+    if a.hdr == Some(true) {
+        let amount = a.hdr_amount.unwrap_or(0.6).clamp(0.0, 1.0);
+        img = crate::paint::painter::hdr_tone_map(&img, amount);
+        println!("{}  hdr: the picture re-lit before painting (amount {amount:.2})", style("·").dim());
+        if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+            let _ = img.save(std::path::Path::new(&dir).join("hdr_input.png"));
+        }
+    }
 
     // Palette: `image`/`auto` derives one from the reference; otherwise a named palette (defaulting to the
     // medium's own when a medium is given).

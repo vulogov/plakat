@@ -112,6 +112,12 @@ pub struct PaintPlan {
     /// LEAKS (0..1): runs of pigment dripping out of the wet washes. Nothing leaks unless asked.
     #[serde(default)]
     pub leak: Option<f32>,
+    /// HDR (true/false): tone-map the picture before painting — lamps stop blowing out, shadows lift to show
+    /// their detail — so every stage paints the re-lit picture. `hdr_amount` 0..1 is how far.
+    #[serde(default)]
+    pub hdr: Option<bool>,
+    #[serde(default)]
+    pub hdr_amount: Option<f32>,
     /// LEVELS: how many value masses the armature is cut into — for a wash medium, how many glazes the picture
     /// is built from. Few and clean; many stacked transparent layers are mud.
     #[serde(default)]
@@ -177,6 +183,8 @@ impl Default for PaintPlan {
             granulate: None,
             ladder_keep: None,
             leak: None,
+            hdr: None,
+            hdr_amount: None,
             levels: None,
             notes: Vec::new(),
         }
@@ -237,6 +245,12 @@ impl PaintPlan {
         }
         if let Some(l) = self.leak {
             o.push_str(&format!("leak: {l:.2}\n"));
+        }
+        if let Some(hd) = self.hdr {
+            o.push_str(&format!("hdr: {hd}\n"));
+        }
+        if let Some(v) = self.hdr_amount {
+            o.push_str(&format!("hdr_amount: {v:.2}\n"));
         }
         if let Some(n) = self.levels {
             o.push_str(&format!("levels: {n}\n"));
@@ -505,6 +519,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             granulate: None,
             ladder_keep: None,
             leak: None,
+            hdr: None,
+            hdr_amount: None,
             levels: None,
         notes,
     }
