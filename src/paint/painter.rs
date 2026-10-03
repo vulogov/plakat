@@ -1808,7 +1808,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None },
         strokes: Vec::new(),
     };
 
@@ -1957,6 +1957,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // glaze), with `wcb_hits` the lane hits a stroke lays per pixel (the calibration from flat patches).
     let wcb_trans = wc_brush && env_f("PLAKAT_WCB_TRANS", if wc_wash { 1.0 } else { 0.0 }) > 0.0;
     let wcb_hits = env_f("PLAKAT_WCB_HITS", if wc_wash { 0.5 } else { 1.5 });
+    // The fluid stage's strength / radius (fraction of the short side) / rim, by the technique: wet-on-wet
+    // floods wide, wet-on-dry a narrow film that sets with a rim, the dry brush has no water to flow.
+    let (flow_s, flow_r, flow_m) = match p.technique {
+        WetTechnique::WetOnWet => (0.9, 0.012, 0.4),
+        WetTechnique::DryOnDry => (0.0, 0.0, 0.0),
+        _ => (0.6, 0.005, 0.8),
+    };
+    let wcb_flow = env_f("PLAKAT_WCB_FLOW", if wc_wash { 1.0 } else { 0.0 });
+    if wc_wash && wcb_flow > 0.0 && flow_s > 0.0 {
+        let radius = (w.min(h) as f32 * env_f("PLAKAT_WCB_FLOWR", flow_r)).max(1.0);
+        score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m)));
+    }
     // The broad passes drag a seed's dose across a whole swath: they carry it at this many hits instead.
     let wcb_hits_broad = env_f("PLAKAT_WCB_HITSBROAD", if wc_wash { 1.2 } else { wcb_hits });
     if wcb_trans {
@@ -2818,6 +2830,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         if wcb_broad_pass && wcb_bleed > 0.0 {
             canvas.bleed_with(wcb_bleed, 0.0);
         }
+        // THE FLUID STAGE (see `Canvas::flow`): the water film the pass left, the pigment diffusing in it, the
+        // rim where it dries — after every pass, tapering with the passes as the bleed does, and in the score
+        // so the replay crosses the same water.
+        if let Some((fs, fr, fm)) = score.header.flow {
+            if let Some(t) = flow_taper(b_idx, b_n) {
+                canvas.flow(fs * t, fr, fm);
+            }
+        }
         if b_idx + 1 < b_n {
             canvas.dry(1.0 - p.dry);
         }
@@ -2911,6 +2931,14 @@ pub fn pass_bleed_taper(layer: usize, n: usize) -> f32 {
     } else {
         1.0 - layer as f32 / (n - 1) as f32
     }
+}
+
+/// How much of the fluid stage (`Canvas::flow`) pass `layer` of `n` gets: the BROAD passes — the first half of
+/// the schedule — flow at the bleed's taper; the fine passes are laid on paper that has dried and do not
+/// (`None`): a watercolour's detail is wet-on-dry, its washes wet-in-wet.
+pub fn flow_taper(layer: usize, n: usize) -> Option<f32> {
+    let t = pass_bleed_taper(layer, n);
+    if t > 0.5 { Some(t) } else { None }
 }
 
 /// The fraction of the medium's bleed applied once over the finished painting (after the finish passes).
@@ -5836,7 +5864,7 @@ mod transmittance_tests {
         // from the text as from memory — the flag, `kd` and `cap` all survive serialisation.
         let pal = palette::EARTH;
         let mut sc = crate::paint::score::StrokeScore {
-            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true },
+            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None },
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();

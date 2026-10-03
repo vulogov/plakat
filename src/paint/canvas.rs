@@ -40,6 +40,9 @@ pub struct Canvas {
     film: Vec<f32>,
     /// The film at the last `mark_film` (empty = never marked), for a wash brush's film cap.
     film_mark: Vec<f32>,
+    /// The pigment as it was at the last `mark_film` (transmittance film only — there deposits ADD, so the
+    /// difference is exactly what the pass since laid; see `flow`).
+    conc_mark: Vec<f32>,
     /// Per-pixel paint height (impasto), row-major.
     pub height: Vec<f32>,
     /// Per-pixel wet pigment available for pickup, row-major (0 = dry).
@@ -114,7 +117,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -312,6 +315,9 @@ impl Canvas {
     /// Remember the film as it is now (see `BrushConfig::film_cap`): the start of a wash pass.
     pub fn mark_film(&mut self) {
         self.film_mark = self.film.clone();
+        if self.transmittance {
+            self.conc_mark = self.conc.clone();
+        }
     }
 
     /// The film laid at row-major pixel `p` since the last `mark_film` (all of it when never marked).
@@ -416,6 +422,129 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    /// THE FLUID STAGE of a watercolour (`flow`): water on paper is a continuous FILM, not the brush's
+    /// footprint, and only the pigment still IN the water moves — what dried in the earlier passes stays
+    /// where it was laid. The pass's own deposit (since `mark_film`; the transmittance film adds, so the
+    /// difference is exact) is the wet layer; it is split into WASHES — the regions where one pigment leads
+    /// the mix (a watercolourist lays the sky, the wall, the lit window as separate washes, each of its own
+    /// colour) — and inside each wash the fresh pigment DIFFUSES by `strength` over `radius` px (a blur
+    /// confined to the wash, so the lanes' gaps are filled: the plain bleed, run on the lanes' own wetness,
+    /// diffused pigment in a lattice of wet cells over dry gaps and printed a honeycomb) and SETTLES toward
+    /// the wash's edge as it dries, deeper there by `rim` (0..1): the tide line between two washes, the
+    /// cauliflower against the dry paper. Deterministic; a no-op at strength 0 or on a non-transmittance
+    /// canvas.
+    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 0.5 || !self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        let r = radius.round().max(1.0) as usize;
+        let film_mark = |p: usize| self.film_mark.get(p).copied().unwrap_or(0.0);
+        // The pass's own deposit: the pigment that is still wet.
+        let fresh_film: Vec<f32> = (0..px).map(|p| (self.film[p] - film_mark(p)).max(0.0)).collect();
+        if !fresh_film.iter().any(|&f| f > 1e-5) {
+            return;
+        }
+        let mut fresh = vec![0f32; px * n];
+        for i in 0..px * n {
+            fresh[i] = (self.conc[i] - self.conc_mark.get(i).copied().unwrap_or(0.0)).max(0.0);
+        }
+        // 1. The washes: the wet layer smoothed over the radius (the water joins the lanes), each pixel
+        //    assigned to the pigment that leads the smoothed mix there.
+        let wet_b = Self::box_blur_f(&fresh_film, w, h, r);
+        let mut ch = vec![0f32; px];
+        let mut lead: Vec<i16> = vec![-1; px];
+        let mut lead_v = vec![0f32; px];
+        let mut present = vec![false; n];
+        for c in 0..n {
+            for p in 0..px { ch[p] = fresh[p * n + c]; }
+            if !ch.iter().any(|&v| v > 0.0) { continue; }
+            present[c] = true;
+            let bl = Self::box_blur_f(&ch, w, h, r);
+            for p in 0..px {
+                if wet_b[p] > 1e-6 && bl[p] > lead_v[p] {
+                    lead_v[p] = bl[p];
+                    lead[p] = c as i16;
+                }
+            }
+        }
+        // 2. Per wash: the pigment diffuses inside it (a blur confined to the wash: blur(fresh × mask) /
+        //    blur(mask)), mixed in by `s × coverage`, and at the wash's edge — where its coverage falls —
+        //    the pigment the water carried out settles, deeper (the rim band: the wash's inner `r`/2).
+        let k = rim.clamp(0.0, 1.0);
+        let mut mask = vec![0f32; px];
+        let mut masked = vec![0f32; px];
+        let mut out_film = fresh_film.clone();
+        let mut out = fresh.clone();
+        for c in 0..n {
+            if !present[c] { continue; }
+            let mut any = false;
+            for p in 0..px { mask[p] = if lead[p] == c as i16 { any = true; 1.0 } else { 0.0 }; }
+            if !any { continue; }
+            let cov = Self::box_blur_f(&mask, w, h, r);
+            // The edge band: coverage below 3/4 inside the wash means the wash ends within r/2 — weight 1 at
+            // the edge (coverage 1/2 at a straight edge) falling to 0 at 3/4.
+            let edge = |p: usize| -> f32 { if k <= 0.0 { 0.0 } else { k * ((0.75 - cov[p]) / 0.25).clamp(0.0, 1.0) } };
+            for p in 0..px { masked[p] = fresh_film[p] * mask[p]; }
+            let num = Self::box_blur_f(&masked, w, h, r);
+            for p in 0..px {
+                if mask[p] <= 0.0 { continue; }
+                let a = s * cov[p].min(1.0);
+                let d = num[p] / cov[p].max(1e-6);
+                out_film[p] = fresh_film[p] * (1.0 - a) + d * a * (1.0 + edge(p));
+            }
+            for cc in 0..n {
+                if !present[cc] { continue; }
+                let mut any = false;
+                for p in 0..px { masked[p] = fresh[p * n + cc] * mask[p]; any |= masked[p] > 0.0; }
+                if !any { continue; }
+                let num = Self::box_blur_f(&masked, w, h, r);
+                for p in 0..px {
+                    if mask[p] <= 0.0 { continue; }
+                    let a = s * cov[p].min(1.0);
+                    let d = num[p] / cov[p].max(1e-6);
+                    let i = p * n + cc;
+                    out[i] = fresh[i] * (1.0 - a) + d * a * (1.0 + edge(p));
+                }
+            }
+        }
+        for p in 0..px {
+            self.film[p] = film_mark(p) + out_film[p];
+            for c in 0..n {
+                let i = p * n + c;
+                self.conc[i] = self.conc_mark.get(i).copied().unwrap_or(0.0) + out[i];
+            }
+        }
+    }
+
+    /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
+    /// cells actually inside).
+    fn box_blur_f(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+        let pass = |line: &[f32], out: &mut [f32]| {
+            let len = line.len();
+            let mut prefix = vec![0f32; len + 1];
+            for i in 0..len { prefix[i + 1] = prefix[i] + line[i]; }
+            for i in 0..len {
+                let a = i.saturating_sub(r);
+                let b = (i + r).min(len - 1);
+                out[i] = (prefix[b + 1] - prefix[a]) / (b - a + 1) as f32;
+            }
+        };
+        let mut t = vec![0f32; w * h];
+        for y in 0..h { pass(&src[y * w..(y + 1) * w], &mut t[y * w..(y + 1) * w]); }
+        let mut out = vec![0f32; w * h];
+        let mut col = vec![0f32; h];
+        let mut colo = vec![0f32; h];
+        for x in 0..w {
+            for y in 0..h { col[y] = t[y * w + x]; }
+            pass(&col, &mut colo);
+            for y in 0..h { out[y * w + x] = colo[y]; }
+        }
+        out
     }
 
     /// One step of directional pigment transport between wet neighbours (see `bleed_with`). Each 4-neighbour
@@ -1122,5 +1251,85 @@ mod tests {
         let d_thick = delta_e76(base, srgb_to_lab(thick.color_at(0, 0)));
         assert!(d_thin > 0.0, "a glaze does tint");
         assert!(d_thin < d_thick, "thin glaze shifts less than a covering deposit ({d_thin} < {d_thick})");
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::paint::palette;
+
+    #[test]
+    fn the_box_blur_matches_a_naive_mean() {
+        let (w, h) = (7usize, 5usize);
+        let src: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 11) as f32).collect();
+        let got = Canvas::box_blur_f(&src, w, h, 2);
+        for y in 0..h {
+            for x in 0..w {
+                let (mut s, mut c) = (0f32, 0f32);
+                for yy in y.saturating_sub(2)..=(y + 2).min(h - 1) { for xx in x.saturating_sub(2)..=(x + 2).min(w - 1) { s += src[yy * w + xx]; c += 1.0; } }
+                assert!((got[y * w + x] - s / c).abs() < 1e-4, "at {x},{y}: {} vs {}", got[y * w + x], s / c);
+            }
+        }
+    }
+
+    #[test]
+    fn the_flow_fills_the_gaps_between_lanes_and_leaves_a_rim() {
+        // Two wet dots a few pixels apart on paper: after the flow the gap between them is painted (the
+        // film joins them), and the film's edge is deeper than its interior.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(48, 48, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[3] = 1.5;
+        for &x in &[20u32, 26] { c.deposit(x, 24, &load, 0.0); }
+        let gap_before = c.saturation_at(23, 24);
+        c.flow(1.0, 4.0, 1.0);
+        let gap_after = c.saturation_at(23, 24);
+        assert!(gap_before == 0.0 && gap_after > 0.0, "the gap is painted by the film: {gap_before} → {gap_after}");
+        assert!(c.saturation_at(23, 24) > c.saturation_at(23, 40), "and the paper beyond the film stays bare");
+        let interior = c.saturation_at(23, 24);
+        let edge: f32 = (0..48).map(|y| c.saturation_at(23, y)).fold(0.0, f32::max);
+        assert!(edge >= interior, "the rim is at least as deep as the interior ({edge} vs {interior})");
+    }
+
+    #[test]
+    fn two_washes_meet_in_a_tide_line() {
+        // A blue wash and an ochre wash laid side by side, wet: each keeps its own colour (the diffusion is
+        // confined to the wash) and is deeper along the line where they meet than in its interior.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[1] = 1.0;
+        b[3] = 1.0;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        c.flow(1.0, 4.0, 1.0);
+        let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
+        assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
+        assert!(at(30, 16, 1) > at(8, 16, 1) * 1.2, "the blue is deeper at the meeting line: {} vs {}", at(30, 16, 1), at(8, 16, 1));
+        assert!(at(33, 16, 3) > at(56, 16, 3) * 1.2, "and so is the ochre: {} vs {}", at(33, 16, 3), at(56, 16, 3));
+    }
+
+    #[test]
+    fn the_flow_leaves_the_dried_passes_where_they_were() {
+        // A crisp dot laid in an earlier pass (marked = dried) and a wet wash laid after it: the flow moves
+        // the wash, not the dot — the dot's pigment and its sharp edge survive exactly.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(48, 48, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut dot = vec![0f32; pal.pigments.len()];
+        dot[1] = 2.0;
+        c.deposit(10, 10, &dot, 0.0);
+        c.mark_film();
+        let n = c.n;
+        let dot_before: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
+        let beside_before = c.saturation_at(11, 10);
+        let mut wash = vec![0f32; pal.pigments.len()];
+        wash[3] = 1.0;
+        for x in 30..40u32 { for y in 30..34u32 { c.deposit(x, y, &wash, 0.0); } }
+        c.flow(1.0, 3.0, 0.5);
+        let dot_after: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
+        assert_eq!(dot_before, dot_after, "the dried dot does not move");
+        assert_eq!(beside_before, c.saturation_at(11, 10), "nor does its edge soften");
+        assert!(c.saturation_at(29, 32) > 0.0 && c.saturation_at(41, 32) > 0.0, "the wet wash spread beyond its footprint");
     }
 }

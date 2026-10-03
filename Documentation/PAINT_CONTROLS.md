@@ -171,6 +171,12 @@ reserved paper.
 - Tune: `bleed` up (→0.7) for looser washes/bloom; `opacity` down (→0.35) for more paper glow; `stroke_length`
   up for flowing washes. Keep `pickup` low, `impasto` 0.
 - Good with: `style: fidelity`/`legible`, `palette: limited-landscape`/`sumi`, `haze: 0`.
+- **The fluid stage** (the wash recipe, `PLAKAT_WC_WASH=1`): after each **broad** pass the water the brush
+  left is treated as a continuous film — the pass's own wet pigment (never the dried passes beneath) is split
+  into **washes**, the regions where one pigment leads the mix, and inside each it diffuses and settles toward
+  the wash's edge as it dries: the **tide line** where two washes meet, the bloom against dry paper. The fine
+  passes are wet‑on‑dry and stay crisp. `--technique wet-on-wet` floods wider and softer, `dry-on-dry` has no
+  water to flow; the score records it (`flow=strength,radius,rim`) so a replay crosses the same water.
 
 ```hjson
 medium: watercolour
