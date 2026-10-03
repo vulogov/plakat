@@ -609,6 +609,10 @@ pub struct FromArgs {
     /// darks have something to paint and the lights are not a hole in the sheet. Plan: `hdr: true`.
     #[arg(long)]
     pub hdr: Option<bool>,
+    /// BRISTLE RIDGES (0..1): a stroke's relief striated across its width by the lanes' loads, so the
+    /// impasto relight shows bristle marks rather than a smooth tube. Plan: `ridges`.
+    #[arg(long)]
+    pub ridges: Option<f32>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1826,6 +1830,22 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.hdr.is_none() {
             a.hdr = plan.hdr;
         }
+        if a.ridges.is_none() {
+            a.ridges = plan.ridges;
+        }
+        if a.impasto.is_none() {
+            a.impasto = plan.impasto;
+        }
+        // The plain dials: the plan's value applies where the command line left the default.
+        if let Some(v) = plan.stroke_width {
+            if (a.stroke_width - 1.0).abs() < 1e-6 { a.stroke_width = v; }
+        }
+        if let Some(v) = plan.stroke_length {
+            if (a.stroke_length - 1.0).abs() < 1e-6 { a.stroke_length = v; }
+        }
+        if let Some(v) = plan.detail_restate {
+            if (a.detail_restate - 0.08).abs() < 1e-6 { a.detail_restate = v; }
+        }
         if a.hdr_amount.is_none() {
             a.hdr_amount = plan.hdr_amount;
         }
@@ -2136,6 +2156,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(pk) = a.pickup {
         params.brush.k_pickup = pk.clamp(0.0, 1.0);
+    }
+    if let Some(rg) = a.ridges {
+        params.brush.ridges = rg.clamp(0.0, 1.0);
     }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);

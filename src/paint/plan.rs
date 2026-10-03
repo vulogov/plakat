@@ -116,6 +116,21 @@ pub struct PaintPlan {
     /// their detail — so every stage paints the re-lit picture. `hdr_amount` 0..1 is how far.
     #[serde(default)]
     pub hdr: Option<bool>,
+    /// BRISTLE RIDGES (0..1): a stroke's relief striated across its width by the lanes' loads (the impasto
+    /// relight then shows bristle marks, not a smooth tube), with the relief scaled against a robust
+    /// height so one heavy crossing cannot flatten the sheet. 0 = off (the finish as before).
+    #[serde(default)]
+    pub ridges: Option<f32>,
+    /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
+    /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
+    #[serde(default)]
+    pub impasto: Option<f32>,
+    #[serde(default)]
+    pub stroke_width: Option<f32>,
+    #[serde(default)]
+    pub stroke_length: Option<f32>,
+    #[serde(default)]
+    pub detail_restate: Option<f32>,
     #[serde(default)]
     pub hdr_amount: Option<f32>,
     /// LEVELS: how many value masses the armature is cut into — for a wash medium, how many glazes the picture
@@ -184,6 +199,11 @@ impl Default for PaintPlan {
             ladder_keep: None,
             leak: None,
             hdr: None,
+            ridges: None,
+            impasto: None,
+            stroke_width: None,
+            stroke_length: None,
+            detail_restate: None,
             hdr_amount: None,
             levels: None,
             notes: Vec::new(),
@@ -248,6 +268,14 @@ impl PaintPlan {
         }
         if let Some(hd) = self.hdr {
             o.push_str(&format!("hdr: {hd}\n"));
+        }
+        if let Some(v) = self.ridges {
+            o.push_str(&format!("ridges: {v:.2}\n"));
+        }
+        for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
         }
         if let Some(v) = self.hdr_amount {
             o.push_str(&format!("hdr_amount: {v:.2}\n"));
@@ -520,6 +548,11 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             ladder_keep: None,
             leak: None,
             hdr: None,
+            ridges: None,
+            impasto: None,
+            stroke_width: None,
+            stroke_length: None,
+            detail_restate: None,
             hdr_amount: None,
             levels: None,
         notes,

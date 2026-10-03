@@ -780,7 +780,14 @@ impl Canvas {
         }
         // IMPASTO + SHEEN relight from the paint HEIGHT.
         if f.impasto > 1e-4 || f.sheen > 1e-4 {
-            let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
+            // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
+            // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
+            let peak = if f.relief_robust {
+                let mut v: Vec<f32> = self.height.iter().copied().filter(|h| *h > 0.0).collect();
+                if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[(v.len() - 1) * 98 / 100].max(1e-4) }
+            } else {
+                self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4)
+            };
             let (lx, ly) = (0.55_f32, 0.83_f32);
             let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
             let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
@@ -890,6 +897,9 @@ impl Canvas {
 pub struct Finish {
     /// Impasto relief strength (0 flat → 1 thick, light-catching).
     pub impasto: f32,
+    /// Scale the relief against a robust height (the 98th percentile) rather than the single peak — one
+    /// heavy crossing no longer flattens every other ridge. Off = the old scale, byte for byte.
+    pub relief_robust: bool,
     /// Saturation multiplier (1 neutral; >1 vivid oil; <1 muted gouache/watercolour).
     pub chroma: f32,
     /// Drying value shift (+ lighter watercolour; − matte-compressed gouache).
@@ -916,7 +926,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 

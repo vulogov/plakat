@@ -42,6 +42,9 @@ pub struct BrushConfig {
     /// A loaded WASH brush holds its charge along the whole stroke (no dry-brush tail) — with or without
     /// the end taper.
     pub hold_charge: bool,
+    /// BRISTLE RIDGES (0 = off): the paint a lane leaves stands as high as that lane was loaded relative to
+    /// its neighbours, so a stroke's relief is striated across its width. The amount scales the striation.
+    pub ridges: f32,
 }
 
 impl Default for BrushConfig {
@@ -50,7 +53,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, ridges: 0.0 }
     }
 }
 
@@ -207,7 +210,17 @@ impl Stroke {
                     let floor = 0.12 + (1.0 - rnd) * 0.33; // flat brush deposits more evenly across its width
                     (1.0 - d.powf(pw)).max(floor)
                 };
-                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, deplete, &mut scratch);
+                // BRISTLE RIDGES: the paint a lane leaves stands as high as that lane was loaded relative to its
+                // neighbours — a loaded bristle drags a ridge, a dry one a furrow — so a stroke's relief is
+                // striated across its width (the relight read a smooth hump before; every stroke was a
+                // flat tube). The ridge follows the lane's STARTING load (its streak), so it runs the whole stroke.
+                let ridge = if brush.ridges > 0.0 && brush.viscosity > 0.0 && nb > 2 {
+                    let k = brush.ridges.clamp(0.0, 1.0);
+                    1.0 + k * ((lane_hash(seed, b as u64 ^ 0x5A5A) - 0.5) * 1.6 + 0.4 * ((b as f32 * 2.4).sin() * 0.5 + 0.5) - 0.4)
+                } else {
+                    1.0
+                };
+                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, deplete, &mut scratch, ridge.max(0.05));
             }
         }
     }
@@ -247,7 +260,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
@@ -277,7 +290,7 @@ impl Stroke {
             dep_total += d;
             load[c] -= d * deplete;
         }
-        canvas.deposit(px, py, deposit, dep_total * brush.viscosity);
+        canvas.deposit(px, py, deposit, dep_total * brush.viscosity * ridge);
 
         // Pickup: lift wet canvas pigment into the load (the dirty brush). Scales with how empty the brush is.
         let cw = canvas.wetness[p];
