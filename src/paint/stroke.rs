@@ -277,11 +277,13 @@ impl Stroke {
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
         let mut df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
-        // The dry brush: below 0.6 wet the bristle no longer floods the hollows; the drier it is, the higher
+        // The dry brush: a mark laid below 0.6 wet no longer floods the hollows; the drier it is, the higher
         // the fibre it must find to leave paint. The paper's relief is the same deterministic grain the
-        // granulation settles into, so the skips and the mottle share one tooth.
+        // granulation settles into, so the skips and the mottle share one tooth. Read from the mark's OWN
+        // wetness, not the bristle's running one: that decays along every stroke, and read there the tail of
+        // every long wash went dry and the whole sheet stippled and darkened.
         if brush.skip > 0.0 {
-            let dryness = ((0.6 - *bwet) / 0.6).clamp(0.0, 1.0);
+            let dryness = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
             if dryness > 0.0 {
                 let thr = brush.skip.clamp(0.0, 1.0) * dryness * 0.9;
                 let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);

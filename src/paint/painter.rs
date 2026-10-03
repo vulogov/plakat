@@ -1927,10 +1927,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // lays a face, a sky, a sleeve as a wash. Under the recipe a fine mark's wetness follows how BUSY the
     // picture is at the mark's scale (the local value range, a contrast fact: 0.06 is about where texture
     // begins), so the marks in a smooth passage flood the tooth and the marks in a textured one skip it.
+    // Never over the LIGHTS: a watercolourist does not drag dry pigment across a lit window or a lamp — those
+    // are the paper and a wash — so the busy field is gated out where the picture is bright. And never over a
+    // FACE: the eyes and the features are busy at the mark's scale, but they are the eye's destination and
+    // are laid as washes with a few crisp accents, not dragged dry (dry-brushed eyes fragmented).
     let busy_field: Option<Vec<f32>> = if p.brush.skip > 0.0 && p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" {
         let lm = luma_map(input);
         let fine = local_range(&lm, w as usize, h as usize, (p.min_brush * 0.75).round().max(2.0) as usize);
-        Some(fine.iter().map(|&f| ((f - 0.04) / 0.08).clamp(0.0, 1.0)).collect())
+        let face = p.face_mask.as_deref();
+        Some((0..lm.len()).map(|i| {
+            let f = ((fine[i] - 0.08) / 0.12).clamp(0.0, 1.0) * (1.0 - ((lm[i] - 0.5) / 0.3).clamp(0.0, 1.0));
+            f * (1.0 - face.and_then(|m| m.get(i).copied()).unwrap_or(0.0).clamp(0.0, 1.0))
+        }).collect())
     } else {
         None
     };
@@ -2636,13 +2644,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                 }
                 let wet = if wcb_broad && wcb_wet > 0.0 { wcb_wet } else { wet };
-                // A fine mark goes on dry only where the picture is textured (see `busy_field`); in a smooth
-                // passage it goes on wet enough to flood the tooth. Recorded per stroke: replay-exact.
+                // A fine mark goes on DRY (0.25 — enough to skip half the fibres) only where the picture is
+                // textured (see `busy_field`); in a smooth passage it goes on wet enough to flood the tooth, and
+                // the broad washes are always flooded. Recorded per stroke: replay-exact.
                 let wet = match (&busy_field, wcb_broad) {
                     (Some(bf), false) if wet < 0.62 => {
                         let b = bf.get(region_i).copied().unwrap_or(0.0);
-                        wet * b + 0.62 * (1.0 - b)
+                        0.25 * b + 0.62 * (1.0 - b)
                     }
+                    (Some(_), true) => wet.max(0.62),
                     _ => wet,
                 };
                 if wc_brush {
