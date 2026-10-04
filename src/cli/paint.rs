@@ -2711,7 +2711,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let path = if dest.is_empty() { a.out.with_extension("md") } else { std::path::PathBuf::from(dest) };
         let argv: Vec<String> = std::env::args().collect();
         let info = crate::paint::report::RunInfo { source: &a.input, output: &a.out, width: w, height: h, plan_text: plan_text.as_deref(), plan_path: plan_path.as_deref(), argv: &argv, seconds: result.seconds };
-        let mut md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes);
+        let mut md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes, Some(&img));
         std::fs::write(&path, &md).with_context(|| format!("writing {}", path.display()))?;
         println!("{}  analysis → {}", style("·").dim(), path.display());
         // THE INSIGHTS pass (P0.5): the report's facts through the LLM; appended, with its provenance.

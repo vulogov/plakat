@@ -416,7 +416,7 @@ pub struct PassStat {
     pub seconds: f64,
 }
 
-fn luma_map(img: &RgbImage) -> Vec<f32> {
+pub(crate) fn luma_map(img: &RgbImage) -> Vec<f32> {
     img.pixels().map(|p| color::linear_luma(color::srgb_to_linear(p.0))).collect()
 }
 
@@ -1525,7 +1525,7 @@ pub fn from_scratch_budget(w: u32, h: u32, brush_sizes: &[f32], min_brush: f32, 
 
 /// Local value RANGE (max − min) of a luma field over a square window of half-width `r` — a cheap "is there an
 /// edge nearby" measure. Separable (row max/min then column max/min), so it costs O(w·h·r).
-fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+pub(crate) fn local_range(luma: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
     // A SLIDING min and max, not a re-scan per pixel. The old form was separable but still walked the whole
     // window at every pixel — O(radius) each — and the flow field asks for radii up to ~72 on a 2048² sheet,
     // which made this ONE function 93% of a watercolour's paint time (330 s of 352). A monotonic deque gives

@@ -101,7 +101,7 @@ fn masked_mean(field: &[f32], mask: &[f32], thr: f32, invert: bool) -> Option<f3
 }
 
 /// The analysis, as Markdown.
-pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &StrokeScore, canvas: &Canvas, stats: &[PassStat], strokes_laid: usize) -> String {
+pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &StrokeScore, canvas: &Canvas, stats: &[PassStat], strokes_laid: usize, source: Option<&image::RgbImage>) -> String {
     let mut o = String::new();
     let h = &result_score.header;
     let title = info.source.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "painting".into());
@@ -258,6 +258,18 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
             s.stage, s.radius, s.strokes, rate, s.seconds, len / n, wid / n, if recs.is_empty() { 0 } else { dry * 100 / recs.len() }
         ));
     }
+    // THE CAPS a reader (or a model) cannot see from the counts alone: why the budget was not spent, and
+    // how long a mark of each brush can be at all.
+    if strokes_laid < params.budget {
+        o.push_str(&format!(
+            "\n**Why {} of {} strokes:** the budget is a ceiling, not a target. A pass lays a mark only where the canvas is still notably wrong (the restate gate), where the picture has structure for a fine brush, and where a plane allows that brush — so a picture whose masses are right after the mid passes leaves the budget unspent. Raising `fill`, `budget` or the density does not change this; `detail_restate` (lower = restate more) and `fine_lines` do.\n",
+            strokes_laid, params.budget
+        ));
+    }
+    o.push_str("\n**Length caps:** a mark may run at most ~2.2× its brush radius per half (then the colour-drift and hard-edge stops end it sooner), scaled by `stroke_length` and, on the fine passes, by `detail_len`: ");
+    let caps: Vec<String> = stats.iter().filter(|s| s.strokes > 0).map(|s| format!("{} ≤ ~{:.0} px", s.stage, s.radius * 2.2 * 2.0 * params.stroke_len)).collect();
+    o.push_str(&caps.join(" · "));
+    o.push_str(". A 2–4 px brush cannot lay a long mark whatever the dials; its share of short marks is a fact of its size.\n");
     let stage_names: Vec<&str> = result_score.strokes.iter().map(|r| r.stage.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     let extra: Vec<&str> = stage_names.iter().copied().filter(|n| !stats.iter().any(|s| s.stage == *n)).collect();
     if !extra.is_empty() {
@@ -273,23 +285,43 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
     if peak > 1e-6 {
         let hp: Vec<f32> = canvas.height.iter().map(|v| v / peak * 100.0).collect();
         let whole = hp.iter().sum::<f32>() / hp.len().max(1) as f32;
-        ms.push(Measure { label: "paint height, whole sheet (mean, % of peak)", value: format!("{whole:.1}") });
+        ms.push(Measure { label: "paint height, whole sheet (mean, % of peak)", value: format!("{whole:.1} — heights are relative to this run's own peak; compare RATIOS between runs, not these percentages") });
         if let Some(fm) = &params.face_mask {
             if let Some(v) = masked_mean(&hp, fm, 0.35, false) {
                 ms.push(Measure { label: "paint height on the faces", value: format!("{v:.1}") });
             }
         }
+        let mut face_h = None;
+        if let Some(fm) = &params.face_mask {
+            face_h = masked_mean(&hp, fm, 0.35, false);
+        }
         if let Some(sm) = &params.subject_mask {
-            if let Some(v) = masked_mean(&hp, sm, 0.5, false) {
+            let subj = masked_mean(&hp, sm, 0.5, false);
+            let bg = masked_mean(&hp, sm, 0.5, true);
+            if let Some(v) = subj {
                 ms.push(Measure { label: "paint height on the subject", value: format!("{v:.1}") });
             }
-            if let Some(v) = masked_mean(&hp, sm, 0.5, true) {
+            if let Some(v) = bg {
                 ms.push(Measure { label: "paint height on the background", value: format!("{v:.1}") });
             }
+            if let (Some(sj), Some(b)) = (subj, bg) {
+                ms.push(Measure { label: "RATIO subject : background (the map's intent is > 1)", value: format!("{:.2}", sj / b.max(1e-3)) });
+            }
+            if let (Some(f), Some(sj)) = (face_h, subj) {
+                ms.push(Measure { label: "RATIO faces : subject (the map lays faces thin: < 1)", value: format!("{:.2}", f / sj.max(1e-3)) });
+            }
         }
-        // Lights and shadows by the finished picture's own value: the top and bottom fifths.
-        let img = canvas.to_image();
-        let mut luma: Vec<f32> = img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0).collect();
+        // Lights and shadows by the SOURCE picture's value (what the painter read), the top and bottom
+        // fifths — and smooth vs broken SURFACES by the source's local value range at the finest brush's
+        // scale (the painter's own busy measure). The finished picture's value is relit and painted, so
+        // it is a weaker witness; it is used only when the source is not at hand.
+        let (luma, witness) = match source {
+            Some(img) if img.width() as usize * img.height() as usize == hp.len() => (crate::paint::painter::luma_map(img), "source"),
+            _ => {
+                let img = canvas.to_image();
+                (img.pixels().map(|p| (0.299 * p.0[0] as f32 + 0.587 * p.0[1] as f32 + 0.114 * p.0[2] as f32) / 255.0).collect::<Vec<f32>>(), "finished picture")
+            }
+        };
         let mut sorted = luma.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let lo = sorted[sorted.len() / 5];
@@ -297,12 +329,25 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
         let lights: Vec<f32> = luma.iter().map(|l| if *l >= hi { 1.0 } else { 0.0 }).collect();
         let shadows: Vec<f32> = luma.iter().map(|l| if *l <= lo { 1.0 } else { 0.0 }).collect();
         if let Some(v) = masked_mean(&hp, &lights, 0.5, false) {
-            ms.push(Measure { label: "paint height in the lights (top fifth by value)", value: format!("{v:.1}") });
+            ms.push(Measure { label: "paint height in the lights (top fifth of the source by value)", value: format!("{v:.1} (by the {witness})") });
         }
         if let Some(v) = masked_mean(&hp, &shadows, 0.5, false) {
             ms.push(Measure { label: "paint height in the shadows (bottom fifth)", value: format!("{v:.1}") });
         }
-        luma.clear();
+        if let (Some(l), Some(sh)) = (masked_mean(&hp, &lights, 0.5, false), masked_mean(&hp, &shadows, 0.5, false)) {
+            ms.push(Measure { label: "RATIO lights : shadows (the map's intent is > 1; without the map darks come out thickest, they carry more pigment)", value: format!("{:.2}", l / sh.max(1e-3)) });
+        }
+        if witness == "source" {
+            let r = (params.min_brush * 0.75).round().max(2.0) as usize;
+            let fine = crate::paint::painter::local_range(&luma, info.width as usize, info.height as usize, r);
+            let busy: Vec<f32> = fine.iter().map(|f| ((f - 0.08) / 0.12).clamp(0.0, 1.0)).collect();
+            if let (Some(b), Some(sm)) = (masked_mean(&hp, &busy, 0.5, false), masked_mean(&hp, &busy, 0.2, true)) {
+                ms.push(Measure { label: "paint height on broken surfaces (beard, bark, cobbles) / on smooth ones (skin, sky, glass)", value: format!("{b:.1} / {sm:.1}") });
+                ms.push(Measure { label: "RATIO broken : smooth (the map's intent is > 1)", value: format!("{:.2}", b / sm.max(1e-3)) });
+            }
+            let covered = busy.iter().filter(|b| **b > 0.5).count() * 100 / busy.len().max(1);
+            ms.push(Measure { label: "share of the sheet that is broken surface at the finest brush's scale", value: format!("{covered}%") });
+        }
     }
     // Fine-stroke lengths: the finest stage of the ladder.
     if let Some(finest) = stats.iter().filter(|s| s.strokes > 0).min_by(|a, b| a.radius.partial_cmp(&b.radius).unwrap_or(std::cmp::Ordering::Equal)) {
@@ -435,7 +480,7 @@ mod tests {
         let r = paint_from_image(&img, &p);
         let argv = vec!["plakat".to_string(), "paint".into(), "from".into(), "x.png".into(), "--impasto".into(), "0.5".into()];
         let info = RunInfo { source: std::path::Path::new("x.png"), output: std::path::Path::new("out/x_paint.png"), width: 64, height: 48, plan_text: Some("medium: oil-direct\nridges: 0.8\n"), plan_path: None, argv: &argv, seconds: r.seconds };
-        let md = analysis_markdown(&info, &p, &r.score, &r.canvas, &r.stats, r.strokes);
+        let md = analysis_markdown(&info, &p, &r.score, &r.canvas, &r.stats, r.strokes, Some(&img));
         assert!(md.contains("# plakat paint — analysis of “x”"));
         assert!(md.contains("```hjson\nmedium: oil-direct"));
         assert!(md.contains("| `impasto` | 0.5 | cli |"));
