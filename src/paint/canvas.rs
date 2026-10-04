@@ -1100,6 +1100,23 @@ impl Canvas {
                     if spec > 0.0 && facing > 0.0 {
                         shade += spec * facing * facing * amt;
                     }
+                    // CAST SHADOW (with the striated relief, `ridges`): a thick stroke beside thin paint is
+                    // a step, and the raking light throws the step's shadow onto the thin side — the
+                    // micro-shadow that makes thick paint SIT ON the smooth passage instead of fading into
+                    // it. Walk a few pixels toward the light; where the paint there stands higher than this
+                    // pixel by more than the light's climb, this pixel is in its shadow.
+                    if f.relief_robust && gain > 0.0 {
+                        let mut occl = 0f32;
+                        for k in 1..=5i32 {
+                            let sx = (x as i32 + (lx * k as f32).round() as i32).clamp(0, w as i32 - 1) as usize;
+                            let sy = (y as i32 + (ly * k as f32).round() as i32).clamp(0, h as i32 - 1) as usize;
+                            let rise = (self.height[sy * w + sx] - self.height[y * w + x]) / peak - 0.06 * k as f32;
+                            occl = occl.max(rise);
+                        }
+                        if occl > 0.0 {
+                            shade -= 0.7 * gain * occl.min(1.0) * amt;
+                        }
+                    }
                     if weave > 0.0 {
                         let (xf, yf) = (x as f32, y as f32);
                         let dwx = (linen(xf + 1.0, yf) - linen(xf - 1.0, yf)) * 0.5;
