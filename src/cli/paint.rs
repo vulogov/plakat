@@ -637,6 +637,14 @@ pub struct FromArgs {
     /// beside the output (`<out>.md`); a value is the path. Plan: `analysis: true` / `analysis: "path"`.
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
     pub analysis: Option<String>,
+    /// INSIGHTS (RFC PAINT-3 P0.5): run the analysis report through the configured LLM and append
+    /// `## Insights` and `## Recommendations` (plan lines with reasons) to it. Takes a provider as the
+    /// enhancer does (`auto`, `ollama`, `ollama:<model>`, `deepseek`, `gemini`, `local`); no value =
+    /// `auto`. The model gets the report's facts, never the picture. A hosted provider receives the
+    /// report text — it leaves the machine; Ollama/local keep it here. Implies `--analysis`.
+    /// Plan: `analysis_insights: true | "provider"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    pub analysis_insights: Option<String>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1855,6 +1863,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 _ => None,
             };
         }
+        if a.analysis_insights.is_none() {
+            a.analysis_insights = match &plan.analysis_insights {
+                Some(crate::paint::plan::Artefact::On(true)) => Some("auto".into()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
+        }
         if a.hair_mask.is_none() {
             a.hair_mask = plan.hair_mask.as_ref().map(std::path::PathBuf::from);
         }
@@ -2689,13 +2704,33 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}", style("✓").green(), stroke_summary(result.strokes, a.budget), a.out.display(), score_path.display());
     // THE ANALYSIS artefact (RFC PAINT-3): the run's own facts as Markdown, beside the picture.
+    if a.analysis_insights.is_some() && a.analysis.is_none() {
+        a.analysis = Some(String::new());
+    }
     if let Some(dest) = &a.analysis {
         let path = if dest.is_empty() { a.out.with_extension("md") } else { std::path::PathBuf::from(dest) };
         let argv: Vec<String> = std::env::args().collect();
         let info = crate::paint::report::RunInfo { source: &a.input, output: &a.out, width: w, height: h, plan_text: plan_text.as_deref(), plan_path: plan_path.as_deref(), argv: &argv, seconds: result.seconds };
-        let md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes);
-        std::fs::write(&path, md).with_context(|| format!("writing {}", path.display()))?;
+        let mut md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes);
+        std::fs::write(&path, &md).with_context(|| format!("writing {}", path.display()))?;
         println!("{}  analysis → {}", style("·").dim(), path.display());
+        // THE INSIGHTS pass (P0.5): the report's facts through the LLM; appended, with its provenance.
+        if let Some(provider) = &a.analysis_insights {
+            let label = crate::prompt::resolve_provider_label(provider);
+            if crate::paint::report::provider_is_hosted(provider) {
+                println!("{}  insights: sending the report text to {label} (a hosted provider — it leaves this machine)", style("·").yellow());
+            } else {
+                println!("{}  insights: {label} (local — nothing leaves this machine)", style("·").dim());
+            }
+            match crate::paint::report::insights(provider, &md, &params.medium).await {
+                Ok(extra) => {
+                    md.push_str(&extra);
+                    std::fs::write(&path, &md).with_context(|| format!("writing {}", path.display()))?;
+                    println!("{}  insights → appended to {}", style("·").dim(), path.display());
+                }
+                Err(e) => println!("{}  insights: {e:#} — the analysis stands without them", style("·").yellow()),
+            }
+        }
     }
     if a.report {
         let tr = painter::traceability(&out, &img);

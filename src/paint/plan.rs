@@ -150,6 +150,10 @@ pub struct PaintPlan {
     /// (`<out>.md`); a string is the path to write it to.
     #[serde(default)]
     pub analysis: Option<Artefact>,
+    /// INSIGHTS (RFC PAINT-3 P0.5): `true` runs the analysis through the configured LLM (`auto`); a
+    /// string names the provider (`ollama`, `ollama:<model>`, `deepseek`, `gemini`, `local`).
+    #[serde(default)]
+    pub analysis_insights: Option<Artefact>,
     /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
     /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
     #[serde(default)]
@@ -235,6 +239,7 @@ impl Default for PaintPlan {
             weave: None,
             sheen: None,
             analysis: None,
+            analysis_insights: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
@@ -325,6 +330,11 @@ impl PaintPlan {
         match &self.analysis {
             Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
             Some(Artefact::Path(p)) => o.push_str(&format!("analysis: {p:?}\n")),
+            _ => {}
+        }
+        match &self.analysis_insights {
+            Some(Artefact::On(true)) => o.push_str("analysis_insights: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("analysis_insights: {p:?}\n")),
             _ => {}
         }
         for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
@@ -610,6 +620,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             weave: None,
             sheen: None,
             analysis: None,
+            analysis_insights: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,

@@ -205,7 +205,7 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
             let (k, v) = l.split_once(':').unwrap();
             let k = k.trim();
             let v = v.split('#').next().unwrap_or("").trim().trim_matches('"');
-            if k.is_empty() || k.contains(' ') || rows.iter().any(|(rk, _)| *rk == k) || k == "analysis" {
+            if k.is_empty() || k.contains(' ') || rows.iter().any(|(rk, _)| *rk == k) || k == "analysis" || k == "analysis_insights" {
                 continue;
             }
             o.push_str(&format!("| `{k}` | {v} | plan | {} |\n", control_row(k).unwrap_or_default()));
@@ -363,6 +363,36 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
     o
 }
 
+/// The system prompt for the INSIGHTS pass (RFC PAINT-3 §2b), versioned with the binary.
+pub const INSIGHTS_SYSTEM: &str = include_str!("../../assets/prompts/paint_insights.md");
+
+/// Whether a provider name sends the text off the machine (a hosted API) — said in the terminal and in
+/// the report, never hidden.
+pub fn provider_is_hosted(provider: &str) -> bool {
+    let p = provider.to_lowercase();
+    p == "deepseek" || p == "gemini" || (p == "auto" && {
+        let cfg = crate::config::Config::load().ok();
+        cfg.as_ref().is_some_and(|c| c.deepseek_api_key.is_some() || c.gemini_api_key.is_some())
+    })
+}
+
+/// The INSIGHTS pass: the analysis report (facts) through the configured LLM with [`INSIGHTS_SYSTEM`],
+/// returning the two sections to append (`## Insights`, `## Recommendations`) plus a provenance line.
+/// The model gets the report and the medium's dial glossary — never the picture (P0.5).
+pub async fn insights(provider: &str, analysis_md: &str, medium: &str) -> anyhow::Result<String> {
+    let glossary = CONTROLS.lines().filter(|l| l.starts_with("| `")).collect::<Vec<_>>().join("\n");
+    let user = format!(
+        "Medium: {medium}\n\n# RUN REPORT (facts)\n\n{analysis_md}\n\n# DIAL GLOSSARY (the only dials you may recommend)\n\n{glossary}\n"
+    );
+    let label = crate::prompt::resolve_provider_label(provider);
+    let out = crate::prompt::complete(provider, INSIGHTS_SYSTEM, &user, &crate::prompt::EnhanceArgs::default()).await?;
+    let out = out.trim();
+    // Keep only from the first section heading: a chatty model's preamble is not a finding.
+    let body = out.find("## Insights").map(|i| &out[i..]).unwrap_or(out);
+    let where_ = if provider_is_hosted(provider) { "a hosted provider — the report text left this machine" } else { "run locally — nothing left this machine" };
+    Ok(format!("\n{body}\n\n*Insights by `{label}` ({where_}). They reason only from the report above; they have not seen the picture.*\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +405,15 @@ mod tests {
         assert_eq!(source_of("impasto_map", Some(plan), &argv), "cli");
         assert_eq!(source_of("sheen", Some(plan), &argv), "cli");
         assert_eq!(source_of("weave", Some(plan), &argv), "default");
+    }
+
+    #[test]
+    fn the_insights_prompt_pins_its_rules() {
+        for must in ["ONLY from the report", "faces must stay recognizable", "## Insights", "## Recommendations", "key: value"] {
+            assert!(INSIGHTS_SYSTEM.contains(must), "system prompt lost: {must}");
+        }
+        assert!(provider_is_hosted("deepseek") && provider_is_hosted("gemini"));
+        assert!(!provider_is_hosted("ollama") && !provider_is_hosted("local") && !provider_is_hosted("ollama:qwen2.5"));
     }
 
     #[test]
