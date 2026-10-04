@@ -1957,6 +1957,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let wcb_src_floor = env_f("PLAKAT_WCB_SRCFLOOR", if wc_wash { (w.min(h) as f32 / 300.0).max(2.0) } else { 0.0 });
     let wcb_faceonly = env_f("PLAKAT_WCB_FACEONLY", if wc_wash { 0.0 } else { 4.5 });
     let wcb_restate = env_f("PLAKAT_WCB_RESTATE", if wc_wash { 1.0 } else { 2.0 });
+    // The structure a fine brush needs to find before it restates off the subject (a local value range at
+    // the brush's scale; 0 = restate tone too, the old behaviour).
+    let wcb_struct = env_f("PLAKAT_WCB_STRUCT", if wc_wash { 0.10 } else { 0.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
     let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
@@ -2274,6 +2277,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 imageops::blur(input, (radius * if wc_brush { wcb_blur } else { 0.32 }).max(0.6))
             }
         };
+        // ECONOMY OF STRUCTURE (the wash recipe): off the subject a fine brush restates only where the picture
+        // HAS something at that brush's scale — an edge, a texture (the local value range of the pass's own
+        // reference) — never a wash that merely differs in tone. A thousand small tone corrections over the
+        // washes were the stipple that covered the whole sheet and painted the tide lines and the mottle
+        // back out; cut them wholesale and the walls went to blotches with the window frames lost.
+        // (The FINE brushes only: the mid and broad brushes keep glazing tone, pass over pass — that is how a
+        // nocturne's darks are built, each pass being one dose; gating them too left the walls bare paper.)
+        let structure: Option<Vec<f32>> = if wc_wash && fine && wcb_struct > 0.0 {
+            let lm = luma_map(&reference);
+            Some(local_range(&lm, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize))
+        } else {
+            None
+        };
         lap("pass:reference", &mut prof_acc, &mut prof_t);
         let luma = luma_map(&reference);
         // Coherent flow (structure tensor). Fidelity + detail keep it TIGHT (small sigma) so strokes hug local
@@ -2444,6 +2460,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let on_face = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35;
                 let on_subject = p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.5;
                 let restate_floor = if wc_brush && !block_in && !on_face && !on_subject { restate_floor * wcb_restate } else { restate_floor };
+                if let Some(st) = &structure {
+                    if !on_face && !on_subject && st[region_i] < wcb_struct {
+                        return None;
+                    }
+                }
                 if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
