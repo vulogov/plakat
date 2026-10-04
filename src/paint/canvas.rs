@@ -999,8 +999,8 @@ impl Canvas {
                 }
             }
         }
-        // IMPASTO + SHEEN relight from the paint HEIGHT.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 {
+        // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 {
             // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
             // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
             let peak = if f.relief_robust {
@@ -1012,6 +1012,22 @@ impl Canvas {
             let (lx, ly) = (0.55_f32, 0.83_f32);
             let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
             let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
+            // The weave: a plain linen — warp and weft threads at a period of ~1/400 of the short side (a
+            // medium canvas), each thread wandering a little (no two threads are the same), seen where the
+            // paint is THIN: the cover falls off with the paint's HEIGHT, so a built-up passage hides it
+            // entirely and a scumble or the bare ground shows it. Analytic, so its slope is exact.
+            let weave = f.weave.clamp(0.0, 1.0);
+            let period = (w.min(h) as f32 / 400.0).max(3.0);
+            let kw = std::f32::consts::TAU / period;
+            // "Thick" is judged against the sheet's MEDIAN painted height, not its peak (a few heavy
+            // crossings set the peak, and against it nothing counted as built-up — the threads showed
+            // through every passage, the faces too).
+            let h50 = if weave > 0.0 {
+                let mut v: Vec<f32> = self.height.iter().copied().filter(|h| *h > 0.0).collect();
+                if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[v.len() / 2].max(1e-4) }
+            } else {
+                1.0
+            };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -1030,6 +1046,20 @@ impl Canvas {
                     let mut shade = gain * facing * amt;
                     if spec > 0.0 && facing > 0.0 {
                         shade += spec * facing * facing * amt;
+                    }
+                    if weave > 0.0 {
+                        // The threads wander (a slow drift of the warp and the weft, ± half a period) and vary
+                        // in thickness, so the weave reads as linen, not a printed grid.
+                        let wx = paper_grain(x / 9, y / 9, f.seed ^ 0x11EA) - 0.5;
+                        let wy = paper_grain(x / 9, y / 9, f.seed ^ 0x2BEE) - 0.5;
+                        let thick_t = 0.7 + 0.6 * paper_grain(x / 3, y / 3, f.seed ^ 0x3C0D);
+                        let dwx = (kw * (x as f32 + wx * period)).cos();
+                        let dwy = (kw * (y as f32 + wy * period)).cos();
+                        let facing_w = 0.5 * (dwx * lx + dwy * ly) * thick_t;
+                        // Covered by THICKNESS: a passage built to the sheet's median height or more hides the
+                        // threads; a glaze or the bare ground shows them.
+                        let cover = (-2.5 * self.height[y * w + x] / h50).exp();
+                        shade += 0.9 * weave * facing_w * cover;
                     }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {
@@ -1134,6 +1164,9 @@ pub struct Finish {
     /// Paper edge (0..1): fade the painting to bare paper at the borders with an irregular DECKLED edge — the
     /// torn-paper vignette a watercolour sits in. 0 = full-bleed rectangle.
     pub paper_edge: f32,
+    /// CANVAS WEAVE (0 = none): the linen's threads under the paint, seen in the relight where the paint is
+    /// thin or bare — a built-up passage covers them entirely.
+    pub weave: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -1147,7 +1180,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 
@@ -1477,6 +1510,27 @@ mod flow_tests {
         assert!(at(&sel, 30) < at(&flood, 30) * 0.5, "the water holds back at the hard edge: {} vs {}", at(&sel, 30), at(&flood, 30));
         // Far from it the lane gap is filled either way.
         assert!(at(&sel, 70) > 0.0 && at(&flood, 70) > 0.0, "the soft mass still floods");
+    }
+
+    #[test]
+    fn the_weave_shows_under_thin_paint_and_is_covered_by_thick() {
+        // One canvas, a thin glaze on the left and a built-up passage on the right, relit with the weave:
+        // the left half's pixels vary with the threads, the right half's hardly at all.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let (mut thin, mut thick) = (vec![0f32; n], vec![0f32; n]);
+        thin[1] = 0.15;
+        thick[1] = 3.0;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &thin, 0.1); c.deposit(x + 32, y, &thick, 2.0); } }
+        let img = c.to_image_finished(&Finish { weave: 1.0, impasto: 0.0, ..Default::default() });
+        let spread = |x0: u32| -> f32 {
+            let v: Vec<f32> = (8..24).flat_map(|y| (x0..x0 + 24).map(move |x| (x, y))).map(|(x, y)| img.get_pixel(x, y).0[1] as f32).collect();
+            let m = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|a| (a - m).powi(2)).sum::<f32>() / v.len() as f32).sqrt()
+        };
+        assert!(spread(4) > 2.0, "the thin glaze shows the threads: {}", spread(4));
+        assert!(spread(36) < spread(4) * 0.25, "the built-up paint covers them: {} vs {}", spread(36), spread(4));
     }
 
     #[test]

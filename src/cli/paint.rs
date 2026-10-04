@@ -623,6 +623,15 @@ pub struct FromArgs {
     /// `fine_lines`.
     #[arg(long)]
     pub fine_lines: Option<f32>,
+    /// IMPASTO MAPPED TO THE PICTURE (0..1, default 0): the paint's thickness follows the picture — lights
+    /// thick, shadows thin; subject thick, background thin; nearer thicker with a depth map — instead of one
+    /// thickness over the sheet. Pair with `--impasto`/`--ridges` on an oil. Plan: `impasto_map`.
+    #[arg(long)]
+    pub impasto_map: Option<f32>,
+    /// CANVAS WEAVE (0..1, default 0): the linen's threads under the paint, seen in the relight where the
+    /// paint is thin or bare — a built-up passage covers them entirely. Plan: `weave`.
+    #[arg(long)]
+    pub weave: Option<f32>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1849,6 +1858,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.fine_lines.is_none() {
             a.fine_lines = plan.fine_lines;
         }
+        if a.impasto_map.is_none() {
+            a.impasto_map = plan.impasto_map;
+        }
+        if a.weave.is_none() {
+            a.weave = plan.weave;
+        }
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }
@@ -2181,6 +2196,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(fl) = a.fine_lines {
         params.fine_lines = fl.clamp(0.0, 1.0);
+    }
+    if let Some(im) = a.impasto_map {
+        params.impasto_map = im.clamp(0.0, 1.0);
+    }
+    if let Some(wv) = a.weave {
+        params.weave = wv.clamp(0.0, 1.0);
     }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);

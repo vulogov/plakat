@@ -129,6 +129,12 @@ pub struct PaintPlan {
     /// rigger's line, 0 = short marks only (no drawn lines).
     #[serde(default)]
     pub fine_lines: Option<f32>,
+    /// IMPASTO MAPPED TO THE PICTURE (0..1): lights thick / shadows thin, subject thick / background thin.
+    #[serde(default)]
+    pub impasto_map: Option<f32>,
+    /// CANVAS WEAVE (0..1): the linen's threads under thin paint and bare ground, in the relight.
+    #[serde(default)]
+    pub weave: Option<f32>,
     /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
     /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
     #[serde(default)]
@@ -210,6 +216,8 @@ impl Default for PaintPlan {
             ridges: None,
             skip: None,
             fine_lines: None,
+            impasto_map: None,
+            weave: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
@@ -287,6 +295,12 @@ impl PaintPlan {
         }
         if let Some(v) = self.fine_lines {
             o.push_str(&format!("fine_lines: {v:.2}\n"));
+        }
+        if let Some(v) = self.impasto_map {
+            o.push_str(&format!("impasto_map: {v:.2}\n"));
+        }
+        if let Some(v) = self.weave {
+            o.push_str(&format!("weave: {v:.2}\n"));
         }
         for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
             if let Some(v) = v {
@@ -567,6 +581,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             ridges: None,
             skip: None,
             fine_lines: None,
+            impasto_map: None,
+            weave: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
