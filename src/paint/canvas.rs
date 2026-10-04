@@ -436,9 +436,12 @@ impl Canvas {
     /// cauliflower against the dry paper. And the pigment GRANULATES in the water by `grain` (0..1): a
     /// granulating pigment (an earth; read from the masstone's chroma, a staining dye does not) settles
     /// into the paper's tooth where the wash POOLED — the heavier the water, the heavier the mottle — so the
-    /// grain is a fact of the wash, not a uniform screen over the sheet. Deterministic; a no-op at strength
-    /// 0 or on a non-transmittance canvas.
-    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32, grain: f32) {
+    /// grain is a fact of the wash, not a uniform screen over the sheet. And the water is SELECTIVE by
+    /// `selective` (0..1): a painter floods the soft masses wet-in-wet and keeps the architecture wet-on-dry,
+    /// so the diffusion holds back near the picture's HARD EDGES — read from the canvas itself (the colour
+    /// the sheet shows at this moment, so a replay sees the same edges), not from the source. Deterministic;
+    /// a no-op at strength 0 or on a non-transmittance canvas.
+    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32, grain: f32, selective: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 || radius < 0.5 || !self.transmittance {
             return;
@@ -528,6 +531,38 @@ impl Canvas {
         } else {
             Vec::new()
         };
+        // Where the sheet has a HARD EDGE: the luma of what it shows now, smoothed at r/2 (a one-pixel lane
+        // gap is diluted away by that — it is what the water must fill — while a boundary between two
+        // masses keeps its full step), then the value RANGE over r/2: a crisp boundary spans ≥ 0.2, a wash's
+        // fade far less. The band reaches r/2 either side, so the water stops short of the edge.
+        let sel = selective.clamp(0.0, 1.0);
+        let hold: Vec<f32> = if sel > 0.0 {
+            let mut lum = vec![0f32; px];
+            for p in 0..px {
+                let mut out = self.ground_lin;
+                for (i, rr) in self.ln_r.iter().enumerate() {
+                    let d = self.conc[p * n + i].max(0.0);
+                    if d > 0.0 { for c in 0..3 { out[c] *= (d * rr[c]).exp(); } }
+                }
+                lum[p] = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+            }
+            let rd = (r / 2).max(1);
+            let lb = Self::box_blur_f(&lum, w, h, rd);
+            let (mut mx, mut mn) = (lb.clone(), lb.clone());
+            let mut t = lb.clone();
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.max(lb[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = f32::MAX; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.min(lb[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = f32::MAX; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.min(t[d * w + x]); } mn[y * w + x] = m; } }
+            let e: Vec<f32> = (0..px).map(|p| ((mx[p] - mn[p] - 0.06) / 0.14).clamp(0.0, 1.0)).collect();
+            // Widened by r/2 more: the water stops a brush-radius short of the edge.
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.max(e[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+            Self::box_blur_f(&mx, w, h, rd).into_iter().map(|v| sel * v).collect()
+        } else {
+            Vec::new()
+        };
+        let held = |p: usize| -> f32 { if hold.is_empty() { 1.0 } else { 1.0 - hold[p] } };
         let mut mask = vec![0f32; px];
         let mut masked = vec![0f32; px];
         let mut out_film = fresh_film.clone();
@@ -542,7 +577,7 @@ impl Canvas {
             let num = Self::box_blur_f(&masked, w, h, r);
             for p in 0..px {
                 if mask[p] <= 0.0 { continue; }
-                let a = s * cov[p].min(1.0);
+                let a = s * cov[p].min(1.0) * held(p);
                 let d = num[p] / cov[p].max(1e-6);
                 out_film[p] = fresh_film[p] * (1.0 - a) + d * a * (1.0 + edge[p]);
             }
@@ -557,7 +592,7 @@ impl Canvas {
                 let settle = gq * ((1.3 - mob) / 0.6).clamp(0.0, 1.0);
                 for p in 0..px {
                     if mask[p] <= 0.0 { continue; }
-                    let a = (s * cov[p].min(1.0) * mob).min(1.0);
+                    let a = (s * cov[p].min(1.0) * mob * held(p)).min(1.0);
                     let d = num[p] / cov[p].max(1e-6);
                     let i = p * n + cc;
                     let mut v = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
@@ -1347,7 +1382,7 @@ mod flow_tests {
         load[3] = 1.5;
         for &x in &[20u32, 26] { c.deposit(x, 24, &load, 0.0); }
         let gap_before = c.saturation_at(23, 24);
-        c.flow(1.0, 4.0, 1.0, 0.0);
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
         let gap_after = c.saturation_at(23, 24);
         assert!(gap_before == 0.0 && gap_after > 0.0, "the gap is painted by the film: {gap_before} → {gap_after}");
         assert!(c.saturation_at(23, 24) > c.saturation_at(23, 40), "and the paper beyond the film stays bare");
@@ -1367,7 +1402,7 @@ mod flow_tests {
         a[1] = 1.0;
         b[3] = 0.3;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
-        c.flow(1.0, 4.0, 1.0, 0.0);
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
         // (The heavy wash pushes a little way into the light one; the line sits at the push's edge.)
@@ -1386,7 +1421,7 @@ mod flow_tests {
         a[1] = 1.0;
         b[3] = 1.0;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
-        c.flow(1.0, 4.0, 1.0, 0.0);
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
         assert!(line < at(8, 16, 1) * 1.05, "no line between equal washes: {line} vs {}", at(8, 16, 1));
@@ -1405,8 +1440,8 @@ mod flow_tests {
         b[earth] = 0.2;
         for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
         let mut plain = c.clone();
-        plain.flow(1.0, 3.0, 0.0, 0.0);
-        c.flow(1.0, 3.0, 0.0, 1.0);
+        plain.flow(1.0, 3.0, 0.0, 0.0, 0.0);
+        c.flow(1.0, 3.0, 0.0, 1.0, 0.0);
         let spread = |cv: &Canvas, x0: usize| -> f32 {
             let vals: Vec<f32> = (8..24).flat_map(|y| (x0..x0 + 16).map(move |x| (x, y))).map(|(x, y)| cv.conc[(y * 64 + x) * n + earth]).collect();
             let mean = vals.iter().sum::<f32>() / vals.len() as f32;
@@ -1415,6 +1450,33 @@ mod flow_tests {
         assert!(spread(&plain, 8) < 0.01, "without grain the heavy wash is even: {}", spread(&plain, 8));
         assert!(spread(&c, 8) > 0.1, "with grain it mottles: {}", spread(&c, 8));
         assert!(spread(&c, 8) > spread(&c, 40) * 3.0, "and the thin wash far less: {} vs {}", spread(&c, 8), spread(&c, 40));
+    }
+
+    #[test]
+    fn the_selective_flow_holds_back_at_a_hard_edge_and_floods_the_soft_mass() {
+        // One wash of one pigment with a sharp heavy stripe through it: flooded (selective 0) the stripe's
+        // edge softens; selective, the water holds back at that hard edge and the stripe keeps its edge,
+        // while far from it the wash still diffuses (a gap in the lanes is still filled).
+        let pal = palette::EARTH;
+        let mk = || {
+            let mut c = Canvas::white(96, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+            let n = c.n;
+            let (mut thin, mut heavy) = (vec![0f32; n], vec![0f32; n]);
+            thin[1] = 0.3;
+            heavy[1] = 3.0;
+            for y in 0..32u32 { for x in 0..96u32 { if x != 70 { c.deposit(x, y, &thin, 0.0); } } }
+            for y in 0..32u32 { for x in 20..28u32 { c.deposit(x, y, &heavy, 0.0); } }
+            c
+        };
+        let (mut flood, mut sel) = (mk(), mk());
+        flood.flow(1.0, 4.0, 0.0, 0.0, 0.0);
+        sel.flow(1.0, 4.0, 0.0, 0.0, 1.0);
+        let n = flood.n;
+        let at = |c: &Canvas, x: usize| c.conc[(16 * 96 + x) * n + 1];
+        // Just outside the stripe: the flooded wash received the stripe's pigment, the selective one far less.
+        assert!(at(&sel, 30) < at(&flood, 30) * 0.5, "the water holds back at the hard edge: {} vs {}", at(&sel, 30), at(&flood, 30));
+        // Far from it the lane gap is filled either way.
+        assert!(at(&sel, 70) > 0.0 && at(&flood, 70) > 0.0, "the soft mass still floods");
     }
 
     #[test]
@@ -1433,7 +1495,7 @@ mod flow_tests {
         let mut wash = vec![0f32; pal.pigments.len()];
         wash[3] = 1.0;
         for x in 30..40u32 { for y in 30..34u32 { c.deposit(x, y, &wash, 0.0); } }
-        c.flow(1.0, 3.0, 0.5, 0.0);
+        c.flow(1.0, 3.0, 0.5, 0.0, 0.0);
         let dot_after: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
         assert_eq!(dot_before, dot_after, "the dried dot does not move");
         assert_eq!(beside_before, c.saturation_at(11, 10), "nor does its edge soften");

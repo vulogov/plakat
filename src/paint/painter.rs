@@ -294,6 +294,9 @@ pub struct PaintParams {
     /// only OUTSIDE the matted subject (texture is for the background masses; on a face it is scrawl).
     /// 0 = fine layers read the plain armature.
     pub detail_texture: f32,
+    /// FINE LINES (the watercolour wash recipe; 0..1): how far the finest brushes' marks may run along an edge
+    /// beyond the ladder's cap — 1 = a rigger's line (3× the cap), 0 = the short marks only (the old beads).
+    pub fine_lines: f32,
     /// GRADATION (0..1, default 0): keep slow RAMPS continuous in the armature. The value masses turn a cloud,
     /// a soft-lit wall or still water into a few flat tones with contour edges; where the picture is a ramp,
     /// not an edge (the flow rule's scale-free test), this brings the bilateral back toward a plain smooth of
@@ -376,7 +379,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0 }
     }
 }
 
@@ -1961,7 +1964,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // the brush's scale; 0 = restate tone too, the old behaviour).
     let wcb_struct = env_f("PLAKAT_WCB_STRUCT", if wc_wash { 0.10 } else { 0.0 });
     // How much longer the fine brushes' marks may run than the ladder's default cap (lines, not beads).
-    let wcb_finelen = env_f("PLAKAT_WCB_FINELEN", if wc_wash { 3.0 } else { 1.0 });
+    let wcb_finelen = env_f("PLAKAT_WCB_FINELEN", if wc_wash { 1.0 + 2.0 * p.fine_lines.clamp(0.0, 1.0) } else { 1.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
     let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
@@ -2007,7 +2010,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // Granulation happens in the WATER: the granulating pigments settle into the tooth where the wash
         // pooled (see `Canvas::flow`), so the finish's uniform grain is turned down to a trace of paper.
         let grain = env_f("PLAKAT_WCB_FLOWGRAIN", p.granulate);
-        score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m), grain));
+        // SELECTIVE wet-in-wet (see `Canvas::flow`): the water floods the soft masses and holds back at the
+        // picture's hard edges — the painter's choice of where to work wet-in-wet and where wet-on-dry.
+        let selective = env_f("PLAKAT_WCB_FLOWSEL", 1.0);
+        score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m), grain, selective));
         if grain > 0.0 {
             score.header.granulate = p.granulate * 0.25;
         }
@@ -2911,9 +2917,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // THE FLUID STAGE (see `Canvas::flow`): the water film the pass left, the pigment diffusing in it, the
         // rim where it dries — after every pass, tapering with the passes as the bleed does, and in the score
         // so the replay crosses the same water.
-        if let Some((fs, fr, fm, fg)) = score.header.flow {
+        if let Some((fs, fr, fm, fg, fe)) = score.header.flow {
             if let Some(t) = flow_taper(b_idx, b_n) {
-                canvas.flow(fs * t, fr, fm, fg);
+                canvas.flow(fs * t, fr, fm, fg, fe);
             }
         }
         if b_idx + 1 < b_n {

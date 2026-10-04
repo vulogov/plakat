@@ -618,6 +618,11 @@ pub struct FromArgs {
     /// `skip`. (The watercolour wash recipe turns it on by itself.)
     #[arg(long)]
     pub skip: Option<f32>,
+    /// FINE LINES (watercolour, 0..1, default 1): how far the finest brushes' marks may run along an edge —
+    /// 1 = a rigger's line (a mullion, a rail drawn as one mark), 0 = short marks only, no drawn lines. Plan:
+    /// `fine_lines`.
+    #[arg(long)]
+    pub fine_lines: Option<f32>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1841,6 +1846,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.skip.is_none() {
             a.skip = plan.skip;
         }
+        if a.fine_lines.is_none() {
+            a.fine_lines = plan.fine_lines;
+        }
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }
@@ -2170,6 +2178,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(sk) = a.skip {
         params.brush.skip = sk.clamp(0.0, 1.0);
+    }
+    if let Some(fl) = a.fine_lines {
+        params.fine_lines = fl.clamp(0.0, 1.0);
     }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);
