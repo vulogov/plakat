@@ -2764,9 +2764,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // The SURFACE: a smooth form (skin, a sky, glass) is laid smooth and blended, a broken one
                     // (a beard, bark, cobbles) stands up — read from the picture's own texture at the mark's
                     // scale, not from a global switch.
+                    // A FACE is a smooth form whatever its wrinkles say at the mark's scale (sfumato, not
+                    // relief — the lit cheek came out the thickest paint on the sheet); its hair and beard
+                    // are not. Smooth wins over light: a lit smooth form is laid thin and blended.
                     let busy = busy_field.as_deref().and_then(|b| b.get(region_i)).copied().unwrap_or(0.5);
-                    let surface = 0.45 + 0.9 * busy;
-                    let f = (light * plane * near * surface).clamp(0.15, 2.5);
+                    let face_here = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35 && hair < 0.3;
+                    let surface = if face_here { 0.25 } else { 0.3 + 1.1 * busy };
+                    let f = (light * plane * near * surface).clamp(0.12, 2.5);
                     stroke_brush.viscosity = p.brush.viscosity * (1.0 + p.impasto_map.clamp(0.0, 1.0) * (f - 1.0));
                 }
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
@@ -2956,6 +2960,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         stats.push(PassStat { stage: pass.stage.clone(), radius, strokes: in_pass, seconds: pass_t0.elapsed().as_secs_f64() });
         if let Some(dir) = std::env::var_os("PLAKAT_WCB_DUMP") {
             let _ = canvas.to_image().save(std::path::Path::new(&dir).join(format!("pass_{layer}.png")));
+        }
+        if let Some(path) = std::env::var_os("PLAKAT_PAINT_HEIGHT_DUMP") {
+            // Diagnostic: the paint HEIGHT after this pass as a 16-bit grey (scaled to its peak).
+            let peak = canvas.height.iter().copied().fold(0.0f32, f32::max).max(1e-6);
+            let img = image::ImageBuffer::<image::Luma<u16>, Vec<u16>>::from_fn(w, h, |x, y| image::Luma([(canvas.height[(y * w + x) as usize] / peak * 65535.0) as u16]));
+            let _ = img.save(&path);
         }
         if prof_on { eprintln!("PROFILE pass {layer} r={radius:.1} strokes={in_pass} {:.2}s", pass_t0.elapsed().as_secs_f64()); }
     }

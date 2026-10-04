@@ -2263,7 +2263,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // leave paper, and the fine brushes it keeps are for the face alone. (The focal PLANE still only runs when
     // `armature_face` asks for it — a beard is not cut by this.)
     let luminous_new = a.new_painting && a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
-    if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new {
+    // (The impasto map too: a face is laid smooth and thin whatever the light says, so it must know where
+    // the faces are.)
+    let mapped_impasto = a.impasto_map.map_or(false, |v| v > 0.0);
+    if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new || mapped_impasto {
         if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
             params.face_mask = Some(m);
             face_extent = Some(e);
