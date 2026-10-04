@@ -645,6 +645,14 @@ pub struct FromArgs {
     /// Plan: `analysis_insights: true | "provider"`.
     #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
     pub analysis_insights: Option<String>,
+    /// OUTCOME sheet (RFC PAINT-3 P1): a one-page sheet beside the picture — the master composition, four
+    /// micro-analysis lens crops chosen by rule (the faces, the thickest paint, the textured ground, the
+    /// lights) each captioned with its measurements, the layer hierarchy (the canvas after every pass),
+    /// the palette ranked by use with classic pigment names, and the brushwork facts. Typeset with Typst
+    /// (`brew install typst`). No value = `<out>_sheet.png`; a value is the path (`.png` or `.pdf`).
+    /// Plan: `outcome: true` / `outcome: "path"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub outcome: Option<String>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -1863,6 +1871,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 _ => None,
             };
         }
+        if a.outcome.is_none() {
+            a.outcome = match &plan.outcome {
+                Some(crate::paint::plan::Artefact::On(true)) => Some(String::new()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
+        }
         if a.analysis_insights.is_none() {
             a.analysis_insights = match &plan.analysis_insights {
                 Some(crate::paint::plan::Artefact::On(true)) => Some("auto".into()),
@@ -2687,6 +2702,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         brush_sizes.iter().map(|r| format!("{r:.0}")).collect::<Vec<_>>().join("→"),
     );
 
+    // The outcome sheet needs the canvas after every pass: dump them into the sheet's work directory.
+    let outcome_path: Option<std::path::PathBuf> = a.outcome.as_ref().map(|d| if d.is_empty() { a.out.with_file_name(format!("{}_sheet.png", a.out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "paint".into()))) } else { std::path::PathBuf::from(d) });
+    if let Some(op) = &outcome_path {
+        let stem = op.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "sheet".into());
+        let dir = op.with_file_name(format!("{stem}_sheet"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        params.dump_passes = Some(dir);
+    }
     let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
     let result = painter::paint_from_image_progress(&img, &params, &|ev| paint_progress(&pb, ev));
     pb.set_position(result.strokes as u64);
@@ -2730,6 +2753,36 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 }
                 Err(e) => println!("{}  insights: {e:#} — the analysis stands without them", style("·").yellow()),
             }
+        }
+    }
+    // THE OUTCOME sheet (RFC PAINT-3 P1).
+    if let Some(op) = &outcome_path {
+        let is_oil = params.impasto > 0.0 || params.medium.starts_with("oil") || params.medium == "acrylic";
+        let luma = crate::paint::painter::luma_map(&img);
+        let fine = crate::paint::painter::local_range(&luma, w as usize, h as usize, (params.min_brush * 0.75).round().max(2.0) as usize);
+        let busy: Vec<f32> = fine.iter().map(|f| ((f - 0.08) / 0.12).clamp(0.0, 1.0)).collect();
+        let insets = crate::paint::sheet::choose_insets(&params, &result.canvas, &luma, &busy, w, h, is_oil);
+        let swatches = crate::paint::sheet::palette_by_use(&result.score, 9);
+        let mut passes: Vec<(std::path::PathBuf, String, f32, usize)> = Vec::new();
+        if let Some(dir) = &params.dump_passes {
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("pass_"))).collect()).unwrap_or_default();
+            files.sort();
+            for (i, f) in files.iter().enumerate() {
+                let st = result.stats.get(i);
+                passes.push((f.clone(), st.map(|s| s.stage.clone()).unwrap_or_default(), st.map(|s| s.radius).unwrap_or(0.0), st.map(|s| s.strokes).unwrap_or(0)));
+            }
+        }
+        let title = a.input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "painting".into());
+        let facts = vec![
+            ("strokes".to_string(), format!("{} laid of {} budgeted · {:.0} s", result.strokes, params.budget, result.seconds)),
+            ("marks".to_string(), format!("width ×{} · length ×{} · detail length {}", params.stroke_width, params.stroke_len, params.detail_len)),
+            ("relief".to_string(), if is_oil { format!("impasto {} · map {} · ridges {} · weave {} · sheen {}", params.impasto, params.impasto_map, params.brush.ridges, params.weave, params.sheen) } else { format!("opacity {} · bleed {} · granulate {} · skip {}", params.opacity, params.bleed, params.granulate, params.brush.skip) }),
+            ("planes".to_string(), format!("faces {} · subject {} · hair {}", if params.face_mask.is_some() { "found" } else { "none" }, if params.subject_mask.is_some() { "matte" } else { "none" }, if params.hair_mask.is_some() { "found" } else { "none" })),
+        ];
+        let inputs = crate::paint::sheet::SheetInputs { title: &title, medium: &params.medium, master: &out, insets: &insets, passes, palette: &swatches, stats: &result.stats, score: &result.score, facts };
+        match crate::paint::sheet::build(&inputs, op) {
+            Ok(p) => println!("{}  outcome sheet → {}", style("·").dim(), p.display()),
+            Err(e) => println!("{}  outcome sheet: {e:#}", style("·").yellow()),
         }
     }
     if a.report {

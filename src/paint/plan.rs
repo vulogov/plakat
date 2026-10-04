@@ -154,6 +154,10 @@ pub struct PaintPlan {
     /// string names the provider (`ollama`, `ollama:<model>`, `deepseek`, `gemini`, `local`).
     #[serde(default)]
     pub analysis_insights: Option<Artefact>,
+    /// OUTCOME sheet (RFC PAINT-3): `true` writes the one-page sheet beside the output (`<out>_sheet.png`);
+    /// a string is the path (`.png` or `.pdf`).
+    #[serde(default)]
+    pub outcome: Option<Artefact>,
     /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
     /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
     #[serde(default)]
@@ -240,6 +244,7 @@ impl Default for PaintPlan {
             sheen: None,
             analysis: None,
             analysis_insights: None,
+            outcome: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
@@ -335,6 +340,11 @@ impl PaintPlan {
         match &self.analysis_insights {
             Some(Artefact::On(true)) => o.push_str("analysis_insights: true\n"),
             Some(Artefact::Path(p)) => o.push_str(&format!("analysis_insights: {p:?}\n")),
+            _ => {}
+        }
+        match &self.outcome {
+            Some(Artefact::On(true)) => o.push_str("outcome: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("outcome: {p:?}\n")),
             _ => {}
         }
         for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
@@ -621,6 +631,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             sheen: None,
             analysis: None,
             analysis_insights: None,
+            outcome: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,

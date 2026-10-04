@@ -26,6 +26,7 @@ pub mod palette;
 pub mod plan;
 pub mod pigment;
 pub mod report;
+pub mod sheet;
 pub mod score;
 pub mod seam;
 pub mod spec;

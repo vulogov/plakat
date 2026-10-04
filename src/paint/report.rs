@@ -205,7 +205,7 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
             let (k, v) = l.split_once(':').unwrap();
             let k = k.trim();
             let v = v.split('#').next().unwrap_or("").trim().trim_matches('"');
-            if k.is_empty() || k.contains(' ') || rows.iter().any(|(rk, _)| *rk == k) || k == "analysis" || k == "analysis_insights" {
+            if k.is_empty() || k.contains(' ') || rows.iter().any(|(rk, _)| *rk == k) || k == "analysis" || k == "analysis_insights" || k == "outcome" {
                 continue;
             }
             o.push_str(&format!("| `{k}` | {v} | plan | {} |\n", control_row(k).unwrap_or_default()));
