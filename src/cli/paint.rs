@@ -1864,6 +1864,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.weave.is_none() {
             a.weave = plan.weave;
         }
+        if a.sheen.is_none() {
+            a.sheen = plan.sheen;
+        }
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }

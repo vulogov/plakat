@@ -219,9 +219,15 @@ impl Stroke {
                 // neighbours — a loaded bristle drags a ridge, a dry one a furrow — so a stroke's relief is
                 // striated across its width (the relight read a smooth hump before; every stroke was a
                 // flat tube). The ridge follows the lane's STARTING load (its streak), so it runs the whole stroke.
+                // And the PLOW: the brush pushes paint out to the stroke's lateral edges, so the section is
+                // not a rounded bump but a trough with a steep ridge thrown up along each side — the outer
+                // lanes stand higher than the middle, more so for a flat brush (a knife-like edge) than a
+                // round one. The paint's own colour is laid as before; only its height is displaced.
                 let ridge = if brush.ridges > 0.0 && brush.viscosity > 0.0 && nb > 2 {
                     let k = brush.ridges.clamp(0.0, 1.0);
-                    1.0 + k * ((lane_hash(seed, b as u64 ^ 0x5A5A) - 0.5) * 1.6 + 0.4 * ((b as f32 * 2.4).sin() * 0.5 + 0.5) - 0.4)
+                    let lateral = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
+                    let plow = 1.0 + k * (0.9 - 0.4 * brush.round.clamp(0.0, 1.0)) * (lateral.powi(3) * 1.6 - 0.35);
+                    plow * (1.0 + k * ((lane_hash(seed, b as u64 ^ 0x5A5A) - 0.5) * 1.6 + 0.4 * ((b as f32 * 2.4).sin() * 0.5 + 0.5) - 0.4))
                 } else {
                     1.0
                 };
