@@ -460,8 +460,29 @@ impl Canvas {
             fresh[i] = (self.conc[i] - self.conc_mark.get(i).copied().unwrap_or(0.0)).max(0.0);
         }
         // 1. The washes: the wet layer smoothed over the radius (the water joins the lanes), each pixel
-        //    assigned to the pigment that leads the smoothed mix there.
+        //    assigned to the pigment that leads the smoothed mix there. The water's REACH beyond the deposit
+        //    is not one radius all along the edge: it runs further where the paper's fibres carry it and
+        //    stops short where they do not (capillary action), so the wash ends in FINGERS, not in the
+        //    smooth support of a blur. The reach is a slow value noise at the radius' scale, and it gates
+        //    where the smoothed water counts as wet.
         let wet_b = Self::box_blur_f(&fresh_film, w, h, r);
+        let reach: Vec<f32> = (0..px).map(|p| {
+            let (x, y) = (p % w, p / w);
+            let fx = x as f32 / (r as f32 * 1.2);
+            let fy = y as f32 / (r as f32 * 1.2);
+            0.25 + 0.75 * value_noise(fx, fy, 0xF1BE_5EED)
+        }).collect();
+        // A deposit's smoothed water falls from its level at the deposit to ~0 one radius out; the finger gate
+        // asks for more of it where the reach is short. Judged against the local deposit level so a thin
+        // wash fingers as a heavy one does.
+        let level = {
+            let mut m: Vec<f32> = fresh_film.iter().map(|&f| if f > 1e-5 { 1.0 } else { 0.0 }).collect();
+            let mut t = m.clone();
+            for y in 0..h { for x in 0..w { let mut mx = 0f32; for d in x.saturating_sub(r)..=(x + r).min(w - 1) { mx = mx.max(m[y * w + d]); } t[y * w + x] = mx; } }
+            for y in 0..h { for x in 0..w { let mut mx = 0f32; for d in y.saturating_sub(r)..=(y + r).min(h - 1) { mx = mx.max(t[d * w + x]); } m[y * w + x] = mx; } }
+            Self::box_blur_f(&m, w, h, r)
+        };
+        let wet_here = |p: usize| -> bool { fresh_film[p] > 1e-5 || (wet_b[p] > 1e-6 && level[p] > 1.0 - reach[p]) };
         let mut ch = vec![0f32; px];
         let mut lead: Vec<i16> = vec![-1; px];
         let mut lead_v = vec![0f32; px];
@@ -472,7 +493,7 @@ impl Canvas {
             present[c] = true;
             let bl = Self::box_blur_f(&ch, w, h, r);
             for p in 0..px {
-                if wet_b[p] > 1e-6 && bl[p] > lead_v[p] {
+                if wet_here(p) && bl[p] > lead_v[p] {
                     lead_v[p] = bl[p];
                     lead[p] = c as i16;
                 }
@@ -488,6 +509,11 @@ impl Canvas {
         //    uniform stroke), and pools heavier along a wash's LOWER edge — the water runs down.
         let k = rim.clamp(0.0, 1.0);
         let load_b = Self::box_blur_f(&fresh_film, w, h, r);
+        //    The backrun is ONE-SIDED: the wetter wash pushes its pigment into the drier one, and the line
+        //    forms on the DRIER side of the boundary — where the load is below the local mean of the two
+        //    sides — sharp there, nothing on the wet side. (Symmetric, both sides deepened and the line
+        //    read as a drawn border.)
+        let load_wide = Self::box_blur_f(&load_b, w, h, r);
         let contrast: Vec<f32> = (0..px)
             .map(|p| {
                 let (x, y) = (p % w, p / w);
@@ -495,7 +521,10 @@ impl Canvas {
                 let gx = load_b[p + 1] - load_b[p - 1];
                 let gy = load_b[p + w] - load_b[p - w];
                 let g = (gx * gx + gy * gy).sqrt() * r as f32 * 0.5;
-                (g / (load_b[p] + 1e-4) * 1.5).clamp(0.0, 1.0)
+                let c = (g / (load_b[p] + 1e-4) * 1.5).clamp(0.0, 1.0);
+                // The drier side: this pixel's load sits below the boundary's mean.
+                let drier = ((load_wide[p] - load_b[p]) / (load_wide[p] + 1e-4) * 4.0).clamp(0.0, 1.0);
+                c * drier
             })
             .collect();
         // Mobility: a staining dye travels in the water, an earth settles where it was laid — the pigments
@@ -1426,8 +1455,9 @@ mod flow_tests {
 
     #[test]
     fn two_washes_meet_in_a_tide_line() {
-        // A blue wash and an ochre wash laid side by side, wet: each keeps its own colour (the diffusion is
-        // confined to the wash) and is deeper along the line where they meet than in its interior.
+        // A heavy blue wash and a thin ochre wash laid side by side, wet: each keeps its own colour (the
+        // diffusion is confined to the wash), and the BACKRUN forms on the DRIER side — the thin wash is
+        // deeper along the line where they meet than in its interior, the heavy wash is not deepened.
         let pal = palette::EARTH;
         let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
         let n = c.n;
@@ -1438,9 +1468,10 @@ mod flow_tests {
         c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
         let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
         assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
-        // (The heavy wash pushes a little way into the light one; the line sits at the push's edge.)
-        let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
-        assert!(line > at(8, 16, 1) * 1.1, "the heavy wash is deeper at the meeting line: {line} vs {}", at(8, 16, 1));
+        let line: f32 = (32..40).map(|x| at(x, 16, 3)).fold(0.0, f32::max);
+        assert!(line > at(56, 16, 3) * 1.15, "the thin wash is deeper at the meeting line: {line} vs {}", at(56, 16, 3));
+        let heavy_line: f32 = (24..32).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
+        assert!(heavy_line <= at(8, 16, 1) * 1.02, "the heavy wash is not deepened: {heavy_line} vs {}", at(8, 16, 1));
     }
 
     #[test]

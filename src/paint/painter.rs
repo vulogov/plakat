@@ -2022,7 +2022,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let selective = env_f("PLAKAT_WCB_FLOWSEL", 1.0);
         score.header.flow = Some((flow_s * wcb_flow, radius, env_f("PLAKAT_WCB_FLOWRIM", flow_m), grain, selective));
         if grain > 0.0 {
-            score.header.granulate = p.granulate * 0.25;
+            score.header.granulate = p.granulate * 0.1;
         }
     }
     // The broad passes drag a seed's dose across a whole swath: they carry it at this many hits instead.
