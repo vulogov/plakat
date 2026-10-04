@@ -1941,7 +1941,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // are the paper and a wash — so the busy field is gated out where the picture is bright. And never over a
     // FACE: the eyes and the features are busy at the mark's scale, but they are the eye's destination and
     // are laid as washes with a few crisp accents, not dragged dry (dry-brushed eyes fragmented).
-    let busy_field: Option<Vec<f32>> = if p.brush.skip > 0.0 && p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" {
+    // (The same field drives the IMPASTO MAP's texture term: thick where the form is broken, thin where it
+    // is smooth — so a cheek or a sky is laid smooth and a beard or bark stands up.)
+    let busy_field: Option<Vec<f32>> = if (p.brush.skip > 0.0 && p.luminous && !p.book && p.from_scratch && p.medium == "watercolour") || p.impasto_map > 0.0 {
         let lm = luma_map(input);
         let fine = local_range(&lm, w as usize, h as usize, (p.min_brush * 0.75).round().max(2.0) as usize);
         let face = p.face_mask.as_deref();
@@ -2759,7 +2761,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     let light = 0.35 + 1.3 * tluma.clamp(0.0, 1.0);
                     let plane = if subj > 0.5 { 1.0 } else { 0.6 };
                     let near = p.depth.as_deref().and_then(|d| d.get(region_i)).map(|&z| 0.55 + 0.9 * z.clamp(0.0, 1.0)).unwrap_or(1.0);
-                    let f = (light * plane * near).clamp(0.15, 2.5);
+                    // The SURFACE: a smooth form (skin, a sky, glass) is laid smooth and blended, a broken one
+                    // (a beard, bark, cobbles) stands up — read from the picture's own texture at the mark's
+                    // scale, not from a global switch.
+                    let busy = busy_field.as_deref().and_then(|b| b.get(region_i)).copied().unwrap_or(0.5);
+                    let surface = 0.45 + 0.9 * busy;
+                    let f = (light * plane * near * surface).clamp(0.15, 2.5);
                     stroke_brush.viscosity = p.brush.viscosity * (1.0 + p.impasto_map.clamp(0.0, 1.0) * (f - 1.0));
                 }
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.

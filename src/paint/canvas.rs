@@ -1041,21 +1041,45 @@ impl Canvas {
             let (lx, ly) = (0.55_f32, 0.83_f32);
             let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
             let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
-            // The weave: a plain linen — warp and weft threads at a period of ~1/400 of the short side (a
-            // medium canvas), each thread wandering a little (no two threads are the same), seen where the
-            // paint is THIN: the cover falls off with the paint's HEIGHT, so a built-up passage hides it
-            // entirely and a scumble or the bare ground shows it. Analytic, so its slope is exact.
+            // The weave: a plain LINEN, not a grid — the warp and weft domain-warped by a slow noise (the
+            // cloth stretched unevenly on its bars), interlocked over-and-under (a checker of bumps where
+            // one thread crosses the other), each thread's thickness wandering along its length (slubs),
+            // and a fibrous micro-roughness over all. Period ~1/400 of the short side (a medium canvas).
+            // Seen where the paint is THIN — the cover falls off with the LOCAL paint height (a ridged
+            // stroke is a comb of peaks and furrows and the furrows are paint too), so a built-up passage
+            // hides the threads entirely and a glaze or the bare ground shows them.
             let weave = f.weave.clamp(0.0, 1.0);
             let period = (w.min(h) as f32 / 400.0).max(3.0);
             let kw = std::f32::consts::TAU / period;
-            // "Thick" is judged against the sheet's MEDIAN painted height, not its peak (a few heavy
-            // crossings set the peak, and against it nothing counted as built-up — the threads showed
-            // through every passage, the faces too).
-            let h50 = if weave > 0.0 {
-                let mut v: Vec<f32> = self.height.iter().copied().filter(|h| *h > 0.0).collect();
-                if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[v.len() / 2].max(1e-4) }
+            let (h50, local_h) = if weave > 0.0 {
+                // The local height: the max over a 3-px window, lightly smoothed.
+                let r3 = 3usize;
+                let mut t = self.height.clone();
+                let mut mx = self.height.clone();
+                for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(r3)..=(x + r3).min(w - 1) { m = m.max(self.height[y * w + d]); } t[y * w + x] = m; } }
+                for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(r3)..=(y + r3).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+                let lh = Self::box_blur_f(&mx, w, h, 2);
+                let mut v: Vec<f32> = lh.iter().copied().filter(|h| *h > 0.0).collect();
+                let med = if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[v.len() / 2].max(1e-4) };
+                (med, lh)
             } else {
-                1.0
+                (1.0, Vec::new())
+            };
+            let linen = |x: f32, y: f32| -> f32 {
+                // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
+                let wx = (value_noise(x / (period * 40.0), y / (period * 40.0), f.seed ^ 0x11EA) - 0.5) * 2.0 * period;
+                let wy = (value_noise(x / (period * 40.0) + 7.3, y / (period * 40.0) + 3.1, f.seed ^ 0x2BEE) - 0.5) * 2.0 * period;
+                let (u, v) = (x + wx, y + wy);
+                let sx = (kw * u).sin();
+                let sy = (kw * v).sin();
+                // Slubs: a warp thread (running in y) varies along y, a weft thread along x.
+                let tx = 0.75 + 0.5 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), f.seed ^ 0x3C0D);
+                let ty = 0.75 + 0.5 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, f.seed ^ 0x4D1E);
+                // Interlock (the checker of crossings) + the threads' own ridges + fibrous roughness.
+                let interlock = sx * sy;
+                let ridges = 0.35 * (sx.abs() * tx + sy.abs() * ty);
+                let fibre = 0.12 * (value_noise(x / 1.7, y / 1.7, f.seed ^ 0x5F1B) - 0.5);
+                0.6 * interlock * (tx + ty) * 0.5 + ridges + fibre
             };
             for y in 0..h {
                 for x in 0..w {
@@ -1077,17 +1101,11 @@ impl Canvas {
                         shade += spec * facing * facing * amt;
                     }
                     if weave > 0.0 {
-                        // The threads wander (a slow drift of the warp and the weft, ± half a period) and vary
-                        // in thickness, so the weave reads as linen, not a printed grid.
-                        let wx = paper_grain(x / 9, y / 9, f.seed ^ 0x11EA) - 0.5;
-                        let wy = paper_grain(x / 9, y / 9, f.seed ^ 0x2BEE) - 0.5;
-                        let thick_t = 0.7 + 0.6 * paper_grain(x / 3, y / 3, f.seed ^ 0x3C0D);
-                        let dwx = (kw * (x as f32 + wx * period)).cos();
-                        let dwy = (kw * (y as f32 + wy * period)).cos();
-                        let facing_w = 0.5 * (dwx * lx + dwy * ly) * thick_t;
-                        // Covered by THICKNESS: a passage built to the sheet's median height or more hides the
-                        // threads; a glaze or the bare ground shows them.
-                        let cover = (-2.5 * self.height[y * w + x] / h50).exp();
+                        let (xf, yf) = (x as f32, y as f32);
+                        let dwx = (linen(xf + 1.0, yf) - linen(xf - 1.0, yf)) * 0.5;
+                        let dwy = (linen(xf, yf + 1.0) - linen(xf, yf - 1.0)) * 0.5;
+                        let facing_w = (dwx * lx + dwy * ly) * period / 2.2;
+                        let cover = (-4.0 * local_h[y * w + x] / h50).exp();
                         shade += 0.9 * weave * facing_w * cover;
                     }
                     let shade = shade.clamp(-0.55, 0.85);
