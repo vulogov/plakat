@@ -8,6 +8,14 @@
 
 use serde::Deserialize;
 
+/// An artefact switch in a plan: `true`/`false`, or the path to write it to.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum Artefact {
+    On(bool),
+    Path(String),
+}
+
 /// A painting plan: the structural decisions the paint stage executes. Serialisable to HJSON so it is
 /// inspectable and hand-editable — the art director's written plan.
 #[derive(Debug, Clone, Deserialize)]
@@ -138,6 +146,10 @@ pub struct PaintPlan {
     /// SHEEN (0..1): the specular gloss on the relief's light-facing slopes (wet oil; 0 = matte).
     #[serde(default)]
     pub sheen: Option<f32>,
+    /// ANALYSIS artefact (RFC PAINT-3): `true` writes a Markdown report beside the output
+    /// (`<out>.md`); a string is the path to write it to.
+    #[serde(default)]
+    pub analysis: Option<Artefact>,
     /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
     /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
     #[serde(default)]
@@ -222,6 +234,7 @@ impl Default for PaintPlan {
             impasto_map: None,
             weave: None,
             sheen: None,
+            analysis: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,
@@ -308,6 +321,11 @@ impl PaintPlan {
         }
         if let Some(v) = self.sheen {
             o.push_str(&format!("sheen: {v:.2}\n"));
+        }
+        match &self.analysis {
+            Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("analysis: {p:?}\n")),
+            _ => {}
         }
         for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
             if let Some(v) = v {
@@ -591,6 +609,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             impasto_map: None,
             weave: None,
             sheen: None,
+            analysis: None,
             impasto: None,
             stroke_width: None,
             stroke_length: None,

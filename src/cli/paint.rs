@@ -632,6 +632,11 @@ pub struct FromArgs {
     /// paint is thin or bare — a built-up passage covers them entirely. Plan: `weave`.
     #[arg(long)]
     pub weave: Option<f32>,
+    /// ANALYSIS artefact (RFC PAINT-3): write a Markdown report of the run — every parameter with the
+    /// comment that explains it, what the run found, what it measured. With no value the report goes
+    /// beside the output (`<out>.md`); a value is the path. Plan: `analysis: true` / `analysis: "path"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub analysis: Option<String>,
     /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
     #[arg(long)]
     pub hdr_amount: Option<f32>,
@@ -859,6 +864,16 @@ pub struct PaletteArgs {
     pub name: Option<String>,
 }
 
+
+/// A finding the terminal shows AND the analysis report repeats (RFC PAINT-3): the same text, the glyph
+/// dropped. `found!(glyph, "fmt", args…)`.
+macro_rules! found {
+    ($glyph:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {{
+        let __msg = format!($fmt $(, $arg)*);
+        println!("{}  {}", $glyph, __msg);
+        crate::paint::report::note(__msg);
+    }};
+}
 pub async fn run(args: PaintArgs) -> Result<()> {
     match args.cmd {
         Some(PaintCmd::New(a)) => run_new(a),
@@ -1045,7 +1060,7 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
             let hits = owl.detect_all(path, q, if loud { 0.0 } else { thr }, 4).unwrap_or_default();
             if loud {
                 let best = hits.iter().map(|d| d.score).fold(0.0f32, f32::max);
-                println!("{}  semantic probe: {:?} best score {:.3} (threshold {thr:.2}) → {} box(es)", style("·").dim(), q, best, hits.iter().filter(|d| d.score >= thr).count());
+                found!(style("·").dim(), "semantic probe: {:?} best score {:.3} (threshold {thr:.2}) → {} box(es)", q, best, hits.iter().filter(|d| d.score >= thr).count());
             }
             for d in hits.into_iter().filter(|d| d.score >= thr) {
                 boxes.push((d.x0, d.y0, d.x1, d.y1));
@@ -1082,7 +1097,7 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
     ] {
         let boxes = detect(queries, thr);
         if !boxes.is_empty() {
-            println!("{}  semantic: {} {label} region(s) → armature tier {res}px", style("·").dim(), boxes.len());
+            found!(style("·").dim(), "semantic: {} {label} region(s) → armature tier {res}px", boxes.len());
             let m = boxes_to_mask(&boxes, iw, ih, w, h);
             if label.starts_with("hair") {
                 hair_mask = Some(m.clone());
@@ -1093,10 +1108,10 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
     // CLOTHING / SHOULDERS → extend the subject so a light shirt is PAINTED, not reserved to blank paper.
     let clothing = detect(&["a shirt", "clothing", "a t-shirt", "shoulders", "a jacket"], 0.10);
     let clothing_mask = if clothing.is_empty() {
-        println!("{}  semantic: no clothing detected", style("·").yellow());
+        found!(style("·").yellow(), "semantic: no clothing detected");
         None
     } else {
-        println!("{}  semantic: {} clothing region(s) → extend the subject (paint the shirt)", style("·").dim(), clothing.len());
+        found!(style("·").dim(), "semantic: {} clothing region(s) → extend the subject (paint the shirt)", clothing.len());
         Some(boxes_to_mask(&clothing, iw, ih, w, h))
     };
     Ok((tiers, clothing_mask, hair_mask))
@@ -1230,11 +1245,11 @@ async fn sam_hair_extent(path: &std::path::Path, w: u32, h: u32, seed: &[f32]) -
     let frame = (w as usize) * (h as usize);
     match choose_part_scale(&areas, seeded.len(), frame).map(|i| cands.swap_remove(i)) {
         Some((area, v)) => {
-            println!("{}  hair/fur: SAM's part-scale extent over {}% of the frame (the detector named {}%)", style("·").dim(), area * 100 / v.len().max(1), seeded.len() * 100 / v.len().max(1));
+            found!(style("·").dim(), "hair/fur: SAM's part-scale extent over {}% of the frame (the detector named {}%)", area * 100 / v.len().max(1), seeded.len() * 100 / v.len().max(1));
             Ok(Some(v))
         }
         None => {
-            println!("{}  hair/fur: no SAM candidate was believable as the named hair — keeping the detector's boxes", style("·").yellow());
+            found!(style("·").yellow(), "hair/fur: no SAM candidate was believable as the named hair — keeping the detector's boxes");
             Ok(None)
         }
     }
@@ -1812,6 +1827,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let mut plan_ladder_keep: Option<usize> = None;
     // Whether the stroke budget was named on the command line (a new painting otherwise counts its own).
     let mut budget_explicit = a.budget != 1500;
+    let mut plan_text: Option<String> = None;
+    let mut plan_path: Option<std::path::PathBuf> = None;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;
@@ -1823,10 +1840,20 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             p
         } else {
             let text = std::fs::read_to_string(&spec).with_context(|| format!("reading plan {spec}"))?;
-            crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?
+            let p = crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?;
+            plan_text = Some(text);
+            plan_path = Some(std::path::PathBuf::from(&spec));
+            p
         };
         if plan.from_scratch {
             a.new_painting = true;
+        }
+        if a.analysis.is_none() {
+            a.analysis = match &plan.analysis {
+                Some(crate::paint::plan::Artefact::On(true)) => Some(String::new()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
         }
         if a.hair_mask.is_none() {
             a.hair_mask = plan.hair_mask.as_ref().map(std::path::PathBuf::from);
@@ -1969,7 +1996,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if a.hdr == Some(true) {
         let amount = a.hdr_amount.unwrap_or(0.6).clamp(0.0, 1.0);
         img = crate::paint::painter::hdr_tone_map(&img, amount);
-        println!("{}  hdr: the picture re-lit before painting (amount {amount:.2})", style("·").dim());
+        found!(style("·").dim(), "hdr: the picture re-lit before painting (amount {amount:.2})");
         if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
             let _ = img.save(std::path::Path::new(&dir).join("hdr_input.png"));
         }
@@ -2275,7 +2302,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             face_extent = Some(e);
         }
         if params.face_mask.is_none() {
-            println!("{}  face: none detected — painting without a face focal region", style("·").yellow());
+            found!(style("·").yellow(), "face: none detected — painting without a face focal region");
         }
     }
     // MULTI-REGION armature (RFC §5.2): matte the SUBJECT (U2Net) so the body paints from a mid armature and the
@@ -2289,7 +2316,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let covered = mask.iter().filter(|&&m| m > 0.5).count();
         let total = mask.len().max(1);
         if covered > total / 50 && covered < total * 49 / 50 {
-            println!("{}  subject matte: {}% foreground → three-tier armature", style("·").dim(), covered * 100 / total);
+            found!(style("·").dim(), "subject matte: {}% foreground → three-tier armature", covered * 100 / total);
             // The background goes COARSER than the body only when the subject fills the frame (a portrait, a
             // bust). In a SCENE where the matted subject is small, the background IS the picture — a field, a
             // sky, a street — and painting it from the coarsest tier erased its structure wholesale (a landscape
@@ -2315,7 +2342,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             }
             params.subject_mask = Some(mask);
         } else {
-            println!("{}  subject matte: no clear subject — skipping the body tier", style("·").yellow());
+            found!(style("·").yellow(), "subject matte: no clear subject — skipping the body tier");
             params.armature_body_side = None;
         }
     }
@@ -2358,7 +2385,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     let _ = g.save(std::path::Path::new(&dir).join("mask_hair.png"));
                 }
                 let cov = hm.iter().filter(|&&v| v > 0.5).count();
-                println!("{}  hair/fur: the strand tool over {}% of the frame (finer floor · raked lanes · no pickup · strands break the silhouette)", style("·").dim(), cov * 100 / hm.len().max(1));
+                found!(style("·").dim(), "hair/fur: the strand tool over {}% of the frame (finer floor · raked lanes · no pickup · strands break the silhouette)", cov * 100 / hm.len().max(1));
                 Some(hm)
             } else {
                 None
@@ -2383,7 +2410,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(s) = subject {
             let cov = s.iter().filter(|&&m| m > 0.5).count();
             if cov > s.len() / 50 && cov < s.len() * 49 / 50 {
-                println!("{}  sam: precise subject mask ({}% foreground) — sharp silhouette", style("·").dim(), cov * 100 / s.len().max(1));
+                found!(style("·").dim(), "sam: precise subject mask ({}% foreground) — sharp silhouette", cov * 100 / s.len().max(1));
                 // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {
@@ -2394,13 +2421,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     _ => params.subject_mask = Some(s),
                 }
             } else {
-                println!("{}  sam: subject mask unusable — keeping the matte", style("·").yellow());
+                found!(style("·").yellow(), "sam: subject mask unusable — keeping the matte");
             }
         }
         if let Some(fm) = face_m {
             let cov = fm.iter().filter(|&&m| m > 0.4).count();
             if cov > fm.len() / 200 && cov < fm.len() / 2 {
-                println!("{}  sam: precise face mask — face-shaped focal region", style("·").dim());
+                found!(style("·").dim(), "sam: precise face mask — face-shaped focal region");
                 // A NEW painting's focal plane is EVERY face found: SAM's precise mask is prompted from one
                 // face, and replacing the detector's mask with it left the other faces in the figure tier
                 // (a second child's face painted as a blur beside a resolved one).
@@ -2573,7 +2600,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let enc = |v: f64| { let v = v / n; let c = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }; (c * 255.0).round().clamp(0.0, 255.0) as u8 };
             let tone = [enc(acc[0]), enc(acc[1]), enc(acc[2])];
             params.ground = Some(tone);
-            println!("{}  new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", style("·").dim(), tone[0], tone[1], tone[2]);
+            found!(style("·").dim(), "new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", tone[0], tone[1], tone[2]);
         }
         // ARMATURE FIDELITY IS INDEPENDENT OF CANVAS COVERAGE (RFC §5.2): a figure and a face are read at a
         // fixed number of pixels across THEIR OWN extent, whatever share of the sheet they take — a small face
@@ -2607,9 +2634,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             a.budget = b;
         }
         let (bg, body, focal) = painter::plane_floors(w, h, params.min_brush, sides);
-        println!(
-            "{}  new painting: armature {}px background · {}px figure · {}px faces — minimum brush {:.0} / {:.0} / {:.0} px · budget {} strokes (coverage)",
+        found!(
             style("·").dim(),
+            "new painting: armature {}px background · {}px figure · {}px faces — minimum brush {:.0} / {:.0} / {:.0} px · budget {} strokes (coverage)",
             bg_side,
             sides.1.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
             sides.2.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
@@ -2661,6 +2688,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
 
     print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}", style("✓").green(), stroke_summary(result.strokes, a.budget), a.out.display(), score_path.display());
+    // THE ANALYSIS artefact (RFC PAINT-3): the run's own facts as Markdown, beside the picture.
+    if let Some(dest) = &a.analysis {
+        let path = if dest.is_empty() { a.out.with_extension("md") } else { std::path::PathBuf::from(dest) };
+        let argv: Vec<String> = std::env::args().collect();
+        let info = crate::paint::report::RunInfo { source: &a.input, output: &a.out, width: w, height: h, plan_text: plan_text.as_deref(), plan_path: plan_path.as_deref(), argv: &argv, seconds: result.seconds };
+        let md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes);
+        std::fs::write(&path, md).with_context(|| format!("writing {}", path.display()))?;
+        println!("{}  analysis → {}", style("·").dim(), path.display());
+    }
     if a.report {
         let tr = painter::traceability(&out, &img);
         println!("{}  traceability {:.3} (→1 = traced/filter; a painting keeps structure but invents surface)", style("·").dim(), tr);

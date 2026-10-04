@@ -42,6 +42,39 @@ All of this exists in the painter today as `PaintResult.stats`, the score header
 field (`PLAKAT_PAINT_HEIGHT_DUMP`) and the plan's own comments; the work is a `report.rs` that gathers
 them and writes Markdown.
 
+## 2b. Insights and recommendations (LLM, optional) — P0.5
+
+When prompt enrichment is configured (a hosted provider or Ollama), the analysis can be run THROUGH the
+LLM to add two sections the facts alone cannot write: **Insights** (what the numbers say about the
+painting) and **Recommendations** (which dials to move, by how much, and why — as a plan diff the user
+can paste).
+
+```
+--analysis-insights          analysis_insights: true     (requires --analysis / analysis: true)
+```
+
+Design rules:
+- **Input = the facts.** The model receives the analysis Markdown (plan with comments, resolved dials,
+  findings, passes, measurements, pigment usage) and the PAINT_CONTROLS glossary for the medium. It does
+  NOT receive the picture unless the provider is a vision model and `--analysis-insights=with-image` is
+  given (a downsized copy; then the model may also judge what it sees, and says so).
+- **System prompt** (the whole value is here; kept in `assets/prompts/paint_insights.md`, versioned):
+  the model is a painting technician reading a run report; it reasons ONLY from the numbers given and
+  cites the measurement behind every claim ("height on faces 9.5 vs beard 17 → …"); it recommends dials
+  from the glossary ONLY, with a value and a one-line reason each, as an hjson snippet; it must say what
+  it cannot know from the facts (anything about likeness, taste, the subject); it never invents
+  techniques or pigment names; it keeps the user's hard rules (faces recognizable; no scene-specific
+  defaults; one heavy job at a time is not its concern). Medium-specific sections (oil: thickness, relief,
+  weave, sheen; watercolour: reserve, flow, grain, dry brush, fine lines).
+- **Output** appended to the same `.md` under `## Insights` and `## Recommendations`, each
+  recommendation as `key: value   # reason` so the user can copy it into the plan; plus a line naming the
+  model and provider used.
+- **Privacy**: a hosted provider receives the report text (and the image when asked) — it leaves the
+  machine; Ollama keeps it local. The docs and the terminal line say which.
+- **Loop**: `plakat paint … --analysis --analysis-insights` → read the recommendations → edit the plan →
+  rerun. Later (P3) `--analysis-apply` could write the recommended plan as `plan.next.hjson` for review,
+  never overwriting the user's plan.
+
 ## 3. The outcome sheet
 
 ### 3.1 Panels and their sources
@@ -91,8 +124,9 @@ default paint path is untouched (the artefacts read the result; they never chang
 
 ## 5. Phases
 
-- **P0 — analysis.md** (`report.rs`): the six sections from existing data; the per-pass dumps promoted to
-  an option (`--dump-passes DIR`); height/busy fields kept in `PaintResult` for the measurements.
+- **P0 — analysis.md** (`report.rs`) — BUILT: the six sections from existing data.
+- **P0.5 — insights** (§2b): the LLM pass over the report with the versioned system prompt; hosted/Ollama
+  via the existing enrichment layer; privacy line.
 - **P1 — the sheet, data panels**: insets chosen by §3.2, palette ranking + classic-name table, pass stack;
   Typst template; PNG out.
 - **P2 — the brushwork concept panel**: contour drawing + flow arrows + mark-type legend.
