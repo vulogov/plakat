@@ -1960,6 +1960,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // The structure a fine brush needs to find before it restates off the subject (a local value range at
     // the brush's scale; 0 = restate tone too, the old behaviour).
     let wcb_struct = env_f("PLAKAT_WCB_STRUCT", if wc_wash { 0.10 } else { 0.0 });
+    // How much longer the fine brushes' marks may run than the ladder's default cap (lines, not beads).
+    let wcb_finelen = env_f("PLAKAT_WCB_FINELEN", if wc_wash { 3.0 } else { 1.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
     let wcb_broken = env_f("PLAKAT_WCB_BROKEN", if wc_wash { 0.0 } else { 1.0 });
     let wcb_texture = env_f("PLAKAT_WCB_TEXTURE", 1.0);
@@ -2598,7 +2600,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let pvar = 0.85 + 0.15 * (jitter(p.seed ^ 0x2C7D, k.wrapping_add(3)) + 0.5);
                 // A strand is LONGER and NARROWER than a mass mark: a lock of hair is drawn in one gesture.
                 let rw = (radius * profile.radius_scale * p.stroke_width * wvar * (1.0 - 0.35 * hair) * if wcb_broad { wcb_width } else { 1.0 }).max(p.min_brush * 0.8);
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
+                // The watercolour's FINE brush draws LINES: a mullion, a rail, the edge of a basin — a mark many
+                // times longer than wide (a rigger's), not a dab two widths long. The length cap on the fine
+                // passes is raised; the colour-drift and hard-edge stops still end a mark where the picture does,
+                // so on a texture the marks stay short and on an edge they run. (Measured: 60% of the 4 px marks
+                // were under 10 px — every edge printed as a chain of beads.)
+                let fine_len = if wc_wash && fine && !wcb_broad { wcb_finelen } else { 1.0 };
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
