@@ -127,9 +127,9 @@ default paint path is untouched (the artefacts read the result; they never chang
 - **P0 — analysis.md** (`report.rs`) — BUILT: the six sections from existing data.
 - **P0.5 — insights** (§2b): the LLM pass over the report with the versioned system prompt; hosted/Ollama
   via the existing enrichment layer; privacy line.
-- **P1 — the sheet, data panels**: insets chosen by §3.2, palette ranking + classic-name table, pass stack;
+- **P1 — the sheet, data panels** — BUILT (`ccb05ce5`): insets chosen by §3.2, palette ranking + classic-name table, pass stack;
   Typst template; PNG out.
-- **P2 — the brushwork concept panel**: contour drawing + flow arrows + mark-type legend.
+- **P2 — the brushwork concept panel** — BUILT: the recorded stroke paths drawn as ink + flow arrows from the marks' own directions + a mark-type legend counted from the score (no contour pass needed: the score IS the drawing).
 - **P3 — polish**: watercolour/ink vocabularies, optional LLM prose captions (hosted → the prose leaves the
   machine; Ollama keeps it local — say so in the docs), `plakat ui` hook.
 

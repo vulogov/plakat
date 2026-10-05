@@ -275,6 +275,144 @@ pub fn palette_by_use(score: &StrokeScore, n: usize) -> Vec<Swatch> {
         .collect()
 }
 
+/// A stroke's direction as a unit vector along its path (start → end), for the flow arrows.
+fn stroke_dir(spline: &[[f32; 2]]) -> Option<(f32, f32)> {
+    if spline.len() < 2 {
+        return None;
+    }
+    let (a, b) = (spline[0], spline[spline.len() - 1]);
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l = (dx * dx + dy * dy).sqrt();
+    (l > 1e-3).then(|| (dx / l, dy / l))
+}
+
+/// Stamp a disc (anti-aliased by coverage) — the pen of the brushwork drawing.
+fn stamp(img: &mut RgbImage, x: f32, y: f32, r: f32, rgb: [u8; 3], alpha: f32) {
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let rr = r.max(0.5);
+    for yy in (y - rr - 1.0).floor() as i32..=(y + rr + 1.0).ceil() as i32 {
+        for xx in (x - rr - 1.0).floor() as i32..=(x + rr + 1.0).ceil() as i32 {
+            if xx < 0 || yy < 0 || xx >= w || yy >= h {
+                continue;
+            }
+            let d = ((xx as f32 + 0.5 - x).powi(2) + (yy as f32 + 0.5 - y).powi(2)).sqrt();
+            let cov = (rr + 0.5 - d).clamp(0.0, 1.0) * alpha;
+            if cov <= 0.0 {
+                continue;
+            }
+            let p = img.get_pixel_mut(xx as u32, yy as u32);
+            for c in 0..3 {
+                p.0[c] = (p.0[c] as f32 * (1.0 - cov) + rgb[c] as f32 * cov).round() as u8;
+            }
+        }
+    }
+}
+
+fn line(img: &mut RgbImage, a: (f32, f32), b: (f32, f32), r: f32, rgb: [u8; 3], alpha: f32) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l = (dx * dx + dy * dy).sqrt();
+    let n = (l / (r.max(0.5) * 0.7)).ceil().max(1.0) as usize;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        stamp(img, a.0 + dx * t, a.1 + dy * t, r, rgb, alpha);
+    }
+}
+
+/// THE BRUSHWORK CONCEPT (P2): the drawing a reader expects on the sheet — but made of the run's own
+/// facts. The recorded stroke PATHS are drawn as ink on paper (the broad passes faint and wide, the fine
+/// passes dark and thin, the drawn lines — rigger, contour, ink — darkest), so the drawing IS the
+/// brushwork; over it, one arrow per cell gives the dominant direction the marks ran there (the mean of
+/// their unit directions, length by their agreement). Returns the image and the mark-type legend with
+/// counts, every count from the score.
+pub fn brushwork_drawing(score: &StrokeScore, w: u32, h: u32, side: u32) -> (RgbImage, Vec<(String, usize)>) {
+    let scale = side as f32 / w.max(h) as f32;
+    let (ow, oh) = (((w as f32) * scale).round() as u32, ((h as f32) * scale).round() as u32);
+    let mut img = RgbImage::from_pixel(ow.max(1), oh.max(1), image::Rgb([246, 241, 230]));
+    let painted: Vec<&crate::paint::score::StrokeRecord> = score.strokes.iter().filter(|r| !r.wipe && r.spline.len() >= 2).collect();
+    // Line weight by the pass: the widest brush faintest.
+    let max_w = painted.iter().map(|r| r.w0).fold(1.0f32, f32::max);
+    let is_line_stage = |st: &str| st == "rigger" || st == "contour" || st == "ink" || st == "hotspot" || st.starts_with("line");
+    // Draw a bounded sample so the drawing stays a drawing (every fine mark would print as a field of grey).
+    let budget = 14_000usize;
+    let stride = (painted.len() / budget).max(1);
+    for (k, r) in painted.iter().enumerate() {
+        // A hotspot is a filled accent (a spiral), not a drawn line: it prints as a blot. Leave it out.
+        if r.stage == "hotspot" {
+            continue;
+        }
+        let linework = is_line_stage(&r.stage);
+        if !linework && k % stride != 0 {
+            continue;
+        }
+        let rel = (r.w0 / max_w).clamp(0.0, 1.0);
+        let (radius, alpha, rgb) = if linework {
+            (0.9, 0.9, [40, 32, 28])
+        } else {
+            ((0.5 + 1.6 * rel) * scale.max(0.35), 0.12 + 0.5 * (1.0 - rel), [70, 58, 50])
+        };
+        for seg in r.spline.windows(2) {
+            line(&mut img, (seg[0][0] * scale, seg[0][1] * scale), (seg[1][0] * scale, seg[1][1] * scale), radius, rgb, alpha);
+        }
+    }
+    // Flow arrows: an 8×8 grid of the marks' dominant direction (double-angle mean, so a mark and its
+    // reverse agree), drawn where the agreement is real.
+    let cells = 8usize;
+    let (cw, ch) = (w as f32 / cells as f32, h as f32 / cells as f32);
+    let mut acc: Vec<(f32, f32, usize)> = vec![(0.0, 0.0, 0); cells * cells];
+    for r in &painted {
+        if let Some((dx, dy)) = stroke_dir(&r.spline) {
+            let m = r.spline[r.spline.len() / 2];
+            let (cx, cy) = (((m[0] / cw) as usize).min(cells - 1), ((m[1] / ch) as usize).min(cells - 1));
+            let th = dy.atan2(dx) * 2.0;
+            let a = &mut acc[cy * cells + cx];
+            a.0 += th.cos();
+            a.1 += th.sin();
+            a.2 += 1;
+        }
+    }
+    for (i, (cx2, sy2, n)) in acc.iter().enumerate() {
+        if *n < 8 {
+            continue;
+        }
+        let coh = ((cx2 * cx2 + sy2 * sy2).sqrt() / *n as f32).clamp(0.0, 1.0);
+        if coh < 0.25 {
+            continue;
+        }
+        let th = sy2.atan2(*cx2) * 0.5;
+        let (ux, uy) = (th.cos(), th.sin());
+        let (x0, y0) = (((i % cells) as f32 + 0.5) * cw * scale, ((i / cells) as f32 + 0.5) * ch * scale);
+        let len = cw.min(ch) * scale * (0.18 + 0.32 * coh);
+        let (a, b) = ((x0 - ux * len, y0 - uy * len), (x0 + ux * len, y0 + uy * len));
+        let rgb = [150, 40, 30];
+        line(&mut img, a, b, 1.3 * scale.max(0.4), rgb, 0.95);
+        // Head.
+        let hl = len * 0.35;
+        for sgn in [-1.0f32, 1.0] {
+            let ang = 0.5f32;
+            let (hx, hy) = (ux * ang.cos() - uy * ang.sin() * sgn, uy * ang.cos() + ux * ang.sin() * sgn);
+            line(&mut img, b, (b.0 - hx * hl, b.1 - hy * hl), 1.3 * scale.max(0.4), rgb, 0.95);
+        }
+    }
+    // The legend: mark types the run used, counted from the records.
+    let mut legend: Vec<(String, usize)> = Vec::new();
+    let count = |f: &dyn Fn(&crate::paint::score::StrokeRecord) -> bool| painted.iter().filter(|r| f(r)).count();
+    let broad = count(&|r| r.w0 >= max_w * 0.5);
+    let fine = count(&|r| r.w0 < max_w * 0.1 && !is_line_stage(&r.stage));
+    let dry = count(&|r| r.wet < 0.62 && !r.wash);
+    let wash = count(&|r| r.wash);
+    let strands = count(&|r| r.bristles.is_some());
+    let lines = count(&|r| is_line_stage(&r.stage));
+    let hot = count(&|r| r.stage == "hotspot");
+    if broad > 0 { legend.push(("broad sweeps — the block-in and the masses".into(), broad)); }
+    if fine > 0 { legend.push(("fine marks — the restatements and detail".into(), fine)); }
+    if strands > 0 { legend.push(("strand strokes — the hair tool's raked lanes".into(), strands)); }
+    if dry > 0 { legend.push(("dry marks — laid with little water, skipping the tooth".into(), dry)); }
+    if wash > 0 { legend.push(("wash sweeps — the water lays the film".into(), wash)); }
+    if lines > hot { legend.push(("drawn lines — rigger / contour / ink".into(), lines - hot)); }
+    if hot > 0 { legend.push(("hotspots — the brightest accents".into(), hot)); }
+    (img, legend)
+}
+
 fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"").replace('#', "\\#").replace('@', "\\@").replace('*', "\\*").replace('_', "\\_")
 }
@@ -323,6 +461,9 @@ pub fn build(inputs: &SheetInputs, out: &Path) -> Result<PathBuf> {
             layer_files.push((f, format!("{label} · {radius:.0} px · {strokes} strokes")));
         }
     }
+    // The brushwork drawing and its legend.
+    let (bw_img, legend) = brushwork_drawing(inputs.score, mw, mh, 900);
+    bw_img.save(dir.join("brushwork.png"))?;
     // ---- Typst ----
     let mut t = String::new();
     t.push_str("#set page(width: 320mm, height: auto, margin: 10mm, fill: rgb(\"#f3eee3\"))\n");
@@ -365,8 +506,14 @@ pub fn build(inputs: &SheetInputs, out: &Path) -> Result<PathBuf> {
         t.push_str(&format!("      align(center)[#circle(radius: 8mm, fill: rgb(\"{}\"), stroke: 1pt + rgb(\"#3a3330\"))#v(1mm)#text(size: 7.5pt, weight: \"bold\")[#upper(\"{}\")]#linebreak()#text(size: 7pt)[{:.0}% of the paint]#linebreak()#text(size: 6pt, fill: rgb(\"#7a6f62\"))[{}]],\n", sw.hex, esc(&sw.name), sw.share, esc(&sw.hex)));
     }
     t.push_str("    )\n    #v(1mm)#text(size: 7pt, fill: rgb(\"#5a5047\"))[Ranked by use over every stroke; named by the nearest classic pigment to the measured masstone.]\n  ],\n");
-    // brushwork facts
-    t.push_str("  panel(\"Brushwork dynamics\")[\n    #table(columns: (auto, auto, auto, auto), stroke: 0.4pt + rgb(\"#9a8f7a\"), inset: 3pt, align: left,\n      [*pass*], [*brush*], [*marks*], [*dry*],\n");
+    // brushwork: the drawing, the legend, then the pass facts
+    t.push_str("  panel(\"Brushwork dynamics concept\")[\n");
+    t.push_str("    #box(stroke: 0.5pt + rgb(\"#6a6055\"))[#image(\"brushwork.png\", width: 100%)]\n");
+    t.push_str("    #text(size: 6.5pt, fill: rgb(\"#5a5047\"))[The recorded stroke paths drawn as ink (broad faint, fine dark, drawn lines darkest); arrows = the marks' dominant direction per cell, length by their agreement.]\n    #v(1.5mm)\n");
+    for (label, n) in &legend {
+        t.push_str(&format!("    #text(size: 7.5pt)[#box(width: 3mm, height: 3mm, fill: rgb(\"#8a3a2a\"), radius: 1mm) #h(1mm) *{}* — {}]#linebreak()\n", n, esc(label)));
+    }
+    t.push_str("    #v(1.5mm)\n    #table(columns: (auto, auto, auto, auto), stroke: 0.4pt + rgb(\"#9a8f7a\"), inset: 2.5pt, align: left,\n      [*pass*], [*brush*], [*marks*], [*dry*],\n");
     for s in inputs.stats.iter().filter(|s| s.strokes > 0) {
         let recs: Vec<&crate::paint::score::StrokeRecord> = inputs.score.strokes.iter().filter(|r| r.stage == s.stage && !r.wipe).collect();
         let dry = if recs.is_empty() { 0 } else { recs.iter().filter(|r| r.wet < 0.62).count() * 100 / recs.len() };
@@ -435,5 +582,11 @@ mod tests {
         assert!(ins.iter().any(|i| i.title == "The lights"));
         let sw = palette_by_use(&r.score, 6);
         assert!(!sw.is_empty() && sw[0].share > 0.0);
+        let (bw, legend) = brushwork_drawing(&r.score, w, h, 320);
+        assert_eq!(bw.width(), 320);
+        assert!(legend.iter().any(|(l, n)| l.starts_with("broad sweeps") && *n > 0));
+        // Ink went down: the drawing is not blank paper.
+        let dark = bw.pixels().filter(|p| p.0[0] < 200).count();
+        assert!(dark > 500, "{dark}");
     }
 }
