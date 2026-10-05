@@ -1728,6 +1728,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // This is how the stroke cost was found to be the mixture solver, not the brush — keep it.
     let started = std::time::Instant::now();
     let mut stats: Vec<PassStat> = Vec::new();
+    let mut splattered_wet = false;
     let prof_on = std::env::var("PLAKAT_PAINT_PROFILE").is_ok();
     let mut prof_acc: Vec<(&'static str, f64)> = Vec::new();
     let mut prof_t = std::time::Instant::now();
@@ -2982,6 +2983,16 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         // Dry the canvas before the next pass so the just-laid masses SET: the restatement then reads as fresh
         // overlays instead of picking the masses back up and stirring them into mud. Wet-into-wet is `--dry 0`.
+        // The watercolour SPATTERS WHILE THE WASHES ARE WET (see `splatter_pass`): at the end of the last
+        // broad pass, BEFORE its bleed and flow (the replay lays a stage's strokes and then crosses — the
+        // drops must be laid on the same side of that crossing), as that pass's own marks — a drop in a wash
+        // blooms, one on dry paper stays sharp. (At the end, on a dried sheet, every drop was a hard dot.)
+        // (A luminous paint's brush passes come after its wash stages: their taper index continues from them.)
+        let (b_idx, b_n) = if p.luminous { (wash_stages + layer, n_stages_total) } else { (layer, passes.len()) };
+        if wc_wash && p.splatter > 0.0 && !splattered_wet && flow_taper(b_idx, b_n).is_some() && flow_taper(b_idx + 1, b_n).is_none() {
+            splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k, &pass.stage, true);
+            splattered_wet = true;
+        }
         lap("pass:strokes", &mut prof_acc, &mut prof_t);
         // WET-INTO-WET per pass, tapering coarse → fine: the broad washes bloom into each other while still wet,
         // the later, finer work goes onto paper that has set and stays crisp. One bleed over the finished
@@ -2989,7 +3000,6 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // whole sheet read as one blur). The same schedule is reproduced by the score replay at each stage
         // boundary, so the drawing stays byte-exact.
         // (A luminous paint's brush passes come after its wash stages: their taper index continues from them.)
-        let (b_idx, b_n) = if p.luminous { (wash_stages + layer, n_stages_total) } else { (layer, passes.len()) };
         if bleed_eff > 0.0 {
             canvas.bleed_with(bleed_eff * pass_bleed_taper(b_idx, b_n), p.diffuse);
         }
@@ -3086,8 +3096,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     if p.luminous && p.leak > 0.0 && finish_ok {
         leak_pass(&mut canvas, &mut score, p, &mut placed, &mut k);
     }
-    if p.splatter > 0.0 && finish_ok {
-        splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
+    if p.splatter > 0.0 && finish_ok && !splattered_wet {
+        splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k, "splatter", false);
     }
 
     // A last, light wet-into-wet touch over the finish passes (contour, silhouette, splatter) so a wet medium
@@ -3751,7 +3761,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
 /// the paper for the bright speckle of spray/snow/sparkle. Positions come from a hash so the spatter is even but
 /// unstructured, and every droplet is recorded into the score (the bright ones as wipe strokes at `wet*lift`,
 /// exactly as replay applies them) so a re-render reproduces it. `splatter` scales the count.
-fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) {
+fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64, stage: &str, on_wet_sheet: bool) {
     let (w, h) = (input.width(), input.height());
     let strength = p.splatter.clamp(0.0, 1.0);
     if strength <= 0.0 {
@@ -3777,12 +3787,40 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
     let mut brush = p.brush;
     brush.streak = 0.0;
     brush.round = 1.0;
+    // FLICKS, not rain: spatter comes off a brush flicked at the sheet a few times — each flick a RADIAL
+    // spray from its own origin, dense near the origin and thinning out with distance, the drops round
+    // where they land square on and ELONGATED along the spray's direction where they land obliquely,
+    // their sizes spread from mist to the odd heavy blob. The uniform scatter before read as digital rain.
+    // Origins land off the subject (a painter flicks at the margins), deterministic from the seed.
+    let n_flicks = (3.0 + 5.0 * strength).round() as usize;
+    let mut origins: Vec<(f32, f32)> = Vec::new();
+    let mut tries = 0;
+    while origins.len() < n_flicks && tries < 64 {
+        tries += 1;
+        *k = k.wrapping_add(1);
+        let ox = (jitter(p.seed ^ 0x0F11, *k) + 0.5) * w as f32;
+        let oy = (jitter(p.seed ^ 0x0F22, k.wrapping_add(7)) + 0.5) * h as f32;
+        let i = (oy as usize).min(h as usize - 1) * w as usize + (ox as usize).min(w as usize - 1);
+        if sal[i] > 0.5 || p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.2 {
+            continue;
+        }
+        origins.push((ox, oy));
+    }
+    if origins.is_empty() {
+        origins.push((w as f32 * 0.5, h as f32 * 0.5));
+    }
+    let reach = w.min(h) as f32 * 0.45;
     for _ in 0..n {
         *k = k.wrapping_add(1);
-        let hx = jitter(p.seed ^ 0x5D19, *k) + 0.5;
-        let hy = jitter(p.seed ^ 0x9C4B, k.wrapping_add(11)) + 0.5;
-        let cx = (hx * w as f32).clamp(1.0, w as f32 - 2.0);
-        let cy = (hy * h as f32).clamp(1.0, h as f32 - 2.0);
+        // Which flick, and where along its spray: distance from the origin decays (density ∝ 1/(1+d)),
+        // direction uniform.
+        let fi = ((jitter(p.seed ^ 0x5D19, *k) + 0.5) * origins.len() as f32) as usize;
+        let (ox, oy) = origins[fi.min(origins.len() - 1)];
+        let ang = (jitter(p.seed ^ 0x9C4B, k.wrapping_add(11)) + 0.5) * std::f32::consts::TAU;
+        let u = (jitter(p.seed ^ 0x3D7A, k.wrapping_add(13)) + 0.5).clamp(1e-4, 1.0);
+        let dist = reach * u * u; // squared: most drops near the origin
+        let cx = (ox + ang.cos() * dist).clamp(1.0, w as f32 - 2.0);
+        let cy = (oy + ang.sin() * dist).clamp(1.0, h as f32 - 2.0);
         let i = cy as usize * w as usize + cx as usize;
         if let Some(m) = &p.protect {
             if m.get(i).copied().unwrap_or(false) {
@@ -3802,15 +3840,26 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
             continue;
         }
         let rr = (jitter(p.seed ^ 0x2AE7, k.wrapping_add(3)) + 0.5).clamp(0.0, 1.0);
-        // Mostly fine; a tail of coarser blobs, the biggest a few brush widths — the drop that flew furthest.
-        let radius = unit * if rr > 0.9 { 2.0 + 5.0 * (rr - 0.9) / 0.1 } else { 0.6 + 1.4 * rr };
-        // A drop on wet paper blooms wide and soft; on dry paper it is a hard dot.
-        let (radius, drop_wet) = match p.technique {
-            WetTechnique::WetOnWet => (radius * 1.5, 0.9),
-            WetTechnique::DryOnDry => (radius * 0.8, 0.15),
-            _ => (radius, 0.5),
+        // Sizes: a log-normal-ish spread — mist for most, a tail of heavy blobs (the drop that flew
+        // furthest is the biggest), up to a few brush widths.
+        let radius = unit * (0.5 + 1.2 * rr * rr + if rr > 0.93 { 4.0 * (rr - 0.93) / 0.07 } else { 0.0 }) * (0.8 + 0.4 * (dist / reach));
+        // A drop on wet paper blooms wide and soft; on dry paper it is a hard dot. On a wet sheet (the
+        // transparent media, spattered while the washes are still wet) the DROP READS THE CANVAS: it is
+        // as wet as the paper it lands on, so one in a wash blooms and feathers and one on dry paper
+        // stays sharp — recorded per stroke, so the replay lays the same drop.
+        let (radius, drop_wet) = if on_wet_sheet {
+            let wet_here = canvas.wetness[i].clamp(0.0, 1.0);
+            (radius * (1.0 + 0.6 * wet_here), 0.25 + 0.7 * wet_here)
+        } else {
+            match p.technique {
+                WetTechnique::WetOnWet => (radius * 1.5, 0.9),
+                WetTechnique::DryOnDry => (radius * 0.8, 0.15),
+                _ => (radius, 0.5),
+            }
         };
-        let path = vec![[cx, cy], [cx + 0.6, cy + 0.4]];
+        // Elongation: a drop landing obliquely (far from the origin) stretches along the spray.
+        let stretch = radius * 2.2 * (dist / reach).powi(2);
+        let path = vec![[cx - ang.cos() * stretch * 0.5, cy - ang.sin() * stretch * 0.5], [cx + ang.cos() * stretch * 0.5 + 0.6, cy + ang.sin() * stretch * 0.5 + 0.4]];
         // A drop READS by contrast: on dark paint it is the paper showing through (a lift), on light paint it
         // is pigment. Decided from the canvas as it stands at this spot — a fact of the picture, not a setting.
         let here = canvas.color_at(cx as u32, cy as u32);
@@ -3826,7 +3875,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 id: *placed as u32,
                 wipe: true,
                 wash: false,
-                stage: "splatter".into(),
+                stage: stage.into(),
                 spline: s.path,
                 w0: s.width0,
                 w1: s.width1,
@@ -3872,7 +3921,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
             score.strokes.push(StrokeRecord {
                 id: *placed as u32,
                 wipe: false, wash: false,
-                stage: "splatter".into(),
+                stage: stage.into(),
                 spline: s.path,
                 w0: s.width0,
                 w1: s.width1,
