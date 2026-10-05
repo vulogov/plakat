@@ -378,7 +378,7 @@ impl StrokeScore {
                         kd: get("kd").parse().ok(),
                         visc: get("visc").parse().ok(),
                         tgt: {
-                            let p: Vec<u8> = get("tgt").split(',').filter_map(|x| x.parse().ok()).collect();
+                            let p: Vec<u8> = get("tgt").split(',').filter_map(|x| x.parse::<u8>().ok()).collect();
                             (p.len() == 3).then(|| [p[0], p[1], p[2]])
                         },
                         cap: get("cap").parse().ok(),
@@ -399,7 +399,7 @@ impl StrokeScore {
                 }
                 "M" => {
                     let cols: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-                    let runs: Vec<usize> = it.next().unwrap_or("").split(',').filter_map(|v| v.parse().ok()).collect();
+                    let runs: Vec<usize> = it.next().unwrap_or("").split(',').filter_map(|v| v.parse::<usize>().ok()).collect();
                     let mut cells: Vec<u8> = Vec::new();
                     let mut cur = 0u8;
                     for r in runs {
