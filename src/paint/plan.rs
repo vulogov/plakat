@@ -8,6 +8,14 @@
 
 use serde::Deserialize;
 
+/// An artefact switch in a plan: `true`/`false`, or the path to write it to.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum Artefact {
+    On(bool),
+    Path(String),
+}
+
 /// A painting plan: the structural decisions the paint stage executes. Serialisable to HJSON so it is
 /// inspectable and hand-editable — the art director's written plan.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +83,101 @@ pub struct PaintPlan {
     /// coverage budget, a toned ground under an opaque medium. `false` (default) = the path that tracks its source.
     #[serde(default, rename = "new")]
     pub from_scratch: bool,
+    /// HAIR MASK: a grey PNG, white where hair / beard / fur is, for the strand tool to work over. Given, it
+    /// REPLACES what the part detector found — the detector boxes only the hair it can name, so a long beard
+    /// came out strands at the top and a smooth mass at its fall, and no automatic region has managed the
+    /// whole of one yet. `plakat segment` and `plakat remove --what` both write masks of this shape.
+    #[serde(default)]
+    pub hair_mask: Option<String>,
+    /// INFILL: what a stroke follows where the picture has no structure — `follow`, `flat`, or an angle in
+    /// degrees. Absent = `follow` for a new painting, `flat` otherwise.
+    #[serde(default)]
+    pub infill: Option<String>,
+    /// RIGGER (0..1): put back the few shapes too thin for the brush ladder. Absent = 0.35 for a new painting.
+    #[serde(default)]
+    pub rigger: Option<f32>,
+    /// HOTSPOT (0..1): how far a flat blown specular highlight is re-modelled into a dome. Absent = 0.5 for a
+    /// new painting, 0 otherwise.
+    #[serde(default)]
+    pub hotspot: Option<f32>,
+    /// TECHNIQUE: `wet-on-wet`, `wet-on-dry` or `dry-on-dry` — how wet the paper is when each layer goes down.
+    #[serde(default)]
+    pub technique: Option<String>,
+    /// SPLATTER (0..1): flicked drops off the brush. A watercolour tell; the plan can ask for more or none.
+    #[serde(default)]
+    pub splatter: Option<f32>,
+    /// EDGE POOL (0..1): the darker pigment rim where a wash dried — the cauliflower edge.
+    #[serde(default)]
+    pub edge_pool: Option<f32>,
+    /// GRANULATE (0..1): pigment settling into the paper's tooth.
+    #[serde(default)]
+    pub granulate: Option<f32>,
+    /// BRUSH LADDER: keep only this many of the COARSEST brushes. A watercolour is broad decisive washes and
+    /// a few darks, not a fine brush going back over them — but how far to cut is a judgement about the
+    /// picture (cut too hard and a lit face is left as bare reserved paper), so it lives here.
+    #[serde(default)]
+    pub ladder_keep: Option<usize>,
+    /// LEAKS (0..1): runs of pigment dripping out of the wet washes. Nothing leaks unless asked.
+    #[serde(default)]
+    pub leak: Option<f32>,
+    /// HDR (true/false): tone-map the picture before painting — lamps stop blowing out, shadows lift to show
+    /// their detail — so every stage paints the re-lit picture. `hdr_amount` 0..1 is how far.
+    #[serde(default)]
+    pub hdr: Option<bool>,
+    /// BRISTLE RIDGES (0..1): a stroke's relief striated across its width by the lanes' loads (the impasto
+    /// relight then shows bristle marks, not a smooth tube), with the relief scaled against a robust
+    /// height so one heavy crossing cannot flatten the sheet. 0 = off (the finish as before).
+    #[serde(default)]
+    pub ridges: Option<f32>,
+    /// DRY-BRUSH SKIPPING (0..1): a bristle with little water touches only the paper's standing fibres, so
+    /// a dry mark is broken by the tooth along its drag. 0 = off.
+    #[serde(default)]
+    pub skip: Option<f32>,
+    /// FINE LINES (watercolour, 0..1): how far the finest brushes' marks may run along an edge — 1 = a
+    /// rigger's line, 0 = short marks only (no drawn lines).
+    #[serde(default)]
+    pub fine_lines: Option<f32>,
+    /// IMPASTO MAPPED TO THE PICTURE (0..1): lights thick / shadows thin, subject thick / background thin.
+    #[serde(default)]
+    pub impasto_map: Option<f32>,
+    /// CANVAS WEAVE (0..1): the linen's threads under thin paint and bare ground, in the relight.
+    #[serde(default)]
+    pub weave: Option<f32>,
+    /// SHEEN (0..1): the specular gloss on the relief's light-facing slopes (wet oil; 0 = matte).
+    #[serde(default)]
+    pub sheen: Option<f32>,
+    /// WET COLLISION (0..1): after each broad pass the wet paint drags along its striation where loaded
+    /// strokes meet — colours marble, ridges plow. Oil/acrylic. 0 = off.
+    #[serde(default)]
+    pub collide: Option<f32>,
+    /// ANALYSIS artefact (RFC PAINT-3): `true` writes a Markdown report beside the output
+    /// (`<out>.md`); a string is the path to write it to.
+    #[serde(default)]
+    pub analysis: Option<Artefact>,
+    /// INSIGHTS (RFC PAINT-3 P0.5): `true` runs the analysis through the configured LLM (`auto`); a
+    /// string names the provider (`ollama`, `ollama:<model>`, `deepseek`, `gemini`, `local`).
+    #[serde(default)]
+    pub analysis_insights: Option<Artefact>,
+    /// OUTCOME sheet (RFC PAINT-3): `true` writes the one-page sheet beside the output (`<out>_sheet.png`);
+    /// a string is the path (`.png` or `.pdf`).
+    #[serde(default)]
+    pub outcome: Option<Artefact>,
+    /// The MARK dials, as a plan decides them: impasto thickness, stroke width and length multipliers, and
+    /// how far a fine pass must disagree with the picture before it restates (higher = looser, more paint).
+    #[serde(default)]
+    pub impasto: Option<f32>,
+    #[serde(default)]
+    pub stroke_width: Option<f32>,
+    #[serde(default)]
+    pub stroke_length: Option<f32>,
+    #[serde(default)]
+    pub detail_restate: Option<f32>,
+    #[serde(default)]
+    pub hdr_amount: Option<f32>,
+    /// LEVELS: how many value masses the armature is cut into — for a wash medium, how many glazes the picture
+    /// is built from. Few and clean; many stacked transparent layers are mud.
+    #[serde(default)]
+    pub levels: Option<u32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -126,6 +229,33 @@ impl Default for PaintPlan {
             reserve: None,
             budget: None,
             from_scratch: false,
+            hair_mask: None,
+            infill: None,
+            rigger: None,
+            hotspot: None,
+            technique: None,
+            splatter: None,
+            edge_pool: None,
+            granulate: None,
+            ladder_keep: None,
+            leak: None,
+            hdr: None,
+            ridges: None,
+            skip: None,
+            fine_lines: None,
+            impasto_map: None,
+            weave: None,
+            sheen: None,
+            collide: None,
+            analysis: None,
+            analysis_insights: None,
+            outcome: None,
+            impasto: None,
+            stroke_width: None,
+            stroke_length: None,
+            detail_restate: None,
+            hdr_amount: None,
+            levels: None,
             notes: Vec::new(),
         }
     }
@@ -159,6 +289,82 @@ impl PaintPlan {
         }
         if self.from_scratch {
             o.push_str("new: true\n");
+        }
+        if let Some(hm) = &self.hair_mask {
+            o.push_str(&format!("hair_mask: {hm}\n"));
+        }
+        if let Some(inf) = &self.infill {
+            o.push_str(&format!("infill: {inf}\n"));
+        }
+        if let Some(rg) = self.rigger {
+            o.push_str(&format!("rigger: {rg:.2}\n"));
+        }
+        if let Some(hs) = self.hotspot {
+            o.push_str(&format!("hotspot: {hs:.2}\n"));
+        }
+        if let Some(t) = &self.technique {
+            o.push_str(&format!("technique: {t}\n"));
+        }
+        for (k, v) in [("splatter", self.splatter), ("edge_pool", self.edge_pool), ("granulate", self.granulate)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
+        }
+        if let Some(n) = self.ladder_keep {
+            o.push_str(&format!("ladder_keep: {n}\n"));
+        }
+        if let Some(l) = self.leak {
+            o.push_str(&format!("leak: {l:.2}\n"));
+        }
+        if let Some(hd) = self.hdr {
+            o.push_str(&format!("hdr: {hd}\n"));
+        }
+        if let Some(v) = self.ridges {
+            o.push_str(&format!("ridges: {v:.2}\n"));
+        }
+        if let Some(v) = self.skip {
+            o.push_str(&format!("skip: {v:.2}\n"));
+        }
+        if let Some(v) = self.fine_lines {
+            o.push_str(&format!("fine_lines: {v:.2}\n"));
+        }
+        if let Some(v) = self.impasto_map {
+            o.push_str(&format!("impasto_map: {v:.2}\n"));
+        }
+        if let Some(v) = self.weave {
+            o.push_str(&format!("weave: {v:.2}\n"));
+        }
+        if let Some(v) = self.sheen {
+            o.push_str(&format!("sheen: {v:.2}\n"));
+        }
+        if let Some(v) = self.collide {
+            o.push_str(&format!("collide: {v:.2}\n"));
+        }
+        match &self.analysis {
+            Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("analysis: {p:?}\n")),
+            _ => {}
+        }
+        match &self.analysis_insights {
+            Some(Artefact::On(true)) => o.push_str("analysis_insights: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("analysis_insights: {p:?}\n")),
+            _ => {}
+        }
+        match &self.outcome {
+            Some(Artefact::On(true)) => o.push_str("outcome: true\n"),
+            Some(Artefact::Path(p)) => o.push_str(&format!("outcome: {p:?}\n")),
+            _ => {}
+        }
+        for (k, v) in [("impasto", self.impasto), ("stroke_width", self.stroke_width), ("stroke_length", self.stroke_length), ("detail_restate", self.detail_restate)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
+        }
+        if let Some(v) = self.hdr_amount {
+            o.push_str(&format!("hdr_amount: {v:.2}\n"));
+        }
+        if let Some(n) = self.levels {
+            o.push_str(&format!("levels: {n}\n"));
         }
         if self.semantic {
             o.push_str("semantic: true\n");
@@ -413,6 +619,34 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
         reserve,
         budget: Some(budget),
         from_scratch: a.from_scratch,
+        // The planner cannot know a hair region; it is named on the command line or in a hand-written plan.
+        hair_mask: None,
+            infill: None,
+            rigger: None,
+            hotspot: None,
+            technique: None,
+            splatter: None,
+            edge_pool: None,
+            granulate: None,
+            ladder_keep: None,
+            leak: None,
+            hdr: None,
+            ridges: None,
+            skip: None,
+            fine_lines: None,
+            impasto_map: None,
+            weave: None,
+            sheen: None,
+            collide: None,
+            analysis: None,
+            analysis_insights: None,
+            outcome: None,
+            impasto: None,
+            stroke_width: None,
+            stroke_length: None,
+            detail_restate: None,
+            hdr_amount: None,
+            levels: None,
         notes,
     }
 }
@@ -426,7 +660,14 @@ mod tests {
         let base = Analysis { faces: 1, luma_stddev: 0.12, luma_mean: 0.5, medium: "watercolour".into(), palette: "image".into(), short_side: 512, long_side: 682, surface_white: true, structure: STRUCTURE_NORM, from_scratch: false };
         let flat = plan_from(&base);
         let punchy = plan_from(&Analysis { luma_stddev: 0.26, luma_mean: 0.5, ..base_like(&base) });
-        assert!(flat.value_key > punchy.value_key, "a flat reference is keyed harder ({} vs {})", flat.value_key, punchy.value_key);
+        // The key reads the reference's CONTRAST — but only for a medium that builds its values with paint.
+        // A LUMINOUS one takes a mild fixed key instead, because its lights are the paper and keying them
+        // harder only lifts the picture off it. Watercolour became luminous when it gained its washes, so the
+        // contrast relationship is checked on an opaque medium and the fixed key is checked on watercolour.
+        let opaque = |sd: f32| plan_from(&Analysis { luma_stddev: sd, medium: "oil-direct".into(), ..base_like(&base) }).value_key;
+        assert!(opaque(0.12) > opaque(0.26), "a flat reference is keyed harder ({} vs {})", opaque(0.12), opaque(0.26));
+        assert_eq!(flat.value_key, punchy.value_key, "a luminous medium takes the same mild key either way");
+        assert!(flat.value_key > 0.0 && flat.value_key < 0.6, "and it is mild ({})", flat.value_key);
         assert_eq!(flat.armature_face, Some(300), "a detected face gets a fine focal armature (SAM precise focal)");
         assert_eq!(flat.armature_body, Some(210), "a subject gets a mid body armature (three-tier)");
         // No aerial veil by default (measured: it lifted mean luma +0.04 and hurt structural agreement with the

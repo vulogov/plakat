@@ -1,6 +1,6 @@
 [package]
 name = "plakat"
-version = "7.0.0"
+version = "7.1.0"
 edition = "2024"
 rust-version = "1.87"
 authors = ["Vladimir Ulogov <vulogov@gmail.com>"]
@@ -34,6 +34,8 @@ exclude = [
     # the 10 MB cap.
     "corpus/",
     "gallery/",
+    # The in-repo guard kit / bench scratch (untracked renders) — never part of the crate.
+    "scratchpad/",
     # `plakat verify` reference-authoring harness — offline python/diffusers dev tooling
     # (RFC_VERIFY.md). NEVER a plakat dependency: it authors golden tensors that are frozen
     # on HF; the shipped crate only consumes them. Excluded so the crate stays self-contained.

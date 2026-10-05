@@ -336,6 +336,79 @@ fn kmeans_rgb(px: &[[f32; 3]], k: usize, iters: usize) -> Vec<[f32; 3]> {
     cents
 }
 
+/// The WATERCOLOUR's palette from the picture: k-means in CIELAB seeded by FARTHEST POINT (k-means++), so a
+/// small vivid passage — a stained-glass pane, a flower box — gets a pigment of its own instead of the
+/// strided seeding's duplicates of the biggest mass; each cluster's pigment is its chroma extreme; near
+/// duplicates (ΔE < 6) dropped. Only the brush watercolour uses it (the other media keep `palette_from_image`
+/// byte for byte).
+fn palette_for_watercolour(img: &image::RgbImage, k: usize) -> crate::paint::palette::Palette {
+    use crate::paint::pigment::Pigment;
+    let small = image::imageops::resize(img, 160, 160, image::imageops::FilterType::Nearest);
+    let srgbs: Vec<crate::paint::color::Srgb> = small.pixels().map(|p| p.0).collect();
+    let lab: Vec<[f32; 3]> = srgbs.iter().map(|&c| { let l = crate::paint::color::srgb_to_lab(c); [l.l, l.a, l.b] }).collect();
+    let d2 = |a: &[f32; 3], b: &[f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+    // Farthest-point seeding, then Lloyd iterations.
+    let kk = k.saturating_sub(2).max(4);
+    let mut cents: Vec<[f32; 3]> = vec![lab[lab.len() / 2]];
+    let mut dist: Vec<f32> = lab.iter().map(|p| d2(p, &cents[0])).collect();
+    while cents.len() < kk {
+        let (i, _) = dist.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+        cents.push(lab[i]);
+        for (j, p) in lab.iter().enumerate() {
+            dist[j] = dist[j].min(d2(p, &lab[i]));
+        }
+    }
+    let mut assign = vec![0usize; lab.len()];
+    for _ in 0..12 {
+        for (i, p) in lab.iter().enumerate() {
+            assign[i] = (0..cents.len()).min_by(|&a, &b| d2(p, &cents[a]).partial_cmp(&d2(p, &cents[b])).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0);
+        }
+        let mut sum = vec![[0f32; 3]; cents.len()];
+        let mut cnt = vec![0usize; cents.len()];
+        for (i, p) in lab.iter().enumerate() {
+            for j in 0..3 { sum[assign[i]][j] += p[j]; }
+            cnt[assign[i]] += 1;
+        }
+        for (ci, cent) in cents.iter_mut().enumerate() {
+            if cnt[ci] > 0 { for j in 0..3 { cent[j] = sum[ci][j] / cnt[ci] as f32; } }
+        }
+    }
+    let chroma = |pi: usize| (lab[pi][1].powi(2) + lab[pi][2].powi(2)).sqrt();
+    let mut cols: Vec<crate::paint::color::Srgb> = vec![[247, 245, 241], [24, 24, 28]];
+    let mut picked: Vec<[f32; 3]> = Vec::new();
+    // THE ACCENTS FIRST: the most chromatic pixels the picture has, in each hue sector, are pigments before
+    // the clusters are — a flower box or a stained-glass pane is a few hundred pixels of a 160² sample and
+    // no cluster of its own, and the palette had no pink for the flowers and no pastel for the panes.
+    // (The hue sectors are the picture's own colours; nothing here names one.)
+    let hue_of = |pi: usize| lab[pi][2].atan2(lab[pi][1]);
+    let mut by_hue: Vec<Vec<usize>> = vec![Vec::new(); 12];
+    for pi in 0..lab.len() {
+        if chroma(pi) > 28.0 {
+            let sector = (((hue_of(pi) + std::f32::consts::PI) / (2.0 * std::f32::consts::PI) * 12.0) as usize).min(11);
+            by_hue[sector].push(pi);
+        }
+    }
+    for sector in by_hue.iter_mut() {
+        if sector.len() < 12 { continue; }
+        sector.sort_by(|&a, &b| chroma(a).partial_cmp(&chroma(b)).unwrap_or(std::cmp::Ordering::Equal));
+        let pi = sector[(sector.len() - 1) * 85 / 100];
+        if picked.iter().any(|q| d2(q, &lab[pi]) < 36.0) { continue; }
+        picked.push(lab[pi]);
+        cols.push(srgbs[pi]);
+    }
+    for ci in 0..cents.len() {
+        let mut m: Vec<usize> = (0..lab.len()).filter(|&i| assign[i] == ci).collect();
+        if m.is_empty() { continue; }
+        m.sort_by(|&a, &b| chroma(a).partial_cmp(&chroma(b)).unwrap_or(std::cmp::Ordering::Equal));
+        let pi = m[(m.len() - 1) * 85 / 100];
+        if picked.iter().any(|q| d2(q, &lab[pi]) < 36.0) { continue; }
+        picked.push(lab[pi]);
+        cols.push(srgbs[pi]);
+    }
+    let pigments: Vec<Pigment> = cols.iter().enumerate().map(|(i, c)| Pigment { name: Box::leak(format!("img-{i}").into_boxed_str()), masstone: *c }).collect();
+    crate::paint::palette::Palette { name: "image", pigments: Box::leak(pigments.into_boxed_slice()) }
+}
+
 /// Build a PALETTE FROM the reference IMAGE: cluster its dominant colours into pigments (plus a near-white and
 /// near-black so the value range and ground are covered), so any photo repaints cleanly in any medium instead
 /// of being forced through a fixed palette that can't represent its colours. The pigments are leaked to
@@ -524,6 +597,114 @@ pub struct FromArgs {
     /// and denser on demand — not more detail than the reference holds.
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
+    /// LEAKS (0..1, 0 = none): runs of pigment that drip down out of the wet washes under gravity, tapering to
+    /// a drop where they dried — the mark that says "this was liquid" more than any other. Only the big wet
+    /// masses leak, from their lower edge, in their own pigment; wet-on-wet runs further, dry-on-dry never
+    /// leaks, and a run is never started across a face. A watercolourist courts it or guards against it, so
+    /// it is yours: nothing leaks unless asked.
+    #[arg(long)]
+    pub leak: Option<f32>,
+    /// HDR: tone-map the picture before painting (a local operator: lamps stop blowing out, shadows lift to
+    /// show what is in them, the picture's colours kept), so every stage paints the re-lit picture — the
+    /// darks have something to paint and the lights are not a hole in the sheet. Plan: `hdr: true`.
+    #[arg(long)]
+    pub hdr: Option<bool>,
+    /// BRISTLE RIDGES (0..1): a stroke's relief striated across its width by the lanes' loads, so the
+    /// impasto relight shows bristle marks rather than a smooth tube. Plan: `ridges`.
+    #[arg(long)]
+    pub ridges: Option<f32>,
+    /// DRY-BRUSH SKIPPING (0..1): a bristle with little water touches only the paper's standing fibres, so
+    /// a dry mark is broken by the tooth along its drag instead of printing as a solid gritty band. Plan:
+    /// `skip`. (The watercolour wash recipe turns it on by itself.)
+    #[arg(long)]
+    pub skip: Option<f32>,
+    /// FINE LINES (watercolour, 0..1, default 1): how far the finest brushes' marks may run along an edge —
+    /// 1 = a rigger's line (a mullion, a rail drawn as one mark), 0 = short marks only, no drawn lines. Plan:
+    /// `fine_lines`.
+    #[arg(long)]
+    pub fine_lines: Option<f32>,
+    /// IMPASTO MAPPED TO THE PICTURE (0..1, default 0): the paint's thickness follows the picture — lights
+    /// thick, shadows thin; subject thick, background thin; nearer thicker with a depth map — instead of one
+    /// thickness over the sheet. Pair with `--impasto`/`--ridges` on an oil. Plan: `impasto_map`.
+    #[arg(long)]
+    pub impasto_map: Option<f32>,
+    /// CANVAS WEAVE (0..1, default 0): the linen's threads under the paint, seen in the relight where the
+    /// paint is thin or bare — a built-up passage covers them entirely. Plan: `weave`.
+    #[arg(long)]
+    pub weave: Option<f32>,
+    /// WET COLLISION (0..1, default 0): after each broad pass the wet paint drags along its own striation
+    /// where loaded strokes meet — the colours marble, the ridges plow — nothing of it a blur. Off the
+    /// faces; tapered with the passes like the bleed. Oil/acrylic. Plan: `collide`.
+    #[arg(long)]
+    pub collide: Option<f32>,
+    /// ANALYSIS artefact (RFC PAINT-3): write a Markdown report of the run — every parameter with the
+    /// comment that explains it, what the run found, what it measured. With no value the report goes
+    /// beside the output (`<out>.md`); a value is the path. Plan: `analysis: true` / `analysis: "path"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub analysis: Option<String>,
+    /// INSIGHTS (RFC PAINT-3 P0.5): run the analysis report through the configured LLM and append
+    /// `## Insights` and `## Recommendations` (plan lines with reasons) to it. Takes a provider as the
+    /// enhancer does (`auto`, `ollama`, `ollama:<model>`, `deepseek`, `gemini`, `local`); no value =
+    /// `auto`. The model gets the report's facts, never the picture. A hosted provider receives the
+    /// report text — it leaves the machine; Ollama/local keep it here. Implies `--analysis`.
+    /// Plan: `analysis_insights: true | "provider"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    pub analysis_insights: Option<String>,
+    /// OUTCOME sheet (RFC PAINT-3 P1): a one-page sheet beside the picture — the master composition, four
+    /// micro-analysis lens crops chosen by rule (the faces, the thickest paint, the textured ground, the
+    /// lights) each captioned with its measurements, the layer hierarchy (the canvas after every pass),
+    /// the palette ranked by use with classic pigment names, and the brushwork facts. Typeset with Typst
+    /// (`brew install typst`). No value = `<out>_sheet.png`; a value is the path (`.png` or `.pdf`).
+    /// Plan: `outcome: true` / `outcome: "path"`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub outcome: Option<String>,
+    /// How far the HDR re-light goes, 0..1 (default 0.6 when `--hdr` is on). Plan: `hdr_amount`.
+    #[arg(long)]
+    pub hdr_amount: Option<f32>,
+    /// TECHNIQUE: how wet the paper is when each layer goes down — the decision that makes a watercolour look
+    /// the way it does. `wet-on-wet` floods one wash into the next: soft blooms, colours running together, no
+    /// hard edges anywhere. `wet-on-dry` lets each wash SET before the next: crisp wash boundaries with the
+    /// dark pigment rim where they dried, soft modelling within — the classic watercolour, and the default
+    /// for a wet medium. `dry-on-dry` drags a barely-loaded brush over dry paper: no bleeding, the paper's
+    /// tooth breaking every stroke, pigment granulating in the hollows. Sets drying, bleed, edge pooling and
+    /// granulation together, so it is one decision rather than four.
+    #[arg(long, value_name = "wet-on-wet|wet-on-dry|dry-on-dry")]
+    pub technique: Option<String>,
+    /// HOTSPOT (0..1): polish flat, blown specular highlights — the shine on a bald head, a glazed pot, wet
+    /// stone. The armature snaps such a highlight into ONE value mass and the brush fills it flat, so what
+    /// should be a turning form reads as a hole cut in the picture: a pale plateau with a hard rim. This
+    /// re-models it as a DOME, brightest at its own centre and easing to the value its rim sits against. The
+    /// gradient is invented from the shape's geometry, never copied from the source, and only the value moves
+    /// — the hue stays, because a highlight is a lightness event. 0 leaves the plateau alone; the default
+    /// softens it while KEEPING the highlight, which is where the light is; 1 models it fully.
+    /// Default: 0.5 for a new painting, 0 otherwise.
+    #[arg(long)]
+    pub hotspot: Option<f32>,
+    /// RIGGER (0..1, 0 = off): put back the few shapes too THIN for the brush ladder to lay at all — a stem,
+    /// a spoon handle, the line of a shelf. Anything narrower than the finest brush does not soften, it
+    /// disappears; a painter finishes with a rigger and puts those few things back. Draws RIDGES (a thin shape
+    /// is lighter or darker than BOTH its sides, so an edge detector fires beside it and never on it), in the
+    /// shape's own colour, and only where the painting LOST one. Rationed hard — a wiry picture is worse than
+    /// a missing stem. Default: 0.35 for a new painting, 0 otherwise.
+    #[arg(long)]
+    pub rigger: Option<f32>,
+    /// INFILL: what a stroke follows where the picture gives it NOTHING to follow — a flat passage, which in
+    /// a dark interior is most of the canvas. `flat` lays long level marks, the way a painter blends a sky;
+    /// it is right for atmosphere and wrong for a dark mass, where every stroke runs horizontally and the
+    /// passage tiles into a rectangular quilt. `follow` carries the direction inward from the nearest
+    /// structure, so a dark mass is stroked along the shelf edge or silhouette that bounds it. A NUMBER is a
+    /// fixed stroke angle in degrees from horizontal — the painter's own decision about a passage.
+    /// Default: `follow` for a new painting, `flat` otherwise (the path whose renders are already accepted).
+    #[arg(long, value_name = "follow|flat|DEGREES")]
+    pub infill: Option<String>,
+    /// HAIR MASK: a grey PNG, white where hair / beard / fur is. Those passages are painted with the STRAND
+    /// tool — many raked bristle lanes, almost no pickup, long narrow marks tapering to a point, following the
+    /// picture's own growth direction, and a minority of strands breaking the silhouette. Given, it REPLACES
+    /// the part detector, which boxes only the hair it can name: a long beard came out strands at the top and
+    /// a smooth mass at its fall, and no automatic region has yet managed the whole of one. Make one with
+    /// `plakat segment` or `plakat remove --what`. Resized to the painting; white = hair.
+    #[arg(long, value_name = "PNG")]
+    pub hair_mask: Option<std::path::PathBuf>,
     /// NEW PAINTING (default false; `--new` or `--new true`): paint FROM SCRATCH, as RFC PAINT-1 specifies — the
     /// picture is read once into a REDUCED armature (its things, none of its texture) and painted with
     /// the medium's strokes: a minimum brush per plane (broad in the background, finer on the figure, finest
@@ -704,6 +885,16 @@ pub struct PaletteArgs {
     pub name: Option<String>,
 }
 
+
+/// A finding the terminal shows AND the analysis report repeats (RFC PAINT-3): the same text, the glyph
+/// dropped. `found!(glyph, "fmt", args…)`.
+macro_rules! found {
+    ($glyph:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {{
+        let __msg = format!($fmt $(, $arg)*);
+        println!("{}  {}", $glyph, __msg);
+        crate::paint::report::note(__msg);
+    }};
+}
 pub async fn run(args: PaintArgs) -> Result<()> {
     match args.cmd {
         Some(PaintCmd::New(a)) => run_new(a),
@@ -813,6 +1004,31 @@ async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<O
     Ok(Some((mask, extent)))
 }
 
+/// What the run cost, per pass and in total. A pass's rate is what tells a wide block-in from a fine
+/// restatement: the same budget of marks costs very differently depending on the brush laying them.
+fn print_paint_stats(stats: &[crate::paint::painter::PassStat], total_strokes: usize, seconds: f64) {
+    if stats.is_empty() {
+        return;
+    }
+    let mins = (seconds / 60.0).floor() as u64;
+    let secs = seconds - (mins as f64) * 60.0;
+    let when = if mins > 0 { format!("{mins}m {secs:04.1}s") } else { format!("{secs:.1}s") };
+    println!("{}  painted in {when} · {} strokes · {:.0}/s overall", style("·").dim(), total_strokes, total_strokes as f64 / seconds.max(1e-6));
+    for st in stats {
+        if st.strokes == 0 && st.seconds < 0.05 {
+            continue;
+        }
+        println!(
+            "     {:<14} {:>5.0}px {:>9} strokes {:>8.1}/s {:>7.1}s",
+            st.stage,
+            st.radius,
+            st.strokes,
+            st.strokes as f64 / st.seconds.max(1e-6),
+            st.seconds
+        );
+    }
+}
+
 /// Human summary of the stroke count against the budget. The budget is a CEILING, not a quota: the gates
 /// (saliency / reserve / focus / preserve-face / restate) can exhaust the eligible cells before it is reached,
 /// so when fewer strokes were laid we say so explicitly instead of silently reporting a number below the budget.
@@ -852,46 +1068,74 @@ fn boxes_to_mask(boxes: &[(f32, f32, f32, f32)], iw: u32, ih: u32, w: u32, h: u3
 /// - hair/beard → a COARSE wash armature tier (kept softer than the body);
 /// - clothing/shoulders → a mask to EXTEND the subject fact, so a light shirt is painted, not reserved to paper.
 /// Both are open-vocab detections; a model-free empty result if nothing is found.
-async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32, face: u32) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>)> {
+async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: u32, body: u32, face: u32, fine_hair: bool) -> Result<(Vec<(Vec<f32>, u32)>, Option<Vec<f32>>, Option<Vec<f32>>)> {
     let device = crate::device::select("auto")?;
     let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
     let (iw, ih) = image::image_dimensions(path).with_context(|| format!("reading dimensions of {}", path.display()))?;
+    // `PLAKAT_PAINT_SEMANTIC=1` prints what each query actually scored. A part that is never detected is
+    // silent otherwise, and a silent miss looks exactly like a part the picture does not contain.
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
     let detect = |queries: &[&str], thr: f32| -> Vec<(f32, f32, f32, f32)> {
         let mut boxes = Vec::new();
         for q in queries {
-            for d in owl.detect_all(path, q, thr, 4).unwrap_or_default() {
+            let hits = owl.detect_all(path, q, if loud { 0.0 } else { thr }, 4).unwrap_or_default();
+            if loud {
+                let best = hits.iter().map(|d| d.score).fold(0.0f32, f32::max);
+                found!(style("·").dim(), "semantic probe: {:?} best score {:.3} (threshold {thr:.2}) → {} box(es)", q, best, hits.iter().filter(|d| d.score >= thr).count());
+            }
+            for d in hits.into_iter().filter(|d| d.score >= thr) {
                 boxes.push((d.x0, d.y0, d.x1, d.y1));
             }
         }
         boxes
     };
     let mut tiers = Vec::new();
+    let mut hair_mask: Option<Vec<f32>> = None;
     // A named part → its armature-resolution ROLE, derived from the plan's own tiers (not image-tuned):
-    //   hair/beard = COARSE wash · skin = MID smooth form · hands = FINE (structure, a secondary focal).
-    let hair_res = (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6));
+    //   skin = MID smooth form · hands = FINE (structure, a secondary focal).
+    // HAIR was a COARSE wash, softer than the body. That is backwards: hair is the finest structure on a figure
+    // after the features, and softening it is why a mane and a beard came out as a lumpy mass. A new painting
+    // reads it BETWEEN the body and the face, where a lock of hair is a thing with a shape. (The old tier is
+    // kept for the path that tracks its source, whose renders are already accepted.)
+    let hair_res = if fine_hair {
+        ((body + face) / 2).clamp(body, face)
+    } else {
+        (coarse + 12).clamp(coarse + 4, body.saturating_sub(8).max(coarse + 6))
+    };
     let skin_res = (body + (face.saturating_sub(body)) / 4).clamp(body, face);
     let hands_res = ((body + face) / 2).clamp(body, face);
     for (label, queries, thr, res) in [
-        ("hair/beard", &["a beard", "long hair", "hair", "a moustache"][..], 0.12_f32, hair_res),
+        // FUR too: the queries were human-only, so a lion's mane matched nothing at all and the whole hair
+        // path never ran on an animal.
+        // Part-level words find a human's hair. They do NOT find an animal's coat: on a picture that is half
+        // lion, "fur" and "a mane" both scored under 0.06 while every part query sat at noise. So name the
+        // ANIMAL as well — on an animal the coat IS the body, and the region is then the animal's box narrowed
+        // by the subject matte (below).
+        ("hair/beard/fur", &["a beard", "long hair", "hair", "a moustache", "fur", "a mane",
+                             "a lion", "a dog", "a cat", "a horse", "a bear", "a wolf", "a furry animal"][..], 0.12_f32, hair_res),
         ("skin", &["skin", "a neck", "a bald head", "a forehead"][..], 0.11, skin_res),
         ("hands", &["a hand", "hands", "fingers"][..], 0.11, hands_res),
     ] {
         let boxes = detect(queries, thr);
         if !boxes.is_empty() {
-            println!("{}  semantic: {} {label} region(s) → armature tier {res}px", style("·").dim(), boxes.len());
-            tiers.push((boxes_to_mask(&boxes, iw, ih, w, h), res));
+            found!(style("·").dim(), "semantic: {} {label} region(s) → armature tier {res}px", boxes.len());
+            let m = boxes_to_mask(&boxes, iw, ih, w, h);
+            if label.starts_with("hair") {
+                hair_mask = Some(m.clone());
+            }
+            tiers.push((m, res));
         }
     }
     // CLOTHING / SHOULDERS → extend the subject so a light shirt is PAINTED, not reserved to blank paper.
     let clothing = detect(&["a shirt", "clothing", "a t-shirt", "shoulders", "a jacket"], 0.10);
     let clothing_mask = if clothing.is_empty() {
-        println!("{}  semantic: no clothing detected", style("·").yellow());
+        found!(style("·").yellow(), "semantic: no clothing detected");
         None
     } else {
-        println!("{}  semantic: {} clothing region(s) → extend the subject (paint the shirt)", style("·").dim(), clothing.len());
+        found!(style("·").dim(), "semantic: {} clothing region(s) → extend the subject (paint the shirt)", clothing.len());
         Some(boxes_to_mask(&clothing, iw, ih, w, h))
     };
-    Ok((tiers, clothing_mask))
+    Ok((tiers, clothing_mask, hair_mask))
 }
 
 /// Detect the primary (largest, highest-score) face box `[x0,y0,x1,y1]` in original-image pixels, via SCRFD.
@@ -953,6 +1197,120 @@ async fn sam_regions(path: &std::path::Path, w: u32, h: u32) -> Result<(Option<V
         mask_to_vec(blurred)
     });
     Ok((subject, face_mask))
+}
+
+/// Which of SAM's candidate masks is the PART the prompt sits in, by area alone.
+///
+/// SAM answers one point with three masks — roughly a subpart, a part, and the whole object. Reject the whole
+/// object by SIZE: a beard is not several times the region a detector named for it, nor a large share of the
+/// frame. Of what remains take the LARGEST, which reaches furthest down the hair rather than catching a
+/// fragment of it. `None` when nothing is believable.
+fn choose_part_scale(areas: &[usize], seed_area: usize, frame: usize) -> Option<usize> {
+    areas
+        .iter()
+        .enumerate()
+        .filter(|&(_, &a)| a <= (seed_area * 3).max(frame / 20) && a * 4 >= seed_area)
+        .max_by_key(|&(_, &a)| a)
+        .map(|(i, _)| i)
+}
+
+/// The hair's own extent, from SAM's PART-scale mask.
+///
+/// A detector boxes the hair it can name — the head, the top of a beard — and stops, so the strand tool ran
+/// down to where the box ended and the rest was painted as a smooth mass. SAM knows where the beard ends; the
+/// trick is asking it the right question. Prompted with a point it returns three masks (roughly a subpart, a
+/// part, and the whole object), and taking the highest predicted IoU takes the WHOLE OBJECT — a point inside
+/// a beard came back as the entire seated man. So choose by SCALE instead: the SMALLEST candidate that still
+/// covers most of the named seed. That is the part the prompt is inside of.
+///
+/// `None` when there is no seed, or when every candidate is implausible as hair.
+async fn sam_hair_extent(path: &std::path::Path, w: u32, h: u32, seed: &[f32]) -> Result<Option<Vec<f32>>> {
+    use crate::pipelines::sam::{build_selection_masks, PointPrompt};
+    let (iw, ih) = image::image_dimensions(path)?;
+    let seeded: Vec<usize> = (0..seed.len()).filter(|&i| seed[i] > 0.5).collect();
+    if seeded.len() < 64 {
+        return Ok(None);
+    }
+    let (mut sx, mut sy) = (0f64, 0f64);
+    for &i in &seeded {
+        sx += (i % w as usize) as f64;
+        sy += (i / w as usize) as f64;
+    }
+    let n = seeded.len() as f64;
+    let sc = (iw as f64 / w as f64, ih as f64 / h as f64);
+    // ONE point, at the seed's centre of mass. Two points spread down the beard seemed the safer prompt and
+    // is the opposite: SAM answers several points with an object CONTAINING them all, so every candidate came
+    // back a torso. Asked at one place it offers the part that place is in.
+    let pts = vec![PointPrompt { x: sx / n * sc.0, y: sy / n * sc.1, foreground: true }];
+    let device = crate::device::select("auto")?;
+    let Ok((masks, _)) = build_selection_masks(path, &pts, &device).await else { return Ok(None) };
+
+    let dump = std::env::var("PLAKAT_PAINT_MASKS").ok();
+    let mut cands: Vec<(usize, Vec<f32>)> = Vec::new();
+    for (mi, m) in masks.into_iter().enumerate() {
+        let scaled = image::imageops::resize(&m, w, h, image::imageops::FilterType::Triangle);
+        let v: Vec<f32> = scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+        let area = v.iter().filter(|&&x| x > 0.5).count();
+        if let Some(d) = &dump {
+            let _ = scaled.save(std::path::Path::new(d).join(format!("sam_cand{mi}.png")));
+            let cov = seeded.iter().filter(|&&i| v[i] > 0.5).count();
+            println!("{}  sam candidate {mi}: area {}% · covers {}% of the named seed", style("·").dim(), area * 100 / v.len().max(1), cov * 100 / seeded.len().max(1));
+        }
+        // Reject the WHOLE-OBJECT candidate by size: a part that is several times the hair the detector
+        // named, or a large share of the frame, is the person, not their beard. Of what is left take the
+        // LARGEST — the fullest reach down the beard, rather than a fragment of it. Seed coverage is NOT a
+        // test: the seed also holds the hair behind an ear, which a beard-only mask rightly does not contain.
+        cands.push((area, v));
+    }
+    let areas: Vec<usize> = cands.iter().map(|(a, _)| *a).collect();
+    let frame = (w as usize) * (h as usize);
+    match choose_part_scale(&areas, seeded.len(), frame).map(|i| cands.swap_remove(i)) {
+        Some((area, v)) => {
+            found!(style("·").dim(), "hair/fur: SAM's part-scale extent over {}% of the frame (the detector named {}%)", area * 100 / v.len().max(1), seeded.len() * 100 / v.len().max(1));
+            Ok(Some(v))
+        }
+        None => {
+            found!(style("·").yellow(), "hair/fur: no SAM candidate was believable as the named hair — keeping the detector's boxes");
+            Ok(None)
+        }
+    }
+}
+
+/// The wet technique (see `--technique`): the painter's enum, plus the canvas-level behaviour that goes with
+/// it — `(technique, drying between layers, bleed multiplier, pigment diffusion)`. What the technique does to
+/// each STROKE and WASH lives in the painter; this is only what happens to the sheet between them.
+fn technique_of(v: &str) -> Result<(crate::paint::painter::WetTechnique, f32, f32, f32)> {
+    use crate::paint::painter::WetTechnique as T;
+    Ok(match v.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "wet-on-wet" | "wet" => (T::WetOnWet, 0.12, 1.6, 0.35),
+        "wet-on-dry" | "classic" => (T::WetOnDry, 1.0, 1.0, 0.0),
+        "dry-on-dry" | "dry" | "drybrush" => (T::DryOnDry, 1.0, 0.15, 0.0),
+        other => anyhow::bail!("--technique expects wet-on-wet, wet-on-dry or dry-on-dry — got {other:?}"),
+    })
+}
+
+/// `follow` / `flat` / a stroke angle in degrees.
+fn parse_infill(v: &str) -> Result<crate::paint::painter::FlowInfill> {
+    use crate::paint::painter::FlowInfill;
+    let t = v.trim();
+    Ok(match t.to_ascii_lowercase().as_str() {
+        "follow" | "structure" => FlowInfill::Follow,
+        "flat" | "level" => FlowInfill::Flat,
+        _ => FlowInfill::Angle(t.parse::<f32>().with_context(|| format!("--infill expects follow, flat, or an angle in degrees — got {t:?}"))?),
+    })
+}
+
+/// Load a HAIR MASK png (white = hair) and fit it to the painting. A hand-drawn mask has a hard edge, and a
+/// hard edge in this mask is a hard edge in the TOOL — the boundary between strand-painted and mass-painted
+/// passages reads as a defect, which is the whole complaint the mask exists to answer. So it is feathered a
+/// little: a few pixels, enough to hide the switch, far too few to blur which side of the beard's silhouette
+/// a pixel is on.
+fn load_hair_mask(path: &std::path::Path, w: u32, h: u32) -> Result<Vec<f32>> {
+    let m = image::open(path).with_context(|| format!("opening the hair mask {}", path.display()))?.to_luma8();
+    let feather = ((w.min(h) as f32) / 400.0).clamp(2.0, 16.0);
+    let blurred = image::imageops::blur(&m, feather);
+    let scaled = image::imageops::resize(&blurred, w, h, image::imageops::FilterType::Triangle);
+    Ok(scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect())
 }
 
 /// Global luma standard deviation in [0,1] — a cheap proxy for tonal contrast (low = flat/foggy reference).
@@ -1349,6 +1707,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     );
     std::fs::write(&sidecar, recipe).ok();
 
+    print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}  ·  recipe → {}", style("✓").green(), stroke_summary(result.strokes, plan.budget), out.display(), score_path.display(), sidecar.display());
     if a.report {
         let tr = painter::traceability(&image_out, &reference);
@@ -1485,8 +1844,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // unset flags leave open — the art director hands the technique a plan. Explicit flags always win.
     // Whether the background armature tier came from the plan (adjustable by the matte below) or the user.
     let mut armature_from_plan = false;
+    // The plan's brush-ladder cut, applied after the medium has built its ladder (see `PaintPlan::ladder_keep`).
+    let mut plan_ladder_keep: Option<usize> = None;
     // Whether the stroke budget was named on the command line (a new painting otherwise counts its own).
-    let budget_explicit = a.budget != 1500;
+    let mut budget_explicit = a.budget != 1500;
+    let mut plan_text: Option<String> = None;
+    let mut plan_path: Option<std::path::PathBuf> = None;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;
@@ -1498,10 +1861,107 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             p
         } else {
             let text = std::fs::read_to_string(&spec).with_context(|| format!("reading plan {spec}"))?;
-            crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?
+            let p = crate::paint::plan::PaintPlan::parse(&text).with_context(|| format!("parsing plan {spec}"))?;
+            plan_text = Some(text);
+            plan_path = Some(std::path::PathBuf::from(&spec));
+            p
         };
         if plan.from_scratch {
             a.new_painting = true;
+        }
+        if a.analysis.is_none() {
+            a.analysis = match &plan.analysis {
+                Some(crate::paint::plan::Artefact::On(true)) => Some(String::new()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
+        }
+        if a.outcome.is_none() {
+            a.outcome = match &plan.outcome {
+                Some(crate::paint::plan::Artefact::On(true)) => Some(String::new()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
+        }
+        if a.analysis_insights.is_none() {
+            a.analysis_insights = match &plan.analysis_insights {
+                Some(crate::paint::plan::Artefact::On(true)) => Some("auto".into()),
+                Some(crate::paint::plan::Artefact::Path(p)) => Some(p.clone()),
+                _ => None,
+            };
+        }
+        if a.hair_mask.is_none() {
+            a.hair_mask = plan.hair_mask.as_ref().map(std::path::PathBuf::from);
+        }
+        if a.infill.is_none() {
+            a.infill = plan.infill.clone();
+        }
+        if a.rigger.is_none() {
+            a.rigger = plan.rigger;
+        }
+        if a.hotspot.is_none() {
+            a.hotspot = plan.hotspot;
+        }
+        if a.technique.is_none() {
+            a.technique = plan.technique.clone();
+        }
+        if a.leak.is_none() {
+            a.leak = plan.leak;
+        }
+        if a.hdr.is_none() {
+            a.hdr = plan.hdr;
+        }
+        if a.ridges.is_none() {
+            a.ridges = plan.ridges;
+        }
+        if a.skip.is_none() {
+            a.skip = plan.skip;
+        }
+        if a.fine_lines.is_none() {
+            a.fine_lines = plan.fine_lines;
+        }
+        if a.impasto_map.is_none() {
+            a.impasto_map = plan.impasto_map;
+        }
+        if a.weave.is_none() {
+            a.weave = plan.weave;
+        }
+        if a.sheen.is_none() {
+            a.sheen = plan.sheen;
+        }
+        if a.collide.is_none() {
+            a.collide = plan.collide;
+        }
+        if a.impasto.is_none() {
+            a.impasto = plan.impasto;
+        }
+        // The plain dials: the plan's value applies where the command line left the default.
+        if let Some(v) = plan.stroke_width {
+            if (a.stroke_width - 1.0).abs() < 1e-6 { a.stroke_width = v; }
+        }
+        if let Some(v) = plan.stroke_length {
+            if (a.stroke_length - 1.0).abs() < 1e-6 { a.stroke_length = v; }
+        }
+        if let Some(v) = plan.detail_restate {
+            if (a.detail_restate - 0.08).abs() < 1e-6 { a.detail_restate = v; }
+        }
+        if a.hdr_amount.is_none() {
+            a.hdr_amount = plan.hdr_amount;
+        }
+        if a.armature_levels.is_none() {
+            a.armature_levels = plan.levels;
+        }
+        if a.splatter.is_none() {
+            a.splatter = plan.splatter;
+        }
+        if a.edge_pool.is_none() {
+            a.edge_pool = plan.edge_pool;
+        }
+        if a.granulate.is_none() {
+            a.granulate = plan.granulate;
+        }
+        if let Some(n) = plan.ladder_keep {
+            plan_ladder_keep = Some(n);
         }
         if a.medium.is_none() {
             a.medium = Some(plan.medium.clone());
@@ -1558,6 +2018,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.budget == 1500 {
             if let Some(b) = plan.budget {
                 a.budget = b;
+                // A budget the plan names is as explicit as one on the command line: the coverage count a
+                // new painting works out for itself must not overrule it.
+                budget_explicit = true;
             }
         }
         if a.detail_length.is_none() {
@@ -1566,13 +2029,83 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     let mut img = image::open(&a.input).with_context(|| format!("opening {}", a.input.display()))?.to_rgb8();
     let (w, h) = img.dimensions();
+    // HDR re-light before anything reads the picture (the palette, the armature, every pass); the
+    // detectors read the file and see the original.
+    if a.hdr == Some(true) {
+        let amount = a.hdr_amount.unwrap_or(0.6).clamp(0.0, 1.0);
+        img = crate::paint::painter::hdr_tone_map(&img, amount);
+        found!(style("·").dim(), "hdr: the picture re-lit before painting (amount {amount:.2})");
+        if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+            let _ = img.save(std::path::Path::new(&dir).join("hdr_input.png"));
+        }
+    }
 
     // Palette: `image`/`auto` derives one from the reference; otherwise a named palette (defaulting to the
     // medium's own when a medium is given).
+    // EXPERIMENT (PLAKAT_WC_BRUSH): a brush watercolour paints the picture re-KEYED to the paper, so its
+    // pigments are derived from the keyed picture — a night scene's own pigments hold no light warm colour,
+    // and keyed-up skin was mixed from the lamp glow's pale blue (teal patches on every lit face).
+    let wc_brush_cli = a.new_painting && a.medium.as_deref() == Some("watercolour") && (std::env::var_os("PLAKAT_WC_BRUSH").is_some() || std::env::var_os("PLAKAT_WC_WASH").is_some());
+    let img_for_palette: image::RgbImage = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_NOKEY").is_none() && !(std::env::var_os("PLAKAT_WC_WASH").is_some() && std::env::var_os("PLAKAT_WCB_KEY").is_none()) {
+        let envf = |n: &str, d: f32| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
+        crate::paint::painter::key_image(&img, &img, envf("PLAKAT_WCB_DEPTH", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.8 } else { 0.9 }), envf("PLAKAT_WCB_GAMMA", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 1.6 } else { 2.6 }), envf("PLAKAT_WCB_HI", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.985 } else { 0.95 }))
+    } else {
+        img.clone()
+    };
+    // A WATERCOLOUR PIGMENT IS DARK IN MASSTONE AND CLEAN IN TINT. A film of pigment can never be darker
+    // than the pigment itself, and a pigment taken straight from the picture is as light as the passage it
+    // came from — so every dark had to be mixed with black, and the tint of that mix is grey. The brush
+    // watercolour takes each image pigment's CHROMATICITY (the picture's hue, nothing named) and sets its
+    // masstone deep; the value of every wash then comes from concentration, as it does on paper.
+    let dark_masstones = |p: crate::paint::palette::Palette| -> crate::paint::palette::Palette {
+        use crate::paint::pigment::Pigment;
+        let depth = std::env::var("PLAKAT_WCB_MASSTONE").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.05);
+        let pigs: Vec<Pigment> = p
+            .pigments
+            .iter()
+            .map(|pg| {
+                let lin = crate::paint::color::srgb_to_linear(pg.masstone);
+                let l = crate::paint::color::linear_luma(lin).max(1e-4);
+                let (mx, mn) = (lin[0].max(lin[1]).max(lin[2]), lin[0].min(lin[1]).min(lin[2]));
+                // Near-neutral pigments (the paper white, the dark) are left as they are.
+                if mx - mn < 0.02 * mx.max(0.02) || (depth < 1.0 && l < depth) {
+                    return *pg;
+                }
+                // `PLAKAT_WCB_MASSTONE` ≥ 1: the VIVID masstone instead — the hue at its brightest saturated
+                // form (a Kubelka-Munk tint of a deep masstone goes grey; of a vivid one stays clean).
+                let sc = if depth >= 1.0 { 1.0 / mx.max(1e-4) } else { depth / l };
+                Pigment { name: pg.name, masstone: crate::paint::color::linear_to_srgb([(lin[0] * sc).min(1.0), (lin[1] * sc).min(1.0), (lin[2] * sc).min(1.0)]) }
+            })
+            .collect();
+        crate::paint::palette::Palette { name: p.name, pigments: Box::leak(pigs.into_boxed_slice()) }
+    };
+    // CHROMA GAIN (calibration, not preference): a transparent film reads at well under its pigment's
+    // chroma (measured on flat patches: the film lands at roughly 60% of the chroma of the colour it was
+    // mixed for), so the brush watercolour's pigments are derived with their chroma raised by the gain that
+    // brings the film back to the picture's own chroma — every hue by the same factor, the picture's hues
+    // and nothing else, clipped to the gamut.
+    let chroma_gain = |p: crate::paint::palette::Palette, g: f32| -> crate::paint::palette::Palette {
+        use crate::paint::pigment::Pigment;
+        let pigs: Vec<Pigment> = p
+            .pigments
+            .iter()
+            .map(|pg| {
+                let lin = crate::paint::color::srgb_to_linear(pg.masstone);
+                let l = crate::paint::color::linear_luma(lin);
+                let v = [l + (lin[0] - l) * g, l + (lin[1] - l) * g, l + (lin[2] - l) * g];
+                Pigment { name: pg.name, masstone: crate::paint::color::linear_to_srgb([v[0].clamp(0.0, 1.0), v[1].clamp(0.0, 1.0), v[2].clamp(0.0, 1.0)]) }
+            })
+            .collect();
+        crate::paint::palette::Palette { name: p.name, pigments: Box::leak(pigs.into_boxed_slice()) }
+    };
+    let wcb_gain = std::env::var("PLAKAT_WCB_GAIN").ok().and_then(|v| v.parse::<f32>().ok()).filter(|_| wc_brush_cli);
     let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
         "image" | "auto" => {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let p = palette_from_image(&img, 16);
+            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if std::env::var_os("PLAKAT_WC_WASH").is_some() { 24 } else { 16 });
+            let p = if std::env::var_os("PLAKAT_WC_WASH").is_some() { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
+            let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
+            let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
             p
         }
@@ -1613,6 +2146,17 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     let mut params = PaintParams::new(palette, a.budget);
     params.from_scratch = a.new_painting;
+    // A new painting FOLLOWS by default: it is the path being judged, and the quilt is its most visible
+    // artefact. The path that tracks its source keeps laying flat passages level, so its accepted renders
+    // stay exactly as they are. Either can be overridden outright.
+    params.rigger = a.rigger.unwrap_or(if a.new_painting { 0.35 } else { 0.0 }).clamp(0.0, 1.0);
+    params.leak = a.leak.unwrap_or(0.0).clamp(0.0, 1.0);
+    params.hotspot = a.hotspot.unwrap_or(if a.new_painting { 0.5 } else { 0.0 }).clamp(0.0, 1.0);
+    params.infill = match a.infill.as_deref() {
+        Some(v) => parse_infill(v)?,
+        None if a.new_painting => painter::FlowInfill::Follow,
+        None => painter::FlowInfill::Flat,
+    };
     // MEDIUM: apply the full technique behaviour (as the spec path does); the flags below still override.
     // The medium's MARK character (its brush, stroke proportions, charge, hatching, own grey) — applied AFTER
     // the flags below so it multiplies what the user asked for.
@@ -1712,6 +2256,24 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(pk) = a.pickup {
         params.brush.k_pickup = pk.clamp(0.0, 1.0);
     }
+    if let Some(rg) = a.ridges {
+        params.brush.ridges = rg.clamp(0.0, 1.0);
+    }
+    if let Some(sk) = a.skip {
+        params.brush.skip = sk.clamp(0.0, 1.0);
+    }
+    if let Some(fl) = a.fine_lines {
+        params.fine_lines = fl.clamp(0.0, 1.0);
+    }
+    if let Some(im) = a.impasto_map {
+        params.impasto_map = im.clamp(0.0, 1.0);
+    }
+    if let Some(wv) = a.weave {
+        params.weave = wv.clamp(0.0, 1.0);
+    }
+    if let Some(cv) = a.collide {
+        params.collide = cv.clamp(0.0, 1.0);
+    }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);
     }
@@ -1768,13 +2330,20 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     params.armature_face_side = a.armature_face;
     let mut face_extent: Option<f32> = None;
-    if a.preserve_face.is_some() || a.armature_face.is_some() {
+    // A wash medium painted from scratch always finds its faces: the shape-aware reserve must know where NOT to
+    // leave paper, and the fine brushes it keeps are for the face alone. (The focal PLANE still only runs when
+    // `armature_face` asks for it — a beard is not cut by this.)
+    let luminous_new = a.new_painting && a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
+    // (The impasto map too: a face is laid smooth and thin whatever the light says, so it must know where
+    // the faces are.)
+    let mapped_impasto = a.impasto_map.map_or(false, |v| v > 0.0);
+    if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new || mapped_impasto {
         if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
             params.face_mask = Some(m);
             face_extent = Some(e);
         }
         if params.face_mask.is_none() {
-            println!("{}  face: none detected — painting without a face focal region", style("·").yellow());
+            found!(style("·").yellow(), "face: none detected — painting without a face focal region");
         }
     }
     // MULTI-REGION armature (RFC §5.2): matte the SUBJECT (U2Net) so the body paints from a mid armature and the
@@ -1788,7 +2357,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let covered = mask.iter().filter(|&&m| m > 0.5).count();
         let total = mask.len().max(1);
         if covered > total / 50 && covered < total * 49 / 50 {
-            println!("{}  subject matte: {}% foreground → three-tier armature", style("·").dim(), covered * 100 / total);
+            found!(style("·").dim(), "subject matte: {}% foreground → three-tier armature", covered * 100 / total);
             // The background goes COARSER than the body only when the subject fills the frame (a portrait, a
             // bust). In a SCENE where the matted subject is small, the background IS the picture — a field, a
             // sky, a street — and painting it from the coarsest tier erased its structure wholesale (a landscape
@@ -1814,7 +2383,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             }
             params.subject_mask = Some(mask);
         } else {
-            println!("{}  subject matte: no clear subject — skipping the body tier", style("·").yellow());
+            found!(style("·").yellow(), "subject matte: no clear subject — skipping the body tier");
             params.armature_body_side = None;
         }
     }
@@ -1824,8 +2393,45 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let coarse = a.armature.unwrap_or(72);
         let body = a.armature_body.unwrap_or(coarse + 40);
         let face = a.armature_face.unwrap_or(body + 96);
-        let (tiers, clothing) = build_semantic_regions(&a.input, w, h, coarse, body, face).await?;
+        let (tiers, clothing, hair) = build_semantic_regions(&a.input, w, h, coarse, body, face, a.new_painting).await?;
         params.region_tiers = tiers;
+        // Hand the painter the hair/fur region so it changes TOOL there (see `PaintParams::hair_mask`).
+        // An ANIMAL query returns the whole animal, so narrow it to what is actually coat: inside the subject
+        // matte (not the ground showing through the box) and OUTSIDE the face (a muzzle, an eye and a nose are
+        // smooth form — painting them with the strand tool would rake the features into fur).
+        if a.new_painting {
+            params.hair_mask = if let Some(mut hm) = hair {
+                for (i, v) in hm.iter_mut().enumerate() {
+                    if let Some(sm) = params.subject_mask.as_deref() {
+                        *v *= sm.get(i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+                    }
+                    if let Some(fm) = params.face_mask.as_deref() {
+                        *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    }
+                }
+                // The detector named WHERE hair is; SAM says how far it goes (see `sam_hair_extent`). The
+                // face is smooth form however the segmenter drew the object, so it comes back out either way.
+                if let Ok(Some(ext)) = sam_hair_extent(&a.input, w, h, &hm).await {
+                    for (v, e) in hm.iter_mut().zip(&ext) {
+                        *v = v.max(*e);
+                    }
+                    if let Some(fm) = params.face_mask.as_deref() {
+                        for (i, v) in hm.iter_mut().enumerate() {
+                            *v *= 1.0 - fm.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                        }
+                    }
+                }
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(hm[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("mask_hair.png"));
+                }
+                let cov = hm.iter().filter(|&&v| v > 0.5).count();
+                found!(style("·").dim(), "hair/fur: the strand tool over {}% of the frame (finer floor · raked lanes · no pickup · strands break the silhouette)", cov * 100 / hm.len().max(1));
+                Some(hm)
+            } else {
+                None
+            };
+        }
         if let Some(cloth) = clothing {
             // Union the clothing into the subject mask so the reserve treats the shirt as subject, not background.
             match params.subject_mask.as_mut() {
@@ -1845,7 +2451,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(s) = subject {
             let cov = s.iter().filter(|&&m| m > 0.5).count();
             if cov > s.len() / 50 && cov < s.len() * 49 / 50 {
-                println!("{}  sam: precise subject mask ({}% foreground) — sharp silhouette", style("·").dim(), cov * 100 / s.len().max(1));
+                found!(style("·").dim(), "sam: precise subject mask ({}% foreground) — sharp silhouette", cov * 100 / s.len().max(1));
                 // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {
@@ -1856,13 +2462,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     _ => params.subject_mask = Some(s),
                 }
             } else {
-                println!("{}  sam: subject mask unusable — keeping the matte", style("·").yellow());
+                found!(style("·").yellow(), "sam: subject mask unusable — keeping the matte");
             }
         }
         if let Some(fm) = face_m {
             let cov = fm.iter().filter(|&&m| m > 0.4).count();
             if cov > fm.len() / 200 && cov < fm.len() / 2 {
-                println!("{}  sam: precise face mask — face-shaped focal region", style("·").dim());
+                found!(style("·").dim(), "sam: precise face mask — face-shaped focal region");
                 // A NEW painting's focal plane is EVERY face found: SAM's precise mask is prompted from one
                 // face, and replacing the detector's mask with it left the other faces in the figure tier
                 // (a second child's face painted as a blur beside a resolved one).
@@ -1928,6 +2534,42 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
     }
 
+    // TECHNIQUE: one decision that sets drying, bleed, edge pooling and granulation together (see the flag).
+    // Applied after the medium and its luminous defaults, so it shapes what the medium brought rather than
+    // replacing it; an explicit `--dry` / `--bleed` / `--edge-pool` still wins, as the flags always do.
+    // The technique says HOW pigment behaves; the plan's and medium's amounts say HOW MUCH of each effect.
+    // The two compose instead of fighting — an earlier form multiplied the amounts here and was silently
+    // switched off the moment a plan named one of them, so every technique rendered identically.
+    if let Some(t) = a.technique.as_deref() {
+        use crate::paint::painter::WetTechnique as T;
+        let (tech, dry, bl, diffuse) = technique_of(t)?;
+        params.technique = tech;
+        if (a.dry - 0.5).abs() < 1e-6 {
+            params.dry = dry;
+        }
+        if a.bleed.is_none() {
+            params.bleed = (params.bleed * bl).clamp(0.0, 1.0);
+        }
+        if a.diffuse.is_none() {
+            params.diffuse = diffuse;
+        }
+        // Behaviour, so applied whatever the amount was set to: standing water keeps pigment from settling
+        // into the tooth, a dry brush drags it straight into the hollows; and water cannot pool at an edge
+        // that never set.
+        match tech {
+            T::WetOnWet => {
+                params.granulate = (params.granulate * 0.6).clamp(0.0, 1.0);
+                params.edge_pool = 0.0;
+            }
+            T::DryOnDry => {
+                params.granulate = (params.granulate * 1.8).clamp(0.0, 1.0);
+                params.edge_pool = 0.0;
+            }
+            _ => {}
+        }
+        println!("{}  technique {t}: dry {:.2} · bleed {:.2} · diffuse {:.2} · granulate {:.2} · rims {} · splatter {:.2}", style("·").dim(), params.dry, params.bleed, params.diffuse, params.granulate, if params.edge_pool > 0.0 { "form" } else { "none" }, params.splatter);
+    }
+
     // FAMILY SEPARATION (RFC §3.3): partition light/shadow families and enforce the invariant, so masses read
     // SOLID instead of a washed photographic average. The spec path does this via --families; here it is wired for
     // the from-photo path too. Applied AFTER value-key so it groups the re-keyed values.
@@ -1941,16 +2583,46 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         println!("{}  families: light/shadow split · invariant enforced (solid masses)", style("·").dim());
     }
+    // An EXPLICIT hair mask wins outright over anything the part detector found. It is the instrument for the
+    // one thing automatic detection keeps getting wrong — a long beard's full fall — and it is deliberately
+    // not gated on `--new`: the strand tool and the growth-direction field both work from the mask alone, so
+    // naming a region is enough to paint hair with hair's tool on either path. (A new painting additionally
+    // gives that region a finer minimum brush, which is a plane decision and stays with the planes.)
+    if let Some(hp) = a.hair_mask.clone() {
+        let m = load_hair_mask(&hp, w, h)?;
+        let cov = m.iter().filter(|&&v| v > 0.5).count();
+        if cov == 0 {
+            println!("{}  hair mask {} is empty — nothing will be painted with the strand tool", style("·").yellow(), hp.display());
+        } else {
+            println!("{}  hair mask {} → the strand tool over {}% of the frame (replaces the part detector)", style("·").dim(), hp.display(), cov * 100 / m.len().max(1));
+        }
+        params.hair_mask = Some(m);
+    }
+
     // DIAGNOSTIC (`PLAKAT_PAINT_MASKS=<dir>`): write the planes as found — the focal (face) mask and the subject
     // matte — as grey PNGs, to see WHERE a plane ends when a picture shows its edge. Never changes the painting.
     if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
-        for (name, m) in [("face", params.face_mask.as_deref()), ("subject", params.subject_mask.as_deref())] {
+        for (name, m) in [("face", params.face_mask.as_deref()), ("subject", params.subject_mask.as_deref()), ("hair", params.hair_mask.as_deref())] {
             if let Some(m) = m.filter(|m| m.len() == (w * h) as usize) {
                 let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
                 let _ = g.save(std::path::Path::new(&dir).join(format!("mask_{name}.png")));
             }
         }
     }
+    // The PLAN's ladder cut, last, so it overrides whatever the medium chose.
+    if let Some(n) = plan_ladder_keep {
+        let n = n.max(1).min(params.brush_sizes.len());
+        if params.face_mask.is_some() && n < params.brush_sizes.len() {
+            // The cut brushes are kept, for the face alone: a face painted with nothing finer than a wash
+            // is not a face, and the user's one hard line here is that faces stay recognisable.
+            params.face_ladder_from = Some(n);
+            println!("{}  plan: brush ladder cut to the {} coarsest for the sheet ({:?}); the finer {} kept for the face", style("·").dim(), n, params.brush_sizes[..n].iter().map(|r| r.round() as u32).collect::<Vec<_>>(), params.brush_sizes.len() - n);
+        } else {
+            params.brush_sizes.truncate(n);
+            println!("{}  plan: brush ladder cut to the {} coarsest ({:?})", style("·").dim(), n, params.brush_sizes.iter().map(|r| r.round() as u32).collect::<Vec<_>>());
+        }
+    }
+
     if params.from_scratch {
         // Nothing restates the source's texture.
         params.detail_texture = 0.0;
@@ -1969,7 +2641,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let enc = |v: f64| { let v = v / n; let c = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }; (c * 255.0).round().clamp(0.0, 255.0) as u8 };
             let tone = [enc(acc[0]), enc(acc[1]), enc(acc[2])];
             params.ground = Some(tone);
-            println!("{}  new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", style("·").dim(), tone[0], tone[1], tone[2]);
+            found!(style("·").dim(), "new painting: toned ground rgb({}, {}, {}) — the picture's mean colour", tone[0], tone[1], tone[2]);
         }
         // ARMATURE FIDELITY IS INDEPENDENT OF CANVAS COVERAGE (RFC §5.2): a figure and a face are read at a
         // fixed number of pixels across THEIR OWN extent, whatever share of the sheet they take — a small face
@@ -1997,15 +2669,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let sides = (bg_side, params.armature_body_side, params.armature_face_side);
         if !budget_explicit && !params.density {
             // …and the budget is the coverage of the planes as found.
-            let floor = painter::plane_floor_field(w, h, params.min_brush, sides, params.subject_mask.as_deref(), params.face_mask.as_deref());
+            let floor = painter::plane_floor_field(w, h, params.min_brush, sides, params.subject_mask.as_deref(), params.face_mask.as_deref(), params.hair_mask.as_deref());
             let b = painter::from_scratch_budget(w, h, &params.brush_sizes, params.min_brush, &floor);
             params.budget = b;
             a.budget = b;
         }
         let (bg, body, focal) = painter::plane_floors(w, h, params.min_brush, sides);
-        println!(
-            "{}  new painting: armature {}px background · {}px figure · {}px faces — minimum brush {:.0} / {:.0} / {:.0} px · budget {} strokes (coverage)",
+        found!(
             style("·").dim(),
+            "new painting: armature {}px background · {}px figure · {}px faces — minimum brush {:.0} / {:.0} / {:.0} px · budget {} strokes (coverage)",
             bg_side,
             sides.1.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
             sides.2.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
@@ -2041,6 +2713,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         brush_sizes.iter().map(|r| format!("{r:.0}")).collect::<Vec<_>>().join("→"),
     );
 
+    // The outcome sheet needs the canvas after every pass: dump them into the sheet's work directory.
+    let outcome_path: Option<std::path::PathBuf> = a.outcome.as_ref().map(|d| if d.is_empty() { a.out.with_file_name(format!("{}_sheet.png", a.out.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "paint".into()))) } else { std::path::PathBuf::from(d) });
+    if let Some(op) = &outcome_path {
+        let stem = op.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "sheet".into());
+        let dir = op.with_file_name(format!("{stem}_sheet"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        params.dump_passes = Some(dir);
+    }
     let pb = crate::ui::progress::step_bar(params.budget as u64, "painting");
     let result = painter::paint_from_image_progress(&img, &params, &|ev| paint_progress(&pb, ev));
     pb.set_position(result.strokes as u64);
@@ -2055,7 +2735,67 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let score_path = a.out.with_extension("strokes");
     std::fs::write(&score_path, result.score.to_text()).with_context(|| format!("writing {}", score_path.display()))?;
 
+    print_paint_stats(&result.stats, result.strokes, result.seconds);
     println!("{}  {} → {}  ·  score → {}", style("✓").green(), stroke_summary(result.strokes, a.budget), a.out.display(), score_path.display());
+    // THE ANALYSIS artefact (RFC PAINT-3): the run's own facts as Markdown, beside the picture.
+    if a.analysis_insights.is_some() && a.analysis.is_none() {
+        a.analysis = Some(String::new());
+    }
+    if let Some(dest) = &a.analysis {
+        let path = if dest.is_empty() { a.out.with_extension("md") } else { std::path::PathBuf::from(dest) };
+        let argv: Vec<String> = std::env::args().collect();
+        let info = crate::paint::report::RunInfo { source: &a.input, output: &a.out, width: w, height: h, plan_text: plan_text.as_deref(), plan_path: plan_path.as_deref(), argv: &argv, seconds: result.seconds };
+        let mut md = crate::paint::report::analysis_markdown(&info, &params, &result.score, &result.canvas, &result.stats, result.strokes, Some(&img));
+        std::fs::write(&path, &md).with_context(|| format!("writing {}", path.display()))?;
+        println!("{}  analysis → {}", style("·").dim(), path.display());
+        // THE INSIGHTS pass (P0.5): the report's facts through the LLM; appended, with its provenance.
+        if let Some(provider) = &a.analysis_insights {
+            let label = crate::prompt::resolve_provider_label(provider);
+            if crate::paint::report::provider_is_hosted(provider) {
+                println!("{}  insights: sending the report text to {label} (a hosted provider — it leaves this machine)", style("·").yellow());
+            } else {
+                println!("{}  insights: {label} (local — nothing leaves this machine)", style("·").dim());
+            }
+            match crate::paint::report::insights(provider, &md, &params.medium).await {
+                Ok(extra) => {
+                    md.push_str(&extra);
+                    std::fs::write(&path, &md).with_context(|| format!("writing {}", path.display()))?;
+                    println!("{}  insights → appended to {}", style("·").dim(), path.display());
+                }
+                Err(e) => println!("{}  insights: {e:#} — the analysis stands without them", style("·").yellow()),
+            }
+        }
+    }
+    // THE OUTCOME sheet (RFC PAINT-3 P1).
+    if let Some(op) = &outcome_path {
+        let is_oil = params.impasto > 0.0 || params.medium.starts_with("oil") || params.medium == "acrylic";
+        let luma = crate::paint::painter::luma_map(&img);
+        let fine = crate::paint::painter::local_range(&luma, w as usize, h as usize, (params.min_brush * 0.75).round().max(2.0) as usize);
+        let busy: Vec<f32> = fine.iter().map(|f| ((f - 0.08) / 0.12).clamp(0.0, 1.0)).collect();
+        let insets = crate::paint::sheet::choose_insets(&params, &result.canvas, &luma, &busy, w, h, is_oil);
+        let swatches = crate::paint::sheet::palette_by_use(&result.score, 9);
+        let mut passes: Vec<(std::path::PathBuf, String, f32, usize)> = Vec::new();
+        if let Some(dir) = &params.dump_passes {
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.file_name().map_or(false, |n| n.to_string_lossy().starts_with("pass_"))).collect()).unwrap_or_default();
+            files.sort();
+            for (i, f) in files.iter().enumerate() {
+                let st = result.stats.get(i);
+                passes.push((f.clone(), st.map(|s| s.stage.clone()).unwrap_or_default(), st.map(|s| s.radius).unwrap_or(0.0), st.map(|s| s.strokes).unwrap_or(0)));
+            }
+        }
+        let title = a.input.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "painting".into());
+        let facts = vec![
+            ("strokes".to_string(), format!("{} laid of {} budgeted · {:.0} s", result.strokes, params.budget, result.seconds)),
+            ("marks".to_string(), format!("width ×{} · length ×{} · detail length {}", params.stroke_width, params.stroke_len, params.detail_len)),
+            ("relief".to_string(), if is_oil { format!("impasto {} · map {} · ridges {} · weave {} · sheen {}", params.impasto, params.impasto_map, params.brush.ridges, params.weave, params.sheen) } else { format!("opacity {} · bleed {} · granulate {} · skip {}", params.opacity, params.bleed, params.granulate, params.brush.skip) }),
+            ("planes".to_string(), format!("faces {} · subject {} · hair {}", if params.face_mask.is_some() { "found" } else { "none" }, if params.subject_mask.is_some() { "matte" } else { "none" }, if params.hair_mask.is_some() { "found" } else { "none" })),
+        ];
+        let inputs = crate::paint::sheet::SheetInputs { title: &title, medium: &params.medium, master: &out, insets: &insets, passes, palette: &swatches, stats: &result.stats, score: &result.score, facts };
+        match crate::paint::sheet::build(&inputs, op) {
+            Ok(p) => println!("{}  outcome sheet → {}", style("·").dim(), p.display()),
+            Err(e) => println!("{}  outcome sheet: {e:#}", style("·").yellow()),
+        }
+    }
     if a.report {
         let tr = painter::traceability(&out, &img);
         println!("{}  traceability {:.3} (→1 = traced/filter; a painting keeps structure but invents surface)", style("·").dim(), tr);
@@ -2153,6 +2893,40 @@ fn run_palette(a: PaletteArgs) -> Result<()> {
 #[cfg(test)]
 mod focal_tier_tests {
     use super::main_face_extent;
+
+    #[test]
+    fn the_part_scale_choice_rejects_the_whole_object() {
+        let frame = 1_000_000usize;
+        let seed = 20_000; // 2% of the frame, the sort of region a part detector names for a beard
+        // SAM's three: a fragment, the beard, the whole man. Take the beard — the largest that is not the man.
+        assert_eq!(super::choose_part_scale(&[6_000, 40_000, 230_000], seed, frame), Some(1));
+        // Nothing believable: every candidate is the person.
+        assert_eq!(super::choose_part_scale(&[230_000, 260_000], seed, frame), None);
+        // A fragment far smaller than what was named is not the hair either.
+        assert_eq!(super::choose_part_scale(&[900], seed, frame), None);
+        // On a picture that is mostly animal, a coat IS most of the subject — the frame share must not veto it.
+        assert_eq!(super::choose_part_scale(&[210_000], 220_000, frame), Some(0));
+    }
+
+    #[test]
+    fn a_hair_mask_loads_white_as_hair_and_softens_its_own_edge() {
+        // White is hair, black is not, and the switch between the two tools is feathered — a hard edge in the
+        // mask is a hard edge in the TOOL, and that boundary reads as exactly the defect the mask exists to fix.
+        let dir = std::env::temp_dir().join("plakat_hair_mask_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.png");
+        let img = image::GrayImage::from_fn(64, 64, |x, _| image::Luma([if x < 32 { 255 } else { 0 }]));
+        img.save(&path).unwrap();
+
+        let m = super::load_hair_mask(&path, 64, 64).unwrap();
+        assert_eq!(m.len(), 64 * 64);
+        assert!(m[32 * 64 + 4] > 0.9, "the white half is hair");
+        assert!(m[32 * 64 + 60] < 0.1, "the black half is not");
+        // Across the boundary the value must pass through the middle rather than jump.
+        let mid: Vec<f32> = (24..40).map(|x| m[32 * 64 + x]).collect();
+        assert!(mid.iter().any(|v| (0.2..0.8).contains(v)), "the edge is feathered, not a step: {mid:?}");
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn the_focal_tier_is_sized_by_the_smallest_main_face() {

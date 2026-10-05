@@ -8,6 +8,77 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.1.0 — the paint is paint: watercolour fluids, oil relief, and a run that explains itself
+
+Sixty-odd commits on `plakat paint`, all on the `--new` painting, all judged on 1:1 crops and
+measured on the finished canvas. The default painting path is **byte-identical** to 7.0.0: every new
+behaviour is a dial that defaults off, and every accepted reference reproduces at DSSIM 0.
+
+### Watercolour — a real fluid stage
+
+- **The paint is a transparent film** (Beer–Lambert transmittance): darks by density, tints that keep
+  their chroma. The whole brush ladder paints on it, light to dark, in the picture's own colours — a
+  watercolour of the picture, not a tinted copy of it.
+- **The fluid stage** (`Canvas::flow`, recorded in the score, replay-exact): after each broad pass the
+  pass's own wet pigment — never the dried passes beneath — is split into **washes** (the regions one
+  pigment leads), diffuses inside them, and settles into **tide lines** where the water meets a different
+  load: one-sided, on the drier side, ragged with the paper, heavier along a wash's lower edge, and the
+  washes end in **fingers** (capillary reach). Pigments **separate** at the edge: a staining dye travels,
+  an earth settles. **Granulation happens in the water** — the earths settle into the tooth where the wash
+  pooled, not as a uniform screen. The water is **selective**: it floods the soft masses and holds back
+  at the picture's hard edges.
+- **The dry brush skips** (`skip`): a bristle with little water touches only the paper's standing fibres,
+  so a dry mark is broken along its drag — over textured passages only (cobbles, a beard, bark), never on
+  faces or lights. Caught on the way: reading the bristle's *running* wetness darkened the whole sheet 6%.
+- **Economy of structure**: off the faces and subject the fine brushes restate only where the picture has
+  an edge or a texture at that brush's scale — the sheet-wide stipple that covered the tide lines is gone
+  (71k → 53k fine marks on the test picture) — and a fine mark may **run as a line** along an edge
+  (`fine_lines`, 0 = short marks only).
+- `--hdr` / `--hdr-amount`: re-light the picture before painting (a local tone-map; lamps stop blowing
+  out, shadows lift, colours kept) — for every medium.
+
+### Oil — relief that behaves like paint
+
+- **`ridges`**: bristle ridges in the relief — each lane stands as high as it was loaded — with the stroke's
+  section **plowed** (paint pushed to the lateral edges, a steep ridge each side) and the relief casting
+  **micro-shadows** where thick paint steps down onto thin, so a beard sits *on* a cheek instead of
+  fading into it.
+- **`impasto_map`**: the paint's thickness follows the picture — lights thick / shadows thin, subject thick /
+  background thin, nearer thicker with a depth map, broken surfaces up / smooth ones (skin, sky, glass)
+  blended; the faces laid thin whatever the light says. Per stroke (`visc=`), replay-exact. On a snow
+  scene it divides the pigment load out and reads value against the picture's own range, so an all-light
+  picture keeps its lights thickest (lights:shadows 0.60 → 0.97).
+- **`weave`**: a linen under the paint — domain-warped, interlocked, slubbed, fibrous — seen only where the
+  paint is thin or bare and buried where it is built (measured: 0.01 on a cheek, 0.19 on bare cobbles).
+- **`collide`**: wet collision — after each broad pass the wet paint drags along its own striation where
+  loaded strokes meet; colours marble in concentration, ridges plow with them; dry paint stays; the faces
+  are held still by a coarse mask recorded in the score, so the replay crosses the same drags.
+- `sheen`, `impasto`, `stroke_width`, `stroke_length`, `detail_restate` are plan keys now.
+
+### A run that explains itself (RFC PAINT-3)
+
+- **`--analysis`** / `analysis: true`: a Markdown report beside the picture — the plan verbatim with its
+  comments, every dial with where its value came from and what it does, what the run found (faces,
+  matte, regions, hair, budget), the pass table with per-pass length / width / dry share, measurements
+  from the canvas (paint height per plane as ratios, lights vs shadows by the source, broken vs smooth,
+  fine-mark lengths, pigments by use), the caps a reader cannot see from the counts.
+- **`--analysis-insights`**: the report through the configured LLM (DeepSeek / Gemini / Ollama / local)
+  under a versioned system prompt — findings that cite their measurements, recommendations as plan lines
+  with reasons, and what it could not judge. A hosted provider receives the report text; the terminal says
+  so first. Tested as a loop on a 4096 render: it converges once the report carries the mechanism.
+- **`--outcome`** / `outcome: true`: a one-page sheet typeset with Typst — the master composition, four
+  lens crops chosen by rule and captioned with their numbers, the layer hierarchy (the canvas after every
+  pass), the palette by use named by the nearest classic pigment, and the **brushwork concept**: the
+  stroke score itself drawn as ink with flow arrows and a counted legend. The `.typ` is kept.
+
+### Also
+
+- A hair/fur **tool** for `--new` (raked lanes, no pickup, strands that break the silhouette), its own
+  flow field, SAM's part-scale extent, `--hair-mask`. The **rigger** puts back shapes too thin to paint.
+  `--hotspot` gives a blown highlight its falloff back. The flow infill is computed on a coarse grid
+  (5.6× the painting's cost before). Every stroke records its **intent colour** (`tgt=`), the groundwork
+  for `plakat paint repaint` (RFC PAINT-2).
+
 ## What's new in 7.0.0 — `plakat paint --new`: a painting from scratch
 
 By default `paint` tracks its source closely: a painterly rendering of the image in front of it.

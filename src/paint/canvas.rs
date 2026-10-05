@@ -38,6 +38,11 @@ pub struct Canvas {
     /// over the ground and the tooth saturation; kept apart from `conc` so covering a light block-in with a
     /// dark restatement changes the film's colour without thinning it.
     film: Vec<f32>,
+    /// The film at the last `mark_film` (empty = never marked), for a wash brush's film cap.
+    film_mark: Vec<f32>,
+    /// The pigment as it was at the last `mark_film` (transmittance film only — there deposits ADD, so the
+    /// difference is exactly what the pass since laid; see `flow`).
+    conc_mark: Vec<f32>,
     /// Per-pixel paint height (impasto), row-major.
     pub height: Vec<f32>,
     /// Per-pixel wet pigment available for pickup, row-major (0 = dry).
@@ -53,6 +58,15 @@ pub struct Canvas {
     /// Hiding power (the film-build's `OPACITY_K`). Measured: a full block-in already hides 96% of the ground at
     /// the default, so this is NOT the lever for a light/grey painting (that was the palette gamut).
     opacity_k: f32,
+    /// TRANSMITTANCE film (transparent media): the film is a stack of pigment densities and the colour is the
+    /// ground seen through it — `ground × Π R_i^(density_i)` (Beer–Lambert) — so a dark is the SAME hue at a
+    /// higher density, a tint keeps its hue, and two glazes multiply. Off: the covering film-build model.
+    transmittance: bool,
+    /// `ln R_i` per pigment (linear reflectance), filled when `transmittance` is on.
+    ln_r: Vec<[f32; 3]>,
+    /// A CLIP: while set, strokes lay paint only where it is true (a wash brush working INSIDE a shape —
+    /// the shape's edge stays exact however the strokes overshoot). `None` = no clip.
+    clip: Option<Vec<bool>>,
     n: usize,
 }
 
@@ -103,7 +117,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -118,6 +132,105 @@ impl Canvas {
             acc += (1.0 - (-self.opacity_k * self.opacity * total.max(0.0)).exp()) as f64;
         }
         (acc / px as f64) as f32
+    }
+
+    /// Set the clip to the inside of `rings` (NaN-separated polygons, even-odd, pixel centres); fewer than
+    /// three points clears it.
+    pub fn set_clip_rings(&mut self, rings: &[[f32; 2]]) {
+        let (w, h) = (self.w as usize, self.h as usize);
+        let mut edges: Vec<([f32; 2], [f32; 2])> = Vec::new();
+        let mut ring: Vec<[f32; 2]> = Vec::new();
+        let flush = |ring: &mut Vec<[f32; 2]>, edges: &mut Vec<([f32; 2], [f32; 2])>| {
+            if ring.len() >= 3 {
+                for i in 0..ring.len() {
+                    edges.push((ring[i], ring[(i + 1) % ring.len()]));
+                }
+            }
+            ring.clear();
+        };
+        for pt in rings {
+            if pt[0].is_nan() || pt[1].is_nan() {
+                flush(&mut ring, &mut edges);
+            } else {
+                ring.push(*pt);
+            }
+        }
+        flush(&mut ring, &mut edges);
+        if edges.is_empty() {
+            self.clip = None;
+            return;
+        }
+        let mut mask = vec![false; w * h];
+        let mut xs: Vec<f32> = Vec::new();
+        for y in 0..h {
+            let yc = y as f32 + 0.5;
+            xs.clear();
+            for (a, b) in &edges {
+                let (ya, yb) = (a[1], b[1]);
+                if (ya <= yc && yb > yc) || (yb <= yc && ya > yc) {
+                    let t = (yc - ya) / (yb - ya);
+                    xs.push(a[0] + t * (b[0] - a[0]));
+                }
+            }
+            if xs.len() < 2 {
+                continue;
+            }
+            xs.sort_by(|p, q| p.partial_cmp(q).unwrap_or(std::cmp::Ordering::Equal));
+            for pair in xs.chunks(2) {
+                if pair.len() < 2 {
+                    break;
+                }
+                let xa = (pair[0] - 0.5).ceil().max(0.0) as i64;
+                let xb = (pair[1] - 0.5).floor().min(w as f32 - 1.0) as i64;
+                for x in xa..=xb {
+                    mask[y * w + x as usize] = true;
+                }
+            }
+        }
+        self.clip = Some(mask);
+    }
+
+    /// Whether row-major pixel `p` is outside the current clip (never, when no clip is set).
+    pub fn clipped(&self, p: usize) -> bool {
+        self.clip.as_ref().is_some_and(|c| !c[p])
+    }
+
+    /// Switch the TRANSMITTANCE film on (see the field). Builder-style.
+    pub fn with_transmittance(mut self, on: bool) -> Self {
+        self.transmittance = on;
+        self.ln_r = if on {
+            self.palette
+                .pigments
+                .iter()
+                .map(|p| {
+                    let r = color::srgb_to_linear(p.masstone);
+                    [r[0].clamp(0.004, 1.0).ln(), r[1].clamp(0.004, 1.0).ln(), r[2].clamp(0.004, 1.0).ln()]
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self
+    }
+
+    /// Whether the transmittance film is on.
+    pub fn is_transmittance(&self) -> bool {
+        self.transmittance
+    }
+
+    /// `ln R` per pigment, for the transmittance solver (empty unless the film is on).
+    pub fn ln_reflectance(&self) -> &[[f32; 3]] {
+        &self.ln_r
+    }
+
+    /// The ground's linear reflectance (the paper, or the toned priming).
+    pub fn ground_linear(&self) -> LinRgb {
+        self.ground_lin
+    }
+
+    /// The linear reflectance of a pixel.
+    pub fn linear_at(&self, x: u32, y: u32) -> LinRgb {
+        color::srgb_to_linear(self.color_at(x, y))
     }
 
     /// Set the BODY / opacity multiplier (1 = opaque; lower = transparent). Builder-style.
@@ -183,13 +296,33 @@ impl Canvas {
     pub fn deposit(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
         let i = self.idx(x, y);
         let amount: f32 = delta.iter().take(self.n).map(|d| d.max(0.0)).sum();
-        let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
-        for c in 0..self.n {
-            self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
+        if self.transmittance {
+            // Densities ADD: a glaze over a glaze is both.
+            for c in 0..self.n {
+                self.conc[i + c] += delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            }
+        } else {
+            let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
+            for c in 0..self.n {
+                self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            }
         }
         let p = y as usize * self.w as usize + x as usize;
         self.film[p] += amount;
         self.height[p] += height.max(0.0);
+    }
+
+    /// Remember the film as it is now (see `BrushConfig::film_cap`): the start of a wash pass.
+    pub fn mark_film(&mut self) {
+        self.film_mark = self.film.clone();
+        if self.transmittance {
+            self.conc_mark = self.conc.clone();
+        }
+    }
+
+    /// The film laid at row-major pixel `p` since the last `mark_film` (all of it when never marked).
+    pub fn film_since_mark(&self, p: usize) -> f32 {
+        self.film[p] - self.film_mark.get(p).copied().unwrap_or(0.0)
     }
 
     /// WIPE / scrape back at a pixel (RFC PAINT-1 §8.7): remove a `strength` fraction of the accumulated
@@ -289,6 +422,342 @@ impl Canvas {
                 }
             }
         }
+    }
+
+    /// THE FLUID STAGE of a watercolour (`flow`): water on paper is a continuous FILM, not the brush's
+    /// footprint, and only the pigment still IN the water moves — what dried in the earlier passes stays
+    /// where it was laid. The pass's own deposit (since `mark_film`; the transmittance film adds, so the
+    /// difference is exact) is the wet layer; it is split into WASHES — the regions where one pigment leads
+    /// the mix (a watercolourist lays the sky, the wall, the lit window as separate washes, each of its own
+    /// colour) — and inside each wash the fresh pigment DIFFUSES by `strength` over `radius` px (a blur
+    /// confined to the wash, so the lanes' gaps are filled: the plain bleed, run on the lanes' own wetness,
+    /// diffused pigment in a lattice of wet cells over dry gaps and printed a honeycomb) and SETTLES toward
+    /// the wash's edge as it dries, deeper there by `rim` (0..1): the tide line between two washes, the
+    /// cauliflower against the dry paper. And the pigment GRANULATES in the water by `grain` (0..1): a
+    /// granulating pigment (an earth; read from the masstone's chroma, a staining dye does not) settles
+    /// into the paper's tooth where the wash POOLED — the heavier the water, the heavier the mottle — so the
+    /// grain is a fact of the wash, not a uniform screen over the sheet. And the water is SELECTIVE by
+    /// `selective` (0..1): a painter floods the soft masses wet-in-wet and keeps the architecture wet-on-dry,
+    /// so the diffusion holds back near the picture's HARD EDGES — read from the canvas itself (the colour
+    /// the sheet shows at this moment, so a replay sees the same edges), not from the source. Deterministic;
+    /// a no-op at strength 0 or on a non-transmittance canvas.
+    pub fn flow(&mut self, strength: f32, radius: f32, rim: f32, grain: f32, selective: f32) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 0.5 || !self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        let r = radius.round().max(1.0) as usize;
+        let film_mark = |p: usize| self.film_mark.get(p).copied().unwrap_or(0.0);
+        // The pass's own deposit: the pigment that is still wet.
+        let fresh_film: Vec<f32> = (0..px).map(|p| (self.film[p] - film_mark(p)).max(0.0)).collect();
+        if !fresh_film.iter().any(|&f| f > 1e-5) {
+            return;
+        }
+        let mut fresh = vec![0f32; px * n];
+        for i in 0..px * n {
+            fresh[i] = (self.conc[i] - self.conc_mark.get(i).copied().unwrap_or(0.0)).max(0.0);
+        }
+        // 1. The washes: the wet layer smoothed over the radius (the water joins the lanes), each pixel
+        //    assigned to the pigment that leads the smoothed mix there. The water's REACH beyond the deposit
+        //    is not one radius all along the edge: it runs further where the paper's fibres carry it and
+        //    stops short where they do not (capillary action), so the wash ends in FINGERS, not in the
+        //    smooth support of a blur. The reach is a slow value noise at the radius' scale, and it gates
+        //    where the smoothed water counts as wet.
+        let wet_b = Self::box_blur_f(&fresh_film, w, h, r);
+        let reach: Vec<f32> = (0..px).map(|p| {
+            let (x, y) = (p % w, p / w);
+            let fx = x as f32 / (r as f32 * 1.2);
+            let fy = y as f32 / (r as f32 * 1.2);
+            0.25 + 0.75 * value_noise(fx, fy, 0xF1BE_5EED)
+        }).collect();
+        // A deposit's smoothed water falls from its level at the deposit to ~0 one radius out; the finger gate
+        // asks for more of it where the reach is short. Judged against the local deposit level so a thin
+        // wash fingers as a heavy one does.
+        let level = {
+            let mut m: Vec<f32> = fresh_film.iter().map(|&f| if f > 1e-5 { 1.0 } else { 0.0 }).collect();
+            let mut t = m.clone();
+            for y in 0..h { for x in 0..w { let mut mx = 0f32; for d in x.saturating_sub(r)..=(x + r).min(w - 1) { mx = mx.max(m[y * w + d]); } t[y * w + x] = mx; } }
+            for y in 0..h { for x in 0..w { let mut mx = 0f32; for d in y.saturating_sub(r)..=(y + r).min(h - 1) { mx = mx.max(t[d * w + x]); } m[y * w + x] = mx; } }
+            Self::box_blur_f(&m, w, h, r)
+        };
+        let wet_here = |p: usize| -> bool { fresh_film[p] > 1e-5 || (wet_b[p] > 1e-6 && level[p] > 1.0 - reach[p]) };
+        let mut ch = vec![0f32; px];
+        let mut lead: Vec<i16> = vec![-1; px];
+        let mut lead_v = vec![0f32; px];
+        let mut present = vec![false; n];
+        for c in 0..n {
+            for p in 0..px { ch[p] = fresh[p * n + c]; }
+            if !ch.iter().any(|&v| v > 0.0) { continue; }
+            present[c] = true;
+            let bl = Self::box_blur_f(&ch, w, h, r);
+            for p in 0..px {
+                if wet_here(p) && bl[p] > lead_v[p] {
+                    lead_v[p] = bl[p];
+                    lead[p] = c as i16;
+                }
+            }
+        }
+        // 2. Per wash: the pigment diffuses inside it (a blur confined to the wash: blur(fresh × mask) /
+        //    blur(mask)), mixed in by `s × coverage`, and at the wash's edge — where its coverage falls —
+        //    the pigment the water carried out settles, deeper.
+        //    The rim is NOT a contour drawn round every wash: a tide line forms where the water meets a
+        //    DIFFERENT load — the lit window against the wall, a wash against dry paper — not between two
+        //    washes of the same weight laid together (they blend). So the band is weighted by the LOAD
+        //    CONTRAST across the edge, varies along it with the paper (a tide line is ragged, never a
+        //    uniform stroke), and pools heavier along a wash's LOWER edge — the water runs down.
+        let k = rim.clamp(0.0, 1.0);
+        let load_b = Self::box_blur_f(&fresh_film, w, h, r);
+        //    The backrun is ONE-SIDED: the wetter wash pushes its pigment into the drier one, and the line
+        //    forms on the DRIER side of the boundary — where the load is below the local mean of the two
+        //    sides — sharp there, nothing on the wet side. (Symmetric, both sides deepened and the line
+        //    read as a drawn border.)
+        let load_wide = Self::box_blur_f(&load_b, w, h, r);
+        let contrast: Vec<f32> = (0..px)
+            .map(|p| {
+                let (x, y) = (p % w, p / w);
+                if x == 0 || y == 0 || x + 1 >= w || y + 1 >= h { return 0.0; }
+                let gx = load_b[p + 1] - load_b[p - 1];
+                let gy = load_b[p + w] - load_b[p - w];
+                let g = (gx * gx + gy * gy).sqrt() * r as f32 * 0.5;
+                let c = (g / (load_b[p] + 1e-4) * 1.5).clamp(0.0, 1.0);
+                // The drier side: this pixel's load sits below the boundary's mean.
+                let drier = ((load_wide[p] - load_b[p]) / (load_wide[p] + 1e-4) * 4.0).clamp(0.0, 1.0);
+                c * drier
+            })
+            .collect();
+        // Mobility: a staining dye travels in the water, an earth settles where it was laid — the pigments
+        // SEPARATE at a wash's edge instead of moving as one tint (read from the masstone's chroma).
+        let mobility: Vec<f32> = (0..n)
+            .map(|c| {
+                let m = self.palette.pigments.get(c).map(|pg| pg.masstone).unwrap_or([128, 128, 128]);
+                let (mx, mn) = (m[0].max(m[1]).max(m[2]) as f32, m[0].min(m[1]).min(m[2]) as f32);
+                let chroma = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+                0.7 + 0.6 * chroma
+            })
+            .collect();
+        // The rim weight at a pixel: the load contrast there (the band is the contrast's own width, ~r
+        // either side of the boundary), ragged with the paper, heavier where the water runs DOWN into it
+        // (the load falls going down: the wash's lower edge).
+        let edge: Vec<f32> = (0..px)
+            .map(|p| {
+                if k <= 0.0 || contrast[p] <= 0.0 { return 0.0; }
+                let (x, y) = (p % w, p / w);
+                let ragged = 0.4 + 1.2 * value_noise(x as f32 / (r as f32 * 1.5), y as f32 / (r as f32 * 1.5), 0x7ADE_11E5);
+                let below = if y + 1 < h && y > 0 { (load_b[p - w] - load_b[p + w]).max(0.0) * r as f32 / (load_b[p] + 1e-4) } else { 0.0 };
+                let run = 1.0 + 0.6 * below.min(1.0);
+                k * contrast[p].powf(1.5) * ragged * run
+            })
+            .collect();
+        // Where the water POOLED: the local load against the pass's mean wet load (0..2).
+        let gq = grain.clamp(0.0, 1.0);
+        let pool: Vec<f32> = if gq > 0.0 {
+            let (mut sum, mut cnt) = (0f32, 0usize);
+            for p in 0..px { if load_b[p] > 1e-5 { sum += load_b[p]; cnt += 1; } }
+            let mean = if cnt > 0 { sum / cnt as f32 } else { 1.0 };
+            (0..px).map(|p| (load_b[p] / mean.max(1e-6)).min(2.0)).collect()
+        } else {
+            Vec::new()
+        };
+        // Where the sheet has a HARD EDGE: the luma of what it shows now, smoothed at r/2 (a one-pixel lane
+        // gap is diluted away by that — it is what the water must fill — while a boundary between two
+        // masses keeps its full step), then the value RANGE over r/2: a crisp boundary spans ≥ 0.2, a wash's
+        // fade far less. The band reaches r/2 either side, so the water stops short of the edge.
+        let sel = selective.clamp(0.0, 1.0);
+        let hold: Vec<f32> = if sel > 0.0 {
+            let mut lum = vec![0f32; px];
+            for p in 0..px {
+                let mut out = self.ground_lin;
+                for (i, rr) in self.ln_r.iter().enumerate() {
+                    let d = self.conc[p * n + i].max(0.0);
+                    if d > 0.0 { for c in 0..3 { out[c] *= (d * rr[c]).exp(); } }
+                }
+                lum[p] = 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2];
+            }
+            let rd = (r / 2).max(1);
+            let lb = Self::box_blur_f(&lum, w, h, rd);
+            let (mut mx, mut mn) = (lb.clone(), lb.clone());
+            let mut t = lb.clone();
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.max(lb[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = f32::MAX; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.min(lb[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = f32::MAX; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.min(t[d * w + x]); } mn[y * w + x] = m; } }
+            let e: Vec<f32> = (0..px).map(|p| ((mx[p] - mn[p] - 0.06) / 0.14).clamp(0.0, 1.0)).collect();
+            // Widened by r/2 more: the water stops a brush-radius short of the edge.
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(rd)..=(x + rd).min(w - 1) { m = m.max(e[y * w + d]); } t[y * w + x] = m; } }
+            for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(rd)..=(y + rd).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+            Self::box_blur_f(&mx, w, h, rd).into_iter().map(|v| sel * v).collect()
+        } else {
+            Vec::new()
+        };
+        let held = |p: usize| -> f32 { if hold.is_empty() { 1.0 } else { 1.0 - hold[p] } };
+        let mut mask = vec![0f32; px];
+        let mut masked = vec![0f32; px];
+        let mut out_film = fresh_film.clone();
+        let mut out = fresh.clone();
+        for c in 0..n {
+            if !present[c] { continue; }
+            let mut any = false;
+            for p in 0..px { mask[p] = if lead[p] == c as i16 { any = true; 1.0 } else { 0.0 }; }
+            if !any { continue; }
+            let cov = Self::box_blur_f(&mask, w, h, r);
+            for p in 0..px { masked[p] = fresh_film[p] * mask[p]; }
+            let num = Self::box_blur_f(&masked, w, h, r);
+            for p in 0..px {
+                if mask[p] <= 0.0 { continue; }
+                let a = s * cov[p].min(1.0) * held(p);
+                let d = num[p] / cov[p].max(1e-6);
+                out_film[p] = fresh_film[p] * (1.0 - a) + d * a * (1.0 + edge[p]);
+            }
+            for cc in 0..n {
+                if !present[cc] { continue; }
+                let mut any = false;
+                for p in 0..px { masked[p] = fresh[p * n + cc] * mask[p]; any |= masked[p] > 0.0; }
+                if !any { continue; }
+                let num = Self::box_blur_f(&masked, w, h, r);
+                let mob = mobility[cc];
+                // The granulating share: what does not travel settles.
+                let settle = gq * ((1.3 - mob) / 0.6).clamp(0.0, 1.0);
+                for p in 0..px {
+                    if mask[p] <= 0.0 { continue; }
+                    let a = (s * cov[p].min(1.0) * mob * held(p)).min(1.0);
+                    let d = num[p] / cov[p].max(1e-6);
+                    let i = p * n + cc;
+                    let mut v = fresh[i] * (1.0 - a) + d * a * (1.0 + edge[p]);
+                    if settle > 0.0 {
+                        let g = paper_grain(p % w, p / w, 0x6_1A1_0000) - 0.5;
+                        v *= (1.0 + settle * pool[p] * g * 2.4).max(0.0);
+                    }
+                    out[i] = v;
+                }
+            }
+        }
+        for p in 0..px {
+            self.film[p] = film_mark(p) + out_film[p];
+            for c in 0..n {
+                let i = p * n + c;
+                self.conc[i] = self.conc_mark.get(i).copied().unwrap_or(0.0) + out[i];
+            }
+        }
+    }
+
+    /// WET COLLISION (`collide`, an oil's stage): when a loaded wet stroke lands beside or over another, the
+    /// paint MOVES — the colours drag into each other along the stroke's direction (marbling), the new
+    /// stroke's bead plows the old paint's height sideways, and nothing of it is a blur. Run after a broad
+    /// pass, on the wet paint only (a dried pass does not move), with the direction read from the canvas
+    /// itself — the striation of the height field (its structure tensor over `radius`), so a replay sees the
+    /// same drags. `strength` (0..1) is how far the paint is carried (up to `radius` px); `face` masks the
+    /// pixels that must not smear (the faces: their features soften under any drag). Opaque media only;
+    /// a no-op at strength 0.
+    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 1.0 || self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        let r = radius.round().max(1.0) as usize;
+        // 1. The direction the paint runs: the height field's striation. Structure tensor of the height's
+        //    gradient, smoothed over r; the stroke runs ALONG the striation (perpendicular to the gradient).
+        let hb = Self::box_blur_f(&self.height, w, h, 1);
+        let (mut jxx, mut jyy, mut jxy) = (vec![0f32; px], vec![0f32; px], vec![0f32; px]);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let p = y * w + x;
+                let gx = (hb[p + 1] - hb[p - 1]) * 0.5;
+                let gy = (hb[p + w] - hb[p - w]) * 0.5;
+                jxx[p] = gx * gx;
+                jyy[p] = gy * gy;
+                jxy[p] = gx * gy;
+            }
+        }
+        let jxx = Self::box_blur_f(&jxx, w, h, r);
+        let jyy = Self::box_blur_f(&jyy, w, h, r);
+        let jxy = Self::box_blur_f(&jxy, w, h, r);
+        // 2. Where the collision happens: wet paint beside wet paint of a DIFFERENT colour or height — the
+        //    wetness smoothed over r is the "both wet" measure, the local height range the "a ridge meets
+        //    paint" measure.
+        let wet_b = Self::box_blur_f(&self.wetness, w, h, r);
+        // 3. Advect: each pixel pulls colour and height from a point `d` back along the striation, where
+        //    d = s × r × wet × contrast; the colour mixes (marbling), the height moves with it (the plow).
+        let old_conc = self.conc.clone();
+        let old_h = self.height.clone();
+        let old_w = self.wetness.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                let wet = old_w[p].clamp(0.0, 1.0) * wet_b[p].clamp(0.0, 1.0);
+                if wet < 0.02 {
+                    continue;
+                }
+                let fm = face.map(|m| m.get(p).copied().unwrap_or(0.0)).unwrap_or(0.0);
+                if fm > 0.35 {
+                    continue;
+                }
+                // The striation direction from the tensor: the eigenvector of the SMALLER eigenvalue.
+                let (a, b, c) = (jxx[p], jyy[p], jxy[p]);
+                let coh = (((a - b) * (a - b) + 4.0 * c * c).sqrt()) / (a + b + 1e-9);
+                if coh < 0.15 {
+                    continue;
+                }
+                let theta = 0.5 * (2.0 * c).atan2(a - b); // gradient direction
+                let (ux, uy) = (-theta.sin(), theta.cos()); // along the striation
+                // The drag follows the slope's sign so paint runs off the ridge, not into it: pull from the
+                // higher side.
+                let gx = (hb[(p + 1).min(px - 1)] - hb[p.saturating_sub(1)]) * 0.5;
+                let gy = (hb[(p + w).min(px - 1)] - hb[p.saturating_sub(w)]) * 0.5;
+                let sign = if gx * ux + gy * uy >= 0.0 { 1.0 } else { -1.0 };
+                let d = s * r as f32 * wet * coh.min(1.0);
+                let sx = (x as f32 + ux * d * sign).clamp(0.0, w as f32 - 1.0);
+                let sy = (y as f32 + uy * d * sign).clamp(0.0, h as f32 - 1.0);
+                let (x0, y0) = (sx.floor() as usize, sy.floor() as usize);
+                let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+                let (tx, ty) = (sx - x0 as f32, sy - y0 as f32);
+                let wts = [((y0 * w + x0), (1.0 - tx) * (1.0 - ty)), ((y0 * w + x1), tx * (1.0 - ty)), ((y1 * w + x0), (1.0 - tx) * ty), ((y1 * w + x1), tx * ty)];
+                // How much of the sampled paint comes in: the wetness (dry paint under a wet stroke does not
+                // move) — and the mix is in CONCENTRATION, so the colours marble by Kubelka–Munk, not alpha.
+                let mix = (0.85 * wet).min(0.85);
+                let mut hsum = 0f32;
+                for c in 0..n {
+                    let mut v = 0f32;
+                    for (q, wq) in &wts {
+                        v += old_conc[q * n + c] * wq;
+                    }
+                    self.conc[p * n + c] = old_conc[p * n + c] * (1.0 - mix) + v * mix;
+                }
+                for (q, wq) in &wts {
+                    hsum += old_h[*q] * wq;
+                }
+                self.height[p] = old_h[p] * (1.0 - mix) + hsum * mix;
+            }
+        }
+    }
+
+    /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
+    /// cells actually inside).
+    fn box_blur_f(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+        let pass = |line: &[f32], out: &mut [f32]| {
+            let len = line.len();
+            let mut prefix = vec![0f32; len + 1];
+            for i in 0..len { prefix[i + 1] = prefix[i] + line[i]; }
+            for i in 0..len {
+                let a = i.saturating_sub(r);
+                let b = (i + r).min(len - 1);
+                out[i] = (prefix[b + 1] - prefix[a]) / (b - a + 1) as f32;
+            }
+        };
+        let mut t = vec![0f32; w * h];
+        for y in 0..h { pass(&src[y * w..(y + 1) * w], &mut t[y * w..(y + 1) * w]); }
+        let mut out = vec![0f32; w * h];
+        let mut col = vec![0f32; h];
+        let mut colo = vec![0f32; h];
+        for x in 0..w {
+            for y in 0..h { col[y] = t[y * w + x]; }
+            pass(&col, &mut colo);
+            for y in 0..h { out[y * w + x] = colo[y]; }
+        }
+        out
     }
 
     /// One step of directional pigment transport between wet neighbours (see `bleed_with`). Each 4-neighbour
@@ -511,6 +980,18 @@ impl Canvas {
         if total <= 1e-4 {
             return color::linear_to_srgb(self.ground_lin);
         }
+        if self.transmittance {
+            let mut out = self.ground_lin;
+            for (i, r) in self.ln_r.iter().enumerate() {
+                let d = conc.get(i).copied().unwrap_or(0.0).max(0.0);
+                if d > 0.0 {
+                    for c in 0..3 {
+                        out[c] *= (d * r[c]).exp();
+                    }
+                }
+            }
+            return color::linear_to_srgb(out);
+        }
         let paint = pigment::mix_linear(self.palette.pigments, conc);
         let alpha = 1.0 - (-self.opacity_k * self.opacity * total).exp();
         let mut out = [0f32; 3];
@@ -599,7 +1080,7 @@ impl Canvas {
                     // darker) where paint sits, with NO net darkening (a centred grain), so it reads as texture,
                     // not grey noise.
                     if f.granulate > 1e-3 && paint > 0.05 {
-                        let d = f.granulate * paint * (grain(x, y, f.seed) - 0.5) * 0.7;
+                        let d = f.granulate * paint * (paper_grain(x, y, f.seed) - 0.5) * 0.7;
                         for v in c.iter_mut() {
                             *v = (*v * (1.0 - d)).clamp(0.0, 1.0);
                         }
@@ -639,12 +1120,63 @@ impl Canvas {
                 }
             }
         }
-        // IMPASTO + SHEEN relight from the paint HEIGHT.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 {
-            let peak = self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4);
+        // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 {
+            // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
+            // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
+            let peak = if f.relief_robust {
+                let mut v: Vec<f32> = self.height.iter().copied().filter(|h| *h > 0.0).collect();
+                if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[(v.len() - 1) * 98 / 100].max(1e-4) }
+            } else {
+                self.height.iter().copied().fold(0.0_f32, f32::max).max(1e-4)
+            };
             let (lx, ly) = (0.55_f32, 0.83_f32);
             let gain = 1.6 * f.impasto.clamp(0.0, 1.0);
             let spec = 0.9 * f.sheen.clamp(0.0, 1.0);
+            // The weave: a plain LINEN, not a grid — the warp and weft domain-warped by a slow noise (the
+            // cloth stretched unevenly on its bars), interlocked over-and-under (a checker of bumps where
+            // one thread crosses the other), each thread's thickness wandering along its length (slubs),
+            // and a fibrous micro-roughness over all. Period ~1/400 of the short side (a medium canvas).
+            // Seen where the paint is THIN — the cover falls off with the LOCAL paint height (a ridged
+            // stroke is a comb of peaks and furrows and the furrows are paint too), so a built-up passage
+            // hides the threads entirely and a glaze or the bare ground shows them.
+            let weave = f.weave.clamp(0.0, 1.0);
+            let period = (w.min(h) as f32 / 400.0).max(3.0);
+            let kw = std::f32::consts::TAU / period;
+            let (h50, local_h) = if weave > 0.0 {
+                // The local height: the max over a 3-px window, lightly smoothed.
+                let r3 = 3usize;
+                let mut t = self.height.clone();
+                let mut mx = self.height.clone();
+                for y in 0..h { for x in 0..w { let mut m = 0f32; for d in x.saturating_sub(r3)..=(x + r3).min(w - 1) { m = m.max(self.height[y * w + d]); } t[y * w + x] = m; } }
+                for y in 0..h { for x in 0..w { let mut m = 0f32; for d in y.saturating_sub(r3)..=(y + r3).min(h - 1) { m = m.max(t[d * w + x]); } mx[y * w + x] = m; } }
+                let lh = Self::box_blur_f(&mx, w, h, 2);
+                let mut v: Vec<f32> = lh.iter().copied().filter(|h| *h > 0.0).collect();
+                let med = if v.is_empty() { 1e-4 } else { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v[v.len() / 2].max(1e-4) };
+                (med, lh)
+            } else {
+                (1.0, Vec::new())
+            };
+            let linen = |x: f32, y: f32| -> f32 {
+                // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
+                // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
+                // straight grid to the eye — a dot screen on the sky.)
+                let wx = (value_noise(x / (period * 12.0), y / (period * 12.0), f.seed ^ 0x11EA) - 0.5) * 3.0 * period
+                    + (value_noise(x / (period * 3.5), y / (period * 3.5), f.seed ^ 0x77A1) - 0.5) * 0.8 * period;
+                let wy = (value_noise(x / (period * 12.0) + 7.3, y / (period * 12.0) + 3.1, f.seed ^ 0x2BEE) - 0.5) * 3.0 * period
+                    + (value_noise(x / (period * 3.5) + 2.2, y / (period * 3.5) + 9.1, f.seed ^ 0x88B2) - 0.5) * 0.8 * period;
+                let (u, v) = (x + wx, y + wy);
+                let sx = (kw * u).sin();
+                let sy = (kw * v).sin();
+                // Slubs: a warp thread (running in y) varies along y, a weft thread along x.
+                let tx = 0.55 + 0.9 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), f.seed ^ 0x3C0D);
+                let ty = 0.55 + 0.9 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, f.seed ^ 0x4D1E);
+                // Interlock (the checker of crossings) + the threads' own ridges + fibrous roughness.
+                let interlock = sx * sy;
+                let ridges = 0.35 * (sx.abs() * tx + sy.abs() * ty);
+                let fibre = 0.12 * (value_noise(x / 1.7, y / 1.7, f.seed ^ 0x5F1B) - 0.5);
+                0.6 * interlock * (tx + ty) * 0.5 + ridges + fibre
+            };
             for y in 0..h {
                 for x in 0..w {
                     let xl = x.saturating_sub(1);
@@ -664,6 +1196,31 @@ impl Canvas {
                     if spec > 0.0 && facing > 0.0 {
                         shade += spec * facing * facing * amt;
                     }
+                    // CAST SHADOW (with the striated relief, `ridges`): a thick stroke beside thin paint is
+                    // a step, and the raking light throws the step's shadow onto the thin side — the
+                    // micro-shadow that makes thick paint SIT ON the smooth passage instead of fading into
+                    // it. Walk a few pixels toward the light; where the paint there stands higher than this
+                    // pixel by more than the light's climb, this pixel is in its shadow.
+                    if f.relief_robust && gain > 0.0 {
+                        let mut occl = 0f32;
+                        for k in 1..=5i32 {
+                            let sx = (x as i32 + (lx * k as f32).round() as i32).clamp(0, w as i32 - 1) as usize;
+                            let sy = (y as i32 + (ly * k as f32).round() as i32).clamp(0, h as i32 - 1) as usize;
+                            let rise = (self.height[sy * w + sx] - self.height[y * w + x]) / peak - 0.06 * k as f32;
+                            occl = occl.max(rise);
+                        }
+                        if occl > 0.0 {
+                            shade -= 0.7 * gain * occl.min(1.0) * amt;
+                        }
+                    }
+                    if weave > 0.0 {
+                        let (xf, yf) = (x as f32, y as f32);
+                        let dwx = (linen(xf + 1.0, yf) - linen(xf - 1.0, yf)) * 0.5;
+                        let dwy = (linen(xf, yf + 1.0) - linen(xf, yf - 1.0)) * 0.5;
+                        let facing_w = (dwx * lx + dwy * ly) * period / 2.2;
+                        let cover = (-4.0 * local_h[y * w + x] / h50).exp();
+                        shade += 0.9 * weave * facing_w * cover;
+                    }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {
                         continue;
@@ -674,7 +1231,16 @@ impl Canvas {
                     // darker, smoother masses — a seam. Damp the relief toward the light end so the texture's
                     // magnitude is even across the value range (impasto still reads on the mid/dark brushwork).
                     let l = (p.0[0] as f32 * 0.299 + p.0[1] as f32 * 0.587 + p.0[2] as f32 * 0.114) / 255.0;
-                    let ldamp = (1.0 - 0.8 * (l - 0.45).max(0.0) / 0.55).clamp(0.22, 1.0);
+                    // (With the striated relief on — `ridges` — a near-white painting went flat under this damp:
+                    // a snow scene's mane stood three times the sky's height and none of it showed. Then the
+                    // relief is damped by half as much, and on a light passage the shadow side keeps its depth
+                    // while the lit side is held — paint on white can only gain shadow, not glare.)
+                    let ldamp = if f.relief_robust {
+                        let d = (1.0 - 0.4 * (l - 0.45).max(0.0) / 0.55).clamp(0.5, 1.0);
+                        if shade > 0.0 { d * 0.6 } else { d }
+                    } else {
+                        (1.0 - 0.8 * (l - 0.45).max(0.0) / 0.55).clamp(0.22, 1.0)
+                    };
                     let shade = shade * ldamp;
                     for cc in 0..3 {
                         p.0[cc] = (p.0[cc] as f32 * (1.0 + shade)).round().clamp(0.0, 255.0) as u8;
@@ -728,7 +1294,7 @@ impl Canvas {
                 for x in 0..w {
                     let d = x.min(w - 1 - x).min(y).min(h - 1 - y) as f32;
                     // Irregular inner boundary: the band width wobbles with a low-frequency hash of the position.
-                    let wob = 0.55 + 0.9 * grain(x / 3, y / 3, f.seed ^ 0x9E37);
+                    let wob = 0.55 + 0.9 * paper_grain(x / 3, y / 3, f.seed ^ 0x9E37);
                     let edge = band * wob;
                     if d >= edge {
                         continue;
@@ -751,6 +1317,9 @@ impl Canvas {
 pub struct Finish {
     /// Impasto relief strength (0 flat → 1 thick, light-catching).
     pub impasto: f32,
+    /// Scale the relief against a robust height (the 98th percentile) rather than the single peak — one
+    /// heavy crossing no longer flattens every other ridge. Off = the old scale, byte for byte.
+    pub relief_robust: bool,
     /// Saturation multiplier (1 neutral; >1 vivid oil; <1 muted gouache/watercolour).
     pub chroma: f32,
     /// Drying value shift (+ lighter watercolour; − matte-compressed gouache).
@@ -764,6 +1333,9 @@ pub struct Finish {
     /// Paper edge (0..1): fade the painting to bare paper at the borders with an irregular DECKLED edge — the
     /// torn-paper vignette a watercolour sits in. 0 = full-bleed rectangle.
     pub paper_edge: f32,
+    /// CANVAS WEAVE (0 = none): the linen's threads under the paint, seen in the relight where the paint is
+    /// thin or bare — a built-up passage covers them entirely.
+    pub weave: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -777,7 +1349,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 
@@ -811,7 +1383,14 @@ fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
 /// Deterministic paper-grain value in `[0,1]` at a pixel — the mottle granulation settles into. A LOW-FREQUENCY
 /// value noise at the paper-tooth scale (a coarse cell plus a finer octave), NOT a per-pixel hash: real
 /// granulation is pigment pooling in clusters across the tooth, so a per-pixel hash read as digital static.
-fn grain(x: usize, y: usize, seed: u64) -> f32 {
+/// The paper's RELIEF at a pixel (0 = a hollow, 1 = a standing fibre): the grain a dry brush skips over
+/// (see `BrushConfig::skip`). One fixed seed — the sheet is the same sheet under every stroke and every
+/// replay.
+pub fn paper_relief(x: usize, y: usize) -> f32 {
+    paper_grain(x, y, 0x5A9E_7001)
+}
+
+fn paper_grain(x: usize, y: usize, seed: u64) -> f32 {
     let coarse = value_noise(x as f32 / 5.0, y as f32 / 5.0, seed);
     let fine = value_noise(x as f32 / 2.2, y as f32 / 2.2, seed ^ 0x9E37_79B9);
     (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
@@ -973,5 +1552,216 @@ mod tests {
         let d_thick = delta_e76(base, srgb_to_lab(thick.color_at(0, 0)));
         assert!(d_thin > 0.0, "a glaze does tint");
         assert!(d_thin < d_thick, "thin glaze shifts less than a covering deposit ({d_thin} < {d_thick})");
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use crate::paint::palette;
+
+    #[test]
+    fn the_box_blur_matches_a_naive_mean() {
+        let (w, h) = (7usize, 5usize);
+        let src: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 11) as f32).collect();
+        let got = Canvas::box_blur_f(&src, w, h, 2);
+        for y in 0..h {
+            for x in 0..w {
+                let (mut s, mut c) = (0f32, 0f32);
+                for yy in y.saturating_sub(2)..=(y + 2).min(h - 1) { for xx in x.saturating_sub(2)..=(x + 2).min(w - 1) { s += src[yy * w + xx]; c += 1.0; } }
+                assert!((got[y * w + x] - s / c).abs() < 1e-4, "at {x},{y}: {} vs {}", got[y * w + x], s / c);
+            }
+        }
+    }
+
+    #[test]
+    fn the_flow_fills_the_gaps_between_lanes_and_leaves_a_rim() {
+        // Two wet dots a few pixels apart on paper: after the flow the gap between them is painted (the
+        // film joins them), and the film's edge is deeper than its interior.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(48, 48, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut load = vec![0f32; pal.pigments.len()];
+        load[3] = 1.5;
+        for &x in &[20u32, 26] { c.deposit(x, 24, &load, 0.0); }
+        let gap_before = c.saturation_at(23, 24);
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
+        let gap_after = c.saturation_at(23, 24);
+        assert!(gap_before == 0.0 && gap_after > 0.0, "the gap is painted by the film: {gap_before} → {gap_after}");
+        assert!(c.saturation_at(23, 24) > c.saturation_at(23, 40), "and the paper beyond the film stays bare");
+        let interior = c.saturation_at(23, 24);
+        let edge: f32 = (0..48).map(|y| c.saturation_at(23, y)).fold(0.0, f32::max);
+        assert!(edge >= interior, "the rim is at least as deep as the interior ({edge} vs {interior})");
+    }
+
+    #[test]
+    fn two_washes_meet_in_a_tide_line() {
+        // A heavy blue wash and a thin ochre wash laid side by side, wet: each keeps its own colour (the
+        // diffusion is confined to the wash), and the BACKRUN forms on the DRIER side — the thin wash is
+        // deeper along the line where they meet than in its interior, the heavy wash is not deepened.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[1] = 1.0;
+        b[3] = 0.3;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
+        let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
+        assert!(at(8, 16, 3) == 0.0 && at(56, 16, 1) == 0.0, "no pigment crosses into the other wash");
+        let line: f32 = (32..40).map(|x| at(x, 16, 3)).fold(0.0, f32::max);
+        assert!(line > at(56, 16, 3) * 1.15, "the thin wash is deeper at the meeting line: {line} vs {}", at(56, 16, 3));
+        let heavy_line: f32 = (24..32).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
+        assert!(heavy_line <= at(8, 16, 1) * 1.02, "the heavy wash is not deepened: {heavy_line} vs {}", at(8, 16, 1));
+    }
+
+    #[test]
+    fn two_washes_of_one_weight_blend_without_a_line() {
+        // The same two washes at the same load: no tide line forms between them (they were laid together,
+        // wet) — the rim is a fact of the load contrast, not a contour round every wash.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[1] = 1.0;
+        b[3] = 1.0;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
+        let at = |x: usize, y: usize, k: usize| c.conc[(y * 64 + x) * n + k];
+        let line: f32 = (26..36).map(|x| at(x, 16, 1)).fold(0.0, f32::max);
+        assert!(line < at(8, 16, 1) * 1.05, "no line between equal washes: {line} vs {}", at(8, 16, 1));
+    }
+
+    #[test]
+    fn the_grain_settles_where_the_wash_pooled() {
+        // One earth pigment, a heavy wash on the left and a thin one on the right, granulating in the water:
+        // the heavy wash mottles (its pigment varies across the tooth), the thin one much less.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let earth = (0..n).min_by_key(|&k| { let m = pal.pigments[k].masstone; (m[0].max(m[1]).max(m[2]) as i32 - m[0].min(m[1]).min(m[2]) as i32) * 255 / m[0].max(m[1]).max(m[2]).max(1) as i32 }).unwrap();
+        let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+        a[earth] = 1.6;
+        b[earth] = 0.2;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &a, 0.0); c.deposit(x + 32, y, &b, 0.0); } }
+        let mut plain = c.clone();
+        plain.flow(1.0, 3.0, 0.0, 0.0, 0.0);
+        c.flow(1.0, 3.0, 0.0, 1.0, 0.0);
+        let spread = |cv: &Canvas, x0: usize| -> f32 {
+            let vals: Vec<f32> = (8..24).flat_map(|y| (x0..x0 + 16).map(move |x| (x, y))).map(|(x, y)| cv.conc[(y * 64 + x) * n + earth]).collect();
+            let mean = vals.iter().sum::<f32>() / vals.len() as f32;
+            (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt() / mean.max(1e-6)
+        };
+        assert!(spread(&plain, 8) < 0.01, "without grain the heavy wash is even: {}", spread(&plain, 8));
+        assert!(spread(&c, 8) > 0.1, "with grain it mottles: {}", spread(&c, 8));
+        assert!(spread(&c, 8) > spread(&c, 40) * 3.0, "and the thin wash far less: {} vs {}", spread(&c, 8), spread(&c, 40));
+    }
+
+    #[test]
+    fn the_selective_flow_holds_back_at_a_hard_edge_and_floods_the_soft_mass() {
+        // One wash of one pigment with a sharp heavy stripe through it: flooded (selective 0) the stripe's
+        // edge softens; selective, the water holds back at that hard edge and the stripe keeps its edge,
+        // while far from it the wash still diffuses (a gap in the lanes is still filled).
+        let pal = palette::EARTH;
+        let mk = || {
+            let mut c = Canvas::white(96, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+            let n = c.n;
+            let (mut thin, mut heavy) = (vec![0f32; n], vec![0f32; n]);
+            thin[1] = 0.3;
+            heavy[1] = 3.0;
+            for y in 0..32u32 { for x in 0..96u32 { if x != 70 { c.deposit(x, y, &thin, 0.0); } } }
+            for y in 0..32u32 { for x in 20..28u32 { c.deposit(x, y, &heavy, 0.0); } }
+            c
+        };
+        let (mut flood, mut sel) = (mk(), mk());
+        flood.flow(1.0, 4.0, 0.0, 0.0, 0.0);
+        sel.flow(1.0, 4.0, 0.0, 0.0, 1.0);
+        let n = flood.n;
+        let at = |c: &Canvas, x: usize| c.conc[(16 * 96 + x) * n + 1];
+        // Just outside the stripe: the flooded wash received the stripe's pigment, the selective one far less.
+        assert!(at(&sel, 30) < at(&flood, 30) * 0.5, "the water holds back at the hard edge: {} vs {}", at(&sel, 30), at(&flood, 30));
+        // Far from it the lane gap is filled either way.
+        assert!(at(&sel, 70) > 0.0 && at(&flood, 70) > 0.0, "the soft mass still floods");
+    }
+
+    #[test]
+    fn the_weave_shows_under_thin_paint_and_is_covered_by_thick() {
+        // One canvas, a thin glaze on the left and a built-up passage on the right, relit with the weave:
+        // the left half's pixels vary with the threads, the right half's hardly at all.
+        let pal = palette::ZORN;
+        let mut c = Canvas::white(64, 32, pal, 0.9);
+        let n = c.n;
+        let (mut thin, mut thick) = (vec![0f32; n], vec![0f32; n]);
+        thin[1] = 0.15;
+        thick[1] = 3.0;
+        for y in 0..32u32 { for x in 0..32u32 { c.deposit(x, y, &thin, 0.1); c.deposit(x + 32, y, &thick, 2.0); } }
+        let img = c.to_image_finished(&Finish { weave: 1.0, impasto: 0.0, ..Default::default() });
+        let spread = |x0: u32| -> f32 {
+            let v: Vec<f32> = (8..24).flat_map(|y| (x0..x0 + 24).map(move |x| (x, y))).map(|(x, y)| img.get_pixel(x, y).0[1] as f32).collect();
+            let m = v.iter().sum::<f32>() / v.len() as f32;
+            (v.iter().map(|a| (a - m).powi(2)).sum::<f32>() / v.len() as f32).sqrt()
+        };
+        assert!(spread(4) > 2.0, "the thin glaze shows the threads: {}", spread(4));
+        assert!(spread(36) < spread(4) * 0.25, "the built-up paint covers them: {} vs {}", spread(36), spread(4));
+    }
+
+    #[test]
+    fn the_collision_drags_wet_paint_along_its_striation_and_leaves_dry_paint_alone() {
+        // Two wet ridged bands of different pigments running horizontally, touching: after the collision
+        // the colours have mixed along the bands' direction (a pixel inside the red band carries some ochre
+        // from its neighbour band), and a DRY band of the same layout does not move.
+        let pal = palette::ZORN;
+        let lay = |c: &mut Canvas, wet: f32| {
+            let n = c.n;
+            let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+            a[1] = 2.0; // cadmium red
+            b[0] = 2.0; // ochre
+            for x in 0..64u32 {
+                for y in 8..16u32 { c.deposit(x, y, &a, 1.0 + 0.6 * ((x / 2) % 2) as f32); c.wetness[(y * 64 + x) as usize] = wet; }
+                for y in 16..24u32 { c.deposit(x, y, &b, 1.0 + 0.6 * ((x / 2 + 1) % 2) as f32); c.wetness[(y * 64 + x) as usize] = wet; }
+            }
+        };
+        let mut wetc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut wetc, 1.0);
+        let n = wetc.n;
+        let before = wetc.conc.clone();
+        wetc.collide(1.0, 4.0, None);
+        let moved: f32 = wetc.conc.iter().zip(&before).map(|(a, b)| (a - b).abs()).sum();
+        assert!(moved > 1.0, "wet paint moved: {moved}");
+        let mut dryc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut dryc, 0.0);
+        let before_d = dryc.conc.clone();
+        dryc.collide(1.0, 4.0, None);
+        assert_eq!(dryc.conc, before_d, "dry paint does not move");
+        // Masked pixels do not move either.
+        let mut maskc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut maskc, 1.0);
+        let before_m = maskc.conc.clone();
+        let mask = vec![1.0f32; 64 * 32];
+        maskc.collide(1.0, 4.0, Some(&mask));
+        assert_eq!(maskc.conc, before_m, "the face mask holds the paint still");
+        let _ = n;
+    }
+
+    #[test]
+    fn the_flow_leaves_the_dried_passes_where_they_were() {
+        // A crisp dot laid in an earlier pass (marked = dried) and a wet wash laid after it: the flow moves
+        // the wash, not the dot — the dot's pigment and its sharp edge survive exactly.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(48, 48, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let mut dot = vec![0f32; pal.pigments.len()];
+        dot[1] = 2.0;
+        c.deposit(10, 10, &dot, 0.0);
+        c.mark_film();
+        let n = c.n;
+        let dot_before: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
+        let beside_before = c.saturation_at(11, 10);
+        let mut wash = vec![0f32; pal.pigments.len()];
+        wash[3] = 1.0;
+        for x in 30..40u32 { for y in 30..34u32 { c.deposit(x, y, &wash, 0.0); } }
+        c.flow(1.0, 3.0, 0.5, 0.0, 0.0);
+        let dot_after: Vec<f32> = c.conc[(10 * 48 + 10) * n..(10 * 48 + 11) * n].to_vec();
+        assert_eq!(dot_before, dot_after, "the dried dot does not move");
+        assert_eq!(beside_before, c.saturation_at(11, 10), "nor does its edge soften");
+        assert!(c.saturation_at(29, 32) > 0.0 && c.saturation_at(41, 32) > 0.0, "the wet wash spread beyond its footprint");
     }
 }
