@@ -288,7 +288,7 @@ pub fn compile(spec: &PaintSpec, ref_w: u32, ref_h: u32) -> Result<PaintPlan> {
             } else {
                 ((rest_budget as f32) * stage_weight(s) / rest_w).round() as usize
             };
-            PassSpec { radius: radius.max(fine), budget: b.max(1), stage: s.slug() }
+            PassSpec { face_only: false, radius: radius.max(fine), budget: b.max(1), stage: s.slug() }
         })
         .collect();
 

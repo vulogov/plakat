@@ -151,6 +151,31 @@ pub async fn build_selection_mask(
     points: &[PointPrompt],
     device: &Device,
 ) -> Result<GrayImage> {
+    let (mut masks, ious) = build_selection_masks(in_path, points, device).await?;
+    // The multimask-BEST: the highest predicted IoU, which is what a single click should give.
+    let best = ious
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    Ok(masks.remove(best.min(masks.len().saturating_sub(1))))
+}
+
+/// All of SAM's candidate masks for these prompts, with their predicted IoUs, in the model's own order.
+///
+/// SAM answers a point with THREE masks at different granularities — roughly a subpart, a part, and the whole
+/// object it belongs to — because a click is ambiguous. Picking the highest predicted IoU, as
+/// [`build_selection_mask`] does, systematically returns the WHOLE OBJECT: that is the right answer for "what
+/// did I click on" and the wrong one for "which PART did I click in". A point inside a beard came back as the
+/// entire seated man for exactly this reason, not because the prompt lacked negative points.
+///
+/// Callers that want a part choose by SCALE instead — the smallest candidate that still contains the prompt.
+pub async fn build_selection_masks(
+    in_path: &Path,
+    points: &[PointPrompt],
+    device: &Device,
+) -> Result<(Vec<GrayImage>, Vec<f32>)> {
     if points.is_empty() {
         return Err(anyhow!(
             "no prompt: pass at least one --point X,Y (append :bg to exclude a region)"
@@ -185,32 +210,26 @@ pub async fn build_selection_mask(
         .collect();
 
     let x = to_tensor(&resized, device)?;
-    // multimask_output=true → 3 candidate masks + IoU; pick the best.
+    // multimask_output=true → 3 candidate masks + their predicted IoUs.
     let (masks, iou) = sam.forward(&x, &pts, true).context("SAM forward")?;
     let (n_masks, _mh, _mw) = masks.dims3()?;
-    let best = {
-        let ious: Vec<f32> = iou.flatten_all()?.to_vec1()?;
-        ious.iter()
-            .take(n_masks)
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    };
-    let sel = masks.i(best)?; // (rh, rw) logits
-
-    // Threshold at 0 (the model's mask threshold) → the SELECTION binary mask at
-    // the resized resolution, then nearest-resize back to the original size.
-    let vals: Vec<f32> = sel.flatten_all()?.to_vec1()?;
-    let mut g = GrayImage::new(rw, rh);
-    for (i, &v) in vals.iter().enumerate() {
-        g.put_pixel((i as u32) % rw, (i as u32) / rw, Luma([if v > 0.0 { 255 } else { 0 }]));
+    let ious: Vec<f32> = iou.flatten_all()?.to_vec1()?;
+    let mut out = Vec::with_capacity(n_masks);
+    for m in 0..n_masks {
+        // Threshold at 0 (the model's mask threshold) → a binary mask at the resized resolution, then
+        // nearest-resize back to the original size.
+        let vals: Vec<f32> = masks.i(m)?.flatten_all()?.to_vec1()?;
+        let mut g = GrayImage::new(rw, rh);
+        for (i, &v) in vals.iter().enumerate() {
+            g.put_pixel((i as u32) % rw, (i as u32) / rw, Luma([if v > 0.0 { 255 } else { 0 }]));
+        }
+        out.push(if (rw, rh) != (w0, h0) {
+            image::imageops::resize(&g, w0, h0, image::imageops::FilterType::Nearest)
+        } else {
+            g
+        });
     }
-    Ok(if (rw, rh) != (w0, h0) {
-        image::imageops::resize(&g, w0, h0, image::imageops::FilterType::Nearest)
-    } else {
-        g
-    })
+    Ok((out, ious.into_iter().take(n_masks).collect()))
 }
 
 /// White (255) where the normalized depth is within `[lo, hi]`, black elsewhere.

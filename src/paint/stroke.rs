@@ -31,6 +31,25 @@ pub struct BrushConfig {
     /// Cross-section ROUNDNESS (0..1): 1 = a round brush (soft feathered edges), 0 = a flat brush (harder,
     /// squarer edge across the width).
     pub round: f32,
+    /// A WASH brush (0 = off): the stroke lays at most this many times its own single-hit deposit of film at
+    /// any pixel since the canvas's last `mark_film`, so overlapping strokes of one wash pass build ONE film —
+    /// the water evens the pigment out — rather than doubling where they cross.
+    pub film_cap: f32,
+    /// A WASH brush: loaded with water, it lays its full film to the very ends of the mark (no end taper) and
+    /// its charge does not run out along the stroke (no dry-brush tail), so strokes overlap into one flat
+    /// wash whose only edges are where the wash stops. Off for every brush mark.
+    pub flat_ends: bool,
+    /// A loaded WASH brush holds its charge along the whole stroke (no dry-brush tail) — with or without
+    /// the end taper.
+    pub hold_charge: bool,
+    /// BRISTLE RIDGES (0 = off): the paint a lane leaves stands as high as that lane was loaded relative to
+    /// its neighbours, so a stroke's relief is striated across its width. The amount scales the striation.
+    pub ridges: f32,
+    /// DRY-BRUSH SKIPPING (0 = off): a bristle with little water touches only the raised fibres of the
+    /// paper — the drier the bristle, the fewer fibres it reaches — so a dry mark is broken by the tooth
+    /// along its drag instead of printing as a solid, gritty band. The amount scales how high the fibres
+    /// stand. A loaded wet brush floods the hollows and is never broken.
+    pub skip: f32,
 }
 
 impl Default for BrushConfig {
@@ -39,7 +58,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, ridges: 0.0, skip: 0.0 }
     }
 }
 
@@ -119,7 +138,10 @@ impl Stroke {
         // brush). Each lane still keeps its own evolving load along the whole stroke, so dirty-brush pickup and
         // stroke-order harmonisation survive. Capped so a very wide stroke can't explode the inner loop.
         let maxw = self.width0.max(self.width1).max(1.0);
-        let nb = (maxw.ceil() as usize).max(brush.bristles).clamp(1, 256);
+        // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
+        // untouched (the rounding), and a wash came out as a dotted screen.
+        let dense = brush.flat_ends || brush.hold_charge;
+        let nb = ((if dense { maxw * 2.0 } else { maxw }).ceil() as usize).max(brush.bristles).clamp(1, 256);
         // BRISTLE STREAKS (naturalness): a real brush is uneven — some bristles carry more paint than others, so
         // a stroke shows drybrush streaks along its length, not a uniform blob. Give each lane a slightly
         // different starting load (deterministic from the stroke's origin, so replay is exact). A few lanes run
@@ -138,7 +160,7 @@ impl Stroke {
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
         // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
         // fraction of what it deposits, so a long stroke lays paint along its whole travel.
-        let deplete = (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0);
+        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) };
 
         for i in 0..pts.len() {
             let p = pts[i];
@@ -156,7 +178,9 @@ impl Stroke {
 
             // Ends taper: the first/last ~22% of the stroke deposits less, so a mark has soft ROUND tips, not a
             // rectangular butt (the "blocky patch" tell). Deeper falloff = more organic marks.
-            let end = {
+            let end = if brush.flat_ends {
+                1.0
+            } else {
                 let e = (t.min(1.0 - t) / 0.22).clamp(0.0, 1.0);
                 0.15 + 0.85 * e * e
             };
@@ -180,14 +204,34 @@ impl Stroke {
                 // Cross-section falloff by brush ROUNDNESS: a round brush feathers gently to the edge (soft
                 // mark); a flat brush holds a flatter top and drops sharper (a squarer edge). `round` in [0,1]
                 // interpolates between them.
-                let edge = {
+                // A wash brush lays its film evenly across its whole width: the water, not the bristles,
+                // sets the film (a cross-section falloff left a third-strength rim along every stroke).
+                let edge = if dense {
+                    1.0
+                } else {
                     let d = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
                     let rnd = brush.round.clamp(0.0, 1.0);
                     let pw = 2.0 + (1.0 - rnd) * 6.0; // round → parabola, flat → flatter top
                     let floor = 0.12 + (1.0 - rnd) * 0.33; // flat brush deposits more evenly across its width
                     (1.0 - d.powf(pw)).max(floor)
                 };
-                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, deplete, &mut scratch);
+                // BRISTLE RIDGES: the paint a lane leaves stands as high as that lane was loaded relative to its
+                // neighbours — a loaded bristle drags a ridge, a dry one a furrow — so a stroke's relief is
+                // striated across its width (the relight read a smooth hump before; every stroke was a
+                // flat tube). The ridge follows the lane's STARTING load (its streak), so it runs the whole stroke.
+                // And the PLOW: the brush pushes paint out to the stroke's lateral edges, so the section is
+                // not a rounded bump but a trough with a steep ridge thrown up along each side — the outer
+                // lanes stand higher than the middle, more so for a flat brush (a knife-like edge) than a
+                // round one. The paint's own colour is laid as before; only its height is displaced.
+                let ridge = if brush.ridges > 0.0 && brush.viscosity > 0.0 && nb > 2 {
+                    let k = brush.ridges.clamp(0.0, 1.0);
+                    let lateral = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
+                    let plow = 1.0 + k * (0.9 - 0.4 * brush.round.clamp(0.0, 1.0)) * (lateral.powi(3) * 1.6 - 0.35);
+                    plow * (1.0 + k * ((lane_hash(seed, b as u64 ^ 0x5A5A) - 0.5) * 1.6 + 0.4 * ((b as f32 * 2.4).sin() * 0.5 + 0.5) - 0.4))
+                } else {
+                    1.0
+                };
+                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end, deplete, &mut scratch, ridge.max(0.05));
             }
         }
     }
@@ -227,15 +271,41 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32) {
         let p = py as usize * canvas.w as usize + px as usize;
+        if canvas.clipped(p) {
+            return;
+        }
         let tooth = canvas.tooth[p];
         let contact = (self.pressure * cover.clamp(0.0, 1.0) * tooth).clamp(0.0, 1.0);
         let sat = (canvas.saturation_at(px, py) / SAT_FULL).clamp(0.0, 1.0);
 
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
         // caller-owned scratch buffer, cleared here — no per-pixel heap allocation.
-        let df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        let mut df = (brush.k_deposit * contact * (1.0 - SAT_THROTTLE * sat)).clamp(0.0, 1.0);
+        // The dry brush: a mark laid below 0.6 wet no longer floods the hollows; the drier it is, the higher
+        // the fibre it must find to leave paint. The paper's relief is the same deterministic grain the
+        // granulation settles into, so the skips and the mottle share one tooth. Read from the mark's OWN
+        // wetness, not the bristle's running one: that decays along every stroke, and read there the tail of
+        // every long wash went dry and the whole sheet stippled and darkened.
+        if brush.skip > 0.0 {
+            let dryness = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
+            if dryness > 0.0 {
+                let thr = brush.skip.clamp(0.0, 1.0) * dryness * 0.9;
+                let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+                let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
+                df *= t * t * (3.0 - 2.0 * t);
+            }
+        }
+        if brush.film_cap > 0.0 {
+            let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
+            let laid = canvas.film_since_mark(p);
+            let room = (cap - laid).max(0.0);
+            let would = Self::load_norm(load) * df;
+            if would > room {
+                df *= room / would.max(1e-6);
+            }
+        }
         deposit.clear();
         deposit.resize(n, 0.0);
         let mut dep_total = 0.0;
@@ -245,7 +315,7 @@ impl Stroke {
             dep_total += d;
             load[c] -= d * deplete;
         }
-        canvas.deposit(px, py, deposit, dep_total * brush.viscosity);
+        canvas.deposit(px, py, deposit, dep_total * brush.viscosity * ridge);
 
         // Pickup: lift wet canvas pigment into the load (the dirty brush). Scales with how empty the brush is.
         let cw = canvas.wetness[p];
@@ -299,6 +369,27 @@ mod tests {
         let s = Stroke { path: vec![[3.0, 10.0], [56.0, 10.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: 1.0 };
         s.rasterize(&mut c, &BrushConfig::default());
         assert!(c.height[10 * 60 + 6] > c.height[10 * 60 + 52], "more paint near the loaded start than the dry end");
+    }
+
+    #[test]
+    fn a_dry_brush_skips_the_paper_and_a_wet_one_floods_it() {
+        // The same long mark laid nearly dry with `skip` on is BROKEN along its drag (bare and painted pixels
+        // alternate on the centre line); laid wet it is solid; and with `skip` off the dry mark is as solid as
+        // the default path always made it.
+        let mark = |wet: f32, skip: f32| -> Vec<f32> {
+            let mut c = Canvas::white(120, 16, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [116.0, 8.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: wet };
+            let brush = BrushConfig { skip, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            (6..114).map(|x| c.saturation_at(x as u32, 8)).collect()
+        };
+        let gaps = |m: &[f32]| m.iter().filter(|&&f| f < 1e-4).count();
+        let dry = mark(0.15, 1.0);
+        let wet = mark(0.9, 1.0);
+        let off = mark(0.15, 0.0);
+        assert!(gaps(&dry) > 10, "the dry mark is broken by the tooth ({} bare pixels of {})", gaps(&dry), dry.len());
+        assert_eq!(gaps(&wet), 0, "the wet mark floods the hollows");
+        assert_eq!(gaps(&off), 0, "with the dial off the dry mark is solid, as before");
     }
 
     #[test]
