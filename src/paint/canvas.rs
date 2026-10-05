@@ -1067,14 +1067,18 @@ impl Canvas {
             };
             let linen = |x: f32, y: f32| -> f32 {
                 // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
-                let wx = (value_noise(x / (period * 40.0), y / (period * 40.0), f.seed ^ 0x11EA) - 0.5) * 2.0 * period;
-                let wy = (value_noise(x / (period * 40.0) + 7.3, y / (period * 40.0) + 3.1, f.seed ^ 0x2BEE) - 0.5) * 2.0 * period;
+                // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
+                // straight grid to the eye — a dot screen on the sky.)
+                let wx = (value_noise(x / (period * 12.0), y / (period * 12.0), f.seed ^ 0x11EA) - 0.5) * 3.0 * period
+                    + (value_noise(x / (period * 3.5), y / (period * 3.5), f.seed ^ 0x77A1) - 0.5) * 0.8 * period;
+                let wy = (value_noise(x / (period * 12.0) + 7.3, y / (period * 12.0) + 3.1, f.seed ^ 0x2BEE) - 0.5) * 3.0 * period
+                    + (value_noise(x / (period * 3.5) + 2.2, y / (period * 3.5) + 9.1, f.seed ^ 0x88B2) - 0.5) * 0.8 * period;
                 let (u, v) = (x + wx, y + wy);
                 let sx = (kw * u).sin();
                 let sy = (kw * v).sin();
                 // Slubs: a warp thread (running in y) varies along y, a weft thread along x.
-                let tx = 0.75 + 0.5 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), f.seed ^ 0x3C0D);
-                let ty = 0.75 + 0.5 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, f.seed ^ 0x4D1E);
+                let tx = 0.55 + 0.9 * value_noise(u / (period * 0.9) + 11.0, v / (period * 6.0), f.seed ^ 0x3C0D);
+                let ty = 0.55 + 0.9 * value_noise(u / (period * 6.0), v / (period * 0.9) + 5.0, f.seed ^ 0x4D1E);
                 // Interlock (the checker of crossings) + the threads' own ridges + fibrous roughness.
                 let interlock = sx * sy;
                 let ridges = 0.35 * (sx.abs() * tx + sy.abs() * ty);
@@ -1135,7 +1139,16 @@ impl Canvas {
                     // darker, smoother masses — a seam. Damp the relief toward the light end so the texture's
                     // magnitude is even across the value range (impasto still reads on the mid/dark brushwork).
                     let l = (p.0[0] as f32 * 0.299 + p.0[1] as f32 * 0.587 + p.0[2] as f32 * 0.114) / 255.0;
-                    let ldamp = (1.0 - 0.8 * (l - 0.45).max(0.0) / 0.55).clamp(0.22, 1.0);
+                    // (With the striated relief on — `ridges` — a near-white painting went flat under this damp:
+                    // a snow scene's mane stood three times the sky's height and none of it showed. Then the
+                    // relief is damped by half as much, and on a light passage the shadow side keeps its depth
+                    // while the lit side is held — paint on white can only gain shadow, not glare.)
+                    let ldamp = if f.relief_robust {
+                        let d = (1.0 - 0.4 * (l - 0.45).max(0.0) / 0.55).clamp(0.5, 1.0);
+                        if shade > 0.0 { d * 0.6 } else { d }
+                    } else {
+                        (1.0 - 0.8 * (l - 0.45).max(0.0) / 0.55).clamp(0.22, 1.0)
+                    };
                     let shade = shade * ldamp;
                     for cc in 0..3 {
                         p.0[cc] = (p.0[cc] as f32 * (1.0 + shade)).round().clamp(0.0, 255.0) as u8;

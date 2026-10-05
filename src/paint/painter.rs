@@ -1945,6 +1945,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // are laid as washes with a few crisp accents, not dragged dry (dry-brushed eyes fragmented).
     // (The same field drives the IMPASTO MAP's texture term: thick where the form is broken, thin where it
     // is smooth — so a cheek or a sky is laid smooth and a beard or bark stands up.)
+    // The picture's own value range for the impasto map (linear luma, 5th–95th percentile).
+    let (map_lo, map_hi) = if p.impasto_map > 0.0 {
+        let mut v: Vec<f32> = input.pixels().map(|px| color::linear_luma(color::srgb_to_linear(px.0))).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        (v[v.len() / 20], v[v.len() * 19 / 20])
+    } else {
+        (0.0, 1.0)
+    };
+    // The reference charge for the map's load compensation: what a mid-value stroke carries (the
+    // ladder's charge at the picture's median value), so the compensation is 1 at the middle of the range.
+    let load_ref: f32 = p.charge.max(1e-3);
     let busy_field: Option<Vec<f32>> = if (p.brush.skip > 0.0 && p.luminous && !p.book && p.from_scratch && p.medium == "watercolour") || p.impasto_map > 0.0 {
         let lm = luma_map(input);
         let fine = local_range(&lm, w as usize, h as usize, (p.min_brush * 0.75).round().max(2.0) as usize);
@@ -2760,7 +2771,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // (the far planes recede as thin paint), nearer thicker when a depth map is known. Per stroke,
                 // as the brush's viscosity, recorded so the replay lays the same height.
                 if p.impasto_map > 0.0 {
-                    let light = 0.35 + 1.3 * tluma.clamp(0.0, 1.0);
+                    // The LIGHT term reads the target's value against the picture's own range (its 5th and 95th
+                    // percentiles), not absolutely: on a snow scene every patch is bright and the absolute term
+                    // gave the sky and the drifts one thickness while the dark branches won on pigment load.
+                    let rel = ((tluma - map_lo) / (map_hi - map_lo).max(0.05)).clamp(0.0, 1.0);
+                    let light = 0.35 + 1.3 * rel;
                     let plane = if subj > 0.5 { 1.0 } else { 0.6 };
                     let near = p.depth.as_deref().and_then(|d| d.get(region_i)).map(|&z| 0.55 + 0.9 * z.clamp(0.0, 1.0)).unwrap_or(1.0);
                     // The SURFACE: a smooth form (skin, a sky, glass) is laid smooth and blended, a broken one
@@ -2772,7 +2787,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     let busy = busy_field.as_deref().and_then(|b| b.get(region_i)).copied().unwrap_or(0.5);
                     let face_here = p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.35 && hair < 0.3;
                     let surface = if face_here { 0.25 } else { 0.3 + 1.1 * busy };
-                    let f = (light * plane * near * surface).clamp(0.12, 2.5);
+                    // Height is viscosity × pigment LAID, and a dark target is laid with far more pigment than a
+                    // light one — so without compensation the darks come out thickest whatever the map says
+                    // (measured: lights:shadows 0.6–0.8 on a snow scene with the map at 1). Divide the load
+                    // out: the thickness follows the map's intent, not the charge.
+                    let load_here: f32 = load.iter().map(|v| v.max(0.0)).sum::<f32>().max(1e-3);
+                    let load_norm = (load_ref / load_here).clamp(0.35, 3.0);
+                    let f = (light * plane * near * surface * load_norm).clamp(0.12, 3.0);
                     stroke_brush.viscosity = p.brush.viscosity * (1.0 + p.impasto_map.clamp(0.0, 1.0) * (f - 1.0));
                 }
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
