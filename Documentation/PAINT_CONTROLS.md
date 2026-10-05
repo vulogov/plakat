@@ -179,7 +179,7 @@ reserved paper.
 - Tune: `bleed` up (→0.7) for looser washes/bloom; `opacity` down (→0.35) for more paper glow; `stroke_length`
   up for flowing washes. Keep `pickup` low, `impasto` 0.
 - Good with: `style: fidelity`/`legible`, `palette: limited-landscape`/`sumi`, `haze: 0`.
-- **The fluid stage** (the wash recipe, `PLAKAT_WC_WASH=1`): after each **broad** pass the water the brush
+- **The watercolour** (7.2: the default for a `--new` watercolour; `PLAKAT_WC_LEGACY=1` gives the 7.0 glazed‑wash path back): the paint is a transparent film over the paper — darks by density, tints that keep their chroma — and the whole brush ladder paints on it, light to dark. **The fluid stage**: after each **broad** pass the water the brush
   left is treated as a continuous film — the pass's own wet pigment (never the dried passes beneath) is split
   into **washes**, the regions where one pigment leads the mix, and inside each it diffuses and settles toward
   the wash's edge as it dries: the **tide line** where the water meets a different load (a lit window against
