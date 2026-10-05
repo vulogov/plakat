@@ -3837,8 +3837,34 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 streak: 0.0,
                 round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None, });
         } else {
+            // THE DROP'S COLOUR is the brush's — the wash being flicked, i.e. the picture's colour at this
+            // spot, a shade deeper — not the palette's darkest pigment. On a white snow scene the ink drops
+            // read as black rain; a flick of the sky's grey or the snow's blue is what a painter leaves.
+            // Only where the picture is itself dark does the drop go to the ink. (The transparent media:
+            // an opaque medium keeps the ink — its spatter is a dark accent by convention.)
             let mut load = vec![0f32; np];
-            load[ink] = p.charge * (0.45 + 0.55 * rr);
+            let charge = p.charge * (0.45 + 0.55 * rr);
+            if p.luminous {
+                let src = input.get_pixel(cx as u32, cy as u32).0;
+                let src_luma = color::linear_luma(color::srgb_to_linear(src));
+                if src_luma < 0.25 {
+                    load[ink] = charge;
+                } else {
+                    // The pigment nearest the spot's colour, deepened: a drop is a small heavy charge.
+                    let lab = color::srgb_to_lab(src);
+                    let mut best = (ink, f32::MAX);
+                    for (i, pg) in p.palette.pigments.iter().enumerate() {
+                        let d = color::delta_e76(lab, color::srgb_to_lab(pg.masstone));
+                        if d < best.1 {
+                            best = (i, d);
+                        }
+                    }
+                    load[best.0] = charge * 0.6;
+                    load[ink] = charge * 0.12 * (1.0 - src_luma);
+                }
+            } else {
+                load[ink] = charge;
+            }
             let s = Stroke { path, width0: radius, width1: radius, load, pressure: 1.0, wetness: drop_wet };
             s.rasterize(canvas, &brush);
             let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(idx, v)| (p.palette.pigments[idx].name.to_string(), *v)).collect();
