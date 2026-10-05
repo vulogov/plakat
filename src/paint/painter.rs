@@ -2536,7 +2536,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let on_subject = p.subject_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) > 0.5;
                 let restate_floor = if wc_brush && !block_in && !on_face && !on_subject { restate_floor * wcb_restate } else { restate_floor };
                 if let Some(st) = &structure {
-                    if !on_face && !on_subject && st[region_i] < wcb_struct {
+                    // Off the faces and the subject the fine brushes restate STRUCTURE, not tone. With no human
+                    // face in the picture (two lions) the subject is not a likeness to protect: there the
+                    // gate applies on the subject too, so a mane keeps its strands (structure) and loses the
+                    // posterised value steps the armature left (tone) — a contour-mapped mane otherwise.
+                    let protected = on_face || (on_subject && p.face_mask.is_some());
+                    if !protected && st[region_i] < wcb_struct {
                         return None;
                     }
                 }
