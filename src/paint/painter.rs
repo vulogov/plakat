@@ -1964,10 +1964,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let lm = luma_map(input);
         let fine = local_range(&lm, w as usize, h as usize, (p.min_brush * 0.75).round().max(2.0) as usize);
         let face = p.face_mask.as_deref();
-        Some((0..lm.len()).map(|i| {
+        let bf0: Vec<f32> = (0..lm.len()).map(|i| {
             let f = ((fine[i] - 0.08) / 0.12).clamp(0.0, 1.0) * (1.0 - ((lm[i] - 0.5) / 0.3).clamp(0.0, 1.0));
             f * (1.0 - face.and_then(|m| m.get(i).copied()).unwrap_or(0.0).clamp(0.0, 1.0))
-        }).collect())
+        }).collect();
+        // A MARK is dry or wet as a whole: the field is read at the mark's scale, not at one pixel — on a
+        // 4096 snow field the per-pixel range was 4% on average but 100% at isolated specks of sensor grain,
+        // and every fine mark seeded on a speck ran dry along its whole length (a thousand dry streaks on
+        // flat snow). Smoothed over a few brush widths, a speck is nothing and a beard is still a beard.
+        let bf = crate::paint::canvas::box_blur_pub(&bf0, w as usize, h as usize, (p.min_brush * 3.0).round().max(3.0) as usize);
+        if let Some(dir) = std::env::var_os("PLAKAT_WCB_DUMP") {
+            let img = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(bf[(y * w + x) as usize] * 255.0) as u8]));
+            let _ = img.save(std::path::Path::new(&dir).join("busy.png"));
+        }
+        Some(bf)
     } else {
         None
     };
@@ -2335,7 +2345,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // nocturne's darks are built, each pass being one dose; gating them too left the walls bare paper.)
         let structure: Option<Vec<f32>> = if wc_wash && fine && wcb_struct > 0.0 {
             let lm = luma_map(&reference);
-            Some(local_range(&lm, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize))
+            let st = local_range(&lm, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize);
+            if let Some(dir) = std::env::var_os("PLAKAT_WCB_DUMP") {
+                // Diagnostic: the structure field the fine pass gates on, as 8-bit (×4 so 0.25 saturates).
+                let img = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(st[(y * w + x) as usize] * 4.0 * 255.0).clamp(0.0, 255.0) as u8]));
+                let _ = img.save(std::path::Path::new(&dir).join(format!("structure_{layer}.png")));
+                let _ = reference.save(std::path::Path::new(&dir).join(format!("reference_{layer}.png")));
+            }
+            Some(st)
         } else {
             None
         };
@@ -2630,6 +2647,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // the focal hard-edge region_mask keeps a single subject crisp against the ground.
                 // HAIR / FUR: how much this mark is a strand rather than a mass (see `PaintParams::hair_mask`).
                 let hair = p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0).clamp(0.0, 1.0);
+                // A mane is ON the animal: the hair tool never runs off the subject, whatever extent SAM
+                // handed back (on the snow lions it returned 23% of the frame — the manes AND the snow around
+                // them — and the strand tool raked 1,300 dry streaks across flat snow). Where there is no
+                // subject matte the mask stands as given. (A strand may still BREAK the silhouette: that is
+                // decided below from the stroke's path, not from its seed.)
+                // (The watercolour recipe only: the oil keeps its hair mask as given — its strands along the
+                // subject's edge are part of how it was judged.)
+                let hair = if wc_wash && p.subject_mask.is_some() && subj < 0.5 { 0.0 } else { hair };
                 // SILHOUETTE STRANDS: hair reads as hair at its EDGE — a few strands escape the mass — but the
                 // subject silhouette is a seam that strokes TERMINATE at, which is exactly wrong for a mane and
                 // left every head and beard with a soft rounded outline. A MINORITY of hair marks (about a

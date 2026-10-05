@@ -750,6 +750,11 @@ impl Canvas {
         }
     }
 
+    /// `box_blur_f` for callers outside the canvas (the painter's fields).
+    pub fn box_blur_pub_impl(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+        Self::box_blur_f(src, w, h, r)
+    }
+
     /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
     /// cells actually inside).
     fn box_blur_f(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
@@ -1367,6 +1372,11 @@ impl Default for Finish {
     fn default() -> Self {
         Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
+}
+
+/// A box blur of a scalar field (see `Canvas::box_blur_f`), for the painter's fields.
+pub fn box_blur_pub(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    Canvas::box_blur_pub_impl(src, w, h, r)
 }
 
 /// Hashed value in `[0,1]` at an integer lattice point.
