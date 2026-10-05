@@ -381,16 +381,24 @@ pub fn brushwork_drawing(score: &StrokeScore, w: u32, h: u32, side: u32) -> (Rgb
         let th = sy2.atan2(*cx2) * 0.5;
         let (ux, uy) = (th.cos(), th.sin());
         let (x0, y0) = (((i % cells) as f32 + 0.5) * cw * scale, ((i / cells) as f32 + 0.5) * ch * scale);
-        let len = cw.min(ch) * scale * (0.18 + 0.32 * coh);
+        let len = cw.min(ch) * scale * (0.2 + 0.32 * coh);
         let (a, b) = ((x0 - ux * len, y0 - uy * len), (x0 + ux * len, y0 + uy * len));
-        let rgb = [150, 40, 30];
-        line(&mut img, a, b, 1.3 * scale.max(0.4), rgb, 0.95);
-        // Head.
-        let hl = len * 0.35;
-        for sgn in [-1.0f32, 1.0] {
-            let ang = 0.5f32;
-            let (hx, hy) = (ux * ang.cos() - uy * ang.sin() * sgn, uy * ang.cos() + ux * ang.sin() * sgn);
-            line(&mut img, b, (b.0 - hx * hl, b.1 - hy * hl), 1.3 * scale.max(0.4), rgb, 0.95);
+        // Thick enough to read over the ink: a pale halo under a heavy red shaft and a wide head.
+        let pen = (side as f32 / 220.0).max(2.0);
+        let hl = len * 0.4;
+        let heads: Vec<((f32, f32), (f32, f32))> = [-1.0f32, 1.0]
+            .iter()
+            .map(|sgn| {
+                let ang = 0.55f32;
+                let (hx, hy) = (ux * ang.cos() - uy * ang.sin() * sgn, uy * ang.cos() + ux * ang.sin() * sgn);
+                (b, (b.0 - hx * hl, b.1 - hy * hl))
+            })
+            .collect();
+        for (r, rgb, alpha) in [(pen * 1.9, [246u8, 241, 230], 0.85f32), (pen, [160, 30, 20], 1.0)] {
+            line(&mut img, a, b, r, rgb, alpha);
+            for (p0, p1) in &heads {
+                line(&mut img, *p0, *p1, r, rgb, alpha);
+            }
         }
     }
     // The legend: mark types the run used, counted from the records.
