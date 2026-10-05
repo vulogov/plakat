@@ -146,6 +146,10 @@ pub struct PaintPlan {
     /// SHEEN (0..1): the specular gloss on the relief's light-facing slopes (wet oil; 0 = matte).
     #[serde(default)]
     pub sheen: Option<f32>,
+    /// WET COLLISION (0..1): after each broad pass the wet paint drags along its striation where loaded
+    /// strokes meet — colours marble, ridges plow. Oil/acrylic. 0 = off.
+    #[serde(default)]
+    pub collide: Option<f32>,
     /// ANALYSIS artefact (RFC PAINT-3): `true` writes a Markdown report beside the output
     /// (`<out>.md`); a string is the path to write it to.
     #[serde(default)]
@@ -242,6 +246,7 @@ impl Default for PaintPlan {
             impasto_map: None,
             weave: None,
             sheen: None,
+            collide: None,
             analysis: None,
             analysis_insights: None,
             outcome: None,
@@ -331,6 +336,9 @@ impl PaintPlan {
         }
         if let Some(v) = self.sheen {
             o.push_str(&format!("sheen: {v:.2}\n"));
+        }
+        if let Some(v) = self.collide {
+            o.push_str(&format!("collide: {v:.2}\n"));
         }
         match &self.analysis {
             Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
@@ -629,6 +637,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             impasto_map: None,
             weave: None,
             sheen: None,
+            collide: None,
             analysis: None,
             analysis_insights: None,
             outcome: None,

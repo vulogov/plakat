@@ -80,6 +80,11 @@ pub struct ScoreHeader {
     pub flow: Option<(f32, f32, f32, f32, f32)>,
     /// CANVAS WEAVE (see `Finish::weave`). 0 = none.
     pub weave: f32,
+    /// WET COLLISION (see `Canvas::collide`) after the broad passes: (strength, radius px). None = off.
+    pub collide: Option<(f32, f32)>,
+    /// The HOLD mask the collision respects (the faces), coarse: a `cols`-wide grid of 0/1 cells at the
+    /// score's aspect, so a replay keeps the same paint still. None = none. (`M cols rle…` record.)
+    pub hold_mask: Option<(u32, Vec<u8>)>,
 }
 
 /// One recorded stroke.
@@ -130,6 +135,39 @@ pub struct StrokeRecord {
     /// pass's reference — recorded so another medium can re-solve its own charge for the same drawing.
     /// Ignored by `replay` (the mix is what was laid). `None` = not recorded (older scores).
     pub tgt: Option<[u8; 3]>,
+}
+
+/// A coarse hold mask (`cols` wide, 0/1 cells at the score's aspect) from a full-size 0..1 mask: a cell
+/// is 1 when more than a third of it is masked. 64 columns on a 2048 sheet = 32-px cells.
+pub fn coarse_hold(mask: &[f32], w: u32, h: u32, cols: u32) -> (u32, Vec<u8>) {
+    let rows = ((h as f32 / w as f32) * cols as f32).round().max(1.0) as u32;
+    let mut sum = vec![0f32; (cols * rows) as usize];
+    let mut cnt = vec![0u32; (cols * rows) as usize];
+    for y in 0..h {
+        let cy = (y * rows / h).min(rows - 1);
+        for x in 0..w {
+            let cx = (x * cols / w).min(cols - 1);
+            let i = (cy * cols + cx) as usize;
+            sum[i] += if mask[(y * w + x) as usize] > 0.35 { 1.0 } else { 0.0 };
+            cnt[i] += 1;
+        }
+    }
+    let cells = (0..sum.len()).map(|i| (cnt[i] > 0 && sum[i] / cnt[i] as f32 > 0.33) as u8).collect();
+    (cols, cells)
+}
+
+/// The coarse hold mask back at canvas size (nearest cell), as a 0/1 mask.
+pub fn expand_hold(cols: u32, cells: &[u8], w: u32, h: u32) -> Vec<f32> {
+    let rows = (cells.len() as u32 / cols.max(1)).max(1);
+    let mut out = vec![0f32; (w * h) as usize];
+    for y in 0..h {
+        let cy = (y * rows / h).min(rows - 1);
+        for x in 0..w {
+            let cx = (x * cols / w).min(cols - 1);
+            out[(y * w + x) as usize] = cells[(cy * cols + cx) as usize] as f32;
+        }
+    }
+    out
 }
 
 impl ScoreHeader {
@@ -195,11 +233,22 @@ impl StrokeScore {
         let ground = match h.flow { Some((s, r, m, g, e)) => format!("{ground} flow={},{},{},{},{}", fmt_f(s), fmt_f(r), fmt_f(m), fmt_f(g), fmt_f(e)), None => ground };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() }, ground,
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
         ));
         // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
         for (name, rgb) in &h.pigments {
             o.push_str(&format!("P {} {} {} {}\n", name, rgb[0], rgb[1], rgb[2]));
+        }
+        if let Some((cols, cells)) = &h.hold_mask {
+            // Run-length: alternating counts of 0s and 1s, starting with 0s.
+            let mut runs: Vec<usize> = Vec::new();
+            let mut cur = 0u8;
+            let mut n = 0usize;
+            for &c in cells {
+                if c == cur { n += 1; } else { runs.push(n); cur = c; n = 1; }
+            }
+            runs.push(n);
+            o.push_str(&format!("M {} {}\n", cols, runs.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",")));
         }
         for s in &self.strokes {
             let spline = s.spline.iter().map(|p| format!("{},{}", fmt_f(p[0]), fmt_f(p[1]))).collect::<Vec<_>>().join(";");
@@ -230,6 +279,7 @@ impl StrokeScore {
         let mut header: Option<ScoreHeader> = None;
         let mut strokes = Vec::new();
         let mut pigments: Vec<(String, [u8; 3])> = Vec::new();
+        let mut hold_mask: Option<(u32, Vec<u8>)> = None;
         for (lineno, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -276,6 +326,8 @@ impl StrokeScore {
                         lift: get("lift").parse().unwrap_or(1.0),
                         transmittance: m.get("trans").map(|v| v == "1").unwrap_or(false),
                         weave: get("weave").parse().unwrap_or(0.0),
+                        collide: m.get("collide").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (p.len() == 2).then(|| (p[0], p[1])) }),
+                        hold_mask: None,
                         flow: m.get("flow").and_then(|v| { let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect(); (3..=5).contains(&p.len()).then(|| (p[0], p[1], p[2], p.get(3).copied().unwrap_or(0.0), p.get(4).copied().unwrap_or(0.0))) }),
                         brush: BrushConfig {
                             k_deposit: get("kd").parse().unwrap_or(0.12),
@@ -345,12 +397,26 @@ impl StrokeScore {
                         pigments.push((name, rgb));
                     }
                 }
+                "M" => {
+                    let cols: u32 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let runs: Vec<usize> = it.next().unwrap_or("").split(',').filter_map(|v| v.parse().ok()).collect();
+                    let mut cells: Vec<u8> = Vec::new();
+                    let mut cur = 0u8;
+                    for r in runs {
+                        cells.extend(std::iter::repeat(cur).take(r));
+                        cur ^= 1;
+                    }
+                    if cols > 0 && !cells.is_empty() {
+                        hold_mask = Some((cols, cells));
+                    }
+                }
                 "C" => { /* checkpoint markers ignored on parse in this slice */ }
                 _ => bail!("stroke score: unrecognised record on line {}: {:?}", lineno + 1, tag),
             }
         }
         let mut header = header.context("stroke score: missing H header line")?;
         header.pigments = pigments;
+        header.hold_mask = hold_mask;
         Ok(StrokeScore { header, strokes })
     }
 
@@ -459,6 +525,12 @@ impl StrokeScore {
             if let Some((s, r, m, g, e)) = self.header.flow {
                 if let Some(t) = crate::paint::painter::flow_taper(idx, n) {
                     canvas.flow(s * t, r, m, g, e);
+                }
+            }
+            if let Some((s, r)) = self.header.collide {
+                if let Some(t) = crate::paint::painter::flow_taper(idx, n) {
+                    let hold = self.header.hold_mask.as_ref().map(|(cols, cells)| expand_hold(*cols, cells, canvas.w, canvas.h));
+                    canvas.collide(s * t, r, hold.as_deref());
                 }
             }
             if self.header.dry > 0.0 && idx + 1 < n {
@@ -575,7 +647,7 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0 },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
                 StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
@@ -601,10 +673,14 @@ mod tests {
         s.strokes[0].visc = Some(1.75);
         s.strokes[0].tgt = Some([200, 30, 40]);
         s.header.weave = 0.4;
+        s.header.collide = Some((0.5, 6.0));
+        s.header.hold_mask = Some((8, vec![0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
         let parsed = StrokeScore::parse(&s.to_text()).expect("parses");
         assert_eq!(parsed.strokes[0].visc, Some(1.75));
         assert_eq!(parsed.strokes[0].tgt, Some([200, 30, 40]));
         assert_eq!(parsed.strokes[1].tgt, None);
+        assert_eq!(parsed.header.collide, Some((0.5, 6.0)));
+        assert_eq!(parsed.header.hold_mask, s.header.hold_mask);
         // The intent colour does not change what is laid: replay with and without it is byte-identical.
         let mut bare = s.clone();
         bare.strokes[0].tgt = None;
@@ -685,7 +761,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0 };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None };
         let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };

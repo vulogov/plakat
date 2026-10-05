@@ -167,6 +167,7 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
         ("skip", f2(b.skip)),
         ("weave", f2(params.weave)),
         ("sheen", f2(params.sheen)),
+        ("collide", f2(params.collide)),
         ("chroma", f2(params.chroma)),
         ("dry_shift", f2(params.dry_shift)),
         ("granulate", f2(params.granulate)),

@@ -307,6 +307,9 @@ pub struct PaintParams {
     /// CANVAS WEAVE (0..1, 0 = none): the linen's threads under the paint, seen in the relight where the
     /// paint is thin or bare; a built-up passage covers them.
     pub weave: f32,
+    /// WET COLLISION (0..1, 0 = off): after each broad pass the wet paint drags along its own striation —
+    /// colours marble, ridges plow — where loaded wet strokes meet. Off the faces; tapered with the passes.
+    pub collide: f32,
     /// GRADATION (0..1, default 0): keep slow RAMPS continuous in the armature. The value masses turn a cloud,
     /// a soft-lit wall or still water into a few flat tones with contour edges; where the picture is a ramp,
     /// not an edge (the flow rule's scale-free test), this brings the bilateral back toward a plain smooth of
@@ -389,7 +392,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
     }
 }
 
@@ -1833,7 +1836,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave, collide: None, hold_mask: None },
         strokes: Vec::new(),
     };
 
@@ -2025,6 +2028,19 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         WetTechnique::WetOnWet => (0.9, 0.012, 0.4),
         WetTechnique::DryOnDry => (0.0, 0.0, 0.0),
         _ => (0.6, 0.005, 0.8),
+    };
+    // The painter holds the faces still under the collision; the replay must too, so the faces go into the
+    // score as a coarse hold mask — and the painter uses THAT same coarse mask, so both cross identically.
+    let collide_hold: Option<Vec<f32>> = if p.collide > 0.0 && !p.luminous {
+        score.header.collide = Some((p.collide.clamp(0.0, 1.0), (w.min(h) as f32 * 0.006).max(2.0)));
+        p.face_mask.as_deref().map(|fm| {
+            let (cols, cells) = crate::paint::score::coarse_hold(fm, w, h, 64);
+            let hold = crate::paint::score::expand_hold(cols, &cells, w, h);
+            score.header.hold_mask = Some((cols, cells));
+            hold
+        })
+    } else {
+        None
     };
     let wcb_flow = env_f("PLAKAT_WCB_FLOW", if wc_wash { 1.0 } else { 0.0 });
     if wc_wash && wcb_flow > 0.0 && flow_s > 0.0 {
@@ -2975,6 +2991,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         if let Some((fs, fr, fm, fg, fe)) = score.header.flow {
             if let Some(t) = flow_taper(b_idx, b_n) {
                 canvas.flow(fs * t, fr, fm, fg, fe);
+            }
+        }
+        // WET COLLISION (see `Canvas::collide`): the broad passes' wet paint drags where strokes meet. In the
+        // score so the replay crosses the same drags; the face mask is not in the score, so the painter
+        // masks the faces and the replay — which has no faces — relies on the collision reaching only the
+        // broad passes, whose marks the face tier repaints after.
+        if let Some((cs, cr)) = score.header.collide {
+            if let Some(t) = flow_taper(b_idx, b_n) {
+                canvas.collide(cs * t, cr, collide_hold.as_deref());
             }
         }
         if b_idx + 1 < b_n {
@@ -6006,7 +6031,7 @@ mod transmittance_tests {
         // from the text as from memory — the flag, `kd` and `cap` all survive serialisation.
         let pal = palette::EARTH;
         let mut sc = crate::paint::score::StrokeScore {
-            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0 },
+            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0, collide: None, hold_mask: None },
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();

@@ -642,6 +642,98 @@ impl Canvas {
         }
     }
 
+    /// WET COLLISION (`collide`, an oil's stage): when a loaded wet stroke lands beside or over another, the
+    /// paint MOVES — the colours drag into each other along the stroke's direction (marbling), the new
+    /// stroke's bead plows the old paint's height sideways, and nothing of it is a blur. Run after a broad
+    /// pass, on the wet paint only (a dried pass does not move), with the direction read from the canvas
+    /// itself — the striation of the height field (its structure tensor over `radius`), so a replay sees the
+    /// same drags. `strength` (0..1) is how far the paint is carried (up to `radius` px); `face` masks the
+    /// pixels that must not smear (the faces: their features soften under any drag). Opaque media only;
+    /// a no-op at strength 0.
+    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>) {
+        let s = strength.clamp(0.0, 1.0);
+        if s <= 0.0 || radius < 1.0 || self.transmittance {
+            return;
+        }
+        let (w, h, n) = (self.w as usize, self.h as usize, self.n);
+        let px = w * h;
+        let r = radius.round().max(1.0) as usize;
+        // 1. The direction the paint runs: the height field's striation. Structure tensor of the height's
+        //    gradient, smoothed over r; the stroke runs ALONG the striation (perpendicular to the gradient).
+        let hb = Self::box_blur_f(&self.height, w, h, 1);
+        let (mut jxx, mut jyy, mut jxy) = (vec![0f32; px], vec![0f32; px], vec![0f32; px]);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let p = y * w + x;
+                let gx = (hb[p + 1] - hb[p - 1]) * 0.5;
+                let gy = (hb[p + w] - hb[p - w]) * 0.5;
+                jxx[p] = gx * gx;
+                jyy[p] = gy * gy;
+                jxy[p] = gx * gy;
+            }
+        }
+        let jxx = Self::box_blur_f(&jxx, w, h, r);
+        let jyy = Self::box_blur_f(&jyy, w, h, r);
+        let jxy = Self::box_blur_f(&jxy, w, h, r);
+        // 2. Where the collision happens: wet paint beside wet paint of a DIFFERENT colour or height — the
+        //    wetness smoothed over r is the "both wet" measure, the local height range the "a ridge meets
+        //    paint" measure.
+        let wet_b = Self::box_blur_f(&self.wetness, w, h, r);
+        // 3. Advect: each pixel pulls colour and height from a point `d` back along the striation, where
+        //    d = s × r × wet × contrast; the colour mixes (marbling), the height moves with it (the plow).
+        let old_conc = self.conc.clone();
+        let old_h = self.height.clone();
+        let old_w = self.wetness.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                let wet = old_w[p].clamp(0.0, 1.0) * wet_b[p].clamp(0.0, 1.0);
+                if wet < 0.02 {
+                    continue;
+                }
+                let fm = face.map(|m| m.get(p).copied().unwrap_or(0.0)).unwrap_or(0.0);
+                if fm > 0.35 {
+                    continue;
+                }
+                // The striation direction from the tensor: the eigenvector of the SMALLER eigenvalue.
+                let (a, b, c) = (jxx[p], jyy[p], jxy[p]);
+                let coh = (((a - b) * (a - b) + 4.0 * c * c).sqrt()) / (a + b + 1e-9);
+                if coh < 0.15 {
+                    continue;
+                }
+                let theta = 0.5 * (2.0 * c).atan2(a - b); // gradient direction
+                let (ux, uy) = (-theta.sin(), theta.cos()); // along the striation
+                // The drag follows the slope's sign so paint runs off the ridge, not into it: pull from the
+                // higher side.
+                let gx = (hb[(p + 1).min(px - 1)] - hb[p.saturating_sub(1)]) * 0.5;
+                let gy = (hb[(p + w).min(px - 1)] - hb[p.saturating_sub(w)]) * 0.5;
+                let sign = if gx * ux + gy * uy >= 0.0 { 1.0 } else { -1.0 };
+                let d = s * r as f32 * wet * coh.min(1.0);
+                let sx = (x as f32 + ux * d * sign).clamp(0.0, w as f32 - 1.0);
+                let sy = (y as f32 + uy * d * sign).clamp(0.0, h as f32 - 1.0);
+                let (x0, y0) = (sx.floor() as usize, sy.floor() as usize);
+                let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+                let (tx, ty) = (sx - x0 as f32, sy - y0 as f32);
+                let wts = [((y0 * w + x0), (1.0 - tx) * (1.0 - ty)), ((y0 * w + x1), tx * (1.0 - ty)), ((y1 * w + x0), (1.0 - tx) * ty), ((y1 * w + x1), tx * ty)];
+                // How much of the sampled paint comes in: the wetness (dry paint under a wet stroke does not
+                // move) — and the mix is in CONCENTRATION, so the colours marble by Kubelka–Munk, not alpha.
+                let mix = (0.85 * wet).min(0.85);
+                let mut hsum = 0f32;
+                for c in 0..n {
+                    let mut v = 0f32;
+                    for (q, wq) in &wts {
+                        v += old_conc[q * n + c] * wq;
+                    }
+                    self.conc[p * n + c] = old_conc[p * n + c] * (1.0 - mix) + v * mix;
+                }
+                for (q, wq) in &wts {
+                    hsum += old_h[*q] * wq;
+                }
+                self.height[p] = old_h[p] * (1.0 - mix) + hsum * mix;
+            }
+        }
+    }
+
     /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
     /// cells actually inside).
     fn box_blur_f(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
@@ -1610,6 +1702,44 @@ mod flow_tests {
         };
         assert!(spread(4) > 2.0, "the thin glaze shows the threads: {}", spread(4));
         assert!(spread(36) < spread(4) * 0.25, "the built-up paint covers them: {} vs {}", spread(36), spread(4));
+    }
+
+    #[test]
+    fn the_collision_drags_wet_paint_along_its_striation_and_leaves_dry_paint_alone() {
+        // Two wet ridged bands of different pigments running horizontally, touching: after the collision
+        // the colours have mixed along the bands' direction (a pixel inside the red band carries some ochre
+        // from its neighbour band), and a DRY band of the same layout does not move.
+        let pal = palette::ZORN;
+        let lay = |c: &mut Canvas, wet: f32| {
+            let n = c.n;
+            let (mut a, mut b) = (vec![0f32; n], vec![0f32; n]);
+            a[1] = 2.0; // cadmium red
+            b[0] = 2.0; // ochre
+            for x in 0..64u32 {
+                for y in 8..16u32 { c.deposit(x, y, &a, 1.0 + 0.6 * ((x / 2) % 2) as f32); c.wetness[(y * 64 + x) as usize] = wet; }
+                for y in 16..24u32 { c.deposit(x, y, &b, 1.0 + 0.6 * ((x / 2 + 1) % 2) as f32); c.wetness[(y * 64 + x) as usize] = wet; }
+            }
+        };
+        let mut wetc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut wetc, 1.0);
+        let n = wetc.n;
+        let before = wetc.conc.clone();
+        wetc.collide(1.0, 4.0, None);
+        let moved: f32 = wetc.conc.iter().zip(&before).map(|(a, b)| (a - b).abs()).sum();
+        assert!(moved > 1.0, "wet paint moved: {moved}");
+        let mut dryc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut dryc, 0.0);
+        let before_d = dryc.conc.clone();
+        dryc.collide(1.0, 4.0, None);
+        assert_eq!(dryc.conc, before_d, "dry paint does not move");
+        // Masked pixels do not move either.
+        let mut maskc = Canvas::white(64, 32, pal, 0.9);
+        lay(&mut maskc, 1.0);
+        let before_m = maskc.conc.clone();
+        let mask = vec![1.0f32; 64 * 32];
+        maskc.collide(1.0, 4.0, Some(&mask));
+        assert_eq!(maskc.conc, before_m, "the face mask holds the paint still");
+        let _ = n;
     }
 
     #[test]

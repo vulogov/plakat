@@ -632,6 +632,11 @@ pub struct FromArgs {
     /// paint is thin or bare — a built-up passage covers them entirely. Plan: `weave`.
     #[arg(long)]
     pub weave: Option<f32>,
+    /// WET COLLISION (0..1, default 0): after each broad pass the wet paint drags along its own striation
+    /// where loaded strokes meet — the colours marble, the ridges plow — nothing of it a blur. Off the
+    /// faces; tapered with the passes like the bleed. Oil/acrylic. Plan: `collide`.
+    #[arg(long)]
+    pub collide: Option<f32>,
     /// ANALYSIS artefact (RFC PAINT-3): write a Markdown report of the run — every parameter with the
     /// comment that explains it, what the run found, what it measured. With no value the report goes
     /// beside the output (`<out>.md`); a value is the path. Plan: `analysis: true` / `analysis: "path"`.
@@ -1924,6 +1929,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.sheen.is_none() {
             a.sheen = plan.sheen;
         }
+        if a.collide.is_none() {
+            a.collide = plan.collide;
+        }
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }
@@ -2262,6 +2270,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(wv) = a.weave {
         params.weave = wv.clamp(0.0, 1.0);
+    }
+    if let Some(cv) = a.collide {
+        params.collide = cv.clamp(0.0, 1.0);
     }
     if let Some(im) = a.impasto {
         params.impasto = im.clamp(0.0, 1.0);
