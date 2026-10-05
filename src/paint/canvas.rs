@@ -650,7 +650,7 @@ impl Canvas {
     /// same drags. `strength` (0..1) is how far the paint is carried (up to `radius` px); `face` masks the
     /// pixels that must not smear (the faces: their features soften under any drag). Opaque media only;
     /// a no-op at strength 0.
-    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>) {
+    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>, hold_at: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 || radius < 1.0 || self.transmittance {
             return;
@@ -691,8 +691,10 @@ impl Canvas {
                 if wet < 0.02 {
                     continue;
                 }
+                // The hold mask carries a LEVEL: ≥ `hold_at` holds the paint still (faces always; the
+                // subject on the fine passes, where a drag would soften what the fine brushes resolved).
                 let fm = face.map(|m| m.get(p).copied().unwrap_or(0.0)).unwrap_or(0.0);
-                if fm > 0.35 {
+                if fm >= hold_at {
                     continue;
                 }
                 // The striation direction from the tensor: the eigenvector of the SMALLER eigenvalue.
@@ -1724,20 +1726,20 @@ mod flow_tests {
         lay(&mut wetc, 1.0);
         let n = wetc.n;
         let before = wetc.conc.clone();
-        wetc.collide(1.0, 4.0, None);
+        wetc.collide(1.0, 4.0, None, 2.0);
         let moved: f32 = wetc.conc.iter().zip(&before).map(|(a, b)| (a - b).abs()).sum();
         assert!(moved > 1.0, "wet paint moved: {moved}");
         let mut dryc = Canvas::white(64, 32, pal, 0.9);
         lay(&mut dryc, 0.0);
         let before_d = dryc.conc.clone();
-        dryc.collide(1.0, 4.0, None);
+        dryc.collide(1.0, 4.0, None, 2.0);
         assert_eq!(dryc.conc, before_d, "dry paint does not move");
         // Masked pixels do not move either.
         let mut maskc = Canvas::white(64, 32, pal, 0.9);
         lay(&mut maskc, 1.0);
         let before_m = maskc.conc.clone();
         let mask = vec![1.0f32; 64 * 32];
-        maskc.collide(1.0, 4.0, Some(&mask));
+        maskc.collide(1.0, 4.0, Some(&mask), 1.0);
         assert_eq!(maskc.conc, before_m, "the face mask holds the paint still");
         let _ = n;
     }

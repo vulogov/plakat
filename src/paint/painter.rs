@@ -2033,12 +2033,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // score as a coarse hold mask — and the painter uses THAT same coarse mask, so both cross identically.
     let collide_hold: Option<Vec<f32>> = if p.collide > 0.0 && !p.luminous {
         score.header.collide = Some((p.collide.clamp(0.0, 1.0), (w.min(h) as f32 * 0.006).max(2.0)));
-        p.face_mask.as_deref().map(|fm| {
-            let (cols, cells) = crate::paint::score::coarse_hold(fm, w, h, 64);
+        if p.face_mask.is_some() || p.subject_mask.is_some() {
+            let (cols, cells) = crate::paint::score::coarse_hold(p.face_mask.as_deref(), p.subject_mask.as_deref(), w, h, 64);
             let hold = crate::paint::score::expand_hold(cols, &cells, w, h);
             score.header.hold_mask = Some((cols, cells));
-            hold
-        })
+            Some(hold)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -2998,8 +3000,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // masks the faces and the replay — which has no faces — relies on the collision reaching only the
         // broad passes, whose marks the face tier repaints after.
         if let Some((cs, cr)) = score.header.collide {
-            if let Some(t) = flow_taper(b_idx, b_n) {
-                canvas.collide(cs * t, cr, collide_hold.as_deref());
+            let (st, at) = collide_schedule(cs, b_idx, b_n);
+            if st > 0.0 {
+                canvas.collide(st, cr, collide_hold.as_deref(), at);
             }
         }
         if b_idx + 1 < b_n {
@@ -3113,6 +3116,21 @@ pub fn pass_bleed_taper(layer: usize, n: usize) -> f32 {
 pub fn flow_taper(layer: usize, n: usize) -> Option<f32> {
     let t = pass_bleed_taper(layer, n);
     if t > 0.5 { Some(t) } else { None }
+}
+
+/// The collision's strength and hold level at pass `layer` of `n`: the broad passes drag at the bleed's
+/// taper holding the faces (level 2); the fine passes drag at a third of it holding the SUBJECT too
+/// (level 1) — the fine marks over the ground and the background marble into their wet base, while what
+/// the fine brushes resolved on the figure is not softened. (0, _) = no collision on that pass.
+pub fn collide_schedule(strength: f32, layer: usize, n: usize) -> (f32, f32) {
+    let t = pass_bleed_taper(layer, n);
+    if t > 0.5 {
+        (strength * t, 2.0)
+    } else if t > 0.0 {
+        (strength * 0.35 * (t / 0.5), 1.0)
+    } else {
+        (0.0, 1.0)
+    }
 }
 
 /// The fraction of the medium's bleed applied once over the finished painting (after the finish passes).
