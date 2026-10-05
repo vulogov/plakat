@@ -966,6 +966,54 @@ fn main_face_extent(sides: &[f32]) -> Option<f32> {
     sides.iter().copied().filter(|s| *s > 0.0 && *s >= largest * 0.5).fold(None, |m: Option<f32>, s| Some(m.map_or(s, |v| v.min(s))))
 }
 
+
+/// Keep only the detector boxes that read as a PERSON's face, not an animal's, by asking OWL-ViT on a
+/// crop of each box (with a margin). A box the probe reads as NO person at all (< 0.02) and more as an
+/// animal is dropped; any box with a trace of a person is kept.
+async fn species_check(path: &std::path::Path, faces: Vec<crate::pipelines::scrfd::Face>, device: &candle_core::Device) -> Vec<crate::pipelines::scrfd::Face> {
+    let owl = match crate::pipelines::owlvit::OwlViT::load_pretrained(device).await {
+        Ok(o) => o,
+        Err(_) => return faces,
+    };
+    let img = match image::open(path) {
+        Ok(i) => i.to_rgb8(),
+        Err(_) => return faces,
+    };
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
+    let mut kept = Vec::new();
+    for f in faces {
+        let [x1, y1, x2, y2] = f.bbox;
+        let (bw, bh) = (x2 - x1, y2 - y1);
+        let cx1 = (x1 - bw * 0.6).max(0.0);
+        let cy1 = (y1 - bh * 0.6).max(0.0);
+        let cx2 = (x2 + bw * 0.6).min(iw);
+        let cy2 = (y2 + bh * 0.6).min(ih);
+        let crop = image::imageops::crop_imm(&img, cx1 as u32, cy1 as u32, (cx2 - cx1).max(8.0) as u32, (cy2 - cy1).max(8.0) as u32).to_image();
+        let tmp = std::env::temp_dir().join(format!("plakat_face_probe_{}.png", std::process::id()));
+        if crop.save(&tmp).is_err() {
+            kept.push(f);
+            continue;
+        }
+        let score = |q: &str| owl.detect_all(&tmp, q, 0.0, 1).ok().and_then(|v| v.first().map(|d| d.score)).unwrap_or(0.0);
+        let person = score("a person's face").max(score("a human face"));
+        let animal = score("an animal").max(score("an animal's face"));
+        let _ = std::fs::remove_file(&tmp);
+        if loud {
+            println!("{}  face probe: person {person:.3} · animal {animal:.3}", style("·").dim());
+        }
+        // Measured: a large person's face scores 0.55–0.73 here, small ones in a wide scene 0.04–0.14 —
+        // and a lion's 0.008 (animal 0.056). "An animal" fires weakly on everything (0.08–0.26 on real
+        // faces), so the one signal that separates the lion is a person score at ZERO: drop only when
+        // the probe sees no person at all (< 0.02, half the smallest real face measured) and more animal.
+        if person < 0.02 && animal > person {
+            continue;
+        }
+        kept.push(f);
+    }
+    kept
+}
+
 /// [`build_face_mask`] plus the main faces' extent at paint size (see [`main_face_extent`]).
 async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<Option<(Vec<f32>, f32)>> {
     use candle_core::DType;
@@ -976,6 +1024,15 @@ async fn build_face_mask_ext(path: &std::path::Path, w: u32, h: u32) -> Result<O
     let det = crate::pipelines::scrfd::SCRFDDetector::load(&weights, crate::pipelines::scrfd::SCRFDConfig::default(), &device, DType::F32).context("loading the face detector")?;
     let faces = det.detect(path).context("detecting faces")?;
     if faces.is_empty() {
+        return Ok(None);
+    }
+    // A HUMAN face detector fires on a frontal animal (a lion's eyes-nose-mouth passes; a turned one does
+    // not), and one lion then gets the face tier, the hold masks and the finest brushes while the other
+    // does not. Verify each box by species with the open-vocabulary detector on the box's own crop: a
+    // box the animal wins is not a face. (`PLAKAT_PAINT_FACE_ANY=1` keeps every box, as before.)
+    let faces = if std::env::var_os("PLAKAT_PAINT_FACE_ANY").is_some() { faces } else { species_check(path, faces, &device).await };
+    if faces.is_empty() {
+        println!("{}  preserve-face: the detector's face(s) were an animal's — no human face focal region", style("·").dim());
         return Ok(None);
     }
     let mut m = image::GrayImage::new(iw, ih);
@@ -2045,10 +2102,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // EXPERIMENT (PLAKAT_WC_BRUSH): a brush watercolour paints the picture re-KEYED to the paper, so its
     // pigments are derived from the keyed picture — a night scene's own pigments hold no light warm colour,
     // and keyed-up skin was mixed from the lamp glow's pale blue (teal patches on every lit face).
-    let wc_brush_cli = a.new_painting && a.medium.as_deref() == Some("watercolour") && (std::env::var_os("PLAKAT_WC_BRUSH").is_some() || std::env::var_os("PLAKAT_WC_WASH").is_some());
-    let img_for_palette: image::RgbImage = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_NOKEY").is_none() && !(std::env::var_os("PLAKAT_WC_WASH").is_some() && std::env::var_os("PLAKAT_WCB_KEY").is_none()) {
+    let wc_brush_cli = a.new_painting && a.medium.as_deref() == Some("watercolour") && (std::env::var_os("PLAKAT_WC_BRUSH").is_some() || crate::paint::painter::wc_recipe_on());
+    let img_for_palette: image::RgbImage = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_NOKEY").is_none() && !(crate::paint::painter::wc_recipe_on() && std::env::var_os("PLAKAT_WCB_KEY").is_none()) {
         let envf = |n: &str, d: f32| std::env::var(n).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
-        crate::paint::painter::key_image(&img, &img, envf("PLAKAT_WCB_DEPTH", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.8 } else { 0.9 }), envf("PLAKAT_WCB_GAMMA", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 1.6 } else { 2.6 }), envf("PLAKAT_WCB_HI", if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.985 } else { 0.95 }))
+        crate::paint::painter::key_image(&img, &img, envf("PLAKAT_WCB_DEPTH", if crate::paint::painter::wc_recipe_on() { 0.8 } else { 0.9 }), envf("PLAKAT_WCB_GAMMA", if crate::paint::painter::wc_recipe_on() { 1.6 } else { 2.6 }), envf("PLAKAT_WCB_HI", if crate::paint::painter::wc_recipe_on() { 0.985 } else { 0.95 }))
     } else {
         img.clone()
     };
@@ -2102,8 +2159,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let palette = match a.palette.trim().to_ascii_lowercase().as_str() {
         "image" | "auto" => {
             // A NEW painting mixes from a LIMITED palette (RFC §1.2): eight pigments of this picture.
-            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if std::env::var_os("PLAKAT_WC_WASH").is_some() { 24 } else { 16 });
-            let p = if std::env::var_os("PLAKAT_WC_WASH").is_some() { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
+            // (The watercolour recipe's palette — more pigments, farthest-point seeded with per-hue accents —
+            // is the WATERCOLOUR's; every other medium keeps its 16 from the picture.)
+            let npig = std::env::var("PLAKAT_WCB_PIGMENTS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(if wc_brush_cli { 24 } else { 16 });
+            let p = if wc_brush_cli { palette_for_watercolour(&img_for_palette, npig) } else { palette_from_image(&img_for_palette, npig) };
             let p = if wc_brush_cli && std::env::var_os("PLAKAT_WCB_MASSTONE").is_some() { dark_masstones(p) } else { p };
             let p = match wcb_gain { Some(g) => chroma_gain(p, g), None => p };
             println!("{}  palette: derived {} pigments from the image", style("·").dim(), p.pigments.len());
@@ -2612,11 +2671,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     // The PLAN's ladder cut, last, so it overrides whatever the medium chose.
     if let Some(n) = plan_ladder_keep {
         let n = n.max(1).min(params.brush_sizes.len());
-        if params.face_mask.is_some() && n < params.brush_sizes.len() {
+        if (params.face_mask.is_some() || params.subject_mask.is_some()) && n < params.brush_sizes.len() {
             // The cut brushes are kept, for the face alone: a face painted with nothing finer than a wash
-            // is not a face, and the user's one hard line here is that faces stay recognisable.
+            // is not a face, and the user's one hard line here is that faces stay recognisable. With no
+            // HUMAN face in the picture (two lions, a horse) the fine brushes follow the SUBJECT instead —
+            // a plan written for a portrait dissolved the animals into 12k broad marks.
             params.face_ladder_from = Some(n);
-            println!("{}  plan: brush ladder cut to the {} coarsest for the sheet ({:?}); the finer {} kept for the face", style("·").dim(), n, params.brush_sizes[..n].iter().map(|r| r.round() as u32).collect::<Vec<_>>(), params.brush_sizes.len() - n);
+            let what = if params.face_mask.is_some() { "the face" } else { "the subject (no human face)" };
+            println!("{}  plan: brush ladder cut to the {} coarsest for the sheet ({:?}); the finer {} kept for {what}", style("·").dim(), n, params.brush_sizes[..n].iter().map(|r| r.round() as u32).collect::<Vec<_>>(), params.brush_sizes.len() - n);
         } else {
             params.brush_sizes.truncate(n);
             println!("{}  plan: brush ladder cut to the {} coarsest ({:?})", style("·").dim(), n, params.brush_sizes.iter().map(|r| r.round() as u32).collect::<Vec<_>>());

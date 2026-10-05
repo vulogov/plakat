@@ -1713,7 +1713,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // THE DRY BRUSH (see `BrushConfig::skip`): under the watercolour wash recipe the fine, drier marks are
     // broken by the paper's tooth unless the caller set the dial — on the params the strokes AND the score
     // header are built from, so the replay crosses the same paper.
-    let recipe_skip = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some() && p.brush.skip <= 0.0;
+    let recipe_skip = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && wc_recipe_on() && p.brush.skip <= 0.0;
     let p_skip: PaintParams;
     let p: &PaintParams = if recipe_skip {
         let mut q = p.clone();
@@ -1849,7 +1849,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // it is not a pass of this painting at all.
     // The watercolour paints the whole sheet with ONE ladder: a figure-plane floor gave the feet fine marks
     // and the paving beside them a coarse one.
-    let wc_wash_early = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some();
+    let wc_wash_early = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && wc_recipe_on();
     let wc_planes = std::env::var("PLAKAT_WCB_PLANES").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if wc_wash_early { 0.0 } else { 1.0 }) > 0.0;
     let plane_floor: Option<Vec<f32>> = (p.from_scratch && wc_planes).then(|| plane_floor_field(w, h, p.min_brush, (p.armature_side.unwrap_or(NEW_BACKGROUND_SIDE), p.armature_body_side, p.armature_face_side), p.subject_mask.as_deref(), p.face_mask.as_deref(), p.hair_mask.as_deref()));
     let passes: Vec<PassSpec> = match &plane_floor {
@@ -1870,7 +1870,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // each broad pass toward the picture's light envelope so the film darkens light-to-dark, the fine passes
     // reading the source. (The sweep/mass route is still here under its own knobs — it lost the picture.)
     // One switch; every `PLAKAT_WCB_*` knob still overrides its part.
-    let wc_wash = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_WASH").is_some();
+    let wc_wash = p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && wc_recipe_on();
     let wc_brush = wc_wash || (p.luminous && !p.book && p.from_scratch && p.medium == "watercolour" && std::env::var_os("PLAKAT_WC_BRUSH").is_some());
     let env_or = |name: &str, d: f32| std::env::var(name).ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(d);
     let wcb_fill = wc_brush && env_or("PLAKAT_WCB_FILL", 0.0) > 0.0;
@@ -2472,8 +2472,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // (The brush watercolour gives the sheet the whole ladder, but its two finest brushes — the
                 // ones that stippled every wash — stay for the face.)
                 let face_only_here = if wc_brush { radius <= wcb_faceonly } else { pass.face_only };
-                if face_only_here && p.face_mask.as_deref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.0) < 0.35 {
-                    return None;
+                if face_only_here {
+                    // The focal plane the fine brushes are kept for: the face when there is one, else the
+                    // subject (an animal's head is its subject's; see the ladder cut).
+                    let on_focal = match (p.face_mask.as_deref(), p.subject_mask.as_deref()) {
+                        (Some(m), _) => m.get(region_i).copied().unwrap_or(0.0) >= 0.35,
+                        (None, Some(sm)) => sm.get(region_i).copied().unwrap_or(0.0) >= 0.5,
+                        (None, None) => false,
+                    };
+                    if !on_focal {
+                        return None;
+                    }
                 }
                 // Under the wash recipe the sweeps ARE the block-in: a second block-in over them in another
                 // direction was the stroke mess.
@@ -3113,6 +3122,17 @@ pub fn pass_bleed_taper(layer: usize, n: usize) -> f32 {
 /// How much of the fluid stage (`Canvas::flow`) pass `layer` of `n` gets: the BROAD passes — the first half of
 /// the schedule — flow at the bleed's taper; the fine passes are laid on paper that has dried and do not
 /// (`None`): a watercolour's detail is wet-on-dry, its washes wet-in-wet.
+/// THE WATERCOLOUR RECIPE is the default for a new watercolour (7.2.0): the transmittance film, the fluid
+/// stage, the grain in the water, the dry brush, the economy of structure, the fine lines. It was the
+/// `PLAKAT_WC_WASH=1` experiment through 7.1.0 — and a plan run never set it, so the plain path painted a
+/// posterised glaze. `PLAKAT_WC_LEGACY=1` brings the old glazed-wash path back for comparison.
+pub fn wc_recipe_on() -> bool {
+    std::env::var_os("PLAKAT_WC_LEGACY").is_none()
+}
+// NOTE: `wc_recipe_on()` says only whether the recipe is wanted; every reader must ALSO gate on the
+// medium being a new watercolour (`wc_wash`, `wc_brush_cli`) — an ungated reader in the palette builder
+// gave the oil 32 pigments and changed every oil render.
+
 pub fn flow_taper(layer: usize, n: usize) -> Option<f32> {
     let t = pass_bleed_taper(layer, n);
     if t > 0.5 { Some(t) } else { None }
@@ -4539,7 +4559,7 @@ fn wc_mass_colours(img: &RgbImage, k: usize, seed: u64) -> (Vec<u16>, Vec<Srgb>)
     let blurred = imageops::blur(img, (w.max(h) as f32 * 0.004).max(1.5));
     // `PLAKAT_WCB_MASSVAL` > 0: cluster on CHROMATICITY with the perceptual value at that weight, so a mass is
     // an object's colour, not a value band (value bands are the concentric posterisation rings).
-    let massval = std::env::var("PLAKAT_WCB_MASSVAL").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if std::env::var_os("PLAKAT_WC_WASH").is_some() { 0.3 } else { 0.0 });
+    let massval = std::env::var("PLAKAT_WCB_MASSVAL").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if wc_recipe_on() { 0.3 } else { 0.0 });
     let lin_px: Vec<[f32; 3]> = blurred.pixels().map(|p| color::srgb_to_linear(p.0)).collect();
     let px: Vec<[f32; 3]> = if massval > 0.0 {
         lin_px.iter().map(|l| { let s = l[0] + l[1] + l[2] + 1e-4; [l[0] / s, l[1] / s, color::linear_luma(*l).max(0.0).powf(1.0 / 2.2) * massval] }).collect()
@@ -4687,7 +4707,7 @@ pub fn key_image(img: &RgbImage, measure: &RgbImage, depth: f32, gamma: f32, hi_
     // `PLAKAT_WCB_KEYLAB`: re-key in Lab — the VALUE moves, a*/b* stay. Scaling the channels equally keeps
     // the chromaticity ratio, and a dark brown lifted that way is a saturated red (a night's a* went 7 → 19:
     // the maroon sheet). A painter lifting a dark brown paints a lighter brown.
-    let keylab = std::env::var("PLAKAT_WCB_KEYLAB").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if std::env::var_os("PLAKAT_WC_WASH").is_some() { 1.0 } else { 0.0 }) > 0.0;
+    let keylab = std::env::var("PLAKAT_WCB_KEYLAB").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(if wc_recipe_on() { 1.0 } else { 0.0 }) > 0.0;
     let mut out = img.clone();
     for px in out.pixels_mut() {
         let lin = color::srgb_to_linear(px.0);
