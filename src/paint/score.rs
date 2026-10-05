@@ -126,6 +126,10 @@ pub struct StrokeRecord {
     /// This stroke's impasto viscosity (height per unit of paint), when it differs from the header's — the
     /// thickness mapped to the picture (see `PaintParams::impasto_map`). `None` = the header's.
     pub visc: Option<f32>,
+    /// The INTENT colour (RFC PAINT-2 P0): the sRGB the stroke was aiming at — its seed's target in the
+    /// pass's reference — recorded so another medium can re-solve its own charge for the same drawing.
+    /// Ignored by `replay` (the mix is what was laid). `None` = not recorded (older scores).
+    pub tgt: Option<[u8; 3]>,
 }
 
 impl ScoreHeader {
@@ -215,7 +219,7 @@ impl StrokeScore {
                 fmt_f(s.streak),
                 fmt_f(s.round),
                 s.pickup.map(|v| format!(" pickup={}", fmt_f(v))).unwrap_or_default(),
-                s.bristles.map(|v| format!(" bristles={v}")).unwrap_or_default() + &s.kd.map(|v| format!(" kd={}", fmt_f(v))).unwrap_or_default() + &s.cap.map(|v| format!(" cap={}", fmt_f(v))).unwrap_or_default() + if s.flat { " flat=1" } else { "" } + if s.hold { " hold=1" } else { "" } + &s.visc.map(|v| format!(" visc={}", fmt_f(v))).unwrap_or_default(),
+                s.bristles.map(|v| format!(" bristles={v}")).unwrap_or_default() + &s.kd.map(|v| format!(" kd={}", fmt_f(v))).unwrap_or_default() + &s.cap.map(|v| format!(" cap={}", fmt_f(v))).unwrap_or_default() + if s.flat { " flat=1" } else { "" } + if s.hold { " hold=1" } else { "" } + &s.visc.map(|v| format!(" visc={}", fmt_f(v))).unwrap_or_default() + &s.tgt.map(|t| format!(" tgt={},{},{}", t[0], t[1], t[2])).unwrap_or_default(),
             ));
         }
         o
@@ -321,6 +325,10 @@ impl StrokeScore {
                         bristles: get("bristles").parse().ok(),
                         kd: get("kd").parse().ok(),
                         visc: get("visc").parse().ok(),
+                        tgt: {
+                            let p: Vec<u8> = get("tgt").split(',').filter_map(|x| x.parse().ok()).collect();
+                            (p.len() == 3).then(|| [p[0], p[1], p[2]])
+                        },
                         cap: get("cap").parse().ok(),
                         flat: get("flat") == "1",
                         hold: get("hold") == "1",
@@ -569,8 +577,8 @@ mod tests {
         StrokeScore {
             header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0 },
             strokes: vec![
-                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None },
-                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None },
+                StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
+                StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
             ],
         }
     }
@@ -591,9 +599,16 @@ mod tests {
     fn a_strokes_own_viscosity_and_the_weave_round_trip() {
         let mut s = sample();
         s.strokes[0].visc = Some(1.75);
+        s.strokes[0].tgt = Some([200, 30, 40]);
         s.header.weave = 0.4;
         let parsed = StrokeScore::parse(&s.to_text()).expect("parses");
         assert_eq!(parsed.strokes[0].visc, Some(1.75));
+        assert_eq!(parsed.strokes[0].tgt, Some([200, 30, 40]));
+        assert_eq!(parsed.strokes[1].tgt, None);
+        // The intent colour does not change what is laid: replay with and without it is byte-identical.
+        let mut bare = s.clone();
+        bare.strokes[0].tgt = None;
+        assert_eq!(s.replay(64, 48).unwrap().to_image().into_raw(), bare.replay(64, 48).unwrap().to_image().into_raw());
         assert_eq!(parsed.strokes[1].visc, None);
         assert_eq!(parsed.header.weave, 0.4);
         // And a mapped stroke lays a different height from an unmapped one at replay.
@@ -671,9 +686,9 @@ mod tests {
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
         let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0 };
-        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None };
+        let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
-        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None };
+        let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };
         let with_wipe = StrokeScore { header: base, strokes: vec![stroke, wipe] };
         let a = no_wipe.replay(40, 20).unwrap();
         let b = with_wipe.replay(40, 20).unwrap();

@@ -84,8 +84,8 @@ equal `replay` byte for byte (the identity test), which pins the translation lay
 
 ## 4. Phases
 
-- **P0 — intent colour.** `tgt=` recorded by every painter path; parse/write; replay ignores it. Guard 0
-  (the image does not change). One commit.
+- **P0 — intent colour** — BUILT: `tgt=r,g,b` recorded on every ladder stroke (the seed's target in the pass's
+  reference); parse/write; replay ignores it (tested byte-identical with and without). Guard 0.
 - **P1 — the verb, same medium = replay.** `plakat paint repaint` with `--medium`, the translation layer,
   the identity test, new-score replay test. Oil ↔ watercolour on the night picture judged by the user
   (crops to `quality/REPAINT_*`).
