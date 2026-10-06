@@ -82,6 +82,7 @@ pub mod dc_ae;
 pub mod vendored_gemma2;
 pub mod vendored_qwen2;
 pub mod kandinsky;
+pub mod kandinsky_dit;
 pub mod kandinsky_text;
 pub mod sana;
 pub mod sana_dit;
