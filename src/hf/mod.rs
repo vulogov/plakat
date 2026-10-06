@@ -341,7 +341,7 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         family: "Kandinsky5",
         kind: "base",
         gated: false,
-        note: "Kandinsky 5.0 T2I Lite — 6B flow DiT + Qwen2.5-VL-7B + CLIP-L + Flux VAE (surface only; pipeline in progress)",
+        note: "Kandinsky 5.0 T2I Lite — 6B flow DiT + Qwen2.5-VL-7B + CLIP-L + Flux VAE (text encoders + VAE in; DiT in progress)",
     },
     AliasEntry {
         aliases: &["kandinsky5-pretrain"],
