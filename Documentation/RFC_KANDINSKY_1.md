@@ -495,7 +495,18 @@ Each phase is independently mergeable.
 - **The Qwen download skips a shard.** The index puts every `model.*` tensor in shards 1–4; shard 5 (1.09 GB) holds only `lm_head`. The loader reads the index and fetches 15.5 GB, not 16.6 GB. The checkpoint's key names match candle's `qwen2::Model` one for one (checked against the index).
 - **`generate --model kandinsky5` now runs P1:** loads the encoders, encodes prompt and negative, prints token counts and statistics, releases the encoders, then stops. `PLAKAT_K5_DUMP_DIR` writes the tensors; `PLAKAT_K5_VAE_IMAGE` round-trips an image through the VAE; `PLAKAT_K5_STAGE=vae` does that alone.
 - **Measured on the 24 GB Mac:** the VAE round-trip of a photograph is 34.3 dB at 512² (Metal) and 37.2 dB at 1024² (CPU). At **1024² on Metal the F32 VAE fails** with "Failed to create metal resource: Buffer" — the single-buffer cap bites at the family's base size, not only at the 1408-px buckets §9 names. P3's tiled decode fallback is needed from 1024² up on this class of machine.
-- **Not yet run:** the Qwen tower has not been loaded anywhere (15.5 GB download, ≈14 GB resident), so parity stages 1–2 and the VAE decode against a reference dump are open. They run on the 36 GB host: `python tools/kandinsky_dump.py --out DIR`, then the ignored test `kandinsky_parity_p1` with `PLAKAT_PARITY_DIR=DIR`.
+- **The parity gate is run and passes** (36 GB M5 Max, the default prompt and empty negative at 1024², `upstream` template; the ignored test `kandinsky_parity_p1` with `PLAKAT_PARITY_DIR` set to a `tools/kandinsky_dump.py --out DIR` dump). Token ids match on both prompts.
+
+  | Stage | CPU, F32 | Metal, BF16 weights |
+  |---|---|---|
+  | Qwen hidden, prompt | cosine 1.000000, max-abs 1.22e-3 | cosine 0.999999, max-abs 2.45e-1 |
+  | Qwen hidden, negative | cosine 1.000000, max-abs 5.84e-4 | cosine 0.999999, max-abs 1.17e-1 |
+  | CLIP-L pooled | cosine 1.000000, max-abs ≤ 1.1e-5 | cosine 0.99993 / 0.99994 |
+  | VAE decode of a dumped latent | 108.1 dB | 120.0 dB |
+
+- **The Qwen tower is vendored, and computes in F32** (`src/pipelines/vendored_qwen2.rs`). With candle's `qwen2::Model` run entirely in BF16 on Metal the gate FAILED: cosine 0.945 on the prompt and 0.901 on the negative against the F32 reference, where transformers' own BF16 run (MPS) holds 0.99993 and 0.99964. The port's logic was right — the same code in F32 on CPU was exact — so it is precision: candle rounds every intermediate to BF16. (candle also builds the RoPE angles in the model dtype; fixing that alone changed nothing, 0.939 / 0.901.) The vendored tower keeps the weights in BF16 (what the checkpoint stores, ≈14 GB) and widens each layer's weights to F32 for that layer's forward only, so activations are F32 and the result is the F32 reference's. It is encoder-only: no KV cache, no mask path (T3 cannot be reached). A small random-tower test (`qwen2_gpu_dtypes_track_cpu_f32`, ignored, needs a GPU) pins it without the checkpoint.
+- **The F32 tolerances are relative.** §12's absolute max-abs bounds were not reachable: Qwen's hidden states peak near 117, and F32 after 28 layers lands at ≈1e-3 absolute (1e-5 relative). The test holds F32 to max-abs / reference peak ≤ 1e-4 (Qwen) and ≤ 1e-5 (CLIP); the GPU bars are unchanged (cosine ≥ 0.999 and ≥ 0.9999).
+- **The 1024² F32 VAE decode runs on Metal on the 36 GB host** — the single-buffer failure above is the 24 GB machine's.
 - **One thing for P3:** upstream's own sampler defaults to `scheduler_scale = 3.0` in `t2i_pipeline.py`, while the diffusers repo's scheduler config says `shift: 5.0`. The port follows the diffusers config (§8.1); worth a look when the first images exist.
 
 ### Phase 2 — DiT
