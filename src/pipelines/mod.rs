@@ -80,6 +80,7 @@ pub mod faceswap_scenario;
 pub mod mmdit_inner;
 pub mod dc_ae;
 pub mod vendored_gemma2;
+pub mod kandinsky;
 pub mod sana;
 pub mod sana_dit;
 pub mod sd3;

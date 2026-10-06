@@ -465,6 +465,10 @@ pub enum Variant {
     /// `pipelines::sana::run`. Phase 0 ships dispatch wiring; DC-AE (P1),
     /// Gemma encoder (P2), Linear-DiT (P3), end-to-end flow-matching (P4).
     Sana,
+    /// 7.2 (RFC KANDINSKY-1) phase 0: Kandinsky 5.0 T2I Lite — eighth family. A 6B flow-matching DiT
+    /// conditioned on Qwen2.5-VL-7B hidden states + CLIP-L pooled, with the Flux VAE. Routes to
+    /// `pipelines::kandinsky`; phase 0 ships the surface, the pipeline lands in P1–P3.
+    Kandinsky5,
 }
 
 impl Variant {
@@ -481,6 +485,11 @@ impl Variant {
         // across plakat's alias/repo surface. Routes to pipelines::sana::run.
         if m.contains("sana") {
             return Self::Sana;
+        }
+        // 7.2 (RFC KANDINSKY-1): Kandinsky 5 detection, ahead of every generic fallback. The substring
+        // "kandinsky" is unambiguous across plakat's alias/repo surface.
+        if crate::pipelines::kandinsky::is_kandinsky(&m) {
+            return Self::Kandinsky5;
         }
         // v0.35 phase 0: PixArt detection precedes everything else.
         // PixArt-Σ repo ids contain "pixart" — distinct from any
@@ -612,6 +621,10 @@ impl Variant {
     /// Linear-attention DiT + DC-AE + Gemma-2-2B — its own pipeline module.
     pub fn is_sana(self) -> bool {
         matches!(self, Self::Sana)
+    }
+    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5 family. Routes to `pipelines::kandinsky`.
+    pub fn is_kandinsky(self) -> bool {
+        matches!(self, Self::Kandinsky5)
     }
 }
 
@@ -959,6 +972,9 @@ impl Pipeline {
                 "Pipeline::load is SD-only; Sana models use \
                  pipelines::sana::Pipeline::load"
             );
+        }
+        if variant.is_kandinsky() {
+            return Err(crate::pipelines::kandinsky::not_yet());
         }
         let repo = resolve_repo(&req.model);
 
@@ -2853,6 +2869,12 @@ fn embed_xl(
 /// transformer-based backbone).
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
+
+    // 7.2 (RFC KANDINSKY-1) phase 0: Kandinsky 5 routing. The family is registered and detected ahead of
+    // every other; its pipeline lands in P1–P3, so the dispatch ends here for now.
+    if variant.is_kandinsky() {
+        return Err(crate::pipelines::kandinsky::not_yet());
+    }
 
     // v0.37 phase 0: Stable Cascade routing. Detection precedes
     // PixArt / SD3 / Flux / SD because Stable Cascade is its own

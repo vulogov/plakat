@@ -114,6 +114,8 @@ pub enum BaseModel {
     /// Catalog-LoRA support lands later in the 4.5 cycle; the slot
     /// reserves the name so the variant enum stays exhaustive.
     Sana,
+    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5 — no style LoRAs exist for it yet; listed so the mapping is total.
+    Kandinsky5,
 }
 
 impl BaseModel {
@@ -141,6 +143,7 @@ impl BaseModel {
             Variant::PixArt => Self::PixArt,
             Variant::StableCascade => Self::StableCascade,
             Variant::Sana => Self::Sana,
+            Variant::Kandinsky5 => Self::Kandinsky5,
         }
     }
 
@@ -154,6 +157,7 @@ impl BaseModel {
             Self::PixArt => "pixart",
             Self::StableCascade => "cascade",
             Self::Sana => "sana",
+            Self::Kandinsky5 => "kandinsky5",
         }
     }
 }

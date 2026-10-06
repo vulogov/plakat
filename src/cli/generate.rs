@@ -486,6 +486,30 @@ pub struct GenerateArgs {
     #[arg(help_heading = "ControlNet & regional", long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
+    /// **Kandinsky 5 only** (RFC KANDINSKY-1): load the Qwen2.5-VL text tower as a Q4 GGUF (~4.7 GB
+    /// instead of ~14 GB). Part of the quantized tier; rejected on other families.
+    #[arg(help_heading = "Model & sampler", long = "quantize-qwen", default_value_t = false)]
+    pub quantize_qwen: bool,
+
+    /// **Kandinsky 5 only**: run the DiT from NF4 weights (~4 GB instead of ~12 GB). With
+    /// `--quantize-qwen` the family peaks near 6 GB. Rejected on other families.
+    #[arg(help_heading = "Model & sampler", long = "dit-nf4", default_value_t = false)]
+    pub dit_nf4: bool,
+
+    /// **Kandinsky 5 only**: keep the text encoders resident through the denoise (~27 GB) instead of
+    /// releasing them after encoding (~15 GB peak). For interactive re-prompting when memory allows.
+    #[arg(help_heading = "Model & sampler", long = "keep-encoders", default_value_t = false)]
+    pub keep_encoders: bool,
+
+    /// **Kandinsky 5 only**: do not snap `--size` to a native resolution bucket. Off-distribution;
+    /// both dimensions must divide by 16.
+    #[arg(help_heading = "Size & output", long = "size-exact", default_value_t = false)]
+    pub size_exact: bool,
+
+    /// **Kandinsky 5 only**: prompt tokens kept after the template (default 512, at most 1023).
+    #[arg(help_heading = "Model & sampler", long = "max-seq", value_name = "N")]
+    pub max_seq: Option<usize>,
+
     /// Regional prompting: a prompted region `"X0,Y0,X1,Y1[,w=W][,feather=F]:prompt"`
     /// (coords are `[0,1]` canvas fractions). Repeatable — each region's prompt applies
     /// in its box, blended over the main prompt for one coherent image. Optional per-region
@@ -951,8 +975,61 @@ fn apply_quality(args: &mut GenerateArgs) {
     ));
 }
 
+/// The Kandinsky 5 surface (RFC KANDINSKY-1, phase 0): its own flags are rejected with a hint on every
+/// other family; on the family, the flags it has no adapters for are rejected, `--max-seq` is bounded and
+/// `--size` snaps to a native bucket. Until the pipeline lands the family's path ends here.
+fn kandinsky_surface(args: &mut GenerateArgs) -> Result<()> {
+    use crate::pipelines::kandinsky as k5;
+    let scoped = [
+        ("--quantize-qwen", args.quantize_qwen),
+        ("--dit-nf4", args.dit_nf4),
+        ("--keep-encoders", args.keep_encoders),
+        ("--size-exact", args.size_exact),
+        ("--max-seq", args.max_seq.is_some()),
+    ];
+    if !k5::is_kandinsky(&args.model) {
+        if let Some((flag, _)) = scoped.iter().find(|(_, on)| *on) {
+            anyhow::bail!("{flag} is a Kandinsky 5 flag and has no meaning for --model {:?}; use it with --model kandinsky5", args.model);
+        }
+        return Ok(());
+    }
+    let no_adapters = "no public Kandinsky 5 adapters exist yet (RFC KANDINSKY-1, non-goal N4)";
+    if !args.loras.is_empty() {
+        anyhow::bail!("--lora is not available on --model kandinsky5: {no_adapters}");
+    }
+    if !args.control_specs.is_empty() {
+        anyhow::bail!("--control-spec is not available on --model kandinsky5: {no_adapters}");
+    }
+    if args.refiner {
+        anyhow::bail!("--refiner is the SDXL refiner; it does not apply to --model kandinsky5");
+    }
+    if args.fast.is_some() {
+        anyhow::bail!("--fast is not available on --model kandinsky5: no distilled or few-step checkpoint exists (RFC KANDINSKY-1, non-goal N6)");
+    }
+    if let Some(n) = args.max_seq {
+        if n == 0 || n > k5::MAX_SEQ_CAP {
+            anyhow::bail!("--max-seq must be 1..={} (default {}); got {n}", k5::MAX_SEQ_CAP, k5::DEFAULT_MAX_SEQ);
+        }
+    }
+    let (w, h) = args.size.map(|s| (s.w, s.h)).unwrap_or((1024, 1024));
+    if args.size_exact {
+        k5::check_exact(w, h)?;
+        if !k5::BUCKETS.contains(&(w, h)) {
+            crate::ui::progress::println(&format!("kandinsky5: --size-exact {w}x{h} is off the model's native buckets (off-distribution)"));
+        }
+    } else {
+        let (bw, bh) = k5::snap_bucket(w, h);
+        if (bw, bh) != (w, h) {
+            crate::ui::progress::println(&format!("kandinsky5: --size {w}x{h} → {bw}x{bh} (native bucket)"));
+        }
+        args.size = Some(Size { w: bw, h: bh });
+    }
+    Err(k5::not_yet())
+}
+
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
+    kandinsky_surface(&mut args)?;
     // `--unique-files`: nest this whole run under a timestamped folder BEFORE any path derives from
     // `args.out`, so every out_dir / reconstructed `plakat-<seed>.png` / grid / naturalize path inherits
     // it and no prior run is clobbered. One redirect covers the entire pipeline.
@@ -2200,6 +2277,11 @@ mod tests {
             flux_quant_level: None,
             t5_quant_level: None,
             fast: None,
+            quantize_qwen: false,
+            dit_nf4: false,
+            keep_encoders: false,
+            size_exact: false,
+            max_seq: None,
             look: None,
             genre: None,
             offline: false,

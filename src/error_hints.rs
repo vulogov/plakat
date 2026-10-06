@@ -43,6 +43,8 @@ pub enum OomContext {
     Upscale,
     /// Sana — three resident models + a large F32 DC-AE decode at 1024².
     Sana,
+    /// Kandinsky 5 — a 14 GB text tower, then a 12 GB DiT (staged), 4,096+ tokens at 20 heads.
+    Kandinsky5,
 }
 
 impl OomContext {
@@ -79,6 +81,12 @@ impl OomContext {
             OomContext::Upscale => vec![
                 "use a smaller factor (×2 instead of ×4)",
                 "on Apple/Metal, retry on CPU: `--device cpu` (Real-ESRGAN ×4 buffers exceed the Metal single-buffer cap)",
+            ],
+            OomContext::Kandinsky5 => vec![
+                "close other GPU apps: the staged load peaks near 15 GB (the Qwen text tower, then the DiT)",
+                "drop `--keep-encoders` if set — it holds the 14 GB text tower through the denoise",
+                "use a smaller native bucket: `--size 1024x1024` instead of a 1408-px one",
+                "on Apple/Metal, retry on CPU: `--device cpu` (no single-buffer cap; slower but always fits)",
             ],
             OomContext::Sana => vec![
                 "try a smaller image: `--size 512x512` (must be a multiple of 32; the F32 DC-AE decode is the memory peak)",

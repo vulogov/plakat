@@ -332,6 +332,25 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         gated: false,
         note: "Stable Cascade — 3-stage architecture with CLIP-G text encoder (~3.6B Stage C + 1.5B Stage B + 3.6M Stage A VAE)",
     },
+    // 7.2 (RFC KANDINSKY-1, phase 0): Kandinsky 5.0 T2I Lite — eighth family. A 6B flow-matching DiT
+    // conditioned on Qwen2.5-VL-7B hidden states + CLIP-L pooled, decoded by the Flux VAE. MIT, ungated.
+    // Phase 0 registers the surface; generation lands in P1–P3.
+    AliasEntry {
+        aliases: &["kandinsky5", "kandinsky", "k5", "kandinsky5-lite"],
+        repo: "kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers",
+        family: "Kandinsky5",
+        kind: "base",
+        gated: false,
+        note: "Kandinsky 5.0 T2I Lite — 6B flow DiT + Qwen2.5-VL-7B + CLIP-L + Flux VAE (surface only; pipeline in progress)",
+    },
+    AliasEntry {
+        aliases: &["kandinsky5-pretrain"],
+        repo: "kandinskylab/Kandinsky-5.0-T2I-Lite-pretrain-Diffusers",
+        family: "Kandinsky5",
+        kind: "base",
+        gated: false,
+        note: "Kandinsky 5.0 T2I Lite pretrain checkpoint — listed for future LoRA training, not a generation target",
+    },
 ];
 
 /// Map short aliases to canonical HuggingFace repo ids.

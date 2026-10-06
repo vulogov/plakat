@@ -90,11 +90,15 @@ enum Family {
     Sd3,
     Cascade,
     Flux,
+    /// RFC KANDINSKY-1 phase 0: registered, not benchable until its pipeline lands.
+    Kandinsky5,
 }
 
 fn family_of(model: &str) -> Family {
     let m = model.to_lowercase();
-    if m.contains("flux") {
+    if crate::pipelines::kandinsky::is_kandinsky(&m) {
+        Family::Kandinsky5
+    } else if m.contains("flux") {
         Family::Flux
     } else if m.contains("cascade") {
         Family::Cascade
@@ -171,6 +175,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
 
     // ---- load (timed, cold) + generate (timed), dispatched by family ----
     let samples = match family {
+        Family::Kandinsky5 => return Err(crate::pipelines::kandinsky::not_yet()),
         Family::Sd => {
             let t = Instant::now();
             let pipeline = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
@@ -387,6 +392,7 @@ mod tests {
         assert_eq!(family_of("sd35-medium"), Family::Sd3);
         assert_eq!(family_of("sd3-medium"), Family::Sd3);
         assert_eq!(family_of("stable-cascade"), Family::Cascade);
+        assert_eq!(family_of("kandinsky5"), Family::Kandinsky5);
         assert_eq!(family_of("flux-schnell"), Family::Flux);
     }
 
