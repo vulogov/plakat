@@ -1999,6 +1999,8 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // The structure a fine brush needs to find before it restates off the subject (a local value range at
     // the brush's scale; 0 = restate tone too, the old behaviour).
     let wcb_struct = env_f("PLAKAT_WCB_STRUCT", if wc_wash { 0.10 } else { 0.0 });
+    // The share of that bar a faceless subject is held to (1 = as the ground, 0 = restate tone freely).
+    let wcb_struct_subj = env_f("PLAKAT_WCB_STRUCTSUBJ", 0.4);
     // How much longer the fine brushes' marks may run than the ladder's default cap (lines, not beads).
     let wcb_finelen = env_f("PLAKAT_WCB_FINELEN", if wc_wash { 1.0 + 2.0 * p.fine_lines.clamp(0.0, 1.0) } else { 1.0 });
     let wcb_blur = env_f("PLAKAT_WCB_BLUR", if wc_wash { 0.2 } else { 0.32 });
@@ -2540,8 +2542,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // face in the picture (two lions) the subject is not a likeness to protect: there the
                     // gate applies on the subject too, so a mane keeps its strands (structure) and loses the
                     // posterised value steps the armature left (tone) — a contour-mapped mane otherwise.
+                    // (SOFTER on that subject than on the ground: at the ground's full bar a mane lost its tan
+                    // body with its bands — measured 5.6 points paler than the picture at 4096. The subject's bar
+                    // is a fraction of it, so only the flattest passages of the animal are left to the washes.)
                     let protected = on_face || (on_subject && p.face_mask.is_some());
-                    if !protected && st[region_i] < wcb_struct {
+                    let bar = if on_subject { wcb_struct * wcb_struct_subj } else { wcb_struct };
+                    if !protected && st[region_i] < bar {
                         return None;
                     }
                 }
