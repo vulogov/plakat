@@ -43,6 +43,7 @@ const MODELS: &[ModelMeta] = &[
     ModelMeta { alias: "sana-512",      native_res: 512,  dtype: "BF16", tuning: "512² Sana — use --size 512x512", metal_blocked: false },
     ModelMeta { alias: "sana-2k",       native_res: 2048, dtype: "BF16", tuning: "2K Sana — --size 2048x2048; memory-heavy", metal_blocked: false },
     ModelMeta { alias: "sana-1.5",      native_res: 1024, dtype: "BF16", tuning: "Sana-1.5 (qk_norm) — improved 1024² checkpoint", metal_blocked: false },
+    ModelMeta { alias: "kandinsky5",    native_res: 1024, dtype: "BF16", tuning: "staged load (~15 GB peak); 50 steps × CFG — slowest family; surface only, pipeline in progress", metal_blocked: false },
     ModelMeta { alias: "stable-cascade", native_res: 1024, dtype: "BF16", tuning: "--decoder-guidance / smaller --size", metal_blocked: false },
     ModelMeta { alias: "flux-dev",      native_res: 1024, dtype: "BF16", tuning: "→ flux-dev-gguf --quant-level Q4_K_S (~7 GB) + --quantize-t5; gated", metal_blocked: false },
     ModelMeta { alias: "flux-schnell",  native_res: 1024, dtype: "BF16", tuning: "→ flux-schnell-gguf Q4 + --quantize-t5; 4-step", metal_blocked: false },
@@ -66,6 +67,14 @@ pub struct ResidentEstimate {
     /// `true` when derived from the on-disk cached snapshot (exact); `false` when it's
     /// a coarse family/dtype guess because the model isn't cached yet.
     pub exact: bool,
+    /// The peak when the family loads in STAGES (encode, release the encoders, denoise) rather than
+    /// holding everything resident — the honest figure for such a family. `None` for the rest.
+    pub staged_peak_gb: Option<f64>,
+}
+
+/// A family's staged-residency peak (GB, with runtime overhead), if it loads in stages.
+pub fn staged_peak_gb(alias: &str) -> Option<f64> {
+    crate::pipelines::kandinsky::is_kandinsky(alias).then_some(crate::pipelines::kandinsky::STAGED_PEAK_GB + OVERHEAD_GB)
 }
 
 /// Estimate what `alias` will cost in RAM once loaded — fast + synchronous (no
@@ -75,10 +84,10 @@ pub struct ResidentEstimate {
 pub fn resident_estimate(alias: &str) -> ResidentEstimate {
     let repo = crate::hf::resolve_alias(alias);
     if let Some(gb) = cached_repo_gb(repo) {
-        return ResidentEstimate { gb: gb + OVERHEAD_GB, exact: true };
+        return ResidentEstimate { gb: gb + OVERHEAD_GB, exact: true, staged_peak_gb: staged_peak_gb(alias) };
     }
     let weight = MODELS.iter().find(|m| m.alias == alias).map(rough_weight_gb).unwrap_or(8.0);
-    ResidentEstimate { gb: weight + OVERHEAD_GB, exact: false }
+    ResidentEstimate { gb: weight + OVERHEAD_GB, exact: false, staged_peak_gb: staged_peak_gb(alias) }
 }
 
 /// On-disk GB of a model's cached weight files (None if not cached). Sums the current
@@ -109,6 +118,7 @@ fn gen_base_gb(m: &ModelMeta) -> f64 {
         a if a.starts_with("pixart") => 4.0,
         "stable-cascade" => 4.0,
         a if a.starts_with("sana") => 3.5, // linear-attn DiT is light; Gemma/DC-AE resident
+        a if a.starts_with("kandinsky") => 4.0, // 4,096 image tokens × 20 heads at 1024²
         a if a.starts_with("flux") => 6.0,
         _ => 2.5,
     }
@@ -125,6 +135,7 @@ fn rough_weight_gb(m: &ModelMeta) -> f64 {
         a if a.starts_with("pixart") => 12.0, // T5-XXL dominates
         "stable-cascade" => 14.0,
         a if a.starts_with("sana") => 13.0, // BF16: Gemma-2-2B (~5) + DiT + DC-AE (600m less, 2k similar)
+        a if a.starts_with("kandinsky") => 27.0, // everything resident: Qwen text tower (~14) + DiT (~12) + CLIP-L + VAE
         a if a.starts_with("flux") => 24.0,
         _ => 8.0,
     }
@@ -143,9 +154,11 @@ pub struct ModelCapability {
     pub size_source: String,
     /// Estimated resident need (GB) = weights + overhead.
     pub resident_gb: Option<f64>,
+    /// Peak (GB) for a family that loads in stages; the verdict is judged on it. `None` otherwise.
+    pub staged_peak_gb: Option<f64>,
     pub native_res: u32,
     pub dtype: String,
-    /// `runs` | `tight` | `wont-fit` | `blocked` | `unknown`.
+    /// `runs` | `tight` | `wont-fit` | `blocked` | `unknown` | `pending` (registered, pipeline not landed).
     pub verdict: String,
     /// The lever that helps (only when not `runs`), or None.
     pub tuning: Option<String>,
@@ -174,13 +187,22 @@ pub async fn build(hardware: HardwareReport, want_network: bool) -> CapabilityRe
 
         let (weight_gb, size_source) = derive_size(&repo, want_network, token.as_deref()).await;
         let resident_gb = weight_gb.map(|w| w + OVERHEAD_GB);
-        let verdict = verdict_for(resident_gb, &hardware, m, gated, token.is_some(), size_source);
+        // A staged family is judged on its staged peak (a figure of the design, so treated as exact), not on
+        // the sum of weights it never holds at once.
+        let staged = staged_peak_gb(m.alias);
+        let verdict = match staged {
+            // …and a family whose pipeline has not landed is `pending`, whatever would fit.
+            Some(_) if crate::pipelines::kandinsky::is_kandinsky(m.alias) && !crate::pipelines::kandinsky::PIPELINE_READY => "pending",
+            Some(p) => verdict_for(Some(p), &hardware, m, gated, token.is_some(), "cache"),
+            None => verdict_for(resident_gb, &hardware, m, gated, token.is_some(), size_source),
+        };
         // The default Flux tuning points at the GGUF path — but that is BROKEN on Metal (candle's Metal
         // quantized mat×mat kernel produces garbage; plakat blocks it). On Metal, warn instead of misleading.
         let tuning = if hardware.backend == "metal" && m.alias.starts_with("flux") {
             Some("GGUF Flux is broken on Metal (candle quantized-matmul bug — plakat blocks it); use full BF16 (needs the RAM, ~24 GB) or --device cpu (correct but slow). Not recommended on Metal.".to_string())
         } else {
-            (verdict != "runs" && !m.tuning.is_empty()).then(|| m.tuning.to_string())
+            // (A staged family's note always shows: it carries the peak and the cost, whatever the verdict.)
+            ((verdict != "runs" || staged.is_some()) && !m.tuning.is_empty()).then(|| m.tuning.to_string())
         };
 
         models.push(ModelCapability {
@@ -191,6 +213,7 @@ pub async fn build(hardware: HardwareReport, want_network: bool) -> CapabilityRe
             weight_gb,
             size_source: size_source.to_string(),
             resident_gb,
+            staged_peak_gb: staged,
             native_res: m.native_res,
             dtype: if hardware.backend == "cpu" { "F32".into() } else { m.dtype.to_string() },
             verdict: verdict.to_string(),

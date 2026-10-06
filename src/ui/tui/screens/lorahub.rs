@@ -709,6 +709,7 @@ fn family_label(f: BaseFamily) -> &'static str {
         BaseFamily::PixArt => "PixArt",
         BaseFamily::StableCascade => "Cascade",
         BaseFamily::Sana => "Sana",
+        BaseFamily::Kandinsky5 => "Kandinsky 5",
     }
 }
 

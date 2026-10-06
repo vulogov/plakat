@@ -63,6 +63,9 @@ pub enum BaseFamily {
     /// Routes through `pipelines::sana`. LoRA discovery lands later
     /// in the 4.5 cycle (base t2i first).
     Sana,
+    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5. No public adapters exist yet (non-goal N4), so nothing is
+    /// discovered for it; the family is here so the mapping stays total.
+    Kandinsky5,
 }
 
 impl BaseFamily {
@@ -86,6 +89,7 @@ impl BaseFamily {
             Variant::PixArt => Self::PixArt,
             Variant::StableCascade => Self::StableCascade,
             Variant::Sana => Self::Sana,
+            Variant::Kandinsky5 => Self::Kandinsky5,
         }
     }
 
@@ -101,6 +105,7 @@ impl BaseFamily {
             Self::PixArt => "pixart",
             Self::StableCascade => "cascade",
             Self::Sana => "sana",
+            Self::Kandinsky5 => "kandinsky5",
         }
     }
 
@@ -137,6 +142,7 @@ impl BaseFamily {
             Self::StableCascade => b.contains("cascade"),
             // v4.5: Sana LoRA discovery lands later in the cycle; conservative match.
             Self::Sana => b.contains("sana"),
+            Self::Kandinsky5 => b.contains("kandinsky"),
         }
     }
 }
@@ -439,6 +445,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::PixArt => id_l.contains("pixart"),
         BaseFamily::StableCascade => id_l.contains("cascade"),
         BaseFamily::Sana => id_l.contains("sana"),
+        BaseFamily::Kandinsky5 => id_l.contains("kandinsky"),
     };
     if id_check {
         return true;
@@ -452,6 +459,7 @@ fn hf_repo_matches_base(repo_id: &str, tags: &[String], base: BaseFamily) -> boo
         BaseFamily::PixArt => &["pixart", "pixart-sigma", "pixart-alpha"],
         BaseFamily::StableCascade => &["stable-cascade", "cascade"],
         BaseFamily::Sana => &["sana"],
+        BaseFamily::Kandinsky5 => &["kandinsky"],
     };
     tags.iter().any(|t| {
         let tl = t.to_lowercase();
