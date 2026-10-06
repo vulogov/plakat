@@ -67,7 +67,7 @@ pub struct RunRequest {
 
 /// `shift·t / (1 + (shift−1)·t)` — the flow-matching sigma time-shift (diffusers `mu_t`; identical
 /// to `sd3::shift_t`).
-fn shift_t(t: f64, shift: f64) -> f64 {
+pub(crate) fn shift_t(t: f64, shift: f64) -> f64 {
     if shift == 1.0 { t } else { shift * t / (1.0 + (shift - 1.0) * t) }
 }
 
@@ -75,7 +75,7 @@ fn shift_t(t: f64, shift: f64) -> f64 {
 /// `sigmas[i] · 1000` is the DiT timestep. Matches diffusers `FlowMatchEulerDiscreteScheduler`,
 /// which applies the shift **twice**: once at init (the schedule floor becomes `shift_t(1/1000)`),
 /// then again over the `linspace(1, floor)` in `set_timesteps`.
-fn flow_sigmas(steps: usize, shift: f64) -> Vec<f64> {
+pub(crate) fn flow_sigmas(steps: usize, shift: f64) -> Vec<f64> {
     let floor = shift_t(1.0 / 1000.0, shift);
     let mut sig: Vec<f64> = (0..steps)
         .map(|i| {

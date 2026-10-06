@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **RFC** | KANDINSKY-1 |
-| **Status** | Accepted — Phase 0 built (7.2.0); P1 next |
+| **Status** | Accepted — Phase 0 and P1 built (7.2.0); P1's weight gates pending on the 36 GB host; P2 next |
 | **Target** | 7.2.0 (diversify slot after 7.1.0) |
 | **Author** | Vladimir Ulogov |
 | **Model** | `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated) |
@@ -88,8 +88,8 @@ The reference implementation is now upstream in diffusers (`transformer_kandinsk
 |---|---|---|---|
 | `transformer/` | `Kandinsky5Transformer3DModel` | ≈12 GB (6.0B params) | **new**: `pipelines/kandinsky_dit.rs` |
 | `text_encoder/` | `Qwen2_5_VLForConditionalGeneration` | 16.6 GB on disk; **≈14.1 GB loaded** (text tower only, no `lm_head`) | candle `models::qwen2::Model` |
-| `text_encoder_2/` | `CLIPTextModel` (ViT-L/14) | ≈0.25 GB | `vendored_clip::ClipTextTransformer` |
-| `vae/` | `AutoencoderKL` (Flux.1-dev VAE) | ≈0.17 GB | candle `flux::autoencoder` (`fae`) |
+| `text_encoder_2/` | `CLIPTextModel` (ViT-L/14) | ≈0.25 GB loaded (the file is the whole CLIP, 1.71 GB) | `vendored_clip::ClipTextTransformer` |
+| `vae/` | `AutoencoderKL` (Flux.1-dev VAE, diffusers key layout) | ≈0.17 GB | candle `stable_diffusion::vae::AutoEncoderKL`, as the SD3 path (not `fae`: wrong key layout) |
 | `scheduler/` | `FlowMatchEulerDiscreteScheduler`, `shift: 5.0` | — | `sana::flow_sigmas` |
 | `tokenizer/`, `tokenizer_2/` | Qwen2VLProcessor / CLIPTokenizer | — | `tokenizers` 0.20 |
 
@@ -485,6 +485,18 @@ Each phase is independently mergeable.
 - `kandinsky_text.rs`: the config shim, template and offset slice, causal batch-of-1 encode, and the CLIP-L pooled helper (factored out of `flux.rs`).
 - AE construction with `shift_factor = 0`, and the upstream-repo check from §9.
 - **Gate:** parity stages 1–2; T7 (offset 41); the VAE round-trip on a dumped latent at PSNR ≥ 40 dB.
+
+**P1 as built** (`src/pipelines/kandinsky_text.rs`, `kandinsky::run_p1`, `tools/kandinsky_dump.py`), with what checking the references changed:
+
+- **Two templates, not one.** The upstream training code (`kandinskylab/kandinsky-5`, `text_embedders.py`) uses "promt" with `crop_start` 41, as §7.1 says. But diffusers `main` has since *corrected the typo* and uses `prompt_template_encode_start_idx = 40`. plakat defaults to the **upstream** template (what the weights were trained with) and carries the diffusers one for parity runs (`PLAKAT_K5_TEMPLATE=diffusers`); the dump tool records which was used and the parity test follows it. T7 was run against the repo's real `tokenizer.json`: 41 and 40 tokens respectively.
+- **The VAE is in the diffusers layout.** `vae/diffusion_pytorch_model.safetensors` is an `AutoencoderKL`, which candle's BFL-layout `flux::autoencoder` cannot read. It loads with `stable_diffusion::vae::AutoEncoderKL` exactly as plakat's SD3 path does (same shape: 4 blocks, 16 latent channels, no quant convs), and the scale is applied by hand: `decode(z / 0.3611)`, `encode(x) · 0.3611`. So §9's "construct `fae::Config` with `shift_factor = 0`" is not what was built; the effect is the same.
+- **§9's check is done:** upstream `generation_utils.py` also uses `scaling_factor` alone on both encode and decode. No shift; T1 stands.
+- **CLIP-L is a 1.71 GB file**, not ≈0.25 GB: `text_encoder_2/model.safetensors` is the whole CLIP ViT-L/14. Only `text_model.*` is read. A prompt over 77 CLIP tokens is cut with the EOT as its last token, as the reference tokenizer does — its own helper (`clip_ids_77`), so `flux.rs` was left untouched rather than refactored (§7.2's shared helper is not done).
+- **The Qwen download skips a shard.** The index puts every `model.*` tensor in shards 1–4; shard 5 (1.09 GB) holds only `lm_head`. The loader reads the index and fetches 15.5 GB, not 16.6 GB. The checkpoint's key names match candle's `qwen2::Model` one for one (checked against the index).
+- **`generate --model kandinsky5` now runs P1:** loads the encoders, encodes prompt and negative, prints token counts and statistics, releases the encoders, then stops. `PLAKAT_K5_DUMP_DIR` writes the tensors; `PLAKAT_K5_VAE_IMAGE` round-trips an image through the VAE; `PLAKAT_K5_STAGE=vae` does that alone.
+- **Measured on the 24 GB Mac:** the VAE round-trip of a photograph is 34.3 dB at 512² (Metal) and 37.2 dB at 1024² (CPU). At **1024² on Metal the F32 VAE fails** with "Failed to create metal resource: Buffer" — the single-buffer cap bites at the family's base size, not only at the 1408-px buckets §9 names. P3's tiled decode fallback is needed from 1024² up on this class of machine.
+- **Not yet run:** the Qwen tower has not been loaded anywhere (15.5 GB download, ≈14 GB resident), so parity stages 1–2 and the VAE decode against a reference dump are open. They run on the 36 GB host: `python tools/kandinsky_dump.py --out DIR`, then the ignored test `kandinsky_parity_p1` with `PLAKAT_PARITY_DIR=DIR`.
+- **One thing for P3:** upstream's own sampler defaults to `scheduler_scale = 3.0` in `t2i_pipeline.py`, while the diffusers repo's scheduler config says `shift: 5.0`. The port follows the diffusers config (§8.1); worth a look when the first images exist.
 
 ### Phase 2 — DiT
 

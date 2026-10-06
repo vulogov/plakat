@@ -977,8 +977,8 @@ fn apply_quality(args: &mut GenerateArgs) {
 
 /// The Kandinsky 5 surface (RFC KANDINSKY-1, phase 0): its own flags are rejected with a hint on every
 /// other family; on the family, the flags it has no adapters for are rejected, `--max-seq` is bounded and
-/// `--size` snaps to a native bucket. Until the pipeline lands the family's path ends here.
-fn kandinsky_surface(args: &mut GenerateArgs) -> Result<()> {
+/// `--size` snaps to a native bucket. Returns whether the run belongs to the family.
+fn kandinsky_surface(args: &mut GenerateArgs) -> Result<bool> {
     use crate::pipelines::kandinsky as k5;
     let scoped = [
         ("--quantize-qwen", args.quantize_qwen),
@@ -991,7 +991,7 @@ fn kandinsky_surface(args: &mut GenerateArgs) -> Result<()> {
         if let Some((flag, _)) = scoped.iter().find(|(_, on)| *on) {
             anyhow::bail!("{flag} is a Kandinsky 5 flag and has no meaning for --model {:?}; use it with --model kandinsky5", args.model);
         }
-        return Ok(());
+        return Ok(false);
     }
     let no_adapters = "no public Kandinsky 5 adapters exist yet (RFC KANDINSKY-1, non-goal N4)";
     if !args.loras.is_empty() {
@@ -1024,12 +1024,17 @@ fn kandinsky_surface(args: &mut GenerateArgs) -> Result<()> {
         }
         args.size = Some(Size { w: bw, h: bh });
     }
-    Err(k5::not_yet())
+    Ok(true)
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
-    kandinsky_surface(&mut args)?;
+    if kandinsky_surface(&mut args)? {
+        // RFC KANDINSKY-1, P1: the family's own run — conditioning and VAE today, then it stops.
+        use crate::pipelines::kandinsky as k5;
+        let size = args.size.map(|s| (s.w, s.h)).unwrap_or((1024, 1024));
+        return k5::run_p1(&args.model, &args.prompt, &args.negative, args.max_seq.unwrap_or(k5::DEFAULT_MAX_SEQ), size, &device, &args.out).await;
+    }
     // `--unique-files`: nest this whole run under a timestamped folder BEFORE any path derives from
     // `args.out`, so every out_dir / reconstructed `plakat-<seed>.png` / grid / naturalize path inherits
     // it and no prior run is clobbered. One redirect covers the entire pipeline.
