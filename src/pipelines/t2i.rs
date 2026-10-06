@@ -212,6 +212,10 @@ pub struct Request {
     /// LAYERED-1 (S3): when set, the SD-family generate is steered toward a low-frequency guide (RFC
     /// LAYERED-1). `None` (the default) is byte-identical to the ordinary txt2img path.
     pub layered: Option<LayeredGuide>,
+    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5's `--max-seq` (prompt tokens kept after the template; `None` =
+    /// the family default) and `--keep-encoders`. Ignored on every other pipeline.
+    pub kandinsky_max_seq: Option<usize>,
+    pub kandinsky_keep_encoders: bool,
 }
 
 /// LAYERED-1 (S3) guide attached to an SD-family [`Request`]: the composed guide image (VAE-encoded to `G`
@@ -292,6 +296,8 @@ impl Request {
             cascade_image_prompt: None,
             cascade_controlnet_weights: None,
             layered: None,
+            kandinsky_max_seq: None,
+            kandinsky_keep_encoders: false,
         }
     }
 }
@@ -974,7 +980,7 @@ impl Pipeline {
             );
         }
         if variant.is_kandinsky() {
-            return Err(crate::pipelines::kandinsky::not_yet());
+            return Err(crate::pipelines::kandinsky::txt2img_only("the SD-family pipeline"));
         }
         let repo = resolve_repo(&req.model);
 
@@ -2870,10 +2876,27 @@ fn embed_xl(
 pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines::sd_core::SdCore>>> {
     let variant = Variant::detect(&req.model);
 
-    // 7.2 (RFC KANDINSKY-1) phase 0: Kandinsky 5 routing. The family is registered and detected ahead of
-    // every other; its pipeline lands in P1–P3, so the dispatch ends here for now.
+    // 7.2 (RFC KANDINSKY-1): Kandinsky 5 routing, ahead of every other family. Staged text-to-image —
+    // encode, release the encoders, denoise, decode.
     if variant.is_kandinsky() {
-        return Err(crate::pipelines::kandinsky::not_yet());
+        use crate::pipelines::kandinsky;
+        kandinsky::run(kandinsky::RunRequest {
+            model: req.model.clone(),
+            device: req.device.clone(),
+            prompt: req.prompt.clone(),
+            negative: req.negative.clone(),
+            width: req.width,
+            height: req.height,
+            steps: req.steps,
+            guidance: req.guidance,
+            seed: req.seed,
+            out_dir: req.out_dir.clone(),
+            count: req.count,
+            max_seq: req.kandinsky_max_seq.unwrap_or(kandinsky::DEFAULT_MAX_SEQ),
+            keep_encoders: req.kandinsky_keep_encoders,
+        })
+        .await?;
+        return Ok(None);
     }
 
     // v0.37 phase 0: Stable Cascade routing. Detection precedes

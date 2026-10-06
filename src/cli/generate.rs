@@ -1024,17 +1024,22 @@ fn kandinsky_surface(args: &mut GenerateArgs) -> Result<bool> {
         }
         args.size = Some(Size { w: bw, h: bh });
     }
+    // The family's own sampler defaults stand in for clap's (`--steps 28`, `--guidance 7.5` are what
+    // "not set" looks like here, as for the presets and recipes): 50 steps at guidance 3.5.
+    if args.steps == 28 {
+        args.steps = k5::DEFAULT_STEPS;
+    }
+    if (args.guidance - 7.5).abs() < f64::EPSILON {
+        args.guidance = k5::DEFAULT_GUIDANCE;
+    }
     Ok(true)
 }
 
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
-    if kandinsky_surface(&mut args)? {
-        // RFC KANDINSKY-1, P1: the family's own run — conditioning and VAE today, then it stops.
-        use crate::pipelines::kandinsky as k5;
-        let size = args.size.map(|s| (s.w, s.h)).unwrap_or((1024, 1024));
-        return k5::run_p1(&args.model, &args.prompt, &args.negative, args.max_seq.unwrap_or(k5::DEFAULT_MAX_SEQ), size, &device, &args.out).await;
-    }
+    // RFC KANDINSKY-1: validates the family's flags, snaps the size and sets its sampler defaults; the
+    // run itself goes through `t2i::run` like every other family's.
+    kandinsky_surface(&mut args)?;
     // `--unique-files`: nest this whole run under a timestamped folder BEFORE any path derives from
     // `args.out`, so every out_dir / reconstructed `plakat-<seed>.png` / grid / naturalize path inherits
     // it and no prior run is clobbered. One redirect covers the entire pipeline.
@@ -1666,6 +1671,8 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         // v0.38 phase 5: Cascade ControlNet weights path.
         cascade_controlnet_weights: args.cascade_control_weights,
         layered: None,
+        kandinsky_max_seq: args.max_seq,
+        kandinsky_keep_encoders: args.keep_encoders,
     })
     .await
     .map_err(|e| {
@@ -1673,6 +1680,9 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         // mitigation suggestions. Detection is conservative (looks
         // for "out of memory" / "OOM" substrings); unrelated errors
         // pass through unchanged.
+        if crate::pipelines::kandinsky::is_kandinsky(&model_for_oom) {
+            return e; // decorated by the family's own run, with its own mitigations
+        }
         let ctx = if model_for_oom.contains("flux") {
             crate::error_hints::OomContext::Flux
         } else if model_for_oom.contains("xl") {
