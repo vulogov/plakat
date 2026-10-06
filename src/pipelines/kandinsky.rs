@@ -1,10 +1,11 @@
 //! Kandinsky 5.0 T2I Lite — plakat's eighth model family (RFC KANDINSKY-1).
 //!
-//! **Through P1.** Phase 0 registered the surface (alias, variant and dispatch, capability row, the
+//! **Through P2.** Phase 0 registered the surface (alias, variant and dispatch, capability row, the
 //! native resolution buckets, the family-scoped flags). P1 adds the conditioning and the VAE
 //! (`kandinsky_text`): `generate --model kandinsky5` now loads the text encoders, encodes the prompt
-//! and the negative, releases the encoders, and — given an image — round-trips it through the VAE. The
-//! 6B flow-matching DiT is P2 and the denoise loop P3; until then the run ends at [`not_yet`].
+//! and the negative, releases the encoders, and — given an image — round-trips it through the VAE. P2
+//! adds the 6B flow-matching DiT (`kandinsky_dit`), verified against the reference stage by stage but
+//! not yet driven from here: the denoise loop is P3, and until then the run ends at [`not_yet`].
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -61,11 +62,11 @@ pub fn check_exact(w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
-/// Where every path into the family ends until the DiT (P2) and the denoise loop (P3) land.
+/// Where every path into the family ends until the denoise loop (P3) lands.
 pub fn not_yet() -> anyhow::Error {
     anyhow::anyhow!(
-        "Kandinsky 5 cannot generate yet (RFC KANDINSKY-1): the surface (P0) and the text encoders + VAE (P1) \
-         are in; the DiT lands in P2 and the denoise loop in P3."
+        "Kandinsky 5 cannot generate yet (RFC KANDINSKY-1): the surface (P0), the text encoders + VAE (P1) \
+         and the DiT (P2) are in; the denoise loop lands in P3."
     )
 }
 

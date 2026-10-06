@@ -514,6 +514,29 @@ Each phase is independently mergeable.
 - `kandinsky_dit.rs` per §6, with F32-island loading.
 - **Gate:** parity stages 3–6 at both precisions, and on Metal as well as CPU (§14, the rank > 4 risk).
 
+**P2 as built** (`src/pipelines/kandinsky_dit.rs`, `tools/kandinsky_dump.py --stage p2`), with what the measurements changed:
+
+- **The DiT is §6 as written**, and it matched the reference on its first run, on the CPU and on Metal. The rank > 4 risk (§14) did not bite: attention is flattened to `B·heads` (3-D matmuls, a few heads at a time so one score tensor stays under 1 GiB), the RoPE rotation is done at rank ≤ 4, and the rank-6 patchify / unpatchify permutes run on the CPU once per forward. One thing §6.1 does not say: a patch goes IN as `(ph, pw, C)` but comes OUT of the output layer as `(C, ph, pw)`, so the two are not inverses of each other.
+- **The weights rest in BF16 on every device** (the checkpoint is BF16 throughout, 12.0 GB), and a layer widens its weights to the activation dtype for the call. §6.6's "load the F32 islands as F32" became "widen them at use" — the same numbers, without holding 2.4 GB of F32 modulation weights. The CPU path is therefore 12 GB resident, not 24.
+- **The compute dtype defaults to F32 on a GPU too** (`PLAKAT_K5_DIT_COMPUTE=bf16` opts out). It is nearly free — 8.1 s against 7.4 s for a 1024² forward on the M5 Max — and it is the difference between matching the reference and approximating it (table below). Both pass the GPU bars; this is P1's Qwen finding again in a milder form.
+- **§12.3 is measured: the BF16 rounding of the rotated Q/K stays on.** With it, the text stream and visual block 0 are within 7e-5 of the reference (relative max-abs); with `PLAKAT_K5_ROPE_ROUND=0` they are 2.4e-3 and 2.5e-4 off. So the reference's rounding is mirrored on every path, F32 included. Whether it changes the *image* is P3's question.
+- **§12.2's F32 bound for blocks and velocity is restated.** "≤ 1e-3 relative" holds for the time embedding, the text stream and block 0. Deeper it is not reachable against a reference computed on another backend: that same rounding turns 1e-6 differences into 4e-3 ones in a few Q/K elements, and fifty blocks carry them (velocity at step 25: 1.8e-3 on Metal). The deep stages are held to cosine ≥ 0.9999 in F32; the BF16 bars are unchanged (0.998 blocks, 0.995 velocity).
+- **The reference dump is its own loop**, not the pipeline's `__call__`: it reads the embeddings back from `p1.safetensors` (no text tower), calls the transformer and the scheduler directly, and taps what §12.1 lists, plus the final latent and the decoded image for P3 (stages 7–8). 100 forwards at 1024² in F32 on MPS take 14 minutes. The decoded reference is the expected image.
+- **The gate, run and passing** (36 GB M5 Max; default prompt, empty negative, seed 42, 1024², 50 steps, guidance 3.5; the reference is F32 on MPS). Cosine to the reference, with relative max-abs in brackets:
+
+  | Stage | Metal, F32 compute | Metal, BF16 compute |
+  |---|---|---|
+  | Time embedding, t ∈ {1000, 500, 1} | 1.000000 (≤ 1.3e-6) | the same (an F32 island) |
+  | Text stream after its 2 blocks, t = 500 | 1.000000 (6.6e-5) | 0.999965 |
+  | Visual block 0 / 24 / 49, t = 500 | 1.000000 (6.3e-5 / 5.1e-5 / 3.1e-4) | 0.999991 / 0.999924 / 0.999966 |
+  | Velocity, t = 500 | 1.000000 (4.0e-4) | 0.999930 |
+  | Velocity at step 0, cond / uncond | 1.000000 (2.8e-4 / 8.4e-5) | 0.999934 / 0.999950 |
+  | Velocity at step 25 | 1.000000 (1.8e-3 / 1.1e-3) | 0.999967 / 0.999972 |
+  | Velocity at step 49 | 1.000000 (7.0e-4 / 7.7e-4) | 0.999544 / 0.999550 |
+
+  On the **CPU** (F32, 69 s a forward) every stage is at cosine 1.000000: the time embedding within 2.3e-7, the text stream 4.9e-5, blocks 0 / 24 / 49 at 6.3e-5 / 4.9e-5 / 3.5e-4, and the velocities between 9.0e-5 and 1.6e-3 (step 25).
+- **For P3:** the reference passes the timestep through the transformer's dtype, so a BF16 pipeline hands the DiT a BF16-rounded `t`; plakat passes it in F32. And the DiT takes one image and one prompt per forward — the two CFG branches differ in length (§8.2), so they are two forwards.
+
 ### Phase 3 — End-to-end and staged residency
 
 - `kandinsky.rs` orchestration, §7.4 batching and the scenario `pre_encode` hook, `--keep-encoders`, and tiled decode fallback.
