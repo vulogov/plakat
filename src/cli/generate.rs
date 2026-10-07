@@ -491,8 +491,9 @@ pub struct GenerateArgs {
     #[arg(help_heading = "Model & sampler", long = "quantize-qwen", default_value_t = false)]
     pub quantize_qwen: bool,
 
-    /// **Kandinsky 5 only**: run the DiT from NF4 weights (~4 GB instead of ~12 GB). With
-    /// `--quantize-qwen` the family peaks near 6 GB. Rejected on other families.
+    /// **Kandinsky 5 only**: run the DiT from NF4 weights (~4 GB instead of ~12 GB), quantized at load.
+    /// With `--quantize-qwen` the family peaks at 7 GB on a machine under 24 GB of RAM (or with
+    /// `PLAKAT_K5_LOW_MEMORY=1`) and at 11 GB otherwise. Rejected on other families.
     #[arg(help_heading = "Model & sampler", long = "dit-nf4", default_value_t = false)]
     pub dit_nf4: bool,
 
@@ -1673,6 +1674,8 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         layered: None,
         kandinsky_max_seq: args.max_seq,
         kandinsky_keep_encoders: args.keep_encoders,
+        kandinsky_quantize_qwen: args.quantize_qwen,
+        kandinsky_dit_nf4: args.dit_nf4,
     })
     .await
     .map_err(|e| {

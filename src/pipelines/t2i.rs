@@ -216,6 +216,9 @@ pub struct Request {
     /// the family default) and `--keep-encoders`. Ignored on every other pipeline.
     pub kandinsky_max_seq: Option<usize>,
     pub kandinsky_keep_encoders: bool,
+    /// Kandinsky 5 only: `--quantize-qwen` and `--dit-nf4` (the quantized tier).
+    pub kandinsky_quantize_qwen: bool,
+    pub kandinsky_dit_nf4: bool,
 }
 
 /// LAYERED-1 (S3) guide attached to an SD-family [`Request`]: the composed guide image (VAE-encoded to `G`
@@ -298,6 +301,8 @@ impl Request {
             layered: None,
             kandinsky_max_seq: None,
             kandinsky_keep_encoders: false,
+            kandinsky_quantize_qwen: false,
+            kandinsky_dit_nf4: false,
         }
     }
 }
@@ -2894,6 +2899,8 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             count: req.count,
             max_seq: req.kandinsky_max_seq.unwrap_or(kandinsky::DEFAULT_MAX_SEQ),
             keep_encoders: req.kandinsky_keep_encoders,
+            quantize_qwen: req.kandinsky_quantize_qwen,
+            dit_nf4: req.kandinsky_dit_nf4,
         })
         .await?;
         return Ok(None);
