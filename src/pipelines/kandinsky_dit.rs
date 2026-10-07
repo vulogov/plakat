@@ -50,6 +50,9 @@ const ROPE_MAX_TEXT: usize = 1024;
 const ROPE_MAX_AXIS: usize = 128;
 /// Attention scores are computed a few heads at a time, so that one score tensor stays under this.
 const ATTN_CHUNK_BYTES: usize = 1 << 30;
+/// The same on a low-memory host ([`crate::pipelines::kandinsky::low_memory`]): at 1024² the denoise's
+/// pool is 1.8 GB instead of 3.4 GB, for 18 % more time a step (measured with the NF4 DiT).
+const ATTN_CHUNK_BYTES_LOW: usize = 1 << 27;
 
 impl Config {
     /// Kandinsky 5.0 T2I Lite (RFC §4.2).
@@ -203,6 +206,56 @@ fn wide(l: &Linear, xs: &Tensor) -> Result<Tensor> {
     Ok(Linear::new(l.weight().to_dtype(dt)?, bias).forward(xs)?)
 }
 
+/// A block's linear layer: the checkpoint's dense weights, or NF4 (`--dit-nf4`, RFC §10.2) — 4-bit
+/// codes, two to a byte, and an absmax per 64 values, both on the model's device. A call dequantizes
+/// there: the bytes index a 256-row table of code pairs and the blocks are scaled by their absmax, so
+/// the dense weight exists for one matmul and its buffer is the pool's to reuse. (Dequantizing on the
+/// CPU and uploading was measured first: as fast, but each upload is a fresh buffer and the denoise
+/// peaked 7 GB higher.) The bias stays dense.
+enum Lin {
+    Dense(Linear),
+    Nf4 { packed: Tensor, absmax: Tensor, pairs: Tensor, bias: Option<Tensor>, shape: (usize, usize) },
+}
+
+impl Lin {
+    /// `vb` is on the model's device. `quant`, when given, is the same path on the CPU: the weight is
+    /// read through it one layer at a time and quantized, so the dense checkpoint is never resident.
+    fn load(vb: VarBuilder, quant: Option<VarBuilder>, input: usize, output: usize, bias: bool) -> Result<Self> {
+        use crate::pipelines::nf4_codec::{quantize_nf4_cpu, NF4_BLOCK_SIZE, NF4_CODEBOOK};
+        let Some(q) = quant else {
+            return Ok(Lin::Dense(lin(vb, input, output, bias)?));
+        };
+        let device = vb.device();
+        let w: Vec<f32> = q.get((output, input), "weight")?.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
+        let (packed, absmax) = quantize_nf4_cpu(&w)?;
+        let blocks = absmax.len();
+        debug_assert_eq!(blocks * NF4_BLOCK_SIZE, input * output);
+        // Row `b` is the two values a byte `b` packs: low nibble first.
+        let pairs: Vec<f32> = (0..256usize).flat_map(|b| [NF4_CODEBOOK[b & 0x0F], NF4_CODEBOOK[b >> 4]]).collect();
+        Ok(Lin::Nf4 {
+            packed: Tensor::from_vec(packed, input * output / 2, device)?,
+            absmax: Tensor::from_vec(absmax, (blocks, 1), device)?,
+            pairs: Tensor::from_vec(pairs, (256, 2), device)?,
+            bias: if bias { Some(vb.get(output, "bias")?) } else { None },
+            shape: (output, input),
+        })
+    }
+
+    /// `xs` through the layer, in `xs`'s dtype.
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        match self {
+            Lin::Dense(l) => wide(l, xs),
+            Lin::Nf4 { packed, absmax, pairs, bias, shape } => {
+                let dt = xs.dtype();
+                let blocks = absmax.dim(0)?;
+                let w = pairs.index_select(packed, 0)?.reshape((blocks, ()))?.broadcast_mul(absmax)?.reshape(*shape)?.to_dtype(dt)?;
+                let bias = bias.as_ref().map(|b| b.to_dtype(dt)).transpose()?;
+                Ok(Linear::new(w, bias).forward(xs)?)
+            }
+        }
+    }
+}
+
 /// Non-affine LayerNorm over the last dim, in F32.
 fn layer_norm(x: &Tensor) -> Result<Tensor> {
     let x = x.to_dtype(DType::F32)?;
@@ -261,7 +314,8 @@ fn residual(x: &Tensor, gate: &Tensor, out: &Tensor) -> Result<Tensor> {
 /// Plain scaled-dot-product attention over `(B·heads, L, D)`, no mask, a few heads at a time.
 fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
     let (bh, lq, d) = q.dims3()?;
-    let per = (ATTN_CHUNK_BYTES / (lq * k.dim(1)? * q.dtype().size_in_bytes()).max(1)).clamp(1, bh);
+    let budget = if crate::pipelines::kandinsky::low_memory() { ATTN_CHUNK_BYTES_LOW } else { ATTN_CHUNK_BYTES };
+    let per = (budget / (lq * k.dim(1)? * q.dtype().size_in_bytes()).max(1)).clamp(1, bh);
     let scale = 1.0 / (d as f64).sqrt();
     let kt = k.transpose(1, 2)?.contiguous()?;
     let mut out = Vec::new();
@@ -276,10 +330,10 @@ fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
 }
 
 struct Attention {
-    to_query: Linear,
-    to_key: Linear,
-    to_value: Linear,
-    out_layer: Linear,
+    to_query: Lin,
+    to_key: Lin,
+    to_value: Lin,
+    out_layer: Lin,
     query_norm: Tensor,
     key_norm: Tensor,
     heads: usize,
@@ -287,13 +341,14 @@ struct Attention {
 }
 
 impl Attention {
-    fn new(vb: VarBuilder, cfg: &Config, rope_round: bool) -> Result<Self> {
+    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, rope_round: bool) -> Result<Self> {
         let (c, hd) = (cfg.model_dim, cfg.head_dim());
+        let load = |name: &str| Lin::load(vb.pp(name), quant.as_ref().map(|q| q.pp(name)), c, c, true);
         Ok(Self {
-            to_query: lin(vb.pp("to_query"), c, c, true)?,
-            to_key: lin(vb.pp("to_key"), c, c, true)?,
-            to_value: lin(vb.pp("to_value"), c, c, true)?,
-            out_layer: lin(vb.pp("out_layer"), c, c, true)?,
+            to_query: load("to_query")?,
+            to_key: load("to_key")?,
+            to_value: load("to_value")?,
+            out_layer: load("out_layer")?,
             query_norm: vb.pp("query_norm").get(hd, "weight")?,
             key_norm: vb.pp("key_norm").get(hd, "weight")?,
             heads: cfg.heads(),
@@ -324,27 +379,28 @@ impl Attention {
         let (b, l, c) = x.dims3()?;
         let src = context.unwrap_or(x);
         let (lk, hd) = (src.dim(1)?, c / self.heads);
-        let q = self.prepare(&wide(&self.to_query, x)?, &self.query_norm, rope)?;
-        let k = self.prepare(&wide(&self.to_key, src)?, &self.key_norm, rope)?;
-        let v = wide(&self.to_value, src)?.reshape((b, lk, self.heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((b * self.heads, lk, hd))?;
+        let q = self.prepare(&self.to_query.forward(x)?, &self.query_norm, rope)?;
+        let k = self.prepare(&self.to_key.forward(src)?, &self.key_norm, rope)?;
+        let v = self.to_value.forward(src)?.reshape((b, lk, self.heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((b * self.heads, lk, hd))?;
         let out = sdpa(&q, &k, &v)?.reshape((b, self.heads, l, hd))?.transpose(1, 2)?.contiguous()?.reshape((b, l, c))?;
-        wide(&self.out_layer, &out)
+        self.out_layer.forward(&out)
     }
 }
 
 /// `Linear (no bias) → exact GELU → Linear (no bias)`.
 struct FeedForward {
-    in_layer: Linear,
-    out_layer: Linear,
+    in_layer: Lin,
+    out_layer: Lin,
 }
 
 impl FeedForward {
-    fn new(vb: VarBuilder, cfg: &Config) -> Result<Self> {
-        Ok(Self { in_layer: lin(vb.pp("in_layer"), cfg.model_dim, cfg.ff_dim, false)?, out_layer: lin(vb.pp("out_layer"), cfg.ff_dim, cfg.model_dim, false)? })
+    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config) -> Result<Self> {
+        let q = |name: &str| quant.as_ref().map(|q| q.pp(name));
+        Ok(Self { in_layer: Lin::load(vb.pp("in_layer"), q("in_layer"), cfg.model_dim, cfg.ff_dim, false)?, out_layer: Lin::load(vb.pp("out_layer"), q("out_layer"), cfg.ff_dim, cfg.model_dim, false)? })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        wide(&self.out_layer, &wide(&self.in_layer, x)?.gelu_erf()?)
+        self.out_layer.forward(&self.in_layer.forward(x)?.gelu_erf()?)
     }
 }
 
@@ -418,22 +474,36 @@ pub struct Dit {
 impl Dit {
     /// Build from a VarBuilder over the checkpoint (any stored dtype); activations run in `compute`.
     pub fn new(cfg: Config, vb: VarBuilder, compute: DType) -> Result<Self> {
+        Self::build(cfg, vb, None, compute)
+    }
+
+    /// As [`Self::new`], with the blocks' attention and feed-forward weights in NF4 — 95 % of the model.
+    /// `quant` is a VarBuilder over the same checkpoint on the CPU, which those weights are read
+    /// through. The embeddings, the modulations (the reference's F32 islands) and the output layer stay
+    /// dense.
+    pub fn new_nf4(cfg: Config, vb: VarBuilder, quant: VarBuilder, compute: DType) -> Result<Self> {
+        Self::build(cfg, vb, Some(quant), compute)
+    }
+
+    fn build(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, compute: DType) -> Result<Self> {
         let round = std::env::var("PLAKAT_K5_ROPE_ROUND").ok().as_deref() != Some("0");
         let (c, td) = (cfg.model_dim, cfg.time_dim);
         let text_blocks = (0..cfg.num_text_blocks)
             .map(|i| {
                 let vb = vb.pp("text_transformer_blocks").pp(i);
-                Ok(TextBlock { modulation: Modulation::new(vb.pp("text_modulation"), td, c, 6)?, attention: Attention::new(vb.pp("self_attention"), &cfg, round)?, feed_forward: FeedForward::new(vb.pp("feed_forward"), &cfg)? })
+                let q = |name: &str| quant.as_ref().map(|q| q.pp("text_transformer_blocks").pp(i).pp(name));
+                Ok(TextBlock { modulation: Modulation::new(vb.pp("text_modulation"), td, c, 6)?, attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round)?, feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg)? })
             })
             .collect::<Result<Vec<_>>>()?;
         let visual_blocks = (0..cfg.num_visual_blocks)
             .map(|i| {
                 let vb = vb.pp("visual_transformer_blocks").pp(i);
+                let q = |name: &str| quant.as_ref().map(|q| q.pp("visual_transformer_blocks").pp(i).pp(name));
                 Ok(VisualBlock {
                     modulation: Modulation::new(vb.pp("visual_modulation"), td, c, 9)?,
-                    self_attention: Attention::new(vb.pp("self_attention"), &cfg, round)?,
-                    cross_attention: Attention::new(vb.pp("cross_attention"), &cfg, round)?,
-                    feed_forward: FeedForward::new(vb.pp("feed_forward"), &cfg)?,
+                    self_attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round)?,
+                    cross_attention: Attention::new(vb.pp("cross_attention"), q("cross_attention"), &cfg, round)?,
+                    feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -465,11 +535,17 @@ impl Dit {
     /// Load `transformer/` from a Kandinsky 5 diffusers repo. The weights rest in BF16 (what the
     /// checkpoint stores, ≈12 GB) on every device.
     pub async fn load(repo: &str, device: &Device) -> Result<Self> {
+        Self::load_with(repo, device, false).await
+    }
+
+    /// As [`Self::load`]; with `nf4` the block weights are quantized as they are read (≈3.7 GB resident).
+    pub async fn load_with(repo: &str, device: &Device, nf4: bool) -> Result<Self> {
         let cfg_path = crate::hf::download::get_file(repo, "transformer/config.json").await.context("Kandinsky 5 transformer/config.json")?;
         let cfg = Config::from_json(&std::fs::read_to_string(&cfg_path)?)?;
         let weights = crate::hf::download::get_file(repo, "transformer/diffusion_pytorch_model.safetensors").await.context("Kandinsky 5 transformer weights")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, device)? };
-        Self::new(cfg, vb, Self::compute_dtype(device)).context("building the Kandinsky 5 DiT")
+        let quant = if nf4 { Some(unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, &Device::Cpu)? }) } else { None };
+        Self::build(cfg, vb, quant, Self::compute_dtype(device)).context("building the Kandinsky 5 DiT")
     }
 
     pub fn compute(&self) -> DType {

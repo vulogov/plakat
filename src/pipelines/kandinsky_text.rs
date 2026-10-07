@@ -193,8 +193,27 @@ pub struct Embeds {
 
 /// The two text encoders. Owned separately from the DiT so the pipeline can drop them after encoding
 /// (staged residency, RFC §10.1).
+/// The quantized Qwen tower (`--quantize-qwen`): the language model of Qwen2.5-VL-7B-Instruct at
+/// Q4_K_M, 4.7 GB. The tokenizer stays the Kandinsky repo's own.
+pub const QWEN_GGUF: (&str, &str) = ("ggml-org/Qwen2.5-VL-7B-Instruct-GGUF", "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf");
+
+/// The Qwen tower as loaded: the checkpoint's BF16 weights, or a GGUF's quantized ones.
+enum Qwen {
+    Dense(qwen2::Model),
+    Quantized(crate::pipelines::vendored_qwen2q::Model),
+}
+
+impl Qwen {
+    fn forward(&self, ids: &Tensor) -> candle_core::Result<Tensor> {
+        match self {
+            Qwen::Dense(m) => m.forward(ids),
+            Qwen::Quantized(m) => m.forward(ids),
+        }
+    }
+}
+
 pub struct TextEncoders {
-    qwen: qwen2::Model,
+    qwen: Qwen,
     qwen_tok: Tokenizer,
     clip: vclip::ClipTextTransformer,
     clip_tok: Tokenizer,
@@ -225,6 +244,11 @@ async fn shards_with_prefix(repo: &str, subfolder: &str, prefix: &str) -> Result
 impl TextEncoders {
     /// Load the Qwen text tower and CLIP-L from a Kandinsky 5 diffusers repo. BF16 on a GPU, F32 on CPU.
     pub async fn load(repo: &str, device: &Device) -> Result<Self> {
+        Self::load_with(repo, device, false).await
+    }
+
+    /// As [`Self::load`]; with `quantized` the Qwen tower comes from [`QWEN_GGUF`] instead of the repo.
+    pub async fn load_with(repo: &str, device: &Device, quantized: bool) -> Result<Self> {
         let dtype = if device.is_cpu() { DType::F32 } else { DType::BF16 };
         let qwen_tok_path = crate::hf::download::get_file(repo, "tokenizer/tokenizer.json").await.context("Kandinsky 5 tokenizer/tokenizer.json")?;
         let qwen_tok = Tokenizer::from_file(&qwen_tok_path).map_err(|e| anyhow!("loading the Qwen tokenizer: {e}"))?;
@@ -233,12 +257,20 @@ impl TextEncoders {
         if crop != template.crop_start {
             anyhow::bail!("the `{}` template prefix is {crop} tokens under the repo's tokenizer, expected {} (RFC KANDINSKY-1, trap T7)", template.name, template.crop_start);
         }
-        let cfg_path = crate::hf::download::get_file(repo, "text_encoder/config.json").await?;
-        let cfg = qwen_config_from_json(&std::fs::read_to_string(&cfg_path)?)?;
-        // Only the language tower: `model.*`. `lm_head` and `visual.*` stay on disk.
-        let shards = shards_with_prefix(repo, "text_encoder", "model.").await?;
-        let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, dtype, device)? };
-        let qwen = qwen2::Model::new(&cfg, vb).context("building the Qwen2.5-VL text tower")?;
+        let qwen = if quantized {
+            let (gguf_repo, gguf_file) = QWEN_GGUF;
+            let path = crate::hf::download::get_file(gguf_repo, gguf_file).await.with_context(|| format!("{gguf_repo}/{gguf_file}"))?;
+            let mut file = std::fs::File::open(&path)?;
+            let content = candle_core::quantized::gguf_file::Content::read(&mut file).map_err(|e| anyhow!("reading {}: {e}", path.display()))?;
+            Qwen::Quantized(crate::pipelines::vendored_qwen2q::Model::from_gguf(content, &mut file, device).context("building the quantized Qwen2.5-VL text tower")?)
+        } else {
+            let cfg_path = crate::hf::download::get_file(repo, "text_encoder/config.json").await?;
+            let cfg = qwen_config_from_json(&std::fs::read_to_string(&cfg_path)?)?;
+            // Only the language tower: `model.*`. `lm_head` and `visual.*` stay on disk.
+            let shards = shards_with_prefix(repo, "text_encoder", "model.").await?;
+            let vb = unsafe { VarBuilder::from_mmaped_safetensors(&shards, dtype, device)? };
+            Qwen::Dense(qwen2::Model::new(&cfg, vb).context("building the Qwen2.5-VL text tower")?)
+        };
 
         let clip_weights = crate::hf::download::get_file(repo, "text_encoder_2/model.safetensors").await?;
         let clip_tok_path = crate::hf::download::get_file(repo, "tokenizer_2/tokenizer.json").await?;

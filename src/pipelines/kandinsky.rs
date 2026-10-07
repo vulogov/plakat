@@ -110,6 +110,10 @@ pub struct Settings {
     pub max_seq: usize,
     /// Hold the text encoders through the denoise instead of dropping them (`--keep-encoders`).
     pub keep_encoders: bool,
+    /// The Qwen tower from a Q4_K_M GGUF (`--quantize-qwen`).
+    pub quantize_qwen: bool,
+    /// The DiT's block weights in NF4 (`--dit-nf4`).
+    pub dit_nf4: bool,
 }
 
 /// `plakat generate`'s request: `count` images of one prompt, seeds counting up from `seed`.
@@ -130,6 +134,10 @@ pub struct RunRequest {
     pub count: u32,
     pub max_seq: usize,
     pub keep_encoders: bool,
+    /// The Qwen tower from a Q4_K_M GGUF (`--quantize-qwen`).
+    pub quantize_qwen: bool,
+    /// The DiT's block weights in NF4 (`--dit-nf4`).
+    pub dit_nf4: bool,
 }
 
 /// Flow-matching Euler from `noise` (NCHW `(1, 16, H/8, W/8)`, pure noise at sigma 1) to the clean
@@ -184,22 +192,35 @@ pub fn decode_tiled(vae: &Vae, latent: &Tensor) -> Result<Tensor> {
     crate::pipelines::tiled::tile_decode_2d(latent, TILE_LATENT, TILE_STRIDE, 8, |tile| vae.decode(tile))
 }
 
+/// Whether to trade time and decode fidelity for memory: a host with under 24 GB of RAM, or
+/// `PLAKAT_K5_LOW_MEMORY=1` (`=0` to refuse). It shrinks the DiT's attention chunks and decodes in tiles;
+/// with the quantized tier that is what holds a 1024² run under 7 GB (RFC §10.2).
+pub fn low_memory() -> bool {
+    static LOW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOW.get_or_init(|| match std::env::var("PLAKAT_K5_LOW_MEMORY").ok().as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => crate::hw::total_ram_gb() < 24.0,
+    })
+}
+
 /// Where the VAE decodes. On Metal that is the CPU: candle's whole-image decode takes 38 GB there at
-/// 1024² against 10 GB on the CPU (30 s, and within 1e-5 of the reference's image). Tiles on the GPU are
-/// faster (12 s, 11 GB) but land 36 dB from the whole decode, so they are opt-in:
-/// `PLAKAT_K5_VAE_TILED=1` keeps the decode on the GPU, in tiles.
+/// 1024² against 10 GB on the CPU (30 s, and within 1e-5 of the reference's image), and its tiles 11 GB
+/// against 3 GB.
 pub fn decode_device(base: &Device) -> Result<Device> {
-    Ok(if base.is_metal() && !forced_tiles() { Device::Cpu } else { stage_device(base)? })
+    Ok(if base.is_metal() { Device::Cpu } else { stage_device(base)? })
 }
 
-fn forced_tiles() -> bool {
-    std::env::var("PLAKAT_K5_VAE_TILED").ok().as_deref() == Some("1")
-}
-
-/// Decode a latent on the VAE's device: whole, with blended tiles as the out-of-memory fallback
-/// (or at once under `PLAKAT_K5_VAE_TILED=1`).
+/// Decode a latent on the VAE's device. Whole, with blended tiles as the out-of-memory fallback — or
+/// in tiles at once on a [`low_memory`] host, where the whole decode's 10 GB is not there to take: the
+/// tiles need 3 GB, take twice as long and land 36 dB from the whole decode.
+/// `PLAKAT_K5_VAE_TILED=1` forces the tiles and `=0` the whole decode.
 pub fn decode(vae: &Vae, latent: &Tensor) -> Result<Tensor> {
-    let tiles = forced_tiles();
+    let tiles = match std::env::var("PLAKAT_K5_VAE_TILED").ok().as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => low_memory(),
+    };
     if tiles {
         return decode_tiled(vae, latent);
     }
@@ -241,8 +262,10 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     // Stage 1 — text. Each distinct prompt and negative is encoded once.
     let t0 = std::time::Instant::now();
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 text encoders (Qwen2.5-VL text tower + CLIP-L)");
-    let text_device = stage_device(&settings.device)?;
-    let mut encoders = TextEncoders::load(&repo, &text_device).await.context("loading the Kandinsky 5 text encoders")?;
+    // The quantized tower runs on the CPU on Metal: 5.7 GB there against 7.9 GB on the GPU, the same
+    // embeddings (per-token cosine 0.994 against 0.995), and a prompt takes two seconds either way.
+    let text_device = if settings.quantize_qwen && settings.device.is_metal() { Device::Cpu } else { stage_device(&settings.device)? };
+    let mut encoders = TextEncoders::load_with(&repo, &text_device, settings.quantize_qwen).await.context("loading the Kandinsky 5 text encoders")?;
     spin.finish_with_message(format!("✓ text encoders loaded in {:.1}s", t0.elapsed().as_secs_f64()));
     let t1 = std::time::Instant::now();
     let mut embeds: std::collections::HashMap<String, Embeds> = std::collections::HashMap::new();
@@ -268,7 +291,7 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 DiT");
     let dit_device = stage_device(&settings.device)?;
     let device = &dit_device;
-    let dit = Dit::load(&repo, device).await.context("loading the Kandinsky 5 DiT")?;
+    let dit = Dit::load_with(&repo, device, settings.dit_nf4).await.context("loading the Kandinsky 5 DiT")?;
     spin.finish_with_message(format!("✓ DiT loaded in {:.1}s", t2.elapsed().as_secs_f64()));
     let mut latents = Vec::with_capacity(jobs.len());
     for (n, j) in jobs.iter().enumerate() {
@@ -318,7 +341,7 @@ pub async fn run(req: RunRequest) -> Result<()> {
             Job { prompt: req.prompt.clone(), negative: req.negative.clone(), width: req.width, height: req.height, steps, guidance, seed, out_path: req.out_dir.join(format!("plakat-kandinsky5-{seed}.png")) }
         })
         .collect();
-    let settings = Settings { model: req.model.clone(), device: req.device.clone(), max_seq: if req.max_seq == 0 { DEFAULT_MAX_SEQ } else { req.max_seq }, keep_encoders: req.keep_encoders };
+    let settings = Settings { model: req.model.clone(), device: req.device.clone(), max_seq: if req.max_seq == 0 { DEFAULT_MAX_SEQ } else { req.max_seq }, keep_encoders: req.keep_encoders, quantize_qwen: req.quantize_qwen, dit_nf4: req.dit_nf4 };
     run_jobs(&settings, &jobs).await.map(|_| ())
 }
 
@@ -456,6 +479,133 @@ mod tests {
         assert!(db >= min_db, "image PSNR {db} dB");
     }
 
+    /// P4's first measurements (RFC §10.2), against a P2 reference dump: the quantized Qwen tower on the
+    /// CPU and on the GPU, and one NF4 DiT forward. Prints; asserts nothing.
+    /// `PLAKAT_PARITY_DIR=<dir> cargo test --release --features metal --lib kandinsky_p4_probe -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_p4_probe() {
+        let dir = std::path::PathBuf::from(std::env::var("PLAKAT_PARITY_DIR").unwrap());
+        let meta: serde_json::Value = serde_json::from_reader(std::fs::File::open(dir.join("meta_p2.json")).unwrap()).unwrap();
+        let p1meta: serde_json::Value = serde_json::from_reader(std::fs::File::open(dir.join("meta.json")).unwrap()).unwrap();
+        let p1 = candle_core::safetensors::load(dir.join("p1.safetensors"), &Device::Cpu).unwrap();
+        let p2 = candle_core::safetensors::load(dir.join("p2.safetensors"), &Device::Cpu).unwrap();
+        let repo = meta["repo"].as_str().unwrap();
+        let base = crate::device::select("auto").unwrap();
+        let gb = || crate::memwatch::footprint_gb().unwrap_or(0.0);
+        let flat = |t: &Tensor| -> Vec<f32> { t.to_dtype(DType::F32).unwrap().to_device(&Device::Cpu).unwrap().flatten_all().unwrap().to_vec1().unwrap() };
+        let cos = |a: &[f32], b: &[f32]| -> f64 {
+            let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
+            let n = |x: &[f32]| x.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+            dot / (n(a) * n(b))
+        };
+        // Mean and worst per-token cosine of `(1, L, H)` hidden states.
+        let per_token = |got: &Tensor, want: &Tensor| -> (f64, f64) {
+            let (g, w, h) = (flat(got), flat(want), want.dim(2).unwrap());
+            let each: Vec<f64> = g.chunks(h).zip(w.chunks(h)).map(|(a, b)| cos(a, b)).collect();
+            (each.iter().sum::<f64>() / each.len() as f64, each.iter().cloned().fold(1.0, f64::min))
+        };
+        if std::env::var("PLAKAT_P4_SKIP_TEXT").is_err() {
+            for on_cpu in [true, false] {
+                let device = if on_cpu { Device::Cpu } else { stage_device(&base).unwrap() };
+                let (before, t) = (gb(), std::time::Instant::now());
+                let mut enc = TextEncoders::load_with(repo, &device, true).await.unwrap();
+                let (loaded, t1) = (t.elapsed().as_secs_f64(), std::time::Instant::now());
+                for tag in ["pos", "neg"] {
+                    let text = p1meta[if tag == "pos" { "prompt" } else { "negative" }].as_str().unwrap();
+                    let e = enc.encode(text, DEFAULT_MAX_SEQ).unwrap();
+                    let (mean, worst) = per_token(&e.qwen, &p1[&format!("qwen_hidden_{tag}")]);
+                    println!("Q4 Qwen on {}: {tag} per-token cosine mean {mean:.4} worst {worst:.4}", if on_cpu { "CPU" } else { "GPU" });
+                }
+                println!("Q4 Qwen on {}: loaded in {loaded:.1}s, two texts in {:.1}s, +{:.2} GB", if on_cpu { "CPU" } else { "GPU" }, t1.elapsed().as_secs_f64(), gb() - before);
+                drop((enc, device));
+                std::thread::sleep(std::time::Duration::from_secs(3));
+            }
+        }
+        let device = stage_device(&base).unwrap();
+        let (before, t) = (gb(), std::time::Instant::now());
+        let dit = Dit::load_with(repo, &device, true).await.unwrap();
+        println!("NF4 DiT: loaded in {:.1}s, +{:.2} GB", t.elapsed().as_secs_f64(), gb() - before);
+        for i in 0..2 {
+            let t = std::time::Instant::now();
+            let v = dit.forward(&p2["noise"], &p1["qwen_hidden_pos"], &p1["clip_pooled_pos"], 500.0).unwrap();
+            let c = cos(&flat(&v), &flat(&p2["velocity_500"]));
+            println!("NF4 DiT: forward {i} in {:.1}s, velocity cosine {c:.6}, footprint {:.2} GB", t.elapsed().as_secs_f64(), gb());
+        }
+    }
+
+    /// P4's acceptance (RFC §10.2). The RFC names a "64-prompt verify corpus" that does not exist in
+    /// the tree, so the prompts are the 8 × 8 grid below.
+    /// 1. The Q4 tower against the BF16 one on all 64: mean per-token cosine ≥ 0.98.
+    /// 2. CLIP adherence of the quantized tier (Q4 + NF4) against the full one, on the first
+    ///    `PLAKAT_P4_IMAGES` prompts (default 4) at `PLAKAT_P4_STEPS` steps (default 20), same seeds:
+    ///    the mean drops by ≤ 2 %. 64 images a tier at 50 steps is a day of this machine; set the two
+    ///    variables for the whole thing. Images land in `PLAKAT_P4_OUT`.
+    /// `PLAKAT_P4_OUT=<dir> cargo test --release --features metal --lib kandinsky_p4_acceptance -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_p4_acceptance() {
+        let subjects = ["a red fox", "an old fisherman mending a net", "a glass teapot", "a lighthouse on a cliff", "two children flying a kite", "a steam locomotive", "a bowl of ripe figs", "a snowy owl in flight"];
+        let settings = ["at dawn in soft golden light", "in heavy rain at night, neon reflections", "as a watercolor painting", "in a studio, black background, product photo", "in thick fog, muted colors", "as a detailed pencil sketch", "under a starry sky, long exposure", "in a sunlit meadow, shallow depth of field"];
+        let prompts: Vec<String> = subjects.iter().flat_map(|a| settings.iter().map(move |b| format!("{a} {b}"))).collect();
+        let base = crate::device::select("auto").unwrap();
+        let repo = crate::hf::resolve_alias("kandinsky5").to_string();
+        let flat = |t: &Tensor| -> Vec<f32> { t.to_dtype(DType::F32).unwrap().to_device(&Device::Cpu).unwrap().flatten_all().unwrap().to_vec1().unwrap() };
+        let mut failed = Vec::new();
+
+        if std::env::var("PLAKAT_P4_SKIP_TEXT").is_err() {
+            let encode_all = |mut enc: TextEncoders| -> Vec<(Vec<f32>, usize)> { prompts.iter().map(|p| enc.encode(p, DEFAULT_MAX_SEQ).map(|e| (flat(&e.qwen), e.qwen.dim(2).unwrap())).unwrap()).collect() };
+            let dense = {
+                let device = stage_device(&base).unwrap();
+                encode_all(TextEncoders::load(&repo, &device).await.unwrap())
+            };
+            let quant = encode_all(TextEncoders::load_with(&repo, &Device::Cpu, true).await.unwrap());
+            let mut per_prompt = Vec::new();
+            for ((d, h), (q, _)) in dense.iter().zip(&quant) {
+                let each: Vec<f64> = d.chunks(*h).zip(q.chunks(*h)).map(|(a, b)| {
+                    let dot: f64 = a.iter().zip(b).map(|(x, y)| *x as f64 * *y as f64).sum();
+                    let n = |x: &[f32]| x.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+                    dot / (n(a) * n(b))
+                }).collect();
+                per_prompt.push(each.iter().sum::<f64>() / each.len() as f64);
+            }
+            let mean = per_prompt.iter().sum::<f64>() / per_prompt.len() as f64;
+            let worst = per_prompt.iter().cloned().fold(1.0, f64::min);
+            println!("Q4 against BF16 tower, {} prompts: per-token cosine mean {mean:.4}, worst prompt {worst:.4}", prompts.len());
+            if mean < 0.98 {
+                failed.push(format!("encoder cosine {mean}"));
+            }
+        }
+
+        let out = std::path::PathBuf::from(std::env::var("PLAKAT_P4_OUT").expect("set PLAKAT_P4_OUT to a directory for the images"));
+        let n: usize = std::env::var("PLAKAT_P4_IMAGES").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let steps: usize = std::env::var("PLAKAT_P4_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
+        // Spread over the grid rather than the first subject's row.
+        let chosen: Vec<&String> = (0..n).map(|i| &prompts[(i * 9) % prompts.len()]).collect();
+        let mut files = Vec::new();
+        for (tier, quantized) in [("full", false), ("quant", true)] {
+            let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: quantized, dit_nf4: quantized };
+            let jobs: Vec<Job> = chosen.iter().enumerate().map(|(i, p)| Job { prompt: (*p).clone(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(tier).join(format!("{i}.png")) }).collect();
+            let t = std::time::Instant::now();
+            files.push(run_jobs(&settings, &jobs).await.unwrap());
+            println!("{tier}: {n} images at {steps} steps in {:.0}s", t.elapsed().as_secs_f64());
+        }
+        let aes = crate::pipelines::aesthetic::AestheticScorer::load(&base).await.unwrap();
+        let clip = crate::pipelines::clip_adherence::ClipAdherence::load(&base).await.unwrap();
+        let score = |files: &[PathBuf]| -> Vec<f32> { files.iter().zip(&chosen).map(|(f, p)| clip.adherence(&aes.image_embedding(f).unwrap(), p).unwrap()).collect() };
+        let (full, quant) = (score(&files[0]), score(&files[1]));
+        for (i, p) in chosen.iter().enumerate() {
+            println!("adherence {:.4} full, {:.4} quantized — {p}", full[i], quant[i]);
+        }
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let drop = (mean(&full) - mean(&quant)) / mean(&full);
+        println!("CLIP adherence: full {:.4}, quantized {:.4}, drop {:.1} %", mean(&full), mean(&quant), drop * 100.0);
+        if drop > 0.02 {
+            failed.push(format!("adherence drop {drop}"));
+        }
+        assert!(failed.is_empty(), "P4 acceptance failed: {failed:#?}");
+    }
+
     /// What each way of decoding costs and how far it lands from the reference's image:
     /// `PLAKAT_PARITY_DIR=<dir> cargo test --release --features metal --lib kandinsky_decode_probe -- --ignored --nocapture`
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -526,8 +676,23 @@ mod tests {
             println!("{:>6.2} GB  {what} (settled in {:.1}s)", crate::memwatch::footprint_gb().unwrap_or(0.0), t.elapsed().as_secs_f64());
         };
         mem("start");
-        let device = stage_device(&base).unwrap();
-        let mut enc = TextEncoders::load(&repo, &device).await.unwrap();
+        // `PLAKAT_PROBE_QUANT=1` probes the quantized tier, as `run_jobs` stages it.
+        let quant = std::env::var("PLAKAT_PROBE_QUANT").is_ok();
+        // The highest footprint since the last call, sampled every 20 ms.
+        let high = std::sync::Arc::new(std::sync::Mutex::new(0f64));
+        {
+            let high = high.clone();
+            std::thread::spawn(move || loop {
+                let now = crate::memwatch::footprint_gb().unwrap_or(0.0);
+                let mut h = high.lock().unwrap();
+                *h = h.max(now);
+                drop(h);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            });
+        }
+        let peak = |what: &str| println!("{:>6.2} GB  peak during {what}", std::mem::take(&mut *high.lock().unwrap()));
+        let device = if quant && base.is_metal() { Device::Cpu } else { stage_device(&base).unwrap() };
+        let mut enc = TextEncoders::load_with(&repo, &device, quant).await.unwrap();
         mem("encoders loaded");
         let mut pos = enc.encode("A red fox sitting in fresh snow at dawn", DEFAULT_MAX_SEQ).unwrap();
         let mut neg = enc.encode("", DEFAULT_MAX_SEQ).unwrap();
@@ -538,19 +703,24 @@ mod tests {
         drop((enc, device));
         mem("encoders dropped");
         settle("encoders dropped");
+        peak("the text stage");
         let device = stage_device(&base).unwrap();
-        let dit = Dit::load(&repo, &device).await.unwrap();
+        let dit = Dit::load_with(&repo, &device, quant).await.unwrap();
         mem("DiT loaded");
+        peak("the DiT's load");
         let size = std::env::var("PLAKAT_PROBE_SIZE").unwrap_or_else(|_| "1024x1024".into());
         let (w, h) = size.split_once('x').map(|(w, h)| (w.parse::<usize>().unwrap(), h.parse::<usize>().unwrap())).unwrap();
         let noise = Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, h / 8, w / 8), &device).unwrap();
         let mut nohook: Option<&mut dyn StepHook> = None;
         // One tensor left on a stage's device pins that device's whole pool, hence the inner scope.
+        let t_denoise = std::time::Instant::now();
         let latent = {
             let on_gpu = denoise_observed(&dit, &pos, Some(&neg), &noise, 3, 3.5, &mut nohook, "probe", &mut |i, _| mem(&format!("into step {i}"))).unwrap();
+            println!("          {:.1}s a step", t_denoise.elapsed().as_secs_f64() / 3.0);
             cpu(&on_gpu)
         };
         mem(&format!("denoised at {w}x{h}"));
+        peak("the denoise");
         drop((dit, pos, neg, noise, device));
         mem("DiT dropped");
         settle("DiT dropped");

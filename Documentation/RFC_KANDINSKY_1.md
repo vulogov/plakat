@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **RFC** | KANDINSKY-1 |
-| **Status** | Accepted — Phase 0 and P1 built (7.2.0); P1's weight gates pending on the 36 GB host; P2 next |
+| **Status** | Accepted — Phases 0–4 built (7.2.0), gates measured on Metal; P5 next |
 | **Target** | 7.2.0 (diversify slot after 7.1.0) |
 | **Author** | Vladimir Ulogov |
 | **Model** | `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated) |
@@ -572,7 +572,7 @@ Each phase is independently mergeable.
   | GPU, tiles 96 / stride 64 | 12.4 s | +27.5 GB | 40.9 dB |
   | CPU, tiles 64 / stride 48 | 64.1 s | +2.9 GB | 35.7 dB |
 
-  Tiles were the first fix and they cost the image: 35.7 dB is under §12.2's 40 dB bar on their own, before the loop adds anything (an earlier 44.5 dB figure was taken on a 3-step latent and flattered them). They stay as the out-of-memory fallback of the whole decode and as an opt-in: `PLAKAT_K5_VAE_TILED=1` keeps the decode on the GPU in 64 / 48 tiles. With the CPU decode a 1024² run through the CLI still peaks at 16.1 GB.
+  Tiles were the first fix and they cost the image: 35.7 dB is under §12.2's 40 dB bar on their own, before the loop adds anything (an earlier 44.5 dB figure was taken on a 3-step latent and flattered them). They stay as the out-of-memory fallback of the whole decode and as an opt-in: `PLAKAT_K5_VAE_TILED=1` decodes in 64 / 48 tiles (on the GPU when this was measured; on the CPU since P4, where they take +2.9 GB). With the CPU decode a 1024² run through the CLI still peaks at 16.1 GB.
 - **Stage 7–8, re-run with the CPU decode, passes in both compute dtypes** (Metal, 1024², 50 steps): F32 — final latent 0.999979, image 55.4 dB, 766 s; BF16 (`PLAKAT_K5_DIT_COMPUTE=bf16`) — latent into steps 25 / 49 at 0.999938 / 0.997630, final latent 0.997511, image 32.8 dB, 715 s. The VAE alone is 101.8 dB. BF16 clears its 32 dB bar by 0.8 dB and saves 7 % of the time, which is why F32 is the default. With the tiles as the default the same test failed on the image alone: 35.7 dB in F32 and 31.3 dB in BF16.
 - **Unexplained: the time outside the denoise.** The runs above took 514–1151 s of wall time for 131–767 s of denoising, and a later 10-step 1024² run took 3123 s for a 154 s denoise. The weights are on an external USB volume that read at 22 MB/s when measured, which would put the 26 GB of checkpoints at 20 minutes; that is the likely cause, not a confirmed one, and it has not been measured on an internal disk.
 - **Not done, with the reason.** The scenario `pre_encode` hook: `scenario` has its own per-family dispatch (it does not dispatch Sana either), so `run_jobs` is ready for it but nothing calls it. CUDA peak memory cannot be measured on this host. CPU stage 7–8 was not run (≈ 2 hours). §12.3's image-level question (does the Q/K rounding change the picture) is unmeasured. Upstream's own config says `scheduler_scale 3.0` where diffusers ships shift 5.0; plakat follows diffusers, the reference it is checked against.
@@ -582,6 +582,37 @@ Each phase is independently mergeable.
 
 - `vendored_qwen2q.rs`, the GGUF descriptor, and the DiT NF4 path.
 - **Gate:** the §10.2 acceptance numbers; a peak of ≤ 7 GB on a 16 GB Mac. G3 met.
+
+**P4 as built** (`vendored_qwen2q.rs`, `kandinsky_text.rs`, `kandinsky_dit.rs`, `nf4_codec.rs`, `kandinsky.rs`). Both gates pass on Metal, the acceptance one in a reduced form; the 16 GB machine is simulated on the 36 GB host.
+
+- **The Qwen tower** (`--quantize-qwen`) is `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf` from `ggml-org/Qwen2.5-VL-7B-Instruct-GGUF` (4.68 GB, the language model only). `vendored_qwen2q::Model` is `vendored_qwen2` with `QMatMul` layers: one causal forward, every position's hidden state after the final norm, F32 activations. Two things differ from candle's `quantized_qwen2`: the metadata prefix is read from `general.architecture` (llama.cpp writes `qwen2vl` for this model, not `qwen2`), and the token embedding is dequantized once and kept on the CPU in F16 (1.1 GB) instead of on the device in F32.
+- **On Metal the quantized tower runs on the CPU.** Measured on the P1 reference prompt: CPU +5.7 GB, 3.8 s for two texts, per-token cosine 0.9940; GPU +7.9 GB, 1.0 s, 0.9950. The CPU is 2.2 GB cheaper and the 3 seconds are nothing against the denoise.
+- **The DiT** (`--dit-nf4`) is quantized at load from the BF16 checkpoint: there is no NF4 checkpoint of this model to download. `Lin::Nf4` covers the attention and feed-forward linears of all 52 blocks; the embeddings, modulations, time layers and the output layer stay dense BF16. The layout is bitsandbytes' (two codes a byte, absmax per 64 values). Against the reference's `velocity_500` the NF4 forward is at cosine 0.998836.
+- **The weights are dequantized on the device, not on the CPU.** A 256 × 2 table maps a packed byte to its pair of codes, so a layer's weight is `pairs.index_select(packed) · absmax` — all in the op-output pool, which is reused. The first build dequantized on the CPU and uploaded: every upload is a fresh buffer in candle's weight pool, which is swept only every 50 computes, and the denoise peaked at 15.5 GB instead of 8.1 GB.
+- **Low-memory mode** (`kandinsky::low_memory()`): on under 24 GB of RAM, or with `PLAKAT_K5_LOW_MEMORY=1` (`=0` forbids it). Attention runs in 128 MB chunks instead of 1 GB (denoise peak 8.1 → 6.5 GB; 32 MB chunks gain nothing more), and the VAE decodes on the CPU in tiles (+2.9 GB instead of +10 GB, at P3's 35.7 dB against the whole decode's 101.8 dB). Machines with 24 GB or more keep the whole decode.
+- **The memory gate passes: 6.97 GB.** 1024², both flags, 10 steps, `/usr/bin/time -l`, release build, OOM guard on:
+
+  | Run | Denoise | Wall | Peak footprint |
+  |---|---|---|---|
+  | `PLAKAT_K5_LOW_MEMORY=1` | 184.8 s (18.5 s a step) | 553 s | **6.97 GB** |
+  | `PLAKAT_K5_LOW_MEMORY=0` | 184.1 s (18.4 s a step) | 226 s | 11.39 GB |
+  | full tier (P3) | 15.3 s a step | — | 16.1 GB |
+
+  By stage (probe): text 5.56 GB, DiT loaded 4.68 GB, denoising 6.47 GB, then the decode on top of 0.7 GB. The peak is the last tile of the decode or the denoise, within 0.5 GB of each other, and it is 0.03 GB under the bar: there is no margin. NF4 costs 20 % a step (18.4 s against 15.3 s) for the per-call dequantization; the smaller attention chunks cost nothing measurable. This is the 36 GB machine with the mode forced, not a 16 GB machine: footprint is the same quantity on both, but swap behaviour and the OOM guard's verdict there are unmeasured.
+- **§10.2's encoder bar passes: 0.9937** mean per-token cosine of the Q4 tower against the BF16 one over 64 prompts (worst prompt 0.9921; the bar is 0.98). The empty negative prompt alone is at 0.9799 — one token sequence, under the bar on its own, and it is half of every CFG step.
+- **§10.2's adherence bar passes in a reduced run.** 4 prompts, 20 steps, 1024², seeds 42–45, full tier against `--quantize-qwen --dit-nf4`:
+
+  | Prompt | Full | Quantized |
+  |---|---|---|
+  | a red fox at dawn in soft golden light | 0.2903 | 0.3014 |
+  | an old fisherman mending a net in heavy rain at night, neon reflections | 0.3087 | 0.3046 |
+  | a glass teapot as a watercolor painting | 0.3293 | 0.3312 |
+  | a lighthouse on a cliff in a studio, black background, product photo | 0.3164 | 0.3322 |
+  | mean | 0.3112 | 0.3174 |
+
+  The quantized tier scores 2.0 % *higher*; the bar is a drop of ≤ 2 %. On four images that is noise in either direction, not a finding that quantization helps. The images are different pictures of the same prompt (the fisherman gains a hat in one and loses it in the other), both clean.
+- **Where the acceptance departs from §10.2.** There is no "64-prompt verify corpus" in the tree; `kandinsky_p4_acceptance` builds its own 8 subjects × 8 settings grid. The adherence half ran on 4 of the 64 prompts at 20 steps because 64 × 2 images at 50 steps is about 28 hours on this machine; `PLAKAT_P4_IMAGES=64 PLAKAT_P4_STEPS=50` runs it in full.
+- **Not done, with the reason.** No on-disk cache of the NF4 pack: every `--dit-nf4` run reads the 12 GB BF16 checkpoint and quantizes it, 319 s with the checkpoint cold on the busy USB volume and under 40 s warm (the whole 226 s run above holds a 184 s denoise). So the quantized tier saves memory, not download or disk: a 16 GB machine still needs the 12 GB checkpoint. The `kandinsky5-q4` alias (§11.1) is not registered — the two flags are the interface. The Q8 fallback was not needed. CUDA is unmeasured. Only 1024² was measured in this tier.
 
 ### Phase 5 — img2img, inpaint, compile, polish
 
