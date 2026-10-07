@@ -256,6 +256,21 @@ impl Drop for MemoryGuard {
     }
 }
 
+/// This process's physical footprint in GB — what Activity Monitor calls "Memory", and unlike RSS it
+/// counts GPU buffers. `None` off macOS.
+pub fn footprint_gb() -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::proc_pid_rusage(std::process::id() as i32, libc::RUSAGE_INFO_V2, &mut info as *mut _ as *mut libc::rusage_info_t) };
+        (rc == 0).then(|| info.ri_phys_footprint as f64 / (1u64 << 30) as f64)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

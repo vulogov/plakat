@@ -179,22 +179,47 @@ fn to_rgb8(image: &Tensor) -> Result<Vec<u8>> {
 const TILE_LATENT: usize = 64;
 const TILE_STRIDE: usize = 48;
 
-/// Decode a latent, whole if the device takes it and in blended tiles if it runs out of memory — the
-/// F32 decode's single buffer is what a 24 GB Mac cannot allocate at 1024² (RFC §9).
-/// `PLAKAT_K5_VAE_TILED=1` forces the tiles.
+/// Decode a latent in blended tiles.
+pub fn decode_tiled(vae: &Vae, latent: &Tensor) -> Result<Tensor> {
+    crate::pipelines::tiled::tile_decode_2d(latent, TILE_LATENT, TILE_STRIDE, 8, |tile| vae.decode(tile))
+}
+
+/// Where the VAE decodes. On Metal that is the CPU: candle's whole-image decode takes 38 GB there at
+/// 1024² against 10 GB on the CPU (30 s, and within 1e-5 of the reference's image). Tiles on the GPU are
+/// faster (12 s, 11 GB) but land 36 dB from the whole decode, so they are opt-in:
+/// `PLAKAT_K5_VAE_TILED=1` keeps the decode on the GPU, in tiles.
+pub fn decode_device(base: &Device) -> Result<Device> {
+    Ok(if base.is_metal() && !forced_tiles() { Device::Cpu } else { stage_device(base)? })
+}
+
+fn forced_tiles() -> bool {
+    std::env::var("PLAKAT_K5_VAE_TILED").ok().as_deref() == Some("1")
+}
+
+/// Decode a latent on the VAE's device: whole, with blended tiles as the out-of-memory fallback
+/// (or at once under `PLAKAT_K5_VAE_TILED=1`).
 pub fn decode(vae: &Vae, latent: &Tensor) -> Result<Tensor> {
-    let tiled = || crate::pipelines::tiled::tile_decode_2d(latent, TILE_LATENT, TILE_STRIDE, 8, |tile| vae.decode(tile));
-    if std::env::var("PLAKAT_K5_VAE_TILED").ok().as_deref() == Some("1") {
-        return tiled();
+    let tiles = forced_tiles();
+    if tiles {
+        return decode_tiled(vae, latent);
     }
     match vae.decode(latent) {
         Ok(image) => Ok(image),
         Err(e) if crate::error_hints::looks_like_oom(&format!("{e:#}")) => {
             crate::ui::progress::println("kandinsky5: the whole-image VAE decode did not fit; decoding in tiles");
-            tiled()
+            decode_tiled(vae, latent)
         }
         Err(e) => Err(e),
     }
+}
+
+/// A device for one stage of the run. On Metal it is a fresh handle with its own buffer pools, so that
+/// dropping the stage's tensors returns its memory at once. On the shared handle it does not: candle
+/// sweeps the pool the weights sit in only when a command buffer fills (so the encoders outlived the
+/// DiT's load, and the DiT the decode), and never sweeps the pool its intermediates sit in.
+/// Nothing on a stage's device may outlive the stage — what crosses over goes through the CPU.
+pub fn stage_device(base: &Device) -> Result<Device> {
+    Ok(if base.is_metal() { Device::new_metal(0)? } else { base.clone() })
 }
 
 /// Run a batch with staged residency: encode every distinct prompt, release the encoders, denoise every
@@ -211,13 +236,13 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
         check_exact(j.width, j.height)?;
     }
     let repo = crate::hf::resolve_alias(&settings.model).to_string();
-    let device = &settings.device;
     let println = |m: String| crate::ui::progress::println(&m);
 
     // Stage 1 — text. Each distinct prompt and negative is encoded once.
     let t0 = std::time::Instant::now();
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 text encoders (Qwen2.5-VL text tower + CLIP-L)");
-    let mut encoders = TextEncoders::load(&repo, device).await.context("loading the Kandinsky 5 text encoders")?;
+    let text_device = stage_device(&settings.device)?;
+    let mut encoders = TextEncoders::load(&repo, &text_device).await.context("loading the Kandinsky 5 text encoders")?;
     spin.finish_with_message(format!("✓ text encoders loaded in {:.1}s", t0.elapsed().as_secs_f64()));
     let t1 = std::time::Instant::now();
     let mut embeds: std::collections::HashMap<String, Embeds> = std::collections::HashMap::new();
@@ -225,7 +250,8 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
         let wanted = std::iter::once(&j.prompt).chain((j.guidance > 1.0).then_some(&j.negative));
         for text in wanted {
             if !embeds.contains_key(text) {
-                let e = encoders.encode(text, settings.max_seq)?;
+                let mut e = encoders.encode(text, settings.max_seq)?;
+                (e.qwen, e.pooled) = (e.qwen.to_device(&Device::Cpu)?, e.pooled.to_device(&Device::Cpu)?);
                 if let Some(d) = &e.dropped {
                     println(format!("kandinsky5: the prompt ran past --max-seq {}; dropped: “{}”", settings.max_seq, d.trim()));
                 }
@@ -235,11 +261,13 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     }
     println(format!("kandinsky5: encoded {} text(s) in {:.1}s", embeds.len(), t1.elapsed().as_secs_f64()));
     // Staged residency: the encoders are gone before the DiT is loaded, unless asked to stay.
-    let kept = if settings.keep_encoders { Some(encoders) } else { drop(encoders); None };
+    let kept = if settings.keep_encoders { Some((encoders, text_device)) } else { drop((encoders, text_device)); None };
 
     // Stage 2 — denoise every job with the DiT resident.
     let t2 = std::time::Instant::now();
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 DiT");
+    let dit_device = stage_device(&settings.device)?;
+    let device = &dit_device;
     let dit = Dit::load(&repo, device).await.context("loading the Kandinsky 5 DiT")?;
     spin.finish_with_message(format!("✓ DiT loaded in {:.1}s", t2.elapsed().as_secs_f64()));
     let mut latents = Vec::with_capacity(jobs.len());
@@ -256,10 +284,10 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
         latents.push(latent.to_device(&Device::Cpu)?);
     }
     // The DiT is released before the F32 decode, which is the other memory peak.
-    drop(dit);
-    drop(embeds);
+    drop((dit, embeds, dit_device));
 
     // Stage 3 — decode and save.
+    let device = &decode_device(&settings.device)?;
     let vae = Vae::load(&repo, device).await?;
     let mut written = Vec::with_capacity(jobs.len());
     for (j, latent) in jobs.iter().zip(&latents) {
@@ -411,12 +439,13 @@ mod tests {
         let latent = denoise_observed(&dit, &pos, Some(&neg), &p2["noise"].to_device(&device).unwrap(), steps, guidance, &mut nohook, "parity", &mut observe).unwrap();
         println!("{steps} steps with CFG in {:.0}s on {device:?}, compute {:?}", t.elapsed().as_secs_f64(), dit.compute());
         drop(dit);
-        let vae = Vae::load(repo, &device).await.unwrap();
+        let vae_device = decode_device(&device).unwrap();
+        let vae = Vae::load(repo, &vae_device).await.unwrap();
         // Stage 7: the final latent. Stage 8: the image — ours against the reference's, and (to tell
         // the VAE from the loop) our decode of the REFERENCE's latent against the reference's image.
         let c = cosine(&latent, &p2["final_latent"]);
-        let image = decode(&vae, &latent).unwrap();
-        let (db, db_vae) = (psnr(&image, &p2["decoded"]), psnr(&decode(&vae, &p2["final_latent"].to_device(&device).unwrap()).unwrap(), &p2["decoded"]));
+        let image = decode(&vae, &latent.to_device(&vae_device).unwrap()).unwrap();
+        let (db, db_vae) = (psnr(&image, &p2["decoded"]), psnr(&decode(&vae, &p2["final_latent"].to_device(&vae_device).unwrap()).unwrap(), &p2["decoded"]));
         println!("final latent cosine {c:.6} · image PSNR {db:.1} dB (the VAE alone, on the reference's latent: {db_vae:.1} dB)");
         if let Some(out) = std::env::var_os("PLAKAT_PARITY_OUT") {
             let (h, w) = (image.dim(2).unwrap() as u32, image.dim(3).unwrap() as u32);
@@ -425,6 +454,121 @@ mod tests {
         let (min_cos, min_db) = if exact { (0.999, 40.0) } else { (0.99, 32.0) };
         assert!(c >= min_cos, "final latent cosine {c}");
         assert!(db >= min_db, "image PSNR {db} dB");
+    }
+
+    /// What each way of decoding costs and how far it lands from the reference's image:
+    /// `PLAKAT_PARITY_DIR=<dir> cargo test --release --features metal --lib kandinsky_decode_probe -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_decode_probe() {
+        let dir = std::path::PathBuf::from(std::env::var("PLAKAT_PARITY_DIR").unwrap());
+        let p2 = candle_core::safetensors::load(dir.join("p2.safetensors"), &Device::Cpu).unwrap();
+        let repo = crate::hf::resolve_alias("kandinsky5").to_string();
+        let base = crate::device::select("auto").unwrap();
+        let gb = || crate::memwatch::footprint_gb().unwrap_or(0.0);
+        let want = p2["decoded"].to_dtype(DType::F32).unwrap();
+        let ways: [(&str, bool, Option<(usize, usize)>); 5] = [("CPU, whole", true, None), ("GPU, tiles 64/48", false, Some((64, 48))), ("GPU, tiles 64/32", false, Some((64, 32))), ("GPU, tiles 96/64", false, Some((96, 64))), ("CPU, tiles 64/48", true, Some((64, 48)))];
+        for (name, on_cpu, tiles) in ways {
+            let device = if on_cpu { Device::Cpu } else { stage_device(&base).unwrap() };
+            let vae = Vae::load(&repo, &device).await.unwrap();
+            let z = p2["final_latent"].to_device(&device).unwrap();
+            let (before, t) = (gb(), std::time::Instant::now());
+            let peak = std::sync::Arc::new(std::sync::Mutex::new(0f64));
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let watch = {
+                let (peak, stop) = (peak.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let now = crate::memwatch::footprint_gb().unwrap_or(0.0);
+                        let mut p = peak.lock().unwrap();
+                        *p = p.max(now);
+                        drop(p);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                })
+            };
+            let image = match tiles {
+                Some((tile, stride)) => crate::pipelines::tiled::tile_decode_2d(&z, tile, stride, 8, |x| vae.decode(x)).unwrap(),
+                None => vae.decode(&z).unwrap(),
+            }
+            .to_device(&Device::Cpu)
+            .unwrap();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            watch.join().unwrap();
+            let mse = (&image - &want).unwrap().sqr().unwrap().mean_all().unwrap().to_scalar::<f32>().unwrap() as f64;
+            println!("{name:<18} {:>5.1}s  +{:>5.2} GB  PSNR {:.1} dB", t.elapsed().as_secs_f64(), *peak.lock().unwrap() - before, 10.0 * (4.0 / mse.max(1e-12)).log10());
+            drop((vae, z, image, device));
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+    }
+
+    /// Where the memory goes, stage by stage (the process footprint, which counts GPU buffers):
+    /// `cargo test --release --features metal --lib kandinsky_memory_probe -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_memory_probe() {
+        let base = crate::device::select("auto").unwrap();
+        let repo = crate::hf::resolve_alias("kandinsky5").to_string();
+        let mem = |what: &str| println!("{:>6.2} GB  {what}", crate::memwatch::footprint_gb().unwrap_or(0.0));
+        let cpu = |t: &Tensor| t.to_device(&Device::Cpu).unwrap();
+        // Metal returns memory a little after the last reference goes; watch it settle.
+        let settle = |what: &str| {
+            let t = std::time::Instant::now();
+            let mut last = crate::memwatch::footprint_gb().unwrap_or(0.0);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let now = crate::memwatch::footprint_gb().unwrap_or(0.0);
+                if (last - now).abs() < 0.05 || t.elapsed().as_secs() > 20 {
+                    break;
+                }
+                last = now;
+            }
+            println!("{:>6.2} GB  {what} (settled in {:.1}s)", crate::memwatch::footprint_gb().unwrap_or(0.0), t.elapsed().as_secs_f64());
+        };
+        mem("start");
+        let device = stage_device(&base).unwrap();
+        let mut enc = TextEncoders::load(&repo, &device).await.unwrap();
+        mem("encoders loaded");
+        let mut pos = enc.encode("A red fox sitting in fresh snow at dawn", DEFAULT_MAX_SEQ).unwrap();
+        let mut neg = enc.encode("", DEFAULT_MAX_SEQ).unwrap();
+        for e in [&mut pos, &mut neg] {
+            (e.qwen, e.pooled) = (cpu(&e.qwen), cpu(&e.pooled));
+        }
+        mem("two texts encoded");
+        drop((enc, device));
+        mem("encoders dropped");
+        settle("encoders dropped");
+        let device = stage_device(&base).unwrap();
+        let dit = Dit::load(&repo, &device).await.unwrap();
+        mem("DiT loaded");
+        let size = std::env::var("PLAKAT_PROBE_SIZE").unwrap_or_else(|_| "1024x1024".into());
+        let (w, h) = size.split_once('x').map(|(w, h)| (w.parse::<usize>().unwrap(), h.parse::<usize>().unwrap())).unwrap();
+        let noise = Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, h / 8, w / 8), &device).unwrap();
+        let mut nohook: Option<&mut dyn StepHook> = None;
+        // One tensor left on a stage's device pins that device's whole pool, hence the inner scope.
+        let latent = {
+            let on_gpu = denoise_observed(&dit, &pos, Some(&neg), &noise, 3, 3.5, &mut nohook, "probe", &mut |i, _| mem(&format!("into step {i}"))).unwrap();
+            cpu(&on_gpu)
+        };
+        mem(&format!("denoised at {w}x{h}"));
+        drop((dit, pos, neg, noise, device));
+        mem("DiT dropped");
+        settle("DiT dropped");
+        // The two decodes, each on its own device and read back, so the footprint is what they touched.
+        let mut images = Vec::new();
+        for tiled in [true, false] {
+            let device = stage_device(&base).unwrap();
+            let vae = Vae::load(&repo, &device).await.unwrap();
+            let t = std::time::Instant::now();
+            let z = latent.to_device(&device).unwrap();
+            images.push(cpu(&if tiled { decode_tiled(&vae, &z) } else { vae.decode(&z) }.unwrap()));
+            drop(z);
+            mem(&format!("decoded, {} ({:.1}s)", if tiled { "in tiles" } else { "whole" }, t.elapsed().as_secs_f64()));
+            drop((vae, device));
+            settle("VAE dropped");
+        }
+        let mse = (&images[0] - &images[1]).unwrap().sqr().unwrap().mean_all().unwrap().to_scalar::<f32>().unwrap() as f64;
+        println!("tiles against the whole decode: PSNR {:.1} dB (range 2)", 10.0 * (4.0 / mse).log10());
     }
 
     #[test]

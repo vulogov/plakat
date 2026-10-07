@@ -543,22 +543,39 @@ Each phase is independently mergeable.
 - `parameters` sidecar fields: `family=kandinsky5`, `max_seq`, `bucket`.
 - **Gate:** parity stages 7–8. Peak RSS measured on 1024² and 1408×640 at ≤ 16 GB plus activations on CUDA and Metal. G1 and G2 met.
 
-**P3 as built** (`src/pipelines/kandinsky.rs`; `t2i::run`, `cli/generate.rs` and `cli/bench.rs` dispatch to it). **The gate is half met: parity passes, memory does not.**
+**P3 as built** (`src/pipelines/kandinsky.rs`; `t2i::run`, `cli/generate.rs` and `cli/bench.rs` dispatch to it). Parity and memory both pass on Metal; CUDA is unmeasured.
 
 - **It generates.** `kandinsky::run` is the CLI's entry and `run_jobs(settings, jobs)` the batching one (§7.4): every distinct prompt and negative is encoded once, the encoders are dropped (`--keep-encoders` holds them), the DiT denoises every job and is dropped, the VAE decodes. The sampler is `sana::flow_sigmas(steps, 5.0)`, `t = σ·1000`, CFG as two forwards when guidance > 1, Euler. The clap defaults `--steps 28` / `--guidance 7.5` read as "unset" and become 50 / 3.5. Files are `plakat-kandinsky5-{seed}.png`; the sidecar carries `family`, `max_seq` and `bucket`. P1's developer hooks (`run_p1`, `PLAKAT_K5_DUMP_DIR`, `PLAKAT_K5_VAE_IMAGE`, `PLAKAT_K5_STAGE`) are gone.
 - **Parity stages 7–8 pass on Metal, F32 compute** (`kandinsky_parity_p3`; 1024², 50 steps, guidance 3.5, seed 42, against the F32 MPS reference): the latent into steps 0 / 25 / 49 is at cosine 1.000000 / 1.000000 / 0.999981, the final latent 0.999979, the image **55.4 dB** PSNR (the VAE alone, on the reference's latent: 120 dB). 771 s for the 100 forwards. The bars are cosine ≥ 0.999 and ≥ 40 dB in F32, ≥ 0.99 and ≥ 32 dB in BF16. A 256², 6-step reference does *not* pass (final latent 0.963 with every velocity matching): off the trained resolutions the trajectory is chaotic, so the gate is run at a real bucket.
-- **G2 is NOT met — this is the open defect.** Measured with `/usr/bin/time -l` on the 36 GB M5 Max, release build, F32 compute:
+- **G2 is met on Metal: the peak footprint is 16.1 GB at every bucket.** Measured with `/usr/bin/time -l` on the 36 GB M5 Max, release build, F32 compute, OOM guard on:
 
-  | Run | Result | Denoise | Wall | Max RSS | Peak footprint |
-  |---|---|---|---|---|---|
-  | 1024², 50 steps | **killed by the OOM guard after the denoise** | 784 s | 1552 s | 26.5 GB | 44.6 GB |
-  | 1408×640, 50 steps | image written | 658 s | 1549 s | 28.4 GB | 31.0 GB |
-  | 640×1408, 10 steps | image written | 135 s | 561 s | 27.4 GB | 30.9 GB |
-  | 768×1280, 10 steps | **killed by the OOM guard after the denoise** | 148 s | 677 s | 28.1 GB | 45.6 GB |
+  | Run | Denoise | Peak footprint |
+  |---|---|---|
+  | 1024², 50 steps | 767 s (15.3 s a step) | 16.1 GB |
+  | 1408×640, 10 steps | 131 s | 16.1 GB |
+  | 640×1408, 10 steps | 131 s | 16.1 GB |
+  | 768×1280, 10 steps | 146 s | 16.1 GB |
+  | 1280×768, 10 steps | 146 s | 16.1 GB |
+  | 896×1152, 10 steps | 155 s | 16.1 GB |
+  | 1152×896, 10 steps | 155 s | 16.1 GB |
 
-  Against a 16 GB target the process holds ~27 GB resident and peaks at 31–45 GB, and the default size does not finish. Two things are visible in the numbers and neither is diagnosed yet: the stages are not actually vacated (dropping the encoders and the DiT does not return their memory — candle's Metal buffer pool is the first suspect, the F32 widening of every layer's weights per call the second), and the time outside the denoise (≈ 7–15 minutes of load and decode) says the host is swapping. The whole-image VAE decode is where the two kills happened. P3 is not done until this is fixed and the table re-measured.
-- **Tiled decode** is `tiled::tile_decode_2d(latent, 64, 48, 8)`, taken when the whole decode reports an OOM or `PLAKAT_K5_VAE_TILED=1`. It has not been exercised against the whole decode yet, and it did not save the two runs above: the guard kills the process before an allocation fails.
-- **Not done, with the reason.** The scenario `pre_encode` hook: `scenario` has its own per-family dispatch (it does not dispatch Sana either), so `run_jobs` is ready for it but nothing calls it. The remaining buckets (1280×768, 896×1152, 1152×896) and BF16 stage 7–8 were still being measured when this was written. CUDA peak memory cannot be measured on this host. CPU stage 7–8 was not run (≈ 2 hours). §12.3's image-level question (does the Q/K rounding change the picture) is unmeasured. Upstream's own config says `scheduler_scale 3.0` where diffusers ships shift 5.0; plakat follows diffusers, the reference it is checked against.
+  The peak does not move with the image size: it is the text-encoder stage (15.0 GB by the probe), not the DiT (11.3 GB loaded, 14.6 GB denoising at 1024²) and not the decode. "Maximum resident set size" reads 25–28 GB on the same runs and is not the number to watch — it counts the memory-mapped checkpoint pages, which the footprint does not. The first build of P3 did **not** meet this (31–45 GB, and four of seven buckets killed by the guard at the decode); two things were wrong, both found with `kandinsky_memory_probe` (ignored test; it prints `memwatch::footprint_gb()` stage by stage):
+  - **Dropping a model on Metal does not return its memory.** candle keeps freed buffers in two pools. The one weights sit in is swept only when a command buffer fills, so the encoders were still resident while the DiT loaded (26.1 GB) and the DiT while the VAE decoded. The one intermediates sit in is never swept. The fix is `stage_device`: each stage runs on its own `Device::new_metal(0)`, and dropping the stage drops its pools — the footprint is back to 0.1 GB a second after the encoders go. What crosses a stage boundary (embeddings, latents) goes through the CPU, because **one tensor left on a stage's device pins that device's whole pool**; the probe itself did this once and held 14.6 GB.
+  - **candle's whole-image VAE decode on Metal takes 38 GB at 1024²** (footprint 14.6 → 52.6 GB). In tiles it takes 10.8 GB and is faster (11.7 s against 19.5 s).
+- **On Metal the VAE therefore decodes on the CPU, whole** (`decode_device`). Measured on the reference's final latent at 1024², against the reference's image:
+
+  | Decode | Time | Memory | PSNR |
+  |---|---|---|---|
+  | CPU, whole (the default on Metal) | 29.5 s | +10.0 GB | 101.8 dB |
+  | GPU, tiles 64 / stride 48 | 11.7 s | +10.9 GB | 35.7 dB |
+  | GPU, tiles 64 / stride 32 | 11.7 s | +10.9 GB | 36.3 dB |
+  | GPU, tiles 96 / stride 64 | 12.4 s | +27.5 GB | 40.9 dB |
+  | CPU, tiles 64 / stride 48 | 64.1 s | +2.9 GB | 35.7 dB |
+
+  Tiles were the first fix and they cost the image: 35.7 dB is under §12.2's 40 dB bar on their own, before the loop adds anything (an earlier 44.5 dB figure was taken on a 3-step latent and flattered them). They stay as the out-of-memory fallback of the whole decode and as an opt-in: `PLAKAT_K5_VAE_TILED=1` keeps the decode on the GPU in 64 / 48 tiles. With the CPU decode a 1024² run through the CLI still peaks at 16.1 GB.
+- **Stage 7–8 after these changes was being re-run when this was written** (F32 and BF16, with the CPU decode); the 55.4 dB above is from the first build, whose whole decode ran on the GPU. With the tiles as the default the same test failed on the image alone: 35.7 dB in F32 and 31.3 dB in BF16, the final latent at 0.999979 and 0.997511.
+- **Unexplained: the time outside the denoise.** The runs above took 514–1151 s of wall time for 131–767 s of denoising, and a later 10-step 1024² run took 3123 s for a 154 s denoise. The weights are on an external USB volume that read at 22 MB/s when measured, which would put the 26 GB of checkpoints at 20 minutes; that is the likely cause, not a confirmed one, and it has not been measured on an internal disk.
+- **Not done, with the reason.** The scenario `pre_encode` hook: `scenario` has its own per-family dispatch (it does not dispatch Sana either), so `run_jobs` is ready for it but nothing calls it. CUDA peak memory cannot be measured on this host. CPU stage 7–8 was not run (≈ 2 hours). §12.3's image-level question (does the Q/K rounding change the picture) is unmeasured. Upstream's own config says `scheduler_scale 3.0` where diffusers ships shift 5.0; plakat follows diffusers, the reference it is checked against.
 - `bench` has a `kandinsky5` arm (encode once, then time `denoise` + `decode`), and `doctor --capability` reports the family as running.
 
 ### Phase 4 — Quantized tier
