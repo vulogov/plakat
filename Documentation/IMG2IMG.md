@@ -210,12 +210,40 @@ plakat img2img tall_photo.png --model flux-kontext-dev \
 
 `plakat img2img --model kandinsky5` (7.2) runs the flow-matching form
 of both modes. The input is encoded by the family's VAE, mixed with
-fresh noise at the sigma `--strength` picks, and the rest of the
-schedule is run: `--strength 0.6 --steps 50` runs the last 30 steps.
+fresh noise at the level `--strength` picks, and denoised from there.
 `--mask` adds RePaint-style inpaint — after every step the latent
 outside the mask is put back on the input's own noise trajectory, so
-only the white region is repainted. `--mask-feather` and
-`--mask-invert` work as on the other families.
+only the white region is repainted.
+
+**`--strength` has its own scale on this family.** At a megapixel the
+model keeps a picture's composition until almost no signal is left, so
+entering the schedule at `strength` of its steps (what the other
+families do) put every visible change between 0.9 and 1.0. The value
+is mapped to a start noise level instead, so the whole range is
+usable, and the level does not depend on `--steps`:
+
+| `--strength` | What changes (measured on two 1024² pictures) |
+|---|---|
+| 0.3 | Fine detail only — the same photograph, re-rendered. |
+| 0.6 (default) | Detail is redrawn; subject, pose and composition stay. A change of medium may or may not take: an oil-paint prompt did, a watercolour one did not. |
+| 0.75 | The medium changes (photo → watercolour, → oil); the subject and pose stay, the background may be recomposed. |
+| 0.85 | A new picture of the same subject in roughly the same place. |
+| 1.0 | The input no longer matters. |
+
+Most of the steps are still run at any useful strength (26 of 30 at
+0.6), so a lower strength saves little time.
+
+**Inpaint: describe the whole picture, not the patch.** The model has
+no inpaint conditioning: it denoises the whole image and only the
+masked part is kept. Prompted with *"a red fox sitting in snow, and
+behind it a small wooden cabin with a lit window"* it paints a cabin
+that belongs in the scene — right scale, right light, right depth of
+field. Prompted with the cabin alone it tries to make the whole image
+a cabin scene, and the masked part comes out as a crude fragment of
+that with a haze around it. **`--mask-feather` defaults to 48 px
+here**, not 8: with 8 a seam shows. (An explicit `--mask-feather 8` is
+read as "not set"; use 7 or 9 for a narrow edge.) `--mask-invert`
+works as on the other families.
 
 What is specific to the family:
 
@@ -233,13 +261,17 @@ What is specific to the family:
   model yet), `--tiled`, `--artefact`, `--grid`.
 
 ```bash
-# Re-imagine the input — the last 60 % of the schedule
-plakat img2img photo.png --model kandinsky5 \
- --prompt "the same scene as a watercolor painting"
+# A variation: the same picture, redrawn in detail
+plakat img2img photo.png --model kandinsky5 --steps 30 \
+ --prompt "a red fox sitting in fresh snow"
 
-# Repaint only the masked region
-plakat img2img photo.png --model kandinsky5 --mask sky.png \
- --prompt "a dramatic stormy sky"
+# A change of medium
+plakat img2img photo.png --model kandinsky5 --steps 30 --strength 0.75 \
+ --prompt "a watercolor painting of a red fox sitting in fresh snow, loose brushwork"
+
+# Repaint only the masked region — the prompt describes the whole picture
+plakat img2img photo.png --model kandinsky5 --steps 30 --mask sky.png \
+ --prompt "a red fox sitting in fresh snow under a dramatic stormy sky"
 
 # On a 16 GB machine
 plakat img2img photo.png --model kandinsky5 --quantize-qwen --dit-nf4 \

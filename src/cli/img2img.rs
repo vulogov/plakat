@@ -58,6 +58,7 @@ pub struct Img2ImgArgs {
 
     /// Feather radius (pixels) applied to the mask edge. Softens
     /// the inpaint↔preserve transition. Only meaningful with --mask.
+    /// Kandinsky 5 uses 48 when this is left at 8.
     #[arg(help_heading = "Inpaint mask", long = "mask-feather", default_value_t = 8, value_name = "PX")]
     pub mask_feather: u32,
 
@@ -69,6 +70,8 @@ pub struct Img2ImgArgs {
     /// img2img strength in [0, 1]. 0.0 = no change, 1.0 = full
     /// re-noise + denoise inside the mask. Default differs by mode:
     /// 0.6 for img2img (whole image), 1.0 for inpaint (--mask set).
+    /// Kandinsky 5 maps it to a start noise level of its own (0.3
+    /// detail, 0.6 redraw, 0.75 a change of medium).
     #[arg(help_heading = "Model & sampler", long, value_name = "F")]
     pub strength: Option<f32>,
 
@@ -1299,6 +1302,8 @@ async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> 
     if !(strength > 0.0 && strength <= 1.0) {
         anyhow::bail!("--strength must be in (0, 1]; got {strength}");
     }
+    // clap's 8 px is what "not set" looks like; this family needs a wider edge (see the constant).
+    let mask_feather = if args.mask_feather == 8 { k5::DEFAULT_MASK_FEATHER } else { args.mask_feather };
     k5::run(k5::RunRequest {
         model: args.model,
         device,
@@ -1316,7 +1321,7 @@ async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> 
         keep_encoders: false,
         quantize_qwen: args.quantize_qwen,
         dit_nf4: args.dit_nf4,
-        init: Some(k5::Init { image: args.input, strength, mask: args.mask, mask_feather: args.mask_feather, mask_invert: args.mask_invert }),
+        init: Some(k5::Init { image: args.input, strength, mask: args.mask, mask_feather, mask_invert: args.mask_invert }),
     })
     .await
 }
