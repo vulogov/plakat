@@ -125,6 +125,26 @@ pub fn write_sidecar(image_path: &Path, metadata: &GenerationMetadata) -> Result
     Ok(())
 }
 
+/// Add a text chunk to a PNG being written: `tEXt` when the text is Latin-1 — the form every reader of
+/// the A1111 `parameters` key expects — and `iTXt` (UTF-8) when it is not. `tEXt` cannot hold a Cyrillic
+/// or CJK prompt: the encoder refuses it at `write_header`, after the image has been generated.
+pub fn add_png_text<W: std::io::Write>(encoder: &mut png::Encoder<W>, keyword: &str, text: String) -> Result<()> {
+    if text.chars().all(|c| (c as u32) < 256) {
+        encoder.add_text_chunk(keyword.to_string(), text)?;
+    } else {
+        encoder.add_itxt_chunk(keyword.to_string(), text)?;
+    }
+    Ok(())
+}
+
+/// The text stored under `keyword`, whichever chunk type holds it ([`add_png_text`]).
+pub fn png_text(info: &png::Info, keyword: &str) -> Option<String> {
+    if let Some(chunk) = info.uncompressed_latin1_text.iter().find(|c| c.keyword == keyword) {
+        return Some(chunk.text.clone());
+    }
+    info.utf8_text.iter().find(|c| c.keyword == keyword).and_then(|c| c.get_text().ok())
+}
+
 pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening {}", path.display()))?;
@@ -133,12 +153,7 @@ pub fn read_parameters_chunk(path: &Path) -> Result<Option<String>> {
     let reader = decoder
         .read_info()
         .with_context(|| format!("decoding {}", path.display()))?;
-    for chunk in &reader.info().uncompressed_latin1_text {
-        if chunk.keyword == "parameters" {
-            return Ok(Some(chunk.text.clone()));
-        }
-    }
-    Ok(None)
+    Ok(png_text(reader.info(), "parameters"))
 }
 
 pub fn save_rgb_u8_with_metadata(
@@ -278,17 +293,11 @@ fn write_png_with_text_chunk(
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     // A1111 / Civitai / ComfyUI all read this key.
-    encoder
-        .add_text_chunk(
-            "parameters".to_string(),
-            metadata.to_a1111_parameters_string(),
-        )
-        .with_context(|| "add `parameters` tEXt chunk")?;
+    add_png_text(&mut encoder, "parameters", metadata.to_a1111_parameters_string())
+        .with_context(|| "add `parameters` text chunk")?;
     // ETCH-1 L0: the `etch` provenance chunk (6.7.0), when `--etch` is on.
     if let Some(etch) = etch_json {
-        encoder
-            .add_text_chunk("etch".to_string(), etch.to_string())
-            .with_context(|| "add `etch` tEXt chunk")?;
+        add_png_text(&mut encoder, "etch", etch.to_string()).with_context(|| "add `etch` text chunk")?;
     }
     let mut writer = encoder
         .write_header()
@@ -350,6 +359,27 @@ mod tests {
         assert_eq!(parsed.prompt, "a red square");
         assert_eq!(parsed.negative, "blurry");
         assert_eq!(parsed.loras, vec!["my/style:0.7".to_string()]);
+    }
+
+    /// A prompt outside Latin-1 (Cyrillic here) cannot go in a `tEXt` chunk; it is written as `iTXt` and
+    /// read back whole. A Latin-1 prompt stays in `tEXt`, where A1111-style readers look.
+    #[test]
+    fn a_cyrillic_prompt_is_saved_and_read_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let buf = vec![255u8, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
+        let prompt = "рыжая лиса на снегу, 冬";
+        let path = tmp.path().join("ru.png");
+        save_rgb_u8_with_metadata(&buf, 2, 2, &path, &GenerationMetadata::new(prompt, "kandinsky5", 42, 50, 3.5, "flow-euler", 2, 2)).unwrap();
+        assert!(read_parameters_chunk(&path).expect("parameters chunk present").contains(prompt));
+        let chunks = |p: &Path| {
+            let reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(p).unwrap())).read_info().unwrap();
+            (reader.info().uncompressed_latin1_text.len(), reader.info().utf8_text.len())
+        };
+        assert_eq!(chunks(&path), (0, 1));
+        let latin = tmp.path().join("latin.png");
+        save_rgb_u8_with_metadata(&buf, 2, 2, &latin, &GenerationMetadata::new("café at dawn", "sd15", 1, 28, 7.5, "euler-a", 2, 2)).unwrap();
+        assert_eq!(chunks(&latin), (1, 0));
+        assert!(read_parameters_chunk(&latin).unwrap().contains("café"));
     }
 
     #[test]

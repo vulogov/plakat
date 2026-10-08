@@ -50,6 +50,7 @@ determines how you prompt and what you can expect.
   chord_row("sd35-medium / -large", "MMDiT with a T5-XXL encoder — a much larger ~256-token budget and strong prose comprehension. Gated (needs HF_TOKEN)."),
   chord_row("flux-schnell / -dev", "Transformer models, no CLIP token cap — write flowing prose. schnell is 4-step and Apache-licensed; dev is larger and gated."),
   chord_row("sana / pixart", "Efficient large-context prose transformers (Gemma-2 / T5-XXL). Big budgets, light on memory."),
+  chord_row("kandinsky5", "A 6B flow transformer read by a language model (Qwen2.5-VL): long prose, a 512-token budget, no weight syntax. The slowest family — 50 steps, two forwards each; 16 GB of memory, or 7 GB quantised."),
 ))
 
 #term("Model family")[
@@ -96,6 +97,7 @@ to reach print dimensions.
   chord_row("sd15 / sd21", "512² / 768². Small and forgiving."),
   chord_row("sdxl / pony", "1024². Our poster renders here, then upscales."),
   chord_row("sd35 / flux / sana", "1024² native; larger with care and memory."),
+  chord_row("kandinsky5", "Seven native buckets around 1024² (1280×768, 1152×896, 1408×640 and their portraits); other sizes snap to the nearest."),
 ))
 
 #warn(label: "Don't fight the native size")[

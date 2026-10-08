@@ -1113,7 +1113,8 @@ fn img2img_capable(model: &str) -> bool {
         || m.contains("cascade")
         || m.contains("wuerstchen")
         || m.contains("würstchen")
-        || m.contains("sana"))
+        || m.contains("sana")
+        || crate::pipelines::kandinsky::is_kandinsky(&m))
 }
 
 /// Batch naturalize post-pass for many outputs sharing ONE spec (the scenario naturalize field). When the

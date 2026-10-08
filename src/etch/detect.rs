@@ -84,12 +84,7 @@ fn read_etch_chunk(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let decoder = png::Decoder::new(std::io::BufReader::new(file));
     let reader = decoder.read_info().ok()?;
-    reader
-        .info()
-        .uncompressed_latin1_text
-        .iter()
-        .find(|c| c.keyword == "etch")
-        .map(|c| c.text.clone())
+    crate::imaging::io::png_text(reader.info(), "etch")
 }
 
 /// Load an image as RGB + optional alpha (0 = transparent) + dims. `None` if unreadable.

@@ -254,6 +254,9 @@ pub enum ModelFamily {
     /// Sana — Gemma-2 prose transformer (large token budget, descriptive prompting, no A1111 weights).
     /// Budget/emission behave like SD3; kept a distinct family for labelling / future tuning.
     Sana,
+    /// Kandinsky 5 — a Qwen2.5-VL text tower: long-form natural language, a 512-token budget, and no
+    /// A1111 weights (RFC KANDINSKY-1 §11.4).
+    Kandinsky5,
     #[default]
     Unknown,
 }
@@ -269,6 +272,7 @@ impl ModelFamily {
             ModelFamily::Flux => "Flux",
             ModelFamily::PixArt => "PixArt",
             ModelFamily::Sana => "Sana",
+            ModelFamily::Kandinsky5 => "Kandinsky5",
             ModelFamily::Unknown => "Unknown",
         }
     }
@@ -399,7 +403,7 @@ async fn compile_one_scene(
     // Cascade's text encoders don't honour `(term:N)` weights, so keeping them inline would just add noisy
     // punctuation tokens — for Cascade we strip to the plain phrase and let prose reinforcement (2d) carry
     // the emphasis. Every other family keeps the inline weight (their CLIP/T5 encoders apply it).
-    let keep_weights = !matches!(scene.family, ModelFamily::Cascade);
+    let keep_weights = !matches!(scene.family, ModelFamily::Cascade | ModelFamily::Kandinsky5);
 
     // 3) substitute the English weighted spans back INLINE, at their original positions (enhance path only;
     //    `--no-enhance` keeps the source text verbatim). The prose around them is still source-language here —
@@ -1943,7 +1947,10 @@ pub fn lint(input: &str) -> anyhow::Result<Vec<String>> {
 /// Classify a model name into a family (priority: flux → xl → 1.5 → unknown).
 pub fn classify_model(name: &str) -> ModelFamily {
     let n = name.to_ascii_lowercase();
-    if n.contains("flux") {
+    if n.contains("kandinsky") || n == "k5" {
+        // Ahead of every substring heuristic below: the repo ids carry `5.0` and `lite`.
+        ModelFamily::Kandinsky5
+    } else if n.contains("flux") {
         ModelFamily::Flux
     } else if n.contains("cascade") || n.contains("wuerstchen") || n.contains("würstchen") {
         ModelFamily::Cascade
@@ -2036,6 +2043,9 @@ mod tests {
         assert_eq!(classify_model("pixart"), ModelFamily::PixArt, "PixArt T5-XXL → its own family");
         assert_eq!(classify_model("pixart-512"), ModelFamily::PixArt);
         assert_eq!(classify_model("sana"), ModelFamily::Sana, "Sana Gemma-2 → its own family");
+        for k in ["kandinsky5", "k5", "kandinsky5-lite", "kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers"] {
+            assert_eq!(classify_model(k), ModelFamily::Kandinsky5, "{k}");
+        }
         assert_eq!(classify_model("sana-1.5"), ModelFamily::Sana, "must not fall to SD15 via the `1.5` rule");
         // The distinct families still carry the SD3-scale budget (the "proper budget" contract holds).
         assert_eq!(super::assembler::family_token_budget(ModelFamily::PixArt), 256);

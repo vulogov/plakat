@@ -8,6 +8,61 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.2.0 — Kandinsky 5: an eighth model family, conditioned by a language model
+
+*In development; this note is not yet the README's banner.*
+
+### Kandinsky 5.0 T2I Lite (`--model kandinsky5`, RFC KANDINSKY-1)
+
+A from-scratch candle port of `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated): a 6B
+flow transformer conditioned by the Qwen2.5-VL-7B language model and CLIP-L, on the Flux VAE. Every stage
+is checked against dumps of the diffusers reference.
+
+**Read this first.**
+
+- **There are no LoRA and no ControlNet adapters for this model yet.** `--lora` and `--control*` are
+  refused, and so are `--fast`, `--quality`, `--adetailer`, `--hires-fix`, `--artefact` and `--grid`.
+- **It is the slowest family plakat runs.** About 15 s a step at 1024² on an M5 Max — two transformer
+  forwards a step, 50 steps by default: 13 minutes an image. `--steps 30` is enough for most prompts
+  (8 minutes); see below.
+- **The download is 36 GB**, of which about 26 GB is loaded.
+
+**What it does.**
+
+- **txt2img, img2img and inpaint** — `plakat generate` and `plakat img2img` (`--mask` for inpaint), at
+  seven native size buckets around 1024². img2img enters the schedule at `--strength` (default 0.6);
+  inpaint repaints the masked region from pure noise by default and holds the rest to the source at
+  every step.
+- **16 GB of memory, or 7 GB quantised.** The text encoders, the transformer and the VAE are never
+  loaded together (peak 16.1 GB at every bucket). `--quantize-qwen --dit-nf4` runs the text tower as a
+  4-bit GGUF and the transformer from NF4 weights: 7.0 GB peak on a machine with under 24 GB of RAM,
+  for about 20 % more time a step. The quantised tier saves memory, not disk — it still reads the full
+  checkpoint.
+- **Prompts in Russian** work as well as prompts in English (measured on four prompt pairs; `compile`
+  leaves a Russian source in Russian for this family).
+- **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
+  `scenario` renders it, the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover
+  it, and `--etch` and the PNG `parameters` sidecar work as for every family.
+
+**Step count.** On four prompts at 1024², 20, 30, 40 and 50 steps score the same on prompt adherence
+(0.303 / 0.303 / 0.289 / 0.287) and on the aesthetic predictor (6.06 / 6.07 / 5.93 / 5.99), and the
+pictures are equally finished. The default stays at the reference's 50; `--steps 30` is the practical
+setting and 20 is fine for drafts. Four prompts cannot rank the step counts — they show only that none
+of them is visibly worse.
+
+**Known limits.** img2img at strength 0.6 keeps the source's composition closely and did not carry a
+style change in the one case tried; inpaint keeps everything outside the mask but the one fill tried
+was crude, with a hard edge. Both are measured for speed and memory, not tuned for quality. The
+low-memory img2img peak is 7.2 GB, not 7.0. `scenario` encodes the prompts of each task separately, not
+once for the whole run. CUDA is unmeasured.
+
+### Fixed for every family
+
+- **A prompt with non-Latin characters could not be saved to a PNG.** The `parameters` chunk was written
+  as `tEXt`, which is Latin-1 only, so a Cyrillic (or any non-Latin) prompt failed the save after the
+  whole render. Such text is now written as `iTXt` (UTF-8) and read back from either chunk — in the
+  metadata sidecar, in `--etch` detection and in the book-art canvas.
+
 ## What's new in 7.1.0 — the paint is paint: watercolour fluids, oil relief, and a run that explains itself
 
 Sixty-odd commits on `plakat paint`, all on the `--new` painting, all judged on 1:1 crops and

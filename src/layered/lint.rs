@@ -35,7 +35,7 @@ pub fn geometry_for_family(f: ModelFamily) -> LatentGeometry {
         // 8× VAE UNet families — unit = an 8-px cell.
         ModelFamily::Sd15 | ModelFamily::Sdxl | ModelFamily::Unknown => LatentGeometry { v: 8, u: 8, pool_levels: 2 },
         // 8× VAE DiT families — unit = a 2×2-patchified token (16 px).
-        ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::PixArt => LatentGeometry { v: 8, u: 16, pool_levels: 2 },
+        ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::PixArt | ModelFamily::Kandinsky5 => LatentGeometry { v: 8, u: 16, pool_levels: 2 },
         // Sana: 32× DC-AE, 32-px token, shallow pyramid.
         ModelFamily::Sana => LatentGeometry { v: 32, u: 32, pool_levels: 1 },
         // Cascade stage C: coarse ~42× grid, no pyramid.

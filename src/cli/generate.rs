@@ -1007,6 +1007,19 @@ fn kandinsky_surface(args: &mut GenerateArgs) -> Result<bool> {
     if args.fast.is_some() {
         anyhow::bail!("--fast is not available on --model kandinsky5: no distilled or few-step checkpoint exists (RFC KANDINSKY-1, non-goal N6)");
     }
+    // What would otherwise be a silent no-op: these act on the SD UNet, or look for the SD pipelines'
+    // output files after the run.
+    let sd_only = [
+        ("--quality", args.quality.is_some(), "its tiers are SD UNet sampler settings (FreeU, PAG, CFG rescale)"),
+        ("--adetailer", args.adetailer, "the face pass is an SD-family img2img"),
+        ("--hires-fix", args.hires_fix, "the refine pass is an SD-family img2img"),
+        ("--artefact", !args.artefacts.is_empty() || args.artefact_blend, "artefact compositing is not wired for this family"),
+        ("--grid", args.grid, "the grid is not wired for this family"),
+        ("--format", !matches!(args.format, crate::imaging::io::OutputFormat::Png), "the family writes PNG"),
+    ];
+    if let Some((flag, _, why)) = sd_only.iter().find(|(_, on, _)| *on) {
+        anyhow::bail!("{flag} is not available on --model kandinsky5: {why}");
+    }
     if let Some(n) = args.max_seq {
         if n == 0 || n > k5::MAX_SEQ_CAP {
             anyhow::bail!("--max-seq must be 1..={} (default {}); got {n}", k5::MAX_SEQ_CAP, k5::DEFAULT_MAX_SEQ);
