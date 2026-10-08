@@ -1244,9 +1244,15 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
             cache: args.enhance_cache,
         };
         let original = args.prompt.clone();
-        let enhanced =
-            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
-                .await?;
+        // Kandinsky 5 reads long prose and no `(term:N)` weights: the generic enhancer prompt (70 tokens
+        // of detail) is the wrong brief for it, so it gets its family's — unless `--enhance-system` is set.
+        let enhanced = if crate::pipelines::kandinsky::is_kandinsky(&args.model) && args.enhance_system.is_none() {
+            let system = crate::compile::assembler::enhance_system(crate::compile::ModelFamily::Kandinsky5);
+            let enhance_args = crate::prompt::EnhanceArgs { max_new_tokens: enhance_args.max_new_tokens.or(Some(320)), ..enhance_args };
+            crate::prompt::complete(&provider, &system, &args.prompt, &enhance_args).await?
+        } else {
+            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args).await?
+        };
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
         args.prompt = maybe_keep_original(
             &args.model,
@@ -1254,6 +1260,20 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
             &original,
             args.enhance_keep_original,
         );
+    }
+
+    // Kandinsky 5 has no weight parser: `(term:N)` would reach it as punctuation. The brackets come
+    // off and the emphasis is restated in words, as `compile` does for the family.
+    if crate::pipelines::kandinsky::is_kandinsky(&args.model) {
+        use crate::compile::assembler as asm;
+        if !asm::extract_weight_spans(&args.prompt).is_empty() {
+            let emphasis = asm::prose_reinforcement(&args.prompt, crate::compile::ModelFamily::Kandinsky5);
+            args.prompt = asm::strip_weight_spans(&args.prompt);
+            if let Some(e) = emphasis {
+                args.prompt = format!("{} {e}", args.prompt.trim_end());
+            }
+            crate::ui::progress::println(&format!("kandinsky5: `(term:N)` weights are not read by this model — restated in words: {}", args.prompt));
+        }
     }
 
     // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
@@ -2088,7 +2108,7 @@ pub(crate) fn maybe_keep_original(
         return enhanced;
     }
     let variant = crate::pipelines::t2i::Variant::detect(model);
-    if variant.is_flux() || variant.is_sd3() {
+    if variant.is_flux() || variant.is_sd3() || variant.is_kandinsky() {
         tracing::warn!(
             target: "plakat",
             "--enhance-keep-original ignored on Flux/SD3 model {:?}: \

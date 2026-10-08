@@ -42,8 +42,12 @@ is checked against dumps of the diffusers reference.
   checkpoint.
 - **Prompts in Russian** work as well as prompts in English (measured on four prompt pairs; `compile`
   leaves a Russian source in Russian for this family).
+- **Prompts written for other models still work.** `(term:1.5)` weights, which this model cannot read,
+  are restated in words, and `generate --enhance` rewrites a prompt into the long prose the model
+  wants while keeping every element and colour of it.
 - **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
-  `scenario` renders it, the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover
+  `scenario` renders it — all its Kandinsky tasks in one run after the last task, so the 26 GB of
+  checkpoints are loaded once and not once a task — the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover
   it, and `--etch` and the PNG `parameters` sidecar work as for every family.
 
 **Step count.** On four prompts at 1024², 20, 30, 40 and 50 steps score the same on prompt adherence
@@ -54,8 +58,7 @@ of them is visibly worse.
 
 **Known limits.** The img2img strength scale and the inpaint defaults were tuned on two source
 pictures and one mask; how far a given strength moves a picture depends on the picture. The
-low-memory img2img peak is 7.2 GB, not 7.0. `scenario` encodes the prompts of each task separately, not
-once for the whole run. CUDA is unmeasured.
+low-memory img2img peak is 7.2 GB, not 7.0. CUDA is unmeasured.
 
 ### Fixed for every family
 
