@@ -116,6 +116,17 @@ TARGET MODEL: Stable Diffusion 3 / 3.5 (T5-XXL + dual CLIP, ~256-token range).\n
 - Be specific and concrete about composition and spatial layout (what is where), materials, and lighting; a \
 short style phrase up front is fine, then describe the scene as flowing prose.";
 
+const FAMILY_KANDINSKY: &str = "\
+TARGET MODEL: Kandinsky 5 (Qwen2.5-VL language-model text encoder, 512-token range).\n\
+- Write long-form natural-language prose, as you would describe the picture to a person: full sentences, \
+NOT comma-separated tags. Aim 80-300 tokens.\n\
+- This model has NO attention-weight syntax: never write `(term:N)`, `(term)` or `[term]` — the brackets \
+reach the model as literal punctuation. Express emphasis in words and by putting what matters first.\n\
+- Do NOT use SD-style quality boosters (masterpiece, best quality, 8k — no effect).\n\
+- Be concrete about what is where, materials, light, and the medium or style.\n\
+- The model reads Russian as well as English: write the prompt in the language of the source text and do \
+NOT translate it unless a translation is asked for.";
+
 fn family_section(f: ModelFamily) -> &'static str {
     match f {
         ModelFamily::Sd15 | ModelFamily::Unknown => FAMILY_SD15,
@@ -124,6 +135,7 @@ fn family_section(f: ModelFamily) -> &'static str {
         ModelFamily::Sd3 | ModelFamily::PixArt | ModelFamily::Sana => FAMILY_SD3,
         ModelFamily::Cascade => FAMILY_CASCADE,
         ModelFamily::Flux => FAMILY_FLUX,
+        ModelFamily::Kandinsky5 => FAMILY_KANDINSKY,
     }
 }
 
@@ -140,6 +152,8 @@ pub fn family_token_budget(f: ModelFamily) -> usize {
         // PixArt-Σ (T5-XXL) and Sana (Gemma-2) carry a comparable large-context budget.
         ModelFamily::Sd3 | ModelFamily::PixArt | ModelFamily::Sana => 256,
         ModelFamily::Flux => 300,
+        // The pipeline's `--max-seq` default: what the Qwen tower is given after its template.
+        ModelFamily::Kandinsky5 => 512,
     }
 }
 
@@ -258,7 +272,7 @@ fn join_and(items: &[String]) -> String {
 pub fn prose_reinforcement(prompt: &str, family: ModelFamily) -> Option<String> {
     // SD3/Flux honour prose >> weights; Cascade honours NO numeric weights at all — so all three get the
     // prose restatement (for Cascade it's the ONLY way to emphasise, since `(term:N)` does nothing there).
-    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana) {
+    if !matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana | ModelFamily::Kandinsky5) {
         return None;
     }
     let (mut strong, mut moderate, mut faint) = (Vec::new(), Vec::new(), Vec::new());
@@ -381,6 +395,12 @@ pub fn scene_warnings(
         w.push(format!(
             "scene '{name}': prompt ~{est} tokens exceeds the ~{budget}-token effective range for {} — later elements may be ignored at render; tighten the description or split the scene",
             family.label()
+        ));
+    }
+    // Kandinsky 5 has no weight parser. The enhance path strips the wrappers; a verbatim prompt keeps them.
+    if family == ModelFamily::Kandinsky5 && !extract_weight_spans(prompt).is_empty() {
+        w.push(format!(
+            "scene '{name}': the prompt carries `(term:N)` weights, which Kandinsky 5 does not honour — they reach the model as literal punctuation; say the emphasis in words"
         ));
     }
     // The style-drop check only makes sense when the enhancer ran — `--no-enhance` keeps the
@@ -527,7 +547,7 @@ pub fn has_relationships(positive: &str) -> bool {
 pub fn relationship_reinforcement(family: ModelFamily) -> Option<&'static str> {
     // Purely AFFIRMATIVE — no "not floating" negation (models mishandle negation in a positive prompt,
     // and it would collide with the strip-terms-in-positive guard). The violations live in the negative.
-    matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana).then_some(
+    matches!(family, ModelFamily::Sd3 | ModelFamily::Flux | ModelFamily::Cascade | ModelFamily::PixArt | ModelFamily::Sana | ModelFamily::Kandinsky5).then_some(
         "The described objects sit in clear, physically coherent spatial relationships — touching, \
          resting on, and connected exactly as stated, each correctly placed and firmly grounded.",
     )
@@ -677,6 +697,13 @@ mod tests {
     fn scene_warnings_flag_budget_and_dropped_style() {
         // Over-budget prompt warns (SD15 ~77 tokens).
         let long = "word ".repeat(80);
+        // Kandinsky 5: a 512-token budget, and weights are flagged since nothing parses them.
+        assert!(scene_warnings("s", &[], &long, ModelFamily::Kandinsky5, true).is_empty() || estimate_tokens(&long) > 512);
+        let weighted = scene_warnings("s", &[], "a (red:1.4) fox in snow", ModelFamily::Kandinsky5, false);
+        assert!(weighted.iter().any(|m| m.contains("does not honour")), "{weighted:?}");
+        assert!(scene_warnings("s", &[], "a red fox in snow", ModelFamily::Kandinsky5, false).is_empty());
+        assert_eq!(family_token_budget(ModelFamily::Kandinsky5), 512);
+        assert!(family_section(ModelFamily::Kandinsky5).contains("Kandinsky 5"));
         let w = scene_warnings("s", &[], &long, ModelFamily::Sd15, true);
         assert!(w.iter().any(|m| m.contains("exceeds")), "budget warned: {w:?}");
         // Enhanced + style dropped → style warning; verbatim (enhanced=false) → no style warning.
@@ -723,6 +750,7 @@ mod tests {
         assert!(!has_relationships("an impressionist painting of a harbor at dawn"));
         // Prose families get a grounding clause; weight-capable families get the negative side only.
         assert!(relationship_reinforcement(ModelFamily::Sd3).is_some());
+        assert!(relationship_reinforcement(ModelFamily::Kandinsky5).is_some());
         assert!(relationship_reinforcement(ModelFamily::Flux).is_some());
         assert!(relationship_reinforcement(ModelFamily::Sdxl).is_none());
         assert!(relationship_reinforcement(ModelFamily::Sd15).is_none());

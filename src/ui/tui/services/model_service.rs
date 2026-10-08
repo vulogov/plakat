@@ -99,6 +99,7 @@ enum UiFamily {
     Sd3,
     PixArt,
     Cascade,
+    Kandinsky5,
 }
 
 /// Resolve a model alias to its UI loader, or a friendly error for unwired families.
@@ -109,9 +110,10 @@ fn ui_family(alias: &str) -> Result<UiFamily, String> {
         BaseFamily::Sd3 => Ok(UiFamily::Sd3),
         BaseFamily::PixArt => Ok(UiFamily::PixArt),
         BaseFamily::StableCascade => Ok(UiFamily::Cascade),
+        BaseFamily::Kandinsky5 => Ok(UiFamily::Kandinsky5),
         other => Err(format!(
             "'{alias}' is a {other:?} model — the TUI loads SD-family (sd15 / sd21 / \
-             sdxl), SD3/3.5, PixArt, and Cascade; {other:?} support is a follow-up."
+             sdxl), SD3/3.5, PixArt, Cascade, and Kandinsky 5; {other:?} support is a follow-up."
         )),
     }
 }
@@ -131,6 +133,9 @@ enum Loaded {
     // we hold only the applied LoRA set and load-per-generation. Slower, but usable.
     PixArt { loras: Vec<LoraSpec> },
     Cascade { loras: Vec<LoraSpec> },
+    // Kandinsky 5 is staged (text encoders, then the DiT, then the VAE — never together), so nothing
+    // can stay resident between generations either. No adapters exist for it.
+    Kandinsky5,
 }
 
 /// Handle to the model thread. Drop signals shutdown and joins.
@@ -306,6 +311,8 @@ fn model_loop(
                         .map(Loaded::Sd3),
                     UiFamily::PixArt => Ok(Loaded::PixArt { loras }),
                     UiFamily::Cascade => Ok(Loaded::Cascade { loras }),
+                    UiFamily::Kandinsky5 if !loras.is_empty() => Err(anyhow::anyhow!("Kandinsky 5 has no LoRA adapters yet (RFC KANDINSKY-1, non-goal N4)")),
+                    UiFamily::Kandinsky5 => Ok(Loaded::Kandinsky5),
                 };
                 match result {
                     Ok(p) => {
@@ -470,6 +477,49 @@ fn model_loop(
                         match rt.block_on(cascade::run_hooked(req, Some(&mut hook))) {
                             Ok(()) => {
                                 let produced = job.out_dir.join(format!("plakat-cascade-{}.png", job.seed));
+                                let out = keep_unique(&produced, &job.out_dir, job.seed);
+                                embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
+                                let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
+                            }
+                            Err(e) => {
+                                let _ = job.tx.send(GenMessage::Error { message: format!("{e:#}") });
+                            }
+                        }
+                        continue;
+                    }
+                    // ── Kandinsky 5: load-per-gen, staged. txt2img, and img2img / inpaint over
+                    //    the previous image (`init_image`, `mask`). The size snaps to a native
+                    //    bucket. Hooked for progress and cancel; no per-step preview. ──
+                    Loaded::Kandinsky5 => {
+                        use crate::pipelines::kandinsky as k5;
+                        let _ = std::fs::create_dir_all(&job.out_dir);
+                        let (width, height) = k5::snap_bucket(job.width, job.height);
+                        if (width, height) != (job.width, job.height) {
+                            crate::ui::progress::println(&format!("  kandinsky5: {}x{} → {width}x{height} (native bucket)", job.width, job.height));
+                        }
+                        let init = job.init_image.clone().map(|image| k5::Init { image, strength: if job.strength > 0.0 { job.strength.min(1.0) } else { k5::default_strength(job.mask.is_some()) }, mask: job.mask.clone(), mask_feather: 8, mask_invert: false });
+                        let req = k5::RunRequest {
+                            model: alias.clone(),
+                            device: device.clone(),
+                            prompt: prompt.clone(),
+                            negative: job.negative.clone(),
+                            width,
+                            height,
+                            steps: job.steps,
+                            guidance: job.guidance,
+                            seed: Some(job.seed),
+                            out_dir: job.out_dir.clone(),
+                            count: 1,
+                            max_seq: k5::DEFAULT_MAX_SEQ,
+                            keep_encoders: false,
+                            quantize_qwen: false,
+                            dit_nf4: false,
+                            init,
+                        };
+                        let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
+                        match rt.block_on(k5::run_hooked(req, Some(&mut hook))) {
+                            Ok(()) => {
+                                let produced = job.out_dir.join(format!("plakat-kandinsky5-{}.png", job.seed));
                                 let out = keep_unique(&produced, &job.out_dir, job.seed);
                                 embed_chat_recipe(&out, alias, &prompt, &job.negative, job.seed, job.steps, job.guidance, None, None);
                                 let _ = job.tx.send(GenMessage::Done { output: out, cancelled: job.cancel.is_cancelled() });
@@ -813,6 +863,8 @@ mod tests {
         assert!(matches!(ui_family("sd35-medium"), Ok(UiFamily::Sd3)));
         assert!(matches!(ui_family("pixart"), Ok(UiFamily::PixArt)));
         assert!(matches!(ui_family("stable-cascade"), Ok(UiFamily::Cascade)));
+        assert!(matches!(ui_family("kandinsky5"), Ok(UiFamily::Kandinsky5)));
+        assert!(t2i_load_check("kandinsky5").is_ok());
         // All four are loadable in the UI now.
         for a in ["sdxl", "sd35-medium", "pixart", "stable-cascade"] {
             assert!(t2i_load_check(a).is_ok(), "{a} should load");

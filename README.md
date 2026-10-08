@@ -10,7 +10,7 @@
 ![](examples/scenario/forest_snow/plakat-1004.png)
 
 **plakat is a local, pure-Rust creative studio** — a great deal more than a text-to-image CLI. It
-generates across seven open model families, edits and composites images, trains your own styles and
+generates across eight open model families, edits and composites images, trains your own styles and
 subjects, animates, and carries a set of **structured-authoring studios** (comics, book ornaments, PBR
 materials, fantasy maps, fractals) plus a **TUI photo manager**, a **provenance-etching** system, a
 **scripting language**, and a **stable library API**. All of it runs on
@@ -23,7 +23,8 @@ across CPU / CUDA / Metal, pulling weights from HuggingFace and caching them loc
 
 <details open><summary><b>🎨 Image generation</b></summary>
 
-- **Seven model families** — SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, Stable Cascade, and **Sana** (a from-scratch candle port), each verified against reference dumps.
+- **Eight model families** — SD 1.5 / 2.1, SDXL, SD 3.5, Flux, PixArt-Σ, Stable Cascade, **Sana** and **Kandinsky 5** (from-scratch candle ports), each verified against reference dumps.
+- **Kandinsky 5.0 T2I Lite** (`--model kandinsky5`, 7.2) — a 6B flow transformer conditioned by the Qwen2.5-VL language model: txt2img, img2img and inpaint, at 16 GB of memory or 7 GB quantised (`--quantize-qwen --dit-nf4`). The slowest family, and no LoRA or ControlNet adapters exist for it yet.
 - **Few-step / fast presets** — SDXL-Lightning, Hyper-SD, LCM, Turbo (`--fast`), plus a bench harness and step-caching / fused-SDPA speedups.
 - **Guidance & schedulers** — DPM++, UniPC, Euler / Euler-trailing; CFG-rescale, FreeU, PAG, dynamic thresholding, clip-skip.
 - **Prompt tooling** — wildcards, **regional prompting**, prompt weighting, family-aware auto-negatives.

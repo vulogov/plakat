@@ -1,6 +1,6 @@
 //! Kandinsky 5.0 T2I Lite — plakat's eighth model family (RFC KANDINSKY-1).
 //!
-//! **Through P3: it generates.** Phase 0 registered the surface (alias, variant and dispatch, capability
+//! **Through P5: txt2img, img2img and inpaint, with a quantized tier.** Phase 0 registered the surface (alias, variant and dispatch, capability
 //! row, the native resolution buckets, the family-scoped flags); P1 added the conditioning and the VAE
 //! (`kandinsky_text`); P2 the 6B flow-matching DiT (`kandinsky_dit`). This module is the run itself:
 //!
@@ -13,7 +13,10 @@
 //! * **Sampling** (RFC §8). Flow-matching Euler on [`sigmas`]; the DiT's timestep is `sigma · 1000`; CFG
 //!   is two forwards (the branches differ in length) and is skipped at `guidance ≤ 1`.
 //!
-//! txt2img only: img2img and inpaint are P5, the quantized tier P4.
+//! * **img2img and inpaint** (RFC G4, P5). A job with an [`Init`] starts from its image, VAE-encoded and
+//!   flow-noised to the sigma `--strength` picks, and runs the rest of the schedule (SDEdit); with a mask,
+//!   everything outside it is put back on the image's own noise trajectory after every step (RePaint,
+//!   through [`masked_denoise::step_blend`]).
 
 use std::path::PathBuf;
 
@@ -22,6 +25,8 @@ use candle_core::{DType, Device, Tensor};
 
 use super::kandinsky_dit::Dit;
 use super::kandinsky_text::{Embeds, TextEncoders, Vae};
+use super::masked_denoise;
+use super::noise_space::{FlowSpace, LatentGeometry};
 use super::step_hook::{self, StepControl, StepHook};
 
 /// The seven native resolution buckets (W×H) the model was trained at (RFC §4.3).
@@ -74,9 +79,9 @@ pub fn check_exact(w: u32, h: u32) -> Result<()> {
     Ok(())
 }
 
-/// What a path the family does not serve yet says: txt2img is in; img2img and inpaint are P5.
+/// What a path the family is not wired into says. It generates through `generate` and `img2img`.
 pub fn txt2img_only(what: &str) -> anyhow::Error {
-    anyhow::anyhow!("Kandinsky 5 does text-to-image only so far (RFC KANDINSKY-1): {what} is not wired for it yet. Use `plakat generate --model kandinsky5`.")
+    anyhow::anyhow!("Kandinsky 5 is not wired into {what} (RFC KANDINSKY-1). Use `plakat generate --model kandinsky5`, or `plakat img2img --model kandinsky5` for img2img and inpaint.")
 }
 
 /// The sigma schedule the family samples on: diffusers' `FlowMatchEulerDiscreteScheduler` at
@@ -99,6 +104,41 @@ pub struct Job {
     pub seed: u64,
     /// Where the PNG goes.
     pub out_path: PathBuf,
+    /// img2img / inpaint: the image to start from. `None` is txt2img.
+    pub init: Option<Init>,
+}
+
+/// The image an img2img or inpaint job starts from.
+#[derive(Debug, Clone)]
+pub struct Init {
+    /// Resized to the job's size.
+    pub image: PathBuf,
+    /// The share of the schedule that is run, `(0, 1]`: 1 starts from pure noise.
+    pub strength: f32,
+    /// Inpaint: white is repainted, black is kept.
+    pub mask: Option<PathBuf>,
+    pub mask_feather: u32,
+    pub mask_invert: bool,
+}
+
+/// What [`Init`] becomes for the denoise: the image in the model's latent space, and the mask on the
+/// latent grid (`(1, 1, H/8, W/8)`, 1 = repaint).
+pub struct InitLatent {
+    pub z0: Tensor,
+    pub strength: f32,
+    pub mask: Option<Tensor>,
+}
+
+/// The img2img defaults `plakat img2img` uses on every family: most of the schedule for a plain
+/// img2img, all of it inside a mask.
+pub fn default_strength(masked: bool) -> f32 {
+    if masked { 1.0 } else { 0.6 }
+}
+
+/// The step an img2img run enters the schedule at: `strength` of the steps are run, at least one.
+pub fn start_step(steps: usize, strength: f32) -> usize {
+    let run = (strength.clamp(0.0, 1.0) as f64 * steps as f64).round() as usize;
+    steps.saturating_sub(run).min(steps.saturating_sub(1))
 }
 
 /// What a batch shares.
@@ -138,26 +178,44 @@ pub struct RunRequest {
     pub quantize_qwen: bool,
     /// The DiT's block weights in NF4 (`--dit-nf4`).
     pub dit_nf4: bool,
+    /// img2img / inpaint (`plakat img2img`); `None` is txt2img.
+    pub init: Option<Init>,
 }
 
 /// Flow-matching Euler from `noise` (NCHW `(1, 16, H/8, W/8)`, pure noise at sigma 1) to the clean
 /// latent. `neg` is the unconditional branch: `None` runs without CFG. The text stream is
 /// time-modulated, so nothing is cached across steps (trap T8).
 pub fn denoise(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, steps: usize, guidance: f64, hook: &mut Option<&mut dyn StepHook>, label: &str) -> Result<Tensor> {
-    denoise_observed(dit, pos, neg, noise, steps, guidance, hook, label, &mut |_, _| {})
+    denoise_observed(dit, pos, neg, noise, None, steps, guidance, hook, label, &mut |_, _| {})
+}
+
+/// [`denoise`] from an image instead of from noise: the schedule is entered at [`start_step`] with the
+/// image noised to that sigma, and with a mask the latent outside it is returned to the image's
+/// trajectory after every step.
+#[allow(clippy::too_many_arguments)]
+pub fn denoise_from(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, init: &InitLatent, steps: usize, guidance: f64, hook: &mut Option<&mut dyn StepHook>, label: &str) -> Result<Tensor> {
+    denoise_observed(dit, pos, neg, noise, Some(init), steps, guidance, hook, label, &mut |_, _| {})
 }
 
 /// [`denoise`], showing `observe` the latent going into each step (a parity run compares them).
 #[allow(clippy::too_many_arguments)]
-fn denoise_observed(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, steps: usize, guidance: f64, hook: &mut Option<&mut dyn StepHook>, label: &str, observe: &mut dyn FnMut(usize, &Tensor)) -> Result<Tensor> {
+fn denoise_observed(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, init: Option<&InitLatent>, steps: usize, guidance: f64, hook: &mut Option<&mut dyn StepHook>, label: &str, observe: &mut dyn FnMut(usize, &Tensor)) -> Result<Tensor> {
     if steps < 2 {
         anyhow::bail!("Kandinsky 5 needs at least 2 steps (got {steps}); the default is {DEFAULT_STEPS}");
     }
     let sig = sigmas(steps);
-    let mut x = noise.to_dtype(DType::F32)?;
-    let bar = crate::ui::progress::step_bar(steps as u64, label);
-    for i in 0..steps {
-        if step_hook::step(hook, i, steps) == StepControl::Cancel || step_hook::is_cancelled(hook) {
+    let noise = noise.to_dtype(DType::F32)?;
+    let start = init.map_or(0, |i| start_step(steps, i.strength));
+    let mut x = match init {
+        None => noise.clone(),
+        Some(i) => ((i.z0.to_dtype(DType::F32)? * (1.0 - sig[start]))? + (&noise * sig[start])?)?,
+    };
+    // The level after the run's step `k` is the sigma it moves to. The latent is NCHW already; the DiT
+    // patches it 2×2, hence 16 image pixels a token.
+    let space = FlowSpace::new((start..steps).map(|i| sig[i + 1] as f32).collect(), LatentGeometry { v: 8, u: 16, pool_levels: 2 });
+    let bar = crate::ui::progress::step_bar((steps - start) as u64, label);
+    for i in start..steps {
+        if step_hook::step(hook, i - start, steps - start) == StepControl::Cancel || step_hook::is_cancelled(hook) {
             bar.abandon();
             anyhow::bail!("cancelled at step {i} of {steps}");
         }
@@ -169,6 +227,10 @@ fn denoise_observed(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tenso
             v = (&v_uncond + ((&v - &v_uncond)? * guidance)?)?;
         }
         x = (x + (v * (sig[i + 1] - sig[i]))?)?;
+        if let Some(InitLatent { z0, mask: Some(mask), .. }) = init {
+            x = masked_denoise::step_blend(&space, &x, mask, z0, &noise, i - start)?;
+        }
+        x = step_hook::refine(hook, i - start, steps - start, &space, x)?;
         bar.inc(1);
     }
     bar.finish_and_clear();
@@ -190,6 +252,47 @@ const TILE_STRIDE: usize = 48;
 /// Decode a latent in blended tiles.
 pub fn decode_tiled(vae: &Vae, latent: &Tensor) -> Result<Tensor> {
     crate::pipelines::tiled::tile_decode_2d(latent, TILE_LATENT, TILE_STRIDE, 8, |tile| vae.decode(tile))
+}
+
+/// Encode an image `(1, 3, H, W)` in blended tiles of [`TILE_LATENT`] latent pixels, on the CPU: the
+/// whole-image encode takes about 8 GB at 1024², a tile a fraction of that. `encode` maps a pixel tile to
+/// its latent, 8× smaller. Each latent pixel is the weighted mean of the tiles covering it, the weight
+/// falling off towards a tile's edge, where its encoder saw the least context.
+pub fn encode_tiled(pixels: &Tensor, mut encode: impl FnMut(&Tensor) -> Result<Tensor>) -> Result<Tensor> {
+    let (_, _, h, w) = pixels.dims4()?;
+    let (lh, lw) = (h / 8, w / 8);
+    if lh <= TILE_LATENT && lw <= TILE_LATENT {
+        return encode(pixels);
+    }
+    let ramp = |i: usize| (i + 1).min(TILE_LATENT - i) as f32;
+    let (mut acc, mut weight, mut channels) = (Vec::new(), vec![0f32; lh * lw], 0);
+    for pos in crate::pipelines::tiled::tile_positions(lh, lw, TILE_LATENT.min(lh).min(lw), TILE_STRIDE) {
+        let size = pos.size;
+        let tile = encode(&pixels.narrow(2, pos.y * 8, size * 8)?.narrow(3, pos.x * 8, size * 8)?)?;
+        let (_, c, th, tw) = tile.dims4()?;
+        if (th, tw) != (size, size) {
+            anyhow::bail!("a {}-pixel tile encoded to {th}x{tw}, expected {size}x{size}", size * 8);
+        }
+        if acc.is_empty() {
+            (acc, channels) = (vec![0f32; c * lh * lw], c);
+        }
+        let z: Vec<f32> = tile.to_dtype(DType::F32)?.to_device(&Device::Cpu)?.flatten_all()?.to_vec1()?;
+        for ty in 0..size {
+            for tx in 0..size {
+                let (k, at) = (ramp(ty) * ramp(tx), (pos.y + ty) * lw + pos.x + tx);
+                weight[at] += k;
+                for ch in 0..c {
+                    acc[ch * lh * lw + at] += k * z[(ch * size + ty) * size + tx];
+                }
+            }
+        }
+    }
+    for ch in 0..channels {
+        for (a, k) in acc[ch * lh * lw..(ch + 1) * lh * lw].iter_mut().zip(&weight) {
+            *a /= k;
+        }
+    }
+    Ok(Tensor::from_vec(acc, (1, channels, lh, lw), pixels.device())?)
 }
 
 /// Whether to trade time and decode fidelity for memory: a host with under 24 GB of RAM, or
@@ -246,10 +349,15 @@ pub fn stage_device(base: &Device) -> Result<Device> {
 /// Run a batch with staged residency: encode every distinct prompt, release the encoders, denoise every
 /// job, release the DiT, decode and save. Returns the files written, in job order.
 pub async fn run_jobs(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf>> {
-    run_jobs_inner(settings, jobs).await.map_err(|e| crate::error_hints::decorate_oom(e, crate::error_hints::OomContext::Kandinsky5))
+    run_jobs_hooked(settings, jobs, None).await
 }
 
-async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf>> {
+/// [`run_jobs`] with a step hook: progress and cancellation for a caller that shows them (the TUI).
+pub async fn run_jobs_hooked(settings: &Settings, jobs: &[Job], mut hook: Option<&mut dyn StepHook>) -> Result<Vec<PathBuf>> {
+    run_jobs_inner(settings, jobs, &mut hook).await.map_err(|e| crate::error_hints::decorate_oom(e, crate::error_hints::OomContext::Kandinsky5))
+}
+
+async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mut dyn StepHook>) -> Result<Vec<PathBuf>> {
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
@@ -286,6 +394,23 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     // Staged residency: the encoders are gone before the DiT is loaded, unless asked to stay.
     let kept = if settings.keep_encoders { Some((encoders, text_device)) } else { drop((encoders, text_device)); None };
 
+    // Stage 1b — img2img: encode the init images and build the masks, with the VAE alone in memory.
+    let mut inits: Vec<Option<InitLatent>> = Vec::with_capacity(jobs.len());
+    if jobs.iter().any(|j| j.init.is_some()) {
+        let t = std::time::Instant::now();
+        let vae_device = decode_device(&settings.device)?;
+        let vae = Vae::load(&repo, &vae_device).await?;
+        for j in jobs {
+            inits.push(match &j.init {
+                None => None,
+                Some(init) => Some(encode_init(&vae, &vae_device, init, j.width, j.height).with_context(|| format!("preparing the init image {}", init.image.display()))?),
+            });
+        }
+        println(format!("kandinsky5: encoded {} init image(s) in {:.1}s", inits.iter().flatten().count(), t.elapsed().as_secs_f64()));
+    } else {
+        inits.resize_with(jobs.len(), || None);
+    }
+
     // Stage 2 — denoise every job with the DiT resident.
     let t2 = std::time::Instant::now();
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 DiT");
@@ -296,14 +421,28 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     let mut latents = Vec::with_capacity(jobs.len());
     for (n, j) in jobs.iter().enumerate() {
         let _ = device.set_seed(crate::pipelines::seeds::prepare_seed(j.seed, device));
-        let noise = Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, (j.height / 8) as usize, (j.width / 8) as usize), device)?;
+        let (lh, lw) = ((j.height / 8) as usize, (j.width / 8) as usize);
+        // Verify tier 2 (env-gated): the same noise on every device, which candle's RNG does not give.
+        let noise = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
+            deterministic_noise(dit.cfg.in_visual_dim, lh, lw, device)?
+        } else {
+            Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, lh, lw), device)?
+        };
         let neg = (j.guidance > 1.0).then(|| &embeds[&j.negative]);
-        println(format!("  kandinsky5 {} of {} (seed={}, {}x{}, {} steps, guidance {})", n + 1, jobs.len(), j.seed, j.width, j.height, j.steps, j.guidance));
+        let init = match &inits[n] {
+            None => None,
+            Some(i) => Some(InitLatent { z0: i.z0.to_device(device)?, strength: i.strength, mask: i.mask.as_ref().map(|m| m.to_device(device)).transpose()? }),
+        };
+        let run = j.steps - init.as_ref().map_or(0, |i| start_step(j.steps, i.strength));
+        let mode = match &init {
+            None => String::new(),
+            Some(i) => format!(", {} at strength {} — {run} of them run", if i.mask.is_some() { "inpaint" } else { "img2img" }, i.strength),
+        };
+        println(format!("  kandinsky5 {} of {} (seed={}, {}x{}, {} steps, guidance {}{mode})", n + 1, jobs.len(), j.seed, j.width, j.height, j.steps, j.guidance));
         let t = std::time::Instant::now();
-        let mut nohook: Option<&mut dyn StepHook> = None;
-        let latent = denoise(&dit, &embeds[&j.prompt], neg, &noise, j.steps, j.guidance, &mut nohook, "denoise")?;
+        let latent = denoise_observed(&dit, &embeds[&j.prompt], neg, &noise, init.as_ref(), j.steps, j.guidance, hook, "denoise", &mut |_, _| {})?;
         let secs = t.elapsed().as_secs_f64();
-        println(format!("  denoised in {secs:.1}s ({:.2}s a step)", secs / j.steps as f64));
+        println(format!("  denoised in {secs:.1}s ({:.2}s a step)", secs / run as f64));
         latents.push(latent.to_device(&Device::Cpu)?);
     }
     // The DiT is released before the F32 decode, which is the other memory peak.
@@ -319,6 +458,12 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
         m.negative = j.negative.clone();
         let bucket = if BUCKETS.contains(&(j.width, j.height)) { format!("{}x{}", j.width, j.height) } else { "exact".to_string() };
         m.extras.extend([("family".to_string(), "kandinsky5".to_string()), ("max_seq".to_string(), settings.max_seq.to_string()), ("bucket".to_string(), bucket)]);
+        if let Some(init) = &j.init {
+            m.extras.extend([("mode".to_string(), if init.mask.is_some() { "inpaint" } else { "img2img" }.to_string()), ("strength".to_string(), init.strength.to_string()), ("init_image".to_string(), init.image.display().to_string())]);
+            if let Some(mask) = &init.mask {
+                m.extras.push(("mask".to_string(), mask.display().to_string()));
+            }
+        }
         if let Some(dir) = j.out_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -330,19 +475,71 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job]) -> Result<Vec<PathBuf
     Ok(written)
 }
 
-/// `plakat generate --model kandinsky5`.
+/// Unit-Gaussian noise `(1, channels, h, w)` that is the same on every device and build: SplitMix64 through
+/// Box–Muller, computed on the CPU. Verify's shared LCG latent is uniform in `[-1, 1)` — fine for the
+/// families whose schedulers rescale it, but a flow model started from it paints a grey field.
+pub fn deterministic_noise(channels: usize, h: usize, w: usize, device: &Device) -> Result<Tensor> {
+    let mut state = 0x4B35_5F4E_4F49_5345u64;
+    let mut uniform = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        // 53 bits in (0, 1]: never zero, so its log is finite.
+        (((z ^ (z >> 31)) >> 11) as f64 + 1.0) / (1u64 << 53) as f64
+    };
+    let n = channels * h * w;
+    let values: Vec<f32> = (0..n).map(|_| ((-2.0 * uniform().ln()).sqrt() * (std::f64::consts::TAU * uniform()).cos()) as f32).collect();
+    Ok(Tensor::from_vec(values, (1, channels, h, w), &Device::Cpu)?.to_device(device)?)
+}
+
+/// An init image and its mask, ready for the denoise and on the CPU (they cross a stage boundary).
+fn encode_init(vae: &Vae, device: &Device, init: &Init, w: u32, h: u32) -> Result<InitLatent> {
+    if !(init.strength > 0.0 && init.strength <= 1.0) {
+        anyhow::bail!("--strength must be in (0, 1]; got {}", init.strength);
+    }
+    let pixels = crate::imaging::preprocess::sd_image_tensor(&init.image, w, h, device, DType::F32)?;
+    // As the decode: whole unless memory is short (or `PLAKAT_K5_VAE_TILED` says otherwise).
+    let tiled = match std::env::var("PLAKAT_K5_VAE_TILED").ok().as_deref() {
+        Some("1") => true,
+        Some("0") => false,
+        _ => low_memory(),
+    };
+    let z0 = if tiled { encode_tiled(&pixels, |tile| vae.encode(tile))? } else { vae.encode(&pixels)? }.to_device(&Device::Cpu)?;
+    let mask = match &init.mask {
+        None => None,
+        Some(path) => {
+            let mut m = crate::imaging::mask::Mask::load(path, w, h)?;
+            if init.mask_invert {
+                m.invert();
+            }
+            if init.mask_feather > 0 {
+                m.feather(init.mask_feather);
+            }
+            Some(m.to_latent_tensor_factor(8, &Device::Cpu, DType::F32)?)
+        }
+    };
+    Ok(InitLatent { z0, strength: init.strength, mask })
+}
+
+/// `plakat generate --model kandinsky5`, and `plakat img2img --model kandinsky5` with an init image.
 pub async fn run(req: RunRequest) -> Result<()> {
+    run_hooked(req, None).await
+}
+
+/// [`run`] with a step hook (the TUI's live progress and cancel).
+pub async fn run_hooked(req: RunRequest, hook: Option<&mut dyn StepHook>) -> Result<()> {
     let steps = if req.steps == 0 { DEFAULT_STEPS } else { req.steps };
     let guidance = if req.guidance <= 0.0 { DEFAULT_GUIDANCE } else { req.guidance };
     let first = req.seed.unwrap_or(42);
     let jobs: Vec<Job> = (0..req.count.max(1) as u64)
         .map(|i| {
             let seed = first.wrapping_add(i);
-            Job { prompt: req.prompt.clone(), negative: req.negative.clone(), width: req.width, height: req.height, steps, guidance, seed, out_path: req.out_dir.join(format!("plakat-kandinsky5-{seed}.png")) }
+            Job { prompt: req.prompt.clone(), negative: req.negative.clone(), width: req.width, height: req.height, steps, guidance, seed, out_path: req.out_dir.join(format!("plakat-kandinsky5-{seed}.png")), init: req.init.clone() }
         })
         .collect();
     let settings = Settings { model: req.model.clone(), device: req.device.clone(), max_seq: if req.max_seq == 0 { DEFAULT_MAX_SEQ } else { req.max_seq }, keep_encoders: req.keep_encoders, quantize_qwen: req.quantize_qwen, dit_nf4: req.dit_nf4 };
-    run_jobs(&settings, &jobs).await.map(|_| ())
+    run_jobs_hooked(&settings, &jobs, hook).await.map(|_| ())
 }
 
 #[cfg(test)]
@@ -411,6 +608,148 @@ mod tests {
         assert_eq!(to_rgb8(&t).unwrap(), [0, 128, 255, 255, 0, 191]);
     }
 
+    /// P5's two measurements (RFC §13 phase 5, §15 Q3), full tier, 1024², one seed a prompt:
+    /// the step-count sweep (20 / 30 / 40 / 50) that sets the `--steps` guidance, and the same prompts in
+    /// Russian at 20 steps against their English 20-step images. CLIP-L does not read Russian, so a
+    /// Russian image is scored against the English text. `PLAKAT_P5_OUT=<dir>` takes the images:
+    /// `PLAKAT_P5_OUT=<dir> cargo test --release --features metal --lib kandinsky_p5_sweep -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_p5_sweep() {
+        let pairs = [
+            ("a red fox sitting in fresh snow at dawn, soft golden light", "рыжая лиса сидит на свежем снегу на рассвете, мягкий золотой свет"),
+            ("an old fisherman mending a net on a wooden pier under an overcast sky", "старый рыбак чинит сеть на деревянном причале под пасмурным небом"),
+            ("a brass samovar on a wooden table next to a plate of bagels, a window with lace curtains behind", "латунный самовар на деревянном столе рядом с тарелкой баранок, позади окно с кружевными занавесками"),
+            ("a watercolor painting of a white church with golden onion domes by a frozen river in winter", "акварель: белая церковь с золотыми куполами-луковками у замёрзшей реки зимой"),
+        ];
+        let sweep = [20usize, 30, 40, 50];
+        let out = std::path::PathBuf::from(std::env::var("PLAKAT_P5_OUT").expect("set PLAKAT_P5_OUT to a directory for the images"));
+        let base = crate::device::select("auto").unwrap();
+        let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+        let job = |prompt: &str, i: usize, steps: usize, name: String| Job { prompt: prompt.to_string(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(name), init: None };
+        // The Russian set first: it is the shorter run.
+        let ru: Vec<Job> = pairs.iter().enumerate().map(|(i, (_, r))| job(r, i, sweep[0], format!("ru_{i}.png"))).collect();
+        let en: Vec<Job> = sweep.iter().flat_map(|&n| pairs.iter().enumerate().map(move |(i, (e, _))| (i, *e, n))).map(|(i, e, n)| job(e, i, n, format!("en_{i}_{n}.png"))).collect();
+        for (name, jobs) in [("ru", &ru), ("en", &en)] {
+            let t = std::time::Instant::now();
+            run_jobs(&settings, jobs).await.unwrap();
+            println!("{name}: {} images in {:.0}s", jobs.len(), t.elapsed().as_secs_f64());
+        }
+        let aes = crate::pipelines::aesthetic::AestheticScorer::load(&base).await.unwrap();
+        let clip = crate::pipelines::clip_adherence::ClipAdherence::load(&base).await.unwrap();
+        let adherence = |j: &Job, text: &str| clip.adherence(&aes.image_embedding(&j.out_path).unwrap(), text).unwrap();
+        let psnr = |a: &PathBuf, b: &PathBuf| {
+            let (a, b) = (image::open(a).unwrap().to_rgb8(), image::open(b).unwrap().to_rgb8());
+            let mse = a.as_raw().iter().zip(b.as_raw()).map(|(x, y)| (*x as f64 - *y as f64).powi(2)).sum::<f64>() / a.as_raw().len() as f64;
+            10.0 * (255.0f64.powi(2) / mse.max(1e-12)).log10()
+        };
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let n = pairs.len();
+        for (k, steps) in sweep.iter().enumerate() {
+            let jobs = &en[k * n..(k + 1) * n];
+            let adh: Vec<f32> = jobs.iter().zip(&pairs).map(|(j, (e, _))| adherence(j, e)).collect();
+            let aesth: Vec<f32> = jobs.iter().map(|j| aes.score_path(&j.out_path).unwrap()).collect();
+            let near: Vec<f32> = jobs.iter().zip(&en[(sweep.len() - 1) * n..]).map(|(j, last)| psnr(&j.out_path, &last.out_path) as f32).collect();
+            println!("{steps} steps: adherence {:.4} {adh:.4?}, aesthetic {:.3} {aesth:.3?}, PSNR to {} steps {:.1} dB {near:.1?}", mean(&adh), mean(&aesth), sweep[sweep.len() - 1], mean(&near));
+        }
+        let en20: Vec<f32> = en[..n].iter().zip(&pairs).map(|(j, (e, _))| adherence(j, e)).collect();
+        let ru20: Vec<f32> = ru.iter().zip(&pairs).map(|(j, (e, _))| adherence(j, e)).collect();
+        for (i, (e, _)) in pairs.iter().enumerate() {
+            println!("adherence to the English text: {:.4} from English, {:.4} from Russian — {e}", en20[i], ru20[i]);
+        }
+        println!("bilingual, {} steps: English {:.4}, Russian {:.4} ({:+.1} %)", sweep[0], mean(&en20), mean(&ru20), (mean(&ru20) / mean(&en20) - 1.0) * 100.0);
+    }
+
+    /// With an encoder that has no context (8× average pooling), tiling changes nothing.
+    #[test]
+    fn a_tiled_encode_of_a_local_encoder_is_the_whole_encode() {
+        let (h, w) = (640usize, 1024usize);
+        let px: Vec<f32> = (0..3 * h * w).map(|i| ((i % 977) as f32 * 0.013).sin()).collect();
+        let pixels = Tensor::from_vec(px, (1, 3, h, w), &Device::Cpu).unwrap();
+        let pool = |t: &Tensor| -> Result<Tensor> { Ok(t.avg_pool2d(8)?) };
+        let mut tiles = 0;
+        let tiled = encode_tiled(&pixels, |t| {
+            tiles += 1;
+            pool(t)
+        })
+        .unwrap();
+        let whole = pool(&pixels).unwrap();
+        assert_eq!(tiled.dims(), whole.dims());
+        assert!(tiles > 1);
+        let v = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let worst = v(&tiled).iter().zip(v(&whole)).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        assert!(worst < 1e-5, "{worst}");
+        // An image no larger than a tile is encoded whole.
+        let small = Tensor::zeros((1, 3, 256, 256), DType::F32, &Device::Cpu).unwrap();
+        let mut calls = 0;
+        encode_tiled(&small, |t| {
+            calls += 1;
+            pool(t)
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn the_deterministic_noise_is_unit_gaussian_and_repeats() {
+        let v = |t: Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let a = v(deterministic_noise(16, 64, 64, &Device::Cpu).unwrap());
+        assert_eq!(a, v(deterministic_noise(16, 64, 64, &Device::Cpu).unwrap()));
+        let n = a.len() as f64;
+        let mean = a.iter().map(|x| *x as f64).sum::<f64>() / n;
+        let var = a.iter().map(|x| (*x as f64 - mean).powi(2)).sum::<f64>() / n;
+        assert!(mean.abs() < 0.02 && (var - 1.0).abs() < 0.03, "mean {mean}, variance {var}");
+        assert!(a.iter().all(|x| x.is_finite()));
+        // Tails exist: it is not the uniform latent.
+        assert!(a.iter().any(|x| x.abs() > 3.0));
+    }
+
+    #[test]
+    fn strength_picks_the_step_the_schedule_is_entered_at() {
+        assert_eq!(start_step(50, 1.0), 0);
+        assert_eq!(start_step(50, 0.6), 20);
+        assert_eq!(start_step(50, 0.5), 25);
+        // At least one step is run, however small the strength.
+        assert_eq!(start_step(50, 0.0), 49);
+        assert_eq!(start_step(50, 0.001), 49);
+        assert_eq!(start_step(50, 7.0), 0);
+        assert!(default_strength(true) > default_strength(false));
+    }
+
+    /// img2img and inpaint on a tiny random DiT: the endpoints the loop must hit exactly.
+    #[test]
+    fn img2img_and_inpaint_meet_their_endpoints() {
+        use crate::pipelines::kandinsky_dit::tests::{tiny, tiny_inputs, tiny_weights};
+        let cfg = tiny();
+        let dit = Dit::new(cfg.clone(), candle_nn::VarBuilder::from_tensors(tiny_weights(&cfg), DType::F32, &Device::Cpu), DType::F32).unwrap();
+        let (z0, text, pooled) = tiny_inputs(&cfg);
+        let pos = Embeds { qwen: text, pooled, ids: Vec::new(), dropped: None };
+        let noise = (z0.sin().unwrap() * 1.7).unwrap();
+        let flat = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let far = |a: &Tensor, b: &Tensor| flat(a).iter().zip(flat(b)).map(|(x, y)| (x - y).abs()).fold(0f32, f32::max);
+        let run = |init: Option<&InitLatent>| {
+            let mut nohook: Option<&mut dyn StepHook> = None;
+            denoise_observed(&dit, &pos, None, &noise, init, 6, 1.0, &mut nohook, "test", &mut |_, _| {}).unwrap()
+        };
+        let (h, w) = (z0.dim(2).unwrap(), z0.dim(3).unwrap());
+        let mask = |v: f32| Some(Tensor::full(v, (1, 1, h, w), &Device::Cpu).unwrap());
+        let txt = run(None);
+        // Strength 1 enters at sigma 1, where the image has no weight left: txt2img.
+        assert!(far(&run(Some(&InitLatent { z0: z0.clone(), strength: 1.0, mask: None })), &txt) < 1e-6);
+        // A lower strength starts nearer the image and ends somewhere else.
+        let half = run(Some(&InitLatent { z0: z0.clone(), strength: 0.5, mask: None }));
+        assert!(far(&half, &txt) > 1e-3);
+        // A mask of ones keeps nothing: plain img2img. A mask of zeros keeps everything: the image itself.
+        assert!(far(&run(Some(&InitLatent { z0: z0.clone(), strength: 0.5, mask: mask(1.0) })), &half) < 1e-6);
+        assert!(far(&run(Some(&InitLatent { z0: z0.clone(), strength: 1.0, mask: mask(0.0) })), &z0) < 1e-6);
+        // Half a mask: the kept half is the image, the other half is not.
+        let left: Vec<f32> = (0..h * w).map(|i| if i % w < w / 2 { 1.0 } else { 0.0 }).collect();
+        let out = run(Some(&InitLatent { z0: z0.clone(), strength: 1.0, mask: Some(Tensor::from_vec(left, (1, 1, h, w), &Device::Cpu).unwrap()) }));
+        let (kept, painted) = (w / 2, 0);
+        assert!(far(&out.narrow(3, kept, w / 2).unwrap(), &z0.narrow(3, kept, w / 2).unwrap()) < 1e-6);
+        assert!(far(&out.narrow(3, painted, w / 2).unwrap(), &z0.narrow(3, painted, w / 2).unwrap()) > 1e-3);
+    }
+
     #[test]
     fn too_few_steps_are_refused_before_any_work() {
         assert!(txt2img_only("img2img").to_string().contains("img2img"));
@@ -459,7 +798,7 @@ mod tests {
                 println!("latent into step {i:>2}: cosine {:.6}", cosine(x, want));
             }
         };
-        let latent = denoise_observed(&dit, &pos, Some(&neg), &p2["noise"].to_device(&device).unwrap(), steps, guidance, &mut nohook, "parity", &mut observe).unwrap();
+        let latent = denoise_observed(&dit, &pos, Some(&neg), &p2["noise"].to_device(&device).unwrap(), None, steps, guidance, &mut nohook, "parity", &mut observe).unwrap();
         println!("{steps} steps with CFG in {:.0}s on {device:?}, compute {:?}", t.elapsed().as_secs_f64(), dit.compute());
         drop(dit);
         let vae_device = decode_device(&device).unwrap();
@@ -585,7 +924,7 @@ mod tests {
         let mut files = Vec::new();
         for (tier, quantized) in [("full", false), ("quant", true)] {
             let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: quantized, dit_nf4: quantized };
-            let jobs: Vec<Job> = chosen.iter().enumerate().map(|(i, p)| Job { prompt: (*p).clone(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(tier).join(format!("{i}.png")) }).collect();
+            let jobs: Vec<Job> = chosen.iter().enumerate().map(|(i, p)| Job { prompt: (*p).clone(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(tier).join(format!("{i}.png")), init: None }).collect();
             let t = std::time::Instant::now();
             files.push(run_jobs(&settings, &jobs).await.unwrap());
             println!("{tier}: {n} images at {steps} steps in {:.0}s", t.elapsed().as_secs_f64());
@@ -715,7 +1054,7 @@ mod tests {
         // One tensor left on a stage's device pins that device's whole pool, hence the inner scope.
         let t_denoise = std::time::Instant::now();
         let latent = {
-            let on_gpu = denoise_observed(&dit, &pos, Some(&neg), &noise, 3, 3.5, &mut nohook, "probe", &mut |i, _| mem(&format!("into step {i}"))).unwrap();
+            let on_gpu = denoise_observed(&dit, &pos, Some(&neg), &noise, None, 3, 3.5, &mut nohook, "probe", &mut |i, _| mem(&format!("into step {i}"))).unwrap();
             println!("          {:.1}s a step", t_denoise.elapsed().as_secs_f64() / 3.0);
             cpu(&on_gpu)
         };

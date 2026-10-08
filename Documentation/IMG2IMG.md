@@ -47,7 +47,7 @@ plakat img2img photo.jpg --prompt "..." --strength 0.4
 | `--steps <N>` | 28 | Denoising steps. Tutorial recommends 20 with `euler-a`. |
 | `--guidance <F>` | 7.5 | Classifier-free guidance scale. |
 | `--scheduler <K>` | `default` | Scheduler name. Same set as `plakat generate`. |
-| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting; `flux-kontext-dev` (v0.18) for Flux image editing (input becomes the reference, prompt the edit). |
+| `--model <MODEL>` | `sd15` | Model alias or HF repo id. SD 1.5 / 2.1 / SDXL / SDXL-Turbo for the SD path; `flux-dev` / `flux-schnell` for Flux img2img; `flux-fill-dev` for Flux inpainting; `flux-kontext-dev` (v0.18) for Flux image editing (input becomes the reference, prompt the edit); `kandinsky5` for Kandinsky 5 img2img and inpaint. |
 | `--size <WxH>` | input dims | Override working resolution. Input is resized to match. Must be a multiple of 8. |
 | `--out <DIR>` | `./out` | Output directory. Created if absent. |
 
@@ -132,6 +132,7 @@ look worse than at 512² for SD 1.5. For higher resolution, use
 | Flux (img2img / Fill) | `plakat-flux-<seed>.png` |
 | SD3 img2img | `plakat-sd3-img2img-<seed>.png` |
 | SD3 inpaint | `plakat-sd3-inpaint-<seed>.png` |
+| Kandinsky 5 (img2img / inpaint) | `plakat-kandinsky5-<seed>.png` |
 
 With `--count N`, files are `<prefix>-<base>.png`,
 `<prefix>-<base+1>.png`, ... using consecutive seeds.
@@ -204,6 +205,46 @@ plakat img2img tall_photo.png --model flux-kontext-dev \
 
 `--strength` is ignored on Kontext (no flow-match init lerp);
 `--mask` bails loud (use `flux-fill-dev` instead).
+
+## Kandinsky 5 img2img and inpaint
+
+`plakat img2img --model kandinsky5` (7.2) runs the flow-matching form
+of both modes. The input is encoded by the family's VAE, mixed with
+fresh noise at the sigma `--strength` picks, and the rest of the
+schedule is run: `--strength 0.6 --steps 50` runs the last 30 steps.
+`--mask` adds RePaint-style inpaint — after every step the latent
+outside the mask is put back on the input's own noise trajectory, so
+only the white region is repainted. `--mask-feather` and
+`--mask-invert` work as on the other families.
+
+What is specific to the family:
+
+- **The size snaps to a native bucket** (1024², 1280×768, 768×1280,
+  1152×896, 896×1152, 1408×640, 640×1408), nearest by aspect ratio, and
+  the input is resized to it. A 1920×1080 photo is worked on at
+  1280×768.
+- **`--steps` and `--guidance` default to 50 and 3.5** when left at the
+  command's own defaults (28 and 7.5).
+- **`--quantize-qwen` and `--dit-nf4`** select the quantized tier, as on
+  `generate`.
+- **It is the slowest family** — about 15 s a step at 1024² on an M5
+  Max: each step is two forwards of a 6B transformer.
+- Not available: `--lora`, `--control*` (no adapters exist for the
+  model yet), `--tiled`, `--artefact`, `--grid`.
+
+```bash
+# Re-imagine the input — the last 60 % of the schedule
+plakat img2img photo.png --model kandinsky5 \
+ --prompt "the same scene as a watercolor painting"
+
+# Repaint only the masked region
+plakat img2img photo.png --model kandinsky5 --mask sky.png \
+ --prompt "a dramatic stormy sky"
+
+# On a 16 GB machine
+plakat img2img photo.png --model kandinsky5 --quantize-qwen --dit-nf4 \
+ --prompt "the same scene at night"
+```
 
 ## SD3 / SD3.5 img2img and inpaint
 

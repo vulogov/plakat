@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **RFC** | KANDINSKY-1 |
-| **Status** | Accepted — Phases 0–4 built (7.2.0), gates measured on Metal; P5 next |
+| **Status** | Accepted — Phases 0–5 built (7.2.0), gates measured on Metal; the TUI path is not run and CUDA is unmeasured |
 | **Target** | 7.2.0 (diversify slot after 7.1.0) |
 | **Author** | Vladimir Ulogov |
 | **Model** | `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated) |
@@ -620,6 +620,40 @@ Each phase is independently mergeable.
 - The `compile` profile, a step-count quality sweep (20/30/40/50) on the verify corpus to set the `--steps` guidance, and README, Book, and `--help` updates.
 - **Gate:** G4 and G5. Release notes state plainly that there are no LoRA or ControlNet adapters yet and that this is the slowest family.
 
+**P5 as built** (`kandinsky.rs`, `cli/img2img.rs`, `cli/scenario.rs`, `compile/`, `verify/tier2.rs`, `ui/tui/services/model_service.rs`, `imaging/io.rs`). G4 is met as function, with quality caveats; G5 is met except for the TUI, which was built and unit-tested but not run, and scenario-wide text batching, which is not done. Everything below was measured on Metal at 1024², release build.
+
+- **img2img** (`plakat img2img --model kandinsky5`). The source is encoded by the Flux VAE on the decode device (§9: `·scale`, no shift) in its own stage 1b, between the text stage and the DiT. `start_step = steps − round(strength · steps)`, held to at most `steps − 1`; the latent enters at `x = (1 − σ)·z0 + σ·noise` for that step's σ. The default strength is 0.6. With shift 5.0 that is already σ ≈ 0.88: the schedule spends most of its steps at high noise, so strength reads lower than on the UNet families.
+- **Inpaint** (`--mask`, with `--mask-feather` and `--mask-invert`). The mask is reduced to the latent grid (factor 8); after every Euler step `masked_denoise::step_blend` puts the source, re-noised to that step's σ by a `FlowSpace` over the remaining sigmas, back outside the mask. The default strength is 1.0 — the masked region starts from pure noise. `step_hook::refine` is called after the blend, so the existing step hooks see the blended latent.
+- **Measured.**
+
+  | Run | Steps run | A step | Peak footprint |
+  |---|---|---|---|
+  | img2img, strength 0.6, 30 steps | 18 | 15.38 s | 16.41 GB |
+  | inpaint, 30 steps | 30 | 15.58 s | 16.40 GB |
+  | img2img, both quantized flags, low-memory mode, whole CPU encode | 6 of 10 | 18.42 s | 8.98 GB |
+  | the same, tiled encode | 6 of 10 | 18.36 s | **7.21 GB** |
+
+  The whole CPU encode of a 1024² image cost 2 GB over the denoise's peak, so low-memory mode encodes in tiles (`encode_tiled`: 64-latent tiles at stride 48, ramp-weighted; `PLAKAT_K5_VAE_TILED` overrides either way). The remaining 0.2 GB over P4's 7 GB bar is not explained; txt2img in the same mode is 6.97 GB.
+- **Quality, as seen, on one source image.** img2img at strength 0.6 kept the composition almost exactly and did not apply the "watercolor" the prompt asked for. Inpaint left everything outside the mask untouched and filled the mask with a crude flat-sided cabin with a hard edge at the mask boundary. Neither is tuned: one image, one seed, one strength. The seams work; whether the defaults are right is open.
+- **`compile`.** `ModelFamily::Kandinsky5` (any model name containing `kandinsky`, or `k5`): long-form prose, no weight syntax, no quality boosters, a 512-token budget, the prose and relationship reinforcement the other transformer families get, and a lint when a verbatim prompt still carries `(term:N)`.
+- **`scenario`.** A Kandinsky arm at the head of the dispatch: each task snaps to its bucket, takes the family's steps and guidance when the scenario sets none, and runs its `count` images as one `run_jobs` batch. LoRAs in a task are refused. **Not done:** the scenario-wide `pre_encode` of P3's note — the text encoders are loaded once per task, not once per scenario.
+- **`scenario` and `--etch`, run.** A two-task scenario (1024² and 1280×768, 8 steps, `--etch`) rendered both tasks: 15.63 and 14.46 s a step, peak 16.20 GB, and 2023 s of wall time for 241 s of denoising — the checkpoints are read from disk again for each task, which is the cost of the missing scenario-wide encode on a slow volume. `doctor --if-plakat` reads both images as generated: L0 manifest present, L1 pixel etch 16/16 tiles, L3 fingerprint match at cosine 1.000. The L2 latent etch was not checked (its read needs a model).
+- **TUI.** `UiFamily::Kandinsky5` loads per generation through `run_hooked` with the TUI's step hook, and passes an init image and mask through. Covered by unit tests; **not run** — the TUI cannot be driven from the development session.
+- **Verify tier 2.** `kandinsky5` renders 512², 8 steps, guidance 3.5. The harness's shared deterministic latent is uniform in [−1, 1), which a flow model turns into a flat grey field — the first golden was one, and passed while testing nothing. Under `PLAKAT_VERIFY_DET_INIT` the family now draws a unit Gaussian from SplitMix64 and Box–Muller instead. The golden authored that way on the CPU (32.95 s a step, 29.2 GB footprint) is a real picture, and the Metal render matches it at SSIM 0.9969 and mean_abs 1.648 against bars of 0.97 and 4 (3.47 s a step).
+- **Refused, with a message:** in `generate`, `--quality`, `--adetailer`, `--hires-fix`, `--artefact`, `--grid` and non-PNG `--format` (added to P0's list); in `img2img`, `--lora`, `--control*`, `--tiled`, `--artefact` and `--grid`. `naturalize`'s repaint falls back to SDXL for this family, as for the other transformers.
+- **A bug in every family, found by the Russian prompts.** `save_rgb_u8_with_metadata` wrote the `parameters` chunk as `tEXt`, which is Latin-1: a Cyrillic prompt failed the PNG header after the whole render (the first step sweep lost an hour to it). `imaging::io::add_png_text` now writes `iTXt` when the text is not Latin-1 and `png_text` reads either; `etch::detect` and the book-art canvas use them.
+- **Step sweep** (4 prompts, seeds 42–45, the same noise at every step count; 16 images, 10 245 s):
+
+  | Steps | Adherence (CLIP) | Aesthetic | PSNR to the 50-step image |
+  |---|---|---|---|
+  | 20 | 0.3028 | 6.055 | 15.6 dB |
+  | 30 | 0.3025 | 6.067 | 17.2 dB |
+  | 40 | 0.2889 | 5.929 | 15.9 dB |
+  | 50 | 0.2872 | 5.986 | — |
+
+  No step count is measurably or visibly worse: the 20-step images are finished pictures, not drafts of the 50-step ones. The low PSNR is the other finding — the composition holds across step counts but the details do not (a samovar's tap changes side, a pier gains a railing), and 40 steps is no closer to 50 than 20 is. So there is no convergence to buy with more steps. **Guidance: the default stays 50, the reference's; `--steps 30` for ordinary work, 20 for drafts.** Four prompts cannot rank the counts, and the differences in the table are within their spread (per-prompt adherence at 20 steps runs 0.283–0.350).
+- **Q3, the bilingual set.** The same four prompts in Russian, at 20 steps, scored against the *English* text: 0.3055 from Russian, 0.3028 from English (+0.9 %; per prompt 0.300 / 0.284 / 0.287 / 0.351 against 0.283 / 0.286 / 0.292 / 0.350). By eye the Russian set is as faithful — the fox, the fisherman with his net, the samovar with its string of баранки, the watercolour church. `compile`'s profile therefore keeps a Russian source in Russian. Four pairs support "Russian prompts work"; they do not support a claim of a cultural advantage, and none is made.
+
 ## 14. Risks
 
 | Risk | Likelihood | Impact | Mitigation |
@@ -638,7 +672,7 @@ Each phase is independently mergeable.
 
 - Q1. **Prompt-embedding disk cache.** Should `$PLAKAT_HOME/cache/k5emb/` key embeddings by `sha256(model ‖ template ‖ max_seq ‖ prompt)`? It would make TUI re-renders with only seed or size changes skip the encode stage entirely. *Lean: yes, but in 7.3, after real usage shows the hit rate.*
 - Q2. **`--keep-encoders` default in the TUI.** Default it on when `hw` reports ≥ 40 GB? *Lean: yes, decided by `capability`, not hard-coded.*
-- Q3. **`compile` Cyrillic handling.** Is the model's Russian-language and cultural strength real enough to advertise? Treat it as unverified until P5 runs a bilingual prompt set through `clip_adherence` and human review.
+- Q3. **`compile` Cyrillic handling.** Is the model's Russian-language and cultural strength real enough to advertise? Treat it as unverified until P5 runs a bilingual prompt set through `clip_adherence` and human review. *Answered in P5: Russian prompts score the same as English ones on four pairs and look as faithful; `compile` passes a Russian source through. No cultural-strength claim is made.*
 - Q4. **KANDINSKY-2 scope.** I2I-Lite needs a Qwen2.5-VL vision encoder plus true M-RoPE. candle's `qwen3_vl` is the nearest template. Should KANDINSKY-2 vendor a `qwen2_5_vl` vision tower, or wait for candle upstream? The answer also decides whether plakat ever gets VLM-native prompt understanding beyond OWL-ViT and CLIP.
 - Q5. **Pretrain alias.** Keep `kandinsky5-pretrain` in N5, or drop it until a training RFC needs it?
 

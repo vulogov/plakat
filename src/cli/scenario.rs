@@ -4570,6 +4570,7 @@ pub async fn run_with_events(
         || variant.is_sd3()
         || variant.is_pixart()
         || variant.is_cascade()
+        || variant.is_kandinsky()
         || !has_generate_tasks
         || any_animate_tasks);
     // A handed-off Chat pipeline may be reused only when it IS the exact base this run
@@ -5206,6 +5207,7 @@ pub async fn run_with_events(
         && !variant.is_sd3()
         && !variant.is_pixart()
         && !variant.is_cascade()
+        && !variant.is_kandinsky()
         && has_generate_tasks;
 
     // Live status-board events (no-op without a sink). `emitted_records` tracks how
@@ -6964,7 +6966,30 @@ pub async fn run_with_events(
             // split. Cascade has no scenario-level LoRA wiring in
             // v0.37 (deferred to v0.38). Falls through to PixArt →
             // SD3 → SD/Flux for non-Cascade tasks.
-            if let Some(cp) = cascade_pipeline.as_mut() {
+            // 7.2 (RFC KANDINSKY-1, P5): Kandinsky 5 dispatch arm. The family is staged — text encoders,
+            // then the DiT, then the VAE, never together — so nothing is held across tasks: each task is
+            // one `run_jobs` batch (its `count` images share one encode and one DiT load).
+            if variant.is_kandinsky() {
+                use crate::pipelines::kandinsky as k5;
+                anyhow::ensure!(effective_task_loras.is_empty(), "task '{}': Kandinsky 5 has no LoRA adapters yet (RFC KANDINSKY-1, non-goal N4)", task.name);
+                let (kw, kh) = k5::snap_bucket(eff_w as u32, eff_h as u32);
+                if (kw, kh) != (eff_w as u32, eff_h as u32) {
+                    crate::ui::progress::println(&format!("kandinsky5: {eff_w}x{eff_h} → {kw}x{kh} (native bucket)"));
+                }
+                // The scenario's 28 steps at guidance 7.5 are what "not set" looks like; the family's own
+                // defaults stand in for them.
+                let unset = |task_has: bool, file_has: bool| !task_has && !file_has;
+                let k_steps = if unset(task.steps.is_some(), s.steps.is_some()) && eff_steps == 28 { k5::DEFAULT_STEPS } else { eff_steps };
+                let k_guidance = if unset(task.guidance.is_some(), s.guidance.is_some()) && (eff_guidance - 7.5).abs() < f64::EPSILON { k5::DEFAULT_GUIDANCE } else { eff_guidance };
+                let jobs: Vec<k5::Job> = (0..eff_count as u64)
+                    .map(|n| {
+                        let img_seed = task_seed.wrapping_add(n);
+                        k5::Job { prompt: final_prompt.clone(), negative: eff_negative.clone(), width: kw, height: kh, steps: k_steps, guidance: k_guidance, seed: img_seed, out_path: task_out.join(format!("plakat-kandinsky5-{img_seed}.png")), init: None }
+                    })
+                    .collect();
+                let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+                k5::run_jobs(&settings, &jobs).await?;
+            } else if let Some(cp) = cascade_pipeline.as_mut() {
                 use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
                 // Same square / divisible-by-8 contract as t2i::run.
                 // Stage C's prior is fixed at 24×24×16; the pipeline
@@ -8131,6 +8156,7 @@ fn sd_per_task_lora_preflight(
         || variant.is_sd3()
         || variant.is_pixart()
         || variant.is_cascade()
+        || variant.is_kandinsky()
     {
         return Ok(());
     }

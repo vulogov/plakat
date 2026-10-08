@@ -17,6 +17,7 @@ map: what to reach for, and what to expect from it. See the live list any time w
   chord_row("Flux", "Transformer · no CLIP token cap · write flowing prose. schnell 4-step (Apache); dev larger and gated. Quantised GGUF for modest RAM."),
   chord_row("Cascade", "Würstchen-based · ~120 tokens · efficient latent space."),
   chord_row("Sana / PixArt", "Efficient large-context prose transformers (Gemma-2 / T5-XXL) · ~256 tokens · light on memory."),
+  chord_row("Kandinsky 5", "6B flow DiT · Qwen2.5-VL language-model encoder · ~512 tokens · long prose, no weight syntax. txt2img, img2img, inpaint; no LoRA or ControlNet yet. Slowest family; quantised tier for 16 GB."),
 ))
 
 #section("Common aliases")
@@ -31,6 +32,7 @@ map: what to reach for, and what to expect from it. See the live list any time w
   chord_row("sd35-medium / sd35-large", "SD 3.5, gated. Large needs ≥32 GB or PLAKAT_SD3_LOWMEM=1."),
   chord_row("flux-schnell / flux-dev", "Flux 4-step (Apache) / larger gated dev; GGUF variants for low RAM."),
   chord_row("sana, sana-1.5, pixart", "Efficient prose transformers; T5-scale budget."),
+  chord_row("kandinsky5, kandinsky, k5", "Kandinsky 5.0 T2I Lite. Add --quantize-qwen --dit-nf4 on a 16 GB machine."),
 ))
 
 #section("The budget, keyed to the model")
@@ -46,6 +48,7 @@ first and never the subject, recording what it cut (Chapter 8).
   chord_row("~120 tokens", "Cascade."),
   chord_row("~150 tokens", "SDXL / SDXL-turbo / pony."),
   chord_row("~256 tokens", "SD 3.x / Sana / PixArt — room for rich prose."),
+  chord_row("~512 tokens", "Kandinsky 5 — long-form prose; weights in brackets are not read."),
   chord_row("no CLIP cap", "Flux — write as much flowing prose as the scene wants."),
 ))
 
@@ -54,7 +57,7 @@ first and never the subject, recording what it cut (Chapter 8).
 #chord_table((
   chord_row("512²", "SD 1.5, PixArt-512, Sana-512, sd15-inpaint."),
   chord_row("768²", "SD 2.1."),
-  chord_row("1024²", "SDXL, pony, SD 3.5, Flux, Sana, PixArt — render here, upscale later."),
+  chord_row("1024²", "SDXL, pony, SD 3.5, Flux, Sana, PixArt, Kandinsky 5 — render here, upscale later."),
 ))
 
 #section("Choosing, in one breath")

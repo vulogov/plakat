@@ -601,7 +601,7 @@ impl Dit {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn v(t: &Tensor) -> Vec<f32> {
@@ -705,13 +705,13 @@ mod tests {
         assert!(patchify(&Tensor::zeros((1, 2, 3, 4), DType::F32, &Device::Cpu).unwrap()).is_err());
     }
 
-    fn tiny() -> Config {
+    pub(crate) fn tiny() -> Config {
         Config { in_visual_dim: 4, out_visual_dim: 4, time_dim: 32, model_dim: 64, ff_dim: 128, num_text_blocks: 2, num_visual_blocks: 3, axes_dims: [4, 6, 6], in_text_dim: 24, in_text_dim2: 12 }
     }
 
     /// Random BF16-representable weights for a tiny DiT. The reference zero-initialises its modulations;
     /// here they are random too, so the modulate and gate paths are exercised.
-    fn tiny_weights(cfg: &Config) -> HashMap<String, Tensor> {
+    pub(crate) fn tiny_weights(cfg: &Config) -> HashMap<String, Tensor> {
         let vm = candle_nn::VarMap::new();
         Dit::new(cfg.clone(), VarBuilder::from_varmap(&vm, DType::F32, &Device::Cpu), DType::F32).unwrap();
         let mut seed = 1u64;
@@ -739,7 +739,7 @@ mod tests {
             .collect()
     }
 
-    fn tiny_inputs(cfg: &Config) -> (Tensor, Tensor, Tensor) {
+    pub(crate) fn tiny_inputs(cfg: &Config) -> (Tensor, Tensor, Tensor) {
         let f = |n: usize, k: f32| (0..n).map(|i| (i as f32 * k).sin()).collect::<Vec<f32>>();
         let lat = Tensor::from_vec(f(4 * 8 * 12, 0.37), (1, 4, 8, 12), &Device::Cpu).unwrap();
         let text = Tensor::from_vec(f(5 * cfg.in_text_dim, 0.11), (1, 5, cfg.in_text_dim), &Device::Cpu).unwrap();

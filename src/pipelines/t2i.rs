@@ -2901,6 +2901,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             keep_encoders: req.kandinsky_keep_encoders,
             quantize_qwen: req.kandinsky_quantize_qwen,
             dit_nf4: req.kandinsky_dit_nf4,
+            init: None,
         })
         .await?;
         return Ok(None);
