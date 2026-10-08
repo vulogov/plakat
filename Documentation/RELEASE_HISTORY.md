@@ -30,9 +30,11 @@ is checked against dumps of the diffusers reference.
 **What it does.**
 
 - **txt2img, img2img and inpaint** — `plakat generate` and `plakat img2img` (`--mask` for inpaint), at
-  seven native size buckets around 1024². img2img enters the schedule at `--strength` (default 0.6);
-  inpaint repaints the masked region from pure noise by default and holds the rest to the source at
-  every step.
+  seven native size buckets around 1024². `--strength` (default 0.6) has its own scale here, mapped to
+  a start noise level so that the whole range is usable: 0.3 re-renders fine detail, 0.6 redraws detail
+  and keeps the composition, 0.75 changes the medium. Inpaint repaints the masked region from pure
+  noise by default, holds the rest to the source at every step, and feathers the mask by 48 px; its
+  prompt should describe the whole picture, not the patch.
 - **16 GB of memory, or 7 GB quantised.** The text encoders, the transformer and the VAE are never
   loaded together (peak 16.1 GB at every bucket). `--quantize-qwen --dit-nf4` runs the text tower as a
   4-bit GGUF and the transformer from NF4 weights: 7.0 GB peak on a machine with under 24 GB of RAM,
@@ -50,9 +52,8 @@ pictures are equally finished. The default stays at the reference's 50; `--steps
 setting and 20 is fine for drafts. Four prompts cannot rank the step counts — they show only that none
 of them is visibly worse.
 
-**Known limits.** img2img at strength 0.6 keeps the source's composition closely and did not carry a
-style change in the one case tried; inpaint keeps everything outside the mask but the one fill tried
-was crude, with a hard edge. Both are measured for speed and memory, not tuned for quality. The
+**Known limits.** The img2img strength scale and the inpaint defaults were tuned on two source
+pictures and one mask; how far a given strength moves a picture depends on the picture. The
 low-memory img2img peak is 7.2 GB, not 7.0. `scenario` encodes the prompts of each task separately, not
 once for the whole run. CUDA is unmeasured.
 

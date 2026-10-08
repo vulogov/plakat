@@ -497,7 +497,7 @@ fn model_loop(
                         if (width, height) != (job.width, job.height) {
                             crate::ui::progress::println(&format!("  kandinsky5: {}x{} → {width}x{height} (native bucket)", job.width, job.height));
                         }
-                        let init = job.init_image.clone().map(|image| k5::Init { image, strength: if job.strength > 0.0 { job.strength.min(1.0) } else { k5::default_strength(job.mask.is_some()) }, mask: job.mask.clone(), mask_feather: 8, mask_invert: false });
+                        let init = job.init_image.clone().map(|image| k5::Init { image, strength: if job.strength > 0.0 { job.strength.min(1.0) } else { k5::default_strength(job.mask.is_some()) }, mask: job.mask.clone(), mask_feather: k5::DEFAULT_MASK_FEATHER, mask_invert: false });
                         let req = k5::RunRequest {
                             model: alias.clone(),
                             device: device.clone(),

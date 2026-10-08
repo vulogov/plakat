@@ -135,10 +135,37 @@ pub fn default_strength(masked: bool) -> f32 {
     if masked { 1.0 } else { 0.6 }
 }
 
-/// The step an img2img run enters the schedule at: `strength` of the steps are run, at least one.
-pub fn start_step(steps: usize, strength: f32) -> usize {
-    let run = (strength.clamp(0.0, 1.0) as f64 * steps as f64).round() as usize;
-    steps.saturating_sub(run).min(steps.saturating_sub(1))
+/// The mask feather `plakat img2img` uses for this family when none is given, in pixels. The model
+/// has no inpaint conditioning, so a binary mask leaves a visible seam; measured at 1024², 48 px
+/// does not and 8 px (the other families' default) still does.
+pub const DEFAULT_MASK_FEATHER: u32 = 48;
+
+/// How `--strength` maps to the sigma an img2img run starts at: `shift_t(strength, STRENGTH_SHIFT)`.
+/// At a megapixel this model keeps a source image's composition until almost no signal is left:
+/// measured on a photograph, sigma 0.93 changes only fine detail, 0.978 redraws detail and keeps the
+/// subject and the look, and the look itself first gives way near 0.986. Entering the schedule at
+/// `strength` of its steps (sigma 0.88 at 0.6) therefore packed every visible change into the top
+/// tenth of the scale. With this shift 0.3 → 0.908, 0.5 → 0.958, 0.6 → 0.972, 0.75 → 0.986 and
+/// 0.9 → 0.995.
+pub const STRENGTH_SHIFT: f64 = 23.0;
+
+/// The sigmas a run steps through, ending at 0: the reference schedule for txt2img (`None`) and for
+/// strength 1; for a lower strength the same schedule's spacing over the part below its start sigma
+/// (see [`STRENGTH_SHIFT`]), in the share of `steps` that part is of the whole — at least one step.
+pub fn run_sigmas(steps: usize, strength: Option<f32>) -> Vec<f64> {
+    use super::sana::shift_t;
+    let strength = strength.map_or(1.0, |s| s.clamp(0.0, 1.0) as f64);
+    if strength >= 1.0 || steps < 2 {
+        return sigmas(steps);
+    }
+    let floor = shift_t(1.0 / 1000.0, SCHEDULER_SHIFT);
+    let sigma = shift_t(strength, STRENGTH_SHIFT);
+    // The schedule's own (unshifted) time at that sigma.
+    let t = (sigma / (SCHEDULER_SHIFT - (SCHEDULER_SHIFT - 1.0) * sigma)).max(floor);
+    let n = ((t * steps as f64).round() as usize).clamp(1, steps);
+    let mut sig: Vec<f64> = (0..n).map(|k| shift_t(if n == 1 { t } else { t - k as f64 * (t - floor) / (n - 1) as f64 }, SCHEDULER_SHIFT)).collect();
+    sig.push(0.0);
+    sig
 }
 
 /// What a batch shares.
@@ -189,8 +216,8 @@ pub fn denoise(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, st
     denoise_observed(dit, pos, neg, noise, None, steps, guidance, hook, label, &mut |_, _| {})
 }
 
-/// [`denoise`] from an image instead of from noise: the schedule is entered at [`start_step`] with the
-/// image noised to that sigma, and with a mask the latent outside it is returned to the image's
+/// [`denoise`] from an image instead of from noise: the run starts at the sigma [`run_sigmas`] gives its
+/// strength, with the image noised to that sigma, and with a mask the latent outside it is returned to the image's
 /// trajectory after every step.
 #[allow(clippy::too_many_arguments)]
 pub fn denoise_from(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tensor, init: &InitLatent, steps: usize, guidance: f64, hook: &mut Option<&mut dyn StepHook>, label: &str) -> Result<Tensor> {
@@ -203,19 +230,20 @@ fn denoise_observed(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tenso
     if steps < 2 {
         anyhow::bail!("Kandinsky 5 needs at least 2 steps (got {steps}); the default is {DEFAULT_STEPS}");
     }
-    let sig = sigmas(steps);
+    // From here `steps` is the number of steps this run takes.
+    let sig = run_sigmas(steps, init.map(|i| i.strength));
+    let steps = sig.len() - 1;
     let noise = noise.to_dtype(DType::F32)?;
-    let start = init.map_or(0, |i| start_step(steps, i.strength));
     let mut x = match init {
         None => noise.clone(),
-        Some(i) => ((i.z0.to_dtype(DType::F32)? * (1.0 - sig[start]))? + (&noise * sig[start])?)?,
+        Some(i) => ((i.z0.to_dtype(DType::F32)? * (1.0 - sig[0]))? + (&noise * sig[0])?)?,
     };
     // The level after the run's step `k` is the sigma it moves to. The latent is NCHW already; the DiT
     // patches it 2×2, hence 16 image pixels a token.
-    let space = FlowSpace::new((start..steps).map(|i| sig[i + 1] as f32).collect(), LatentGeometry { v: 8, u: 16, pool_levels: 2 });
-    let bar = crate::ui::progress::step_bar((steps - start) as u64, label);
-    for i in start..steps {
-        if step_hook::step(hook, i - start, steps - start) == StepControl::Cancel || step_hook::is_cancelled(hook) {
+    let space = FlowSpace::new((0..steps).map(|i| sig[i + 1] as f32).collect(), LatentGeometry { v: 8, u: 16, pool_levels: 2 });
+    let bar = crate::ui::progress::step_bar(steps as u64, label);
+    for i in 0..steps {
+        if step_hook::step(hook, i, steps) == StepControl::Cancel || step_hook::is_cancelled(hook) {
             bar.abandon();
             anyhow::bail!("cancelled at step {i} of {steps}");
         }
@@ -228,9 +256,9 @@ fn denoise_observed(dit: &Dit, pos: &Embeds, neg: Option<&Embeds>, noise: &Tenso
         }
         x = (x + (v * (sig[i + 1] - sig[i]))?)?;
         if let Some(InitLatent { z0, mask: Some(mask), .. }) = init {
-            x = masked_denoise::step_blend(&space, &x, mask, z0, &noise, i - start)?;
+            x = masked_denoise::step_blend(&space, &x, mask, z0, &noise, i)?;
         }
-        x = step_hook::refine(hook, i - start, steps - start, &space, x)?;
+        x = step_hook::refine(hook, i, steps, &space, x)?;
         bar.inc(1);
     }
     bar.finish_and_clear();
@@ -433,10 +461,11 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mu
             None => None,
             Some(i) => Some(InitLatent { z0: i.z0.to_device(device)?, strength: i.strength, mask: i.mask.as_ref().map(|m| m.to_device(device)).transpose()? }),
         };
-        let run = j.steps - init.as_ref().map_or(0, |i| start_step(j.steps, i.strength));
+        let sig = run_sigmas(j.steps, init.as_ref().map(|i| i.strength));
+        let run = sig.len() - 1;
         let mode = match &init {
             None => String::new(),
-            Some(i) => format!(", {} at strength {} — {run} of them run", if i.mask.is_some() { "inpaint" } else { "img2img" }, i.strength),
+            Some(i) => format!(", {} at strength {} — from sigma {:.3}, {run} of them run", if i.mask.is_some() { "inpaint" } else { "img2img" }, i.strength, sig[0]),
         };
         println(format!("  kandinsky5 {} of {} (seed={}, {}x{}, {} steps, guidance {}{mode})", n + 1, jobs.len(), j.seed, j.width, j.height, j.steps, j.guidance));
         let t = std::time::Instant::now();
@@ -660,6 +689,41 @@ mod tests {
         println!("bilingual, {} steps: English {:.4}, Russian {:.4} ({:+.1} %)", sweep[0], mean(&en20), mean(&ru20), (mean(&ru20) / mean(&en20) - 1.0) * 100.0);
     }
 
+    /// img2img and inpaint tuning, one load: a strength ladder on two sources (`PLAKAT_TUNE_IMAGE`,
+    /// `PLAKAT_TUNE_IMAGE2`) and an inpaint of the first with `PLAKAT_TUNE_MASK`, into `PLAKAT_TUNE_OUT`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_p5_tune() {
+        let env = |k: &str| std::path::PathBuf::from(std::env::var(k).unwrap_or_else(|_| panic!("set {k}")));
+        let (image, mask, out) = (env("PLAKAT_TUNE_IMAGE"), env("PLAKAT_TUNE_MASK"), env("PLAKAT_TUNE_OUT"));
+        let base = crate::device::select("auto").unwrap();
+        let settings = Settings { model: "kandinsky5".into(), device: base, max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+        let job = |prompt: &str, name: &str, strength: f32, feather: Option<u32>| Job {
+            prompt: prompt.to_string(),
+            negative: String::new(),
+            width: 1024,
+            height: 1024,
+            steps: 30,
+            guidance: DEFAULT_GUIDANCE,
+            seed: 42,
+            out_path: out.join(format!("{name}.png")),
+            init: Some(Init { image: image.clone(), strength, mask: feather.map(|_| mask.clone()), mask_feather: feather.unwrap_or(0), mask_invert: false }),
+        };
+        // Batch 2: the strength scale after its remapping, on two sources (`PLAKAT_TUNE_IMAGE2` is the second).
+        let second = env("PLAKAT_TUNE_IMAGE2");
+        let paint = "a watercolor painting of a red fox sitting in fresh snow, loose brushwork, visible paper texture";
+        let oil = "an oil painting of an old fisherman mending a net on a wooden pier, thick impasto brushstrokes, canvas texture";
+        let mut jobs: Vec<Job> = [0.3f32, 0.5, 0.6, 0.75, 0.85].iter().map(|&s| job(paint, &format!("fox_{}", (s * 100.0).round() as u32), s, None)).collect();
+        for s in [0.5f32, 0.6, 0.75, 0.85] {
+            let mut j = job(oil, &format!("pier_{}", (s * 100.0).round() as u32), s, None);
+            j.init.as_mut().unwrap().image = second.clone();
+            jobs.push(j);
+        }
+        let whole = "a red fox sitting in fresh snow at dawn, and behind it in the distance a small wooden cabin with a lit window";
+        jobs.push(job(whole, "inp_whole_s100_f48_b", 1.0, Some(DEFAULT_MASK_FEATHER)));
+        run_jobs(&settings, &jobs).await.unwrap();
+    }
+
     /// With an encoder that has no context (8× average pooling), tiling changes nothing.
     #[test]
     fn a_tiled_encode_of_a_local_encoder_is_the_whole_encode() {
@@ -705,14 +769,26 @@ mod tests {
     }
 
     #[test]
-    fn strength_picks_the_step_the_schedule_is_entered_at() {
-        assert_eq!(start_step(50, 1.0), 0);
-        assert_eq!(start_step(50, 0.6), 20);
-        assert_eq!(start_step(50, 0.5), 25);
+    fn strength_picks_the_sigma_the_run_starts_at() {
+        // No strength, strength 1 and anything above it: the reference schedule itself.
+        assert_eq!(run_sigmas(50, None), sigmas(50));
+        assert_eq!(run_sigmas(50, Some(1.0)), sigmas(50));
+        assert_eq!(run_sigmas(50, Some(7.0)), sigmas(50));
+        // The measured points the mapping is built on.
+        for (strength, sigma) in [(0.3f32, 0.908), (0.5, 0.958), (0.6, 0.972), (0.75, 0.986), (0.9, 0.995)] {
+            let sig = run_sigmas(30, Some(strength));
+            assert!((sig[0] - sigma).abs() < 1e-3, "strength {strength}: sigma {}", sig[0]);
+            assert!(sig.windows(2).all(|w| w[1] < w[0]) && *sig.last().unwrap() == 0.0);
+            assert!(sig.len() - 1 <= 30);
+        }
+        // Fewer steps for a lower strength, and the start sigma does not depend on the step count.
+        assert!(run_sigmas(30, Some(0.3)).len() < run_sigmas(30, Some(0.9)).len());
+        assert!((run_sigmas(20, Some(0.6))[0] - run_sigmas(50, Some(0.6))[0]).abs() < 1e-12);
         // At least one step is run, however small the strength.
-        assert_eq!(start_step(50, 0.0), 49);
-        assert_eq!(start_step(50, 0.001), 49);
-        assert_eq!(start_step(50, 7.0), 0);
+        for s in [0.0f32, 0.001] {
+            let sig = run_sigmas(50, Some(s));
+            assert!(sig.len() == 2 && sig[0] > 0.0 && sig[1] == 0.0, "{sig:?}");
+        }
         assert!(default_strength(true) > default_strength(false));
     }
 
