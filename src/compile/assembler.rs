@@ -124,8 +124,24 @@ NOT comma-separated tags. Aim 80-300 tokens.\n\
 reach the model as literal punctuation. Express emphasis in words and by putting what matters first.\n\
 - Do NOT use SD-style quality boosters (masterpiece, best quality, 8k — no effect).\n\
 - Be concrete about what is where, materials, light, and the medium or style.\n\
-- The model reads Russian as well as English: write the prompt in the language of the source text and do \
-NOT translate it unless a translation is asked for.";
+- Write the prompt in the SAME language as the input: English in, English out; Russian in, Russian out \
+(the model reads both equally well). Do NOT translate unless a translation is asked for.";
+
+/// The system prompt `generate --enhance` uses on a family whose profile the generic enhancer prompt
+/// (70 tokens of comma-separated detail) works against: a rewrite into that family's kind of prompt
+/// that keeps what the user wrote.
+pub fn enhance_system(f: ModelFamily) -> String {
+    format!(
+        "You rewrite text-to-image prompts for a specific model.\n\
+- Keep EVERY element of the input and every colour it names, however unusual (blue grass, a green sky): \
+never normalise, drop or \"correct\" them. Fix obvious typos.\n\
+- `(term:N)` in the input marks emphasis (N above 1 = stronger): keep the term, drop the brackets and the \
+number, and make it prominent in words.\n\
+- Add concrete visual detail only where the input leaves it open (composition, light, mood).\n\
+- Output ONLY the rewritten prompt: no preamble, no quotes, no notes.\n\n{}",
+        family_section(f)
+    )
+}
 
 fn family_section(f: ModelFamily) -> &'static str {
     match f {
@@ -704,6 +720,14 @@ mod tests {
         assert!(scene_warnings("s", &[], "a red fox in snow", ModelFamily::Kandinsky5, false).is_empty());
         assert_eq!(family_token_budget(ModelFamily::Kandinsky5), 512);
         assert!(family_section(ModelFamily::Kandinsky5).contains("Kandinsky 5"));
+        // `generate --enhance` on the family: the family's brief, and the user's elements are kept.
+        let brief = enhance_system(ModelFamily::Kandinsky5);
+        assert!(brief.contains("Kandinsky 5") && brief.contains("EVERY element") && brief.contains("(term:N)"));
+        // What `generate` does to a weighted prompt on the family: brackets off, emphasis in words.
+        let weighted = "a steppe with (blue grass:1.6) under a (green sky:1.5)";
+        assert_eq!(strip_weight_spans(weighted), "a steppe with blue grass under a green sky");
+        let said = prose_reinforcement(weighted, ModelFamily::Kandinsky5).unwrap();
+        assert!(said.contains("blue grass") && said.contains("green sky"));
         let w = scene_warnings("s", &[], &long, ModelFamily::Sd15, true);
         assert!(w.iter().any(|m| m.contains("exceeds")), "budget warned: {w:?}");
         // Enhanced + style dropped → style warning; verbatim (enhanced=false) → no style warning.

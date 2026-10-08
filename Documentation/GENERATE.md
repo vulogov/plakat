@@ -93,8 +93,14 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
   picture of the same seed. Guidance ≤ 1 skips the negative prompt
   and halves the time.
 - **Prompting.** Long natural-language prose, up to 512 tokens
-  (`--max-seq`, at most 1023). `(term:1.3)` weights are not read.
+  (`--max-seq`, at most 1023). The model has no weight parser, so
+  `(term:1.3)` is taken out of the prompt and the emphasis is restated
+  in words at the end of it; the prompt that is used is printed.
   Prompts in Russian work as well as prompts in English.
+- **`--enhance`** uses a brief written for this family instead of the
+  generic one: long prose, every element and colour of your prompt
+  kept (blue grass stays blue), weights turned into words, the output
+  in the language of the input. `--enhance-system` still overrides it.
 - **The quantized tier.** `--quantize-qwen` loads the text tower as a
   4-bit GGUF and `--dit-nf4` runs the transformer from NF4 weights.
   Together they peak at 7 GB on a machine with under 24 GB of RAM and
