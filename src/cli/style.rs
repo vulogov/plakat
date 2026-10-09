@@ -84,7 +84,7 @@ pub struct TrainArgs {
     /// a long run.
     #[arg(help_heading = "Training", long = "log-every", default_value_t = 10)]
     pub log_every: usize,
-    /// Training resolution (256 fits 24 GB; higher needs more memory — kandinsky5: 512 takes 25 GB, 1024 takes 43 GB).
+    /// Training resolution (256 fits 24 GB; higher needs more memory — kandinsky5: 512 takes 22 GB, 1024 takes 30 GB).
     #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
     /// Learning rate.

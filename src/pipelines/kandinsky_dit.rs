@@ -209,6 +209,43 @@ fn wide(l: &Linear, xs: &Tensor) -> Result<Tensor> {
     Ok(Linear::new(l.weight().to_dtype(dt)?, bias).forward(xs)?)
 }
 
+/// The frozen weight of an adapted layer, as one node of the graph. Left to the tape, a matmul is
+/// differentiated with respect to both of its factors: every backward pass would also compute the
+/// gradient of the weight — a product as large as the layer's own — and hold it, at the weight's F32
+/// size, until the pass is over. Nothing reads it. Here the backward pass is `grad · W` and no more.
+/// Holds the layer's input, detached.
+struct Frozen {
+    layer: Linear,
+    x: Tensor,
+}
+
+impl candle_core::CustomOp1 for Frozen {
+    fn name(&self) -> &'static str {
+        "kandinsky-frozen-linear"
+    }
+
+    fn cpu_fwd(&self, _: &candle_core::CpuStorage, _: &candle_core::Layout) -> candle_core::Result<(candle_core::CpuStorage, candle_core::Shape)> {
+        let out = wide(&self.layer, &self.x).map_err(candle_core::Error::wrap)?.contiguous()?;
+        match &*out.storage_and_layout().0 {
+            candle_core::Storage::Cpu(s) => Ok((s.clone(), out.shape().clone())),
+            _ => candle_core::bail!("a linear layer on the CPU gave a tensor elsewhere"),
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    fn metal_fwd(&self, _: &candle_core::MetalStorage, _: &candle_core::Layout) -> candle_core::Result<(candle_core::MetalStorage, candle_core::Shape)> {
+        let out = wide(&self.layer, &self.x).map_err(candle_core::Error::wrap)?.contiguous()?;
+        match &*out.storage_and_layout().0 {
+            candle_core::Storage::Metal(s) => Ok((s.clone(), out.shape().clone())),
+            _ => candle_core::bail!("a linear layer on Metal gave a tensor elsewhere"),
+        }
+    }
+
+    fn bwd(&self, _: &Tensor, _: &Tensor, grad: &Tensor) -> candle_core::Result<Option<Tensor>> {
+        Ok(Some(grad.broadcast_matmul(&self.layer.weight().to_dtype(grad.dtype())?)?))
+    }
+}
+
 /// A block's linear layer: the checkpoint's dense weights, or NF4 (`--dit-nf4`, RFC §10.2) — 4-bit
 /// codes, two to a byte, and an absmax per 64 values, both on the model's device. A call dequantizes
 /// there: the bytes index a 256-row table of code pairs and the blocks are scaled by their absmax, so
@@ -360,7 +397,12 @@ impl Lin {
             Lin::Tuned { base, a, b, scale } => {
                 let dt = xs.dtype();
                 let low = Linear::new(a.to_dtype(dt)?, None).forward(xs)?;
-                Ok((base.forward(xs)? + (Linear::new(b.to_dtype(dt)?, None).forward(&low)? * *scale)?)?)
+                let through = match &**base {
+                    // (The node is written for the CPU and Metal; on CUDA the tape takes the layer.)
+                    Lin::Dense(l) if !xs.device().is_cuda() => xs.apply_op1(Frozen { layer: l.clone(), x: xs.detach() })?,
+                    base => base.forward(xs)?,
+                };
+                Ok((through + (Linear::new(b.to_dtype(dt)?, None).forward(&low)? * *scale)?)?)
             }
         }
     }
@@ -646,6 +688,11 @@ impl FeedForward {
     }
 }
 
+/// The residual sublayers of a text block and of a visual block ([`Dit::text_stage`],
+/// [`Dit::visual_stage`]).
+pub const TEXT_STAGES: usize = 2;
+pub const VISUAL_STAGES: usize = 3;
+
 /// `Kandinsky5TransformerEncoderBlock`: the text stream. Time-modulated, so it runs every step (T8).
 struct TextBlock {
     modulation: Modulation,
@@ -655,11 +702,17 @@ struct TextBlock {
 
 impl TextBlock {
     fn forward(&self, x: &Tensor, time_act: &Tensor, rope: &Rope) -> Result<Tensor> {
+        (0..TEXT_STAGES).try_fold(x.clone(), |x, n| self.stage(n, &x, time_act, rope))
+    }
+
+    /// Residual sublayer `n` of the block: attention, then the feed-forward. The block is the chain
+    /// of them, which lets the trainer differentiate it one sublayer at a time.
+    fn stage(&self, n: usize, x: &Tensor, time_act: &Tensor, rope: &Rope) -> Result<Tensor> {
         let p = self.modulation.params(time_act)?;
-        let out = self.attention.forward(&modulate(x, &p[0], &p[1])?, None, Some(rope))?;
-        let x = residual(x, &p[2], &out)?;
-        let out = self.feed_forward.forward(&modulate(&x, &p[3], &p[4])?)?;
-        residual(&x, &p[5], &out)
+        match n {
+            0 => residual(x, &p[2], &self.attention.forward(&modulate(x, &p[0], &p[1])?, None, Some(rope))?),
+            _ => residual(x, &p[5], &self.feed_forward.forward(&modulate(x, &p[3], &p[4])?)?),
+        }
     }
 }
 
@@ -673,13 +726,18 @@ struct VisualBlock {
 
 impl VisualBlock {
     fn forward(&self, x: &Tensor, text: &Tensor, time_act: &Tensor, rope: &Rope) -> Result<Tensor> {
+        (0..VISUAL_STAGES).try_fold(x.clone(), |x, n| self.stage(n, &x, text, time_act, rope))
+    }
+
+    /// Residual sublayer `n` of the block: self-attention, cross-attention to `text` (the only one
+    /// that reads it), the feed-forward.
+    fn stage(&self, n: usize, x: &Tensor, text: &Tensor, time_act: &Tensor, rope: &Rope) -> Result<Tensor> {
         let p = self.modulation.params(time_act)?;
-        let out = self.self_attention.forward(&modulate(x, &p[0], &p[1])?, None, Some(rope))?;
-        let x = residual(x, &p[2], &out)?;
-        let out = self.cross_attention.forward(&modulate(&x, &p[3], &p[4])?, Some(text), None)?;
-        let x = residual(&x, &p[5], &out)?;
-        let out = self.feed_forward.forward(&modulate(&x, &p[6], &p[7])?)?;
-        residual(&x, &p[8], &out)
+        match n {
+            0 => residual(x, &p[2], &self.self_attention.forward(&modulate(x, &p[0], &p[1])?, None, Some(rope))?),
+            1 => residual(x, &p[5], &self.cross_attention.forward(&modulate(x, &p[3], &p[4])?, Some(text), None)?),
+            _ => residual(x, &p[8], &self.feed_forward.forward(&modulate(x, &p[6], &p[7])?)?),
+        }
     }
 }
 
@@ -871,6 +929,16 @@ impl Dit {
     /// Visual block `i` on the visual stream, attending to the text stream after its blocks.
     pub fn visual_block(&self, i: usize, visual: &Tensor, text: &Tensor, s: &Staged) -> Result<Tensor> {
         self.visual_blocks[i].forward(visual, text, &s.time_act, &s.visual_rope)
+    }
+
+    /// Sublayer `n` (of [`TEXT_STAGES`]) of text block `i`; the block is the chain of them.
+    pub fn text_stage(&self, i: usize, n: usize, text: &Tensor, s: &Staged) -> Result<Tensor> {
+        self.text_blocks[i].stage(n, text, &s.time_act, &s.text_rope)
+    }
+
+    /// Sublayer `n` (of [`VISUAL_STAGES`]) of visual block `i`; the block is the chain of them.
+    pub fn visual_stage(&self, i: usize, n: usize, visual: &Tensor, text: &Tensor, s: &Staged) -> Result<Tensor> {
+        self.visual_blocks[i].stage(n, visual, text, &s.time_act, &s.visual_rope)
     }
 
     /// The output layer on the visual stream after its blocks: velocity tokens `(1, gh · gw, 4C)` in F32,

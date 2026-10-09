@@ -19,9 +19,15 @@
 //!    gradients with respect to the block's adapters are their gradients of the loss.
 //!
 //! The text stream is an input of every visual block, so its gradient is summed over them and then
-//! walked back through the text blocks the same way. Each block is run twice and differentiated once;
-//! the memory is one block's graph, whatever the depth. A test checks the result against one backward
-//! through the whole model.
+//! walked back through the text blocks the same way.
+//!
+//! **A block is itself a chain** of residual sublayers — self-attention, cross-attention, the
+//! feed-forward — and is differentiated one sublayer at a time in the same way; the feed-forward, which
+//! works on each token alone, a thousand tokens at a time. The memory is one sublayer's graph, whatever
+//! the depth. What that buys is measured in buffers, not tensors: candle's Metal pool rounds a buffer
+//! up to a power of two, never frees one, and hands a free 256 MB buffer to a 42 MB tensor. With a
+//! whole block's graph alive at 1024x1024 the pool held 21.5 GB for 8.8 GB of tensors. A test checks
+//! the result against one backward through the whole model.
 
 use std::path::{Path, PathBuf};
 
@@ -29,7 +35,7 @@ use anyhow::{Context, Result};
 use candle_core::backprop::GradStore;
 use candle_core::{DType, Device, Tensor, Var};
 
-use super::kandinsky_dit::{patchify_out, Adapter, Dit};
+use super::kandinsky_dit::{patchify_out, Adapter, Dit, TEXT_STAGES, VISUAL_STAGES};
 
 /// The reference trainer's `scheduler_scale`: the shift of the sampled timestep. (Sampling uses 5.0.)
 pub const TRAIN_SHIFT: f64 = 3.0;
@@ -67,6 +73,64 @@ fn collect(from: &mut GradStore, kept: &mut Vec<(Var, Tensor)>, adapters: &[Adap
     Ok(())
 }
 
+/// The tokens a feed-forward sublayer takes at a time. It works on each token alone, so it is run and
+/// differentiated in pieces, and its four-times-wider hidden layer is then no larger than the
+/// stream at 512x512. (Whole, at a megapixel, it asks the pool for 256 MB buffers, and those stay,
+/// to be handed to 42 MB tensors.)
+const FF_TOKENS: usize = if cfg!(test) { 3 } else { 1024 };
+
+/// Up to this many bytes of visual sublayer inputs are kept from the forward pass; beyond it a
+/// block's are made again on the way back, which costs time and not memory.
+const SUBLAYER_KEEP_BYTES: usize = 2 << 30;
+
+/// A sublayer on `x`, with no graph kept; `tokens` at a time when it is a feed-forward.
+fn forward(stage: &dyn Fn(&Tensor) -> Result<Tensor>, x: &Tensor, tokens: usize) -> Result<Tensor> {
+    let l = x.dim(1)?;
+    if l <= tokens {
+        return Ok(stage(x)?.detach());
+    }
+    let parts = (0..l).step_by(tokens).map(|o| Ok(stage(&x.narrow(1, o, tokens.min(l - o))?)?.detach())).collect::<Result<Vec<_>>>()?;
+    Ok(Tensor::cat(&parts, 1)?)
+}
+
+/// Back through one sublayer: from its parked input `x` and the gradient `g` of its output, the
+/// gradient of its input, that of the text stream if the sublayer read it, and — into `kept` — those
+/// of its adapters. `tokens` at a time, the pieces' adapter gradients summed.
+#[allow(clippy::too_many_arguments)]
+fn back(stage: &dyn Fn(&Tensor, Option<&Tensor>) -> Result<Tensor>, x: &Tensor, g: &Tensor, text: Option<&Tensor>, tokens: usize, device: &Device, kept: &mut Vec<(Var, Tensor)>, adapters: &[Adapter], prefix: &str) -> Result<(Tensor, Option<Tensor>)> {
+    let l = x.dim(1)?;
+    let (mut gx, mut gt, mut sums): (Vec<Tensor>, Option<Tensor>, Vec<(Var, Tensor)>) = (Vec::new(), None, Vec::new());
+    for o in (0..l).step_by(tokens.min(l)) {
+        let n = tokens.min(l - o);
+        // A piece is copied out before it is uploaded: a view would take the whole tensor with it.
+        let piece = |t: &Tensor| if n == l { Ok(t.clone()) } else { t.narrow(1, o, n)?.force_contiguous() };
+        let xv = Var::from_tensor(&piece(x)?.to_device(device)?)?;
+        let tv = text.map(|t| Var::from_tensor(&t.to_device(device)?)).transpose()?;
+        let out = stage(xv.as_tensor(), tv.as_ref().map(|t| t.as_tensor()))?;
+        let mut grads = (out.to_dtype(DType::F32)? * piece(g)?.to_device(device)?)?.sum_all()?.backward()?;
+        gx.push(park(&take(&mut grads, &xv, "a sublayer's input")?)?);
+        if let Some(t) = tv.as_ref().and_then(|tv| grads.remove(tv.as_tensor())) {
+            let t = park(&t)?;
+            gt = Some(match gt {
+                Some(sum) => (sum + t)?,
+                None => t,
+            });
+        }
+        let mut got = Vec::new();
+        collect(&mut grads, &mut got, adapters, prefix)?;
+        if sums.is_empty() {
+            sums = got;
+        } else {
+            anyhow::ensure!(sums.len() == got.len(), "a piece of a sublayer reached other adapters than the first");
+            for ((_, sum), (_, piece)) in sums.iter_mut().zip(got) {
+                *sum = (&*sum + piece)?;
+            }
+        }
+    }
+    kept.extend(sums);
+    Ok((if gx.len() == 1 { gx.remove(0) } else { Tensor::cat(&gx, 1)? }, gt))
+}
+
 /// `PLAKAT_K5_TRAIN_TRACE=1`: print the process footprint at each stage of a step.
 fn trace(what: &str) {
     if std::env::var_os("PLAKAT_K5_TRAIN_TRACE").is_some() {
@@ -77,6 +141,12 @@ fn trace(what: &str) {
 /// The flow-matching loss of one sample at noise level `sigma`, and the gradient of every adapter —
 /// block by block, as the module header describes. `z0` and `noise` are NCHW `(1, C, H/8, W/8)`.
 pub fn loss_and_grads(dit: &Dit, adapters: &[Adapter], z0: &Tensor, text: &Tensor, pooled: &Tensor, sigma: f64, noise: &Tensor) -> Result<(f32, GradStore)> {
+    loss_and_grads_keeping(SUBLAYER_KEEP_BYTES, dit, adapters, z0, text, pooled, sigma, noise)
+}
+
+/// [`loss_and_grads`], keeping up to `keep_bytes` of visual sublayer inputs from the forward pass.
+#[allow(clippy::too_many_arguments)]
+fn loss_and_grads_keeping(keep_bytes: usize, dit: &Dit, adapters: &[Adapter], z0: &Tensor, text: &Tensor, pooled: &Tensor, sigma: f64, noise: &Tensor) -> Result<(f32, GradStore)> {
     anyhow::ensure!(dit.compute() == DType::F32, "LoRA training runs the DiT in F32 (unset PLAKAT_K5_DIT_COMPUTE)");
     let device = dit.device().clone();
     let (z0, noise) = (z0.to_device(&Device::Cpu)?.to_dtype(DType::F32)?, noise.to_device(&Device::Cpu)?.to_dtype(DType::F32)?);
@@ -86,29 +156,42 @@ pub fn loss_and_grads(dit: &Dit, adapters: &[Adapter], z0: &Tensor, text: &Tenso
     let (nt, nv) = dit.block_counts();
     trace("staged");
 
-    // 1. Forward, keeping each block's input (parked) and no graph.
-    let mut texts = vec![park(&s.text)?];
+    // 1. Forward, keeping the input of each sublayer (parked) and no graph.
+    let ff_tokens = |ff: bool| if ff { FF_TOKENS } else { usize::MAX };
+    let mut texts: Vec<Vec<Tensor>> = Vec::new();
     let mut text = s.text.detach();
     for i in 0..nt {
-        text = dit.text_block(i, &text, &s)?.detach();
-        texts.push(park(&text)?);
+        let mut ins = Vec::new();
+        for n in 0..TEXT_STAGES {
+            ins.push(park(&text)?);
+            text = forward(&|x| dit.text_stage(i, n, x, &s), &text, ff_tokens(n == TEXT_STAGES - 1))?;
+        }
+        texts.push(ins);
     }
-    let text_out = texts[nt].clone();
-    let text = text_out.to_device(&device)?;
-    let mut visuals = vec![park(&s.visual)?];
+    let text_out = park(&text)?;
+    // The visual sublayers' inputs are kept too when they are small; at a megapixel they are 4 GB,
+    // and each block makes its own again on the way back.
+    let keep = nv * (VISUAL_STAGES - 1) * s.visual.elem_count() * 4 <= keep_bytes;
+    let mut visuals: Vec<Vec<Tensor>> = Vec::new();
     let mut visual = s.visual.detach();
     for i in 0..nv {
-        visual = dit.visual_block(i, &visual, &text, &s)?.detach();
-        visuals.push(park(&visual)?);
+        let mut ins = Vec::new();
+        for n in 0..VISUAL_STAGES {
+            if n == 0 || keep {
+                ins.push(park(&visual)?);
+            }
+            visual = forward(&|x| dit.visual_stage(i, n, x, &text, &s), &visual, ff_tokens(n == VISUAL_STAGES - 1))?;
+        }
+        visuals.push(ins);
         if i % 10 == 9 {
             trace(&format!("forward through visual block {i}"));
         }
     }
 
     // 2. The loss, and its gradient with respect to the visual stream.
-    drop((visual, text));
     let mut kept: Vec<(Var, Tensor)> = Vec::new();
-    let last = Var::from_tensor(&visuals.pop().expect("the visual stream").to_device(&device)?)?;
+    let last = Var::from_tensor(&visual)?;
+    drop(visual);
     let loss = (dit.head(last.as_tensor(), &s)? - &target)?.sqr()?.mean_all()?;
     let (loss, mut g) = {
         let mut grads = loss.backward()?;
@@ -117,34 +200,43 @@ pub fn loss_and_grads(dit: &Dit, adapters: &[Adapter], z0: &Tensor, text: &Tenso
     drop(last);
     trace("the head differentiated");
 
-    // 3. Back through the visual blocks; the text stream's gradient adds up over them.
+    // 3. Back through the visual blocks, a sublayer at a time; the text stream's gradient adds up
+    //    over them.
     let mut g_text: Option<Tensor> = None;
     for i in (0..nv).rev() {
-        let x = Var::from_tensor(&visuals.pop().expect("a block's input").to_device(&device)?)?;
-        let t = Var::from_tensor(&text_out.to_device(&device)?)?;
-        let out = dit.visual_block(i, x.as_tensor(), t.as_tensor(), &s)?;
-        let mut grads = (out.to_dtype(DType::F32)? * g.to_device(&device)?)?.sum_all()?.backward()?;
-        g = park(&take(&mut grads, &x, "a visual block's input")?)?;
-        let gt = park(&take(&mut grads, &t, "the text stream")?)?;
-        g_text = Some(match g_text {
-            Some(sum) => (sum + gt)?,
-            None => gt,
-        });
-        collect(&mut grads, &mut kept, adapters, &format!("visual_transformer_blocks.{i}."))?;
+        let mut ins = visuals.pop().expect("a block's input");
+        for n in ins.len() - 1..VISUAL_STAGES - 1 {
+            let x = forward(&|x| dit.visual_stage(i, n, x, &text, &s), &ins[n].to_device(&device)?, ff_tokens(false))?;
+            ins.push(park(&x)?);
+        }
+        let prefix = format!("visual_transformer_blocks.{i}.");
+        for n in (0..VISUAL_STAGES).rev() {
+            let x = ins.pop().expect("a sublayer's input");
+            // Only the cross-attention reads the text stream.
+            let stage = |x: &Tensor, t: Option<&Tensor>| dit.visual_stage(i, n, x, t.unwrap_or(&text), &s);
+            let (gx, gt) = back(&stage, &x, &g, Some(&text_out), ff_tokens(n == VISUAL_STAGES - 1), &device, &mut kept, adapters, &prefix)?;
+            g = gx;
+            g_text = match (g_text, gt) {
+                (Some(sum), Some(gt)) => Some((sum + gt)?),
+                (sum, gt) => sum.or(gt),
+            };
+        }
         if i % 10 == 0 {
             trace(&format!("back through visual block {i}"));
         }
     }
+    drop(text);
 
     // 4. Back through the text blocks.
     if let Some(mut g) = g_text {
-        texts.pop();
         for i in (0..nt).rev() {
-            let x = Var::from_tensor(&texts.pop().expect("a text block's input").to_device(&device)?)?;
-            let out = dit.text_block(i, x.as_tensor(), &s)?;
-            let mut grads = (out.to_dtype(DType::F32)? * g.to_device(&device)?)?.sum_all()?.backward()?;
-            g = park(&take(&mut grads, &x, "a text block's input")?)?;
-            collect(&mut grads, &mut kept, adapters, &format!("text_transformer_blocks.{i}."))?;
+            let mut ins = texts.pop().expect("a text block's input");
+            let prefix = format!("text_transformer_blocks.{i}.");
+            for n in (0..TEXT_STAGES).rev() {
+                let x = ins.pop().expect("a sublayer's input");
+                let stage = |x: &Tensor, _: Option<&Tensor>| dit.text_stage(i, n, x, &s);
+                g = back(&stage, &x, &g, None, ff_tokens(n == TEXT_STAGES - 1), &device, &mut kept, adapters, &prefix)?.0;
+            }
         }
     }
     // The gradients go back to the device, each into a buffer of its own size, in a store the
@@ -416,6 +508,13 @@ mod tests {
     }
 
     fn compare_on(device: &Device, tolerance: f32) {
+        // Both ways of having a sublayer's input: kept from the forward pass, and made again.
+        for keep_bytes in [SUBLAYER_KEEP_BYTES, 0] {
+            compare_keeping(keep_bytes, device, tolerance);
+        }
+    }
+
+    fn compare_keeping(keep_bytes: usize, device: &Device, tolerance: f32) {
         let cfg = tiny();
         let mut dit = tiny_dit(device);
         let adapters = dit.install_adapters(4, 1.0, 11).unwrap();
@@ -424,7 +523,7 @@ mod tests {
         wake(&adapters);
         let (z0, text, pooled) = tiny_inputs(&cfg);
         let noise = Draws::new(3).noise_like(&z0).unwrap();
-        let (loss, grads) = loss_and_grads(&dit, &adapters, &z0, &text, &pooled, 0.6, &noise).unwrap();
+        let (loss, grads) = loss_and_grads_keeping(keep_bytes, &dit, &adapters, &z0, &text, &pooled, 0.6, &noise).unwrap();
         let (loss_whole, grads_whole) = whole(&dit, &z0, &text, &pooled, 0.6, &noise);
         assert!((loss - loss_whole).abs() <= 1e-5 * loss_whole.abs().max(1.0), "{loss} against {loss_whole}");
         let flat = |t: &Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();

@@ -20,7 +20,7 @@ the look from your images and bakes it into a small adapter.
 | **SDXL** (UNet) | `--base sdxl` | ✅ **supported** | kohya | ungated; dual-CLIP + add-time conditioning |
 | **SD 3.5 Medium** (MMDiT) | `--base sd35` | ✅ **supported** | diffusers-PEFT | gated on HuggingFace; ~2.5 B-param transformer |
 
-| **Kandinsky 5** (DiT) | `--base kandinsky5` | 🧪 **runs at 512² (25 GB, 11 s a step on an M5 Max); 1024² needs 43 GB** | PEFT (the reference trainer's) | ungated; 6 B-param transformer; see [below](#kandinsky-5) |
+| **Kandinsky 5** (DiT) | `--base kandinsky5` | 🧪 **runs at 512² (22 GB, 11 s a step on an M5 Max) and at 1024² (30 GB, 66 s a step)** | PEFT (the reference trainer's) | ungated; 6 B-param transformer; see [below](#kandinsky-5) |
 
 A LoRA is **bound to the base architecture** — an SD 1.5 LoRA only loads
 on SD 1.5, not on SDXL / SD 3.5 / Flux. Train once per base you want to use.
@@ -204,10 +204,13 @@ On the real model (36 GB Apple M5 Max, Metal, rank 32 — 512 adapters, 109.4 M 
 
 | `--size` | peak memory | a step |
 |---|---|---|
-| 512 | 25.5 GB (27.5 GB over a 200-step run) | 11 s |
-| 1024 | 43.1 GB — swaps on a 36 GB machine | 86–100 s |
+| 512 | 22.1 GB | 11 s |
+| 1024 | 30.2 GB | 66 s |
 
-So **train at `--size 512`** unless the machine has 48 GB or more. One trial has been made: 200 steps
+(Four-step runs; after the first step the footprint is flat — 19.5 GB and 26–27 GB — and the step
+time steady, so neither swaps on 36 GB. A 200-step run at 1024² has not been made.) Both sizes fit a
+36 GB machine; 512² is six times faster a step. One trial has been made (at 512², before the
+memory work below it took 27.5 GB): 200 steps
 on three near-identical images. The LoRA loads (`1 LoRA(s) merged into 512 layers`), with and without
 `--dit-nf4`, and at one seed changes the picture; three images of one subject say nothing about how
 well a style transfers, and that is still unmeasured. `--base kandinsky5-pretrain` trains on the
