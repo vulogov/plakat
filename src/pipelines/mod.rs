@@ -84,6 +84,8 @@ pub mod vendored_qwen2;
 pub mod vendored_qwen2q;
 pub mod kandinsky;
 pub mod kandinsky_dit;
+pub mod kandinsky_lora;
+pub mod kandinsky_train;
 pub mod kandinsky_text;
 pub mod sana;
 pub mod sana_dit;

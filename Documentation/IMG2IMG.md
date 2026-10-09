@@ -257,8 +257,9 @@ What is specific to the family:
   `generate`.
 - **It is the slowest family** — about 15 s a step at 1024² on an M5
   Max: each step is two forwards of a 6B transformer.
-- Not available: `--lora`, `--control*` (no adapters exist for the
-  model yet), `--tiled`, `--artefact`, `--grid`.
+- `--lora file.safetensors[:scale]` works as on `generate`.
+- Not available: `--control*` (no ControlNet exists for the model
+  yet), `--tiled`, `--artefact`, `--grid`.
 
 ```bash
 # A variation: the same picture, redrawn in detail

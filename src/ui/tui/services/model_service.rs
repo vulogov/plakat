@@ -515,6 +515,7 @@ fn model_loop(
                             quantize_qwen: false,
                             dit_nf4: false,
                             init,
+                            loras: Vec::new(),
                         };
                         let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
                         match rt.block_on(k5::run_hooked(req, Some(&mut hook))) {

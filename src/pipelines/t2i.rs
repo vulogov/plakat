@@ -2902,6 +2902,7 @@ pub async fn run(req: Request) -> Result<Option<std::sync::Arc<crate::pipelines:
             quantize_qwen: req.kandinsky_quantize_qwen,
             dit_nf4: req.kandinsky_dit_nf4,
             init: None,
+            loras: kandinsky::resolve_loras(&req.loras, req.lora_scale).await?,
         })
         .await?;
         return Ok(None);

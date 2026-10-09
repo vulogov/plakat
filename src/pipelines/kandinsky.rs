@@ -80,6 +80,16 @@ pub fn check_exact(w: u32, h: u32) -> Result<()> {
 }
 
 /// What a path the family is not wired into says. It generates through `generate` and `img2img`.
+/// Locate (downloading if they are hub specs) the `--lora` files of a run; `global` is `--lora-scale`.
+pub async fn resolve_loras(specs: &[crate::pipelines::lora::LoraSpec], global: f32) -> Result<Vec<Lora>> {
+    let mut out = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let r = spec.resolve().await?;
+        out.push(Lora { path: r.path, scale: r.scale * global, display: r.display });
+    }
+    Ok(out)
+}
+
 pub fn txt2img_only(what: &str) -> anyhow::Error {
     anyhow::anyhow!("Kandinsky 5 is not wired into {what} (RFC KANDINSKY-1). Use `plakat generate --model kandinsky5`, or `plakat img2img --model kandinsky5` for img2img and inpaint.")
 }
@@ -181,6 +191,17 @@ pub struct Settings {
     pub quantize_qwen: bool,
     /// The DiT's block weights in NF4 (`--dit-nf4`).
     pub dit_nf4: bool,
+    /// LoRAs merged into the DiT as it is loaded (`--lora`).
+    pub loras: Vec<Lora>,
+}
+
+/// A LoRA file and the strength it is merged at.
+#[derive(Debug, Clone)]
+pub struct Lora {
+    pub path: PathBuf,
+    pub scale: f32,
+    /// What messages and the metadata call it.
+    pub display: String,
 }
 
 /// `plakat generate`'s request: `count` images of one prompt, seeds counting up from `seed`.
@@ -207,6 +228,8 @@ pub struct RunRequest {
     pub dit_nf4: bool,
     /// img2img / inpaint (`plakat img2img`); `None` is txt2img.
     pub init: Option<Init>,
+    /// LoRAs merged into the DiT (`--lora`).
+    pub loras: Vec<Lora>,
 }
 
 /// Flow-matching Euler from `noise` (NCHW `(1, 16, H/8, W/8)`, pure noise at sigma 1) to the clean
@@ -444,7 +467,17 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mu
     let spin = crate::ui::progress::spinner("Loading the Kandinsky 5 DiT");
     let dit_device = stage_device(&settings.device)?;
     let device = &dit_device;
-    let dit = Dit::load_with(&repo, device, settings.dit_nf4).await.context("loading the Kandinsky 5 DiT")?;
+    let mut lora = super::kandinsky_lora::LoraSet::new();
+    for l in &settings.loras {
+        lora.push(super::kandinsky_lora::LoraFile::load(&l.path)?, l.scale as f64, l.display.clone());
+    }
+    let dit = Dit::load_full(&repo, device, settings.dit_nf4, (!lora.is_empty()).then_some(&lora)).await.context("loading the Kandinsky 5 DiT")?;
+    if !lora.is_empty() {
+        let (merged, unmatched) = lora.report();
+        anyhow::ensure!(merged > 0, "none of the LoRA's layers are layers of the Kandinsky 5 DiT (first: {}) — is it a LoRA for another model?", unmatched.first().map_or("?", String::as_str));
+        println(format!("kandinsky5: {} LoRA(s) merged into {merged} layers{}", settings.loras.len(), if unmatched.is_empty() { String::new() } else { format!(" — {} layer(s) in the file(s) have no place in this model, e.g. {}", unmatched.len(), unmatched[0]) }));
+    }
+    drop(lora);
     spin.finish_with_message(format!("✓ DiT loaded in {:.1}s", t2.elapsed().as_secs_f64()));
     let mut latents = Vec::with_capacity(jobs.len());
     for (n, j) in jobs.iter().enumerate() {
@@ -487,6 +520,9 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mu
         m.negative = j.negative.clone();
         let bucket = if BUCKETS.contains(&(j.width, j.height)) { format!("{}x{}", j.width, j.height) } else { "exact".to_string() };
         m.extras.extend([("family".to_string(), "kandinsky5".to_string()), ("max_seq".to_string(), settings.max_seq.to_string()), ("bucket".to_string(), bucket)]);
+        for l in &settings.loras {
+            m.extras.push(("lora".to_string(), format!("{}:{}", l.display, l.scale)));
+        }
         if let Some(init) = &j.init {
             m.extras.extend([("mode".to_string(), if init.mask.is_some() { "inpaint" } else { "img2img" }.to_string()), ("strength".to_string(), init.strength.to_string()), ("init_image".to_string(), init.image.display().to_string())]);
             if let Some(mask) = &init.mask {
@@ -567,7 +603,7 @@ pub async fn run_hooked(req: RunRequest, hook: Option<&mut dyn StepHook>) -> Res
             Job { prompt: req.prompt.clone(), negative: req.negative.clone(), width: req.width, height: req.height, steps, guidance, seed, out_path: req.out_dir.join(format!("plakat-kandinsky5-{seed}.png")), init: req.init.clone() }
         })
         .collect();
-    let settings = Settings { model: req.model.clone(), device: req.device.clone(), max_seq: if req.max_seq == 0 { DEFAULT_MAX_SEQ } else { req.max_seq }, keep_encoders: req.keep_encoders, quantize_qwen: req.quantize_qwen, dit_nf4: req.dit_nf4 };
+    let settings = Settings { model: req.model.clone(), device: req.device.clone(), max_seq: if req.max_seq == 0 { DEFAULT_MAX_SEQ } else { req.max_seq }, keep_encoders: req.keep_encoders, quantize_qwen: req.quantize_qwen, dit_nf4: req.dit_nf4, loras: req.loras.clone() };
     run_jobs_hooked(&settings, &jobs, hook).await.map(|_| ())
 }
 
@@ -654,7 +690,7 @@ mod tests {
         let sweep = [20usize, 30, 40, 50];
         let out = std::path::PathBuf::from(std::env::var("PLAKAT_P5_OUT").expect("set PLAKAT_P5_OUT to a directory for the images"));
         let base = crate::device::select("auto").unwrap();
-        let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+        let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
         let job = |prompt: &str, i: usize, steps: usize, name: String| Job { prompt: prompt.to_string(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(name), init: None };
         // The Russian set first: it is the shorter run.
         let ru: Vec<Job> = pairs.iter().enumerate().map(|(i, (_, r))| job(r, i, sweep[0], format!("ru_{i}.png"))).collect();
@@ -697,7 +733,7 @@ mod tests {
         let env = |k: &str| std::path::PathBuf::from(std::env::var(k).unwrap_or_else(|_| panic!("set {k}")));
         let (image, mask, out) = (env("PLAKAT_TUNE_IMAGE"), env("PLAKAT_TUNE_MASK"), env("PLAKAT_TUNE_OUT"));
         let base = crate::device::select("auto").unwrap();
-        let settings = Settings { model: "kandinsky5".into(), device: base, max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+        let settings = Settings { model: "kandinsky5".into(), device: base, max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
         let job = |prompt: &str, name: &str, strength: f32, feather: Option<u32>| Job {
             prompt: prompt.to_string(),
             negative: String::new(),
@@ -999,7 +1035,7 @@ mod tests {
         let chosen: Vec<&String> = (0..n).map(|i| &prompts[(i * 9) % prompts.len()]).collect();
         let mut files = Vec::new();
         for (tier, quantized) in [("full", false), ("quant", true)] {
-            let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: quantized, dit_nf4: quantized };
+            let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: quantized, dit_nf4: quantized, loras: Vec::new() };
             let jobs: Vec<Job> = chosen.iter().enumerate().map(|(i, p)| Job { prompt: (*p).clone(), negative: String::new(), width: 1024, height: 1024, steps, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(tier).join(format!("{i}.png")), init: None }).collect();
             let t = std::time::Instant::now();
             files.push(run_jobs(&settings, &jobs).await.unwrap());

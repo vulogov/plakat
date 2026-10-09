@@ -20,8 +20,8 @@ is checked against dumps of the diffusers reference.
 
 **Read this first.**
 
-- **There are no LoRA and no ControlNet adapters for this model yet.** `--lora` and `--control*` are
-  refused, and so are `--fast`, `--quality`, `--adetailer`, `--hires-fix`, `--artefact` and `--grid`.
+- **There is no ControlNet for this model yet, and no published image LoRAs.** `--control*` is refused,
+  and so are `--fast`, `--quality`, `--adetailer`, `--hires-fix`, `--artefact` and `--grid`.
 - **It is the slowest family plakat runs.** About 15 s a step at 1024² on an M5 Max — two transformer
   forwards a step, 50 steps by default: 13 minutes an image. `--steps 30` is enough for most prompts
   (8 minutes); see below.
@@ -45,6 +45,12 @@ is checked against dumps of the diffusers reference.
 - **Prompts written for other models still work.** `(term:1.5)` weights, which this model cannot read,
   are restated in words, and `generate --enhance` rewrites a prompt into the long prose the model
   wants while keeping every element and colour of it.
+- **LoRA, loading and training.**
+  `--lora file[:scale]` merges a LoRA in the format of the model's own trainer; `plakat style train
+  --base kandinsky5` trains one with that trainer's recipe, with the backward done one block at a time
+  so that it fits in memory without gradient checkpointing. On a 36 GB M5 Max training takes 25 GB and
+  11 s a step at 512², and 43 GB at 1024² (it swaps: train at 512²). One trial LoRA has been trained
+  and loaded; how well a style transfers is not yet judged.
 - **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
   `scenario` renders it — all its Kandinsky tasks in one run after the last task, so the 26 GB of
   checkpoints are loaded once and not once a task — the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover
