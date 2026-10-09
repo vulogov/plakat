@@ -481,13 +481,12 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mu
     spin.finish_with_message(format!("✓ DiT loaded in {:.1}s", t2.elapsed().as_secs_f64()));
     let mut latents = Vec::with_capacity(jobs.len());
     for (n, j) in jobs.iter().enumerate() {
-        let _ = device.set_seed(crate::pipelines::seeds::prepare_seed(j.seed, device));
         let (lh, lw) = ((j.height / 8) as usize, (j.width / 8) as usize);
         // Verify tier 2 (env-gated): the same noise on every device, which candle's RNG does not give.
         let noise = if std::env::var("PLAKAT_VERIFY_DET_INIT").is_ok() {
             deterministic_noise(dit.cfg.in_visual_dim, lh, lw, device)?
         } else {
-            Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, lh, lw), device)?
+            seeded_noise(j.seed, dit.cfg.in_visual_dim, lh, lw, device)?
         };
         let neg = (j.guidance > 1.0).then(|| &embeds[&j.negative]);
         let init = match &inits[n] {
@@ -544,7 +543,18 @@ async fn run_jobs_inner(settings: &Settings, jobs: &[Job], hook: &mut Option<&mu
 /// Box–Muller, computed on the CPU. Verify's shared LCG latent is uniform in `[-1, 1)` — fine for the
 /// families whose schedulers rescale it, but a flow model started from it paints a grey field.
 pub fn deterministic_noise(channels: usize, h: usize, w: usize, device: &Device) -> Result<Tensor> {
-    let mut state = 0x4B35_5F4E_4F49_5345u64;
+    noise_from(0x4B35_5F4E_4F49_5345, channels, h, w, device)
+}
+
+/// A seed's starting noise, the same on every device and in every run. candle's Metal generator is not
+/// that: seeded alike, two runs agree in the first values of a draw and not in the rest (measured — the
+/// sum of a `(1, 16, 128, 128)` draw at seed 42 was −770, −864, −893 and −880 in four draws), so a seed
+/// did not repeat its image.
+pub fn seeded_noise(seed: u64, channels: usize, h: usize, w: usize, device: &Device) -> Result<Tensor> {
+    noise_from(seed.wrapping_mul(0xD134_2543_DE82_EF95) ^ 0x4B35_5F53_4545_4421, channels, h, w, device)
+}
+
+fn noise_from(mut state: u64, channels: usize, h: usize, w: usize, device: &Device) -> Result<Tensor> {
     let mut uniform = || {
         state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = state;
@@ -725,6 +735,46 @@ mod tests {
         println!("bilingual, {} steps: English {:.4}, Russian {:.4} ({:+.1} %)", sweep[0], mean(&en20), mean(&ru20), (mean(&ru20) / mean(&en20) - 1.0) * 100.0);
     }
 
+    /// Q6 of the RFC: subjects from Russian culture, each named in Russian and described in English, at
+    /// one seed and 20 steps; the last two ask for Cyrillic lettering. Scored by CLIP against the
+    /// English text (CLIP-L does not read Russian) and meant to be looked at. `PLAKAT_Q6_OUT=<dir>`:
+    /// `PLAKAT_Q6_OUT=<dir> cargo test --release --features metal --lib kandinsky_q6_culture -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn kandinsky_q6_culture() {
+        let pairs = [
+            ("a wooden spoon and bowl decorated with Khokhloma painting, red and gold berries and leaves on black lacquer", "деревянная ложка и миска с хохломской росписью"),
+            ("a porcelain teapot with Gzhel painting, cobalt blue flowers on white", "фарфоровый чайник с гжельской росписью"),
+            ("Baba Yaga's hut standing on chicken legs in a dark fir forest, a fence topped with skulls", "избушка на курьих ножках в тёмном еловом лесу"),
+            ("the Firebird of Russian fairy tales, a bird with glowing golden-red plumage, at night in an orchard of golden apples", "Жар-птица ночью в саду с золотыми яблоками"),
+            ("a row of five matryoshka nesting dolls from the largest to the smallest on a windowsill", "пять матрёшек в ряд от большой к маленькой на подоконнике"),
+            ("a Maslenitsa festival: a tall straw effigy in a peasant dress burning on a snowy field, people in folk costumes around it", "масленица: горит чучело на снежном поле, вокруг люди в народных костюмах"),
+            ("a whitewashed Russian masonry stove inside a log hut, a cat asleep on top of it", "русская печь в избе, на печи спит кот"),
+            ("a bogatyr, a medieval Russian warrior in chain mail and a pointed helmet, on horseback at a crossroads beside a large inscribed stone", "богатырь на коне у камня на распутье"),
+            ("a wooden bakery shop sign that reads \"ХЛЕБ\" in large painted letters, above a shop door", "деревянная вывеска булочной с надписью «ХЛЕБ» крупными буквами над дверью магазина"),
+            ("a Soviet constructivist poster with the word \"МИР\" in bold red letters and a white dove", "советский конструктивистский плакат со словом «МИР» жирными красными буквами и белым голубем"),
+        ];
+        let out = std::path::PathBuf::from(std::env::var("PLAKAT_Q6_OUT").expect("set PLAKAT_Q6_OUT to a directory for the images"));
+        let base = crate::device::select("auto").unwrap();
+        let settings = Settings { model: "kandinsky5".into(), device: base.clone(), max_seq: DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
+        let job = |prompt: &str, i: usize, name: String| Job { prompt: prompt.to_string(), negative: String::new(), width: 1024, height: 1024, steps: 20, guidance: DEFAULT_GUIDANCE, seed: 42 + i as u64, out_path: out.join(name), init: None };
+        let jobs: Vec<Job> = pairs.iter().enumerate().flat_map(|(i, (e, r))| [job(e, i, format!("en_{i}.png")), job(r, i, format!("ru_{i}.png"))]).collect();
+        run_jobs(&settings, &jobs).await.unwrap();
+        let aes = crate::pipelines::aesthetic::AestheticScorer::load(&base).await.unwrap();
+        let clip = crate::pipelines::clip_adherence::ClipAdherence::load(&base).await.unwrap();
+        let (mut en, mut ru) = (Vec::new(), Vec::new());
+        for (i, (e, _)) in pairs.iter().enumerate() {
+            let score = |j: &Job| clip.adherence(&aes.image_embedding(&j.out_path).unwrap(), e).unwrap();
+            let (a, b) = (score(&jobs[2 * i]), score(&jobs[2 * i + 1]));
+            println!("{i}: {a:.4} from English, {b:.4} from Russian — {e}");
+            en.push(a);
+            ru.push(b);
+        }
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        let wins = en.iter().zip(&ru).filter(|(a, b)| b > a).count();
+        println!("adherence to the English text: English {:.4}, Russian {:.4}; Russian ahead in {wins} of {}", mean(&en), mean(&ru), pairs.len());
+    }
+
     /// img2img and inpaint tuning, one load: a strength ladder on two sources (`PLAKAT_TUNE_IMAGE`,
     /// `PLAKAT_TUNE_IMAGE2`) and an inpaint of the first with `PLAKAT_TUNE_MASK`, into `PLAKAT_TUNE_OUT`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -788,6 +838,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_seed_has_its_own_noise_and_repeats_it() {
+        let v = |t: Tensor| t.flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        let draw = |seed| v(seeded_noise(seed, 16, 32, 32, &Device::Cpu).unwrap());
+        assert_eq!(draw(42), draw(42));
+        assert_ne!(draw(42), draw(43));
+        assert_ne!(draw(0), v(deterministic_noise(16, 32, 32, &Device::Cpu).unwrap()));
+        let x = draw(7);
+        let mean = x.iter().sum::<f32>() / x.len() as f32;
+        let var = x.iter().map(|a| (a - mean).powi(2)).sum::<f32>() / x.len() as f32;
+        assert!(mean.abs() < 0.03 && (var - 1.0).abs() < 0.05, "{mean} {var}");
     }
 
     #[test]

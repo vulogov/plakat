@@ -38,8 +38,12 @@ is checked against dumps of the diffusers reference.
 - **16 GB of memory, or 7 GB quantised.** The text encoders, the transformer and the VAE are never
   loaded together (peak 16.1 GB at every bucket). `--quantize-qwen --dit-nf4` runs the text tower as a
   4-bit GGUF and the transformer from NF4 weights: 7.0 GB peak on a machine with under 24 GB of RAM,
-  for about 20 % more time a step. The quantised tier saves memory, not disk — it still reads the full
-  checkpoint.
+  for about 20 % more time a step. The quantised transformer is cached on disk after the first run
+  (2.8 GB beside the models; `--nf4-cache <dir|off>` or a scenario's `nf4-cache:` moves it to a faster
+  disk or turns it off), so later runs do not quantize the 12 GB checkpoint again.
+- **A seed repeats its image.** On Metal it did not: candle's seeded generator there does not repeat a
+  draw. The starting noise now comes from plakat's own generator and is the same in every run and on
+  every device.
 - **Prompts in Russian** work as well as prompts in English (measured on four prompt pairs; `compile`
   leaves a Russian source in Russian for this family).
 - **Prompts written for other models still work.** `(term:1.5)` weights, which this model cannot read,
@@ -50,7 +54,10 @@ is checked against dumps of the diffusers reference.
   --base kandinsky5` trains one with that trainer's recipe, with the backward done one block at a time
   so that it fits in memory without gradient checkpointing. On a 36 GB M5 Max training takes 25 GB and
   11 s a step at 512², and 43 GB at 1024² (it swaps: train at 512²). One trial LoRA has been trained
-  and loaded; how well a style transfers is not yet judged.
+  and loaded; how well a style transfers is not yet judged. In a scenario, `loras:` on the file and on
+  a task are honoured, tasks with the same LoRAs sharing one load. `--base kandinsky5-pretrain` trains
+  on the pretrain checkpoint — a 12 GB download, the transformer alone, since the encoders and the VAE
+  are shared with the generation checkpoint; it costs the same and its LoRA loads into `kandinsky5`.
 - **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
   `scenario` renders it — all its Kandinsky tasks in one run after the last task, so the 26 GB of
   checkpoints are loaded once and not once a task — the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover

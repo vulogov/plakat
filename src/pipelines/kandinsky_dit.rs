@@ -20,6 +20,7 @@
 //!   by default; `PLAKAT_K5_ROPE_ROUND=0` turns it off.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use candle_core::{D, DType, Device, Module, Tensor, Var};
@@ -222,13 +223,75 @@ enum Lin {
     Tuned { base: Box<Lin>, a: Tensor, b: Tensor, scale: f64 },
 }
 
+/// Where a quantized layer's weight comes from: the checkpoint on the CPU, and — when the pack of a
+/// plain checkpoint is cached on disk — the directory of its layers' packs.
+#[derive(Clone)]
+struct Quant {
+    vb: VarBuilder<'static>,
+    cache: Option<PathBuf>,
+}
+
+impl Quant {
+    fn uncached(vb: VarBuilder<'static>) -> Self {
+        Self { vb, cache: None }
+    }
+
+    fn pp<S: ToString>(&self, name: S) -> Self {
+        Self { vb: self.vb.pp(name), cache: self.cache.clone() }
+    }
+}
+
+static NF4_CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Where the NF4 packs are cached (`--nf4-cache`, a scenario's `nf4-cache:`): a directory, or `off`.
+/// The first call wins, so the command line overrides a scenario file.
+pub fn set_nf4_cache(spec: &str) {
+    let _ = NF4_CACHE.set(spec.to_string());
+}
+
+/// The directory of one checkpoint's NF4 packs, or `None` with the cache off. Quantizing the 12 GB
+/// checkpoint is most of a `--dit-nf4` load, and its result is 3.3 GB that never changes; it is kept
+/// under [`set_nf4_cache`]'s directory — by default `plakat-nf4` beside the downloaded models, so it
+/// follows `--cache-dir` to whatever disk they are on. Keyed by the checkpoint file, which the Hub
+/// cache names by its content.
+fn nf4_cache_dir(repo: &str, weights: &std::path::Path) -> Option<PathBuf> {
+    use sha2::Digest;
+    let root = match NF4_CACHE.get().map(String::as_str) {
+        Some("off") | Some("none") | Some("0") => return None,
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => crate::hf::cache::hf_cache_root().join("plakat-nf4"),
+    };
+    let real = std::fs::canonicalize(weights).unwrap_or_else(|_| weights.to_path_buf());
+    let size = std::fs::metadata(&real).map(|m| m.len()).unwrap_or(0);
+    let key = sha2::Sha256::digest(format!("{}|{size}", real.display()).as_bytes());
+    let key: String = key.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    Some(root.join(format!("{}-v1-{key}", repo.replace('/', "--"))))
+}
+
+/// A layer's pack from the cache; `None` when it is not there or is not this layer's size.
+fn read_pack(file: &std::path::Path, values: usize) -> Option<(Vec<u8>, Vec<f32>)> {
+    use crate::pipelines::nf4_codec::NF4_BLOCK_SIZE;
+    let t = candle_core::safetensors::load(file, &Device::Cpu).ok()?;
+    let packed = t.get("packed")?.to_vec1::<u8>().ok()?;
+    let absmax = t.get("absmax")?.to_vec1::<f32>().ok()?;
+    (packed.len() * 2 == values && absmax.len() * NF4_BLOCK_SIZE == values).then_some((packed, absmax))
+}
+
+fn write_pack(file: &std::path::Path, packed: &[u8], absmax: &[f32]) -> Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tensors = HashMap::from([("packed".to_string(), Tensor::from_slice(packed, packed.len(), &Device::Cpu)?), ("absmax".to_string(), Tensor::from_slice(absmax, absmax.len(), &Device::Cpu)?)]);
+    crate::pipelines::atomic_safetensors_save(&tensors, file)
+}
+
 impl Lin {
     /// `vb` is on the model's device. `quant`, when given, is the same path on the CPU: the weight is
     /// read through it one layer at a time and quantized, so the dense checkpoint is never resident.
     ///
     /// `lora`, when it adapts this layer (its key is the layer's path, `vb.prefix()`), is merged into
     /// the weight as it is read — before the quantization, so the 4-bit codes are those of `W + ΔW`.
-    fn load(vb: VarBuilder, quant: Option<VarBuilder>, input: usize, output: usize, bias: bool, lora: Option<&LoraSet>) -> Result<Self> {
+    fn load(vb: VarBuilder, quant: Option<Quant>, input: usize, output: usize, bias: bool, lora: Option<&LoraSet>) -> Result<Self> {
         use crate::pipelines::nf4_codec::{quantize_nf4_cpu, NF4_BLOCK_SIZE, NF4_CODEBOOK};
         let delta = match lora {
             Some(l) => l.delta(&vb.prefix(), output, input)?,
@@ -249,14 +312,27 @@ impl Lin {
             }));
         };
         let device = vb.device();
-        let w = q.get((output, input), "weight")?.to_dtype(DType::F32)?;
-        let w: Vec<f32> = match delta {
-            Some(d) => (w + d)?,
-            None => w,
-        }
-        .flatten_all()?
-        .to_vec1()?;
-        let (packed, absmax) = quantize_nf4_cpu(&w)?;
+        // A layer a LoRA changes is not the checkpoint's: it neither reads the cache nor writes it.
+        let cached = q.cache.as_ref().filter(|_| delta.is_none()).map(|dir| dir.join(format!("{}.safetensors", vb.prefix())));
+        let (packed, absmax) = match cached.as_ref().and_then(|f| read_pack(f, input * output)) {
+            Some(pack) => pack,
+            None => {
+                let w = q.vb.get((output, input), "weight")?.to_dtype(DType::F32)?;
+                let w: Vec<f32> = match delta {
+                    Some(d) => (w + d)?,
+                    None => w,
+                }
+                .flatten_all()?
+                .to_vec1()?;
+                let pack = quantize_nf4_cpu(&w)?;
+                if let Some(f) = &cached {
+                    if let Err(e) = write_pack(f, &pack.0, &pack.1) {
+                        tracing::warn!("kandinsky5: the NF4 cache {} was not written: {e:#}", f.display());
+                    }
+                }
+                pack
+            }
+        };
         let blocks = absmax.len();
         debug_assert_eq!(blocks * NF4_BLOCK_SIZE, input * output);
         // Row `b` is the two values a byte `b` packs: low nibble first.
@@ -493,7 +569,7 @@ struct Attention {
 }
 
 impl Attention {
-    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, rope_round: bool, lora: Option<&LoraSet>) -> Result<Self> {
+    fn new(vb: VarBuilder, quant: Option<Quant>, cfg: &Config, rope_round: bool, lora: Option<&LoraSet>) -> Result<Self> {
         let (c, hd) = (cfg.model_dim, cfg.head_dim());
         let load = |name: &str| Lin::load(vb.pp(name), quant.as_ref().map(|q| q.pp(name)), c, c, true, lora);
         Ok(Self {
@@ -554,7 +630,7 @@ struct FeedForward {
 }
 
 impl FeedForward {
-    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, lora: Option<&LoraSet>) -> Result<Self> {
+    fn new(vb: VarBuilder, quant: Option<Quant>, cfg: &Config, lora: Option<&LoraSet>) -> Result<Self> {
         let q = |name: &str| quant.as_ref().map(|q| q.pp(name));
         Ok(Self { in_layer: Lin::load(vb.pp("in_layer"), q("in_layer"), cfg.model_dim, cfg.ff_dim, false, lora)?, out_layer: Lin::load(vb.pp("out_layer"), q("out_layer"), cfg.ff_dim, cfg.model_dim, false, lora)? })
     }
@@ -644,19 +720,19 @@ impl Dit {
     }
 
     /// As [`Self::new`] (or [`Self::new_nf4`] with `quant`), with `lora` merged into the weights it adapts.
-    pub fn new_with_lora(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, lora: &LoraSet, compute: DType) -> Result<Self> {
-        Self::build(cfg, vb, quant, Some(lora), compute)
+    pub fn new_with_lora(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder<'static>>, lora: &LoraSet, compute: DType) -> Result<Self> {
+        Self::build(cfg, vb, quant.map(Quant::uncached), Some(lora), compute)
     }
 
     /// As [`Self::new`], with the blocks' attention and feed-forward weights in NF4 — 95 % of the model.
     /// `quant` is a VarBuilder over the same checkpoint on the CPU, which those weights are read
     /// through. The embeddings, the modulations (the reference's F32 islands) and the output layer stay
     /// dense.
-    pub fn new_nf4(cfg: Config, vb: VarBuilder, quant: VarBuilder, compute: DType) -> Result<Self> {
-        Self::build(cfg, vb, Some(quant), None, compute)
+    pub fn new_nf4(cfg: Config, vb: VarBuilder, quant: VarBuilder<'static>, compute: DType) -> Result<Self> {
+        Self::build(cfg, vb, Some(Quant::uncached(quant)), None, compute)
     }
 
-    fn build(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, lora: Option<&LoraSet>, compute: DType) -> Result<Self> {
+    fn build(cfg: Config, vb: VarBuilder, quant: Option<Quant>, lora: Option<&LoraSet>, compute: DType) -> Result<Self> {
         let round = std::env::var("PLAKAT_K5_ROPE_ROUND").ok().as_deref() != Some("0");
         let (c, td) = (cfg.model_dim, cfg.time_dim);
         let text_blocks = (0..cfg.num_text_blocks)
@@ -720,7 +796,7 @@ impl Dit {
         let cfg = Config::from_json(&std::fs::read_to_string(&cfg_path)?)?;
         let weights = crate::hf::download::get_file(repo, "transformer/diffusion_pytorch_model.safetensors").await.context("Kandinsky 5 transformer weights")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, device)? };
-        let quant = if nf4 { Some(unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, &Device::Cpu)? }) } else { None };
+        let quant = if nf4 { Some(Quant { vb: unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, &Device::Cpu)? }, cache: nf4_cache_dir(repo, &weights) }) } else { None };
         Self::build(cfg, vb, quant, lora, Self::compute_dtype(device)).context("building the Kandinsky 5 DiT")
     }
 
@@ -905,6 +981,19 @@ pub(crate) mod tests {
         for x in [&q, &k, &val] {
             assert!(rel(a.get(x).unwrap(), b.get(x).unwrap()) < 1e-4);
         }
+    }
+
+    #[test]
+    fn a_cached_pack_reads_back_and_a_wrong_sized_one_is_not_taken() {
+        let dir = std::env::temp_dir().join(format!("plakat-k5-nf4-{}", std::process::id()));
+        let file = dir.join("visual_transformer_blocks.0.feed_forward.in_layer.safetensors");
+        let w: Vec<f32> = (0..128).map(|i| (i as f32 * 0.37).sin()).collect();
+        let (packed, absmax) = crate::pipelines::nf4_codec::quantize_nf4_cpu(&w).unwrap();
+        assert!(read_pack(&file, 128).is_none());
+        write_pack(&file, &packed, &absmax).unwrap();
+        assert_eq!(read_pack(&file, 128), Some((packed, absmax)));
+        assert!(read_pack(&file, 256).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

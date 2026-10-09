@@ -277,7 +277,11 @@ pub async fn train_lora(req: TrainRequest) -> Result<()> {
     let captions: Vec<String> = req.images.iter().map(|p| caption_for(p, &req.trigger)).collect();
     let t0 = std::time::Instant::now();
     let text_device = if req.quantize_qwen && req.device.is_metal() { Device::Cpu } else { k5::stage_device(&req.device)? };
-    let mut encoders = super::kandinsky_text::TextEncoders::load_with(&req.repo, &text_device, req.quantize_qwen).await.context("loading the Kandinsky 5 text encoders")?;
+    // The checkpoints of the family differ in the transformer alone: the text encoders and the VAE of
+    // the pretrain repo are the generation repo's files, byte for byte. They are read from the
+    // generation repo, so training on another checkpoint downloads its 12 GB and not 18 GB more.
+    let shared = crate::hf::resolve_alias("kandinsky5");
+    let mut encoders = super::kandinsky_text::TextEncoders::load_with(shared, &text_device, req.quantize_qwen).await.context("loading the Kandinsky 5 text encoders")?;
     let mut embeds: std::collections::HashMap<String, (Tensor, Tensor)> = std::collections::HashMap::new();
     for text in captions.iter().map(String::as_str).chain([""]) {
         if !embeds.contains_key(text) {
@@ -292,7 +296,7 @@ pub async fn train_lora(req: TrainRequest) -> Result<()> {
     let t1 = std::time::Instant::now();
     let examples: Vec<Example> = {
         let vae_device = k5::decode_device(&req.device)?;
-        let vae = super::kandinsky_text::Vae::load(&req.repo, &vae_device).await?;
+        let vae = super::kandinsky_text::Vae::load(shared, &vae_device).await?;
         req.images
             .iter()
             .zip(&captions)
