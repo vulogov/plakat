@@ -53,7 +53,7 @@ is checked against dumps of the diffusers reference.
   `--lora file[:scale]` merges a LoRA in the format of the model's own trainer; `plakat style train
   --base kandinsky5` trains one with that trainer's recipe, with the backward done one block at a time
   so that it fits in memory without gradient checkpointing. On a 36 GB M5 Max training takes 22 GB and
-  11 s a step at 512², and 30 GB and 66 s a step at 1024² — both without swapping. One trial LoRA has been trained
+  11 s a step at 512², and 33 GB and 67 s a step at 1024² (a 200-step run) — both without swapping. One trial LoRA has been trained
   and loaded; how well a style transfers is not yet judged. In a scenario, `loras:` on the file and on
   a task are honoured, tasks with the same LoRAs sharing one load. `--base kandinsky5-pretrain` trains
   on the pretrain checkpoint — a 12 GB download, the transformer alone, since the encoders and the VAE
