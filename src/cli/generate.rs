@@ -994,10 +994,7 @@ fn kandinsky_surface(args: &mut GenerateArgs) -> Result<bool> {
         }
         return Ok(false);
     }
-    let no_adapters = "no public Kandinsky 5 adapters exist yet (RFC KANDINSKY-1, non-goal N4)";
-    if !args.loras.is_empty() {
-        anyhow::bail!("--lora is not available on --model kandinsky5: {no_adapters}");
-    }
+    let no_adapters = "no Kandinsky 5 ControlNet exists yet (RFC KANDINSKY-1, non-goal N4)";
     if !args.control_specs.is_empty() {
         anyhow::bail!("--control-spec is not available on --model kandinsky5: {no_adapters}");
     }

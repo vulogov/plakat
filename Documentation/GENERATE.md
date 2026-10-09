@@ -106,9 +106,15 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
   Together they peak at 7 GB on a machine with under 24 GB of RAM and
   at 11 GB on a larger one (which keeps the exact VAE decode), for
   about 20 % more time a step.
-- **What it does not have.** No LoRA, no ControlNet (`--lora`,
-  `--control*` are refused: no adapters exist for the model), no
-  few-step mode (`--fast`), and none of the SD-family post passes
+- **LoRA.** `--lora file.safetensors[:scale]` merges a LoRA into the
+  transformer as it is loaded (before the NF4 quantization, with
+  `--dit-nf4`), so it costs nothing a step. The format is the one the
+  model's own trainer writes (PEFT `lora_A` / `lora_B` on the model's
+  layer names); `plakat style train --base kandinsky5` writes it too
+  — see [TRAIN_CUSTOM_LORA.md](TRAIN_CUSTOM_LORA.md#kandinsky-5).
+  Not yet in `scenario` or the TUI.
+- **What it does not have.** No ControlNet (`--control*` is refused:
+  none exists for the model), no few-step mode (`--fast`), and none of the SD-family post passes
   (`--quality`, `--adetailer`, `--hires-fix`, `--artefact`, `--grid`).
   It is the slowest family plakat runs: about 15 s a step at 1024² on
   an M5 Max, two transformer forwards each.

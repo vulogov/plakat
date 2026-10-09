@@ -1279,10 +1279,7 @@ async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
 /// input's own trajectory. The size snaps to a native bucket, as on `generate`.
 async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
     use crate::pipelines::kandinsky as k5;
-    let no_adapters = "no public Kandinsky 5 adapters exist yet (RFC KANDINSKY-1, non-goal N4)";
-    if !args.loras.is_empty() {
-        anyhow::bail!("--lora is not available on --model kandinsky5: {no_adapters}");
-    }
+    let no_adapters = "no Kandinsky 5 ControlNet exists yet (RFC KANDINSKY-1, non-goal N4)";
     if args.control.is_some() || args.control_image.is_some() || args.control_from.is_some() || !args.control_specs.is_empty() {
         anyhow::bail!("--control is not available on --model kandinsky5: {no_adapters}");
     }
@@ -1304,6 +1301,7 @@ async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> 
     }
     // clap's 8 px is what "not set" looks like; this family needs a wider edge (see the constant).
     let mask_feather = if args.mask_feather == 8 { k5::DEFAULT_MASK_FEATHER } else { args.mask_feather };
+    let loras = k5::resolve_loras(&args.loras, args.lora_scale).await?;
     k5::run(k5::RunRequest {
         model: args.model,
         device,
@@ -1322,6 +1320,7 @@ async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> 
         quantize_qwen: args.quantize_qwen,
         dit_nf4: args.dit_nf4,
         init: Some(k5::Init { image: args.input, strength, mask: args.mask, mask_feather, mask_invert: args.mask_invert }),
+        loras,
     })
     .await
 }

@@ -20,6 +20,8 @@ the look from your images and bakes it into a small adapter.
 | **SDXL** (UNet) | `--base sdxl` | ✅ **supported** | kohya | ungated; dual-CLIP + add-time conditioning |
 | **SD 3.5 Medium** (MMDiT) | `--base sd35` | ✅ **supported** | diffusers-PEFT | gated on HuggingFace; ~2.5 B-param transformer |
 
+| **Kandinsky 5** (DiT) | `--base kandinsky5` | 🧪 **runs at 512² (25 GB, 11 s a step on an M5 Max); 1024² needs 43 GB** | PEFT (the reference trainer's) | ungated; 6 B-param transformer; see [below](#kandinsky-5) |
+
 A LoRA is **bound to the base architecture** — an SD 1.5 LoRA only loads
 on SD 1.5, not on SDXL / SD 3.5 / Flux. Train once per base you want to use.
 
@@ -172,6 +174,44 @@ when the style is strong enough, without losing work.
   resolves and merges into the MMDiT at load.
 
 ---
+
+## Kandinsky 5
+
+`plakat style train --base kandinsky5 --from-dir <images> --trigger "<phrase>" --out my.safetensors`
+trains a LoRA on the Kandinsky 5 transformer, with the recipe of the model's own trainer
+([kandinskylab/kandinsky-5-lora-train](https://github.com/kandinskylab/kandinsky-5-lora-train)):
+adapters on the attention and feed-forward layers of all 52 blocks, the flow-matching loss with the
+timestep drawn as `sigmoid(N(0,1))` and shifted by 3, AdamW (β 0.9 / 0.95), a warm-up, the gradient
+clipped at 1, and the caption replaced by the empty one in half the steps (which keeps CFG working).
+
+- **Captions.** A `<name>.txt` beside an image is its caption (the trigger is put in front if the
+  caption does not contain it); an image without one is captioned with the trigger alone.
+- **Settings.** The reference uses `--rank 32 --lr 1e-4` at 1024². plakat's shared defaults
+  (`--rank 16 --lr 1.5e-4 --size 256 --steps 90`) are a smoke test, not a training run.
+- **The file** is the reference's: `base_model.model.<layer>.lora_A.default.weight` /
+  `lora_B…`, BF16, the scale fixed at one. It is what `--model kandinsky5 --lora` reads, and LoRAs
+  from the reference trainer load the same way.
+- **Memory.** candle has no gradient checkpointing, so the backward is done one block at a time: each
+  block is run again from its saved input and differentiated on its own. The graph in memory is one
+  block's, whatever the depth; the price is a second forward. On a machine under 24 GB the frozen
+  model is quantized (NF4 transformer, 4-bit text tower), as in generation.
+- **Not there:** `--class-dir` (prior preservation), aspect-ratio buckets (images are resized to a
+  square), a saved optimizer state (a resumed run restarts AdamW's moments).
+
+**Status.** The gradient is checked against a single backward through the whole model on a small
+random transformer, on the CPU and on Metal, and a small run lowers its loss, saves, and loads back.
+On the real model (36 GB Apple M5 Max, Metal, rank 32 — 512 adapters, 109.4 M parameters, a 219 MB file):
+
+| `--size` | peak memory | a step |
+|---|---|---|
+| 512 | 25.5 GB (27.5 GB over a 200-step run) | 11 s |
+| 1024 | 43.1 GB — swaps on a 36 GB machine | 86–100 s |
+
+So **train at `--size 512`** unless the machine has 48 GB or more. One trial has been made: 200 steps
+on three near-identical images. The LoRA loads (`1 LoRA(s) merged into 512 layers`) and moves the
+picture, with and without `--dit-nf4`; three images of one subject say nothing about how well a
+style transfers, and that is still unmeasured. Generating with a LoRA peaks at 24.4 GB on the dense
+transformer (16.1 GB without one) and at 16.1 GB with `--dit-nf4`, where the merge costs nothing.
 
 ## Roadmap
 

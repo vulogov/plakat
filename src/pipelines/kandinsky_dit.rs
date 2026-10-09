@@ -22,8 +22,10 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow};
-use candle_core::{D, DType, Device, Module, Tensor};
+use candle_core::{D, DType, Device, Module, Tensor, Var};
 use candle_nn::{Linear, VarBuilder};
+
+use crate::pipelines::kandinsky_lora::LoraSet;
 
 /// `transformer/config.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,18 +217,45 @@ fn wide(l: &Linear, xs: &Tensor) -> Result<Tensor> {
 enum Lin {
     Dense(Linear),
     Nf4 { packed: Tensor, absmax: Tensor, pairs: Tensor, bias: Option<Tensor>, shape: (usize, usize) },
+    /// Training: the frozen layer plus a LoRA adapter beside it, `base(x) + scale · B(A(x))`. `a` and `b`
+    /// are the tensors of two `Var`s, so the graph reaches them.
+    Tuned { base: Box<Lin>, a: Tensor, b: Tensor, scale: f64 },
 }
 
 impl Lin {
     /// `vb` is on the model's device. `quant`, when given, is the same path on the CPU: the weight is
     /// read through it one layer at a time and quantized, so the dense checkpoint is never resident.
-    fn load(vb: VarBuilder, quant: Option<VarBuilder>, input: usize, output: usize, bias: bool) -> Result<Self> {
+    ///
+    /// `lora`, when it adapts this layer (its key is the layer's path, `vb.prefix()`), is merged into
+    /// the weight as it is read — before the quantization, so the 4-bit codes are those of `W + ΔW`.
+    fn load(vb: VarBuilder, quant: Option<VarBuilder>, input: usize, output: usize, bias: bool, lora: Option<&LoraSet>) -> Result<Self> {
         use crate::pipelines::nf4_codec::{quantize_nf4_cpu, NF4_BLOCK_SIZE, NF4_CODEBOOK};
+        let delta = match lora {
+            Some(l) => l.delta(&vb.prefix(), output, input)?,
+            None => None,
+        };
         let Some(q) = quant else {
-            return Ok(Lin::Dense(lin(vb, input, output, bias)?));
+            let l = lin(vb, input, output, bias)?;
+            return Ok(Lin::Dense(match delta {
+                None => l,
+                Some(d) => {
+                    // Summed on the CPU and uploaded once. On Metal the sum's F32 intermediates would
+                    // go back to the buffer pool and be handed to the next layers' half-size weights,
+                    // which then hold twice their size for the whole run.
+                    let w = l.weight();
+                    let merged = (w.to_device(&Device::Cpu)?.to_dtype(DType::F32)? + d)?.to_dtype(w.dtype())?;
+                    Linear::new(merged.to_device(w.device())?, l.bias().cloned())
+                }
+            }));
         };
         let device = vb.device();
-        let w: Vec<f32> = q.get((output, input), "weight")?.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
+        let w = q.get((output, input), "weight")?.to_dtype(DType::F32)?;
+        let w: Vec<f32> = match delta {
+            Some(d) => (w + d)?,
+            None => w,
+        }
+        .flatten_all()?
+        .to_vec1()?;
         let (packed, absmax) = quantize_nf4_cpu(&w)?;
         let blocks = absmax.len();
         debug_assert_eq!(blocks * NF4_BLOCK_SIZE, input * output);
@@ -252,8 +281,51 @@ impl Lin {
                 let bias = bias.as_ref().map(|b| b.to_dtype(dt)).transpose()?;
                 Ok(Linear::new(w, bias).forward(xs)?)
             }
+            Lin::Tuned { base, a, b, scale } => {
+                let dt = xs.dtype();
+                let low = Linear::new(a.to_dtype(dt)?, None).forward(xs)?;
+                Ok((base.forward(xs)? + (Linear::new(b.to_dtype(dt)?, None).forward(&low)? * *scale)?)?)
+            }
         }
     }
+
+    /// `(out, in)`.
+    fn dims(&self) -> Result<(usize, usize)> {
+        Ok(match self {
+            Lin::Dense(l) => l.weight().dims2()?,
+            Lin::Nf4 { shape, .. } => *shape,
+            Lin::Tuned { base, .. } => base.dims()?,
+        })
+    }
+
+    /// Put a fresh adapter of `rank` beside this layer and hand back its two variables: `A` uniform in
+    /// `±1/√in` (PEFT's Kaiming-uniform default), `B` zero — the layer computes what it did before.
+    fn tune(&mut self, rank: usize, scale: f64, seed: u64, device: &Device) -> Result<(Var, Var)> {
+        let (out, input) = self.dims()?;
+        let bound = 1.0 / (input as f32).sqrt();
+        let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let init: Vec<f32> = (0..rank * input)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                ((s >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * bound
+            })
+            .collect();
+        let a = Var::from_tensor(&Tensor::from_vec(init, (rank, input), device)?)?;
+        let b = Var::from_tensor(&Tensor::zeros((out, rank), DType::F32, device)?)?;
+        let base = std::mem::replace(self, Lin::Dense(Linear::new(Tensor::zeros((1, 1), DType::F32, &Device::Cpu)?, None)));
+        *self = Lin::Tuned { base: Box::new(base), a: a.as_tensor().clone(), b: b.as_tensor().clone(), scale };
+        Ok((a, b))
+    }
+}
+
+/// A trainable LoRA adapter on one layer: its module path (the key it is saved under) and its two
+/// matrices, `a` `(r, in)` and `b` `(out, r)`.
+pub struct Adapter {
+    pub module: String,
+    pub a: Var,
+    pub b: Var,
 }
 
 /// Non-affine LayerNorm over the last dim, in F32.
@@ -312,9 +384,24 @@ fn residual(x: &Tensor, gate: &Tensor, out: &Tensor) -> Result<Tensor> {
 }
 
 /// Plain scaled-dot-product attention over `(B·heads, L, D)`, no mask, a few heads at a time.
-fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
-    let (bh, lq, d) = q.dims3()?;
+/// `differentiable` takes the softmax built from `exp` and `sum`: candle's fused `softmax_last_dim` has
+/// no backward, and would cut the gradient of every query and key projection.
+fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor, differentiable: bool) -> Result<Tensor> {
+    if differentiable && q.device().is_cuda() {
+        // The node below is written for the CPU and Metal; here the tape differentiates attention.
+        let scores = (q.matmul(&k.transpose(1, 2)?)? * (1.0 / (q.dim(2)? as f64).sqrt()))?;
+        return Ok(candle_nn::ops::softmax(&scores, D::Minus1)?.matmul(v)?);
+    }
+    if differentiable {
+        let held = [q.detach(), k.detach(), v.detach()];
+        return Ok(q.apply_op3(k, v, TrainedAttention(held))?);
+    }
     let budget = if crate::pipelines::kandinsky::low_memory() { ATTN_CHUNK_BYTES_LOW } else { ATTN_CHUNK_BYTES };
+    attend(q, k, v, budget)
+}
+
+fn attend(q: &Tensor, k: &Tensor, v: &Tensor, budget: usize) -> Result<Tensor> {
+    let (bh, lq, d) = q.dims3()?;
     let per = (budget / (lq * k.dim(1)? * q.dtype().size_in_bytes()).max(1)).clamp(1, bh);
     let scale = 1.0 / (d as f64).sqrt();
     let kt = k.transpose(1, 2)?.contiguous()?;
@@ -329,6 +416,69 @@ fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
     Ok(if out.len() == 1 { out.remove(0) } else { Tensor::cat(&out, 0)? })
 }
 
+/// The scores a chunk of heads may take under training, in either direction. Small on purpose:
+/// Metal's buffer pool hands a freed buffer to the next smaller request, and under training the
+/// small tensors of a block's graph live long — each one that lands in a freed score buffer pins
+/// it, so the pool grows by the size of a score chunk at a time.
+const ATTN_TRAIN_CHUNK_BYTES: usize = 1 << 27;
+
+/// Attention under training, as one node of the graph. Left to the tape, a block's attention keeps
+/// every head's `L x L` scores and the softmax's intermediates until the block is differentiated
+/// — 20 GB at 1024x1024. Here the forward pass keeps nothing, and the backward pass rebuilds the
+/// graph a few heads at a time. Holds the three inputs, detached.
+struct TrainedAttention([Tensor; 3]);
+
+impl TrainedAttention {
+    fn forward(&self) -> candle_core::Result<Tensor> {
+        let [q, k, v] = &self.0;
+        attend(q, k, v, ATTN_TRAIN_CHUNK_BYTES).map_err(candle_core::Error::wrap)?.contiguous()
+    }
+}
+
+impl candle_core::CustomOp3 for TrainedAttention {
+    fn name(&self) -> &'static str {
+        "kandinsky-attention"
+    }
+
+    fn cpu_fwd(&self, _: &candle_core::CpuStorage, _: &candle_core::Layout, _: &candle_core::CpuStorage, _: &candle_core::Layout, _: &candle_core::CpuStorage, _: &candle_core::Layout) -> candle_core::Result<(candle_core::CpuStorage, candle_core::Shape)> {
+        let out = self.forward()?;
+        match &*out.storage_and_layout().0 {
+            candle_core::Storage::Cpu(s) => Ok((s.clone(), out.shape().clone())),
+            _ => candle_core::bail!("attention on the CPU gave a tensor elsewhere"),
+        }
+    }
+
+    #[cfg(feature = "metal")]
+    fn metal_fwd(&self, _: &candle_core::MetalStorage, _: &candle_core::Layout, _: &candle_core::MetalStorage, _: &candle_core::Layout, _: &candle_core::MetalStorage, _: &candle_core::Layout) -> candle_core::Result<(candle_core::MetalStorage, candle_core::Shape)> {
+        let out = self.forward()?;
+        match &*out.storage_and_layout().0 {
+            candle_core::Storage::Metal(s) => Ok((s.clone(), out.shape().clone())),
+            _ => candle_core::bail!("attention on Metal gave a tensor elsewhere"),
+        }
+    }
+
+    fn bwd(&self, _: &Tensor, _: &Tensor, _: &Tensor, _: &Tensor, grad: &Tensor) -> candle_core::Result<(Option<Tensor>, Option<Tensor>, Option<Tensor>)> {
+        let [q, k, v] = &self.0;
+        let (bh, lq, d) = q.dims3()?;
+        let per = (ATTN_TRAIN_CHUNK_BYTES / (lq * k.dim(1)? * q.dtype().size_in_bytes()).max(1)).clamp(1, bh);
+        let scale = 1.0 / (d as f64).sqrt();
+        let (mut gq, mut gk, mut gv) = (Vec::new(), Vec::new(), Vec::new());
+        let mut i = 0;
+        while i < bh {
+            let n = per.min(bh - i);
+            let (qc, kc, vc) = (Var::from_tensor(&q.narrow(0, i, n)?)?, Var::from_tensor(&k.narrow(0, i, n)?)?, Var::from_tensor(&v.narrow(0, i, n)?)?);
+            let scores = (qc.matmul(&kc.transpose(1, 2)?)? * scale)?;
+            let out = candle_nn::ops::softmax(&scores, D::Minus1)?.matmul(&vc)?;
+            let grads = (out * grad.narrow(0, i, n)?)?.sum_all()?.backward()?;
+            for (var, into) in [(&qc, &mut gq), (&kc, &mut gk), (&vc, &mut gv)] {
+                into.push(grads.get(var).ok_or_else(|| candle_core::Error::Msg("attention gave no gradient".into()))?.detach());
+            }
+            i += n;
+        }
+        Ok((Some(Tensor::cat(&gq, 0)?), Some(Tensor::cat(&gk, 0)?), Some(Tensor::cat(&gv, 0)?)))
+    }
+}
+
 struct Attention {
     to_query: Lin,
     to_key: Lin,
@@ -338,12 +488,14 @@ struct Attention {
     key_norm: Tensor,
     heads: usize,
     rope_round: bool,
+    /// Set with the adapters: the attention weights must carry a gradient.
+    training: bool,
 }
 
 impl Attention {
-    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, rope_round: bool) -> Result<Self> {
+    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, rope_round: bool, lora: Option<&LoraSet>) -> Result<Self> {
         let (c, hd) = (cfg.model_dim, cfg.head_dim());
-        let load = |name: &str| Lin::load(vb.pp(name), quant.as_ref().map(|q| q.pp(name)), c, c, true);
+        let load = |name: &str| Lin::load(vb.pp(name), quant.as_ref().map(|q| q.pp(name)), c, c, true, lora);
         Ok(Self {
             to_query: load("to_query")?,
             to_key: load("to_key")?,
@@ -353,6 +505,7 @@ impl Attention {
             key_norm: vb.pp("key_norm").get(hd, "weight")?,
             heads: cfg.heads(),
             rope_round,
+            training: false,
         })
     }
 
@@ -382,8 +535,15 @@ impl Attention {
         let q = self.prepare(&self.to_query.forward(x)?, &self.query_norm, rope)?;
         let k = self.prepare(&self.to_key.forward(src)?, &self.key_norm, rope)?;
         let v = self.to_value.forward(src)?.reshape((b, lk, self.heads, hd))?.transpose(1, 2)?.contiguous()?.reshape((b * self.heads, lk, hd))?;
-        let out = sdpa(&q, &k, &v)?.reshape((b, self.heads, l, hd))?.transpose(1, 2)?.contiguous()?.reshape((b, l, c))?;
+        let out = sdpa(&q, &k, &v, self.training)?.reshape((b, self.heads, l, hd))?.transpose(1, 2)?.contiguous()?.reshape((b, l, c))?;
         self.out_layer.forward(&out)
+    }
+}
+
+impl Attention {
+    fn layers(&mut self) -> [(&'static str, &mut Lin); 4] {
+        self.training = true;
+        [("to_query", &mut self.to_query), ("to_key", &mut self.to_key), ("to_value", &mut self.to_value), ("out_layer", &mut self.out_layer)]
     }
 }
 
@@ -394,13 +554,19 @@ struct FeedForward {
 }
 
 impl FeedForward {
-    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config) -> Result<Self> {
+    fn new(vb: VarBuilder, quant: Option<VarBuilder>, cfg: &Config, lora: Option<&LoraSet>) -> Result<Self> {
         let q = |name: &str| quant.as_ref().map(|q| q.pp(name));
-        Ok(Self { in_layer: Lin::load(vb.pp("in_layer"), q("in_layer"), cfg.model_dim, cfg.ff_dim, false)?, out_layer: Lin::load(vb.pp("out_layer"), q("out_layer"), cfg.ff_dim, cfg.model_dim, false)? })
+        Ok(Self { in_layer: Lin::load(vb.pp("in_layer"), q("in_layer"), cfg.model_dim, cfg.ff_dim, false, lora)?, out_layer: Lin::load(vb.pp("out_layer"), q("out_layer"), cfg.ff_dim, cfg.model_dim, false, lora)? })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         self.out_layer.forward(&self.in_layer.forward(x)?.gelu_erf()?)
+    }
+}
+
+impl FeedForward {
+    fn layers(&mut self) -> [(&'static str, &mut Lin); 2] {
+        [("in_layer", &mut self.in_layer), ("out_layer", &mut self.out_layer)]
     }
 }
 
@@ -474,7 +640,12 @@ pub struct Dit {
 impl Dit {
     /// Build from a VarBuilder over the checkpoint (any stored dtype); activations run in `compute`.
     pub fn new(cfg: Config, vb: VarBuilder, compute: DType) -> Result<Self> {
-        Self::build(cfg, vb, None, compute)
+        Self::build(cfg, vb, None, None, compute)
+    }
+
+    /// As [`Self::new`] (or [`Self::new_nf4`] with `quant`), with `lora` merged into the weights it adapts.
+    pub fn new_with_lora(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, lora: &LoraSet, compute: DType) -> Result<Self> {
+        Self::build(cfg, vb, quant, Some(lora), compute)
     }
 
     /// As [`Self::new`], with the blocks' attention and feed-forward weights in NF4 — 95 % of the model.
@@ -482,17 +653,17 @@ impl Dit {
     /// through. The embeddings, the modulations (the reference's F32 islands) and the output layer stay
     /// dense.
     pub fn new_nf4(cfg: Config, vb: VarBuilder, quant: VarBuilder, compute: DType) -> Result<Self> {
-        Self::build(cfg, vb, Some(quant), compute)
+        Self::build(cfg, vb, Some(quant), None, compute)
     }
 
-    fn build(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, compute: DType) -> Result<Self> {
+    fn build(cfg: Config, vb: VarBuilder, quant: Option<VarBuilder>, lora: Option<&LoraSet>, compute: DType) -> Result<Self> {
         let round = std::env::var("PLAKAT_K5_ROPE_ROUND").ok().as_deref() != Some("0");
         let (c, td) = (cfg.model_dim, cfg.time_dim);
         let text_blocks = (0..cfg.num_text_blocks)
             .map(|i| {
                 let vb = vb.pp("text_transformer_blocks").pp(i);
                 let q = |name: &str| quant.as_ref().map(|q| q.pp("text_transformer_blocks").pp(i).pp(name));
-                Ok(TextBlock { modulation: Modulation::new(vb.pp("text_modulation"), td, c, 6)?, attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round)?, feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg)? })
+                Ok(TextBlock { modulation: Modulation::new(vb.pp("text_modulation"), td, c, 6)?, attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round, lora)?, feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg, lora)? })
             })
             .collect::<Result<Vec<_>>>()?;
         let visual_blocks = (0..cfg.num_visual_blocks)
@@ -501,9 +672,9 @@ impl Dit {
                 let q = |name: &str| quant.as_ref().map(|q| q.pp("visual_transformer_blocks").pp(i).pp(name));
                 Ok(VisualBlock {
                     modulation: Modulation::new(vb.pp("visual_modulation"), td, c, 9)?,
-                    self_attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round)?,
-                    cross_attention: Attention::new(vb.pp("cross_attention"), q("cross_attention"), &cfg, round)?,
-                    feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg)?,
+                    self_attention: Attention::new(vb.pp("self_attention"), q("self_attention"), &cfg, round, lora)?,
+                    cross_attention: Attention::new(vb.pp("cross_attention"), q("cross_attention"), &cfg, round, lora)?,
+                    feed_forward: FeedForward::new(vb.pp("feed_forward"), q("feed_forward"), &cfg, lora)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -540,12 +711,17 @@ impl Dit {
 
     /// As [`Self::load`]; with `nf4` the block weights are quantized as they are read (≈3.7 GB resident).
     pub async fn load_with(repo: &str, device: &Device, nf4: bool) -> Result<Self> {
+        Self::load_full(repo, device, nf4, None).await
+    }
+
+    /// As [`Self::load_with`], with `lora` merged into the weights as they are read.
+    pub async fn load_full(repo: &str, device: &Device, nf4: bool, lora: Option<&LoraSet>) -> Result<Self> {
         let cfg_path = crate::hf::download::get_file(repo, "transformer/config.json").await.context("Kandinsky 5 transformer/config.json")?;
         let cfg = Config::from_json(&std::fs::read_to_string(&cfg_path)?)?;
         let weights = crate::hf::download::get_file(repo, "transformer/diffusion_pytorch_model.safetensors").await.context("Kandinsky 5 transformer weights")?;
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, device)? };
         let quant = if nf4 { Some(unsafe { VarBuilder::from_mmaped_safetensors(&[&weights], DType::BF16, &Device::Cpu)? }) } else { None };
-        Self::build(cfg, vb, quant, Self::compute_dtype(device)).context("building the Kandinsky 5 DiT")
+        Self::build(cfg, vb, quant, lora, Self::compute_dtype(device)).context("building the Kandinsky 5 DiT")
     }
 
     pub fn compute(&self) -> DType {
@@ -565,39 +741,132 @@ impl Dit {
     }
 
     pub fn forward_tapped(&self, latents: &Tensor, text: &Tensor, pooled: &Tensor, t: f64, mut taps: Option<&mut Taps>) -> Result<Tensor> {
-        let (b, _c, h, w) = latents.dims4()?;
-        if b != 1 || text.dim(0)? != 1 {
-            anyhow::bail!("the Kandinsky 5 DiT takes one image and one prompt per forward (the two CFG branches differ in length)");
-        }
-        let (gh, gw) = (h / PATCH, w / PATCH);
-        let tokens = patchify(&latents.to_device(&Device::Cpu)?.to_dtype(DType::F32)?)?.to_device(&self.device)?.to_dtype(self.compute)?;
-        let mut visual = wide(&self.visual_in, &tokens)?;
-        let mut text = self.text_embeddings.forward(&text.to_device(&self.device)?.to_dtype(self.compute)?)?.to_dtype(self.compute)?;
-        // The one global conditioning vector: time + pooled text. Every modulation applies the same SiLU.
-        let time = (self.time_embed(t)? + self.pooled_text_embeddings.forward(&pooled.to_device(&self.device)?.to_dtype(DType::F32)?)?)?;
-        let time_act = time.silu()?;
-
-        let len = text.dim(1)?;
-        let text_rope = Rope::new(rope_angles_1d(len, self.cfg.head_dim())?, len, &self.device)?;
-        for block in &self.text_blocks {
-            text = block.forward(&text, &time_act, &text_rope)?;
+        let s = self.stage(latents, text, pooled, t)?;
+        let mut text = s.text.clone();
+        for i in 0..self.text_blocks.len() {
+            text = self.text_block(i, &text, &s)?;
         }
         if let Some(taps) = taps.as_deref_mut() {
             taps.record("text_stream".into(), &text)?;
         }
-        let visual_rope = Rope::new(rope_angles_3d(gh, gw, self.cfg.axes_dims)?, gh * gw, &self.device)?;
-        for (i, block) in self.visual_blocks.iter().enumerate() {
-            visual = block.forward(&visual, &text, &time_act, &visual_rope)?;
+        let mut visual = s.visual.clone();
+        for i in 0..self.visual_blocks.len() {
+            visual = self.visual_block(i, &visual, &text, &s)?;
             if let Some(taps) = taps.as_deref_mut() {
                 if taps.blocks.contains(&i) {
                     taps.record(format!("visual_block_{i}"), &visual)?;
                 }
             }
         }
-        let p = self.out_modulation.params(&time_act)?;
-        let out = wide(&self.out_layer, &modulate(&visual, &p[0], &p[1])?)?;
-        Ok(unpatchify(&out.to_dtype(DType::F32)?.to_device(&Device::Cpu)?, gh, gw)?.to_device(&self.device)?)
+        let out = self.head(&visual, &s)?;
+        Ok(unpatchify(&out.to_device(&Device::Cpu)?, s.gh, s.gw)?.to_device(&self.device)?)
     }
+
+    /// The forward in pieces, for a trainer that walks the blocks itself: the inputs embedded, before
+    /// any block. One image and one prompt, as [`Self::forward`].
+    pub fn stage(&self, latents: &Tensor, text: &Tensor, pooled: &Tensor, t: f64) -> Result<Staged> {
+        let (b, _c, h, w) = latents.dims4()?;
+        if b != 1 || text.dim(0)? != 1 {
+            anyhow::bail!("the Kandinsky 5 DiT takes one image and one prompt per forward (the two CFG branches differ in length)");
+        }
+        let (gh, gw) = (h / PATCH, w / PATCH);
+        let tokens = patchify(&latents.to_device(&Device::Cpu)?.to_dtype(DType::F32)?)?.to_device(&self.device)?.to_dtype(self.compute)?;
+        let visual = wide(&self.visual_in, &tokens)?;
+        let text = self.text_embeddings.forward(&text.to_device(&self.device)?.to_dtype(self.compute)?)?.to_dtype(self.compute)?;
+        // The one global conditioning vector: time + pooled text. Every modulation applies the same SiLU.
+        let time = (self.time_embed(t)? + self.pooled_text_embeddings.forward(&pooled.to_device(&self.device)?.to_dtype(DType::F32)?)?)?;
+        let len = text.dim(1)?;
+        Ok(Staged {
+            time_act: time.silu()?,
+            text_rope: Rope::new(rope_angles_1d(len, self.cfg.head_dim())?, len, &self.device)?,
+            visual_rope: Rope::new(rope_angles_3d(gh, gw, self.cfg.axes_dims)?, gh * gw, &self.device)?,
+            visual,
+            text,
+            gh,
+            gw,
+        })
+    }
+
+    /// Text block `i` on the text stream.
+    pub fn text_block(&self, i: usize, text: &Tensor, s: &Staged) -> Result<Tensor> {
+        self.text_blocks[i].forward(text, &s.time_act, &s.text_rope)
+    }
+
+    /// Visual block `i` on the visual stream, attending to the text stream after its blocks.
+    pub fn visual_block(&self, i: usize, visual: &Tensor, text: &Tensor, s: &Staged) -> Result<Tensor> {
+        self.visual_blocks[i].forward(visual, text, &s.time_act, &s.visual_rope)
+    }
+
+    /// The output layer on the visual stream after its blocks: velocity tokens `(1, gh · gw, 4C)` in F32,
+    /// each patch laid out `(C, ph, pw)` — what [`unpatchify`] takes and [`patchify_out`] makes.
+    pub fn head(&self, visual: &Tensor, s: &Staged) -> Result<Tensor> {
+        let p = self.out_modulation.params(&s.time_act)?;
+        Ok(wide(&self.out_layer, &modulate(visual, &p[0], &p[1])?)?.to_dtype(DType::F32)?)
+    }
+
+    pub fn block_counts(&self) -> (usize, usize) {
+        (self.text_blocks.len(), self.visual_blocks.len())
+    }
+
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    /// Put a trainable LoRA adapter of `rank` beside every layer the reference trainer adapts
+    /// ([`crate::pipelines::kandinsky_lora::TARGETS`]): the attention projections and the feed-forward
+    /// layers of every block, text and visual. `scale` is `alpha / rank`. The adapters start as the
+    /// identity (`B = 0`), so the model computes what it did before. Returned in a fixed order.
+    pub fn install_adapters(&mut self, rank: usize, scale: f64, seed: u64) -> Result<Vec<Adapter>> {
+        anyhow::ensure!(rank > 0, "a LoRA needs a rank of at least 1");
+        let device = self.device.clone();
+        let mut out = Vec::new();
+        let mut n = 0u64;
+        let mut tune = |module: String, layer: &mut Lin, out: &mut Vec<Adapter>| -> Result<()> {
+            n += 1;
+            let (a, b) = layer.tune(rank, scale, seed.wrapping_add(n), &device)?;
+            out.push(Adapter { module, a, b });
+            Ok(())
+        };
+        for (i, block) in self.text_blocks.iter_mut().enumerate() {
+            for (name, layer) in block.attention.layers() {
+                tune(format!("text_transformer_blocks.{i}.self_attention.{name}"), layer, &mut out)?;
+            }
+            for (name, layer) in block.feed_forward.layers() {
+                tune(format!("text_transformer_blocks.{i}.feed_forward.{name}"), layer, &mut out)?;
+            }
+        }
+        for (i, block) in self.visual_blocks.iter_mut().enumerate() {
+            for (part, attention) in [("self_attention", &mut block.self_attention), ("cross_attention", &mut block.cross_attention)] {
+                for (name, layer) in attention.layers() {
+                    tune(format!("visual_transformer_blocks.{i}.{part}.{name}"), layer, &mut out)?;
+                }
+            }
+            for (name, layer) in block.feed_forward.layers() {
+                tune(format!("visual_transformer_blocks.{i}.feed_forward.{name}"), layer, &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// What [`Dit::stage`] hands a block-by-block forward: the two streams before their blocks, and what
+/// every block reads besides them.
+pub struct Staged {
+    pub visual: Tensor,
+    pub text: Tensor,
+    time_act: Tensor,
+    text_rope: Rope,
+    visual_rope: Rope,
+    pub gh: usize,
+    pub gw: usize,
+}
+
+/// NCHW `(B, C, H, W)` → tokens in the OUTPUT layer's layout, each patch `(C, ph, pw)`: the inverse of
+/// [`unpatchify`]. A trainer compares the head's tokens with a target laid out this way.
+pub fn patchify_out(x: &Tensor) -> Result<Tensor> {
+    let (b, c, h, w) = x.dims4()?;
+    let (gh, gw) = (h / PATCH, w / PATCH);
+    Ok(x.reshape(&[b, c, gh, PATCH, gw, PATCH][..])?.permute([0, 2, 4, 1, 3, 5])?.contiguous()?.reshape((b, gh * gw, c * PATCH * PATCH))?)
 }
 
 #[cfg(test)]
@@ -620,6 +889,22 @@ pub(crate) mod tests {
         let (a, b) = (v(a), v(b));
         let peak = b.iter().fold(0f32, |m, x| m.max(x.abs()));
         a.iter().zip(&b).fold(0f32, |m, (x, y)| m.max((x - y).abs())) / peak.max(1e-30)
+    }
+
+    /// The attention node's own backward pass gives the tape's gradients.
+    #[test]
+    fn attention_as_one_node_has_the_tapes_gradients() {
+        let mk = |k: f32, l: usize| Var::from_tensor(&Tensor::from_vec((0..6 * l * 8).map(|i| (i as f32 * k).sin()).collect::<Vec<f32>>(), (6, l, 8), &Device::Cpu).unwrap()).unwrap();
+        let (q, k, val) = (mk(0.37, 5), mk(0.11, 7), mk(0.73, 7));
+        let w = Tensor::from_vec((0..6 * 5 * 8).map(|i| (i as f32 * 0.29).cos()).collect::<Vec<f32>>(), (6, 5, 8), &Device::Cpu).unwrap();
+        let node = sdpa(&q, &k, &val, true).unwrap();
+        let scores = (q.matmul(&k.transpose(1, 2).unwrap()).unwrap() * (1.0 / 8f64.sqrt())).unwrap();
+        let tape = candle_nn::ops::softmax(&scores, D::Minus1).unwrap().matmul(&val).unwrap();
+        assert!(rel(&node, &tape) < 1e-5);
+        let (a, b) = ((node * &w).unwrap().sum_all().unwrap().backward().unwrap(), (tape * &w).unwrap().sum_all().unwrap().backward().unwrap());
+        for x in [&q, &k, &val] {
+            assert!(rel(a.get(x).unwrap(), b.get(x).unwrap()) < 1e-4);
+        }
     }
 
     #[test]

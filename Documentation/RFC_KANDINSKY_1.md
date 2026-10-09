@@ -76,7 +76,7 @@ The reference implementation is now upstream in diffusers (`transformer_kandinsk
   - It is deferred to KANDINSKY-2. See §15 Q4.
 - N2. NABLA sparse attention. It is only used by the video models; the T2I config is `attention_type: "regular"`.
 - N3. Video (T2V/I2V Lite or Pro).
-- N4. LoRA and ControlNet. No public adapters exist yet. The LoRA loader seam is noted in §11.4 but not implemented.
+- N4. LoRA and ControlNet. No public adapters exist yet. The LoRA loader seam is noted in §11.4 but not implemented. *(LoRA lifted after the RFC: see Phase 6.)*
 - N5. The `pretrain` checkpoint as a generation target. It is accepted as an alias only for future LoRA training.
 - N6. A distilled or few-step mode. No distilled T2I checkpoint exists, and LCM/Lightning-style schedulers do not transfer.
 
@@ -658,6 +658,34 @@ Each phase is independently mergeable.
 
   No step count is measurably or visibly worse: the 20-step images are finished pictures, not drafts of the 50-step ones. The low PSNR is the other finding — the composition holds across step counts but the details do not (a samovar's tap changes side, a pier gains a railing), and 40 steps is no closer to 50 than 20 is. So there is no convergence to buy with more steps. **Guidance: the default stays 50, the reference's; `--steps 30` for ordinary work, 20 for drafts.** Four prompts cannot rank the counts, and the differences in the table are within their spread (per-prompt adherence at 20 steps runs 0.283–0.350).
 - **Q3, the bilingual set.** The same four prompts in Russian, at 20 steps, scored against the *English* text: 0.3055 from Russian, 0.3028 from English (+0.9 %; per prompt 0.300 / 0.284 / 0.287 / 0.351 against 0.283 / 0.286 / 0.292 / 0.350). By eye the Russian set is as faithful — the fox, the fisherman with his net, the samovar with its string of баранки, the watercolour church. `compile`'s profile therefore keeps a Russian source in Russian. Four pairs support "Russian prompts work"; they do not support a claim of a cultural advantage, and none is made.
+
+### Phase 6 — LoRA (after the RFC: N4 lifted)
+
+N4 said no public adapters existed. For images that is still so — the 25 Kandinsky 5 LoRAs on the Hub are all for the video models — but the model's authors have published a trainer (`kandinskylab/kandinsky-5-lora-train`, MIT), so there is a format to be compatible with and a recipe to follow.
+
+**P6 as built** (`kandinsky_lora.rs`, `kandinsky_train.rs`, `kandinsky_dit.rs`, `kandinsky.rs`, `cli/style.rs`). The mathematics is verified on the tiny random DiT of the unit tests, on the CPU and on Metal; memory, speed and one trial run are measured on the real weights (36 GB M5 Max).
+
+- **Format.** The reference's: PEFT adapters on the native module names, `base_model.model.<module>.lora_A.default.weight` `(r, in)` and `lora_B…` `(out, r)`, BF16, no alpha (the reference trains at `lora_alpha = r = 32`). The diffusers checkpoint keeps the native names, so the key is the layer's path. Also read: no adapter name, a `transformer.` or `diffusion_model.` prefix, `lora_down` / `lora_up`, and an `.alpha` beside a pair.
+- **Loading** (`--lora file[:scale]` on `generate` and `img2img`). Merged into the weight as each layer is read, `W += s · B · A`, before the NF4 quantization when that is on: no per-step cost, and §11.4's wrapper is not needed. A file none of whose layers are in the model is an error; layers the model has no place for are reported. Not wired into `scenario` (a task with LoRAs is refused) or the TUI.
+- **Training** (`plakat style train --base kandinsky5`). The reference's recipe: the ten target layers (attention projections and feed-forward, text and visual blocks), `t = sigmoid(N(0,1))` shifted by 3.0 — the reference's `scheduler_scale`, not sampling's 5.0 — `x_t = (1 − t)·z + t·ε`, target `ε − z`, MSE, AdamW β 0.9 / 0.95 without weight decay, a 100-step warm-up, gradient norm clipped at 1, the empty caption in half the steps. Captions come from `<image>.txt`. One image a step, square, resized.
+- **The backward goes block by block.** candle keeps a forward's activations until `backward` and has no checkpointing (`GRADIENT_CHECKPOINTING.md` calls it a dead end, and the other transformer trainers OOM above 256² for it). The DiT is a chain, so: forward once with every block's output detached and kept; take the loss on the output layer from the last kept output as a variable, which gives the gradient `g` of the visual stream; then walk back, running block `i` again from its kept input as a variable `x`, and differentiate the scalar `Σ(block(x) · g)` — its gradient in `x` is the next `g`, its gradients in the block's adapters are theirs of the loss. The text stream's gradient is summed over the visual blocks and walked back through the text blocks. Each block is run twice and differentiated once; the graph in memory is one block's. Only `backward` is used.
+- **Checked:** the block-by-block gradient equals one backward through the whole model, for all 84 adapter matrices of the tiny DiT, to 2e-3 of each one's largest entry on the CPU and 5e-3 on Metal; 40 steps lower the loss by over 20 %; the saved file merges back into the trained model (to BF16 rounding); a LoRA merged before NF4 quantization is the model quantized from merged weights; a checkpoint restores into live adapters.
+- **Found by the first test:** `candle_nn::ops::softmax_last_dim`, which the attention used, has no backward — the query and key projections got no gradient at all. With adapters installed the attention takes the softmax built from `exp` and `sum`.
+- **Attention is one node of the graph under training.** Left to the tape, a block's self-attention keeps every head's `L × L` scores and the softmax's intermediates until the block is differentiated. A `CustomOp3` holds the three inputs instead: its forward keeps nothing, its backward rebuilds the graph a few heads at a time. Its gradients equal the tape's (unit test).
+- **Metal's buffer pool decides the memory, not the graph.** candle's Metal backend never releases the pool that op outputs come from, and hands a freed buffer to the next request that fits in it. Under training small tensors live long, and each one that lands in a large freed buffer pins it. Three fixes came from this, each measured: tensors kept across the step (block inputs, `g`, adapter gradients) are parked on the CPU — 512² fell from 42.6 GB to 25.4 GB and stopped swapping; the attention chunk under training is 128 MB of scores, not 1 GB — a 1024² step fell from 254 s to 86–100 s; and a LoRA is merged into a dense weight on the CPU and uploaded once — generation with a LoRA fell from 38.1 GB (stopped by the OOM guard) to 24.4 GB.
+- **Measured** (rank 32: 512 adapters, 109.4 M parameters, 219 MB):
+
+  | | peak | a step |
+  |---|---|---|
+  | training, 512² | 25.5 GB (27.5 GB over 200 steps) | 11 s |
+  | training, 1024² | 43.1 GB | 86–100 s, swapping |
+  | generation 1024², no LoRA | 16.1 GB | 15.5 s |
+  | generation 1024², LoRA, dense | 24.4 GB | 15.6 s |
+  | generation 1024², LoRA, `--dit-nf4` | 16.1 GB | 18.3 s |
+
+  The loss is the same to four digits before and after each memory fix (0.5602, 0.3534, 0.4447 at 512²), so none of them changed the computation.
+- **One trial.** 200 steps at 512² on three near-identical images (38 minutes; loss 0.385 → 0.358, noisy). The file loads into all 512 layers and moves the picture at a fixed seed, dense and NF4 — coarser paint, the set's blue shadows. That shows the path works end to end; it does not show how well a style transfers, which needs a real set.
+- **Open.** 1024² training in 36 GB: about 16 GB still appears in the first blocks of the backward walk and is not explained. The 8 GB a LoRA adds to dense generation (the weights read before the merge are probably released late; reading them on the CPU would avoid it). A style set of 10–20 varied images, judged. Whether a LoRA from the reference trainer loads (none is published to try). Prior preservation, aspect-ratio buckets and the optimizer's state in a checkpoint are not implemented; LoRAs are not wired into `scenario` or the TUI.
 
 ## 14. Risks
 

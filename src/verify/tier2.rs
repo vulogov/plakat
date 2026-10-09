@@ -264,7 +264,7 @@ async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>
             use crate::pipelines::kandinsky as k5;
             let tmp = std::env::temp_dir().join(format!("plakat-tier2-{}-{model}", std::process::id()));
             let png = tmp.join("render.png");
-            let settings = k5::Settings { model: model.to_string(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false };
+            let settings = k5::Settings { model: model.to_string(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
             let job = k5::Job { prompt: fx.prompt.to_string(), negative: fx.negative.to_string(), width: spec.size, height: spec.size, steps: spec.steps, guidance: spec.guidance, seed: 0, out_path: png.clone(), init: None };
             unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
             let gen_result = k5::run_jobs(&settings, &[job]).await;
