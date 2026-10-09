@@ -333,6 +333,17 @@ struct ScenarioFile {
     #[serde(rename = "lora-scale")]
     lora_scale: Option<f32>,
 
+    /// Kandinsky 5: the transformer's block weights in NF4 (`generate --dit-nf4`).
+    #[serde(rename = "dit-nf4", default)]
+    dit_nf4: bool,
+    /// Kandinsky 5: the Qwen text tower from a Q4 GGUF (`generate --quantize-qwen`).
+    #[serde(rename = "quantize-qwen", default)]
+    quantize_qwen: bool,
+    /// Kandinsky 5: where the NF4 transformer is cached between runs — a directory (a fast disk),
+    /// or `off`. The command line's `--nf4-cache` overrides it.
+    #[serde(rename = "nf4-cache", default)]
+    nf4_cache: Option<String>,
+
     scheduler: Option<String>,
     refine: Option<usize>,
     #[serde(rename = "refine-strength")]
@@ -5124,7 +5135,12 @@ pub async fn run_with_events(
     // 7.2 (RFC KANDINSKY-1): the Kandinsky 5 tasks of the scenario, held back for one run after the loop
     // — one load of the text encoders and one of the DiT for all of them (the family is staged, so a
     // run a task reads 26 GB of checkpoints a task). `(task name, its jobs)`.
-    let mut k5_deferred: Vec<(String, Vec<crate::pipelines::kandinsky::Job>)> = Vec::new();
+    // Each with the LoRAs it renders under: they are merged as the transformer is read, so a set of
+    // LoRAs is a load, and the queued tasks render one load a distinct set.
+    let mut k5_deferred: Vec<(String, Vec<crate::pipelines::kandinsky::Job>, Vec<crate::pipelines::kandinsky::Lora>)> = Vec::new();
+    if let Some(spec) = s.nf4_cache.as_deref() {
+        crate::pipelines::kandinsky_dit::set_nf4_cache(spec);
+    }
 
     // v0.34 phase 2: the generate body's async-block wrap returns
     // this enum so the outer match knows whether the body already
@@ -6976,7 +6992,10 @@ pub async fn run_with_events(
             // generation (ranking, artefacts, style, upscale), which needs the images now.
             if variant.is_kandinsky() {
                 use crate::pipelines::kandinsky as k5;
-                anyhow::ensure!(effective_task_loras.is_empty(), "task '{}': LoRAs are not wired into `scenario` for Kandinsky 5 yet — use `generate --model kandinsky5 --lora`", task.name);
+                // The scenario's LoRAs and then the task's. A look's discovered LoRAs are other
+                // families' and are left out.
+                let k_specs = s.loras.iter().chain(&task.loras).map(|l| l.parse::<LoraSpec>()).collect::<Result<Vec<_>>>().with_context(|| format!("task '{}': a LoRA spec", task.name))?;
+                let k_loras = k5::resolve_loras(&k_specs, task.lora_scale.unwrap_or(lora_scale)).await.with_context(|| format!("task '{}': resolving its LoRAs", task.name))?;
                 let (kw, kh) = k5::snap_bucket(eff_w as u32, eff_h as u32);
                 if (kw, kh) != (eff_w as u32, eff_h as u32) {
                     crate::ui::progress::println(&format!("kandinsky5: {eff_w}x{eff_h} → {kw}x{kh} (native bucket)"));
@@ -6994,11 +7013,11 @@ pub async fn run_with_events(
                     .collect();
                 let needs_images_now = (task_can_rank && task_rank.is_some()) || !task.artefacts.is_empty() || task.style.is_some() || s.upscale.upscale;
                 if needs_images_now {
-                    let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
+                    let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: s.quantize_qwen, dit_nf4: s.dit_nf4, loras: k_loras };
                     k5::run_jobs(&settings, &jobs).await?;
                 } else {
                     crate::ui::progress::println(&format!("  kandinsky5: {} image(s) queued — every queued task renders in one run after the last task", jobs.len()));
-                    k5_deferred.push((task.name.clone(), jobs));
+                    k5_deferred.push((task.name.clone(), jobs, k_loras));
                 }
             } else if let Some(cp) = cascade_pipeline.as_mut() {
                 use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
@@ -7922,16 +7941,27 @@ pub async fn run_with_events(
     // task: their records were written as "ok" when they were queued.
     if !k5_deferred.is_empty() {
         use crate::pipelines::kandinsky as k5;
-        let jobs: Vec<k5::Job> = k5_deferred.iter().flat_map(|(_, jobs)| jobs.iter().cloned()).collect();
-        crate::ui::progress::println(&format!("\n{} kandinsky5: {} image(s) of {} task(s), one load", style("▶").cyan().bold(), jobs.len(), k5_deferred.len()));
-        let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
-        if let Err(e) = k5::run_jobs(&settings, &jobs).await {
-            crate::ui::progress::println(&format!("  {} kandinsky5 run: {e:#}", style("✗ failed").red().bold()));
-            for r in task_records.iter_mut().filter(|r| r.status == "ok" && k5_deferred.iter().any(|(name, _)| *name == r.name)) {
-                r.status = "failed".to_string();
-                r.error = Some(format!("{e:#}"));
+        let key = |l: &[k5::Lora]| l.iter().map(|l| format!("{}:{}", l.path.display(), l.scale)).collect::<Vec<_>>();
+        let mut sets: Vec<Vec<k5::Lora>> = Vec::new();
+        for (_, _, loras) in &k5_deferred {
+            if !sets.iter().any(|s| key(s) == key(loras)) {
+                sets.push(loras.clone());
             }
-            any_task_failed = true;
+        }
+        for loras in sets {
+            let tasks: Vec<&str> = k5_deferred.iter().filter(|(_, _, l)| key(l) == key(&loras)).map(|(name, _, _)| name.as_str()).collect();
+            let jobs: Vec<k5::Job> = k5_deferred.iter().filter(|(_, _, l)| key(l) == key(&loras)).flat_map(|(_, jobs, _)| jobs.iter().cloned()).collect();
+            let with = if loras.is_empty() { String::new() } else { format!(", LoRA {}", loras.iter().map(|l| l.display.as_str()).collect::<Vec<_>>().join(" + ")) };
+            crate::ui::progress::println(&format!("\n{} kandinsky5: {} image(s) of {} task(s), one load{with}", style("▶").cyan().bold(), jobs.len(), tasks.len()));
+            let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: s.quantize_qwen, dit_nf4: s.dit_nf4, loras };
+            if let Err(e) = k5::run_jobs(&settings, &jobs).await {
+                crate::ui::progress::println(&format!("  {} kandinsky5 run: {e:#}", style("✗ failed").red().bold()));
+                for r in task_records.iter_mut().filter(|r| r.status == "ok" && tasks.contains(&r.name.as_str())) {
+                    r.status = "failed".to_string();
+                    r.error = Some(format!("{e:#}"));
+                }
+                any_task_failed = true;
+            }
         }
     }
 

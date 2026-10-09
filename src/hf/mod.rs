@@ -349,7 +349,7 @@ pub const ALIAS_TABLE: &[AliasEntry] = &[
         family: "Kandinsky5",
         kind: "base",
         gated: false,
-        note: "Kandinsky 5.0 T2I Lite pretrain checkpoint — listed for future LoRA training, not a generation target",
+        note: "Kandinsky 5.0 T2I Lite pretrain checkpoint — a base for LoRA training (`style train --base kandinsky5-pretrain`), not a generation target",
     },
 ];
 

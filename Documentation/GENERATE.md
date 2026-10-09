@@ -88,9 +88,9 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
   1024², 20, 30, 40 and 50 steps score the same on prompt adherence
   and aesthetics, and the pictures are equally finished: **use
   `--steps 30`** for ordinary work (40 % less time) and 20 for
-  drafts. The step count changes the details, not only their
-  sharpness, so a 20-step draft is not a preview of the 50-step
-  picture of the same seed. Guidance ≤ 1 skips the negative prompt
+  drafts. A 20-step draft is a preview of the 50-step picture
+  of the same seed: the same composition and pose, with details that
+  shift (checked on one prompt). Guidance ≤ 1 skips the negative prompt
   and halves the time.
 - **Prompting.** Long natural-language prose, up to 512 tokens
   (`--max-seq`, at most 1023). The model has no weight parser, so
@@ -112,7 +112,15 @@ repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
   model's own trainer writes (PEFT `lora_A` / `lora_B` on the model's
   layer names); `plakat style train --base kandinsky5` writes it too
   — see [TRAIN_CUSTOM_LORA.md](TRAIN_CUSTOM_LORA.md#kandinsky-5).
-  Not yet in `scenario` or the TUI.
+  In a scenario, `loras:` at the top and on a task work the same way;
+  tasks with the same LoRAs share one load. Not yet in the TUI.
+- **The NF4 cache.** The first `--dit-nf4` run quantizes the 12 GB
+  checkpoint and keeps the result (3.3 GB) in `plakat-nf4` beside the
+  downloaded models; later runs read it. `--nf4-cache <dir>` (or
+  `PLAKAT_NF4_CACHE`, or `nf4-cache:` in a scenario) puts it on
+  another disk — a fast one is the point — and `--nf4-cache off`
+  turns it off. A run with a LoRA re-quantizes the layers the LoRA
+  changes and reads the rest.
 - **What it does not have.** No ControlNet (`--control*` is refused:
   none exists for the model), no few-step mode (`--fast`), and none of the SD-family post passes
   (`--quality`, `--adetailer`, `--hires-fix`, `--artefact`, `--grid`).

@@ -208,9 +208,13 @@ On the real model (36 GB Apple M5 Max, Metal, rank 32 — 512 adapters, 109.4 M 
 | 1024 | 43.1 GB — swaps on a 36 GB machine | 86–100 s |
 
 So **train at `--size 512`** unless the machine has 48 GB or more. One trial has been made: 200 steps
-on three near-identical images. The LoRA loads (`1 LoRA(s) merged into 512 layers`) and moves the
-picture, with and without `--dit-nf4`; three images of one subject say nothing about how well a
-style transfers, and that is still unmeasured. Generating with a LoRA peaks at 24.4 GB on the dense
+on three near-identical images. The LoRA loads (`1 LoRA(s) merged into 512 layers`), with and without
+`--dit-nf4`, and at one seed changes the picture; three images of one subject say nothing about how
+well a style transfers, and that is still unmeasured. `--base kandinsky5-pretrain` trains on the
+pretrain checkpoint instead. Only its transformer is downloaded (12 GB): the text encoders and the VAE are
+the generation checkpoint's files, byte for byte, and are read from there. The same 200-step trial ran on
+it at the same cost (27.4 GB, 11.0 s a step), and its LoRA loads into `--model kandinsky5`; whether it
+transfers a style better than one trained on the generation checkpoint is not measured. Generating with a LoRA peaks at 24.4 GB on the dense
 transformer (16.1 GB without one) and at 16.1 GB with `--dit-nf4`, where the merge costs nothing.
 
 ## Roadmap
