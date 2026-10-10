@@ -17,9 +17,20 @@ per-cycle commits carry the rationale + before/after.
   crossing at 60° and a third at 120° in the darks; flicks in the lights and a band of stipple where the
   first crossing enters a shadow; contours joined into continuous taut lines, cut needle-to-needle, whose weight follows the
   contrast they separate. The plate is mostly paper and spends its whole range on the subject, so a dark
-  subject is no longer a grey net; no line is wider than two fifths of its spacing, so the deepest shadow
+  subject is no longer a grey net; no line is wider than about a third of its spacing, so the deepest shadow
   is a net of lines with a triangle of paper in every mesh. Still deterministic, still replayed from its score. See
   [PAINT_DURER.md](PAINT_DURER.md).
+- **`--depth auto|FILE` gives an engraving the picture's relief.** With a depth map — estimated by
+  Depth-Anything, or supplied as a grey image — the cuts turn round the form where the surface bends: round a
+  tyre, round a pipe — and the far part of the subject is cut lighter, with finer contours. The map is an
+  input like the picture; the plate stays deterministic and replayable.
+- **`--normals auto|FILE` gives an engraving the picture's surfaces.** `auto` is a pass of its own: Marigold-Normals
+  estimates a normal map from the picture alone (saved as `<out>.normals.png`; nothing to prepare), and the
+  cuts wrap the form where a surface turns — round a tyre, a lamp, a limb — and lie level on the ground, so a
+  cast shadow is hatched in strokes that lie on it. A normal-map picture can be given instead. With `--depth`
+  too, the normals lead the line and the depth sets what is far.
+- A highlight on an engraving is clean paper; a line goes on swelling under its crossings; a form passes into the
+  light through stipple, and so does the fringe of a cast shadow.
 - **`--oldpaper true`** (plan and spec key `oldpaper`; default `false`) prints the finished picture on an
   aged sheet — yellowed laid paper with its ribs and chain lines, foxing, specks, worn edges — for any
   medium. An engraving also gets its plate mark and the uneven inking of a hand-pulled impression.

@@ -31,6 +31,27 @@ pub struct Cut {
     pub w1: f32,
 }
 
+/// The picture's relief, when it is known: a depth map at its own resolution, row-major, `z` in `[0,1]`, larger =
+/// nearer (the Depth-Anything / ControlNet-Depth convention). It is an INPUT like the picture — the plate is
+/// still nothing but geometry computed from the two — and it tells the burin what the picture's edges cannot:
+/// which way a surface turns.
+#[derive(Clone, Copy)]
+pub struct Relief<'a> {
+    pub w: usize,
+    pub h: usize,
+    pub z: &'a [f32],
+}
+
+/// The picture's surface normals, when they are known: unit vectors at their own resolution, row-major, in IMAGE
+/// space — `x` right, `y` down, `z` toward the viewer. Like the relief they are an input, and a better one for
+/// the line's direction: which way a surface faces is what a normal says outright and a depth map only implies.
+#[derive(Clone, Copy)]
+pub struct Normals<'a> {
+    pub w: usize,
+    pub h: usize,
+    pub n: &'a [[f32; 3]],
+}
+
 /// A planned plate.
 pub struct Plate {
     pub cuts: Vec<Cut>,
@@ -38,19 +59,35 @@ pub struct Plate {
     pub spacing: f32,
 }
 
-/// The paper each hatch layer may ink at full weight. Every layer stays open — a line is never wider than two
-/// fifths of its spacing — and there are three of them, a third of a turn apart, so the deepest shadow is a
-/// net of distinct lines with a triangle of paper in every mesh. A fourth layer would cut through the meshes
-/// and close them: that is ink pooling, not engraving.
-const LAYER_COVER: [f32; 3] = [0.38, 0.38, 0.4];
+/// The paper each hatch layer may ink at full weight in the deepest shadow. Every layer stays open — a line is
+/// never wider than two fifths of its spacing — and there are three of them, a third of a turn apart, so the
+/// deepest shadow is a net of distinct lines with a triangle of paper in every mesh. A fourth layer would cut
+/// through the meshes and close them: that is ink pooling, not engraving.
+const LAYER_COVER: [f32; 3] = [0.36, 0.36, 0.34];
+/// The weight at which a layer hands over to the next crossing. It is less than the full weight: a line goes on
+/// swelling under its crossings all the way into the deepest shadow, so its weight is never flat.
+const HAND_OVER: f32 = 0.27;
 /// How inked the subject's middle value is cut: an engraving is mostly paper.
 const MIDDLE_TONE: f32 = 0.2;
 /// How much a surface is shaded against its surroundings.
 const RELIEF: f32 = 0.4;
 /// The deepest tone the plate cuts: a burin never fills a black, paper still shows between its lines.
-const DEEPEST: f32 = 0.76;
-/// How far below a hair's worth of tone the first layer still cuts, as flicks: a light tone is a broken line.
-const FLICK: f32 = 0.3;
+const DEEPEST: f32 = 0.7;
+/// How far below a hair's worth of tone the first layer still cuts: a light tone is a broken line — flicks,
+/// and below `DOTS` of a hair, dots, so a form passes into the light through stipple, not over an edge.
+const FLICK: f32 = 0.2;
+const DOTS: f32 = 0.5;
+/// A highlight is clean paper, not a faint tone: a spot among the lightest `LIT` of the subject that is also
+/// lighter than its surroundings by `GLINT` is not cut at all. (A broad light — a lit cheek, a white dress — is
+/// not a highlight: it is modelled, lightly.)
+const LIT: f32 = 0.3;
+const GLINT: f32 = 0.16;
+/// AERIAL PERSPECTIVE, when the relief is known: how much lighter the farthest part of the subject is cut and
+/// how much finer its contours are drawn (0 = the nearest part of the subject, 1 = the farthest). The lighter
+/// tone is what thins the far plane's lines and drops its crossings — continuously, so no seam shows where a
+/// layer ends. The fade is kept gentle: a dark far wall must still read darker than a near half-tone.
+const FAR_LIGHTER: f32 = 0.3;
+const FAR_FINER: f32 = 0.3;
 /// How far below a hair's worth the first crossing still cuts, as dots: the edge of a shadow is stippled before
 /// it is hatched. Only there — stipple everywhere is dust, not form.
 const STIPPLE: f32 = 0.6;
@@ -61,12 +98,23 @@ const BY_RANK: f32 = 0.45;
 /// Each layer's angle off the form's direction: along it, then crossing it at a third of a turn either way, so
 /// two layers leave lozenges and three leave triangles.
 const LAYER_ANGLE: [f32; 3] = [0.0, 1.0472, 2.0944];
+/// Reading a normal map. The grain it is smoothed past, as a share of the sheet's long side (one part in ...);
+/// how far the normal must swing more one way than the other, per side of the sheet, before a surface is taken
+/// to TURN (from ... to fully); the swing past which it is a crease or a step, not a surface; and how far a
+/// steady surface must be TILTED from facing the viewer (the length of its normal's `x`,`y`) to rest the line
+/// level with it.
+const NORMAL_GRAIN: usize = 128;
+const TURNS: (f32, f32) = (3.0, 8.0);
+const CREASE: f32 = 40.0;
+const TILTED: (f32, f32) = (0.35, 0.65);
 
 /// The share of the paper layer `k` inks where the plate's tone is `t`: the layers fill in order, each taking
 /// what the ones before it left, so `k` crossings together ink exactly `t`.
 fn cover(t: f32, k: usize) -> f32 {
     let mut paper = 1.0f32;
-    for (j, &cap) in LAYER_COVER.iter().enumerate() {
+    let deep = ((t - HAND_OVER) / (DEEPEST - HAND_OVER)).clamp(0.0, 1.0);
+    for (j, &full) in LAYER_COVER.iter().enumerate() {
+        let cap = if j + 1 < LAYER_COVER.len() { HAND_OVER + (full - HAND_OVER) * deep } else { full };
         let c = (1.0 - (1.0 - t) / paper).clamp(0.0, cap);
         if j == k {
             return c;
@@ -120,21 +168,26 @@ struct Flow {
 }
 
 impl Flow {
-    fn new(value: &[f32], w: usize, h: usize) -> Flow {
+    /// `ground` (at the sheet's resolution, 0..1) is where a tone lies alone on open paper: a cast shadow, the
+    /// earth under the subject. There the line rests level instead of on the diagonal.
+    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], relief: Option<Relief>, normals: Option<Normals>) -> Flow {
         let long = w.max(h);
         let f = long.div_ceil(512).max(1);
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
         let mut small = vec![0f32; sw * sh];
+        let mut level = vec![0f32; sw * sh];
         let mut count = vec![0f32; sw * sh];
         for y in 0..h {
             for x in 0..w {
                 let i = (y / f) * sw + x / f;
                 small[i] += value[y * w + x];
+                level[i] += ground[y * w + x];
                 count[i] += 1.0;
             }
         }
-        for (s, c) in small.iter_mut().zip(&count) {
+        for ((s, l), c) in small.iter_mut().zip(level.iter_mut()).zip(&count) {
             *s /= c.max(1.0);
+            *l /= c.max(1.0);
         }
         let (gx, gy, _) = sobel(&small, sw, sh);
         let n = sw * sh;
@@ -148,7 +201,7 @@ impl Flow {
         let r = ((long as f32 / 55.0 / f as f32).round() as usize).max(2);
         let (jxx, jyy, jxy) = (blur(&jxx, sw, sh, r, 3), blur(&jyy, sw, sh, r, 3), blur(&jxy, sw, sh, r, 3));
         let energy = ((jxx.iter().sum::<f32>() + jyy.iter().sum::<f32>()) / n as f32).max(1e-12);
-        let (mut c2, mut s2) = (vec![0f32; n], vec![0f32; n]);
+        let (mut c2, mut s2, mut led) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
         for i in 0..n {
             let (a, b) = (jxx[i] - jyy[i], 2.0 * jxy[i]);
             let disc = (a * a + b * b).sqrt();
@@ -161,11 +214,23 @@ impl Flow {
             let form = t * t * (3.0 - 2.0 * t) * e * e * (3.0 - 2.0 * e);
             // The edge's tangent is the gradient's orientation turned a quarter: the doubled angle negated.
             let (fc, fs) = if disc > 1e-12 { (-a / disc, -b / disc) } else { (0.0, -1.0) };
-            c2[i] = form * fc;
-            s2[i] = form * fs - (1.0 - form);
+            led[i] = form;
+            // At rest the line lies on the diagonal — or level, on open ground.
+            let g = level[i].clamp(0.0, 1.0);
+            let (rc, rs) = (g, g - 1.0);
+            let rest = (rc * rc + rs * rs).sqrt().max(1e-6);
+            c2[i] = form * fc + (1.0 - form) * rc / rest;
+            s2[i] = form * fs + (1.0 - form) * rs / rest;
+        }
+        // The normals say which way a surface turns outright; the relief only implies it, so it is asked second.
+        if let Some(normals) = normals.filter(|m| m.w >= 2 && m.h >= 2 && m.n.len() == m.w * m.h) {
+            turn_with_the_normals(&mut c2, &mut s2, &led, sw, sh, normals);
+        } else if let Some(relief) = relief.filter(|r| r.w >= 2 && r.h >= 2 && r.z.len() == r.w * r.h) {
+            turn_with_the_form(&mut c2, &mut s2, &led, sw, sh, relief);
         }
         Flow { w: sw, h: sh, scale: 1.0 / f as f32, c2: blur(&c2, sw, sh, 2, 2), s2: blur(&s2, sw, sh, 2, 2) }
     }
+
 
     /// The unit direction at a sheet position, turned by the layer's angle (`sin`, `cos`).
     fn dir(&self, x: f32, y: f32, turn: (f32, f32)) -> [f32; 2] {
@@ -177,6 +242,197 @@ impl Flow {
         let theta = 0.5 * at(&self.s2).atan2(at(&self.c2));
         let (s, c) = theta.sin_cos();
         [c * turn.1 - s * turn.0, c * turn.0 + s * turn.1]
+    }
+}
+
+/// Where the relief says a surface TURNS — the barrel of a cylinder, the roll of a tyre, the bulge of a cushion —
+/// the cuts run round it, along the direction of its greatest curvature, as an engraver's line wraps a limb.
+/// That direction is the principal axis of the depth's second derivative; the surface normals are the depth's
+/// first derivative, so this is the direction in which the normal swings fastest. Where the surface is flat, or
+/// at the step between two objects (a depth map's edge is a cliff, not a curve), the picture's own direction
+/// stands.
+///
+/// And where a flat surface RECEDES — the ground under the subject above all — and no edge of the picture leads
+/// the line, the cuts rest level with it, along the lines of equal depth, instead of on the diagonal: a cast
+/// shadow is laid in strokes that lie on the ground.
+fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, relief: Relief) {
+    let n = sw * sh;
+    // The depth at the flow's resolution, smoothed past the estimator's grain and an 8-bit map's steps.
+    let mut z = vec![0f32; n];
+    for y in 0..sh {
+        for x in 0..sw {
+            let (fx, fy) = ((x as f32 + 0.5) / sw as f32 * relief.w as f32 - 0.5, (y as f32 + 0.5) / sh as f32 * relief.h as f32 - 0.5);
+            let (fx, fy) = (fx.clamp(0.0, relief.w as f32 - 1.0), fy.clamp(0.0, relief.h as f32 - 1.0));
+            let (x0, y0) = (fx as usize, fy as usize);
+            let (x1, y1) = ((x0 + 1).min(relief.w - 1), (y0 + 1).min(relief.h - 1));
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let at = |x: usize, y: usize| relief.z[y * relief.w + x];
+            z[y * sw + x] = (at(x0, y0) * (1.0 - tx) + at(x1, y0) * tx) * (1.0 - ty) + (at(x0, y1) * (1.0 - tx) + at(x1, y1) * tx) * ty;
+        }
+    }
+    let r = (sw.max(sh) / 100).max(2);
+    let z = blur(&z, sw, sh, r, 3);
+    let at = |x: usize, y: usize| z[y.min(sh - 1) * sw + x.min(sw - 1)];
+    let (mut vx, mut vy, mut bend, mut slope) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    let (mut lx, mut ly, mut sx, mut sy) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    let d = r.max(1);
+    for y in 0..sh {
+        for x in 0..sw {
+            let (xm, xp, ym, yp) = (x.saturating_sub(d), x + d, y.saturating_sub(d), y + d);
+            let zxx = at(xp, y) - 2.0 * at(x, y) + at(xm, y);
+            let zyy = at(x, yp) - 2.0 * at(x, y) + at(x, ym);
+            let zxy = (at(xp, yp) - at(xp, ym) - at(xm, yp) + at(xm, ym)) * 0.25;
+            // The doubled angle of the axis of greatest |curvature|: the larger eigenvalue's when the trace is
+            // positive, the other's (a quarter turn off, so the doubled angle negated) when it is not.
+            let sign = if zxx + zyy >= 0.0 { 1.0 } else { -1.0 };
+            let i = y * sw + x;
+            vx[i] = sign * (zxx - zyy);
+            vy[i] = sign * 2.0 * zxy;
+            bend[i] = (vx[i] * vx[i] + vy[i] * vy[i]).sqrt();
+            let (gx, gy) = (at(xp, y) - at(xm, y), at(x, yp) - at(x, ym));
+            slope[i] = (gx * gx + gy * gy).sqrt();
+            // The doubled angle of the line of equal depth: the slope's own, turned a quarter.
+            lx[i] = -(gx * gx - gy * gy);
+            ly[i] = -2.0 * gx * gy;
+            sx[i] = gx;
+            sy[i] = gy;
+        }
+    }
+    // Curvature and slope are judged on an absolute scale — depth is 0..1 across the picture, lengths are in
+    // sheet sides — not against the picture's own average: a picture whose depth is all but flat (a head against
+    // a wall) must not have the estimator's ripples promoted to form.
+    let side = sw.max(sh) as f32 / d as f32;
+    let typical = 50.0 / (side * side);
+    let steady = 2.6 / side;
+    // A cliff between two objects bends harder than any surface, and the smoothing spreads it into a slope on
+    // either side that is no surface at all: the cliff and its flanks are left out.
+    let wide = r * 2;
+    let edge: Vec<f32> = slope.iter().map(|s| ((s * side - 10.0) / 8.0).clamp(0.0, 1.0)).collect();
+    let edge = blur(&edge, sw, sh, wide, 2);
+    for i in 0..n {
+        let keep = 1.0 - (edge[i] * 2.0).clamp(0.0, 1.0);
+        vx[i] *= keep;
+        vy[i] *= keep;
+        bend[i] *= keep;
+        lx[i] *= keep;
+        ly[i] *= keep;
+    }
+    let (vx, vy, bend) = (blur(&vx, sw, sh, wide, 3), blur(&vy, sw, sh, wide, 3), blur(&bend, sw, sh, wide, 3));
+    // Only a BROAD plane rests the line: the slope is averaged over a far wider window than the curvature, and
+    // must fall ONE way across it — the two flanks of a bar slope opposite ways and are no plane. The small
+    // flats of a machine keep the engraver's diagonal.
+    let broad = wide * 3;
+    let (lx, ly) = (blur(&lx, sw, sh, broad, 3), blur(&ly, sw, sh, broad, 3));
+    let (sx, sy, steep) = (blur(&sx, sw, sh, broad, 3), blur(&sy, sw, sh, broad, 3), blur(&slope, sw, sh, broad, 3));
+    for i in 0..n {
+        let len = (vx[i] * vx[i] + vy[i] * vy[i]).sqrt();
+        // How surely the surface turns one way here: its curvature agrees with its neighbours' and is not noise.
+        let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
+        let firm = ((bend[i] / typical - 0.7) / 1.0).clamp(0.0, 1.0);
+        let t = agree * firm;
+        let t = t * t * (3.0 - 2.0 * t);
+        if len > 1e-9 {
+            c2[i] += (vx[i] / len - c2[i]) * t;
+            s2[i] += (vy[i] / len - s2[i]) * t;
+        }
+        // The slope is squared in `lx`,`ly`, so their length is the squared slope where it runs one way.
+        let level = (lx[i] * lx[i] + ly[i] * ly[i]).sqrt();
+        let sloped = ((level.sqrt() / steady - 0.6) / 0.8).clamp(0.0, 1.0);
+        // ... and only where the surface really is flat: a turning one has its own direction, however weak.
+        let flat = 1.0 - ((bend[i] / typical - 0.3) / 0.7).clamp(0.0, 1.0);
+        let one_way = (((sx[i] * sx[i] + sy[i] * sy[i]).sqrt() / steep[i].max(1e-12) - 0.45) / 0.25).clamp(0.0, 1.0);
+        let u = 0.85 * sloped * one_way * flat * (1.0 - t) * (1.0 - led[i]);
+        if level > 1e-12 {
+            c2[i] += (lx[i] / level - c2[i]) * u;
+            s2[i] += (ly[i] / level - s2[i]) * u;
+        }
+    }
+}
+
+/// The same two rules as [`turn_with_the_form`], read off the surface normals instead of a depth map.
+///
+/// A normal's `x`,`y` part is the surface's tilt, so how the tilt changes across the sheet is the surface's
+/// curvature: where it changes much more one way than the other — a barrel, a limb, a tyre — the cuts run that
+/// way, round the form. Where the tilt is steady and large — the ground, a wall seen aslant — and no edge of the
+/// picture leads the line, the cuts lie across the tilt, level with the surface.
+///
+/// Everything is measured in the normal's own units (how far it swings over one side of the sheet), so no
+/// threshold depends on the picture.
+fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, normals: Normals) {
+    let n = sw * sh;
+    let (mut nx, mut ny) = (vec![0f32; n], vec![0f32; n]);
+    for y in 0..sh {
+        for x in 0..sw {
+            let (fx, fy) = ((x as f32 + 0.5) / sw as f32 * normals.w as f32 - 0.5, (y as f32 + 0.5) / sh as f32 * normals.h as f32 - 0.5);
+            let (fx, fy) = (fx.clamp(0.0, normals.w as f32 - 1.0), fy.clamp(0.0, normals.h as f32 - 1.0));
+            let (x0, y0) = (fx as usize, fy as usize);
+            let (x1, y1) = ((x0 + 1).min(normals.w - 1), (y0 + 1).min(normals.h - 1));
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let at = |x: usize, y: usize, j: usize| normals.n[y * normals.w + x][j];
+            let mix = |j: usize| (at(x0, y0, j) * (1.0 - tx) + at(x1, y0, j) * tx) * (1.0 - ty) + (at(x0, y1, j) * (1.0 - tx) + at(x1, y1, j) * tx) * ty;
+            nx[y * sw + x] = mix(0);
+            ny[y * sw + x] = mix(1);
+        }
+    }
+    let r = (sw.max(sh) / NORMAL_GRAIN).max(2);
+    let (nx, ny) = (blur(&nx, sw, sh, r, 3), blur(&ny, sw, sh, r, 3));
+    let at = |v: &[f32], x: usize, y: usize| v[y.min(sh - 1) * sw + x.min(sw - 1)];
+    let (mut vx, mut vy, mut bend, mut swing) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    let (mut lx, mut ly) = (vec![0f32; n], vec![0f32; n]);
+    let d = r.max(1);
+    // A difference over `2d` cells, as the normal's swing over one side of the sheet.
+    let side = sw.max(sh) as f32 / (2 * d) as f32;
+    for y in 0..sh {
+        for x in 0..sw {
+            let (xm, xp, ym, yp) = (x.saturating_sub(d), x + d, y.saturating_sub(d), y + d);
+            let kxx = (at(&nx, xp, y) - at(&nx, xm, y)) * side;
+            let kyy = (at(&ny, x, yp) - at(&ny, x, ym)) * side;
+            let kxy = ((at(&nx, x, yp) - at(&nx, x, ym)) + (at(&ny, xp, y) - at(&ny, xm, y))) * 0.5 * side;
+            let sign = if kxx + kyy >= 0.0 { 1.0 } else { -1.0 };
+            let i = y * sw + x;
+            vx[i] = sign * (kxx - kyy);
+            vy[i] = sign * 2.0 * kxy;
+            bend[i] = (vx[i] * vx[i] + vy[i] * vy[i]).sqrt();
+            swing[i] = (kxx * kxx + kyy * kyy + 2.0 * kxy * kxy).sqrt();
+            // The doubled angle of the level line: the tilt's own, turned a quarter.
+            lx[i] = -(nx[i] * nx[i] - ny[i] * ny[i]);
+            ly[i] = -2.0 * nx[i] * ny[i];
+        }
+    }
+    // The crease between two faces and the step between two objects swing the normal harder than any surface
+    // a hatch could wrap: they and their flanks are left to the picture's edges.
+    let wide = r * 2;
+    let edge: Vec<f32> = swing.iter().map(|s| ((s - CREASE) / (CREASE * 0.75)).clamp(0.0, 1.0)).collect();
+    let edge = blur(&edge, sw, sh, wide, 2);
+    for i in 0..n {
+        let keep = 1.0 - (edge[i] * 2.0).clamp(0.0, 1.0);
+        vx[i] *= keep;
+        vy[i] *= keep;
+        bend[i] *= keep;
+        lx[i] *= keep;
+        ly[i] *= keep;
+    }
+    let (vx, vy, bend) = (blur(&vx, sw, sh, wide, 3), blur(&vy, sw, sh, wide, 3), blur(&bend, sw, sh, wide, 3));
+    let broad = wide * 3;
+    let (lx, ly) = (blur(&lx, sw, sh, broad, 3), blur(&ly, sw, sh, broad, 3));
+    for i in 0..n {
+        let len = (vx[i] * vx[i] + vy[i] * vy[i]).sqrt();
+        let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
+        let firm = ((bend[i] - TURNS.0) / (TURNS.1 - TURNS.0)).clamp(0.0, 1.0);
+        let t = agree * firm;
+        let t = t * t * (3.0 - 2.0 * t);
+        if len > 1e-9 {
+            c2[i] += (vx[i] / len - c2[i]) * t;
+            s2[i] += (vy[i] / len - s2[i]) * t;
+        }
+        // The tilt is squared in `lx`,`ly`: their length is the squared tilt where it holds one way.
+        let level = (lx[i] * lx[i] + ly[i] * ly[i]).sqrt();
+        let tilted = ((level.sqrt() - TILTED.0) / (TILTED.1 - TILTED.0)).clamp(0.0, 1.0);
+        let u = 0.85 * tilted * (1.0 - t) * (1.0 - led[i]);
+        if level > 1e-12 {
+            c2[i] += (lx[i] / level - c2[i]) * u;
+            s2[i] += (ly[i] / level - s2[i]) * u;
+        }
     }
 }
 
@@ -247,7 +503,6 @@ impl Field<'_> {
     fn trace(&self, start: [f32; 2], layer: usize, near: &Near) -> Vec<[f32; 2]> {
         let turn = LAYER_ANGLE[layer].sin_cos();
         let max_steps = (self.spacing * 90.0) as usize;
-        let d_test = self.spacing * 0.55;
         let mut line: Vec<[f32; 2]> = Vec::new();
         for sign in [-1.0f32, 1.0] {
             let d0 = self.flow.dir(start[0], start[1], turn);
@@ -269,7 +524,7 @@ impl Field<'_> {
                     break;
                 }
                 p = [p[0] + d[0], p[1] + d[1]];
-                if !self.open(p, layer) || near.any_within(p, d_test) {
+                if !self.open(p, layer) || near.any_within(p, self.spacing * 0.55) {
                     break;
                 }
                 pts.push(p);
@@ -292,11 +547,10 @@ impl Field<'_> {
         let mut near = Near::new(self.w, self.h, self.spacing);
         let mut lines: Vec<Vec<[f32; 2]>> = Vec::new();
         let min_len = (self.spacing * 2.0).max(4.0) as usize;
-        let seed_gap = self.spacing * 0.92;
         let every = (self.spacing * 0.5).max(1.0) as usize;
         let mut next = 0usize;
         let grow = |from: [f32; 2], lines: &mut Vec<Vec<[f32; 2]>>, near: &mut Near, next: &mut usize| {
-            if !self.open(from, layer) || near.any_within(from, seed_gap) {
+            if !self.open(from, layer) || near.any_within(from, self.spacing * 0.92) {
                 return;
             }
             let first = self.trace(from, layer, near);
@@ -316,7 +570,7 @@ impl Field<'_> {
                     let here = lines[*next][i];
                     for side in [-1.0f32, 1.0] {
                         let c = [here[0] - dy / len * self.spacing * side, here[1] + dx / len * self.spacing * side];
-                        if !self.open(c, layer) || near.any_within(c, seed_gap) {
+                        if !self.open(c, layer) || near.any_within(c, self.spacing * 0.92) {
                             continue;
                         }
                         let line = self.trace(c, layer, near);
@@ -459,7 +713,7 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 
 /// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `budget` caps the
 /// number of cuts — when the hatch would not fit, its spacing widens until it does.
-pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate {
+pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, contour: f32, budget: usize, seed: u64) -> Plate {
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
@@ -486,6 +740,23 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
     // value about a third inked.
     let around = blur(&dark, w, h, ((long / 40.0) as usize).max(2), 3);
     let modelled: Vec<f32> = dark.iter().zip(&around).map(|(&d, &a)| (d + RELIEF * (d - a)).clamp(0.0, 1.0)).collect();
+    // DISTANCE, when the relief is known: 0 at the nearest part of the subject, 1 at its farthest.
+    let far: Option<Vec<f32>> = relief.filter(|r| r.w >= 2 && r.h >= 2 && r.z.len() == r.w * r.h).map(|r| {
+        let z: Vec<f32> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (((i % w) * r.w / w).min(r.w - 1), ((i / w) * r.h / h).min(r.h - 1));
+                r.z[y * r.w + x]
+            })
+            .collect();
+        let mut of_subject: Vec<f32> = z.iter().zip(&dark).step_by(11).filter(|(_, d)| **d > 0.15).map(|(z, _)| *z).collect();
+        if of_subject.len() < 16 {
+            return vec![0.0; w * h];
+        }
+        of_subject.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let (lo, hi) = (of_subject[of_subject.len() * 5 / 100], of_subject[of_subject.len() * 95 / 100]);
+        let far: Vec<f32> = z.iter().map(|z| ((hi - z) / (hi - lo).max(0.02)).clamp(0.0, 1.0)).collect();
+        blur(&far, w, h, ((long / 250.0) as usize).max(1), 2)
+    });
     let mut hist = [0f32; 256];
     for d in modelled.iter().filter(|d| **d > 0.08) {
         hist[((d * 255.0) as usize).min(255)] += 1.0;
@@ -498,7 +769,19 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
         *r = run / total;
     }
     let key = (MIDDLE_TONE / DEEPEST).ln() / 0.5f32.ln();
-    let tone: Vec<f32> = modelled.iter().map(|&d| DEEPEST * (BY_RANK * if d > 0.08 { rank[((d * 255.0) as usize).min(255)] } else { 0.0 } + (1.0 - BY_RANK) * d).powf(key)).collect();
+    let tone: Vec<f32> = (0..w * h)
+        .map(|i| {
+            let d = modelled[i];
+            let r = if d > 0.08 { rank[((d * 255.0) as usize).min(255)] } else { 0.0 };
+            // A highlight is left clean. The fringe of a tone that dies away into the paper — a cast shadow's
+            // edge — is no highlight (nothing around it is darker by much): it thins out into flicks.
+            if r < LIT && around[i] - dark[i] > GLINT {
+                return 0.0;
+            }
+            let lighter = 1.0 - FAR_LIGHTER * far.as_ref().map_or(0.0, |f| f[i]);
+            lighter * DEEPEST * (BY_RANK * r + (1.0 - BY_RANK) * d).powf(key)
+        })
+        .collect();
 
     // CONTOURS: the edge map's chains, each a line whose weight follows the contrast it separates.
     let mut cuts: Vec<Cut> = Vec::new();
@@ -520,7 +803,8 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
         for chain in chains {
             // A burin's groove is a V: the line enters as a needle, swells where the edge is firm, and leaves
             // as a needle.
-            let mut widths: Vec<f32> = chain.iter().map(|p| base * (0.35 + 1.45 * (at(p) / strong).min(1.0).powf(1.2))).collect();
+            let finer = |p: &[f32; 2]| 1.0 - FAR_FINER * far.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
+            let mut widths: Vec<f32> = chain.iter().map(|p| finer(p) * base * (0.45 + 1.6 * (at(p) / strong).min(1.0).powf(1.2))).collect();
             swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
             pieces(0, &taut(chain), &widths, &mut cuts);
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
@@ -539,7 +823,9 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
     }
 
     // HATCH: the layers, at a spacing that fits the budget.
-    let flow = Flow::new(&value, w, h);
+    // A tone that lies alone on open paper — little around it is dark — is a shadow on the ground.
+    let ground: Vec<f32> = around.iter().map(|a| ((0.42 - a) / 0.2).clamp(0.0, 1.0)).collect();
+    let flow = Flow::new(&value, w, h, &ground, relief, normals);
     let room = budget.saturating_sub(cuts.len());
     let mut spacing = (long / 300.0).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
@@ -561,11 +847,12 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
                         return true;
                     }
                     let at = i as f32 + phase;
-                    if layer == 0 {
-                        return at % period < period * part.max(0.25);
+                    if layer == 0 && part >= DOTS {
+                        return at % period < period * part;
                     }
                     let nth = (at / pitch) as u64;
-                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < (part - STIPPLE) / (1.0 - STIPPLE)
+                    let often = if layer == 0 { 0.25 + 0.75 * (part - FLICK) / (DOTS - FLICK) } else { (part - STIPPLE) / (1.0 - STIPPLE) };
+                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < often
                 };
                 // The hand: a line's weight breathes along it.
                 let hand = |i: usize| {
@@ -620,7 +907,7 @@ mod tests {
 
     #[test]
     fn the_layers_together_ink_the_tone_asked_for() {
-        for t in [0.1f32, 0.3, 0.5, 0.7, 0.76] {
+        for t in [0.1f32, 0.3, 0.5, 0.7] {
             let paper: f32 = (0..LAYER_COVER.len()).map(|k| 1.0 - cover(t, k)).product();
             assert!((1.0 - paper - t).abs() < 1e-4, "tone {t}: the layers ink {}", 1.0 - paper);
         }
@@ -630,7 +917,7 @@ mod tests {
 
     #[test]
     fn a_dark_mass_is_cross_hatched_and_the_ground_stays_paper() {
-        let plate = plan(&two_masses(160, 160), 0.6, 50_000, 7);
+        let plate = plan(&two_masses(160, 160), None, None, 0.6, 50_000, 7);
         let hatch: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer > 0).collect();
         assert!(!hatch.is_empty(), "the dark mass is engraved");
         let outside = hatch.iter().flat_map(|c| c.path.iter()).filter(|p| !(p[0] > 36.0 && p[0] < 124.0 && p[1] > 36.0 && p[1] < 124.0)).count();
@@ -642,7 +929,7 @@ mod tests {
 
     #[test]
     fn lines_of_a_layer_keep_their_distance() {
-        let plate = plan(&two_masses(200, 200), 0.0, 50_000, 7);
+        let plate = plan(&two_masses(200, 200), None, None, 0.0, 50_000, 7);
         let first: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 1).collect();
         let total: f32 = first.iter().map(|c| c.path.len() as f32 * 2.0).sum();
         // A 100-px square ruled every `spacing` holds about 100·100/spacing of line; a tangle holds far more.
@@ -654,7 +941,7 @@ mod tests {
     #[test]
     fn a_small_budget_opens_the_plate() {
         let img = two_masses(200, 200);
-        let (full, tight) = (plan(&img, 0.0, 50_000, 7), plan(&img, 0.0, 60, 7));
+        let (full, tight) = (plan(&img, None, None, 0.0, 50_000, 7), plan(&img, None, None, 0.0, 60, 7));
         assert!(tight.cuts.len() <= 60, "the budget holds ({})", tight.cuts.len());
         assert!(tight.spacing > full.spacing, "by widening the spacing");
     }
@@ -662,7 +949,7 @@ mod tests {
     #[test]
     fn the_same_seed_cuts_the_same_plate() {
         let img = two_masses(120, 90);
-        let (a, b) = (plan(&img, 0.5, 20_000, 3), plan(&img, 0.5, 20_000, 3));
+        let (a, b) = (plan(&img, None, None, 0.5, 20_000, 3), plan(&img, None, None, 0.5, 20_000, 3));
         assert_eq!(a.cuts.len(), b.cuts.len());
         assert!(a.cuts.iter().zip(&b.cuts).all(|(x, y)| x.path == y.path && x.w0 == y.w0 && x.w1 == y.w1));
     }
@@ -673,7 +960,13 @@ mod tests {
     fn a_plate_for_the_eye() {
         let (Ok(src), Ok(out)) = (std::env::var("PLAKAT_ENGRAVE_SRC"), std::env::var("PLAKAT_ENGRAVE_OUT")) else { return };
         let img = image::open(src).unwrap().to_rgb8();
-        let plate = plan(&img, 0.55, 360_000, 42);
+        let depth = std::env::var("PLAKAT_ENGRAVE_DEPTH").ok().map(|p| image::open(p).unwrap().to_luma8());
+        let z: Option<Vec<f32>> = depth.as_ref().map(|d| d.pixels().map(|p| p.0[0] as f32 / 255.0).collect());
+        let relief = depth.as_ref().zip(z.as_ref()).map(|(d, z)| Relief { w: d.width() as usize, h: d.height() as usize, z });
+        let map = std::env::var("PLAKAT_ENGRAVE_NORMALS").ok().map(|p| image::open(p).unwrap().to_rgb8());
+        let n: Option<Vec<[f32; 3]>> = map.as_ref().map(crate::pipelines::normals::from_png);
+        let normals = map.as_ref().zip(n.as_ref()).map(|(m, n)| Normals { w: m.width() as usize, h: m.height() as usize, n });
+        let plate = plan(&img, relief, normals, 0.55, 360_000, 42);
         let (w, h) = (img.width() as i64, img.height() as i64);
         let mut sheet = image::GrayImage::from_pixel(w as u32, h as u32, image::Luma([250]));
         // The stroke rasteriser's footprint for a flat-ended one-point brush: two lanes a pixel across the width.
@@ -706,8 +999,85 @@ mod tests {
     }
 
     #[test]
+    fn a_relief_turns_the_cuts_round_the_form() {
+        // A dark mass that the depth map says holds a rounded bar lying on its side: its surface turns from top
+        // to bottom, so the first layer's cuts run up and down round it. Without the relief they rest on the diagonal.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let z: Vec<f32> = (0..w * h).map(|i| 0.3 + 0.5 * (1.0 - (((i / w) as f32 - 100.0) / 16.0).powi(2)).max(0.0).sqrt()).collect();
+        let upright = |plate: &Plate| {
+            let (mut dx, mut dy) = (0f32, 0f32);
+            for c in plate.cuts.iter().filter(|c| c.layer == 1) {
+                for s in c.path.windows(2).filter(|s| s[0][0] > 70.0 && s[0][0] < 130.0 && s[0][1] > 96.0 && s[0][1] < 104.0) {
+                    dx += (s[1][0] - s[0][0]).abs();
+                    dy += (s[1][1] - s[0][1]).abs();
+                }
+            }
+            dy / (dx + dy).max(1e-6)
+        };
+        let (flat, round) = (plan(&img, None, None, 0.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, 0.0, 50_000, 7));
+        assert!(upright(&flat) < 0.56, "without the relief the cuts rest on the diagonal ({})", upright(&flat));
+        assert!(upright(&round) > 0.68, "round the cylinder they turn upright ({})", upright(&round));
+    }
+
+    /// How upright layer `layer`'s cuts run inside a box of the sheet: 0 = level, 1 = up and down.
+    fn upright_in(plate: &Plate, x: (f32, f32), y: (f32, f32)) -> f32 {
+        let (mut dx, mut dy) = (0f32, 0f32);
+        for c in plate.cuts.iter().filter(|c| c.layer == 1) {
+            for s in c.path.windows(2).filter(|s| s[0][0] > x.0 && s[0][0] < x.1 && s[0][1] > y.0 && s[0][1] < y.1) {
+                dx += (s[1][0] - s[0][0]).abs();
+                dy += (s[1][1] - s[0][1]).abs();
+            }
+        }
+        dy / (dx + dy).max(1e-6)
+    }
+
+    #[test]
+    fn normals_turn_the_cuts_round_the_form() {
+        // The same bar lying on its side, said by its normals: they swing from up to down across it.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let n: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let t = (((i / w) as f32 - 100.0) / 24.0).clamp(-0.95, 0.95);
+                [0.0, t, (1.0 - t * t).sqrt()]
+            })
+            .collect();
+        let (flat, round) = (plan(&img, None, None, 0.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), 0.0, 50_000, 7));
+        let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
+        assert!(band(&flat) < 0.56, "without the normals the cuts rest on the diagonal ({})", band(&flat));
+        assert!(band(&round) > 0.8, "round the bar they turn upright ({})", band(&round));
+    }
+
+    #[test]
+    fn normals_lay_the_cuts_level_on_the_ground() {
+        // A plane facing up and toward the viewer — the ground: the cuts lie level on it, not on the diagonal.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let n = vec![[0.0f32, -0.8, 0.6]; w * h];
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), 0.0, 50_000, 7);
+        let level = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
+        assert!(level < 0.2, "on the ground the cuts lie level ({level})");
+        // A plane facing the viewer says nothing: the diagonal stands.
+        let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
+        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), 0.0, 50_000, 7);
+        let rest = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
+        assert!(rest > 0.4 && rest < 0.6, "a wall facing the viewer keeps the diagonal ({rest})");
+    }
+
+    #[test]
+    fn a_highlight_is_clean_paper() {
+        // A light strip that outshines the dark around it is a highlight: the plate leaves it uncut.
+        let img = RgbImage::from_fn(200, 200, |x, y| if x > 40 && x < 160 && y > 40 && y < 160 { let v = if x < 52 { 205 } else { 50 }; image::Rgb([v, v, v]) } else { image::Rgb([235, 232, 226]) });
+        let plate = plan(&img, None, None, 0.0, 50_000, 7);
+        let lit = plate.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 44.0 && p[0] < 49.0).count();
+        assert_eq!(lit, 0, "nothing is cut in the highlight");
+        assert!(plate.cuts.iter().any(|c| c.layer > 0), "the rest is engraved");
+    }
+
+    #[test]
     fn blank_paper_is_left_alone() {
-        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), 0.6, 5_000, 7);
+        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, 0.6, 5_000, 7);
         assert!(plate.cuts.is_empty(), "nothing to cut ({})", plate.cuts.len());
     }
 }
