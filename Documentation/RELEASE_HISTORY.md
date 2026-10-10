@@ -14,10 +14,11 @@ per-cycle commits carry the rationale + before/after.
 
 - **`--medium durer` is a new engraving.** The plate is now planned by its own module from the picture
   itself: evenly spaced cuts that follow the form, swell with the tone and thin to a point; a second layer
-  crossing at a right angle and two diagonals in the darks; flicks in the lights and stipple where a
-  crossing enters a shadow; contours whose weight follows the contrast they separate. The plate is mostly
-  paper and spends its whole range on the subject, so a dark subject is no longer a grey net; no line is
-  wider than a third of its spacing, so the deepest shadow is still crossed lines with paper between them. Still deterministic, still replayed from its score. See
+  crossing at 60° and a third at 120° in the darks; flicks in the lights and a band of stipple where the
+  first crossing enters a shadow; contours joined into continuous taut lines, cut needle-to-needle, whose weight follows the
+  contrast they separate. The plate is mostly paper and spends its whole range on the subject, so a dark
+  subject is no longer a grey net; no line is wider than two fifths of its spacing, so the deepest shadow
+  is a net of lines with a triangle of paper in every mesh. Still deterministic, still replayed from its score. See
   [PAINT_DURER.md](PAINT_DURER.md).
 - **`--oldpaper true`** (plan and spec key `oldpaper`; default `false`) prints the finished picture on an
   aged sheet — yellowed laid paper with its ribs and chain lines, foxing, specks, worn edges — for any

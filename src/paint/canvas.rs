@@ -1453,7 +1453,7 @@ pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
     };
     const PAPER: [f32; 3] = [238.0, 225.0, 198.0];
     const FOX: [f32; 3] = [188.0, 142.0, 86.0];
-    const INK: [f32; 3] = [28.0, 23.0, 20.0];
+    const INK: [f32; 3] = [20.0, 16.0, 14.0];
     let inset = short * 0.035;
     let line = (short * 0.0022).max(1.0);
     for y in 0..h {
@@ -1489,7 +1489,7 @@ pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
             let mut press = 1.0f32;
             if plate_mark {
                 // A hand-pulled impression: the ink is not laid evenly, and it breaks on the paper's tooth.
-                press = (0.8 + 0.3 * fbm(u / 130.0, v / 130.0, seed ^ 0x01D_000F) + 0.16 * tooth).clamp(0.6, 1.0);
+                press = (0.9 + 0.16 * fbm(u / 130.0, v / 130.0, seed ^ 0x01D_000F) + 0.1 * tooth).clamp(0.8, 1.0);
                 // Signed distance into the plate (negative outside it), its edge wavering a little.
                 let waver = unit * 1.6 * (value_noise(u / 45.0, v / 45.0, seed ^ 0x01D_000A) - 0.5);
                 let into = (x.min(w - 1 - x).min(y).min(h - 1 - y)) as f32 - inset + waver;

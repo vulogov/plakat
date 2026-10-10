@@ -22,14 +22,15 @@ armature has already smoothed away the detail a burin draws.
    between, the plate does not copy the picture's key. A surface is shaded against its surroundings, so the
    turn of a form and the shadow in a joint read stronger than the flat between them; and the subject is
    spread over the plate's whole range mostly by the *order* of its values, with its middle value about a
-   sixth inked: an engraving is mostly paper. A subject that is dark all over is therefore still cut from
-   open line to crossed shadow. The deepest tone is 0.7, and no line is wider than a third of its spacing, so
-   a shadow is four layers of distinct lines with paper between them, never a filled black.
+   fifth inked: an engraving is mostly paper. A subject that is dark all over is therefore still cut from
+   open line to crossed shadow. The deepest tone is 0.76, and no line is wider than two fifths of its
+   spacing, so the deepest shadow is a net of distinct lines with paper in every mesh — never a filled black.
 2. **Contours.** An edge map of the value (Sobel, thinned, kept by hysteresis; `--contour` sets how much of
-   it) is linked into chains. A chain is drawn if its length *and* strength together earn it: a short firm
+   it) is linked into chains; fragments that end where another begins, running the same way, are joined
+   into one line, and each line is pulled taut so it does not step from pixel to pixel. A chain is drawn if its length *and* strength together earn it: a short firm
    edge is a rivet, a long faint one the turn of a cheek, a short faint one is craquelure or grain and is
    left out. The line's width follows the contrast it separates — heavy on a silhouette, a hair inside a
-   form — and tapers at both ends.
+   form — and it is cut like a burin's groove: entering as a needle, swelling, leaving as a needle.
 3. **Direction.** Each layer's lines run along the form: the dominant orientation of the picture's edges,
    smoothed over a wide window, so a tyre is cut in rings and a tube along its length. Where no orientation
    dominates, or far inside a flat face, the lines fall back to the engraver's resting diagonal.
@@ -37,11 +38,12 @@ armature has already smoothed away the detail a burin draws.
    existing one. A line stops at a drawn contour, at the paper, or beside another line.
 5. **Weight, then crossing.** A cut swells with the darkness under it, thins to a point where the tone
    lifts, and wavers a little along its length with the pressure of the hand. The first layer carries a tone
-   up to a third inked; a second layer crosses it at a right angle where one layer cannot carry the tone,
-   then two diagonal layers for the darks. The layers together ink the tone asked for.
-6. **Flicks and stipple.** Below a hair's worth of tone a line is not made thinner — it is broken. The first
-   layer breaks into short flicks whose length carries the tone, and at its lightest into dots. Every
-   crossing layer enters as dots, so the edge of a shadow is stippled before it is hatched.
+   up to about a third inked; a second layer crosses it at 60° where one layer cannot carry the tone,
+   leaving lozenges of paper, and a third at 120° for the darks, leaving triangles. There is no fourth: it
+   would cut through the meshes and close them. The layers together ink the tone asked for.
+6. **Flicks, and a little stipple.** Below a hair's worth of tone a line is not made thinner — it is broken.
+   The first layer breaks into short flicks whose length carries the tone. The first crossing enters as a
+   narrow band of dots, so the edge of a shadow is softened; the second crossing begins as a line.
 
 Line spacing is 1/300 of the sheet's long side (7 px at 2048); a contour is 1 to 6 px wide at that size.
 
