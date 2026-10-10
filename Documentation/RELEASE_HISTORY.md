@@ -10,8 +10,6 @@ per-cycle commits carry the rationale + before/after.
 
 ## What's new in 7.2.0 — Kandinsky 5: an eighth model family, conditioned by a language model
 
-*In development; this note is not yet the README's banner.*
-
 ### Kandinsky 5.0 T2I Lite (`--model kandinsky5`, RFC KANDINSKY-1)
 
 A from-scratch candle port of `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated): a 6B
@@ -60,7 +58,7 @@ is checked against dumps of the diffusers reference.
   are shared with the generation checkpoint; it costs the same and its LoRA loads into `kandinsky5`.
 - **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
   `scenario` renders it — all its Kandinsky tasks in one run after the last task, so the 26 GB of
-  checkpoints are loaded once and not once a task — the TUI lists it, `bench`, `doctor --capability` and `verify --tier 2` cover
+  checkpoints are loaded once and not once a task — the TUI generates with it and applies its LoRAs from the LoRA Hub, `bench`, `doctor --capability` and `verify --tier 2` cover
   it, and `--etch` and the PNG `parameters` sidecar work as for every family.
 
 **Step count.** On four prompts at 1024², 20, 30, 40 and 50 steps score the same on prompt adherence
@@ -71,7 +69,8 @@ of them is visibly worse.
 
 **Known limits.** The img2img strength scale and the inpaint defaults were tuned on two source
 pictures and one mask; how far a given strength moves a picture depends on the picture. The
-low-memory img2img peak is 7.2 GB, not 7.0. CUDA is unmeasured.
+low-memory img2img peak is 7.2 GB, not 7.0. The family has not been run on CUDA, and in the TUI it is
+covered by tests only. How well a trained LoRA carries a style has not been judged.
 
 ### Fixed for every family
 
