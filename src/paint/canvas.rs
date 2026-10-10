@@ -1463,7 +1463,11 @@ pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
             let mottle = fbm(u / 170.0, v / 170.0, seed ^ 0x01D_0001) - 0.5;
             let fibre = value_noise(u / 16.0, v / 2.4, seed ^ 0x01D_0002) - 0.5;
             let tooth = value_noise(u / 1.4, v / 1.4, seed ^ 0x01D_0003) - 0.5;
-            let light = 1.0 + 0.11 * mottle + 0.025 * fibre + 0.035 * tooth;
+            // Laid paper: the mould's close wires leave fine ribs across the sheet, and its chain wires a thin
+            // lighter line every inch or so along it.
+            let laid = (v * std::f32::consts::TAU / 4.6 + 1.5 * (value_noise(u / 90.0, v / 90.0, seed ^ 0x01D_000D) - 0.5)).sin();
+            let chain = 1.0 - (((u + 6.0 * (value_noise(v / 120.0, 0.5, seed ^ 0x01D_000E) - 0.5)).rem_euclid(96.0) - 48.0).abs() / 1.3).min(1.0);
+            let light = 1.0 + 0.11 * mottle + 0.025 * fibre + 0.035 * tooth + 0.014 * laid + 0.022 * chain;
             // Foxing: blooms, but only in the few neighbourhoods where damp got in.
             let damp = step(0.56, 0.78, fbm(u / 300.0, v / 300.0, seed ^ 0x01D_0004));
             let bloom = step(0.45, 0.85, fbm(u / 55.0, v / 55.0, seed ^ 0x01D_0005) + 0.25 * (value_noise(u / 11.0, v / 11.0, seed ^ 0x01D_000C) - 0.5));
@@ -1482,7 +1486,10 @@ pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
             fox = (fox + 0.3 * worn).min(0.9);
             let mut plate = 1.0f32;
             let mut held = 0.0f32;
+            let mut press = 1.0f32;
             if plate_mark {
+                // A hand-pulled impression: the ink is not laid evenly, and it breaks on the paper's tooth.
+                press = (0.8 + 0.3 * fbm(u / 130.0, v / 130.0, seed ^ 0x01D_000F) + 0.16 * tooth).clamp(0.6, 1.0);
                 // Signed distance into the plate (negative outside it), its edge wavering a little.
                 let waver = unit * 1.6 * (value_noise(u / 45.0, v / 45.0, seed ^ 0x01D_000A) - 0.5);
                 let into = (x.min(w - 1 - x).min(y).min(h - 1 - y)) as f32 - inset + waver;
@@ -1497,7 +1504,7 @@ pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
             for c in 0..3 {
                 let sheet = (PAPER[c] + (FOX[c] - PAPER[c]) * fox) * light * plate;
                 let sheet = sheet + (INK[c] - sheet) * held;
-                let through = px.0[c] as f32 / 255.0;
+                let through = 1.0 - (1.0 - px.0[c] as f32 / 255.0) * press;
                 px.0[c] = (INK[c].min(sheet) + (sheet - INK[c].min(sheet)) * through).round().clamp(0.0, 255.0) as u8;
             }
         }

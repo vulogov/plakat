@@ -22,8 +22,9 @@ armature has already smoothed away the detail a burin draws.
    between, the plate does not copy the picture's key. A surface is shaded against its surroundings, so the
    turn of a form and the shadow in a joint read stronger than the flat between them; and the subject is
    spread over the plate's whole range mostly by the *order* of its values, with its middle value about a
-   quarter inked. A subject that is dark all over is therefore still cut from open line to closed shadow.
-   The deepest tone is 0.9: paper shows between the lines even in a black.
+   sixth inked: an engraving is mostly paper. A subject that is dark all over is therefore still cut from
+   open line to crossed shadow. The deepest tone is 0.7, and no line is wider than a third of its spacing, so
+   a shadow is four layers of distinct lines with paper between them, never a filled black.
 2. **Contours.** An edge map of the value (Sobel, thinned, kept by hysteresis; `--contour` sets how much of
    it) is linked into chains. A chain is drawn if its length *and* strength together earn it: a short firm
    edge is a rivet, a long faint one the turn of a cheek, a short faint one is craquelure or grain and is
@@ -34,22 +35,25 @@ armature has already smoothed away the detail a burin draws.
    dominates, or far inside a flat face, the lines fall back to the engraver's resting diagonal.
 4. **Even lines.** A layer is a set of streamlines kept one spacing apart: every new line is seeded beside an
    existing one. A line stops at a drawn contour, at the paper, or beside another line.
-5. **Weight, then crossing.** A cut swells with the darkness under it and thins to a point where the tone
-   lifts. The first layer carries a tone up to a third inked; a second layer crosses it at a right angle
-   where one layer cannot carry the tone, then two diagonal layers for the darks. The layers together ink
-   exactly the tone asked for.
-6. **Flicks in the lights.** Below a hair's worth of tone a line is not made thinner — it is broken into
-   short flicks whose length carries the tone.
+5. **Weight, then crossing.** A cut swells with the darkness under it, thins to a point where the tone
+   lifts, and wavers a little along its length with the pressure of the hand. The first layer carries a tone
+   up to a third inked; a second layer crosses it at a right angle where one layer cannot carry the tone,
+   then two diagonal layers for the darks. The layers together ink the tone asked for.
+6. **Flicks and stipple.** Below a hair's worth of tone a line is not made thinner — it is broken. The first
+   layer breaks into short flicks whose length carries the tone, and at its lightest into dots. Every
+   crossing layer enters as dots, so the edge of a shadow is stippled before it is hatched.
 
-Line spacing is 1/340 of the sheet's long side (6 px at 2048); a contour is 1 to 6 px wide at that size.
+Line spacing is 1/300 of the sheet's long side (7 px at 2048); a contour is 1 to 6 px wide at that size.
 
 ## Old paper and the plate mark
 
 `--oldpaper true` (plan and spec key `oldpaper: true`; default `false`) prints the finished picture on an
-aged sheet: cream laid paper, unevenly yellowed, with foxing, specks and edges darkened by handling. It
+aged sheet: cream laid paper — the fine ribs of the mould's wires and its wider chain lines — unevenly
+yellowed, with foxing, specks and edges darkened by handling. It
 works with **every medium** — the picture's white becomes the paper and its black a warm ink. With `durer`
 the sheet also carries the **plate mark**: the line of ink a copperplate's edge leaves a little inside the
-border. The sheet is a function of the seed and the sheet's size, and is recorded in the score, so a replay
+border, and is inked like a hand-pulled impression: unevenly, the ink breaking on the paper's tooth. There
+is no watermark and no monogram. The sheet is a function of the seed and the sheet's size, and is recorded in the score, so a replay
 ages the same way.
 
 ## Levers

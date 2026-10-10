@@ -38,17 +38,24 @@ pub struct Plate {
     pub spacing: f32,
 }
 
-/// The paper each hatch layer may ink at full weight. The first two stay open — a single layer never closes a
-/// tone, it hands over to a crossing — and the last is allowed to cut heavy, which is what makes a black.
-const LAYER_COVER: [f32; 4] = [0.33, 0.33, 0.45, 0.7];
-/// How inked the subject's middle value is cut.
-const MIDDLE_TONE: f32 = 0.26;
+/// The paper each hatch layer may ink at full weight. Every layer stays open — a line is never wider than a
+/// third of its spacing, so a shadow is made by crossing distinct lines and the paper breathes through all four.
+const LAYER_COVER: [f32; 4] = [0.34, 0.3, 0.28, 0.25];
+/// How inked the subject's middle value is cut: an engraving is mostly paper.
+const MIDDLE_TONE: f32 = 0.17;
 /// How much a surface is shaded against its surroundings.
 const RELIEF: f32 = 0.4;
 /// The deepest tone the plate cuts: a burin never fills a black, paper still shows between its lines.
-const DEEPEST: f32 = 0.9;
-/// How far below a hair's worth of tone the first layer still cuts, as flicks: a light tone is a broken line.
+const DEEPEST: f32 = 0.7;
+/// How far below a hair's worth of tone a layer still cuts, as flicks and then dots: a light tone is a broken
+/// line, and a crossing enters a shadow as stipple before it is a line.
 const FLICK: f32 = 0.3;
+/// Above this share of a hair the first layer breaks into flicks; below it, and in every crossing, into dots.
+const STIPPLE: f32 = 0.6;
+/// How much a line's weight wavers along it with the pressure of the hand.
+const HAND: f32 = 0.22;
+/// How much of the plate's tone is the ORDER of the subject's values rather than the values themselves.
+const BY_RANK: f32 = 0.55;
 /// Each layer's angle off the form's direction: along it, across it, then the two obliques.
 const LAYER_ANGLE: [f32; 4] = [0.0, 1.5708, 0.7854, 2.3562];
 
@@ -226,9 +233,8 @@ impl Field<'_> {
         if p[0] < 0.0 || p[1] < 0.0 || p[0] >= self.w as f32 || p[1] >= self.h as f32 {
             return false;
         }
-        // The first layer runs on into the lights, where it is cut as flicks (see `plan`).
-        let least = if layer == 0 { self.hair * FLICK } else { self.hair };
-        !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= least
+        // A layer runs on below a hair's worth of tone, where it is cut as flicks and dots (see `plan`).
+        !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= self.hair * FLICK
     }
 
     /// One streamline through `start`, both ways, stopping at the paper, at a contour, beside another line, or
@@ -417,8 +423,8 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
         run += n;
         *r = run / total;
     }
-    let key = (MIDDLE_TONE / DEEPEST).ln() / (0.7f32 * 0.5 + 0.3 * 0.5).ln();
-    let tone: Vec<f32> = modelled.iter().map(|&d| DEEPEST * (0.7 * if d > 0.08 { rank[((d * 255.0) as usize).min(255)] } else { 0.0 } + 0.3 * d).powf(key)).collect();
+    let key = (MIDDLE_TONE / DEEPEST).ln() / 0.5f32.ln();
+    let tone: Vec<f32> = modelled.iter().map(|&d| DEEPEST * (BY_RANK * if d > 0.08 { rank[((d * 255.0) as usize).min(255)] } else { 0.0 } + (1.0 - BY_RANK) * d).powf(key)).collect();
 
     // CONTOURS: the edge map's chains, each a line whose weight follows the contrast it separates.
     let mut cuts: Vec<Cut> = Vec::new();
@@ -459,7 +465,7 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
     // HATCH: the layers, at a spacing that fits the budget.
     let flow = Flow::new(&value, w, h);
     let room = budget.saturating_sub(cuts.len());
-    let mut spacing = (long / 340.0).max(3.0);
+    let mut spacing = (long / 300.0).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
     for _ in 0..8 {
         hatch.clear();
@@ -467,11 +473,32 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
         for layer in 0..LAYER_COVER.len() {
             for (li, line) in field.layer(layer, seed).into_iter().enumerate() {
                 let raw: Vec<f32> = line.iter().map(|p| field.width(*p, layer)).collect();
-                // In the lights a line is not thinner than a hair — it is BROKEN: flicks whose length carries
-                // the tone, each line breaking at its own place so the flicks do not fall into ranks.
-                let period = spacing * 3.0;
+                // Below a hair's worth of tone a line is not made thinner — it is BROKEN. The first layer breaks into
+                // flicks whose length carries the tone, and at its lightest into dots; a crossing enters as dots,
+                // so a shadow's edge is stippled before it is hatched. Each line breaks at its own place.
+                let (period, pitch) = (spacing * 3.0, spacing * 1.15);
+                let dot = (field.hair * 1.8).max(2.0);
                 let phase = (jitter(seed ^ 0xF11C ^ layer as u64, li as u64) + 0.5) * period;
-                let on = |i: usize| raw[i] >= field.hair || (i as f32 + phase) % period < period * (raw[i] / field.hair).max(0.25);
+                let on = |i: usize| {
+                    let part = raw[i] / field.hair;
+                    if part >= 1.0 {
+                        return true;
+                    }
+                    let at = i as f32 + phase;
+                    if layer == 0 && part >= STIPPLE {
+                        return at % period < period * part;
+                    }
+                    let nth = (at / pitch) as u64;
+                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < part / STIPPLE
+                };
+                // The hand: a line's weight breathes along it.
+                let hand = |i: usize| {
+                    let at = (i as f32 + phase) / (spacing * 7.0);
+                    let (k, f) = (at as u64, at.fract());
+                    let f = f * f * (3.0 - 2.0 * f);
+                    let knot = |k: u64| jitter(seed ^ 0x4A2D ^ layer as u64, (li as u64) << 20 | k);
+                    1.0 + 2.0 * HAND * (knot(k) * (1.0 - f) + knot(k + 1) * f)
+                };
                 let mut a = 0usize;
                 while a < line.len() {
                     if !on(a) {
@@ -482,13 +509,16 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
                     while b + 1 < line.len() && on(b + 1) {
                         b += 1;
                     }
-                    if b - a >= 3 {
-                        let mut widths: Vec<f32> = raw[a..=b].iter().map(|w| w.max(field.hair)).collect();
-                        swell(&mut widths, 3, field.hair * 0.6, ((spacing * 1.5) as usize).min((b - a) / 2));
+                    if b - a >= 4 {
+                        let mut widths: Vec<f32> = (a..=b).map(|i| (raw[i] * hand(i)).max(field.hair)).collect();
+                        swell(&mut widths, 3, field.hair * 0.6, ((spacing * 3.0) as usize).min((b - a) / 2));
                         let thin: Vec<usize> = (0..=b - a).step_by(2).chain(std::iter::once(b - a).filter(|l| l % 2 == 1)).collect();
                         let pts: Vec<[f32; 2]> = thin.iter().map(|&i| line[a + i]).collect();
                         let ws: Vec<f32> = thin.iter().map(|&i| widths[i]).collect();
                         pieces(layer + 1, &pts, &ws, &mut hatch);
+                    } else if b > a {
+                        let width = field.hair * 1.5;
+                        hatch.push(Cut { layer: layer + 1, path: vec![line[a], line[b]], w0: width, w1: width });
                     }
                     a = b + 1;
                 }
@@ -514,7 +544,7 @@ mod tests {
 
     #[test]
     fn the_layers_together_ink_the_tone_asked_for() {
-        for t in [0.1f32, 0.3, 0.5, 0.7, 0.9] {
+        for t in [0.1f32, 0.3, 0.5, 0.7] {
             let paper: f32 = (0..LAYER_COVER.len()).map(|k| 1.0 - cover(t, k)).product();
             assert!((1.0 - paper - t).abs() < 1e-4, "tone {t}: the layers ink {}", 1.0 - paper);
         }
