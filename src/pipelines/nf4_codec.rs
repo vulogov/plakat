@@ -175,9 +175,115 @@ pub fn dequant_nf4(
     Ok(out)
 }
 
+/// Split `n_blocks` blocks over the machine's cores and run `work(first_block, blocks)` on each share.
+fn par_blocks(n_blocks: usize, work: impl Fn(usize, usize) + Sync) {
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(n_blocks.max(1));
+    let per = n_blocks.div_ceil(threads.max(1)).max(1);
+    std::thread::scope(|s| {
+        let work = &work;
+        let mut first = 0;
+        while first < n_blocks {
+            let n = per.min(n_blocks - first);
+            s.spawn(move || work(first, n));
+            first += n;
+        }
+    });
+}
+
+/// A `Send + Sync` raw pointer for the disjoint per-thread writes of the two functions below.
+#[derive(Clone, Copy)]
+struct Raw<T>(*mut T);
+unsafe impl<T> Send for Raw<T> {}
+unsafe impl<T> Sync for Raw<T> {}
+
+/// Quantize dense weights to NF4 on the CPU, in the layout [`dequant_nf4`] reads: per block of
+/// [`NF4_BLOCK_SIZE`] values an absmax, and per value the nearest codebook entry of `value / absmax`,
+/// two codes to a byte, low nibble first. Returns `(packed, absmax)`.
+pub fn quantize_nf4_cpu(w: &[f32]) -> Result<(Vec<u8>, Vec<f32>)> {
+    if w.len() % NF4_BLOCK_SIZE != 0 {
+        bail!("NF4 quantize: {} values is not a whole number of {NF4_BLOCK_SIZE}-value blocks", w.len());
+    }
+    let n_blocks = w.len() / NF4_BLOCK_SIZE;
+    let mut packed = vec![0u8; w.len() / 2];
+    let mut absmax = vec![0f32; n_blocks];
+    // A value's code is the number of midpoints between neighbouring codebook entries below it.
+    let mut mids = [0f32; 15];
+    for (i, m) in mids.iter_mut().enumerate() {
+        *m = 0.5 * (NF4_CODEBOOK[i] + NF4_CODEBOOK[i + 1]);
+    }
+    let (p, a) = (Raw(packed.as_mut_ptr()), Raw(absmax.as_mut_ptr()));
+    par_blocks(n_blocks, |first, n| {
+        let (p, a) = (p, a);
+        for b in first..first + n {
+            let block = &w[b * NF4_BLOCK_SIZE..(b + 1) * NF4_BLOCK_SIZE];
+            let max = block.iter().fold(0f32, |m, v| m.max(v.abs()));
+            let inv = if max > 0.0 { 1.0 / max } else { 0.0 };
+            let code = |v: f32| mids.iter().filter(|m| v * inv > **m).count() as u8;
+            // SAFETY: block `b` owns absmax[b] and packed[b*32 .. (b+1)*32]; shares are disjoint.
+            unsafe {
+                *a.0.add(b) = max;
+                for (i, pair) in block.chunks_exact(2).enumerate() {
+                    *p.0.add(b * NF4_BLOCK_SIZE / 2 + i) = code(pair[0]) | (code(pair[1]) << 4);
+                }
+            }
+        }
+    });
+    Ok((packed, absmax))
+}
+
+/// [`dequant_nf4`] on the CPU, across the cores: `packed` and `absmax` back to dense F32 values.
+pub fn dequant_nf4_cpu(packed: &[u8], absmax: &[f32]) -> Result<Vec<f32>> {
+    let n_blocks = absmax.len();
+    if packed.len() != n_blocks * NF4_BLOCK_SIZE / 2 {
+        bail!("NF4 dequant: {} bytes against {} blocks", packed.len(), n_blocks);
+    }
+    let mut out: Vec<f32> = Vec::with_capacity(packed.len() * 2);
+    let o = Raw(out.as_mut_ptr());
+    par_blocks(n_blocks, |first, n| {
+        let o = o;
+        for b in first..first + n {
+            let scale = absmax[b];
+            let bytes = &packed[b * NF4_BLOCK_SIZE / 2..(b + 1) * NF4_BLOCK_SIZE / 2];
+            // SAFETY: block `b` owns out[b*64 .. (b+1)*64], inside the reserved capacity.
+            unsafe {
+                let dst = o.0.add(b * NF4_BLOCK_SIZE);
+                for (i, byte) in bytes.iter().enumerate() {
+                    *dst.add(2 * i) = NF4_CODEBOOK[(byte & 0x0F) as usize] * scale;
+                    *dst.add(2 * i + 1) = NF4_CODEBOOK[(byte >> 4) as usize] * scale;
+                }
+            }
+        }
+    });
+    // SAFETY: every element was written above.
+    unsafe { out.set_len(packed.len() * 2) };
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cpu_quantizer_round_trips_through_both_dequantizers() {
+        // A weight-like spread: 4 blocks, values in [-0.2, 0.2].
+        let w: Vec<f32> = (0..256).map(|i| ((i * 37 % 101) as f32 / 101.0 - 0.5) * 0.4).collect();
+        let (packed, absmax) = quantize_nf4_cpu(&w).unwrap();
+        assert_eq!((packed.len(), absmax.len()), (128, 4));
+        let back = dequant_nf4_cpu(&packed, &absmax).unwrap();
+        // Every value lands on its nearest codebook entry: the error is under half the widest gap.
+        for (b, block) in w.chunks(64).enumerate() {
+            for (i, v) in block.iter().enumerate() {
+                assert!((v - back[b * 64 + i]).abs() <= 0.16 * absmax[b], "block {b} value {i}");
+            }
+        }
+        // The extremes are exact, and the tensor path reads the same bytes the same way.
+        let top = w.iter().cloned().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(back.iter().any(|v| (v.abs() - top).abs() < 1e-7));
+        let dev = Device::Cpu;
+        let t = dequant_nf4(&Tensor::from_vec(packed.clone(), (128,), &dev).unwrap(), &Tensor::from_vec(absmax.clone(), (4,), &dev).unwrap(), &[4, 64], NF4_BLOCK_SIZE, &dev).unwrap();
+        assert_eq!(t.flatten_all().unwrap().to_vec1::<f32>().unwrap(), back);
+        assert!(quantize_nf4_cpu(&w[..100]).is_err());
+    }
 
     fn cpu() -> Device {
         Device::Cpu

@@ -486,6 +486,31 @@ pub struct GenerateArgs {
     #[arg(help_heading = "ControlNet & regional", long = "tiled", default_value_t = false)]
     pub tiled: bool,
 
+    /// **Kandinsky 5 only** (RFC KANDINSKY-1): load the Qwen2.5-VL text tower as a Q4 GGUF (~4.7 GB
+    /// instead of ~14 GB). Part of the quantized tier; rejected on other families.
+    #[arg(help_heading = "Model & sampler", long = "quantize-qwen", default_value_t = false)]
+    pub quantize_qwen: bool,
+
+    /// **Kandinsky 5 only**: run the DiT from NF4 weights (~4 GB instead of ~12 GB), quantized at load.
+    /// With `--quantize-qwen` the family peaks at 7 GB on a machine under 24 GB of RAM (or with
+    /// `PLAKAT_K5_LOW_MEMORY=1`) and at 11 GB otherwise. Rejected on other families.
+    #[arg(help_heading = "Model & sampler", long = "dit-nf4", default_value_t = false)]
+    pub dit_nf4: bool,
+
+    /// **Kandinsky 5 only**: keep the text encoders resident through the denoise (~27 GB) instead of
+    /// releasing them after encoding (~15 GB peak). For interactive re-prompting when memory allows.
+    #[arg(help_heading = "Model & sampler", long = "keep-encoders", default_value_t = false)]
+    pub keep_encoders: bool,
+
+    /// **Kandinsky 5 only**: do not snap `--size` to a native resolution bucket. Off-distribution;
+    /// both dimensions must divide by 16.
+    #[arg(help_heading = "Size & output", long = "size-exact", default_value_t = false)]
+    pub size_exact: bool,
+
+    /// **Kandinsky 5 only**: prompt tokens kept after the template (default 512, at most 1023).
+    #[arg(help_heading = "Model & sampler", long = "max-seq", value_name = "N")]
+    pub max_seq: Option<usize>,
+
     /// Regional prompting: a prompted region `"X0,Y0,X1,Y1[,w=W][,feather=F]:prompt"`
     /// (coords are `[0,1]` canvas fractions). Repeatable — each region's prompt applies
     /// in its box, blended over the main prompt for one coherent image. Optional per-region
@@ -951,8 +976,81 @@ fn apply_quality(args: &mut GenerateArgs) {
     ));
 }
 
+/// The Kandinsky 5 surface (RFC KANDINSKY-1, phase 0): its own flags are rejected with a hint on every
+/// other family; on the family, the flags it has no adapters for are rejected, `--max-seq` is bounded and
+/// `--size` snaps to a native bucket. Returns whether the run belongs to the family.
+fn kandinsky_surface(args: &mut GenerateArgs) -> Result<bool> {
+    use crate::pipelines::kandinsky as k5;
+    let scoped = [
+        ("--quantize-qwen", args.quantize_qwen),
+        ("--dit-nf4", args.dit_nf4),
+        ("--keep-encoders", args.keep_encoders),
+        ("--size-exact", args.size_exact),
+        ("--max-seq", args.max_seq.is_some()),
+    ];
+    if !k5::is_kandinsky(&args.model) {
+        if let Some((flag, _)) = scoped.iter().find(|(_, on)| *on) {
+            anyhow::bail!("{flag} is a Kandinsky 5 flag and has no meaning for --model {:?}; use it with --model kandinsky5", args.model);
+        }
+        return Ok(false);
+    }
+    let no_adapters = "no Kandinsky 5 ControlNet exists yet (RFC KANDINSKY-1, non-goal N4)";
+    if !args.control_specs.is_empty() {
+        anyhow::bail!("--control-spec is not available on --model kandinsky5: {no_adapters}");
+    }
+    if args.refiner {
+        anyhow::bail!("--refiner is the SDXL refiner; it does not apply to --model kandinsky5");
+    }
+    if args.fast.is_some() {
+        anyhow::bail!("--fast is not available on --model kandinsky5: no distilled or few-step checkpoint exists (RFC KANDINSKY-1, non-goal N6)");
+    }
+    // What would otherwise be a silent no-op: these act on the SD UNet, or look for the SD pipelines'
+    // output files after the run.
+    let sd_only = [
+        ("--quality", args.quality.is_some(), "its tiers are SD UNet sampler settings (FreeU, PAG, CFG rescale)"),
+        ("--adetailer", args.adetailer, "the face pass is an SD-family img2img"),
+        ("--hires-fix", args.hires_fix, "the refine pass is an SD-family img2img"),
+        ("--artefact", !args.artefacts.is_empty() || args.artefact_blend, "artefact compositing is not wired for this family"),
+        ("--grid", args.grid, "the grid is not wired for this family"),
+        ("--format", !matches!(args.format, crate::imaging::io::OutputFormat::Png), "the family writes PNG"),
+    ];
+    if let Some((flag, _, why)) = sd_only.iter().find(|(_, on, _)| *on) {
+        anyhow::bail!("{flag} is not available on --model kandinsky5: {why}");
+    }
+    if let Some(n) = args.max_seq {
+        if n == 0 || n > k5::MAX_SEQ_CAP {
+            anyhow::bail!("--max-seq must be 1..={} (default {}); got {n}", k5::MAX_SEQ_CAP, k5::DEFAULT_MAX_SEQ);
+        }
+    }
+    let (w, h) = args.size.map(|s| (s.w, s.h)).unwrap_or((1024, 1024));
+    if args.size_exact {
+        k5::check_exact(w, h)?;
+        if !k5::BUCKETS.contains(&(w, h)) {
+            crate::ui::progress::println(&format!("kandinsky5: --size-exact {w}x{h} is off the model's native buckets (off-distribution)"));
+        }
+    } else {
+        let (bw, bh) = k5::snap_bucket(w, h);
+        if (bw, bh) != (w, h) {
+            crate::ui::progress::println(&format!("kandinsky5: --size {w}x{h} → {bw}x{bh} (native bucket)"));
+        }
+        args.size = Some(Size { w: bw, h: bh });
+    }
+    // The family's own sampler defaults stand in for clap's (`--steps 28`, `--guidance 7.5` are what
+    // "not set" looks like here, as for the presets and recipes): 50 steps at guidance 3.5.
+    if args.steps == 28 {
+        args.steps = k5::DEFAULT_STEPS;
+    }
+    if (args.guidance - 7.5).abs() < f64::EPSILON {
+        args.guidance = k5::DEFAULT_GUIDANCE;
+    }
+    Ok(true)
+}
+
 pub async fn run(mut args: GenerateArgs, device: Device) -> Result<()> {
     apply_quality(&mut args);
+    // RFC KANDINSKY-1: validates the family's flags, snaps the size and sets its sampler defaults; the
+    // run itself goes through `t2i::run` like every other family's.
+    kandinsky_surface(&mut args)?;
     // `--unique-files`: nest this whole run under a timestamped folder BEFORE any path derives from
     // `args.out`, so every out_dir / reconstructed `plakat-<seed>.png` / grid / naturalize path inherits
     // it and no prior run is clobbered. One redirect covers the entire pipeline.
@@ -1143,9 +1241,15 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
             cache: args.enhance_cache,
         };
         let original = args.prompt.clone();
-        let enhanced =
-            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args)
-                .await?;
+        // Kandinsky 5 reads long prose and no `(term:N)` weights: the generic enhancer prompt (70 tokens
+        // of detail) is the wrong brief for it, so it gets its family's — unless `--enhance-system` is set.
+        let enhanced = if crate::pipelines::kandinsky::is_kandinsky(&args.model) && args.enhance_system.is_none() {
+            let system = crate::compile::assembler::enhance_system(crate::compile::ModelFamily::Kandinsky5);
+            let enhance_args = crate::prompt::EnhanceArgs { max_new_tokens: enhance_args.max_new_tokens.or(Some(320)), ..enhance_args };
+            crate::prompt::complete(&provider, &system, &args.prompt, &enhance_args).await?
+        } else {
+            crate::prompt::enhance_with_args(&provider, &args.prompt, &enhance_args).await?
+        };
         tracing::info!(target: "plakat", "Enhanced prompt: {enhanced}");
         args.prompt = maybe_keep_original(
             &args.model,
@@ -1153,6 +1257,20 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
             &original,
             args.enhance_keep_original,
         );
+    }
+
+    // Kandinsky 5 has no weight parser: `(term:N)` would reach it as punctuation. The brackets come
+    // off and the emphasis is restated in words, as `compile` does for the family.
+    if crate::pipelines::kandinsky::is_kandinsky(&args.model) {
+        use crate::compile::assembler as asm;
+        if !asm::extract_weight_spans(&args.prompt).is_empty() {
+            let emphasis = asm::prose_reinforcement(&args.prompt, crate::compile::ModelFamily::Kandinsky5);
+            args.prompt = asm::strip_weight_spans(&args.prompt);
+            if let Some(e) = emphasis {
+                args.prompt = format!("{} {e}", args.prompt.trim_end());
+            }
+            crate::ui::progress::println(&format!("kandinsky5: `(term:N)` weights are not read by this model — restated in words: {}", args.prompt));
+        }
     }
 
     // v0.18: A1111 inline <lora:name[:weight]> syntax. Extract
@@ -1584,6 +1702,10 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         // v0.38 phase 5: Cascade ControlNet weights path.
         cascade_controlnet_weights: args.cascade_control_weights,
         layered: None,
+        kandinsky_max_seq: args.max_seq,
+        kandinsky_keep_encoders: args.keep_encoders,
+        kandinsky_quantize_qwen: args.quantize_qwen,
+        kandinsky_dit_nf4: args.dit_nf4,
     })
     .await
     .map_err(|e| {
@@ -1591,6 +1713,9 @@ async fn run_inner(mut args: GenerateArgs, device: Device) -> Result<()> {
         // mitigation suggestions. Detection is conservative (looks
         // for "out of memory" / "OOM" substrings); unrelated errors
         // pass through unchanged.
+        if crate::pipelines::kandinsky::is_kandinsky(&model_for_oom) {
+            return e; // decorated by the family's own run, with its own mitigations
+        }
         let ctx = if model_for_oom.contains("flux") {
             crate::error_hints::OomContext::Flux
         } else if model_for_oom.contains("xl") {
@@ -1980,7 +2105,7 @@ pub(crate) fn maybe_keep_original(
         return enhanced;
     }
     let variant = crate::pipelines::t2i::Variant::detect(model);
-    if variant.is_flux() || variant.is_sd3() {
+    if variant.is_flux() || variant.is_sd3() || variant.is_kandinsky() {
         tracing::warn!(
             target: "plakat",
             "--enhance-keep-original ignored on Flux/SD3 model {:?}: \
@@ -2200,6 +2325,11 @@ mod tests {
             flux_quant_level: None,
             t5_quant_level: None,
             fast: None,
+            quantize_qwen: false,
+            dit_nf4: false,
+            keep_encoders: false,
+            size_exact: false,
+            max_seq: None,
             look: None,
             genre: None,
             offline: false,

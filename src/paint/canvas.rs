@@ -514,10 +514,24 @@ impl Canvas {
         //    sides — sharp there, nothing on the wet side. (Symmetric, both sides deepened and the line
         //    read as a drawn border.)
         let load_wide = Self::box_blur_f(&load_b, w, h, r);
+        // A backrun needs a WASH on the drier side to run into: a thin dark mass (a branch, a mullion) on
+        // bare paper has no drier wash on either flank, and the rule below — "the load is below the
+        // boundary's mean" — was true on BOTH its sides, so every branch grew a dark rim all round
+        // (cloisonné). The drier side must itself be wet: its own, unsmoothed, deposit above a floor set
+        // by the sheet (a tenth of the mean wet load).
+        let wet_floor = {
+            let (mut sum, mut cnt) = (0f32, 0usize);
+            for p in 0..px { if fresh_film[p] > 1e-5 { sum += fresh_film[p]; cnt += 1; } }
+            if cnt > 0 { sum / cnt as f32 * 0.1 } else { 0.0 }
+        };
+        let own_b = Self::box_blur_f(&fresh_film, w, h, (r / 3).max(1));
         let contrast: Vec<f32> = (0..px)
             .map(|p| {
                 let (x, y) = (p % w, p / w);
                 if x == 0 || y == 0 || x + 1 >= w || y + 1 >= h { return 0.0; }
+                // Wet enough to be a wash, and thinner than the boundary's mean (this is the wash side,
+                // not the mass's own edge pixels).
+                if own_b[p] < wet_floor || own_b[p] > load_wide[p] { return 0.0; }
                 let gx = load_b[p + 1] - load_b[p - 1];
                 let gy = load_b[p + w] - load_b[p - w];
                 let g = (gx * gx + gy * gy).sqrt() * r as f32 * 0.5;
@@ -650,7 +664,7 @@ impl Canvas {
     /// same drags. `strength` (0..1) is how far the paint is carried (up to `radius` px); `face` masks the
     /// pixels that must not smear (the faces: their features soften under any drag). Opaque media only;
     /// a no-op at strength 0.
-    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>) {
+    pub fn collide(&mut self, strength: f32, radius: f32, face: Option<&[f32]>, hold_at: f32) {
         let s = strength.clamp(0.0, 1.0);
         if s <= 0.0 || radius < 1.0 || self.transmittance {
             return;
@@ -691,8 +705,10 @@ impl Canvas {
                 if wet < 0.02 {
                     continue;
                 }
+                // The hold mask carries a LEVEL: ≥ `hold_at` holds the paint still (faces always; the
+                // subject on the fine passes, where a drag would soften what the fine brushes resolved).
                 let fm = face.map(|m| m.get(p).copied().unwrap_or(0.0)).unwrap_or(0.0);
-                if fm > 0.35 {
+                if fm >= hold_at {
                     continue;
                 }
                 // The striation direction from the tensor: the eigenvector of the SMALLER eigenvalue.
@@ -732,6 +748,11 @@ impl Canvas {
                 self.height[p] = old_h[p] * (1.0 - mix) + hsum * mix;
             }
         }
+    }
+
+    /// `box_blur_f` for callers outside the canvas (the painter's fields).
+    pub fn box_blur_pub_impl(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+        Self::box_blur_f(src, w, h, r)
     }
 
     /// A box blur of a scalar field, separable, radius `r` (window clamped at the edges, mean over the
@@ -1353,6 +1374,11 @@ impl Default for Finish {
     }
 }
 
+/// A box blur of a scalar field (see `Canvas::box_blur_f`), for the painter's fields.
+pub fn box_blur_pub(src: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    Canvas::box_blur_pub_impl(src, w, h, r)
+}
+
 /// Hashed value in `[0,1]` at an integer lattice point.
 fn hash01(ix: i64, iy: i64, seed: u64) -> f32 {
     let mut z = seed.wrapping_add((ix as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)).wrapping_add((iy as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F));
@@ -1615,6 +1641,27 @@ mod flow_tests {
     }
 
     #[test]
+    fn a_thin_mass_on_bare_paper_grows_no_rim() {
+        // A 2-px dark line on bare paper: nothing wet on either flank for a backrun to run into, so the
+        // flow leaves no rim — the line's own pigment total is unchanged.
+        let pal = palette::EARTH;
+        let mut c = Canvas::white(64, 32, pal, 0.85).with_opacity(0.45).with_transmittance(true);
+        let n = c.n;
+        let mut ink = vec![0f32; n];
+        ink[1] = 3.0;
+        for x in 4..60u32 { for y in 15..17u32 { c.deposit(x, y, &ink, 0.0); } }
+        let peak_before = c.conc.iter().cloned().fold(0f32, f32::max);
+        c.flow(1.0, 4.0, 1.0, 0.0, 0.0);
+        // The water may carry the line's pigment OUT (a softened line), but nothing is DEEPENED: no pixel
+        // beside the line stands above what the line itself carried — no rim.
+        let peak_after = c.conc.iter().cloned().fold(0f32, f32::max);
+        assert!(peak_after <= peak_before * 1.01, "no rim added to a thin mass: peak {peak_before} → {peak_after}");
+        let flank: f32 = (4..60).map(|x| c.conc[(13 * 64 + x) * n + 1]).fold(0f32, f32::max);
+        let line: f32 = (4..60).map(|x| c.conc[(15 * 64 + x) * n + 1]).fold(0f32, f32::max);
+        assert!(flank < line, "the flank stays lighter than the line: {flank} vs {line}");
+    }
+
+    #[test]
     fn two_washes_of_one_weight_blend_without_a_line() {
         // The same two washes at the same load: no tide line forms between them (they were laid together,
         // wet) — the rim is a fact of the load contrast, not a contour round every wash.
@@ -1724,20 +1771,20 @@ mod flow_tests {
         lay(&mut wetc, 1.0);
         let n = wetc.n;
         let before = wetc.conc.clone();
-        wetc.collide(1.0, 4.0, None);
+        wetc.collide(1.0, 4.0, None, 2.0);
         let moved: f32 = wetc.conc.iter().zip(&before).map(|(a, b)| (a - b).abs()).sum();
         assert!(moved > 1.0, "wet paint moved: {moved}");
         let mut dryc = Canvas::white(64, 32, pal, 0.9);
         lay(&mut dryc, 0.0);
         let before_d = dryc.conc.clone();
-        dryc.collide(1.0, 4.0, None);
+        dryc.collide(1.0, 4.0, None, 2.0);
         assert_eq!(dryc.conc, before_d, "dry paint does not move");
         // Masked pixels do not move either.
         let mut maskc = Canvas::white(64, 32, pal, 0.9);
         lay(&mut maskc, 1.0);
         let before_m = maskc.conc.clone();
         let mask = vec![1.0f32; 64 * 32];
-        maskc.collide(1.0, 4.0, Some(&mask));
+        maskc.collide(1.0, 4.0, Some(&mask), 1.0);
         assert_eq!(maskc.conc, before_m, "the face mask holds the paint still");
         let _ = n;
     }

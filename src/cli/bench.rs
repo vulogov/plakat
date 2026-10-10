@@ -90,11 +90,15 @@ enum Family {
     Sd3,
     Cascade,
     Flux,
+    /// RFC KANDINSKY-1 phase 0: registered, not benchable until its pipeline lands.
+    Kandinsky5,
 }
 
 fn family_of(model: &str) -> Family {
     let m = model.to_lowercase();
-    if m.contains("flux") {
+    if crate::pipelines::kandinsky::is_kandinsky(&m) {
+        Family::Kandinsky5
+    } else if m.contains("flux") {
         Family::Flux
     } else if m.contains("cascade") {
         Family::Cascade
@@ -171,6 +175,35 @@ pub async fn run(args: BenchArgs) -> Result<()> {
 
     // ---- load (timed, cold) + generate (timed), dispatched by family ----
     let samples = match family {
+        Family::Kandinsky5 => {
+            // Staged, as a real run is: the text is encoded and the encoders released before the DiT loads.
+            // "load" is everything up to a resident DiT; each sample is one denoise plus its decode.
+            use crate::pipelines::{kandinsky as k5, kandinsky_dit::Dit, kandinsky_text::{TextEncoders, Vae}};
+            k5::check_exact(width, height)?;
+            let t = Instant::now();
+            let (pos, neg) = {
+                // Its own device, and the embeddings off it: that is what returns the encoders' memory.
+                let text_device = k5::stage_device(&device)?;
+                let mut enc = TextEncoders::load(&repo, &text_device).await.with_context(|| format!("loading {:?} text encoders", args.model))?;
+                let mut both = [enc.encode(prompt, k5::DEFAULT_MAX_SEQ)?, enc.encode("", k5::DEFAULT_MAX_SEQ)?];
+                for e in &mut both {
+                    (e.qwen, e.pooled) = (e.qwen.to_device(&candle_core::Device::Cpu)?, e.pooled.to_device(&candle_core::Device::Cpu)?);
+                }
+                let [pos, neg] = both;
+                (pos, neg)
+            };
+            let dit = Dit::load(&repo, &device).await.with_context(|| format!("loading {:?}", args.model))?;
+            let vae_device = k5::decode_device(&device)?;
+            let vae = Vae::load(&repo, &vae_device).await?;
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+            time_runs(load_ms, args.repeat, &peak, |hook| {
+                let _ = device.set_seed(42);
+                let noise = candle_core::Tensor::randn(0f32, 1f32, (1, dit.cfg.in_visual_dim, (height / 8) as usize, (width / 8) as usize), &device)?;
+                let mut opt: Option<&mut dyn StepHook> = Some(hook);
+                let latent = k5::denoise(&dit, &pos, (args.guidance > 1.0).then_some(&neg), &noise, args.steps, args.guidance, &mut opt, "denoise")?;
+                k5::decode(&vae, &latent.to_device(&vae_device)?).map(|_| ())
+            })?
+        }
         Family::Sd => {
             let t = Instant::now();
             let pipeline = crate::pipelines::t2i::Pipeline::load(crate::pipelines::t2i::LoadRequest {
@@ -387,6 +420,7 @@ mod tests {
         assert_eq!(family_of("sd35-medium"), Family::Sd3);
         assert_eq!(family_of("sd3-medium"), Family::Sd3);
         assert_eq!(family_of("stable-cascade"), Family::Cascade);
+        assert_eq!(family_of("kandinsky5"), Family::Kandinsky5);
         assert_eq!(family_of("flux-schnell"), Family::Flux);
     }
 

@@ -82,8 +82,9 @@ pub struct ScoreHeader {
     pub weave: f32,
     /// WET COLLISION (see `Canvas::collide`) after the broad passes: (strength, radius px). None = off.
     pub collide: Option<(f32, f32)>,
-    /// The HOLD mask the collision respects (the faces), coarse: a `cols`-wide grid of 0/1 cells at the
-    /// score's aspect, so a replay keeps the same paint still. None = none. (`M cols rle…` record.)
+    /// The HOLD mask the collision respects, coarse: a `cols`-wide grid of cells at the score's aspect —
+    /// 2 = held always (the faces), 1 = held on the fine passes only (the subject), 0 = free — so a replay
+    /// keeps the same paint still. None = none. (`M cols rle…` record; runs cycle 0,1,2,0,1,2…)
     pub hold_mask: Option<(u32, Vec<u8>)>,
 }
 
@@ -137,22 +138,29 @@ pub struct StrokeRecord {
     pub tgt: Option<[u8; 3]>,
 }
 
-/// A coarse hold mask (`cols` wide, 0/1 cells at the score's aspect) from a full-size 0..1 mask: a cell
-/// is 1 when more than a third of it is masked. 64 columns on a 2048 sheet = 32-px cells.
-pub fn coarse_hold(mask: &[f32], w: u32, h: u32, cols: u32) -> (u32, Vec<u8>) {
+/// A coarse hold mask (`cols` wide, cells at the score's aspect): 2 where the `always` mask covers more
+/// than a third of the cell, else 1 where the `fine` mask does, else 0. 64 columns on a 2048 sheet =
+/// 32-px cells.
+pub fn coarse_hold(always: Option<&[f32]>, fine: Option<&[f32]>, w: u32, h: u32, cols: u32) -> (u32, Vec<u8>) {
     let rows = ((h as f32 / w as f32) * cols as f32).round().max(1.0) as u32;
-    let mut sum = vec![0f32; (cols * rows) as usize];
-    let mut cnt = vec![0u32; (cols * rows) as usize];
+    let cell_n = (cols * rows) as usize;
+    let mut sa = vec![0f32; cell_n];
+    let mut sf = vec![0f32; cell_n];
+    let mut cnt = vec![0u32; cell_n];
     for y in 0..h {
         let cy = (y * rows / h).min(rows - 1);
         for x in 0..w {
             let cx = (x * cols / w).min(cols - 1);
             let i = (cy * cols + cx) as usize;
-            sum[i] += if mask[(y * w + x) as usize] > 0.35 { 1.0 } else { 0.0 };
+            let q = (y * w + x) as usize;
+            if always.map_or(false, |m| m[q] > 0.35) { sa[i] += 1.0; }
+            if fine.map_or(false, |m| m[q] > 0.5) { sf[i] += 1.0; }
             cnt[i] += 1;
         }
     }
-    let cells = (0..sum.len()).map(|i| (cnt[i] > 0 && sum[i] / cnt[i] as f32 > 0.33) as u8).collect();
+    let cells = (0..cell_n).map(|i| {
+        if cnt[i] == 0 { 0 } else if sa[i] / cnt[i] as f32 > 0.33 { 2 } else if sf[i] / cnt[i] as f32 > 0.33 { 1 } else { 0 }
+    }).collect();
     (cols, cells)
 }
 
@@ -241,11 +249,17 @@ impl StrokeScore {
         }
         if let Some((cols, cells)) = &h.hold_mask {
             // Run-length: alternating counts of 0s and 1s, starting with 0s.
+            // Run-length over the levels 0,1,2 cycling (a zero-length run where a level is skipped).
             let mut runs: Vec<usize> = Vec::new();
             let mut cur = 0u8;
             let mut n = 0usize;
             for &c in cells {
-                if c == cur { n += 1; } else { runs.push(n); cur = c; n = 1; }
+                if c == cur { n += 1; } else {
+                    runs.push(n);
+                    cur = (cur + 1) % 3;
+                    while cur != c { runs.push(0); cur = (cur + 1) % 3; }
+                    n = 1;
+                }
             }
             runs.push(n);
             o.push_str(&format!("M {} {}\n", cols, runs.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",")));
@@ -404,7 +418,7 @@ impl StrokeScore {
                     let mut cur = 0u8;
                     for r in runs {
                         cells.extend(std::iter::repeat(cur).take(r));
-                        cur ^= 1;
+                        cur = (cur + 1) % 3;
                     }
                     if cols > 0 && !cells.is_empty() {
                         hold_mask = Some((cols, cells));
@@ -528,9 +542,10 @@ impl StrokeScore {
                 }
             }
             if let Some((s, r)) = self.header.collide {
-                if let Some(t) = crate::paint::painter::flow_taper(idx, n) {
-                    let hold = self.header.hold_mask.as_ref().map(|(cols, cells)| expand_hold(*cols, cells, canvas.w, canvas.h));
-                    canvas.collide(s * t, r, hold.as_deref());
+                let hold = self.header.hold_mask.as_ref().map(|(cols, cells)| expand_hold(*cols, cells, canvas.w, canvas.h));
+                let (st, at) = crate::paint::painter::collide_schedule(s, idx, n);
+                if st > 0.0 {
+                    canvas.collide(st, r, hold.as_deref(), at);
                 }
             }
             if self.header.dry > 0.0 && idx + 1 < n {
@@ -674,7 +689,7 @@ mod tests {
         s.strokes[0].tgt = Some([200, 30, 40]);
         s.header.weave = 0.4;
         s.header.collide = Some((0.5, 6.0));
-        s.header.hold_mask = Some((8, vec![0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        s.header.hold_mask = Some((8, vec![0, 0, 2, 2, 0, 1, 1, 0, 0, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
         let parsed = StrokeScore::parse(&s.to_text()).expect("parses");
         assert_eq!(parsed.strokes[0].visc, Some(1.75));
         assert_eq!(parsed.strokes[0].tgt, Some([200, 30, 40]));

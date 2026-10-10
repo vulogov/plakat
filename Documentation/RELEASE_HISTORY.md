@@ -8,6 +8,77 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.2.0 — Kandinsky 5: an eighth model family, conditioned by a language model
+
+### Kandinsky 5.0 T2I Lite (`--model kandinsky5`, RFC KANDINSKY-1)
+
+A from-scratch candle port of `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` (MIT, ungated): a 6B
+flow transformer conditioned by the Qwen2.5-VL-7B language model and CLIP-L, on the Flux VAE. Every stage
+is checked against dumps of the diffusers reference.
+
+**Read this first.**
+
+- **There is no ControlNet for this model yet, and no published image LoRAs.** `--control*` is refused,
+  and so are `--fast`, `--quality`, `--adetailer`, `--hires-fix`, `--artefact` and `--grid`.
+- **It is the slowest family plakat runs.** About 15 s a step at 1024² on an M5 Max — two transformer
+  forwards a step, 50 steps by default: 13 minutes an image. `--steps 30` is enough for most prompts
+  (8 minutes); see below.
+- **The download is 36 GB**, of which about 26 GB is loaded.
+
+**What it does.**
+
+- **txt2img, img2img and inpaint** — `plakat generate` and `plakat img2img` (`--mask` for inpaint), at
+  seven native size buckets around 1024². `--strength` (default 0.6) has its own scale here, mapped to
+  a start noise level so that the whole range is usable: 0.3 re-renders fine detail, 0.6 redraws detail
+  and keeps the composition, 0.75 changes the medium. Inpaint repaints the masked region from pure
+  noise by default, holds the rest to the source at every step, and feathers the mask by 48 px; its
+  prompt should describe the whole picture, not the patch.
+- **16 GB of memory, or 7 GB quantised.** The text encoders, the transformer and the VAE are never
+  loaded together (peak 16.1 GB at every bucket). `--quantize-qwen --dit-nf4` runs the text tower as a
+  4-bit GGUF and the transformer from NF4 weights: 7.0 GB peak on a machine with under 24 GB of RAM,
+  for about 20 % more time a step. The quantised transformer is cached on disk after the first run
+  (2.8 GB beside the models; `--nf4-cache <dir|off>` or a scenario's `nf4-cache:` moves it to a faster
+  disk or turns it off), so later runs do not quantize the 12 GB checkpoint again.
+- **A seed repeats its image.** On Metal it did not: candle's seeded generator there does not repeat a
+  draw. The starting noise now comes from plakat's own generator and is the same in every run and on
+  every device.
+- **Prompts in Russian** work as well as prompts in English (measured on four prompt pairs; `compile`
+  leaves a Russian source in Russian for this family).
+- **Prompts written for other models still work.** `(term:1.5)` weights, which this model cannot read,
+  are restated in words, and `generate --enhance` rewrites a prompt into the long prose the model
+  wants while keeping every element and colour of it.
+- **LoRA, loading and training.**
+  `--lora file[:scale]` merges a LoRA in the format of the model's own trainer; `plakat style train
+  --base kandinsky5` trains one with that trainer's recipe, with the backward done one block at a time
+  so that it fits in memory without gradient checkpointing. On a 36 GB M5 Max training takes 22 GB and
+  11 s a step at 512², and 33 GB and 67 s a step at 1024² (a 200-step run) — both without swapping. One trial LoRA has been trained
+  and loaded; how well a style transfers is not yet judged. In a scenario, `loras:` on the file and on
+  a task are honoured, tasks with the same LoRAs sharing one load. `--base kandinsky5-pretrain` trains
+  on the pretrain checkpoint — a 12 GB download, the transformer alone, since the encoders and the VAE
+  are shared with the generation checkpoint; it costs the same and its LoRA loads into `kandinsky5`.
+- **In the rest of plakat:** `compile` has a Kandinsky profile (long prose, no `(term:N)` weights),
+  `scenario` renders it — all its Kandinsky tasks in one run after the last task, so the 26 GB of
+  checkpoints are loaded once and not once a task — the TUI generates with it and applies its LoRAs from the LoRA Hub, `bench`, `doctor --capability` and `verify --tier 2` cover
+  it, and `--etch` and the PNG `parameters` sidecar work as for every family.
+
+**Step count.** On four prompts at 1024², 20, 30, 40 and 50 steps score the same on prompt adherence
+(0.303 / 0.303 / 0.289 / 0.287) and on the aesthetic predictor (6.06 / 6.07 / 5.93 / 5.99), and the
+pictures are equally finished. The default stays at the reference's 50; `--steps 30` is the practical
+setting and 20 is fine for drafts. Four prompts cannot rank the step counts — they show only that none
+of them is visibly worse.
+
+**Known limits.** The img2img strength scale and the inpaint defaults were tuned on two source
+pictures and one mask; how far a given strength moves a picture depends on the picture. The
+low-memory img2img peak is 7.2 GB, not 7.0. The family has not been run on CUDA, and in the TUI it is
+covered by tests only. How well a trained LoRA carries a style has not been judged.
+
+### Fixed for every family
+
+- **A prompt with non-Latin characters could not be saved to a PNG.** The `parameters` chunk was written
+  as `tEXt`, which is Latin-1 only, so a Cyrillic (or any non-Latin) prompt failed the save after the
+  whole render. Such text is now written as `iTXt` (UTF-8) and read back from either chunk — in the
+  metadata sidecar, in `--etch` detection and in the book-art canvas.
+
 ## What's new in 7.1.0 — the paint is paint: watercolour fluids, oil relief, and a run that explains itself
 
 Sixty-odd commits on `plakat paint`, all on the `--new` painting, all judged on 1:1 crops and
