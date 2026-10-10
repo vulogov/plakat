@@ -373,7 +373,9 @@ mod tests {
         assert!(read_parameters_chunk(&path).expect("parameters chunk present").contains(prompt));
         let chunks = |p: &Path| {
             let reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(p).unwrap())).read_info().unwrap();
-            (reader.info().uncompressed_latin1_text.len(), reader.info().utf8_text.len())
+            // Only the recipe's own chunk: another test may have etching on, which adds an `etch` one.
+            let info = reader.info();
+            (info.uncompressed_latin1_text.iter().filter(|c| c.keyword == "parameters").count(), info.utf8_text.iter().filter(|c| c.keyword == "parameters").count())
         };
         assert_eq!(chunks(&path), (0, 1));
         let latin = tmp.path().join("latin.png");

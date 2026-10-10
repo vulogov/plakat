@@ -63,7 +63,7 @@ pub enum BaseFamily {
     /// Routes through `pipelines::sana`. LoRA discovery lands later
     /// in the 4.5 cycle (base t2i first).
     Sana,
-    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5. No public adapters exist yet (non-goal N4), so nothing is
+    /// 7.2 (RFC KANDINSKY-1): Kandinsky 5. No public adapters exist yet (non-goal N4; a LoRA trained with `style train` is local), so nothing is
     /// discovered for it; the family is here so the mapping stays total.
     Kandinsky5,
 }

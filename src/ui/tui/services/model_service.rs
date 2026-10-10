@@ -134,8 +134,26 @@ enum Loaded {
     PixArt { loras: Vec<LoraSpec> },
     Cascade { loras: Vec<LoraSpec> },
     // Kandinsky 5 is staged (text encoders, then the DiT, then the VAE — never together), so nothing
-    // can stay resident between generations either. No adapters exist for it.
-    Kandinsky5,
+    // can stay resident between generations either. Its LoRAs are merged as the transformer is read,
+    // so they too are applied by each generation.
+    Kandinsky5 { loras: Vec<crate::pipelines::kandinsky::Lora> },
+}
+
+/// The LoRAs a Kandinsky 5 load asks for, located and checked to be the family's.
+async fn kandinsky_loras(specs: &[LoraSpec]) -> anyhow::Result<Vec<crate::pipelines::kandinsky::Lora>> {
+    let loras = crate::pipelines::kandinsky::resolve_loras(specs, 1.0).await?;
+    for l in &loras {
+        check_kandinsky_lora(&l.path)?;
+    }
+    Ok(loras)
+}
+
+/// A LoRA of another family can be well formed and still adapt nothing here: it must name the
+/// DiT's blocks.
+fn check_kandinsky_lora(path: &std::path::Path) -> anyhow::Result<()> {
+    let file = crate::pipelines::kandinsky_lora::LoraFile::load(path)?;
+    anyhow::ensure!(file.layers.keys().any(|module| module.contains("transformer_blocks.")), "{} is not a Kandinsky 5 LoRA: none of its layers is a block of the transformer", path.display());
+    Ok(())
 }
 
 /// Handle to the model thread. Drop signals shutdown and joins.
@@ -311,8 +329,9 @@ fn model_loop(
                         .map(Loaded::Sd3),
                     UiFamily::PixArt => Ok(Loaded::PixArt { loras }),
                     UiFamily::Cascade => Ok(Loaded::Cascade { loras }),
-                    UiFamily::Kandinsky5 if !loras.is_empty() => Err(anyhow::anyhow!("Kandinsky 5 has no LoRA adapters yet (RFC KANDINSKY-1, non-goal N4)")),
-                    UiFamily::Kandinsky5 => Ok(Loaded::Kandinsky5),
+                    // Nothing is loaded yet, but the LoRAs are read once now: a file of another family
+                    // is refused here, by name, and not by the first generation minutes later.
+                    UiFamily::Kandinsky5 => rt.block_on(kandinsky_loras(&loras)).map(|loras| Loaded::Kandinsky5 { loras }),
                 };
                 match result {
                     Ok(p) => {
@@ -490,7 +509,7 @@ fn model_loop(
                     // ── Kandinsky 5: load-per-gen, staged. txt2img, and img2img / inpaint over
                     //    the previous image (`init_image`, `mask`). The size snaps to a native
                     //    bucket. Hooked for progress and cancel; no per-step preview. ──
-                    Loaded::Kandinsky5 => {
+                    Loaded::Kandinsky5 { loras } => {
                         use crate::pipelines::kandinsky as k5;
                         let _ = std::fs::create_dir_all(&job.out_dir);
                         let (width, height) = k5::snap_bucket(job.width, job.height);
@@ -515,7 +534,7 @@ fn model_loop(
                             quantize_qwen: false,
                             dit_nf4: false,
                             init,
-                            loras: Vec::new(),
+                            loras: loras.clone(),
                         };
                         let mut hook = ChannelHook::new(job.tx.clone(), job.cancel.clone(), job.preview_every);
                         match rt.block_on(k5::run_hooked(req, Some(&mut hook))) {
@@ -866,6 +885,26 @@ mod tests {
         assert!(matches!(ui_family("stable-cascade"), Ok(UiFamily::Cascade)));
         assert!(matches!(ui_family("kandinsky5"), Ok(UiFamily::Kandinsky5)));
         assert!(t2i_load_check("kandinsky5").is_ok());
+    }
+
+    #[test]
+    fn a_kandinsky_load_takes_its_own_loras_and_refuses_others() {
+        use candle_core::{DType, Device, Tensor};
+        let dir = std::env::temp_dir().join(format!("plakat-tui-k5-lora-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, module: &str, a: &str, b: &str| {
+            let t = |r: usize, c: usize| Tensor::zeros((r, c), DType::F32, &Device::Cpu).unwrap();
+            let tensors = std::collections::HashMap::from([(format!("{module}.{a}.weight"), t(4, 8)), (format!("{module}.{b}.weight"), t(8, 4))]);
+            let path = dir.join(name);
+            candle_core::safetensors::save(&tensors, &path).unwrap();
+            path
+        };
+        let own = write("own.safetensors", "base_model.model.visual_transformer_blocks.0.self_attention.to_query", "lora_A.default", "lora_B.default");
+        let other = write("other.safetensors", "lora_unet_down_blocks_1_attentions_0_to_k", "lora_down", "lora_up");
+        assert!(check_kandinsky_lora(&own).is_ok());
+        let refused = check_kandinsky_lora(&other).unwrap_err().to_string();
+        assert!(refused.contains("not a Kandinsky 5 LoRA"), "{refused}");
+        std::fs::remove_dir_all(&dir).ok();
         // All four are loadable in the UI now.
         for a in ["sdxl", "sd35-medium", "pixart", "stable-cascade"] {
             assert!(t2i_load_check(a).is_ok(), "{a} should load");

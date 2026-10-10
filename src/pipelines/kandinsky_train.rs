@@ -614,7 +614,12 @@ mod tests {
         let fresh = again.install_adapters(4, 1.0, 99).unwrap();
         restore(&fresh, &path, &Device::Cpu).unwrap();
         let resumed = flat(&again.forward(&z0, &text, &pooled, 500.0).unwrap());
-        assert!(resumed.iter().zip(&loaded).all(|(a, b)| (a - b).abs() < 1e-4 * scale.max(1.0)));
+        let off = resumed.iter().zip(&loaded).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+        // The two are the same weights applied two ways — merged, and as live adapters — so they differ by
+        // rounding carried through the blocks. How far varies with the run (the training above does not
+        // repeat to the bit: candle sums gradients in hash order): 6e-7 to 6e-4 of a scale near 1.7 over
+        // forty runs. A wrong restore is off by the adapters' whole effect.
+        assert!(off < 2e-3 * scale.max(1.0), "off by {off} of {scale}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
