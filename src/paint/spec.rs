@@ -106,6 +106,9 @@ pub struct PaintSpec {
     pub edge_pool: Option<f32>,
     /// PAPER EDGE (0..1, 0 = off — opt-in): fade to a deckled bare-paper border — the torn-paper watercolour vignette.
     pub paper_edge: Option<f32>,
+    /// OLD PAPER (`true`/`false`, default `false`): print the finished picture on an aged sheet — yellowed laid
+    /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
+    pub oldpaper: Option<bool>,
     /// FINISH GRADE (painting-safe, recorded for replay): CONTRAST (0.5..2, 1 = neutral).
     pub contrast: Option<f32>,
     /// WARMTH (−1..1, 0 = neutral): finish white-balance shift, + warm / − cool.

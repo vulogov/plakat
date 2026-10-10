@@ -18,6 +18,7 @@ pub mod armature;
 pub mod canvas;
 pub mod color;
 pub mod detect;
+pub mod engrave;
 pub mod ink;
 pub mod medium;
 pub mod mixer;

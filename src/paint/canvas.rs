@@ -1329,6 +1329,9 @@ impl Canvas {
                 }
             }
         }
+        if f.old_paper {
+            old_paper(&mut img, f.seed, f.plate_mark);
+        }
         img
     }
 }
@@ -1354,6 +1357,11 @@ pub struct Finish {
     /// Paper edge (0..1): fade the painting to bare paper at the borders with an irregular DECKLED edge — the
     /// torn-paper vignette a watercolour sits in. 0 = full-bleed rectangle.
     pub paper_edge: f32,
+    /// OLD PAPER: print the picture on an aged sheet (see [`old_paper`]).
+    pub old_paper: bool,
+    /// With `old_paper`: the PLATE MARK an intaglio press leaves round an engraving — an inked line a little
+    /// inside the sheet's edge and a breath of plate tone within it.
+    pub plate_mark: bool,
     /// CANVAS WEAVE (0 = none): the linen's threads under the paint, seen in the relight where the paint is
     /// thin or bare — a built-up passage covers them entirely.
     pub weave: f32,
@@ -1370,7 +1378,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 
@@ -1422,6 +1430,80 @@ fn paper_grain(x: usize, y: usize, seed: u64) -> f32 {
     (coarse * 0.68 + fine * 0.32).clamp(0.0, 1.0)
 }
 
+/// OLD PAPER (`--oldpaper`): the finished picture as it would look PRINTED ON AN AGED SHEET. The picture is laid
+/// over the sheet the way ink lies on paper — its white is the paper, its black a warm, slightly faded ink, and
+/// every colour between is the paper seen through it — so any medium can sit on it. The sheet itself is cream
+/// laid paper that has yellowed unevenly: a slow mottle, the fibres' grain, foxing (the brown blooms of damp)
+/// in a few clusters, scattered specks, and edges darkened by handling. With `plate_mark`, the bevelled edge
+/// of an intaglio plate is pressed a little inside the sheet's border: a broken line of ink it held, and a
+/// breath of plate tone within. Everything is a deterministic function of the position, the sheet's size and
+/// the seed, so a score replays to the same sheet.
+pub fn old_paper(img: &mut RgbImage, seed: u64, plate_mark: bool) {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let short = w.min(h) as f32;
+    // The sheet's features are sized against a 1024-px sheet, so a replay at another size ages the same way.
+    let unit = short / 1024.0;
+    let fbm = |x: f32, y: f32, s: u64| 0.55 * value_noise(x, y, s) + 0.3 * value_noise(x * 2.1, y * 2.1, s ^ 0x51) + 0.15 * value_noise(x * 4.3, y * 4.3, s ^ 0xA7);
+    let step = |a: f32, b: f32, v: f32| {
+        let t = ((v - a) / (b - a)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    const PAPER: [f32; 3] = [238.0, 225.0, 198.0];
+    const FOX: [f32; 3] = [188.0, 142.0, 86.0];
+    const INK: [f32; 3] = [28.0, 23.0, 20.0];
+    let inset = short * 0.035;
+    let line = (short * 0.0022).max(1.0);
+    for y in 0..h {
+        for x in 0..w {
+            let (u, v) = (x as f32 / unit, y as f32 / unit);
+            // Uneven yellowing, the laid fibres, and the fine tooth.
+            let mottle = fbm(u / 170.0, v / 170.0, seed ^ 0x01D_0001) - 0.5;
+            let fibre = value_noise(u / 16.0, v / 2.4, seed ^ 0x01D_0002) - 0.5;
+            let tooth = value_noise(u / 1.4, v / 1.4, seed ^ 0x01D_0003) - 0.5;
+            let light = 1.0 + 0.11 * mottle + 0.025 * fibre + 0.035 * tooth;
+            // Foxing: blooms, but only in the few neighbourhoods where damp got in.
+            let damp = step(0.56, 0.78, fbm(u / 300.0, v / 300.0, seed ^ 0x01D_0004));
+            let bloom = step(0.45, 0.85, fbm(u / 55.0, v / 55.0, seed ^ 0x01D_0005) + 0.25 * (value_noise(u / 11.0, v / 11.0, seed ^ 0x01D_000C) - 0.5));
+            let mut fox = 0.42 * damp * bloom;
+            // Specks: a dark grain here and there.
+            let (cx, cy) = ((u / 9.0).floor(), (v / 9.0).floor());
+            let pick = value_noise(cx * 7.31 + 0.5, cy * 5.17 + 0.5, seed ^ 0x01D_0006);
+            if pick > 0.955 {
+                let (sx, sy) = ((cx + 0.2 + 0.6 * value_noise(cx + 0.5, cy + 9.5, seed ^ 0x01D_0007)) * 9.0, (cy + 0.2 + 0.6 * value_noise(cx + 4.5, cy + 0.5, seed ^ 0x01D_0008)) * 9.0);
+                let r = 0.6 + 28.0 * (pick - 0.955);
+                fox = fox.max(0.75 * (1.0 - (((u - sx).powi(2) + (v - sy).powi(2)).sqrt() / r)).clamp(0.0, 1.0));
+            }
+            // Handling: the edges are darker and browner, unevenly.
+            let border = x.min(w - 1 - x).min(y).min(h - 1 - y) as f32 / short;
+            let worn = step(0.09, 0.0, border + 0.05 * (fbm(u / 60.0, v / 60.0, seed ^ 0x01D_0009) - 0.5));
+            fox = (fox + 0.3 * worn).min(0.9);
+            let mut plate = 1.0f32;
+            let mut held = 0.0f32;
+            if plate_mark {
+                // Signed distance into the plate (negative outside it), its edge wavering a little.
+                let waver = unit * 1.6 * (value_noise(u / 45.0, v / 45.0, seed ^ 0x01D_000A) - 0.5);
+                let into = (x.min(w - 1 - x).min(y).min(h - 1 - y)) as f32 - inset + waver;
+                if into > 0.0 {
+                    plate = 0.975;
+                }
+                // The ink the plate's edge held prints as a line that breaks where the edge was wiped clean.
+                let wiped = step(0.3, 0.62, fbm(u / 70.0, v / 70.0, seed ^ 0x01D_000B));
+                held = (1.0 - (into / line).abs()).clamp(0.0, 1.0) * (0.2 + 0.7 * wiped);
+            }
+            let px = img.get_pixel_mut(x as u32, y as u32);
+            for c in 0..3 {
+                let sheet = (PAPER[c] + (FOX[c] - PAPER[c]) * fox) * light * plate;
+                let sheet = sheet + (INK[c] - sheet) * held;
+                let through = px.0[c] as f32 / 255.0;
+                px.0[c] = (INK[c].min(sheet) + (sheet - INK[c].min(sheet)) * through).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
 /// The index of the lightest pigment in a palette (highest CIELAB L*), used as "white"/ground.
 pub fn lightest_pigment(palette: &Palette) -> usize {
     use crate::paint::color::srgb_to_lab;
@@ -1452,6 +1534,49 @@ pub fn coolest_pigment(palette: &Palette) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_paper_keeps_the_picture_and_ages_the_sheet() {
+        // Left half white, right half black.
+        let fresh = RgbImage::from_fn(200, 160, |x, _| if x < 100 { image::Rgb([255, 255, 255]) } else { image::Rgb([0, 0, 0]) });
+        let mut aged = fresh.clone();
+        old_paper(&mut aged, 7, false);
+        let mean = |img: &RgbImage, x0: u32, x1: u32| {
+            let mut s = [0f32; 3];
+            for y in 40..120 {
+                for x in x0..x1 {
+                    for c in 0..3 {
+                        s[c] += img.get_pixel(x, y).0[c] as f32;
+                    }
+                }
+            }
+            s.map(|v| v / (80 * (x1 - x0)) as f32)
+        };
+        let (paper, ink) = (mean(&aged, 30, 70), mean(&aged, 130, 170));
+        assert!(paper[0] > paper[2] + 20.0 && paper[0] > 200.0, "white is now warm paper: {paper:?}");
+        assert!(ink[0] < 45.0, "black is still ink: {ink:?}");
+        let spread = (40..120).flat_map(|y| (30..70).map(move |x| (x, y))).map(|(x, y)| aged.get_pixel(x, y).0[1] as i32).fold((255, 0), |(lo, hi), v| (lo.min(v), hi.max(v)));
+        assert!(spread.1 - spread.0 >= 4, "the sheet is uneven, not a flat tint: {spread:?}");
+        let mut again = fresh.clone();
+        old_paper(&mut again, 7, false);
+        assert_eq!(aged, again, "the same seed ages the same sheet");
+        let mut other = fresh.clone();
+        old_paper(&mut other, 8, false);
+        assert_ne!(aged, other, "another seed, another sheet");
+    }
+
+    #[test]
+    fn a_plate_mark_is_pressed_inside_the_border() {
+        let fresh = RgbImage::from_pixel(400, 400, image::Rgb([255, 255, 255]));
+        let (mut plain, mut pressed) = (fresh.clone(), fresh);
+        old_paper(&mut plain, 3, false);
+        old_paper(&mut pressed, 3, true);
+        // The mark sits 3.5% in: along that line the pressed sheet is darker than the plain one, on average.
+        let along = |img: &RgbImage| (60..340).map(|x| (12..=16).map(|y| img.get_pixel(x, y).0[1] as f32).fold(255.0, f32::min)).sum::<f32>() / 280.0;
+        assert!(along(&pressed) < along(&plain) - 20.0, "an inked line: {} against {}", along(&pressed), along(&plain));
+        // Outside the plate the two sheets are the same sheet.
+        assert_eq!(plain.get_pixel(200, 3), pressed.get_pixel(200, 3));
+    }
     use crate::paint::color::{delta_e76, srgb_to_lab};
     use crate::paint::palette;
 

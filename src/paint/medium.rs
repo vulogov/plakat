@@ -78,7 +78,7 @@ pub struct MarkCharacter {
     pub hatch_angle: f32,
     /// The medium draws in its OWN black/grey regardless of the picture's colours (graphite).
     pub monochrome: bool,
-    /// Density media only: hatch as an ENGRAVING (lines follow the form, fine and dense) instead of a pen.
+    /// Density media only: cut the picture as a COPPERPLATE (`paint::engrave`) instead of drawing it with a pen.
     pub engrave: bool,
     /// Multiplier on the stroke budget: a medium of FEW marks (sumi-e) says so here.
     pub budget_scale: f32,
@@ -468,8 +468,8 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     finish_policy: FinishPolicy::Uniform,
 };
 
-/// ALBRECHT DÜRER (copperplate engraving): the pen-and-ink drawing model with an engraver's hatch — lines that
-/// wrap the form, fine and dense, cross-hatched in the darks; crisp contours; pure black on white.
+/// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
+/// crossed in the darks; a firm contour of varying weight; pure black on white (see `paint::engrave`).
 pub const DURER: MediumProfile = MediumProfile {
     name: "durer",
     value_direction: ValueDirection::LightToDark,
@@ -492,7 +492,7 @@ pub const DURER: MediumProfile = MediumProfile {
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Density,
-    // The burin: every line follows the form, fine and dense, cross-hatched in the darks; pure black on the paper.
+    // The burin. `budget_scale` 3: a swelling line is recorded as several cuts, so a plate needs the count.
     mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: true, budget_scale: 3.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
 };

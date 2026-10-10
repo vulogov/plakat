@@ -318,7 +318,7 @@ pub struct PaintParams {
     /// CROSS-HATCH (medium mark character): each restating pass rotates its stroke direction by this many radians
     /// more than the previous one; 0 = every pass follows the form.
     pub hatch_angle: f32,
-    /// Density media: hatch as an engraving (see `ink::HatchStyle::ENGRAVING`).
+    /// Density media: cut the picture as a copperplate (see `paint::engrave`).
     pub engrave: bool,
     /// After the tonal passes, draw the ink planner's contours on top in the darkest pigment (pencil sketch =
     /// line and tone). Replaces the legacy contour finish.
@@ -381,6 +381,8 @@ pub struct PaintParams {
     /// PAPER EDGE (0..1, 0 = off): fade the painting to bare paper at the borders with an irregular DECKLED edge
     /// — the torn-paper vignette a watercolour sits in. An output-stage effect (see `Finish`).
     pub paper_edge: f32,
+    /// OLD PAPER (`--oldpaper`): print the picture on an aged sheet. An output-stage effect (see `Finish`).
+    pub old_paper: bool,
     /// FINISH GRADE (painting-safe, recorded for replay). CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
     /// WARMTH (−1..1, 0 = neutral): white-balance shift, + warm / − cool.
@@ -392,7 +394,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
     }
 }
 
@@ -1837,7 +1839,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
 
     let mut score = StrokeScore {
-        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave, collide: None, hold_mask: None },
+        header: ScoreHeader { version: 1, palette: p.palette.name.to_string(), pigments: p.palette.pigments.iter().map(|pg| (pg.name.to_string(), pg.masstone)).collect(), medium: p.medium.clone(), seed: p.seed, width: w, height: h, tooth: 0.85, ground: p.ground, brush: p.brush, bleed: p.bleed, diffuse: p.diffuse, stages: None, dry: p.dry, opacity: p.opacity, impasto: p.impasto, chroma: p.chroma, dry_shift: p.dry_shift, granulate: p.granulate, sheen: p.sheen, edge_pool: p.edge_pool, paper_edge: p.paper_edge, old_paper: p.old_paper, contrast: p.contrast, warmth: p.warmth, clarity: p.clarity, lift: p.lift , transmittance: false, flow: None, weave: p.weave, collide: None, hold_mask: None },
         strokes: Vec::new(),
     };
 
@@ -5234,7 +5236,10 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
 
 fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, source: &RgbImage, head: Option<&[f32]>, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
     let w = input.width() as usize;
-    let style = if p.brush_drawing { crate::paint::ink::HatchStyle::SUMI } else if p.engrave { crate::paint::ink::HatchStyle::ENGRAVING } else { crate::paint::ink::HatchStyle::PEN };
+    if p.engrave && !p.brush_drawing {
+        return engraving(canvas, score, if source.dimensions() == input.dimensions() { source } else { input }, p, protect, placed, progress);
+    }
+    let style = if p.brush_drawing { crate::paint::ink::HatchStyle::SUMI } else { crate::paint::ink::HatchStyle::PEN };
     // The head is DRAWN from the source's full detail (the armature has simplified the face away).
     let detail = head.map(|m| (source, m));
     let drawing = crate::paint::ink::plan_detailed(input, detail, p.contour, p.budget.saturating_sub(*placed), p.seed, style);
@@ -5290,6 +5295,37 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
             round: brush.round,
             pickup: None,
             bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None, });
+    }
+}
+
+/// A COPPERPLATE (`durer`): the plate [`crate::paint::engrave::plan`] cuts from the picture itself — not from the
+/// armature, which has simplified away the detail a burin draws — laid as flat-ended one-point strokes, so a
+/// swelling line's pieces join without a seam and the plate replays from its score.
+fn engraving(canvas: &mut Canvas, score: &mut StrokeScore, picture: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, progress: Option<&dyn Fn(PaintProgress)>) {
+    let w = picture.width() as usize;
+    let plate = crate::paint::engrave::plan(picture, p.contour, p.budget.saturating_sub(*placed), p.seed);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let mut load = vec![0f32; p.palette.pigments.len()];
+    load[ink] = p.charge * 2.0;
+    let brush = BrushConfig { k_pickup: 0.0, bristles: 1, streak: 0.0, round: 1.0, flat_ends: true, ..p.brush };
+    let blocked = |pt: &[f32; 2]| protect.map(|m| m.get(pt[1] as usize * w + pt[0] as usize).copied().unwrap_or(false)).unwrap_or(false);
+    for cut in plate.cuts {
+        if *placed >= p.budget {
+            break;
+        }
+        if cut.path.len() < 2 || blocked(&cut.path[cut.path.len() / 2]) {
+            continue;
+        }
+        let stage = if cut.layer == 0 { "contour".to_string() } else { format!("hatch-{}", cut.layer - 1) };
+        let s = Stroke { path: cut.path, width0: cut.w0, width1: cut.w1, load: load.clone(), pressure: 1.0, wetness: 0.0 };
+        s.rasterize(canvas, &brush);
+        *placed += 1;
+        if let Some(pr) = progress {
+            if *placed % 64 == 0 {
+                pr(PaintProgress::Placed(*placed));
+            }
+        }
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage, spline: s.path, w0: cut.w0, w1: cut.w1, taper: 0.0, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, tgt: None });
     }
 }
 
@@ -6180,7 +6216,7 @@ mod transmittance_tests {
         // from the text as from memory — the flag, `kd` and `cap` all survive serialisation.
         let pal = palette::EARTH;
         let mut sc = crate::paint::score::StrokeScore {
-            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0, collide: None, hold_mask: None },
+            header: crate::paint::score::ScoreHeader { version: 1, palette: "earth".into(), pigments: pal.pigments.iter().map(|p| (p.name.to_string(), p.masstone)).collect(), medium: "watercolour".into(), seed: 7, width: 48, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.2, diffuse: 0.0, stages: Some(vec!["wash".into(), "block-in".into()]), dry: 1.0, opacity: 0.45, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: true, flow: None, weave: 0.0, collide: None, hold_mask: None },
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();

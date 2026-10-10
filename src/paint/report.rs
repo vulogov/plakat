@@ -173,6 +173,7 @@ pub fn analysis_markdown(info: &RunInfo, params: &PaintParams, result_score: &St
         ("granulate", f2(params.granulate)),
         ("edge_pool", f2(params.edge_pool)),
         ("paper_edge", f2(params.paper_edge)),
+        ("oldpaper", params.old_paper.to_string()),
         ("contrast", f2(params.contrast)),
         ("warmth", f2(params.warmth)),
         ("clarity", f2(params.clarity)),
