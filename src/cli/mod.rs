@@ -83,6 +83,12 @@ pub struct Cli {
     #[arg(long, global = true, env = "PLAKAT_CACHE_DIR", value_name = "PATH", help_heading = "Global options")]
     pub cache_dir: Option<PathBuf>,
 
+    /// Where `--dit-nf4` keeps the quantized Kandinsky 5 transformer between runs (3.3 GB), so a
+    /// later run reads it instead of quantizing the 12 GB checkpoint again. A directory — put it
+    /// on a fast disk — or `off`. Default: `plakat-nf4` beside the downloaded models.
+    #[arg(long, global = true, env = "PLAKAT_NF4_CACHE", value_name = "PATH|off", help_heading = "Global options")]
+    pub nf4_cache: Option<String>,
+
     /// Allow this run even when another plakat instance is already running on
     /// the host. By default a second heavy (model / training) run is refused —
     /// concurrent runs share unified memory and thrash. (env
@@ -372,6 +378,9 @@ impl Command {
 pub async fn dispatch(cli: Cli) -> Result<()> {
     if let Some(p) = cli.cache_dir.clone() {
         crate::hf::cache::set_override(p);
+    }
+    if let Some(spec) = cli.nf4_cache.as_deref() {
+        crate::pipelines::kandinsky_dit::set_nf4_cache(spec);
     }
     // Install the process-wide etch config from the global `--etch*` flags (RFC ETCH-1). Off by default.
     crate::etch::set_config(cli.etch_config());

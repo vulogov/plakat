@@ -58,6 +58,7 @@ pub struct Img2ImgArgs {
 
     /// Feather radius (pixels) applied to the mask edge. Softens
     /// the inpaint↔preserve transition. Only meaningful with --mask.
+    /// Kandinsky 5 uses 48 when this is left at 8.
     #[arg(help_heading = "Inpaint mask", long = "mask-feather", default_value_t = 8, value_name = "PX")]
     pub mask_feather: u32,
 
@@ -69,6 +70,8 @@ pub struct Img2ImgArgs {
     /// img2img strength in [0, 1]. 0.0 = no change, 1.0 = full
     /// re-noise + denoise inside the mask. Default differs by mode:
     /// 0.6 for img2img (whole image), 1.0 for inpaint (--mask set).
+    /// Kandinsky 5 maps it to a start noise level of its own (0.3
+    /// detail, 0.6 redraw, 0.75 a change of medium).
     #[arg(help_heading = "Model & sampler", long, value_name = "F")]
     pub strength: Option<f32>,
 
@@ -291,6 +294,14 @@ pub struct Img2ImgArgs {
     /// default. Ignored on every other model.
     #[arg(help_heading = "Model & sampler", long = "kontext-bucket", default_value_t = false)]
     pub kontext_bucket: bool,
+
+    /// **Kandinsky 5 only**: load the Qwen2.5-VL text tower as a Q4 GGUF, as on `generate`.
+    #[arg(help_heading = "Model & sampler", long = "quantize-qwen", default_value_t = false)]
+    pub quantize_qwen: bool,
+
+    /// **Kandinsky 5 only**: run the DiT from NF4 weights, as on `generate`.
+    #[arg(help_heading = "Model & sampler", long = "dit-nf4", default_value_t = false)]
+    pub dit_nf4: bool,
 }
 
 pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
@@ -373,6 +384,15 @@ pub async fn run(mut args: Img2ImgArgs, device: Device) -> Result<()> {
             args.scheduler =
                 SchedulerKind::from_str(&sched).unwrap_or(SchedulerKind::Default);
         }
+    }
+
+    // 7.2 (RFC KANDINSKY-1, P5): Kandinsky 5 img2img and inpaint. Ahead of every other check: the
+    // family has its own rejections, sizes and defaults.
+    if crate::pipelines::kandinsky::is_kandinsky(&args.model) {
+        return run_kandinsky_img2img(args, device).await;
+    }
+    if args.quantize_qwen || args.dit_nf4 {
+        anyhow::bail!("--quantize-qwen and --dit-nf4 are Kandinsky 5 flags and have no meaning for --model {:?}; use them with --model kandinsky5", args.model);
     }
 
     // v0.16 phase 10: --tiled is SD3 img2img / inpaint only. SD 1.5
@@ -1254,6 +1274,57 @@ async fn run_sana_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
     .await
 }
 
+/// Kandinsky 5 img2img and inpaint (RFC KANDINSKY-1, G4): the input is VAE-encoded and flow-noised to
+/// `--strength`, the rest of the schedule is run, and with `--mask` everything outside it is held on the
+/// input's own trajectory. The size snaps to a native bucket, as on `generate`.
+async fn run_kandinsky_img2img(args: Img2ImgArgs, device: Device) -> Result<()> {
+    use crate::pipelines::kandinsky as k5;
+    let no_adapters = "no Kandinsky 5 ControlNet exists yet (RFC KANDINSKY-1, non-goal N4)";
+    if args.control.is_some() || args.control_image.is_some() || args.control_from.is_some() || !args.control_specs.is_empty() {
+        anyhow::bail!("--control is not available on --model kandinsky5: {no_adapters}");
+    }
+    if args.tiled {
+        anyhow::bail!("--tiled is wired for SD3 / SD3.5 only; Kandinsky 5 works at its native buckets, up to 1408 px a side");
+    }
+    if !args.artefacts.is_empty() || args.grid {
+        anyhow::bail!("--artefact and --grid are not wired for --model kandinsky5 img2img yet");
+    }
+    let (w, h) = resolve_img2img_size(&args)?;
+    let (width, height) = k5::snap_bucket(w, h);
+    if (width, height) != (w, h) {
+        crate::ui::progress::println(&format!("kandinsky5: {w}x{h} → {width}x{height} (native bucket; the input is resized to it)"));
+    }
+    let masked = args.mask.is_some();
+    let strength = args.strength.unwrap_or(k5::default_strength(masked));
+    if !(strength > 0.0 && strength <= 1.0) {
+        anyhow::bail!("--strength must be in (0, 1]; got {strength}");
+    }
+    // clap's 8 px is what "not set" looks like; this family needs a wider edge (see the constant).
+    let mask_feather = if args.mask_feather == 8 { k5::DEFAULT_MASK_FEATHER } else { args.mask_feather };
+    let loras = k5::resolve_loras(&args.loras, args.lora_scale).await?;
+    k5::run(k5::RunRequest {
+        model: args.model,
+        device,
+        prompt: args.prompt,
+        negative: args.negative,
+        width,
+        height,
+        // clap's img2img defaults (28 steps, guidance 7.5) are what "not set" looks like.
+        steps: if args.steps == 28 { k5::DEFAULT_STEPS } else { args.steps },
+        guidance: if (args.guidance - 7.5).abs() < f64::EPSILON { k5::DEFAULT_GUIDANCE } else { args.guidance },
+        seed: Some(args.seed.unwrap_or_else(rand::random)),
+        out_dir: args.out,
+        count: args.count,
+        max_seq: k5::DEFAULT_MAX_SEQ,
+        keep_encoders: false,
+        quantize_qwen: args.quantize_qwen,
+        dit_nf4: args.dit_nf4,
+        init: Some(k5::Init { image: args.input, strength, mask: args.mask, mask_feather, mask_invert: args.mask_invert }),
+        loras,
+    })
+    .await
+}
+
 async fn run_sd3_img2img(mut args: Img2ImgArgs, device: Device) -> Result<()> {
     // v0.18 phase 2: pre-resolve the seed + capture grid-relevant
     // fields (including mask presence for the filename mode tag)
@@ -1503,6 +1574,8 @@ mod tests {
             grid_cols: None,
             grid_padding: 0,
             kontext_bucket: false,
+            quantize_qwen: false,
+            dit_nf4: false,
         }
     }
 

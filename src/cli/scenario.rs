@@ -333,6 +333,17 @@ struct ScenarioFile {
     #[serde(rename = "lora-scale")]
     lora_scale: Option<f32>,
 
+    /// Kandinsky 5: the transformer's block weights in NF4 (`generate --dit-nf4`).
+    #[serde(rename = "dit-nf4", default)]
+    dit_nf4: bool,
+    /// Kandinsky 5: the Qwen text tower from a Q4 GGUF (`generate --quantize-qwen`).
+    #[serde(rename = "quantize-qwen", default)]
+    quantize_qwen: bool,
+    /// Kandinsky 5: where the NF4 transformer is cached between runs — a directory (a fast disk),
+    /// or `off`. The command line's `--nf4-cache` overrides it.
+    #[serde(rename = "nf4-cache", default)]
+    nf4_cache: Option<String>,
+
     scheduler: Option<String>,
     refine: Option<usize>,
     #[serde(rename = "refine-strength")]
@@ -4570,6 +4581,7 @@ pub async fn run_with_events(
         || variant.is_sd3()
         || variant.is_pixart()
         || variant.is_cascade()
+        || variant.is_kandinsky()
         || !has_generate_tasks
         || any_animate_tasks);
     // A handed-off Chat pipeline may be reused only when it IS the exact base this run
@@ -5120,6 +5132,15 @@ pub async fn run_with_events(
     // exit non-zero so CI consumers see a failure exit code AND
     // get a full --json-summary listing every failure.
     let mut any_task_failed = false;
+    // 7.2 (RFC KANDINSKY-1): the Kandinsky 5 tasks of the scenario, held back for one run after the loop
+    // — one load of the text encoders and one of the DiT for all of them (the family is staged, so a
+    // run a task reads 26 GB of checkpoints a task). `(task name, its jobs)`.
+    // Each with the LoRAs it renders under: they are merged as the transformer is read, so a set of
+    // LoRAs is a load, and the queued tasks render one load a distinct set.
+    let mut k5_deferred: Vec<(String, Vec<crate::pipelines::kandinsky::Job>, Vec<crate::pipelines::kandinsky::Lora>)> = Vec::new();
+    if let Some(spec) = s.nf4_cache.as_deref() {
+        crate::pipelines::kandinsky_dit::set_nf4_cache(spec);
+    }
 
     // v0.34 phase 2: the generate body's async-block wrap returns
     // this enum so the outer match knows whether the body already
@@ -5206,6 +5227,7 @@ pub async fn run_with_events(
         && !variant.is_sd3()
         && !variant.is_pixart()
         && !variant.is_cascade()
+        && !variant.is_kandinsky()
         && has_generate_tasks;
 
     // Live status-board events (no-op without a sink). `emitted_records` tracks how
@@ -6964,7 +6986,40 @@ pub async fn run_with_events(
             // split. Cascade has no scenario-level LoRA wiring in
             // v0.37 (deferred to v0.38). Falls through to PixArt →
             // SD3 → SD/Flux for non-Cascade tasks.
-            if let Some(cp) = cascade_pipeline.as_mut() {
+            // 7.2 (RFC KANDINSKY-1, P5): Kandinsky 5 dispatch arm. The family is staged — text encoders,
+            // then the DiT, then the VAE, never together — so nothing can be held across tasks. Instead the
+            // task's jobs join one run after the loop, unless the task has a pass of its own right after
+            // generation (ranking, artefacts, style, upscale), which needs the images now.
+            if variant.is_kandinsky() {
+                use crate::pipelines::kandinsky as k5;
+                // The scenario's LoRAs and then the task's. A look's discovered LoRAs are other
+                // families' and are left out.
+                let k_specs = s.loras.iter().chain(&task.loras).map(|l| l.parse::<LoraSpec>()).collect::<Result<Vec<_>>>().with_context(|| format!("task '{}': a LoRA spec", task.name))?;
+                let k_loras = k5::resolve_loras(&k_specs, task.lora_scale.unwrap_or(lora_scale)).await.with_context(|| format!("task '{}': resolving its LoRAs", task.name))?;
+                let (kw, kh) = k5::snap_bucket(eff_w as u32, eff_h as u32);
+                if (kw, kh) != (eff_w as u32, eff_h as u32) {
+                    crate::ui::progress::println(&format!("kandinsky5: {eff_w}x{eff_h} → {kw}x{kh} (native bucket)"));
+                }
+                // The scenario's 28 steps at guidance 7.5 are what "not set" looks like; the family's own
+                // defaults stand in for them.
+                let unset = |task_has: bool, file_has: bool| !task_has && !file_has;
+                let k_steps = if unset(task.steps.is_some(), s.steps.is_some()) && eff_steps == 28 { k5::DEFAULT_STEPS } else { eff_steps };
+                let k_guidance = if unset(task.guidance.is_some(), s.guidance.is_some()) && (eff_guidance - 7.5).abs() < f64::EPSILON { k5::DEFAULT_GUIDANCE } else { eff_guidance };
+                let jobs: Vec<k5::Job> = (0..eff_count as u64)
+                    .map(|n| {
+                        let img_seed = task_seed.wrapping_add(n);
+                        k5::Job { prompt: final_prompt.clone(), negative: eff_negative.clone(), width: kw, height: kh, steps: k_steps, guidance: k_guidance, seed: img_seed, out_path: task_out.join(format!("plakat-kandinsky5-{img_seed}.png")), init: None }
+                    })
+                    .collect();
+                let needs_images_now = (task_can_rank && task_rank.is_some()) || !task.artefacts.is_empty() || task.style.is_some() || s.upscale.upscale;
+                if needs_images_now {
+                    let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: s.quantize_qwen, dit_nf4: s.dit_nf4, loras: k_loras };
+                    k5::run_jobs(&settings, &jobs).await?;
+                } else {
+                    crate::ui::progress::println(&format!("  kandinsky5: {} image(s) queued — every queued task renders in one run after the last task", jobs.len()));
+                    k5_deferred.push((task.name.clone(), jobs, k_loras));
+                }
+            } else if let Some(cp) = cascade_pipeline.as_mut() {
                 use crate::imaging::metadata::{GenerationMetadata, LoraEntry};
                 // Same square / divisible-by-8 contract as t2i::run.
                 // Stage C's prior is fixed at 24×24×16; the pipeline
@@ -7882,6 +7937,34 @@ pub async fn run_with_events(
         seed_offset += count as u64;
     }
 
+    // 7.2 (RFC KANDINSKY-1): the queued Kandinsky 5 tasks, in one run. A failure here fails every queued
+    // task: their records were written as "ok" when they were queued.
+    if !k5_deferred.is_empty() {
+        use crate::pipelines::kandinsky as k5;
+        let key = |l: &[k5::Lora]| l.iter().map(|l| format!("{}:{}", l.path.display(), l.scale)).collect::<Vec<_>>();
+        let mut sets: Vec<Vec<k5::Lora>> = Vec::new();
+        for (_, _, loras) in &k5_deferred {
+            if !sets.iter().any(|s| key(s) == key(loras)) {
+                sets.push(loras.clone());
+            }
+        }
+        for loras in sets {
+            let tasks: Vec<&str> = k5_deferred.iter().filter(|(_, _, l)| key(l) == key(&loras)).map(|(name, _, _)| name.as_str()).collect();
+            let jobs: Vec<k5::Job> = k5_deferred.iter().filter(|(_, _, l)| key(l) == key(&loras)).flat_map(|(_, jobs, _)| jobs.iter().cloned()).collect();
+            let with = if loras.is_empty() { String::new() } else { format!(", LoRA {}", loras.iter().map(|l| l.display.as_str()).collect::<Vec<_>>().join(" + ")) };
+            crate::ui::progress::println(&format!("\n{} kandinsky5: {} image(s) of {} task(s), one load{with}", style("▶").cyan().bold(), jobs.len(), tasks.len()));
+            let settings = k5::Settings { model: model.clone(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: s.quantize_qwen, dit_nf4: s.dit_nf4, loras };
+            if let Err(e) = k5::run_jobs(&settings, &jobs).await {
+                crate::ui::progress::println(&format!("  {} kandinsky5 run: {e:#}", style("✗ failed").red().bold()));
+                for r in task_records.iter_mut().filter(|r| r.status == "ok" && tasks.contains(&r.name.as_str())) {
+                    r.status = "failed".to_string();
+                    r.error = Some(format!("{e:#}"));
+                }
+                any_task_failed = true;
+            }
+        }
+    }
+
     // Flush the final iteration's terminal record(s) to the status board.
     while emitted_records < task_records.len() {
         let r = &task_records[emitted_records];
@@ -8131,6 +8214,7 @@ fn sd_per_task_lora_preflight(
         || variant.is_sd3()
         || variant.is_pixart()
         || variant.is_cascade()
+        || variant.is_kandinsky()
     {
         return Ok(());
     }

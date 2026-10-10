@@ -39,6 +39,8 @@ enum Family {
     Sd3,
     /// Stable Cascade — 3-stage pipeline; `generate` returns an RGB buffer.
     Cascade,
+    /// Kandinsky 5 — the staged `kandinsky::run_jobs` (flow-matching Euler; renders a PNG).
+    Kandinsky5,
 }
 struct GenSpec {
     size: u32,
@@ -55,13 +57,15 @@ fn gen_spec(model: &str) -> Option<GenSpec> {
         "pixart" => Some(GenSpec { size: 256, steps: 8, guidance: 4.5, family: Family::PixArt }),
         "sd35-medium" => Some(GenSpec { size: 256, steps: 8, guidance: 4.5, family: Family::Sd3 }),
         "stable-cascade" => Some(GenSpec { size: 256, steps: 10, guidance: 4.0, family: Family::Cascade }),
+        // 512² is off the model's buckets (`--size-exact` territory): a regression gate, not a quality one.
+        "kandinsky5" => Some(GenSpec { size: 512, steps: 8, guidance: 3.5, family: Family::Kandinsky5 }),
         _ => None,
     }
 }
 
 /// Models Tier 2 covers.
 pub fn models(cfg: &VerifyConfig) -> Vec<String> {
-    let covered = ["sd15", "sd21", "sdxl", "pixart", "sd35-medium", "stable-cascade"];
+    let covered = ["sd15", "sd21", "sdxl", "pixart", "sd35-medium", "stable-cascade", "kandinsky5"];
     match &cfg.model {
         Some(m) if covered.contains(&m.as_str()) => vec![m.clone()],
         Some(_) => vec![], // a model Tier 2 doesn't cover → nothing to run
@@ -255,6 +259,20 @@ async fn render(model: &str, spec: &GenSpec, device: &Device) -> Result<(Vec<u8>
             );
             unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
             rendered // (Vec<u8> RGB, w, h)
+        }
+        Family::Kandinsky5 => {
+            use crate::pipelines::kandinsky as k5;
+            let tmp = std::env::temp_dir().join(format!("plakat-tier2-{}-{model}", std::process::id()));
+            let png = tmp.join("render.png");
+            let settings = k5::Settings { model: model.to_string(), device: device.clone(), max_seq: k5::DEFAULT_MAX_SEQ, keep_encoders: false, quantize_qwen: false, dit_nf4: false, loras: Vec::new() };
+            let job = k5::Job { prompt: fx.prompt.to_string(), negative: fx.negative.to_string(), width: spec.size, height: spec.size, steps: spec.steps, guidance: spec.guidance, seed: 0, out_path: png.clone(), init: None };
+            unsafe { std::env::set_var("PLAKAT_VERIFY_DET_INIT", "1") };
+            let gen_result = k5::run_jobs(&settings, &[job]).await;
+            unsafe { std::env::remove_var("PLAKAT_VERIFY_DET_INIT") };
+            gen_result?;
+            let out = load_rgb(&png);
+            let _ = std::fs::remove_dir_all(&tmp);
+            out
         }
     }
 }

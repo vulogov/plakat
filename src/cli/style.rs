@@ -56,7 +56,9 @@ pub struct TrainArgs {
     #[arg(help_heading = "Training", long, value_name = "DIR")]
     pub from_dir: PathBuf,
     /// Base model: `sd15`, `sd21`, `sdxl`, `sd35` (SD3.5 Medium),
-    /// `pixart` (PixArt-Σ), or `cascade` (Stable Cascade Stage-C).
+    /// `pixart` (PixArt-Σ), `cascade` (Stable Cascade Stage-C), or
+    /// `kandinsky5` (a `<name>.txt` beside an image is its caption; the
+    /// reference recipe is `--rank 32 --lr 1e-4`).
     #[arg(help_heading = "Size & output", long, default_value = "sd35")]
     pub base: String,
     /// Trigger phrase woven into training — include it in your prompts
@@ -82,7 +84,7 @@ pub struct TrainArgs {
     /// a long run.
     #[arg(help_heading = "Training", long = "log-every", default_value_t = 10)]
     pub log_every: usize,
-    /// Training resolution (256 fits 24 GB; higher needs more memory).
+    /// Training resolution (256 fits 24 GB; higher needs more memory — kandinsky5: 512 takes 22 GB, 1024 takes 33 GB).
     #[arg(help_heading = "Size & output", long, default_value_t = 256)]
     pub size: u32,
     /// Learning rate.
@@ -414,8 +416,32 @@ async fn train_cmd(args: TrainArgs, device: Device) -> Result<()> {
             })
             .await
         }
+        base if crate::pipelines::kandinsky::is_kandinsky(base) => {
+            use crate::pipelines::{kandinsky as k5, kandinsky_train};
+            anyhow::ensure!(args.class_dir.is_none(), "style train --base kandinsky5: --class-dir (prior preservation) is not implemented for this base");
+            // Under 24 GB the frozen model is quantized, as generation's low-memory mode does.
+            let low = k5::low_memory();
+            kandinsky_train::train_lora(kandinsky_train::TrainRequest {
+                repo: crate::hf::resolve_alias(base).to_string(),
+                device,
+                images,
+                trigger: args.trigger,
+                rank: args.rank,
+                steps: args.steps,
+                lr: args.lr,
+                size: args.size,
+                out: args.out,
+                checkpoint_every: args.checkpoint_every,
+                log_every: args.log_every,
+                resume_from: args.resume,
+                seed: 0,
+                dit_nf4: low,
+                quantize_qwen: low,
+            })
+            .await
+        }
         other => anyhow::bail!(
-            "style train: base '{other}' not supported — use sd15, sd21, sdxl, sd35, pixart, or cascade"
+            "style train: base '{other}' not supported — use sd15, sd21, sdxl, sd35, pixart, cascade, or kandinsky5"
         ),
     }
 }

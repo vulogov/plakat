@@ -60,6 +60,7 @@ Which base model to use. Accepts a short alias or any HuggingFace repo id.
 | `sd35-large` | `stabilityai/stable-diffusion-3.5-large` | SD3.5 Large flagship. 8B-param MMDiT. Gated. |
 | `sd35-large-turbo` | `stabilityai/stable-diffusion-3.5-large-turbo` | 4-step distillation of SD3.5 Large. `--steps 4 --guidance 0`. Gated. |
 | `sd3-medium` | `stabilityai/stable-diffusion-3-medium` | original SD3 Medium (June 2024). Superseded by 3.5. Gated. |
+| `kandinsky5` (`kandinsky`, `k5`) | `kandinskylab/Kandinsky-5.0-T2I-Lite-sft-Diffusers` | **7.2**. Kandinsky 5.0 T2I Lite: a 6B flow transformer with a Qwen2.5-VL text tower. ~26 GB download, not gated. See [Kandinsky 5](#kandinsky-5-72). |
 
 Custom HF repos: pass the full `org/name`. For SD-family the repo must
 have the diffusers layout (`unet/`, `vae/`, `text_encoder[_2]/`,
@@ -68,6 +69,65 @@ layout (`flux1-{schnell,dev}.safetensors` + `ae.safetensors`). GGUF
 repos ship a single `flux1-{variant}-{LEVEL}.gguf` file; the matching
 `ae.safetensors` + text encoders come from the original BFL repo
 ("donor") on first run.
+
+#### Kandinsky 5 (7.2)
+
+`--model kandinsky5` is its own pipeline with its own defaults and flags.
+
+- **Staged loading.** The text encoders (≈14 GB), the transformer
+  (≈12 GB) and the VAE are never in memory together: the prompt is
+  encoded and the encoders are released, then the image is denoised,
+  then decoded. The peak is 16 GB. `--keep-encoders` holds the
+  encoders instead, for machines with memory to spare.
+- **Sizes.** `--size` snaps to the nearest of seven native buckets —
+  1024², 1280×768, 768×1280, 1152×896, 896×1152, 1408×640, 640×1408.
+  `--size-exact` takes any size divisible by 16, off the training
+  distribution.
+- **Sampling.** `--steps` defaults to 50 (the reference's setting)
+  and `--guidance` to 3.5 when left unset. Measured on four prompts at
+  1024², 20, 30, 40 and 50 steps score the same on prompt adherence
+  and aesthetics, and the pictures are equally finished: **use
+  `--steps 30`** for ordinary work (40 % less time) and 20 for
+  drafts. A 20-step draft is a preview of the 50-step picture
+  of the same seed: the same composition and pose, with details that
+  shift (checked on one prompt). Guidance ≤ 1 skips the negative prompt
+  and halves the time.
+- **Prompting.** Long natural-language prose, up to 512 tokens
+  (`--max-seq`, at most 1023). The model has no weight parser, so
+  `(term:1.3)` is taken out of the prompt and the emphasis is restated
+  in words at the end of it; the prompt that is used is printed.
+  Prompts in Russian work as well as prompts in English.
+- **`--enhance`** uses a brief written for this family instead of the
+  generic one: long prose, every element and colour of your prompt
+  kept (blue grass stays blue), weights turned into words, the output
+  in the language of the input. `--enhance-system` still overrides it.
+- **The quantized tier.** `--quantize-qwen` loads the text tower as a
+  4-bit GGUF and `--dit-nf4` runs the transformer from NF4 weights.
+  Together they peak at 7 GB on a machine with under 24 GB of RAM and
+  at 11 GB on a larger one (which keeps the exact VAE decode), for
+  about 20 % more time a step.
+- **LoRA.** `--lora file.safetensors[:scale]` merges a LoRA into the
+  transformer as it is loaded (before the NF4 quantization, with
+  `--dit-nf4`), so it costs nothing a step. The format is the one the
+  model's own trainer writes (PEFT `lora_A` / `lora_B` on the model's
+  layer names); `plakat style train --base kandinsky5` writes it too
+  — see [TRAIN_CUSTOM_LORA.md](TRAIN_CUSTOM_LORA.md#kandinsky-5).
+  In a scenario, `loras:` at the top and on a task work the same way;
+  tasks with the same LoRAs share one load. Not yet in the TUI.
+- **The NF4 cache.** The first `--dit-nf4` run quantizes the 12 GB
+  checkpoint and keeps the result (3.3 GB) in `plakat-nf4` beside the
+  downloaded models; later runs read it. `--nf4-cache <dir>` (or
+  `PLAKAT_NF4_CACHE`, or `nf4-cache:` in a scenario) puts it on
+  another disk — a fast one is the point — and `--nf4-cache off`
+  turns it off. A run with a LoRA re-quantizes the layers the LoRA
+  changes and reads the rest.
+- **What it does not have.** No ControlNet (`--control*` is refused:
+  none exists for the model), no few-step mode (`--fast`), and none of the SD-family post passes
+  (`--quality`, `--adetailer`, `--hires-fix`, `--artefact`, `--grid`).
+  It is the slowest family plakat runs: about 15 s a step at 1024² on
+  an M5 Max, two transformer forwards each.
+
+img2img and inpaint: [`plakat img2img --model kandinsky5`](IMG2IMG.md#kandinsky-5-img2img-and-inpaint).
 
 #### `--flux-quant-level <LEVEL>` (default `Q4_K_S`)
 
@@ -135,6 +195,7 @@ Denoising steps. Each step refines the latent further toward the prompt.
 | SDXL-Turbo | **4** (hard requirement of the trained schedule) |
 | Flux schnell | **4** (rectified flow, very few steps suffice) |
 | Flux dev | 20–50 |
+| Kandinsky 5 | 20–50 (default 50; 30 is enough for most prompts) |
 
 Diminishing returns past the sweet spot. 50 steps rarely beat 30. With
 LCM-LoRA on SD 1.5, 4–8 steps is enough.

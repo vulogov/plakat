@@ -70,7 +70,7 @@ fn save_png_dpi_inner(
     enc.set_pixel_dims(Some(png::PixelDimensions { xppu: ppm, yppu: ppm, unit: png::Unit::Meter }));
     if let Some(m) = meta {
         // A1111 / Civitai / ComfyUI all read the `parameters` key.
-        enc.add_text_chunk("parameters".to_string(), m.to_a1111_parameters_string())?;
+        crate::imaging::io::add_png_text(&mut enc, "parameters", m.to_a1111_parameters_string())?;
     }
     let mut writer = enc.write_header()?;
     writer.write_image_data(img.as_raw())?;

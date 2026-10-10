@@ -142,7 +142,7 @@ weight-free knob (`paper=`, `grain=`, a focus). Companion tokens mirror the CLI:
 `repaint=` value itself, plus `medium=`, `repaint-lora=`, `repaint-model=`.
 
 > **Repaint model.** The repaint runs through the **img2img (UNet) pipeline — SD1.5 / 2.1 / SDXL only.**
-> When the scenario's generation model is a transformer family (SD3/3.5, Flux, PixArt, Cascade, Sana) it
+> When the scenario's generation model is a transformer family (SD3/3.5, Flux, PixArt, Cascade, Sana, Kandinsky 5) it
 > can't img2img, so plakat automatically repaints on **SDXL** (with a note). To choose the repaint model
 > yourself, add **`repaint-model=`** to the spec — e.g. a scenario on `model: sd35` that repaints on SDXL:
 > `naturalize: "repaint=0.4 medium=watercolor repaint-model=sdxl"`.
@@ -177,12 +177,14 @@ identical `naturalize:` field — see NATURALIZE_TUTORIAL's "In scenarios / comp
 **Inheritance:** concatenate = global + scene merged; accumulate = global + scene
 combined; last-wins = scene beats global.
 
-**Model family** (`SD15` / `SDXL` / `SD3` / `Cascade` / `Flux`) is detected from the scene model, else
+**Model family** (`SD15` / `SDXL` / `SD3` / `Cascade` / `Flux` / `Kandinsky5`) is detected from the scene model, else
 the global model, else `--model`. It selects the prompt-writing profile and token budget: SD15 →
 comma-keyword & <77 tokens; SDXL → mixed prose/keywords ~150; **SD3/3.5 → prose, ~256 tokens (T5-XXL, no
 77-token CLIP cap)**; **Cascade → descriptive, ~120 tokens, and `(term:N)` weights are NOT honoured (the
 model has no weight parser) so they're stripped and the emphasis is applied via prose reinforcement
-instead**; Flux → prose ~300, short or empty negative. Over-budget prompts are **condensed to
+instead**; Flux → prose ~300, short or empty negative; **Kandinsky 5 → long-form prose up to 512 tokens, no
+`(term:N)` weights (a verbatim prompt that carries them is flagged), no quality boosters, and a Russian
+source stays in Russian — the model reads it as well as English**. Over-budget prompts are **condensed to
 fit** the family (weights preserved) with a note, not just flagged.
 
 **Attention weights on SD3/Flux.** These T5-driven models honour descriptive *prose* far more than numeric

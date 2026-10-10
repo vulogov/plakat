@@ -267,6 +267,10 @@ async fn run_txt2img_pass(spec: &FractalSpec, base_png: &Path, out: &Path, devic
         cascade_image_prompt: None,
         cascade_controlnet_weights: None,
         layered: None,
+        kandinsky_max_seq: None,
+        kandinsky_keep_encoders: false,
+        kandinsky_quantize_qwen: false,
+        kandinsky_dit_nf4: false,
     };
     t2i::run(req).await.context("fractal paint pass (text2img + ControlNet)")?;
     finalize(scratch.path(), out)

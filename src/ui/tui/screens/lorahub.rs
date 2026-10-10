@@ -680,7 +680,9 @@ pub fn family_from_str(s: &str) -> Option<BaseFamily> {
     if s.is_empty() {
         return None;
     }
-    if s.contains("xl") {
+    if s.contains("kandinsky") {
+        Some(BaseFamily::Kandinsky5)
+    } else if s.contains("xl") {
         Some(BaseFamily::Sdxl)
     } else if s.contains("cascade") {
         Some(BaseFamily::StableCascade)
@@ -709,6 +711,7 @@ fn family_label(f: BaseFamily) -> &'static str {
         BaseFamily::PixArt => "PixArt",
         BaseFamily::StableCascade => "Cascade",
         BaseFamily::Sana => "Sana",
+        BaseFamily::Kandinsky5 => "Kandinsky 5",
     }
 }
 
@@ -825,6 +828,10 @@ fn infer_family(meta: &HashMap<String, String>, dims: &[(String, Vec<usize>)]) -
             return Some(BaseFamily::Sd15);
         }
     }
+    // A Kandinsky 5 LoRA is in PEFT's layout and names the DiT's own blocks.
+    if dims.iter().any(|(name, _)| name.contains("visual_transformer_blocks.") && name.contains("lora_A")) {
+        return Some(BaseFamily::Kandinsky5);
+    }
     // Dim heuristic: a cross-attn (attn2) to_k/to_v down weight is [rank, ctx_dim].
     for (name, shape) in dims {
         let n = name.to_lowercase();
@@ -899,6 +906,21 @@ mod tests {
         assert_eq!(by("style-xl").rank, Some(32));
         assert_eq!(by("char").family, Some(BaseFamily::Sd15));
         assert_eq!(by("char").rank, Some(16));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_kandinsky_lora_is_known_by_its_keys() {
+        let d = tmp("k5");
+        write_st(&d.join("impasto.safetensors"), &[], "base_model.model.visual_transformer_blocks.0.self_attention.to_query.lora_A.default.weight", &[32, 2560]);
+        let mut s = LoraHubState::new(vec![(d.clone(), "loras".into())]);
+        assert_eq!(s.loras[0].family, Some(BaseFamily::Kandinsky5));
+        assert_eq!(s.loras[0].rank, Some(32));
+        s.set_loaded_family(Some(BaseFamily::Kandinsky5));
+        assert_eq!(s.compatible(&s.loras[0]), Some(true));
+        s.set_loaded_family(Some(BaseFamily::Sdxl));
+        assert_eq!(s.compatible(&s.loras[0]), Some(false));
+        assert_eq!(family_from_str("kandinsky5"), Some(BaseFamily::Kandinsky5));
         let _ = std::fs::remove_dir_all(&d);
     }
 
