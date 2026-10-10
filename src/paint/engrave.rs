@@ -38,26 +38,29 @@ pub struct Plate {
     pub spacing: f32,
 }
 
-/// The paper each hatch layer may ink at full weight. Every layer stays open — a line is never wider than a
-/// third of its spacing, so a shadow is made by crossing distinct lines and the paper breathes through all four.
-const LAYER_COVER: [f32; 4] = [0.34, 0.3, 0.28, 0.25];
+/// The paper each hatch layer may ink at full weight. Every layer stays open — a line is never wider than two
+/// fifths of its spacing — and there are three of them, a third of a turn apart, so the deepest shadow is a
+/// net of distinct lines with a triangle of paper in every mesh. A fourth layer would cut through the meshes
+/// and close them: that is ink pooling, not engraving.
+const LAYER_COVER: [f32; 3] = [0.38, 0.38, 0.4];
 /// How inked the subject's middle value is cut: an engraving is mostly paper.
-const MIDDLE_TONE: f32 = 0.17;
+const MIDDLE_TONE: f32 = 0.2;
 /// How much a surface is shaded against its surroundings.
 const RELIEF: f32 = 0.4;
 /// The deepest tone the plate cuts: a burin never fills a black, paper still shows between its lines.
-const DEEPEST: f32 = 0.7;
-/// How far below a hair's worth of tone a layer still cuts, as flicks and then dots: a light tone is a broken
-/// line, and a crossing enters a shadow as stipple before it is a line.
+const DEEPEST: f32 = 0.76;
+/// How far below a hair's worth of tone the first layer still cuts, as flicks: a light tone is a broken line.
 const FLICK: f32 = 0.3;
-/// Above this share of a hair the first layer breaks into flicks; below it, and in every crossing, into dots.
+/// How far below a hair's worth the first crossing still cuts, as dots: the edge of a shadow is stippled before
+/// it is hatched. Only there — stipple everywhere is dust, not form.
 const STIPPLE: f32 = 0.6;
 /// How much a line's weight wavers along it with the pressure of the hand.
-const HAND: f32 = 0.22;
+const HAND: f32 = 0.14;
 /// How much of the plate's tone is the ORDER of the subject's values rather than the values themselves.
-const BY_RANK: f32 = 0.55;
-/// Each layer's angle off the form's direction: along it, across it, then the two obliques.
-const LAYER_ANGLE: [f32; 4] = [0.0, 1.5708, 0.7854, 2.3562];
+const BY_RANK: f32 = 0.45;
+/// Each layer's angle off the form's direction: along it, then crossing it at a third of a turn either way, so
+/// two layers leave lozenges and three leave triangles.
+const LAYER_ANGLE: [f32; 3] = [0.0, 1.0472, 2.0944];
 
 /// The share of the paper layer `k` inks where the plate's tone is `t`: the layers fill in order, each taking
 /// what the ones before it left, so `k` crossings together ink exactly `t`.
@@ -233,8 +236,10 @@ impl Field<'_> {
         if p[0] < 0.0 || p[1] < 0.0 || p[0] >= self.w as f32 || p[1] >= self.h as f32 {
             return false;
         }
-        // A layer runs on below a hair's worth of tone, where it is cut as flicks and dots (see `plan`).
-        !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= self.hair * FLICK
+        // The first layer and the first crossing run on below a hair's worth of tone, where they are cut as
+        // flicks and as dots (see `plan`).
+        let least = [FLICK, STIPPLE, 1.0][layer] * self.hair;
+        !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= least
     }
 
     /// One streamline through `start`, both ways, stopping at the paper, at a contour, beside another line, or
@@ -383,6 +388,75 @@ fn swell(widths: &mut [f32], window: usize, point: f32, run: usize) {
     }
 }
 
+/// Join the edge map's fragments into the lines they were: a chain that ends where another begins, running the
+/// same way, is one line the edge detector dropped a few pixels of. A burin does not lift there.
+fn join(chains: Vec<Vec<[f32; 2]>>, reach: f32) -> Vec<Vec<[f32; 2]>> {
+    // The direction a chain leaves by at its end (`tail`) or arrives by at its start.
+    let heading = |c: &[[f32; 2]], tail: bool| {
+        let n = c.len();
+        let k = 6.min(n - 1);
+        let (a, b) = if tail { (c[n - 1 - k], c[n - 1]) } else { (c[0], c[k]) };
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = (dx * dx + dy * dy).sqrt().max(1e-4);
+        [dx / len, dy / len]
+    };
+    let mut chains: Vec<Option<Vec<[f32; 2]>>> = chains.into_iter().filter(|c| c.len() >= 2).map(Some).collect();
+    let mut out = Vec::new();
+    for i in 0..chains.len() {
+        let Some(mut line) = chains[i].take() else { continue };
+        // Grow from the tail, then turn the line round and grow from what was its head.
+        for _ in 0..2 {
+            loop {
+                let (end, go) = (line[line.len() - 1], heading(&line, true));
+                let mut best: Option<(usize, bool, f32)> = None;
+                for (j, other) in chains.iter().enumerate() {
+                    let Some(o) = other else { continue };
+                    for flip in [false, true] {
+                        let (start, dir) = if flip { (o[o.len() - 1], heading(o, true)) } else { (o[0], heading(o, false)) };
+                        let dir = if flip { [-dir[0], -dir[1]] } else { dir };
+                        let (gx, gy) = (start[0] - end[0], start[1] - end[1]);
+                        let gap = (gx * gx + gy * gy).sqrt();
+                        if gap > reach || go[0] * dir[0] + go[1] * dir[1] < 0.75 || (gap > 1.5 && (gx * go[0] + gy * go[1]) / gap < 0.7) {
+                            continue;
+                        }
+                        if best.is_none_or(|b| gap < b.2) {
+                            best = Some((j, flip, gap));
+                        }
+                    }
+                }
+                let Some((j, flip, _)) = best else { break };
+                let mut o = chains[j].take().unwrap_or_default();
+                if flip {
+                    o.reverse();
+                }
+                line.extend(o);
+            }
+            line.reverse();
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// Pull a traced line taut: an edge map's chain steps from pixel to pixel, a burin's line does not.
+fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let n = pts.len();
+    let mut cur = pts.to_vec();
+    for _ in 0..2 {
+        let src = cur.clone();
+        for i in 1..n.saturating_sub(1) {
+            let r = 3.min(i).min(n - 1 - i);
+            let (mut x, mut y) = (0f32, 0f32);
+            for p in &src[i - r..=i + r] {
+                x += p[0];
+                y += p[1];
+            }
+            cur[i] = [x / (2 * r + 1) as f32, y / (2 * r + 1) as f32];
+        }
+    }
+    cur
+}
+
 /// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `budget` caps the
 /// number of cuts — when the hatch would not fit, its spacing widens until it does.
 pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate {
@@ -432,7 +506,7 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
     if contour > 0.0 {
         let edge = edge_map(&value, w, h, contour);
         let (_, _, mag) = sobel(&value, w, h);
-        let chains = trace_chains(&edge, w, h, (long / 130.0).max(5.0) as usize);
+        let chains = join(trace_chains(&edge, w, h, (long / 130.0).max(5.0) as usize), (long / 200.0).max(3.0));
         let at = |p: &[f32; 2]| mag[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)];
         let mut strengths: Vec<f32> = chains.iter().flat_map(|c| c.iter().map(at)).collect();
         strengths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -444,9 +518,11 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
         chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
         let base = (long / 800.0).clamp(0.8, 3.0);
         for chain in chains {
-            let mut widths: Vec<f32> = chain.iter().map(|p| base * (0.45 + 1.9 * (at(p) / strong).min(1.0).powf(0.8))).collect();
-            swell(&mut widths, 4, base * 0.4, 5);
-            pieces(0, chain, &widths, &mut cuts);
+            // A burin's groove is a V: the line enters as a needle, swells where the edge is firm, and leaves
+            // as a needle.
+            let mut widths: Vec<f32> = chain.iter().map(|p| base * (0.35 + 1.45 * (at(p) / strong).min(1.0).powf(1.2))).collect();
+            swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
+            pieces(0, &taut(chain), &widths, &mut cuts);
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
             for pair in chain.windows(2) {
                 for p in [pair[0], [(pair[0][0] + pair[1][0]) * 0.5, (pair[0][1] + pair[1][1]) * 0.5], pair[1]] {
@@ -474,8 +550,8 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
             for (li, line) in field.layer(layer, seed).into_iter().enumerate() {
                 let raw: Vec<f32> = line.iter().map(|p| field.width(*p, layer)).collect();
                 // Below a hair's worth of tone a line is not made thinner — it is BROKEN. The first layer breaks into
-                // flicks whose length carries the tone, and at its lightest into dots; a crossing enters as dots,
-                // so a shadow's edge is stippled before it is hatched. Each line breaks at its own place.
+                // flicks whose length carries the tone; the first crossing enters as dots. Each line breaks at its
+                // own place, so the marks do not fall into ranks.
                 let (period, pitch) = (spacing * 3.0, spacing * 1.15);
                 let dot = (field.hair * 1.8).max(2.0);
                 let phase = (jitter(seed ^ 0xF11C ^ layer as u64, li as u64) + 0.5) * period;
@@ -485,11 +561,11 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
                         return true;
                     }
                     let at = i as f32 + phase;
-                    if layer == 0 && part >= STIPPLE {
-                        return at % period < period * part;
+                    if layer == 0 {
+                        return at % period < period * part.max(0.25);
                     }
                     let nth = (at / pitch) as u64;
-                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < part / STIPPLE
+                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < (part - STIPPLE) / (1.0 - STIPPLE)
                 };
                 // The hand: a line's weight breathes along it.
                 let hand = |i: usize| {
@@ -511,7 +587,7 @@ pub fn plan(picture: &RgbImage, contour: f32, budget: usize, seed: u64) -> Plate
                     }
                     if b - a >= 4 {
                         let mut widths: Vec<f32> = (a..=b).map(|i| (raw[i] * hand(i)).max(field.hair)).collect();
-                        swell(&mut widths, 3, field.hair * 0.6, ((spacing * 3.0) as usize).min((b - a) / 2));
+                        swell(&mut widths, 4, field.hair * 0.5, ((spacing * 6.0) as usize).min((b - a) / 2));
                         let thin: Vec<usize> = (0..=b - a).step_by(2).chain(std::iter::once(b - a).filter(|l| l % 2 == 1)).collect();
                         let pts: Vec<[f32; 2]> = thin.iter().map(|&i| line[a + i]).collect();
                         let ws: Vec<f32> = thin.iter().map(|&i| widths[i]).collect();
@@ -544,7 +620,7 @@ mod tests {
 
     #[test]
     fn the_layers_together_ink_the_tone_asked_for() {
-        for t in [0.1f32, 0.3, 0.5, 0.7] {
+        for t in [0.1f32, 0.3, 0.5, 0.7, 0.76] {
             let paper: f32 = (0..LAYER_COVER.len()).map(|k| 1.0 - cover(t, k)).product();
             assert!((1.0 - paper - t).abs() < 1e-4, "tone {t}: the layers ink {}", 1.0 - paper);
         }
