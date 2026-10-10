@@ -816,6 +816,19 @@ pub struct FromArgs {
     /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
     #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
     pub oldpaper: Option<bool>,
+    /// RELIEF for an engraving (`--medium durer`): a depth map of the picture, so the cuts turn with the form —
+    /// round a cylinder, round a tyre — instead of following only the picture's edges. `auto` estimates it with
+    /// Depth-Anything (GPU; saved beside the output as `<out>.depth.png`); a path reads a grey image, white =
+    /// near. Omitted: the plate is planned from the picture alone.
+    #[arg(long, value_name = "auto|FILE")]
+    pub depth: Option<String>,
+    /// NORMALS for an engraving (`--medium durer`): which way every surface of the picture faces, so the cuts
+    /// wrap a form — round a barrel, round a limb — and lie level on the ground. `auto` estimates them with
+    /// Marigold-Normals (GPU, a 2 GB download the first time; saved beside the output as `<out>.normals.png`);
+    /// a path reads a normal-map picture (green = up). They lead the line where `--depth` would; give both and
+    /// the depth still sets what is far.
+    #[arg(long, value_name = "auto|FILE")]
+    pub normals: Option<String>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -2551,6 +2564,38 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     _ => fm,
                 });
             }
+        }
+    }
+    if let Some(d) = a.depth.as_deref() {
+        if !params.engrave {
+            println!("{}  --depth is the relief of an engraving (--medium durer); ignored for this medium", style("·").yellow());
+        } else if d == "auto" {
+            println!("{}  relief: estimating depth (Depth-Anything)…", style("◆").cyan());
+            let device = crate::device::select("auto")?;
+            let z = crate::pipelines::depth::DepthPipeline::load(device).await.context("loading Depth-Anything for the relief")?.depth_map(&a.input, w, h).context("estimating the relief")?;
+            let side = a.out.with_extension("depth.png");
+            image::GrayImage::from_fn(w, h, |x, y| image::Luma([(z[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0).round() as u8])).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  relief → {}", style("·").dim(), side.display());
+            params.relief = Some((w, h, z));
+        } else {
+            let map = image::open(d).with_context(|| format!("opening the depth map {d}"))?.to_luma8();
+            params.relief = Some((map.width(), map.height(), map.pixels().map(|p| p.0[0] as f32 / 255.0).collect()));
+        }
+    }
+    if let Some(d) = a.normals.as_deref() {
+        if !params.engrave {
+            println!("{}  --normals lead the line of an engraving (--medium durer); ignored for this medium", style("·").yellow());
+        } else if d == "auto" {
+            println!("{}  normals: estimating the surfaces (Marigold-Normals)…", style("◆").cyan());
+            let device = crate::device::select("auto")?;
+            let n = crate::pipelines::normals::NormalsPipeline::load(device).await.context("loading Marigold-Normals")?.normal_map(&a.input, w, h).context("estimating the normals")?;
+            let side = a.out.with_extension("normals.png");
+            crate::pipelines::normals::to_png(&n, w, h).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  normals → {}", style("·").dim(), side.display());
+            params.normals = Some((w, h, n));
+        } else {
+            let map = image::open(d).with_context(|| format!("opening the normal map {d}"))?.to_rgb8();
+            params.normals = Some((map.width(), map.height(), crate::pipelines::normals::from_png(&map)));
         }
     }
     if a.haze > 0.0 {

@@ -220,6 +220,13 @@ pub struct PaintParams {
     /// veiled toward the atmosphere and lose contrast, so the background RECEDES and the foreground ADVANCES
     /// (foreground/background separation and painted "layers"). `None` = a flat single plane.
     pub depth: Option<Vec<f32>>,
+    /// The picture's RELIEF for an engraving (`--depth`): a depth map `(w, h, z)` at its own resolution, `z` in
+    /// `[0,1]`, 1 = near. The burin's lines turn with the form it describes (see `paint::engrave`). Not used for
+    /// recession — that is `depth` + `haze`.
+    pub relief: Option<(u32, u32, Vec<f32>)>,
+    /// The picture's surface normals for an engraving (`engrave::Normals`): width, height, unit vectors in
+    /// image space. `None` = the line's direction comes from the relief, or from the picture alone.
+    pub normals: Option<(u32, u32, Vec<[f32; 3]>)>,
     /// Aerial-perspective strength (0..1): how strongly distance veils toward the atmosphere. Ignored w/o depth.
     pub haze: f32,
     /// STROKE LENGTH dial (author control): global multiplier on how far strokes run (1.0 = default). Longer =
@@ -394,7 +401,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
     }
 }
 
@@ -5303,7 +5310,9 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
 /// swelling line's pieces join without a seam and the plate replays from its score.
 fn engraving(canvas: &mut Canvas, score: &mut StrokeScore, picture: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, placed: &mut usize, progress: Option<&dyn Fn(PaintProgress)>) {
     let w = picture.width() as usize;
-    let plate = crate::paint::engrave::plan(picture, p.contour, p.budget.saturating_sub(*placed), p.seed);
+    let relief = p.relief.as_ref().map(|(w, h, z)| crate::paint::engrave::Relief { w: *w as usize, h: *h as usize, z });
+    let normals = p.normals.as_ref().map(|(w, h, n)| crate::paint::engrave::Normals { w: *w as usize, h: *h as usize, n });
+    let plate = crate::paint::engrave::plan(picture, relief, normals, p.contour, p.budget.saturating_sub(*placed), p.seed);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let mut load = vec![0f32; p.palette.pigments.len()];
     load[ink] = p.charge * 2.0;
