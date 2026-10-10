@@ -97,6 +97,7 @@ luminous watercolour, a matte gouache, a graded ink wash, a graphite pencil land
 | `splatter`         | `--splatter`        | 0..1 (0 = off, opt‑in)                 | Flick fine pigment **droplets** across the painting — watercolour/ink spatter (spray, snow, sparkle, freckles). Recorded strokes (replay‑exact). |
 | `edge_pool`        | `--edge-pool`       | 0..1 (0 = off, opt‑in)                 | Darken pigment at **wash boundaries** — the watercolour edge‑bloom / "cauliflower" ring. Output stage, recorded. |
 | `paper_edge`       | `--paper-edge`      | 0..1 (0 = off, opt‑in)                 | Fade to a **deckled bare‑paper border** — the torn‑paper watercolour vignette. Output stage, recorded. |
+| `oldpaper`         | `--oldpaper`        | `true` / `false` (default `false`)     | Print the finished picture on an **aged sheet** — yellowed laid paper, foxing, specks, worn edges; `durer` also gets its **plate mark**. Any medium. Output stage, recorded. |
 | `contrast`         | `--contrast`        | 0.5..2 (1 = neutral)                   | Finish‑grade tonal **contrast** (S‑curve). Painting‑safe, recorded for replay. |
 | `warmth`           | `--warmth`          | −1..1 (0 = neutral)                    | Finish **white‑balance** shift — + warm (amber), − cool (blue). Recorded for replay. |
 | `clarity`          | `--clarity`         | 0..1 (0 = off)                         | Gentle **local contrast** (midtone punch) — NOT edge sharpening (that would re‑introduce photographic detail). Recorded for replay. |
@@ -322,7 +323,7 @@ stroke_width: 0.8
 | early-book-illustration | 0.32 | 0.35 | 0.00 | 0.00 | 1.50 | +0.08 | 0.16 | 0.00 | 0.20 | 0.10 | 0.40 | WASHES · flat cumulative glazes through masks from the keyed picture, high key, a coloured line — the early colour‑book print | reserved | limited-landscape |
 | japanese-ink  | 0.40 | 0.70  | 0.90   | 0.00    | 0.90   | +0.05     | 0.06      | 0.00  | 0.10 | 0.10   | 0.15    | continuous · one wide soft brush, long calligraphic strokes, its own black | reserved | sumi (always) |
 | pen-ink       | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.60    | density    | reserved | sumi |
-| durer         | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.70    | density · engraving: lines follow the form, fine, cross-hatched darks | reserved | sumi (always) |
+| durer         | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.70    | density · copperplate: even cuts along the form, swelling with tone, crossed in the darks | reserved | sumi (always) |
 | pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · graphite point: thin grey directional strokes, its own grey | reserved | sumi (always) |
 | black-pencil  | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · the graphite mark with a soft dark point | reserved | sumi (always) |
 | tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · short strokes, each pass cross-hatched 45° | pigment  | verdaccio |

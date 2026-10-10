@@ -67,6 +67,8 @@ pub struct ScoreHeader {
     pub edge_pool: f32,
     /// PAPER EDGE — fade to a deckled paper border at output (torn-paper vignette).
     pub paper_edge: f32,
+    /// OLD PAPER — the picture printed on an aged sheet, at output (`--oldpaper`).
+    pub old_paper: bool,
     /// FINISH GRADE (painting-safe tonal grade, applied at output): contrast, warmth (WB), clarity (local contrast).
     pub contrast: f32,
     pub warmth: f32,
@@ -190,6 +192,8 @@ impl ScoreHeader {
             sheen: self.sheen,
             edge_pool: self.edge_pool,
             paper_edge: self.paper_edge,
+            old_paper: self.old_paper,
+            plate_mark: crate::paint::medium::MediumProfile::by_name(&self.medium).is_some_and(|m| m.mark.engrave),
             weave: self.weave,
             contrast: self.contrast,
             warmth: self.warmth,
@@ -241,7 +245,7 @@ impl StrokeScore {
         let ground = match h.flow { Some((s, r, m, g, e)) => format!("{ground} flow={},{},{},{},{}", fmt_f(s), fmt_f(r), fmt_f(m), fmt_f(g), fmt_f(e)), None => ground };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + (if h.old_paper { " oldpaper=1" } else { "" }) + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
         ));
         // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
         for (name, rgb) in &h.pigments {
@@ -334,6 +338,7 @@ impl StrokeScore {
                         sheen: get("sheen").parse().unwrap_or(0.0),
                         edge_pool: get("edgepool").parse().unwrap_or(0.0),
                         paper_edge: get("paperedge").parse().unwrap_or(0.0),
+                        old_paper: get("oldpaper") == "1",
                         contrast: get("contrast").parse().unwrap_or(1.0),
                         warmth: get("warmth").parse().unwrap_or(0.0),
                         clarity: get("clarity").parse().unwrap_or(0.0),
@@ -662,12 +667,24 @@ mod tests {
 
     fn sample() -> StrokeScore {
         StrokeScore {
-            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None },
+            header: ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 42, width: 64, height: 48, tooth: 0.85, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None },
             strokes: vec![
                 StrokeRecord { id: 1, wipe: false, wash: false, stage: "shadow-mass".into(), spline: vec![[5.0, 20.0], [30.0, 22.0], [50.0, 20.0]], w0: 8.0, w1: 5.0, taper: 0.4, mix: vec![("cadmium-red".into(), 3.0), ("ivory-black".into(), 1.0)], wet: 1.0, press: 0.9, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
                 StrokeRecord { id: 2, wipe: false, wash: false, stage: "light-mass".into(), spline: vec![[10.0, 10.0], [40.0, 12.0]], w0: 6.0, w1: 4.0, taper: 0.3, mix: vec![("yellow-ochre".into(), 2.0), ("titanium-white".into(), 3.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None },
             ],
         }
+    }
+
+    #[test]
+    fn old_paper_round_trips_and_gives_an_engraving_its_plate_mark() {
+        let mut s = sample();
+        assert!(!StrokeScore::parse(&s.to_text()).unwrap().header.old_paper, "off unless asked for");
+        s.header.old_paper = true;
+        let parsed = StrokeScore::parse(&s.to_text()).expect("parses");
+        assert!(parsed.header.old_paper);
+        assert!(parsed.header.finish().old_paper && !parsed.header.finish().plate_mark, "a painting gets the sheet, not a plate mark");
+        s.header.medium = "durer".into();
+        assert!(StrokeScore::parse(&s.to_text()).unwrap().header.finish().plate_mark, "an engraving gets both");
     }
 
     #[test]
@@ -776,7 +793,7 @@ mod tests {
     #[test]
     fn replay_applies_a_wipe_record() {
         // A score that lays a dark stroke then WIPES part of it — the wiped band is lighter than without it.
-        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None };
+        let base = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "oil-direct".into(), seed: 1, width: 40, height: 20, tooth: 0.9, ground: None, brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, collide: None, hold_mask: None };
         let stroke = StrokeRecord { id: 1, wipe: false, wash: false, stage: "mass".into(), spline: vec![[2.0, 10.0], [38.0, 10.0]], w0: 10.0, w1: 10.0, taper: 0.0, mix: vec![("ivory-black".into(), 5.0)], wet: 1.0, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };
         let no_wipe = StrokeScore { header: base.clone(), strokes: vec![stroke.clone()] };
         let wipe = StrokeRecord { id: 2, wipe: true, wash: false, stage: "scrape".into(), spline: vec![[18.0, 4.0], [18.0, 16.0]], w0: 8.0, w1: 8.0, taper: 0.0, mix: vec![], wet: 0.9, press: 1.0, streak: 0.6, round: 0.7, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None };

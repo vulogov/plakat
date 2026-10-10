@@ -109,6 +109,9 @@ pub struct PaintPlan {
     /// EDGE POOL (0..1): the darker pigment rim where a wash dried — the cauliflower edge.
     #[serde(default)]
     pub edge_pool: Option<f32>,
+    /// OLD PAPER: print the finished picture on an aged sheet (any medium; an engraving gets its plate mark).
+    #[serde(default)]
+    pub oldpaper: Option<bool>,
     /// GRANULATE (0..1): pigment settling into the paper's tooth.
     #[serde(default)]
     pub granulate: Option<f32>,
@@ -236,6 +239,7 @@ impl Default for PaintPlan {
             technique: None,
             splatter: None,
             edge_pool: None,
+            oldpaper: None,
             granulate: None,
             ladder_keep: None,
             leak: None,
@@ -309,6 +313,9 @@ impl PaintPlan {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
+        }
+        if let Some(v) = self.oldpaper {
+            o.push_str(&format!("oldpaper: {v}\n"));
         }
         if let Some(n) = self.ladder_keep {
             o.push_str(&format!("ladder_keep: {n}\n"));
@@ -627,6 +634,7 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             technique: None,
             splatter: None,
             edge_pool: None,
+            oldpaper: None,
             granulate: None,
             ladder_keep: None,
             leak: None,
@@ -693,6 +701,9 @@ mod tests {
         assert_eq!(parsed.armature, plan.armature);
         assert_eq!(parsed.armature_face, plan.armature_face);
         assert_eq!(parsed.medium, "watercolour");
+        assert_eq!(parsed.oldpaper, None, "old paper is not a plan's default");
+        let aged = PaintPlan { oldpaper: Some(true), ..plan };
+        assert_eq!(PaintPlan::parse(&aged.to_hjson()).expect("parses").oldpaper, Some(true));
     }
 
     #[test]

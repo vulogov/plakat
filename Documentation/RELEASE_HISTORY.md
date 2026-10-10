@@ -8,6 +8,20 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.3.0 — in development
+
+### `plakat paint`
+
+- **`--medium durer` is a new engraving.** The plate is now planned by its own module from the picture
+  itself: evenly spaced cuts that follow the form, swell with the tone and thin to a point; a second layer
+  crossing at a right angle and two diagonals in the darks; flicks in the lights; contours whose weight
+  follows the contrast they separate. The plate spends its whole range on the subject, so a dark subject is
+  no longer a grey net. Still deterministic, still replayed from its score. See
+  [PAINT_DURER.md](PAINT_DURER.md).
+- **`--oldpaper true`** (plan and spec key `oldpaper`; default `false`) prints the finished picture on an
+  aged sheet — yellowed laid paper, foxing, specks, worn edges — for any medium. An engraving also gets its
+  plate mark.
+
 ## What's new in 7.2.0 — Kandinsky 5: an eighth model family, conditioned by a language model
 
 ### Kandinsky 5.0 T2I Lite (`--model kandinsky5`, RFC KANDINSKY-1)

@@ -138,6 +138,10 @@ pub struct PaintArgs {
     /// PAPER EDGE (0..1, opt-in): fade to a deckled bare-paper border — the torn-paper vignette a watercolour sits in.
     #[arg(long)]
     pub paper_edge: Option<f32>,
+    /// OLD PAPER (`true`/`false`, default `false`): print the finished picture on an aged sheet — yellowed laid
+    /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub oldpaper: Option<bool>,
     /// CONTRAST (0.5..2, 1 = neutral): painting-safe finish grade, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -278,6 +282,7 @@ pub struct SpecArgs {
     pub splatter: Option<f32>,
     pub edge_pool: Option<f32>,
     pub paper_edge: Option<f32>,
+    pub oldpaper: Option<bool>,
     pub contrast: Option<f32>,
     pub warmth: Option<f32>,
     pub clarity: Option<f32>,
@@ -807,6 +812,10 @@ pub struct FromArgs {
     /// torn-paper vignette a watercolour sits in. Higher = wider fade. Great for portraits on paper.
     #[arg(long)]
     pub paper_edge: Option<f32>,
+    /// OLD PAPER (`true`/`false`, default `false`): print the finished picture on an aged sheet — yellowed laid
+    /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub oldpaper: Option<bool>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -907,7 +916,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, fill: args.fill, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, fill: args.fill, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, oldpaper: args.oldpaper, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -1554,6 +1563,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.splatter = spec.splatter.or(a.splatter).unwrap_or(0.0).clamp(0.0, 1.0);
     params.edge_pool = spec.edge_pool.or(a.edge_pool).unwrap_or(0.0).clamp(0.0, 1.0);
     params.paper_edge = spec.paper_edge.or(a.paper_edge).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.old_paper = a.oldpaper.or(spec.oldpaper).unwrap_or(false);
     params.contrast = spec.contrast.or(a.contrast).unwrap_or(1.0).clamp(0.3, 3.0);
     params.warmth = spec.warmth.or(a.warmth).unwrap_or(0.0).clamp(-1.0, 1.0);
     params.clarity = spec.clarity.or(a.clarity).unwrap_or(0.0).clamp(0.0, 1.0);
@@ -1586,6 +1596,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     let reserve_default = (plan.medium.white_source == WhiteSource::Surface).then_some(0.72);
     params.reserve = spec.reserve.or(a.reserve).map(|r| r.clamp(0.0, 1.0)).or(reserve_default);
     params.density = plan.medium.mark_model == MarkModel::Density;
+    params.engrave = plan.medium.mark.engrave;
 
     // Get the reference to paint from, and depth for the merge, one of two ways:
     //   • a supplied `reference:` image → optional CPU-proxy depth (merge only with --planes), or
@@ -2014,6 +2025,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.edge_pool.is_none() {
             a.edge_pool = plan.edge_pool;
         }
+        if a.oldpaper.is_none() {
+            a.oldpaper = plan.oldpaper;
+        }
         if a.granulate.is_none() {
             a.granulate = plan.granulate;
         }
@@ -2369,6 +2383,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(pe) = a.paper_edge {
         params.paper_edge = pe.clamp(0.0, 1.0);
     }
+    params.old_paper = a.oldpaper.unwrap_or(false);
     if let Some(ct) = a.contrast {
         params.contrast = ct.clamp(0.3, 3.0);
     }
