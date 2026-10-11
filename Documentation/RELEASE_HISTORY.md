@@ -14,7 +14,7 @@ per-cycle commits carry the rationale + before/after.
 
 - **`--medium durer` is a new engraving.** The plate is now planned by its own module from the picture
   itself: evenly spaced cuts that follow the form, swell with the tone and thin to a point; a second layer
-  crossing at 60° and a third at 120° in the darks; flicks in the lights and a band of stipple where the
+  crossing at 60° and a third at 120° in the darks; sparse hairs and stipple in the lights and a band of stipple where the
   first crossing enters a shadow; contours joined into continuous taut lines, cut needle-to-needle, whose weight follows the
   contrast they separate. The plate is mostly paper and spends its whole range on the subject, so a dark
   subject is no longer a grey net; no line is wider than about a third of its spacing, so the deepest shadow
@@ -41,13 +41,32 @@ per-cycle commits carry the rationale + before/after.
   diagonal and no rule of form, normals or depth turns it, so a portrait's nose and cheeks are no longer
   circled like a contour map while the rest of the picture follows its form. `skin: hands` adds things found
   by word.
-- **`--white F` is the white point** — the highlight clipping threshold, as a share of the picture's values
-  (0.9 by default, as before). A broad light the plate left as bare paper — a white dress — is cut with
-  0.98. Below the white point the lightest tones now thin into ever sparser dots — evenly, almost to the
-  paper itself — instead of stopping at a flick's worth, so a lit cheek and a white sleeve keep their form.
-- **Every crossing enters as dots.** The third layer used to begin at a line's full width, which drew a seam
-  along the tone it started at — a vertical line across a dark background. It now enters through a band of
-  stipple like the second.
+- **The paper is found in the picture.** The white point used to be the picture's 90th-percentile value,
+  which on a dark painting with a lit face fell inside the face: the whole lit half of it was clipped to
+  paper. The paper is now the picture's brightest *broad flat* value — the sheet of a drawing, a sky, a
+  wall — when it has one in its lights, and otherwise its brightest thousandth; and a sheet's own tint
+  (the yellowing toward its edges, the lamp falling off across it) is left as paper where it is no darker
+  than its surroundings. **`--white F`** names the white point instead, as a share of the values — the
+  highlight clipping threshold: 0.98 cuts more of a white dress, 0.8 leaves a tinted sheet clean.
+- **A light is the same hair, further apart.** Below a hair's worth of tone the lines of a layer used to
+  break into flicks and dots at the full spacing, which made a lit cheek a dashed shimmer and a white dress
+  a burn; a burin cuts nothing finer than a hair, so the lines now lie further apart instead — up to four
+  spacings, dropping out one at a time as the tone lifts, each line whole — and only below the sparsest
+  hairs break into dots, scattered at one spacing, that thin out evenly to the paper. A lit face is modelled
+  by fine lines thinning out; a white dress keeps its folds.
+- **A flat ground is one tone; a face is ranked among what models.** The order of the picture's values,
+  which spreads the subject over the plate's range, is now counted among the values that model something
+  (a value weighs as much as it differs from its surroundings). Counted by number alone, a dark background
+  that darkened by a twentieth toward the edge of the sheet — most of the picture — was cut from open hatch
+  to the deepest black, and the crossing entering along the way drew a seam down the wall; and a lit face,
+  a tenth of a dark picture, was ranked into the paper.
+- **A face is modelled fuller.** Named as skin, a face's middle value is cut a third inked instead of a
+  fifth — fine lines over the whole lit side, as a portrait engraver cuts, open only at the highlights —
+  and a glint on skin must outshine its near surroundings too, so the forehead is modelled up to the
+  hairline instead of being left clean along it.
+- **Every crossing enters sparse.** The third layer used to begin at a line's full width, which drew a seam
+  along the tone it started at — a vertical line across a dark background. It now enters as the second
+  does: hairs further apart than the spacing, with a few dots under them.
 - **A flat surface is ruled.** Where the normals call a surface flat and facing the viewer, nothing of the
   picture's own drift is left in the hatch; the few degrees that were made waves across a plain background.
 - **Fur lies its own way.** The hairs of a coat no longer run round the body under it as a hatch would, nor

@@ -30,13 +30,25 @@ plate byte for byte.
 The plate is cut from the **picture itself**, not from the simplified armature the painting media use — the
 armature has already smoothed away the detail a burin draws.
 
-1. **Tone.** The paper is the picture's light (its 90th-percentile value) and the deepest cut its dark. In
+1. **Tone.** The paper is found in the picture: its brightest *broad flat* value — the sheet of a drawing,
+   a sky, a wall — when it has one in its lights (a band of values holding 3% of the picture, no darker than
+   a middle grey); otherwise, as in a dark painting whose lights are spread thin, its brightest thousandth.
+   A sheet is not one value to a photograph — it yellows toward its edges, the lamp falls off across it —
+   and no engraver cuts that: within the paper's own run of values, a tone no darker than its surroundings
+   is the sheet's tint and is left as paper. (`--white F` names the white point instead, as a share of the
+   picture's values.) The deepest cut is the picture's dark. In
    between, the plate does not copy the picture's key. A surface is shaded against its surroundings, so the
    turn of a form and the shadow in a joint read stronger than the flat between them; and the subject is
    spread over the plate's whole range mostly by the *order* of its values, with its middle value about a
    fifth inked: an engraving is mostly paper. A subject that is dark all over is therefore still cut from
-   open line to crossed shadow. A highlight — a light spot that outshines what surrounds it — is not cut at all: clean paper,
-   not a faint tone. A broad light (a lit cheek, a white dress) is no highlight and is modelled lightly.
+   open line to crossed shadow. The order is counted among the values that *model* something — a value
+   weighs as much as it differs from its surroundings — so a mass of one value, a dark ground or a wall, is
+   one tone and not a ramp from open hatch to black, and a face that is a tenth of a dark picture is not
+   ranked into the paper. A face (named as skin) is modelled fuller than its ground, as a portrait
+   engraver's is: its middle value a third inked, fine lines over the whole lit side, open only at the
+   highlights. A highlight — a light spot that outshines what surrounds it — is not cut at all: clean paper,
+   not a faint tone. A broad light (a lit cheek, a white dress) is no highlight and is modelled lightly;
+   on skin a glint must outshine its near surroundings too, so a forehead is modelled up to the hairline.
    The deepest tone is 0.78: in the deepest shadow each line swells to two fifths of its
    spacing, so the black is made by the weight of the lines, not by more of them, and is still a net of
    distinct lines with paper in every mesh — never a filled black. Beside a shadow, a tone already begun is
@@ -54,20 +66,23 @@ armature has already smoothed away the detail a burin draws.
    a tone lies alone on open paper (a cast shadow, the ground under the subject), they rest level. With a
    normal map (`--normals`) or a depth map (`--depth`), both below, the lines also turn with the form itself.
 4. **Even lines.** A layer is a set of streamlines kept one spacing apart: every new line is seeded beside an
-   existing one. A line stops at a drawn contour, at the paper, or beside another line.
+   existing one. A line stops at a drawn contour, at the paper, or beside another line. In the light the
+   lines lie further apart (point 6), and of two running side by side into it the later stops.
 5. **Weight, then crossing.** A cut swells with the darkness under it, thins to a point where the tone
    lifts, and wavers a little along its length with the pressure of the hand. A line goes on swelling under its
    crossings all the way into the deepest shadow, so its weight is never flat. The first layer carries a tone
    up to about a quarter inked; a second layer crosses it at 60° where one layer cannot carry the tone,
    leaving lozenges of paper, and a third at 120° for the darks, leaving triangles. There is no fourth: it
    would cut through the meshes and close them. The layers together ink the tone asked for.
-6. **Flicks, and a little stipple.** Below a hair's worth of tone a line is not made thinner — it is broken.
-   The first layer breaks into short flicks whose length carries the tone, and at its lightest into dots,
-   ever sparser — evenly, all the way down to the paper — so a form passes into the light through stipple
-   instead of over an edge, and a lit cheek or a white sleeve keeps its form to the white point. Each
-   crossing also enters as a narrow band of dots: a layer that began at a line's full width would draw its
-   own edge, a seam along the tone it starts at. The tone curve has a toe — the lightest tones fall off no
-   faster than three tenths of the value — so the dots reach well into the lights before the paper is bare.
+6. **Into the light: the same hair, further apart; then stipple.** A burin cuts nothing finer than a hair,
+   so below a hair's worth of tone a line is not made thinner — the lines are laid further apart, up to four
+   spacings, dropping out one at a time as the tone lifts, each line whole: a lit cheek is modelled by fine
+   lines thinning out, not by a dashed shimmer. Below the sparsest hairs the lines come back to one spacing
+   and break into dots that thin out evenly, all the way down to the paper, so a form passes into the light
+   through scattered stipple instead of over an edge. Each crossing enters the same way — sparse hairs, and
+   a few dots under them: a layer that began at its full width and density would draw its own edge, a seam
+   along the tone it starts at. The tone curve has a toe — the lightest tones fall off no faster than three
+   tenths of the value — so the lines reach well into the lights before the paper is bare.
 7. **No rings.** A hatch line may turn through about a right angle over its whole length, then the burin
    lifts and a new line begins: round a tyre the hatch is arcs, never a closed ring, and no whorl can form.
 
@@ -130,8 +145,8 @@ thing that is not found is reported and left out.
 | kind | how it is cut |
 |---|---|
 | `fur` (hair, feathers) | cut in **short hairs**, each 5 to 12 line spacings long and its own length, each straying up to ±20° from the coat, lying over one another and not in ranks; a contour through the coat is hairs too — pieces three to eight spacings long with air between, not one taut line; they run the way the coat grows — the direction its own strands agree on, read at the scale of a lock and, where no lock says, of a flank — and never round the body under it as a hatch would, nor along the lines of equal tone round a light patch of the coat (that is the grain of a sawn trunk, not fur): where the coat says nothing they rest on the diagonal; the crossings only lean off the coat (±17° instead of 60° and 120°), so the hairs lie beside one another even in shadow |
-| `glass`, `metal` | polished: light and middle tones open to the paper, the darks stay, a light needs to outshine its surroundings only half as much to be left as a clean glint, and the line is **ruled** — its weight does not waver with the hand, and it is never broken into flicks or dots: into the light it runs on as an unbroken hair |
-| `skin` (a face, a hand) | the hatch is **held at rest**: it does not follow the form the picture, the normals or the depth describe, and does not lie level as on the ground — every tone's line is on the engraver's diagonal and its crossings a third of a turn off it, as if `--follow 0` held there alone. Only the **firm edges** are drawn as contours — an eye, a nostril, the lips, the silhouette; an edge weaker than half a firm one (the turn of a cheek, the shadow under a brow) is no contour on skin, however long, and is left to the hatch, so a face is not a contour map. The tone, the flicks and the dots are as on any surface |
+| `glass`, `metal` | polished: light and middle tones open to the paper, the darks stay, a light needs to outshine its surroundings only half as much to be left as a clean glint, and the line is **ruled** — its weight does not waver with the hand, and it is never broken into dots: into the light it runs on as an unbroken hair |
+| `skin` (a face, a hand) | the hatch is **held at rest**: it does not follow the form the picture, the normals or the depth describe, and does not lie level as on the ground — every tone's line is on the engraver's diagonal and its crossings a third of a turn off it, as if `--follow 0` held there alone. Only the **firm edges** are drawn as contours — an eye, a nostril, the lips, the silhouette; an edge weaker than half a firm one (the turn of a cheek, the shadow under a brow) is no contour on skin, however long, and is left to the hatch, so a face is not a contour map. The tone is cut **fuller** — the middle value a third inked instead of a fifth, fine lines over the whole lit side — and a glint must outshine its near surroundings, not only the hair behind it; the sparse hairs and the dots are as on any surface |
 
 Whole objects ("hare", "wheel") are found firmly. Parts of a machine ("headlamp", "gauge") are found only
 faintly, and some ("engine", "pipe") not at all — the detector is a small one. The report says which.
@@ -181,10 +196,10 @@ ages the same way.
 | flag | effect |
 |---|---|
 | `--follow F` (default 1) | how far the hatch follows the form: 1 wraps every surface; 0 is a ruled plate — every line on the diagonal or level on the ground, only the contours bend. A portrait wants `--materials skin` instead, which holds only the face; without it, about 0.3 |
-| `--white F` (default 0.9) | the **white point**, as a share of the picture's values: what lies at or above it is clean paper. A picture with a broad light that is cut as bare paper — a white dress, a bright sky — wants more of it cut: 0.98. Below the white point the lightest tones thin into ever sparser dots before the paper is reached |
+| `--white F` (unset: found) | the **white point**, as a share of the picture's values: what lies at or above it is clean paper. Unset, the paper is found in the picture — its brightest broad flat value (a sheet, a sky, a wall) or its brightest thousandth — and a sheet's own tint is left as paper (point 1 above). Name it to cut more of a broad light (0.98) or to leave a tinted sheet clean (0.8). Below the white point the lightest tones lie as sparse hairs, then dots, before the paper is reached |
 | `--contour F` (medium default 0.55) | how much of the edge map becomes drawn line: lower keeps only the main lines, higher draws every fold and rivet; 0 = no contours |
 | `--budget N` (plan ×3 by default, 360 000 at most) | the cap on cuts; when the hatch would exceed it the spacing widens to fit, so a small budget gives an open plate |
-| `--seed N` | where the lines start and where the flicks break |
+| `--seed N` | where the lines start and where the dots fall |
 | `--oldpaper true` | the aged sheet and the plate mark |
 | `--normals auto\|FILE` | the picture's surfaces: the cuts wrap the form and lie level on the ground (see above) |
 | `--materials SPEC\|FILE` | what things are made of, in words: fur is cut along the coat, glass and metal open their lights, skin (the faces, found by the face detector) holds the hatch at rest (see above) |
@@ -208,8 +223,8 @@ ages the same way.
 - **Low-resolution or heavily compressed sources** show their blocks as steps in the edge of a tone.
 - **A face** is cut from the picture at full detail; there is no separate portrait pass. Named as skin it is
   hatched on the diagonal and only its firm edges are drawn; unnamed it is cut like any other surface, and
-  follows the form. Lit skin is flicks thinning into stipple; what lies above the white point is paper, so a
-  face lit to the picture's brightest wants `--white 0.98`.
-- **The lightest tones are stippled to the paper**, so a sheet whose own tint lies a little under the white
-  point — the yellowed paper of an old drawing — gets a sparse dusting of dots at its darkest corners. Bring
-  the white point down (`--white 0.8`) or clean the sheet first.
+  follows the form, and is cut at the ground's key, lighter than a named face. Lit skin is fine lines
+  thinning out into stipple; what lies above the white point is paper.
+- **A tinted sheet is read as paper only where it is broad and flat.** A drawing on yellowed paper whose
+  sheet is less than 3% of the picture at any one value, or a sheet darker than a middle grey, is not found,
+  and its tint is cut as a light tone. Name the white point (`--white 0.8`) or clean the sheet first.

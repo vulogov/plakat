@@ -845,9 +845,10 @@ pub struct FromArgs {
     /// — or, without it, about 0.3.
     #[arg(long, value_name = "F")]
     pub follow: Option<f32>,
-    /// WHITE POINT (0.5..1, default 0.9) for an engraving (`--medium durer`): the share of the picture's values
-    /// at or above which the paper is left clean — the highlight clipping threshold. A picture with a broad
-    /// light (a white dress, a bright sky) that is cut as bare paper wants more of it cut: 0.98.
+    /// WHITE POINT (0.5..1) for an engraving (`--medium durer`): the share of the picture's values at or above
+    /// which the paper is left clean — the highlight clipping threshold. Unset, the paper is found in the
+    /// picture: its brightest broad flat value (a sheet, a sky, a wall), or its brightest thousandth. Name it
+    /// to cut more of a broad light (0.98) or to leave a tinted sheet clean (0.8).
     #[arg(long, value_name = "F")]
     pub white: Option<f32>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
@@ -2628,7 +2629,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     }
     if let Some(f) = a.white {
         if params.engrave {
-            params.white = f.clamp(0.5, 1.0);
+            params.white = Some(f.clamp(0.5, 1.0));
         } else {
             println!("{}  --white is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
         }

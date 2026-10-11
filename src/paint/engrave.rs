@@ -87,19 +87,18 @@ const LAYER_COVER: [f32; 3] = [0.42, 0.42, 0.40];
 const HAND_OVER: f32 = 0.27;
 /// How inked the subject's middle value is cut: an engraving is mostly paper.
 const MIDDLE_TONE: f32 = 0.2;
+/// ... except a face, which is modelled fuller than its ground, as a portrait engraver's is: fine lines over
+/// the whole lit side, open only at the highlights. On skin the middle value is cut this far inked.
+const SKIN_TONE: f32 = 0.33;
 /// How much a surface is shaded against its surroundings.
 const RELIEF: f32 = 0.4;
 /// The deepest tone the plate cuts: a burin never fills a black, paper still shows between its lines.
 const DEEPEST: f32 = 0.78;
-/// How far below a hair's worth of tone the first layer still cuts: a light tone is a broken line — flicks,
-/// and below `DOTS` of a hair, dots, so a form passes into the light through stipple, not over an edge.
-const FLICK: f32 = 0.2;
-const DOTS: f32 = 0.5;
-/// ... and below `FLICK` the dots go on thinning, evenly, all the way to the paper: there is no tone so light
-/// that it has no dot at all, so the light rolls off through an ever sparser stipple instead of stopping at an
-/// edge — a lit cheek, a white sleeve, keep their form. `BARE` is the share of a hair below which a tone is not
-/// even a dot: a little above nothing, so the faint unevenness of a sheet of old paper, a whisker under the
-/// white point, is not dusted over.
+/// Below the sparsest hairs (see `SPARSE`) the first layer still cuts, as dots that go on thinning, evenly, all
+/// the way to the paper: there is no tone so light that it has no dot at all, so the light rolls off through an
+/// ever sparser stipple instead of stopping at an edge — a lit cheek, a white sleeve, keep their form. `BARE`
+/// is the share of a hair below which a tone is not even a dot: a little above nothing, so the faint unevenness
+/// of a sheet of old paper, a whisker under the white point, is not dusted over.
 const BARE: f32 = 0.03;
 /// A highlight is clean paper, not a faint tone: a spot among the lightest `LIT` of the subject that is also
 /// lighter than its surroundings by `GLINT` is not cut at all. (A broad light — a lit cheek, a white dress — is
@@ -116,10 +115,25 @@ const FAR_FINER: f32 = 0.3;
 /// hatched, and the deepest crossing enters the same way — a layer that began at a hair's full width would
 /// draw its own edge, a seam along the tone it starts at. Only there — stipple everywhere is dust, not form.
 const STIPPLE: f32 = 0.6;
+/// A LIGHT tone is not a thinner line — a burin cuts nothing finer than a hair — nor, first, a broken one: it
+/// is the same hair, further apart. Below a hair's worth of tone the lines of a layer spread out, up to this
+/// many spacings, dropping out one at a time as the tone lifts, the way an engraver lets a form go into the
+/// light; only past that do the hairs break into flicks and dots. (A lit cheek cut as flicks and dots at the
+/// full spacing read as a burn, not a light.)
+const SPARSE: f32 = 4.0;
+/// THE PAPER, when no white point is named: the picture's brightest broad flat value — the sheet of a drawing,
+/// a sky, a wall — is a band of values a fiftieth of the range wide holding this share of the picture.
+const PAPER_SHARE: f32 = 0.03;
 /// How much a line's weight wavers along it with the pressure of the hand.
 const HAND: f32 = 0.14;
 /// How much of the plate's tone is the ORDER of the subject's values rather than the values themselves.
 const BY_RANK: f32 = 0.45;
+/// ... counted among the values that MODEL something: a value weighs as much as it differs from its
+/// surroundings (fully at this much), so a mass of one value — a dark ground, a wall — counts for little and
+/// is one tone, not a ramp. Ranked by count alone, a ground darkening by a twentieth toward the edge of the
+/// sheet was cut from open hatch to the deepest black, and the crossing that entered along the way drew a
+/// seam down the wall; and a face, a tenth of a dark picture, was ranked into the paper.
+const RANK_RELIEF: f32 = 0.1;
 /// Each layer's angle off the form's direction: along it, then crossing it at a third of a turn either way, so
 /// two layers leave lozenges and three leave triangles.
 const LAYER_ANGLE: [f32; 3] = [0.0, 1.0472, 2.0944];
@@ -657,12 +671,23 @@ impl Field<'_> {
     fn width(&self, p: [f32; 2], layer: usize) -> f32 {
         cover(self.tone[(p[1] as usize).min(self.h - 1) * self.w + (p[0] as usize).min(self.w - 1)], layer) * self.spacing
     }
+    /// How many spacings apart the layer's lines lie here: one, and below a hair's worth of tone more, up to
+    /// `SPARSE` — a light is the same hair, further apart. Lighter still, where the hairs break into flicks
+    /// and dots, the lines come back to one spacing: stipple is scattered, not laid in ranks.
+    fn apart(&self, p: [f32; 2], layer: usize) -> f32 {
+        let part = self.width(p, layer) / self.hair;
+        if part >= 1.0 / SPARSE {
+            (1.0 / part).clamp(1.0, SPARSE)
+        } else {
+            1.0
+        }
+    }
     fn open(&self, p: [f32; 2], layer: usize) -> bool {
         if p[0] < 0.0 || p[1] < 0.0 || p[0] >= self.w as f32 || p[1] >= self.h as f32 {
             return false;
         }
-        // Every layer runs on below a hair's worth of tone, where it is cut as flicks and as dots (see `plan`).
-        let least = [BARE, STIPPLE, STIPPLE][layer] * self.hair;
+        // Every layer runs on below a hair's worth of tone: spread out, then as flicks and as dots (see `plan`).
+        let least = [BARE, STIPPLE / SPARSE, STIPPLE / SPARSE][layer] * self.hair;
         !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= least
     }
 
@@ -700,7 +725,8 @@ impl Field<'_> {
                     break;
                 }
                 p = [p[0] + d[0], p[1] + d[1]];
-                if !self.open(p, layer) || near.any_within(p, self.spacing * 0.55) {
+                // Into the light the lines lie further apart: of two running side by side, the later stops.
+                if !self.open(p, layer) || near.any_within(p, self.spacing * 0.55 * self.apart(p, layer)) {
                     break;
                 }
                 pts.push(p);
@@ -719,7 +745,8 @@ impl Field<'_> {
     }
 
     /// Every line of one layer, evenly spaced: each accepted line seeds its neighbours one spacing to either
-    /// side, and a coarse scan of the sheet starts the surfaces no neighbour reached.
+    /// side (more in the light, where the lines lie further apart), and a coarse scan of the sheet starts the
+    /// surfaces no neighbour reached.
     fn layer(&self, layer: usize, seed: u64) -> Vec<Vec<[f32; 2]>> {
         let mut near = Near::new(self.w, self.h, self.spacing);
         let mut lines: Vec<Vec<[f32; 2]>> = Vec::new();
@@ -727,7 +754,7 @@ impl Field<'_> {
         let every = (self.spacing * 0.5).max(1.0) as usize;
         let mut next = 0usize;
         let grow = |from: [f32; 2], lines: &mut Vec<Vec<[f32; 2]>>, near: &mut Near, next: &mut usize| {
-            if !self.open(from, layer) || near.any_within(from, self.spacing * 0.92) {
+            if !self.open(from, layer) || near.any_within(from, self.spacing * 0.92 * self.apart(from, layer)) {
                 return;
             }
             let first = self.trace(from, layer, near);
@@ -745,9 +772,10 @@ impl Field<'_> {
                     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
                     let len = (dx * dx + dy * dy).sqrt().max(1e-4);
                     let here = lines[*next][i];
+                    let gap = self.spacing * self.apart(here, layer);
                     for side in [-1.0f32, 1.0] {
-                        let c = [here[0] - dy / len * self.spacing * side, here[1] + dx / len * self.spacing * side];
-                        if !self.open(c, layer) || near.any_within(c, self.spacing * 0.92) {
+                        let c = [here[0] - dy / len * gap * side, here[1] + dx / len * gap * side];
+                        if !self.open(c, layer) || near.any_within(c, self.spacing * 0.92 * self.apart(c, layer)) {
                             continue;
                         }
                         let line = self.trace(c, layer, near);
@@ -889,11 +917,11 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 }
 
 /// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `white` (0.5..1) is the
-/// WHITE POINT, as a share of the picture's values: what lies at or above it is clean paper (0.9 by default; a
-/// white dress wants more of the picture cut, 0.98); `follow` (0..1) how far the hatch follows the form (0 = a
+/// WHITE POINT, as a share of the picture's values: what lies at or above it is clean paper (`None` finds the
+/// paper in the picture — see `PAPER_SHARE`; a white dress wants more of the picture cut, 0.98); `follow` (0..1) how far the hatch follows the form (0 = a
 /// ruled plate, every line on the diagonal or level on the ground); `budget` caps the number of cuts — when
 /// the hatch would not fit, its spacing widens until it does.
-pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, white: f32, follow: f32, budget: usize, seed: u64) -> Plate {
+pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, white: Option<f32>, follow: f32, budget: usize, seed: u64) -> Plate {
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
@@ -907,7 +935,41 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     let mut sorted: Vec<f32> = value.iter().step_by(7).copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let q = |f: f32| sorted[((sorted.len() as f32 - 1.0) * f) as usize];
-    let white = q(white.clamp(0.5, 1.0));
+    // THE PAPER. Named, the white point is a share of the picture's values. Unnamed, it is looked for: the
+    // paper is the picture's brightest BROAD FLAT value — the sheet of a drawing, a sky, a wall — a band of
+    // values holding `PAPER_SHARE` of the picture, in its lights (the upper quarter of its values, and no
+    // darker than a middle grey — a dark ground is not paper), taken at the top of its peak, since a sheet's
+    // own values straddle a band. Where there is no such value — a dark
+    // painting with a lit face, its lights spread thin — the paper is the brightest thousandth. (A fixed share
+    // of the values — the tenth-lightest — took the whole lit half of a face on a dark ground for paper.)
+    // A sheet is not one value to a photograph: it yellows toward its edges, the lamp falls off across it —
+    // and no engraver cuts that. The paper's RUN of values is the bands, each `PAPER_SHARE` broad, that hold
+    // together round the peak; within it, a tone no darker than its surroundings is the sheet's own tint, and
+    // is paper (below). `sheet` is the bottom of the run.
+    let (white, sheet) = match white {
+        Some(f) => (q(f.clamp(0.5, 1.0)), None),
+        None => {
+            let mut band = [0usize; 50];
+            for v in &sorted {
+                band[((v * 50.0) as usize).min(49)] += 1;
+            }
+            let broad = (sorted.len() as f32 * PAPER_SHARE) as usize;
+            let lights = ((q(0.75) * 50.0) as usize).clamp(25, 49);
+            match (lights..50).rev().find(|&b| band[b] >= broad) {
+                Some(mut b) => {
+                    while b > 0 && band[b - 1] > band[b] {
+                        b -= 1;
+                    }
+                    let mut lo = b;
+                    while lo > 0 && band[lo - 1] >= broad && band[lo - 1] <= band[lo] {
+                        lo -= 1;
+                    }
+                    ((b + 1) as f32 / 50.0, Some(lo as f32 / 50.0))
+                }
+                None => (q(0.999), None),
+            }
+        }
+    };
     let black = q(0.02).min(white - 0.2);
     // Tone is a broader thing than line: it is read off the picture a little out of focus, so a hatch does not
     // break on the grain of a canvas or the blocks of a JPEG. The contours keep the sharp reading.
@@ -919,7 +981,18 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     // values, so a subject that is dark all over is still cut from open line to closed shadow, with its middle
     // value about a third inked.
     let around = blur(&dark, w, h, ((long / 40.0) as usize).max(2), 3);
-    let modelled: Vec<f32> = dark.iter().zip(&around).map(|(&d, &a)| (d + RELIEF * (d - a)).clamp(0.0, 1.0)).collect();
+    // The sheet's tint: how far below the white point the paper's own run of values reaches. A tone whose
+    // surroundings lie within it is on the sheet, and the sheet's level is taken out of it — wholly, and
+    // fading to nothing by twice the run's depth, where the surroundings are a tone of the subject's.
+    let tint = sheet.map_or(0.0, |s| ((white - s) / (white - black)).clamp(0.0, 1.0));
+    let modelled: Vec<f32> = dark
+        .iter()
+        .zip(&around)
+        .map(|(&d, &a)| {
+            let sheet = a * (1.0 - ((a - tint) / tint.max(1e-3)).clamp(0.0, 1.0));
+            (d - sheet + RELIEF * (d - a)).clamp(0.0, 1.0)
+        })
+        .collect();
     // DISTANCE, when the relief is known: 0 at the nearest part of the subject, 1 at its farthest.
     let far: Option<Vec<f32>> = relief.filter(|r| r.w >= 2 && r.h >= 2 && r.z.len() == r.w * r.h).map(|r| {
         let z: Vec<f32> = (0..w * h)
@@ -938,8 +1011,8 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         blur(&far, w, h, ((long / 250.0) as usize).max(1), 2)
     });
     let mut hist = [0f32; 256];
-    for d in modelled.iter().filter(|d| **d > 0.08) {
-        hist[((d * 255.0) as usize).min(255)] += 1.0;
+    for ((&m, &d), &a) in modelled.iter().zip(&dark).zip(&around).filter(|((m, _), _)| **m > 0.08) {
+        hist[((m * 255.0) as usize).min(255)] += ((d - a).abs() / RANK_RELIEF).clamp(0.05, 1.0);
     }
     let total: f32 = hist.iter().sum::<f32>().max(1.0);
     let mut rank = [0f32; 256];
@@ -956,20 +1029,27 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     };
     let (fur, polished, skin) = (made_of(&[FUR]), made_of(&[GLASS, METAL]), made_of(&[SKIN]));
     let key = (MIDDLE_TONE / DEEPEST).ln() / 0.5f32.ln();
+    let skin_key = (SKIN_TONE / DEEPEST).ln() / 0.5f32.ln();
+    // A glint on skin outshines its NEAR surroundings too: a broad light's edge against the hair is no
+    // highlight, and the forehead is modelled up to the hairline.
+    let near = skin.as_ref().map(|_| blur(&dark, w, h, ((long / 150.0) as usize).max(1), 3));
     let tone: Vec<f32> = (0..w * h)
         .map(|i| {
             let d = modelled[i];
             let r = if d > 0.08 { rank[((d * 255.0) as usize).min(255)] } else { 0.0 };
+            let face = skin.as_ref().map_or(0.0, |s| s[i]);
             // A highlight is left clean. The fringe of a tone that dies away into the paper — a cast shadow's
-            // edge — is no highlight (nothing around it is darker by much): it thins out into flicks.
+            // edge — is no highlight (nothing around it is darker by much): it thins out into stipple.
             // On a polished surface a light need outshine its surroundings by half as much to be a glint.
             let shine = polished.as_ref().map_or(0.0, |p| p[i]);
-            if r < LIT && around[i] - dark[i] > GLINT * (1.0 - 0.5 * shine) {
+            let fringe = around[i] - dark[i];
+            let lift = near.as_ref().map_or(fringe, |n| fringe - (fringe - fringe.min(n[i] - dark[i])) * face);
+            if r < LIT && lift > GLINT * (1.0 - 0.5 * shine) {
                 return 0.0;
             }
             let lighter = 1.0 - FAR_LIGHTER * far.as_ref().map_or(0.0, |f| f[i]);
             let x = BY_RANK * r + (1.0 - BY_RANK) * d;
-            let t = DEEPEST * x.powf(key).max(TOE * x);
+            let t = DEEPEST * x.powf(key + (skin_key - key) * face).max(TOE * x);
             // ... and its light and middle tones open to the paper, while its darks stay: polish is contrast.
             lighter * t * (1.0 - POLISH * shine * (1.0 - t / DEEPEST))
         })
@@ -1063,35 +1143,32 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         for layer in 0..LAYER_COVER.len() {
             for (li, line) in field.layer(layer, seed).into_iter().enumerate() {
                 let raw: Vec<f32> = line.iter().map(|p| field.width(*p, layer)).collect();
-                // Below a hair's worth of tone a line is not made thinner — it is BROKEN. The first layer breaks into
-                // flicks whose length carries the tone; the first crossing enters as dots. Each line breaks at its
-                // own place, so the marks do not fall into ranks.
-                let (period, pitch) = (spacing * 3.0, spacing * 1.15);
+                // Below a hair's worth of tone a line is not made thinner — it is laid further apart (see
+                // `Field::apart`), and below the sparsest hairs it is BROKEN into dots, at one spacing again,
+                // that thin out to the paper. Each line breaks at its own place, so the dots do not fall into ranks.
+                let pitch = spacing * 1.15;
                 let dot = (field.hair * 1.8).max(2.0);
-                let phase = (jitter(seed ^ 0xF11C ^ layer as u64, li as u64) + 0.5) * period;
+                let phase = (jitter(seed ^ 0xF11C ^ layer as u64, li as u64) + 0.5) * pitch;
                 let ruled = |i: usize| {
                     let p = line[i];
                     field.polished.map_or(0.0, |m| m[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)])
                 };
                 let on = |i: usize| {
-                    let part = raw[i] / field.hair;
+                    // Below a hair's worth the lines have spread out (see `Field::apart`): a hair lying `SPARSE`
+                    // spacings from the next carries a `SPARSE`th of its tone, so a line is whole down to there.
                     // On polished metal and glass the line is never broken: it runs on as a hair, straight.
-                    if part >= 1.0 || ruled(i) > 0.5 {
+                    let part = raw[i] / field.hair;
+                    if part >= 1.0 / SPARSE || ruled(i) > 0.5 {
                         return true;
                     }
                     let at = i as f32 + phase;
-                    if layer == 0 && part >= DOTS {
-                        return at % period < period * part;
-                    }
                     let nth = (at / pitch) as u64;
-                    // The first layer's dots thin out, and below a flick's worth go on thinning, evenly, to the
-                    // paper: the light rolls off through stipple to the end.
-                    let often = if layer == 0 {
-                        if part >= FLICK { 0.25 + 0.75 * (part - FLICK) / (DOTS - FLICK) } else { 0.25 * ((part - BARE) / (FLICK - BARE)).max(0.0) }
-                    } else {
-                        (part - STIPPLE) / (1.0 - STIPPLE)
-                    };
-                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < often
+                    // A dot at every pitch of a line at one spacing carries about what a hair `SPARSE` spacings
+                    // from the next does, so the dots take over from the sparsest hairs at their full count and
+                    // thin out from there — the first layer's evenly to the paper, so the light rolls off through
+                    // stipple to the end; a crossing's over the share of a hair's worth under its sparsest hairs.
+                    let often = if layer == 0 { (part - BARE) / (1.0 / SPARSE - BARE) } else { (part * SPARSE - STIPPLE) / (1.0 - STIPPLE) };
+                    at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < often.clamp(0.0, 1.0)
                 };
                 // The hand: a line's weight breathes along it.
                 let hand = |i: usize| {
@@ -1157,7 +1234,7 @@ mod tests {
 
     #[test]
     fn a_dark_mass_is_cross_hatched_and_the_ground_stays_paper() {
-        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, 0.9, 1.0, 50_000, 7);
+        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, None, 1.0, 50_000, 7);
         let hatch: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer > 0).collect();
         assert!(!hatch.is_empty(), "the dark mass is engraved");
         let outside = hatch.iter().flat_map(|c| c.path.iter()).filter(|p| !(p[0] > 36.0 && p[0] < 124.0 && p[1] > 36.0 && p[1] < 124.0)).count();
@@ -1169,7 +1246,7 @@ mod tests {
 
     #[test]
     fn lines_of_a_layer_keep_their_distance() {
-        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, 0.9, 1.0, 50_000, 7);
+        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, None, 1.0, 50_000, 7);
         let first: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 1).collect();
         let total: f32 = first.iter().map(|c| c.path.len() as f32 * 2.0).sum();
         // A 100-px square ruled every `spacing` holds about 100·100/spacing of line; a tangle holds far more.
@@ -1181,7 +1258,7 @@ mod tests {
     #[test]
     fn a_small_budget_opens_the_plate() {
         let img = two_masses(200, 200);
-        let (full, tight) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, None, None, 0.0, 0.9, 1.0, 60, 7));
+        let (full, tight) = (plan(&img, None, None, None, 0.0, None, 1.0, 50_000, 7), plan(&img, None, None, None, 0.0, None, 1.0, 60, 7));
         assert!(tight.cuts.len() <= 60, "the budget holds ({})", tight.cuts.len());
         assert!(tight.spacing > full.spacing, "by widening the spacing");
     }
@@ -1189,7 +1266,7 @@ mod tests {
     #[test]
     fn the_same_seed_cuts_the_same_plate() {
         let img = two_masses(120, 90);
-        let (a, b) = (plan(&img, None, None, None, 0.5, 0.9, 1.0, 20_000, 3), plan(&img, None, None, None, 0.5, 0.9, 1.0, 20_000, 3));
+        let (a, b) = (plan(&img, None, None, None, 0.5, None, 1.0, 20_000, 3), plan(&img, None, None, None, 0.5, None, 1.0, 20_000, 3));
         assert_eq!(a.cuts.len(), b.cuts.len());
         assert!(a.cuts.iter().zip(&b.cuts).all(|(x, y)| x.path == y.path && x.w0 == y.w0 && x.w1 == y.w1));
     }
@@ -1209,7 +1286,7 @@ mod tests {
         let made = std::env::var("PLAKAT_ENGRAVE_MATERIALS").ok().map(|p| image::open(p).unwrap().to_rgb8());
         let kind: Option<Vec<u8>> = made.as_ref().map(crate::pipelines::materials::from_png);
         let materials = made.as_ref().zip(kind.as_ref()).map(|(m, kind)| Materials { w: m.width() as usize, h: m.height() as usize, kind });
-        let plate = plan(&img, relief, normals, materials, 0.55, 0.9, 1.0, 360_000, 42);
+        let plate = plan(&img, relief, normals, materials, 0.55, None, 1.0, 360_000, 42);
         let (w, h) = (img.width() as i64, img.height() as i64);
         let mut sheet = image::GrayImage::from_pixel(w as u32, h as u32, image::Luma([250]));
         // The stroke rasteriser's footprint for a flat-ended one-point brush: two lanes a pixel across the width.
@@ -1258,7 +1335,7 @@ mod tests {
             }
             dy / (dx + dy).max(1e-6)
         };
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 0.9, 1.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, None, 1.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, None, 1.0, 50_000, 7));
         assert!(upright(&flat) < 0.56, "without the relief the cuts rest on the diagonal ({})", upright(&flat));
         assert!(upright(&round) > 0.68, "round the cylinder they turn upright ({})", upright(&round));
     }
@@ -1286,7 +1363,7 @@ mod tests {
                 [0.0, t, (1.0 - t * t).sqrt()]
             })
             .collect();
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, None, 1.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, None, 1.0, 50_000, 7));
         let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
         assert!(band(&flat) < 0.56, "without the normals the cuts rest on the diagonal ({})", band(&flat));
         assert!(band(&round) > 0.8, "round the bar they turn upright ({})", band(&round));
@@ -1305,7 +1382,7 @@ mod tests {
             .collect();
         let kind = vec![SKIN; w * h];
         let normals = Normals { w, h, n: &n };
-        let (round, held) = (plan(&img, None, Some(normals), None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 50_000, 7));
+        let (round, held) = (plan(&img, None, Some(normals), None, 0.0, None, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, None, 1.0, 50_000, 7));
         let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
         assert!(band(&round) > 0.8, "round the bar the cuts turn upright ({})", band(&round));
         assert!(band(&held) > 0.4 && band(&held) < 0.6, "on skin they rest on the diagonal ({})", band(&held));
@@ -1317,12 +1394,12 @@ mod tests {
         let (w, h) = (200usize, 200usize);
         let img = two_masses(w as u32, h as u32);
         let n = vec![[0.0f32, -0.8, 0.6]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, None, 1.0, 50_000, 7);
         let level = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(level < 0.2, "on the ground the cuts lie level ({level})");
         // A plane facing the viewer says nothing: the diagonal stands.
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 0.9, 1.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, None, 1.0, 50_000, 7);
         let rest = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(rest > 0.4 && rest < 0.6, "a wall facing the viewer keeps the diagonal ({rest})");
     }
@@ -1364,7 +1441,7 @@ mod tests {
             let d = (lie(plate, 1) - lie(plate, 2)).abs() % std::f32::consts::PI;
             d.min(std::f32::consts::PI - d)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, None, 1.0, 80_000, 7));
         assert!(apart(&plain) > 0.85, "a plain surface is crossed at a third of a turn ({})", apart(&plain));
         assert!(apart(&furred) < 0.45, "fur's crossing only leans off the coat ({})", apart(&furred));
         assert!(lie(&furred, 1).abs() < 0.2, "and the coat is cut along its strands ({})", lie(&furred, 1));
@@ -1380,7 +1457,7 @@ mod tests {
         let kind = vec![METAL; w * h];
         // The ink laid between two verticals: every point of every cut, by the cut's width.
         let ink = |plate: &Plate, x: (f32, f32)| plate.cuts.iter().map(|c| c.path.iter().filter(|p| p[0] > x.0 && p[0] < x.1).count() as f32 * (c.w0 + c.w1) * 0.5).sum::<f32>();
-        let (plain, polished) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
+        let (plain, polished) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, None, 1.0, 80_000, 7));
         let (mid, deep) = (ink(&polished, (10.0, 80.0)) / ink(&plain, (10.0, 80.0)), ink(&polished, (155.0, 190.0)) / ink(&plain, (155.0, 190.0)));
         assert!(ink(&plain, (10.0, 80.0)) > 100.0, "the plain middle tone is cut at all");
         assert!(mid < 0.7, "the middle tone opens ({mid})");
@@ -1397,7 +1474,7 @@ mod tests {
             image::Rgb([v, v, v])
         });
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let (led, flat) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 0.9, 1.0, 80_000, 7));
+        let (led, flat) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, None, 1.0, 80_000, 7));
         let (by_picture, by_normals) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&flat, (60.0, 140.0), (60.0, 140.0)));
         assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
         assert!(by_normals > 0.4 && by_normals < 0.6, "a flat wall keeps the diagonal ({by_normals})");
@@ -1423,7 +1500,7 @@ mod tests {
             }
             runs.into_iter().fold(0f32, f32::max)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, None, 1.0, 80_000, 7));
         assert!(longest(&plain) > 60.0, "a plain mass is cut in long lines ({})", longest(&plain));
         assert!(longest(&furred) < 2.0 * HAIR_LENGTH.1 * furred.spacing + 4.0, "fur in hairs ({} at spacing {})", longest(&furred), furred.spacing);
     }
@@ -1436,7 +1513,7 @@ mod tests {
             let v = (40.0 + 195.0 * x as f32 / w as f32) as u8;
             image::Rgb([v, v, v])
         });
-        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7);
         let last = plate.cuts.iter().flat_map(|c| c.path.iter().map(|p| p[0])).fold(0f32, f32::max);
         let dots = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() <= 3).count();
         let lines = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() > 3).count();
@@ -1459,7 +1536,7 @@ mod tests {
             let r = (((i % w) as f32 - 100.0).powi(2) + ((i / w) as f32 - 100.0).powi(2)).sqrt();
             0.3 + 0.6 * (1.0 - (r / 60.0).powi(2)).max(0.0).sqrt()
         }).collect();
-        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 0.9, 1.0, 80_000, 7);
+        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, None, 1.0, 80_000, 7);
         let sweep = |c: &Cut| {
             let mut s = 0f32;
             for t in c.path.windows(3) {
@@ -1480,7 +1557,7 @@ mod tests {
             let v = if x < 30 || x > 170 || y < 30 || y > 170 { 235 } else if x % 16 < 8 { 15 } else { 80 };
             image::Rgb([v, v, v])
         });
-        let (led, ruled) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.9, 0.0, 80_000, 7));
+        let (led, ruled) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, None, 0.0, 80_000, 7));
         let (by_picture, by_rule) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&ruled, (60.0, 140.0), (60.0, 140.0)));
         assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
         assert!(by_rule > 0.4 && by_rule < 0.6, "ruled, the diagonal ({by_rule})");
@@ -1496,7 +1573,7 @@ mod tests {
             image::Rgb([v, v, v])
         });
         let in_light = |p: &Plate| p.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 80.0 && p[1] > 100.0).count();
-        let (cut, bare) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.5, 1.0, 80_000, 7));
+        let (cut, bare) = (plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, Some(0.5), 1.0, 80_000, 7));
         assert!(in_light(&cut) > 200, "the light grey is cut ({})", in_light(&cut));
         assert_eq!(in_light(&bare), 0, "with the white point brought down to it, the light grey is paper");
     }
@@ -1521,7 +1598,7 @@ mod tests {
                 [x, y, (1.0 - x * x - y * y).max(0.0).sqrt()]
             })
             .collect();
-        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 80_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, None, 1.0, 80_000, 7);
         // The band to the left of the disc: a fan would run level there (radial) or upright (level on the tilt).
         let beside = upright_in(&plate, (40.0, 75.0), (105.0, 135.0));
         assert!(beside > 0.38 && beside < 0.62, "beside the disc the wall keeps the diagonal ({beside})");
@@ -1534,7 +1611,7 @@ mod tests {
         let (w, h) = (200usize, 200usize);
         let img = two_masses(w as u32, h as u32);
         let wall = vec![[0.8f32, 0.0, 0.6]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &wall }), None, 0.0, 0.9, 1.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &wall }), None, 0.0, None, 1.0, 50_000, 7);
         let on_wall = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(on_wall > 0.38 && on_wall < 0.62, "a wall seen aslant is hatched on the diagonal ({on_wall})");
     }
@@ -1546,7 +1623,7 @@ mod tests {
         let img = two_masses(w as u32, h as u32);
         let kind = vec![FUR; w * h];
         let longest = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).map(|c| c.path.windows(2).map(|s| ((s[1][0] - s[0][0]).powi(2) + (s[1][1] - s[0][1]).powi(2)).sqrt()).sum::<f32>()).fold(0f32, f32::max);
-        let (line, hairs) = (plan(&img, None, None, None, 0.6, 0.9, 1.0, 50_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.6, 0.9, 1.0, 50_000, 7));
+        let (line, hairs) = (plan(&img, None, None, None, 0.6, None, 1.0, 50_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.6, None, 1.0, 50_000, 7));
         assert!(longest(&line) > 30.0, "a drawn contour runs on ({})", longest(&line));
         assert!(longest(&hairs) <= FUR_PIECE.1 * 3.0 + 2.0, "through fur it is pieces ({})", longest(&hairs));
         assert!(hairs.cuts.iter().any(|c| c.layer == 0), "the pieces are still drawn");
@@ -1558,7 +1635,7 @@ mod tests {
         // is read a few pixels out of focus, so its edges carry a trace of tone: the clean paper is judged
         // inside the fringe.)
         let img = RgbImage::from_fn(800, 800, |x, y| if x > 160 && x < 640 && y > 160 && y < 640 { let v = if x < 186 { 205 } else { 50 }; image::Rgb([v, v, v]) } else { image::Rgb([235, 232, 226]) });
-        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 200_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, None, 1.0, 200_000, 7);
         // The strip's side toward the paper is a tone dying away, and thins into dots; the side against the
         // dark is the glint, and is clean.
         let lit = plate.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 173.0 && p[0] < 179.0 && p[1] > 200.0 && p[1] < 600.0).count();
@@ -1567,22 +1644,29 @@ mod tests {
     }
 
     #[test]
-    fn the_deepest_crossing_enters_as_dots() {
-        // A long ramp out of the black: the third layer's lightest band is dots, not lines a hair wide — a
-        // layer that began at its full width would draw its own edge, a seam along the tone it starts at.
+    fn the_deepest_crossing_enters_sparse_and_hair_fine() {
+        // A long ramp out of the black: where the third layer begins, its lines are hairs, and lie further
+        // apart than the spacing — a layer that began at its full width and density would draw its own edge,
+        // a seam along the tone it starts at.
         let (w, h) = (2400usize, 64usize);
         let img = RgbImage::from_fn(w as u32, h as u32, |x, _| {
             let v = (10.0 + 100.0 * x as f32 / w as f32) as u8;
             image::Rgb([v, v, v])
         });
-        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 400_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, None, 1.0, 400_000, 7);
         let deepest: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 3).collect();
         let end = |c: &Cut| c.path.iter().map(|p| p[0]).fold(0f32, f32::max);
         let last = deepest.iter().map(|c| end(c)).fold(0f32, f32::max);
-        let dots = deepest.iter().filter(|c| end(c) > last - 20.0 && c.path.len() <= 3).count();
-        let lines = deepest.iter().filter(|c| end(c) > last - 20.0 && c.path.len() > 3).count();
+        // The lines crossing a band of the ramp (the dots under them are not counted).
+        let start = |c: &Cut| c.path.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
+        let crossing = |x0: f32, x1: f32| deepest.iter().filter(|c| c.path.len() > 3 && start(c) < x1 && end(c) > x0).count();
+        let entering: Vec<&&Cut> = deepest.iter().filter(|c| end(c) > last - 20.0 && c.path.len() > 3).collect();
+        let hair = (plate.spacing * 0.15).max(0.45);
+        let widest = entering.iter().map(|c| c.w0.max(c.w1)).fold(0f32, f32::max);
+        let (light, deep) = (crossing(last - 10.0, last), crossing(last - 100.0, last - 90.0));
         assert!(last > 100.0, "the third layer reaches out of the black ({last})");
-        assert!(dots > lines, "its last band is dots ({dots} dots, {lines} lines)");
+        assert!(widest <= hair * 1.6, "where it begins its lines are hairs ({widest} against a hair of {hair})");
+        assert!(light * 3 <= deep * 2, "and lie further apart than deeper in ({light} where it begins, {deep} deeper in)");
     }
 
     #[test]
@@ -1599,7 +1683,7 @@ mod tests {
             .collect();
         let kind = vec![FUR; w * h];
         let normals = Normals { w, h, n: &n };
-        let (round, coat) = (plan(&img, None, Some(normals), None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 50_000, 7));
+        let (round, coat) = (plan(&img, None, Some(normals), None, 0.0, None, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, None, 1.0, 50_000, 7));
         let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
         assert!(band(&round) > 0.8, "round the bar the cuts turn upright ({})", band(&round));
         assert!(band(&coat) > 0.3 && band(&coat) < 0.7, "in fur they do not ({})", band(&coat));
@@ -1616,7 +1700,7 @@ mod tests {
             image::Rgb([v, v, v])
         });
         let kind = vec![SKIN; w * h];
-        let (plain, skin) = (plan(&img, None, None, None, 1.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 1.0, 0.9, 1.0, 80_000, 7));
+        let (plain, skin) = (plan(&img, None, None, None, 1.0, None, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 1.0, None, 1.0, 80_000, 7));
         let step = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).flat_map(|c| c.path.iter()).filter(|p| (p[0] - 120.0).abs() < 5.0 && p[1] > 20.0 && p[1] < 220.0).count();
         let square = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 174.0 && p[0] < 194.0 && p[1] > 54.0 && p[1] < 74.0).count();
         assert!(step(&plain) > 100, "plain, the soft step is drawn ({})", step(&plain));
@@ -1625,8 +1709,55 @@ mod tests {
     }
 
     #[test]
+    fn the_paper_is_the_brightest_broad_light_or_the_brightest_thousandth() {
+        // A dark painting with a lit face: most of the sheet near black, a lit patch at a middle value, a speck of
+        // highlight. No broad light — so the paper is the brightest thousandth and the lit patch is modelled, not
+        // clipped: it is cut. A drawing on a tinted sheet: the sheet (most of the picture, at one value) is the
+        // paper, clean, and its subject is cut.
+        let (w, h) = (240usize, 240usize);
+        let dark = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if x > 100 && x < 140 && y > 100 && y < 140 { 160 } else if x > 112 && x < 128 && y > 56 && y < 72 { 250 } else { 15 };
+            image::Rgb([v, v, v])
+        });
+        let sheet = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if x > 100 && x < 140 && y > 100 && y < 140 { 60 } else { 222 + ((x * 7 + y * 3) % 5) as u8 };
+            image::Rgb([v, v, v])
+        });
+        let within = |p: &Plate, x: (f32, f32), y: (f32, f32)| p.cuts.iter().flat_map(|c| c.path.iter()).filter(|p| p[0] > x.0 && p[0] < x.1 && p[1] > y.0 && p[1] < y.1).count();
+        let (dark, sheet) = (plan(&dark, None, None, None, 0.0, None, 1.0, 80_000, 7), plan(&sheet, None, None, None, 0.0, None, 1.0, 80_000, 7));
+        assert!(within(&dark, (104.0, 136.0), (104.0, 136.0)) > 20, "the lit face on a dark ground is cut, not clipped ({})", within(&dark, (104.0, 136.0), (104.0, 136.0)));
+        assert_eq!(within(&sheet, (0.0, 90.0), (0.0, 90.0)), 0, "the tinted sheet is paper ({})", within(&sheet, (0.0, 90.0), (0.0, 90.0)));
+        assert!(within(&sheet, (104.0, 136.0), (104.0, 136.0)) > 60, "its subject is cut ({})", within(&sheet, (104.0, 136.0), (104.0, 136.0)));
+    }
+
+    #[test]
+    fn a_light_is_the_same_hair_further_apart() {
+        // A light tone beside a middle one, each flat. In the light the first layer's lines are whole hairs,
+        // not flicks, and lie further apart than in the middle tone; the lines that run from the one into
+        // the other drop out one at a time.
+        let (w, h) = (300usize, 200usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if y < 30 { 240 } else if x < 150 { 120 } else { 205 };
+            image::Rgb([v, v, v])
+        });
+        let plate = plan(&img, None, None, None, 0.0, None, 1.0, 80_000, 7);
+        let first: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 1).collect();
+        // Crossings of a scanline: how many lines it meets in each half.
+        let crossings = |x0: f32, x1: f32| -> usize {
+            let y = 120.0f32;
+            first.iter().filter(|c| c.path.windows(2).any(|s| (s[0][1] - y) * (s[1][1] - y) <= 0.0 && s[0][0] > x0 && s[0][0] < x1)).count()
+        };
+        let (mid, light) = (crossings(20.0, 130.0), crossings(170.0, 280.0));
+        assert!(light * 2 <= mid, "in the light the lines lie further apart ({light} to {mid})");
+        assert!(light >= 4, "but there are lines in the light ({light})");
+        // ... and they are whole: the longest run of a line in the light is many spacings.
+        let longest = first.iter().filter(|c| c.path.iter().all(|p| p[0] > 170.0 && p[1] > 40.0)).map(|c| c.path.len()).max().unwrap_or(0);
+        assert!(longest as f32 > plate.spacing * 6.0, "a hair in the light is whole ({longest} points at spacing {})", plate.spacing);
+    }
+
+    #[test]
     fn blank_paper_is_left_alone() {
-        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, 0.9, 1.0, 5_000, 7);
+        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, None, 1.0, 5_000, 7);
         assert!(plate.cuts.is_empty(), "nothing to cut ({})", plate.cuts.len());
     }
 }
