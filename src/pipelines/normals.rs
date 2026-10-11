@@ -7,7 +7,9 @@
 //! picture's latent beside the latent being denoised) and an empty prompt. Every block is candle's own SD 2.1
 //! one, so this module is only the loop:
 //!
-//! 1. Resize the picture so its long side is 768 (the model's processing resolution), sides multiples of 8.
+//! 1. Resize the picture so its long side is 768 (the model's processing resolution), sides multiples of 8,
+//!    and MIRROR it outward by a margin on every side: the model reads a picture's border as a wall turning
+//!    away, and with the margin that wall falls outside the picture and is cropped off.
 //! 2. VAE-encode it → the image latent.
 //! 3. From seeded noise, four DDIM steps (v-prediction, trailing timesteps, zero terminal SNR), the UNet seeing
 //!    `[image latent, normals latent]` at each.
@@ -28,8 +30,9 @@ const REPO: &str = "prs-eth/marigold-normals-v1-1";
 const UNET: &str = "unet/diffusion_pytorch_model.fp16.safetensors";
 const VAE: &str = "vae/diffusion_pytorch_model.fp16.safetensors";
 const TEXT: &str = "text_encoder/model.fp16.safetensors";
-/// The long side the model works at.
+/// The long side the model works at, and the mirrored margin added round the picture before it is read.
 const PROCESS: u32 = 768;
+const MARGIN: u32 = 64;
 const STEPS: usize = 4;
 const VAE_SCALE: f64 = 0.18215;
 const TRAIN_STEPS: usize = 1000;
@@ -73,11 +76,21 @@ impl NormalsPipeline {
         let side = |v: u32| (((v as f32 * k / 8.0).round() as u32).max(8)) * 8;
         let (w, h) = (side(img.width()), side(img.height()));
         let small = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
-        let (w, h) = (w as usize, h as usize);
+        let (iw, ih) = (w as usize, h as usize);
+        let (w, h) = (iw + 2 * MARGIN as usize, ih + 2 * MARGIN as usize);
+        // Folded back on itself at every edge.
+        let fold = |v: i64, n: usize| -> usize {
+            let n = n as i64;
+            let v = v.rem_euclid(2 * n);
+            (if v < n { v } else { 2 * n - 1 - v }) as usize
+        };
         let mut px = vec![0f32; 3 * w * h];
-        for (x, y, p) in small.enumerate_pixels() {
-            for c in 0..3 {
-                px[c * w * h + y as usize * w + x as usize] = p.0[c] as f32 / 127.5 - 1.0;
+        for y in 0..h {
+            for x in 0..w {
+                let p = small.get_pixel(fold(x as i64 - MARGIN as i64, iw) as u32, fold(y as i64 - MARGIN as i64, ih) as u32);
+                for c in 0..3 {
+                    px[c * w * h + y * w + x] = p.0[c] as f32 / 127.5 - 1.0;
+                }
             }
         }
         let px = Tensor::from_vec(px, (1, 3, h, w), &self.device)?;
@@ -99,11 +112,13 @@ impl NormalsPipeline {
         let out = self.vae.decode(&(latent / VAE_SCALE)?)?.clamp(-1f32, 1f32)?;
         let out = out.i(0)?.to_device(&Device::Cpu)?.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
         let n = w * h;
+        // Read inside the margin only: the picture's own normals, the mirrored border's thrown away.
         let at = |x: usize, y: usize| -> [f32; 3] {
-            let i = y * w + x;
+            let i = (y + MARGIN as usize) * w + x + MARGIN as usize;
             // The model's `y` is up; the sheet's is down.
             [out[i], -out[n + i], out[2 * n + i]]
         };
+        let (w, h) = (iw, ih);
         let mut map = Vec::with_capacity((out_w * out_h) as usize);
         for y in 0..out_h as usize {
             for x in 0..out_w as usize {

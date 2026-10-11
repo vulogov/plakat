@@ -227,6 +227,9 @@ pub struct PaintParams {
     /// The picture's surface normals for an engraving (`engrave::Normals`): width, height, unit vectors in
     /// image space. `None` = the line's direction comes from the relief, or from the picture alone.
     pub normals: Option<(u32, u32, Vec<[f32; 3]>)>,
+    /// What the picture's things are made of, for an engraving (`engrave::Materials`): width, height, a kind per
+    /// pixel (0 = nothing said).
+    pub materials: Option<(u32, u32, Vec<u8>)>,
     /// Aerial-perspective strength (0..1): how strongly distance veils toward the atmosphere. Ignored w/o depth.
     pub haze: f32,
     /// STROKE LENGTH dial (author control): global multiplier on how far strokes run (1.0 = default). Longer =
@@ -401,7 +404,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
     }
 }
 
@@ -1751,6 +1754,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let side = p.armature_face_side.or(p.armature_body_side).unwrap_or(NEW_BACKGROUND_SIDE);
         hair_flow_field(source, side)
     });
+    // FORM FLOW (`--normals`): which way a mark runs by the picture's surfaces — round a turning form, level on
+    // the ground. Off unless a normal map was given.
+    let form_flow = p.normals.as_ref().and_then(|(nw, nh, n)| crate::paint::engrave::FormFlow::new(crate::paint::engrave::Normals { w: *nw as usize, h: *nh as usize, n }, w as usize, h as usize));
     // The reference the strokes read is a low-resolution ARMATURE — structure without detail (§1.1). The output
     // canvas stays full size; only the thing being painted FROM is coarsened.
     let armature_owned;
@@ -2406,6 +2412,29 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 (gx, gy)
             }
             _ => (gx, gy),
+        };
+        // The SURFACE leads the stroke where the picture's values do not: on a passage without an edge of its own
+        // the mark turns onto the form's direction. An edge the picture draws keeps its stroke, and the pass's
+        // magnitude is kept everywhere — it feeds the detail gate, which must not change with the direction.
+        let (gx, gy) = match &form_flow {
+            Some(ff) => {
+                let (mut gx, mut gy) = (gx, gy);
+                for i in 0..gx.len() {
+                    let (dir, sure) = ff.at((i % w as usize) as f32, (i / w as usize) as f32);
+                    let m = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
+                    let t = sure * (1.0 - m.clamp(0.0, 1.0));
+                    if t <= 1e-3 {
+                        continue;
+                    }
+                    let (ux, uy) = (-dir[1], dir[0]); // the "gradient" whose perpendicular is the mark
+                    let (ux, uy) = if ux * gx[i] + uy * gy[i] < 0.0 { (-ux, -uy) } else { (ux, uy) };
+                    let k = m.max(1e-4);
+                    gx[i] += (ux * k - gx[i]) * t;
+                    gy[i] += (uy * k - gy[i]) * t;
+                }
+                (gx, gy)
+            }
+            None => (gx, gy),
         };
         // BRUSH for this pass: the composition layer's `layer_brush` if set, else the intelligent per-role
         // default. HIGH-FIDELITY uses a clean, low-waver, short-tracking brush at every pass so strokes lie down
@@ -5312,7 +5341,8 @@ fn engraving(canvas: &mut Canvas, score: &mut StrokeScore, picture: &RgbImage, p
     let w = picture.width() as usize;
     let relief = p.relief.as_ref().map(|(w, h, z)| crate::paint::engrave::Relief { w: *w as usize, h: *h as usize, z });
     let normals = p.normals.as_ref().map(|(w, h, n)| crate::paint::engrave::Normals { w: *w as usize, h: *h as usize, n });
-    let plate = crate::paint::engrave::plan(picture, relief, normals, p.contour, p.budget.saturating_sub(*placed), p.seed);
+    let materials = p.materials.as_ref().map(|(w, h, kind)| crate::paint::engrave::Materials { w: *w as usize, h: *h as usize, kind });
+    let plate = crate::paint::engrave::plan(picture, relief, normals, materials, p.contour, p.budget.saturating_sub(*placed), p.seed);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let mut load = vec![0f32; p.palette.pigments.len()];
     load[ink] = p.charge * 2.0;

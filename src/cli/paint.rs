@@ -822,13 +822,20 @@ pub struct FromArgs {
     /// near. Omitted: the plate is planned from the picture alone.
     #[arg(long, value_name = "auto|FILE")]
     pub depth: Option<String>,
-    /// NORMALS for an engraving (`--medium durer`): which way every surface of the picture faces, so the cuts
-    /// wrap a form — round a barrel, round a limb — and lie level on the ground. `auto` estimates them with
+    /// NORMALS: which way every surface of the picture faces. Off unless given. An engraving (`--medium durer`)
+    /// wraps its cuts round a form — a barrel, a limb — and lays them level on the ground; a painting medium
+    /// (oil, watercolour, …) turns its strokes the same way on passages the picture gives no direction of their own. `auto` estimates them with
     /// Marigold-Normals (GPU, a 2 GB download the first time; saved beside the output as `<out>.normals.png`);
     /// a path reads a normal-map picture (green = up). They lead the line where `--depth` would; give both and
     /// the depth still sets what is far.
     #[arg(long, value_name = "auto|FILE")]
     pub normals: Option<String>,
+    /// MATERIALS for an engraving (`--medium durer`), named in words: `"fur: hare; glass: lamp lens; metal:
+    /// engine, exhaust pipe"` — kinds `fur`, `glass`, `metal`; the masks are found by OWL-ViT and MobileSAM
+    /// (GPU) and saved beside the output as `<out>.materials.png`. Or a path to such a saved map. Fur is cut
+    /// along the coat with crossings that only lean off it; glass and metal open their lights to the paper.
+    #[arg(long, value_name = "SPEC|FILE")]
+    pub materials: Option<String>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -2583,8 +2590,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
     }
     if let Some(d) = a.normals.as_deref() {
-        if !params.engrave {
-            println!("{}  --normals lead the line of an engraving (--medium durer); ignored for this medium", style("·").yellow());
+        if params.density && !params.engrave {
+            println!("{}  --normals lead an engraving's line or a brush's stroke; ignored for this drawing medium", style("·").yellow());
         } else if d == "auto" {
             println!("{}  normals: estimating the surfaces (Marigold-Normals)…", style("◆").cyan());
             let device = crate::device::select("auto")?;
@@ -2596,6 +2603,23 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         } else {
             let map = image::open(d).with_context(|| format!("opening the normal map {d}"))?.to_rgb8();
             params.normals = Some((map.width(), map.height(), crate::pipelines::normals::from_png(&map)));
+        }
+    }
+    if let Some(m) = a.materials.as_deref() {
+        if !params.engrave {
+            println!("{}  --materials tell an engraving (--medium durer) what it cuts; ignored for this medium", style("·").yellow());
+        } else if std::path::Path::new(m).is_file() {
+            let map = image::open(m).with_context(|| format!("opening the material map {m}"))?.to_rgb8();
+            params.materials = Some((map.width(), map.height(), crate::pipelines::materials::from_png(&map)));
+        } else {
+            let things = crate::pipelines::materials::parse(m)?;
+            println!("{}  materials: finding {} thing(s) (OWL-ViT + MobileSAM)…", style("◆").cyan(), things.len());
+            let device = crate::device::select("auto")?;
+            let (mw, mh, map) = crate::pipelines::materials::material_map(&a.input, &things, &device).await.context("finding the materials")?;
+            let side = a.out.with_extension("materials.png");
+            crate::pipelines::materials::to_png(&map, mw, mh).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  materials → {}", style("·").dim(), side.display());
+            params.materials = Some((mw, mh, map));
         }
     }
     if a.haze > 0.0 {
