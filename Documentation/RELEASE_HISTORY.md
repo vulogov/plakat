@@ -8,7 +8,7 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.3.0 — in development
+## What's new in 7.3.0 — Dürer: an engraving cut from the picture itself, reading its relief, its surfaces and what things are made of
 
 ### `plakat paint`
 
