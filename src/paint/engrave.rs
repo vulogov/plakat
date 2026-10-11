@@ -207,7 +207,9 @@ struct Flow {
 impl Flow {
     /// `ground` (at the sheet's resolution, 0..1) is where a tone lies alone on open paper: a cast shadow, the
     /// earth under the subject. There the line rests level instead of on the diagonal.
-    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>) -> Flow {
+    /// `follow` (0..1) is how far the cuts follow the form at all: at 0 the plate is ruled — every hatch line on
+    /// the resting diagonal, or level on the ground — and only the contours bend.
+    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32) -> Flow {
         let long = w.max(h);
         let f = long.div_ceil(512).max(1);
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
@@ -248,7 +250,7 @@ impl Flow {
             // ... and only near the edges that give it: far inside a flat face the little orientation that reaches
             // it is the lighting's drift, and following that grains the face like wood.
             let e = ((jxx[i] + jyy[i]) / energy / 1.5).clamp(0.0, 1.0);
-            let form = t * t * (3.0 - 2.0 * t) * e * e * (3.0 - 2.0 * e);
+            let form = follow * t * t * (3.0 - 2.0 * t) * e * e * (3.0 - 2.0 * e);
             // The edge's tangent is the gradient's orientation turned a quarter: the doubled angle negated.
             let (fc, fs) = if disc > 1e-12 { (-a / disc, -b / disc) } else { (0.0, -1.0) };
             led[i] = form;
@@ -261,9 +263,9 @@ impl Flow {
         }
         // The normals say which way a surface turns outright; the relief only implies it, so it is asked second.
         if let Some(normals) = normals.filter(|m| m.w >= 2 && m.h >= 2 && m.n.len() == m.w * m.h) {
-            turn_with_the_normals(&mut c2, &mut s2, &led, sw, sh, normals, STRAIGHT);
+            turn_with_the_normals(&mut c2, &mut s2, &led, sw, sh, normals, STRAIGHT, follow);
         } else if let Some(relief) = relief.filter(|r| r.w >= 2 && r.h >= 2 && r.z.len() == r.w * r.h) {
-            turn_with_the_form(&mut c2, &mut s2, &led, sw, sh, relief);
+            turn_with_the_form(&mut c2, &mut s2, &led, sw, sh, relief, follow);
         }
         // FUR grows its own way, whatever the form under it does: there the line takes the direction the coat's
         // own strands run in, read at the scale of a lock, wherever the strands agree on one.
@@ -316,7 +318,7 @@ impl Flow {
 /// And where a flat surface RECEDES — the ground under the subject above all — and no edge of the picture leads
 /// the line, the cuts rest level with it, along the lines of equal depth, instead of on the diagonal: a cast
 /// shadow is laid in strokes that lie on the ground.
-fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, relief: Relief) {
+fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, relief: Relief, follow: f32) {
     let n = sw * sh;
     // The depth at the flow's resolution, smoothed past the estimator's grain and an 8-bit map's steps.
     let mut z = vec![0f32; n];
@@ -391,7 +393,7 @@ fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh
         let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
         let firm = ((bend[i] / typical - 0.7) / 1.0).clamp(0.0, 1.0);
         let t = agree * firm;
-        let t = t * t * (3.0 - 2.0 * t);
+        let t = follow * t * t * (3.0 - 2.0 * t);
         if len > 1e-9 {
             c2[i] += (vx[i] / len - c2[i]) * t;
             s2[i] += (vy[i] / len - s2[i]) * t;
@@ -431,7 +433,7 @@ impl FormFlow {
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
         let (mut c2, mut s2) = (vec![0f32; sw * sh], vec![0f32; sw * sh]);
         // A brush is led only where the normals speak; a flat wall is left to the painter.
-        turn_with_the_normals(&mut c2, &mut s2, &vec![0f32; sw * sh], sw, sh, normals, 0.0);
+        turn_with_the_normals(&mut c2, &mut s2, &vec![0f32; sw * sh], sw, sh, normals, 0.0, 1.0);
         Some(FormFlow { w: sw, h: sh, scale: (sw as f32 / w as f32, sh as f32 / h as f32), c2: blur(&c2, sw, sh, 2, 2), s2: blur(&s2, sw, sh, 2, 2) })
     }
 
@@ -457,7 +459,7 @@ impl FormFlow {
 ///
 /// Everything is measured in the normal's own units (how far it swings over one side of the sheet), so no
 /// threshold depends on the picture.
-fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, normals: Normals, straight: f32) {
+fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, normals: Normals, straight: f32, follow: f32) {
     let n = sw * sh;
     let (mut nx, mut ny) = (vec![0f32; n], vec![0f32; n]);
     for y in 0..sh {
@@ -519,7 +521,7 @@ fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize,
         let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
         let firm = ((bend[i] - TURNS.0) / (TURNS.1 - TURNS.0)).clamp(0.0, 1.0);
         let t = agree * firm;
-        let t = t * t * (3.0 - 2.0 * t);
+        let t = follow * t * t * (3.0 - 2.0 * t);
         if len > 1e-9 {
             c2[i] += (vx[i] / len - c2[i]) * t;
             s2[i] += (vy[i] / len - s2[i]) * t;
@@ -826,9 +828,10 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     cur
 }
 
-/// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `budget` caps the
+/// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `follow` (0..1) how far
+/// the hatch follows the form (0 = a ruled plate, every line on the diagonal or level on the ground); `budget` caps the
 /// number of cuts — when the hatch would not fit, its spacing widens until it does.
-pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, budget: usize, seed: u64) -> Plate {
+pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, follow: f32, budget: usize, seed: u64) -> Plate {
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
@@ -955,7 +958,7 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     // HATCH: the layers, at a spacing that fits the budget.
     // A tone that lies alone on open paper — little around it is dark — is a shadow on the ground.
     let ground: Vec<f32> = around.iter().map(|a| ((0.42 - a) / 0.2).clamp(0.0, 1.0)).collect();
-    let flow = Flow::new(&value, w, h, &ground, fur.as_deref(), relief, normals);
+    let flow = Flow::new(&value, w, h, &ground, fur.as_deref(), relief, normals, follow.clamp(0.0, 1.0));
     let room = budget.saturating_sub(cuts.len());
     let mut spacing = (long / 300.0).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
@@ -1053,7 +1056,7 @@ mod tests {
 
     #[test]
     fn a_dark_mass_is_cross_hatched_and_the_ground_stays_paper() {
-        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, 50_000, 7);
+        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, 1.0, 50_000, 7);
         let hatch: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer > 0).collect();
         assert!(!hatch.is_empty(), "the dark mass is engraved");
         let outside = hatch.iter().flat_map(|c| c.path.iter()).filter(|p| !(p[0] > 36.0 && p[0] < 124.0 && p[1] > 36.0 && p[1] < 124.0)).count();
@@ -1065,7 +1068,7 @@ mod tests {
 
     #[test]
     fn lines_of_a_layer_keep_their_distance() {
-        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, 50_000, 7);
+        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, 1.0, 50_000, 7);
         let first: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 1).collect();
         let total: f32 = first.iter().map(|c| c.path.len() as f32 * 2.0).sum();
         // A 100-px square ruled every `spacing` holds about 100·100/spacing of line; a tangle holds far more.
@@ -1077,7 +1080,7 @@ mod tests {
     #[test]
     fn a_small_budget_opens_the_plate() {
         let img = two_masses(200, 200);
-        let (full, tight) = (plan(&img, None, None, None, 0.0, 50_000, 7), plan(&img, None, None, None, 0.0, 60, 7));
+        let (full, tight) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, None, None, None, 0.0, 1.0, 60, 7));
         assert!(tight.cuts.len() <= 60, "the budget holds ({})", tight.cuts.len());
         assert!(tight.spacing > full.spacing, "by widening the spacing");
     }
@@ -1085,7 +1088,7 @@ mod tests {
     #[test]
     fn the_same_seed_cuts_the_same_plate() {
         let img = two_masses(120, 90);
-        let (a, b) = (plan(&img, None, None, None, 0.5, 20_000, 3), plan(&img, None, None, None, 0.5, 20_000, 3));
+        let (a, b) = (plan(&img, None, None, None, 0.5, 1.0, 20_000, 3), plan(&img, None, None, None, 0.5, 1.0, 20_000, 3));
         assert_eq!(a.cuts.len(), b.cuts.len());
         assert!(a.cuts.iter().zip(&b.cuts).all(|(x, y)| x.path == y.path && x.w0 == y.w0 && x.w1 == y.w1));
     }
@@ -1105,7 +1108,7 @@ mod tests {
         let made = std::env::var("PLAKAT_ENGRAVE_MATERIALS").ok().map(|p| image::open(p).unwrap().to_rgb8());
         let kind: Option<Vec<u8>> = made.as_ref().map(crate::pipelines::materials::from_png);
         let materials = made.as_ref().zip(kind.as_ref()).map(|(m, kind)| Materials { w: m.width() as usize, h: m.height() as usize, kind });
-        let plate = plan(&img, relief, normals, materials, 0.55, 360_000, 42);
+        let plate = plan(&img, relief, normals, materials, 0.55, 1.0, 360_000, 42);
         let (w, h) = (img.width() as i64, img.height() as i64);
         let mut sheet = image::GrayImage::from_pixel(w as u32, h as u32, image::Luma([250]));
         // The stroke rasteriser's footprint for a flat-ended one-point brush: two lanes a pixel across the width.
@@ -1154,7 +1157,7 @@ mod tests {
             }
             dy / (dx + dy).max(1e-6)
         };
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 1.0, 50_000, 7));
         assert!(upright(&flat) < 0.56, "without the relief the cuts rest on the diagonal ({})", upright(&flat));
         assert!(upright(&round) > 0.68, "round the cylinder they turn upright ({})", upright(&round));
     }
@@ -1182,7 +1185,7 @@ mod tests {
                 [0.0, t, (1.0 - t * t).sqrt()]
             })
             .collect();
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 1.0, 50_000, 7));
         let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
         assert!(band(&flat) < 0.56, "without the normals the cuts rest on the diagonal ({})", band(&flat));
         assert!(band(&round) > 0.8, "round the bar they turn upright ({})", band(&round));
@@ -1194,12 +1197,12 @@ mod tests {
         let (w, h) = (200usize, 200usize);
         let img = two_masses(w as u32, h as u32);
         let n = vec![[0.0f32, -0.8, 0.6]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 1.0, 50_000, 7);
         let level = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(level < 0.2, "on the ground the cuts lie level ({level})");
         // A plane facing the viewer says nothing: the diagonal stands.
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 1.0, 50_000, 7);
         let rest = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(rest > 0.4 && rest < 0.6, "a wall facing the viewer keeps the diagonal ({rest})");
     }
@@ -1241,7 +1244,7 @@ mod tests {
             let d = (lie(plate, 1) - lie(plate, 2)).abs() % std::f32::consts::PI;
             d.min(std::f32::consts::PI - d)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
         assert!(apart(&plain) > 0.85, "a plain surface is crossed at a third of a turn ({})", apart(&plain));
         assert!(apart(&furred) < 0.45, "fur's crossing only leans off the coat ({})", apart(&furred));
         assert!(lie(&furred, 1).abs() < 0.2, "and the coat is cut along its strands ({})", lie(&furred, 1));
@@ -1257,7 +1260,7 @@ mod tests {
         let kind = vec![METAL; w * h];
         // The ink laid between two verticals: every point of every cut, by the cut's width.
         let ink = |plate: &Plate, x: (f32, f32)| plate.cuts.iter().map(|c| c.path.iter().filter(|p| p[0] > x.0 && p[0] < x.1).count() as f32 * (c.w0 + c.w1) * 0.5).sum::<f32>();
-        let (plain, polished) = (plan(&img, None, None, None, 0.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 80_000, 7));
+        let (plain, polished) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
         let (mid, deep) = (ink(&polished, (10.0, 80.0)) / ink(&plain, (10.0, 80.0)), ink(&polished, (155.0, 190.0)) / ink(&plain, (155.0, 190.0)));
         assert!(ink(&plain, (10.0, 80.0)) > 100.0, "the plain middle tone is cut at all");
         assert!(mid < 0.7, "the middle tone opens ({mid})");
@@ -1274,7 +1277,7 @@ mod tests {
             image::Rgb([v, v, v])
         });
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let (led, flat) = (plan(&img, None, None, None, 0.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 80_000, 7));
+        let (led, flat) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 1.0, 80_000, 7));
         let (by_picture, by_normals) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&flat, (60.0, 140.0), (60.0, 140.0)));
         assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
         assert!(by_normals > 0.4 && by_normals < 0.6, "a flat wall keeps the diagonal ({by_normals})");
@@ -1300,7 +1303,7 @@ mod tests {
             }
             runs.into_iter().fold(0f32, f32::max)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
         assert!(longest(&plain) > 60.0, "a plain mass is cut in long lines ({})", longest(&plain));
         assert!(longest(&furred) < 2.0 * HAIR_LENGTH.1 * furred.spacing + 4.0, "fur in hairs ({} at spacing {})", longest(&furred), furred.spacing);
     }
@@ -1313,7 +1316,7 @@ mod tests {
             let v = (40.0 + 195.0 * x as f32 / w as f32) as u8;
             image::Rgb([v, v, v])
         });
-        let plate = plan(&img, None, None, None, 0.0, 80_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, 1.0, 80_000, 7);
         let last = plate.cuts.iter().flat_map(|c| c.path.iter().map(|p| p[0])).fold(0f32, f32::max);
         let dots = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() <= 3).count();
         let lines = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() > 3).count();
@@ -1334,7 +1337,7 @@ mod tests {
             let r = (((i % w) as f32 - 100.0).powi(2) + ((i / w) as f32 - 100.0).powi(2)).sqrt();
             0.3 + 0.6 * (1.0 - (r / 60.0).powi(2)).max(0.0).sqrt()
         }).collect();
-        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 80_000, 7);
+        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 1.0, 80_000, 7);
         let sweep = |c: &Cut| {
             let mut s = 0f32;
             for t in c.path.windows(3) {
@@ -1348,10 +1351,24 @@ mod tests {
     }
 
     #[test]
+    fn a_ruled_plate_keeps_the_diagonal_whatever_the_picture_does() {
+        // The striped wall again: alone, the picture's stripes lead; at `follow` 0 the plate is ruled.
+        let (w, h) = (200usize, 200usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if x < 30 || x > 170 || y < 30 || y > 170 { 235 } else if x % 16 < 8 { 15 } else { 80 };
+            image::Rgb([v, v, v])
+        });
+        let (led, ruled) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.0, 80_000, 7));
+        let (by_picture, by_rule) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&ruled, (60.0, 140.0), (60.0, 140.0)));
+        assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
+        assert!(by_rule > 0.4 && by_rule < 0.6, "ruled, the diagonal ({by_rule})");
+    }
+
+    #[test]
     fn a_highlight_is_clean_paper() {
         // A light strip that outshines the dark around it is a highlight: the plate leaves it uncut.
         let img = RgbImage::from_fn(200, 200, |x, y| if x > 40 && x < 160 && y > 40 && y < 160 { let v = if x < 52 { 205 } else { 50 }; image::Rgb([v, v, v]) } else { image::Rgb([235, 232, 226]) });
-        let plate = plan(&img, None, None, None, 0.0, 50_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, 1.0, 50_000, 7);
         let lit = plate.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 44.0 && p[0] < 49.0).count();
         assert_eq!(lit, 0, "nothing is cut in the highlight");
         assert!(plate.cuts.iter().any(|c| c.layer > 0), "the rest is engraved");
@@ -1359,7 +1376,7 @@ mod tests {
 
     #[test]
     fn blank_paper_is_left_alone() {
-        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, 5_000, 7);
+        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, 1.0, 5_000, 7);
         assert!(plate.cuts.is_empty(), "nothing to cut ({})", plate.cuts.len());
     }
 }

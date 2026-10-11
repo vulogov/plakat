@@ -9,7 +9,16 @@ plakat paint from picture.png --plan auto --medium durer --seed 42
 plakat paint from picture.png --plan auto --medium durer --seed 42 --oldpaper true
 plakat paint from picture.png --plan auto --medium durer --seed 42 --normals auto --depth auto
 plakat paint from hare.png --plan auto --medium durer --seed 42 --normals auto --materials "fur: hare"
+plakat paint from portrait.png --plan auto --medium durer --seed 42 --normals auto --follow 0.3
 ```
+
+## What it is good for
+
+**Machinery, architecture, hard surfaces** — this is where the plate is at its best, with the defaults: the
+form-following hatch wraps a tyre, a lamp, a pipe; the cast shadow lies level on the ground; the glints are
+clean paper. **Portraits and animals** need to be told more: name the fur (`--materials "fur: …"`), and
+hold the hatch back from circling the nose and cheeks like a contour map (`--follow 0.3`). A face is
+otherwise cut like any other surface.
 
 It follows the deterministic model of `plakat paint`: no weights and no diffusion, only geometry computed
 from the picture and the seed. Every cut is a stroke in the score, and `plakat paint replay` reproduces the
@@ -160,6 +169,7 @@ ages the same way.
 
 | flag | effect |
 |---|---|
+| `--follow F` (default 1) | how far the hatch follows the form: 1 wraps every surface; 0 is a ruled plate — every line on the diagonal or level on the ground, only the contours bend. A portrait wants about 0.3 |
 | `--contour F` (medium default 0.55) | how much of the edge map becomes drawn line: lower keeps only the main lines, higher draws every fold and rivet; 0 = no contours |
 | `--budget N` (plan ×3 by default, 360 000 at most) | the cap on cuts; when the hatch would exceed it the spacing widens to fit, so a small budget gives an open plate |
 | `--seed N` | where the lines start and where the flicks break |
