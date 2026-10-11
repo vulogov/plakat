@@ -836,6 +836,12 @@ pub struct FromArgs {
     /// along the coat with crossings that only lean off it; glass and metal open their lights to the paper.
     #[arg(long, value_name = "SPEC|FILE")]
     pub materials: Option<String>,
+    /// FOLLOW (0..1, default 1) for an engraving (`--medium durer`): how far the hatch follows the form. 1 = the
+    /// lines wrap every surface the picture, the normals or the depth describe; 0 = a ruled plate, every line
+    /// on the engraver's diagonal or level on the ground, only the contours bending. A portrait, where lines
+    /// circling the nose and cheeks read as a contour map, wants about 0.3; machinery and architecture want 1.
+    #[arg(long, value_name = "F")]
+    pub follow: Option<f32>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -2603,6 +2609,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         } else {
             let map = image::open(d).with_context(|| format!("opening the normal map {d}"))?.to_rgb8();
             params.normals = Some((map.width(), map.height(), crate::pipelines::normals::from_png(&map)));
+        }
+    }
+    if let Some(f) = a.follow {
+        if params.engrave {
+            params.follow = f.clamp(0.0, 1.0);
+        } else {
+            println!("{}  --follow is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
         }
     }
     if let Some(m) = a.materials.as_deref() {

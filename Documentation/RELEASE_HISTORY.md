@@ -36,6 +36,10 @@ per-cycle commits carry the rationale + before/after.
 - **`--normals` also leads the brush** of the painting media (oil, watercolour, …), when given: on a passage
   the picture gives no direction of its own, strokes turn round the form and lie level on the ground. Off by
   default — without the flag every medium paints exactly as before.
+- **`--follow F`** holds an engraving's hatch back from the form: 1 (the default) wraps every surface, 0 is a
+  ruled plate, and a portrait — where lines circling the nose and cheeks read as a contour map — wants
+  about 0.3. The plate is at its best on machinery and architecture with the defaults; see "What it is
+  good for" in [PAINT_DURER.md](PAINT_DURER.md).
 - An engraving's deepest shadows are made by heavier lines (to two fifths of the spacing), still with paper
   in every mesh; between a crossed shadow and the stippled light lies a band of one-way hatching; the tone
   curve has a toe, so the dots reach well into the lights before the paper is bare; no hatch line turns
