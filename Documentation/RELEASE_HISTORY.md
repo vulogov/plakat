@@ -29,6 +29,19 @@ per-cycle commits carry the rationale + before/after.
   cuts wrap the form where a surface turns — round a tyre, a lamp, a limb — and lie level on the ground, so a
   cast shadow is hatched in strokes that lie on it. A normal-map picture can be given instead. With `--depth`
   too, the normals lead the line and the depth sets what is far.
+- **`--materials "fur: hare; glass: headlamp"` tells an engraving what it cuts — in words.** OWL-ViT and
+  MobileSAM find the masks (saved as `<out>.materials.png`, reusable as a file). Fur is cut in short hairs
+  along the coat's own growth, with crossings that only lean off it; glass and metal open their lights to
+  the paper and are ruled with a steady hand.
+- **`--normals` also leads the brush** of the painting media (oil, watercolour, …), when given: on a passage
+  the picture gives no direction of its own, strokes turn round the form and lie level on the ground. Off by
+  default — without the flag every medium paints exactly as before.
+- An engraving's deepest shadows are made by heavier lines (to two fifths of the spacing), still with paper
+  in every mesh; between a crossed shadow and the stippled light lies a band of one-way hatching; the tone
+  curve has a toe, so the dots reach well into the lights before the paper is bare; no hatch line turns
+  through more than about a right angle, so none closes into a ring or a whorl. The normals are estimated
+  on a mirrored margin, so the picture's border casts no wall; a surface they call flat is hatched
+  straight.
 - A highlight on an engraving is clean paper; a line goes on swelling under its crossings; a form passes into the
   light through stipple, and so does the fringe of a cast shadow.
 - **`--oldpaper true`** (plan and spec key `oldpaper`; default `false`) prints the finished picture on an

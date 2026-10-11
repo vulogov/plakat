@@ -8,6 +8,7 @@ varying weight. It is a drawing medium (the density mark model): no brush, no pi
 plakat paint from picture.png --plan auto --medium durer --seed 42
 plakat paint from picture.png --plan auto --medium durer --seed 42 --oldpaper true
 plakat paint from picture.png --plan auto --medium durer --seed 42 --normals auto --depth auto
+plakat paint from hare.png --plan auto --medium durer --seed 42 --normals auto --materials "fur: hare"
 ```
 
 It follows the deterministic model of `plakat paint`: no weights and no diffusion, only geometry computed
@@ -26,8 +27,11 @@ armature has already smoothed away the detail a burin draws.
    fifth inked: an engraving is mostly paper. A subject that is dark all over is therefore still cut from
    open line to crossed shadow. A highlight — a light spot that outshines what surrounds it — is not cut at all: clean paper,
    not a faint tone. A broad light (a lit cheek, a white dress) is no highlight and is modelled lightly.
-   The deepest tone is 0.7, and no line is wider than about a third of its
-   spacing, so the deepest shadow is a net of distinct lines with paper in every mesh — never a filled black.
+   The deepest tone is 0.78: in the deepest shadow each line swells to two fifths of its
+   spacing, so the black is made by the weight of the lines, not by more of them, and is still a net of
+   distinct lines with paper in every mesh — never a filled black. Beside a shadow, a tone already begun is
+   carried at single-hatch weight, so between a crossed shadow and the stippled light lies a band of plain
+   one-way hatching.
 2. **Contours.** An edge map of the value (Sobel, thinned, kept by hysteresis; `--contour` sets how much of
    it) is linked into chains; fragments that end where another begins, running the same way, are joined
    into one line, and each line is pulled taut so it does not step from pixel to pixel. A chain is drawn if its length *and* strength together earn it: a short firm
@@ -50,7 +54,11 @@ armature has already smoothed away the detail a burin draws.
 6. **Flicks, and a little stipple.** Below a hair's worth of tone a line is not made thinner — it is broken.
    The first layer breaks into short flicks whose length carries the tone, and at its lightest into dots,
    ever sparser, so a form passes into the light through stipple instead of over an edge. The first
-   crossing also enters as a narrow band of dots; the second crossing begins as a line.
+   crossing also enters as a narrow band of dots; the second crossing begins as a line. The tone curve has
+   a toe — the lightest tones fall off no faster than three tenths of the value — so the dots reach well
+   into the lights before the paper is bare.
+7. **No rings.** A hatch line may turn through about a right angle over its length, then the burin lifts and
+   a new line begins: round a tyre the hatch is arcs, never a closed ring, and no whorl can form.
 
 Line spacing is 1/300 of the sheet's long side (7 px at 2048); a contour is 1 to 6 px wide at that size.
 
@@ -61,7 +69,9 @@ map** of the picture — for every point, the direction its surface faces — an
 
 - `--normals auto` estimates the map from the picture with Marigold-Normals, as a pass of its own before the
   plate is planned, and saves it beside the output as `<out>.normals.png`. The model is fetched the first
-  time (about 2 GB). The pass starts from a fixed noise, so a picture always gets the same map.
+  time (about 2 GB). The pass starts from a fixed noise, so a picture always gets the same map. The picture
+  is mirrored outward by a margin before it is read — the model takes a picture's border for a wall turning
+  away, and with the margin that wall falls outside the picture and is cropped off.
 - `--normals map.png` reads a normal-map picture in the usual colours (red = right, green = up, blue = toward
   the viewer) at any resolution: the saved `auto` map, retouched or not, or a pass from a 3D scene.
 
@@ -74,8 +84,37 @@ Two things are read from it, both in the normal's own units, so nothing depends 
   — and no edge of the picture leads the line, the cuts lie level with it: a cast shadow is laid in strokes
   that lie on the ground.
 
+- Where the surface neither turns nor tilts — a wall behind a head, the flat face of a machine — the cuts
+  are **straight**, on the resting diagonal, whatever the picture's values do there: the drift of a light or
+  the grain of a canvas does not bend the hatching of a flat surface.
+
 The normals lead the line; they do not change the tone. Given together with `--depth`, the normals set the
 direction and the depth sets what is far.
+
+## Materials: `--materials`
+
+A burin cuts fur and polished metal differently from a plain surface, and the picture's values do not say
+which is which (telling them apart by the picture's own statistics was tried and does not work). So the
+materials are **named, in words**, and the masks are found for you:
+
+```
+--materials "fur: hare"
+--materials "glass: headlamp, gauge; metal: engine"
+```
+
+`kind: thing, thing; kind: thing`. For every thing named, OWL-ViT finds its instances in the picture and
+MobileSAM outlines each — the models `plakat remove --what` uses; nothing new is fetched if you have used
+it. The map is saved beside the output as `<out>.materials.png`, in the kinds' colours; look at it, retouch
+it if you like, and give it back as `--materials map.png`. Where two masks overlap, the thing written first
+keeps the pixel. A thing that is not found is reported and left out.
+
+| kind | how it is cut |
+|---|---|
+| `fur` (hair, feathers) | cut in **short hairs**, each 5 to 12 line spacings long and its own length, each straying up to ±14° from the coat, lying over one another and not in ranks; they run the way the coat grows — the direction its own strands agree on — and the crossings only lean off it (±17° instead of 60° and 120°), so the hairs lie beside one another even in shadow |
+| `glass`, `metal` | polished: light and middle tones open to the paper, the darks stay, a light needs to outshine its surroundings only half as much to be left as a clean glint, and the line is **ruled** — its weight does not waver with the hand, and it is never broken into flicks or dots: into the light it runs on as an unbroken hair |
+
+Whole objects ("hare", "wheel") are found firmly. Parts of a machine ("headlamp", "gauge") are found only
+faintly, and some ("engine", "pipe") not at all — the detector is a small one. The report says which.
 
 ## Relief: `--depth`
 
@@ -126,6 +165,7 @@ ages the same way.
 | `--seed N` | where the lines start and where the flicks break |
 | `--oldpaper true` | the aged sheet and the plate mark |
 | `--normals auto\|FILE` | the picture's surfaces: the cuts wrap the form and lie level on the ground (see above) |
+| `--materials SPEC\|FILE` | what things are made of, in words: fur is cut along the coat, glass and metal open their lights (see above) |
 | `--depth auto\|FILE` | the picture's relief: the far part is cut lighter; without `--normals` it also turns the cuts |
 | `--palette sumi` | forced: the plate is black on paper whatever the picture's colours |
 
@@ -136,9 +176,12 @@ ages the same way.
   `--depth` alone the turn shows on thin rounded parts (a tyre, a pipe) and hardly on broad ones (a head, a
   lamp). With `--normals` it shows on both; small parts (spokes, levers) are finer than a hatch can wrap and
   keep the edge direction.
-- **Materials are not told apart.** Metal, leather, glass, rubber and fur get the same kind of line; only
-  their tone and their edges differ. Telling fur from machinery by the picture's own statistics was tried
-  and does not work — the two measure alike — so a material needs a mask, which the plate does not take yet.
+- **Materials are told apart only where they are named** (`--materials`), and only three kinds: fur, glass,
+  metal. Leather, rubber and cloth are cut as plain surfaces. The detector finds whole objects well and
+  small parts of a machine poorly.
+- **An estimated normal map is a guess**, good on a head, a limb, a tyre, poorer on fine machinery; the
+  estimate is made with a mirrored margin so the picture's border casts no wall, but the saved map is
+  worth a look, and can be retouched and given back as a file.
 - **Low-resolution or heavily compressed sources** show their blocks as steps in the edge of a tone.
 - **A face** is cut like any other surface, from the picture at full detail; there is no separate portrait
   pass. Lit skin is mostly paper with flicks.
