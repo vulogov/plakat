@@ -138,6 +138,10 @@ pub struct PaintArgs {
     /// PAPER EDGE (0..1, opt-in): fade to a deckled bare-paper border — the torn-paper vignette a watercolour sits in.
     #[arg(long)]
     pub paper_edge: Option<f32>,
+    /// OLD PAPER (`true`/`false`, default `false`): print the finished picture on an aged sheet — yellowed laid
+    /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub oldpaper: Option<bool>,
     /// CONTRAST (0.5..2, 1 = neutral): painting-safe finish grade, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -278,6 +282,7 @@ pub struct SpecArgs {
     pub splatter: Option<f32>,
     pub edge_pool: Option<f32>,
     pub paper_edge: Option<f32>,
+    pub oldpaper: Option<bool>,
     pub contrast: Option<f32>,
     pub warmth: Option<f32>,
     pub clarity: Option<f32>,
@@ -807,6 +812,45 @@ pub struct FromArgs {
     /// torn-paper vignette a watercolour sits in. Higher = wider fade. Great for portraits on paper.
     #[arg(long)]
     pub paper_edge: Option<f32>,
+    /// OLD PAPER (`true`/`false`, default `false`): print the finished picture on an aged sheet — yellowed laid
+    /// paper with foxing, specks and worn edges; an engraving (`durer`) also gets its plate mark. Any medium.
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub oldpaper: Option<bool>,
+    /// RELIEF for an engraving (`--medium durer`): a depth map of the picture, so the cuts turn with the form —
+    /// round a cylinder, round a tyre — instead of following only the picture's edges. `auto` estimates it with
+    /// Depth-Anything (GPU; saved beside the output as `<out>.depth.png`); a path reads a grey image, white =
+    /// near. Omitted: the plate is planned from the picture alone.
+    #[arg(long, value_name = "auto|FILE")]
+    pub depth: Option<String>,
+    /// NORMALS: which way every surface of the picture faces. Off unless given. An engraving (`--medium durer`)
+    /// wraps its cuts round a form — a barrel, a limb — and lays them level on the ground; a painting medium
+    /// (oil, watercolour, …) turns its strokes the same way on passages the picture gives no direction of their own. `auto` estimates them with
+    /// Marigold-Normals (GPU, a 2 GB download the first time; saved beside the output as `<out>.normals.png`);
+    /// a path reads a normal-map picture (green = up). They lead the line where `--depth` would; give both and
+    /// the depth still sets what is far.
+    #[arg(long, value_name = "auto|FILE")]
+    pub normals: Option<String>,
+    /// MATERIALS for an engraving (`--medium durer`), named in words: `"fur: hare; glass: lamp lens; metal:
+    /// engine, exhaust pipe; skin"` — kinds `fur`, `glass`, `metal`, `skin`; the masks are found by OWL-ViT and
+    /// MobileSAM (GPU) and saved beside the output as `<out>.materials.png`. `skin` needs no thing named: the
+    /// faces are found by the face detector (`skin: hands` adds things found by word). Or a path to such a
+    /// saved map. Fur is cut along the coat with crossings that only lean off it; glass and metal open their
+    /// lights to the paper; on skin the hatch is held at rest and does not follow the form.
+    #[arg(long, value_name = "SPEC|FILE")]
+    pub materials: Option<String>,
+    /// FOLLOW (0..1, default 1) for an engraving (`--medium durer`): how far the hatch follows the form. 1 = the
+    /// lines wrap every surface the picture, the normals or the depth describe; 0 = a ruled plate, every line
+    /// on the engraver's diagonal or level on the ground, only the contours bending. Machinery and architecture
+    /// want 1; a portrait wants the face held at rest and the rest of the picture following — `--materials skin`
+    /// — or, without it, about 0.3.
+    #[arg(long, value_name = "F")]
+    pub follow: Option<f32>,
+    /// WHITE POINT (0.5..1) for an engraving (`--medium durer`): the share of the picture's values at or above
+    /// which the paper is left clean — the highlight clipping threshold. Unset, the paper is found in the
+    /// picture: its brightest broad flat value (a sheet, a sky, a wall), or its brightest thousandth. Name it
+    /// to cut more of a broad light (0.98) or to leave a tinted sheet clean (0.8).
+    #[arg(long, value_name = "F")]
+    pub white: Option<f32>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -907,7 +951,7 @@ pub async fn run(args: PaintArgs) -> Result<()> {
         Some(PaintCmd::Palette(a)) => run_palette(a),
         Some(PaintCmd::Plan(a)) => run_plan(a).await,
         None => match args.spec {
-            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, fill: args.fill, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
+            Some(spec) => run_spec(SpecArgs { spec, out: args.out, size: args.size, report: args.report, planes: args.planes, critic: args.critic, families: args.families, crisp: args.crisp, strokes: args.strokes, style: args.style, define: args.define, haze: args.haze, stroke_length: args.stroke_length, stroke_width: args.stroke_width, bleed: args.bleed, diffuse: args.diffuse, threads: args.threads, fill: args.fill, dry: args.dry, shadow_floor: args.shadow_floor, detail_length: args.detail_length, coverage: args.coverage,detail_coherence: args.detail_coherence, detail_restate: args.detail_restate, detail_sharpen: args.detail_sharpen, detail_texture: args.detail_texture, gradation: args.gradation, opacity: args.opacity, pickup: args.pickup, impasto: args.impasto, broken: args.broken, contour: args.contour, saliency: args.saliency, reserve: args.reserve, focus_detail: args.focus_detail, preserve_face: args.preserve_face, splatter: args.splatter, edge_pool: args.edge_pool, paper_edge: args.paper_edge, oldpaper: args.oldpaper, contrast: args.contrast, warmth: args.warmth, clarity: args.clarity }).await,
             None => anyhow::bail!("give a PaintSpec (`plakat paint <SPEC>`) or a subcommand (new / show / lint / from / replay / palette)"),
         },
     }
@@ -1554,6 +1598,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.splatter = spec.splatter.or(a.splatter).unwrap_or(0.0).clamp(0.0, 1.0);
     params.edge_pool = spec.edge_pool.or(a.edge_pool).unwrap_or(0.0).clamp(0.0, 1.0);
     params.paper_edge = spec.paper_edge.or(a.paper_edge).unwrap_or(0.0).clamp(0.0, 1.0);
+    params.old_paper = a.oldpaper.or(spec.oldpaper).unwrap_or(false);
     params.contrast = spec.contrast.or(a.contrast).unwrap_or(1.0).clamp(0.3, 3.0);
     params.warmth = spec.warmth.or(a.warmth).unwrap_or(0.0).clamp(-1.0, 1.0);
     params.clarity = spec.clarity.or(a.clarity).unwrap_or(0.0).clamp(0.0, 1.0);
@@ -1586,6 +1631,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     let reserve_default = (plan.medium.white_source == WhiteSource::Surface).then_some(0.72);
     params.reserve = spec.reserve.or(a.reserve).map(|r| r.clamp(0.0, 1.0)).or(reserve_default);
     params.density = plan.medium.mark_model == MarkModel::Density;
+    params.engrave = plan.medium.mark.engrave;
 
     // Get the reference to paint from, and depth for the merge, one of two ways:
     //   • a supplied `reference:` image → optional CPU-proxy depth (merge only with --planes), or
@@ -2014,6 +2060,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.edge_pool.is_none() {
             a.edge_pool = plan.edge_pool;
         }
+        if a.oldpaper.is_none() {
+            a.oldpaper = plan.oldpaper;
+        }
         if a.granulate.is_none() {
             a.granulate = plan.granulate;
         }
@@ -2369,6 +2418,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     if let Some(pe) = a.paper_edge {
         params.paper_edge = pe.clamp(0.0, 1.0);
     }
+    params.old_paper = a.oldpaper.unwrap_or(false);
     if let Some(ct) = a.contrast {
         params.contrast = ct.clamp(0.3, 3.0);
     }
@@ -2536,6 +2586,69 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     _ => fm,
                 });
             }
+        }
+    }
+    if let Some(d) = a.depth.as_deref() {
+        if !params.engrave {
+            println!("{}  --depth is the relief of an engraving (--medium durer); ignored for this medium", style("·").yellow());
+        } else if d == "auto" {
+            println!("{}  relief: estimating depth (Depth-Anything)…", style("◆").cyan());
+            let device = crate::device::select("auto")?;
+            let z = crate::pipelines::depth::DepthPipeline::load(device).await.context("loading Depth-Anything for the relief")?.depth_map(&a.input, w, h).context("estimating the relief")?;
+            let side = a.out.with_extension("depth.png");
+            image::GrayImage::from_fn(w, h, |x, y| image::Luma([(z[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0).round() as u8])).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  relief → {}", style("·").dim(), side.display());
+            params.relief = Some((w, h, z));
+        } else {
+            let map = image::open(d).with_context(|| format!("opening the depth map {d}"))?.to_luma8();
+            params.relief = Some((map.width(), map.height(), map.pixels().map(|p| p.0[0] as f32 / 255.0).collect()));
+        }
+    }
+    if let Some(d) = a.normals.as_deref() {
+        if params.density && !params.engrave {
+            println!("{}  --normals lead an engraving's line or a brush's stroke; ignored for this drawing medium", style("·").yellow());
+        } else if d == "auto" {
+            println!("{}  normals: estimating the surfaces (Marigold-Normals)…", style("◆").cyan());
+            let device = crate::device::select("auto")?;
+            let n = crate::pipelines::normals::NormalsPipeline::load(device).await.context("loading Marigold-Normals")?.normal_map(&a.input, w, h).context("estimating the normals")?;
+            let side = a.out.with_extension("normals.png");
+            crate::pipelines::normals::to_png(&n, w, h).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  normals → {}", style("·").dim(), side.display());
+            params.normals = Some((w, h, n));
+        } else {
+            let map = image::open(d).with_context(|| format!("opening the normal map {d}"))?.to_rgb8();
+            params.normals = Some((map.width(), map.height(), crate::pipelines::normals::from_png(&map)));
+        }
+    }
+    if let Some(f) = a.follow {
+        if params.engrave {
+            params.follow = f.clamp(0.0, 1.0);
+        } else {
+            println!("{}  --follow is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
+        }
+    }
+    if let Some(f) = a.white {
+        if params.engrave {
+            params.white = Some(f.clamp(0.5, 1.0));
+        } else {
+            println!("{}  --white is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
+        }
+    }
+    if let Some(m) = a.materials.as_deref() {
+        if !params.engrave {
+            println!("{}  --materials tell an engraving (--medium durer) what it cuts; ignored for this medium", style("·").yellow());
+        } else if std::path::Path::new(m).is_file() {
+            let map = image::open(m).with_context(|| format!("opening the material map {m}"))?.to_rgb8();
+            params.materials = Some((map.width(), map.height(), crate::pipelines::materials::from_png(&map)));
+        } else {
+            let things = crate::pipelines::materials::parse(m)?;
+            println!("{}  materials: finding {} thing(s) (OWL-ViT + MobileSAM)…", style("◆").cyan(), things.len());
+            let device = crate::device::select("auto")?;
+            let (mw, mh, map) = crate::pipelines::materials::material_map(&a.input, &things, &device).await.context("finding the materials")?;
+            let side = a.out.with_extension("materials.png");
+            crate::pipelines::materials::to_png(&map, mw, mh).save(&side).with_context(|| format!("saving {}", side.display()))?;
+            println!("{}  materials → {}", style("·").dim(), side.display());
+            params.materials = Some((mw, mh, map));
         }
     }
     if a.haze > 0.0 {

@@ -8,6 +8,96 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.3.0 — Dürer: an engraving cut from the picture itself, reading its relief, its surfaces and what things are made of
+
+### `plakat paint`
+
+- **`--medium durer` is a new engraving.** The plate is now planned by its own module from the picture
+  itself: evenly spaced cuts that follow the form, swell with the tone and thin to a point; a second layer
+  crossing at 60° and a third at 120° in the darks; sparse hairs and stipple in the lights and a band of stipple where the
+  first crossing enters a shadow; contours joined into continuous taut lines, cut needle-to-needle, whose weight follows the
+  contrast they separate. The plate is mostly paper and spends its whole range on the subject, so a dark
+  subject is no longer a grey net; no line is wider than about a third of its spacing, so the deepest shadow
+  is a net of lines with a triangle of paper in every mesh. Still deterministic, still replayed from its score. See
+  [PAINT_DURER.md](PAINT_DURER.md).
+- **`--depth auto|FILE` gives an engraving the picture's relief.** With a depth map — estimated by
+  Depth-Anything, or supplied as a grey image — the cuts turn round the form where the surface bends: round a
+  tyre, round a pipe — and the far part of the subject is cut lighter, with finer contours. The map is an
+  input like the picture; the plate stays deterministic and replayable.
+- **`--normals auto|FILE` gives an engraving the picture's surfaces.** `auto` is a pass of its own: Marigold-Normals
+  estimates a normal map from the picture alone (saved as `<out>.normals.png`; nothing to prepare), and the
+  cuts wrap the form where a surface turns — round a tyre, a lamp, a limb — and lie level on the ground, so a
+  cast shadow is hatched in strokes that lie on it. A normal-map picture can be given instead. With `--depth`
+  too, the normals lead the line and the depth sets what is far.
+- **`--materials "fur: hare; glass: headlamp"` tells an engraving what it cuts — in words.** OWL-ViT and
+  MobileSAM find the masks (saved as `<out>.materials.png`, reusable as a file). Fur is cut in short hairs
+  along the coat's own growth, with crossings that only lean off it; glass and metal open their lights to
+  the paper and are ruled with a steady hand.
+- **`--normals` also leads the brush** of the painting media (oil, watercolour, …), when given: on a passage
+  the picture gives no direction of its own, strokes turn round the form and lie level on the ground. Off by
+  default — without the flag every medium paints exactly as before.
+- **`--materials skin` holds the hatch at rest on a face.** The faces are found by the face detector
+  (SCRFD) and outlined by MobileSAM — nothing to name; on them every tone's line is on the engraver's
+  diagonal and no rule of form, normals or depth turns it, so a portrait's nose and cheeks are no longer
+  circled like a contour map while the rest of the picture follows its form. `skin: hands` adds things found
+  by word.
+- **The paper is found in the picture.** The white point used to be the picture's 90th-percentile value,
+  which on a dark painting with a lit face fell inside the face: the whole lit half of it was clipped to
+  paper. The paper is now the picture's brightest *broad flat* value — the sheet of a drawing, a sky, a
+  wall — when it has one in its lights, and otherwise its brightest thousandth; and a sheet's own tint
+  (the yellowing toward its edges, the lamp falling off across it) is left as paper where it is no darker
+  than its surroundings. **`--white F`** names the white point instead, as a share of the values — the
+  highlight clipping threshold: 0.98 cuts more of a white dress, 0.8 leaves a tinted sheet clean.
+- **A light is the same hair, further apart.** Below a hair's worth of tone the lines of a layer used to
+  break into flicks and dots at the full spacing, which made a lit cheek a dashed shimmer and a white dress
+  a burn; a burin cuts nothing finer than a hair, so the lines now lie further apart instead — up to four
+  spacings, dropping out one at a time as the tone lifts, each line whole — and only below the sparsest
+  hairs break into dots, scattered at one spacing, that thin out evenly to the paper. A lit face is modelled
+  by fine lines thinning out; a white dress keeps its folds.
+- **A flat ground is one tone; a face is ranked among what models.** The order of the picture's values,
+  which spreads the subject over the plate's range, is now counted among the values that model something
+  (a value weighs as much as it differs from its surroundings). Counted by number alone, a dark background
+  that darkened by a twentieth toward the edge of the sheet — most of the picture — was cut from open hatch
+  to the deepest black, and the crossing entering along the way drew a seam down the wall; and a lit face,
+  a tenth of a dark picture, was ranked into the paper.
+- **A face is modelled fuller.** Named as skin, a face's middle value is cut a third inked instead of a
+  fifth — fine lines over the whole lit side, as a portrait engraver cuts, open only at the highlights —
+  and a glint on skin must outshine its near surroundings too, so the forehead is modelled up to the
+  hairline instead of being left clean along it.
+- **Every crossing enters sparse.** The third layer used to begin at a line's full width, which drew a seam
+  along the tone it started at — a vertical line across a dark background. It now enters as the second
+  does: hairs further apart than the spacing, with a few dots under them.
+- **A flat surface is ruled.** Where the normals call a surface flat and facing the viewer, nothing of the
+  picture's own drift is left in the hatch; the few degrees that were made waves across a plain background.
+- **Fur lies its own way.** The hairs of a coat no longer run round the body under it as a hatch would, nor
+  along the lines of equal tone round a light patch of the coat (which ringed it like a sawn trunk): they
+  run the way the strands run, read at the scale of a lock and of a flank, and rest on the diagonal where
+  the coat says nothing.
+- **On skin only firm edges are contours.** An edge weaker than half a firm one — the turn of a cheek, the
+  shadow under a brow — is left to the hatch, however long; an eye, a nostril, the lips, the silhouette are
+  drawn as before.
+- A hatch line's turn is now counted over its whole length, both halves from where it starts, so none
+  wraps further than about a right angle.
+- **A flat background stays ruled beside a head.** An estimated normal map fades out across a silhouette;
+  that halo is no surface, and the hatch no longer fans out from it. The level rule is kept for the ground —
+  a surface tilted up or down — and a wall seen aslant is hatched on the diagonal, not turned vertical.
+- **A contour through fur is hairs**, not one taut line: pieces three to eight spacings long with air
+  between, each entering and leaving as a needle; and the hairs of a coat stray further from it (±20°).
+- **`--follow F`** holds the whole plate's hatch back from the form: 1 (the default) wraps every surface, 0 is a
+  ruled plate; a portrait without a skin mask wants about 0.3. The plate is at its best on machinery and
+  architecture with the defaults; see "What it is good for" in [PAINT_DURER.md](PAINT_DURER.md).
+- An engraving's deepest shadows are made by heavier lines (to two fifths of the spacing), still with paper
+  in every mesh; between a crossed shadow and the stippled light lies a band of one-way hatching; the tone
+  curve has a toe, so the dots reach well into the lights before the paper is bare; no hatch line turns
+  through more than about a right angle, so none closes into a ring or a whorl. The normals are estimated
+  on a mirrored margin, so the picture's border casts no wall; a surface they call flat is hatched
+  straight.
+- A highlight on an engraving is clean paper; a line goes on swelling under its crossings; a form passes into the
+  light through stipple, and so does the fringe of a cast shadow.
+- **`--oldpaper true`** (plan and spec key `oldpaper`; default `false`) prints the finished picture on an
+  aged sheet — yellowed laid paper with its ribs and chain lines, foxing, specks, worn edges — for any
+  medium. An engraving also gets its plate mark and the uneven inking of a hand-pulled impression.
+
 ## What's new in 7.2.0 — Kandinsky 5: an eighth model family, conditioned by a language model
 
 ### Kandinsky 5.0 T2I Lite (`--model kandinsky5`, RFC KANDINSKY-1)

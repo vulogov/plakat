@@ -16,9 +16,8 @@
 
 use image::RgbImage;
 
-/// How the tone is hatched. A PEN rules straight lines at fixed angles; an ENGRAVING (Dürer's burin) cuts
-/// lines that FOLLOW THE FORM — curved along the isophotes of the value, cross-hatched in the darks — finer and
-/// denser.
+/// How the tone is hatched. A PEN rules straight lines at fixed angles; a BRUSH (sumi-e) lays lines that FOLLOW
+/// THE FORM — curved along the isophotes of the value. (A copperplate is its own planner: [`super::engrave`].)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HatchStyle {
     /// Line spacing = sheet's long side / this.
@@ -45,13 +44,6 @@ impl HatchStyle {
     /// Contours only — no tone layer ever fires (thresholds above full darkness).
     pub const NONE: HatchStyle = HatchStyle { spacing_div: 180.0, follow_form: false, quantiles: [1.0, 1.0, 1.0, 1.0], floors: [1.01, 1.01, 1.01, 1.01], width_div: 1000.0, eng_floors: [1.01; 6], eng_offsets: [0.0; 6] };
     pub const PEN: HatchStyle = HatchStyle { spacing_div: 180.0, follow_form: false, quantiles: [0.45, 0.68, 0.84, 0.94], floors: [0.18, 0.34, 0.50, 0.66], width_div: 1000.0, eng_floors: [1.01; 6], eng_offsets: [0.0; 6] };
-    /// Dürer's plate is ELABORATE: every surface but the true highlight carries line. The first (form-following)
-    /// hatch starts almost at the paper, the crossings come in with the tone, and the burin's line swells with
-    /// the darkness it cuts (see `Drawing::hatch_widths`).
-    /// The six floors here are placeholders: `plan_with` derives the engraving's floors from the ink COVERAGE
-    /// each crossing adds (width / spacing), so the plate's tone matches the picture's value — a passage gets
-    /// its k-th crossing once it is darker than k crossings would make it.
-    pub const ENGRAVING: HatchStyle = HatchStyle { spacing_div: 300.0, follow_form: true, quantiles: [0.15, 0.42, 0.66, 0.85], floors: [0.12, 0.28, 0.48, 0.66], width_div: 1400.0, eng_floors: [0.0; 6], eng_offsets: [0.0, 0.0, 1.5708, 1.5708, 0.7854, 2.3562] };
 }
 
 /// A planned drawing: contour polylines and hatch segments (with the tone layer each belongs to).
@@ -67,7 +59,7 @@ pub struct Drawing {
 }
 
 /// Perceptual value (gamma-encoded luma): a pen drawing's mid-grey is what the eye calls mid-grey.
-fn value_map(img: &RgbImage) -> Vec<f32> {
+pub(super) fn value_map(img: &RgbImage) -> Vec<f32> {
     img.pixels().map(|p| 0.299 * p.0[0] as f32 / 255.0 + 0.587 * p.0[1] as f32 / 255.0 + 0.114 * p.0[2] as f32 / 255.0).collect()
 }
 
@@ -91,7 +83,7 @@ fn smooth3(v: &[f32], w: usize, h: usize) -> Vec<f32> {
 }
 
 /// Sobel gradient (gx, gy, magnitude).
-fn sobel(v: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+pub(super) fn sobel(v: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let at = |x: i64, y: i64| v[(y.clamp(0, h as i64 - 1) as usize) * w + x.clamp(0, w as i64 - 1) as usize];
     let (mut gx, mut gy, mut mag) = (vec![0f32; w * h], vec![0f32; w * h], vec![0f32; w * h]);
     for y in 0..h as i64 {
@@ -108,7 +100,7 @@ fn sobel(v: &[f32], w: usize, h: usize) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
 }
 
 /// Deterministic hash in [-0.5, 0.5] (the painter's jitter, duplicated here to keep the module self-contained).
-fn jitter(seed: u64, k: u64) -> f32 {
+pub(super) fn jitter(seed: u64, k: u64) -> f32 {
     let mut z = seed.wrapping_add(k.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -119,7 +111,7 @@ fn jitter(seed: u64, k: u64) -> f32 {
 /// The one-pixel-thin, hysteresis-kept edge map of a value field. `strength` (0..1) opens the map: at 0 only the
 /// strongest 3% of gradients count, at 1 the strongest ~15%; the weak threshold is 40% of the strong one, so a
 /// contour that fades keeps going as long as it is connected to a strong start.
-fn edge_map(v: &[f32], w: usize, h: usize, strength: f32) -> Vec<bool> {
+pub(super) fn edge_map(v: &[f32], w: usize, h: usize, strength: f32) -> Vec<bool> {
     let (gx, gy, mag) = sobel(v, w, h);
     // Non-maximum suppression along the gradient (4 quantised directions) → one-pixel edges.
     let mut thin = vec![0f32; w * h];
@@ -248,7 +240,7 @@ fn edge_map_masked(v: &[f32], w: usize, h: usize, mask: &[f32], keep: f32) -> Ve
 
 /// Link edge pixels into chains (polylines), walking 8-connected neighbours and preferring to continue straight.
 /// Chains shorter than `min_len` pixels are noise and dropped.
-fn trace_chains(edge: &[bool], w: usize, h: usize, min_len: usize) -> Vec<Vec<[f32; 2]>> {
+pub(super) fn trace_chains(edge: &[bool], w: usize, h: usize, min_len: usize) -> Vec<Vec<[f32; 2]>> {
     let mut used = vec![false; w * h];
     let mut chains = Vec::new();
     let neighbours = |i: usize| -> Vec<usize> {
@@ -718,19 +710,6 @@ mod tests {
         let img = RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220]));
         let d = plan(&img, 0.6, 5_000, 7);
         assert!(d.contours.is_empty() && d.hatch.is_empty(), "nothing to draw on blank paper");
-    }
-
-    #[test]
-    fn engraving_hatch_follows_the_form_and_stays_in_the_dark_mass() {
-        let img = two_masses(120, 120);
-        let d = plan_with(&img, 0.6, 20_000, 7, HatchStyle::ENGRAVING);
-        assert!(!d.hatch.is_empty(), "the dark mass is engraved");
-        let outside = d.hatch.iter().flat_map(|(_, s)| s.iter()).filter(|p| !(p[0] > 29.0 && p[0] < 91.0 && p[1] > 29.0 && p[1] < 91.0)).count();
-        assert_eq!(outside, 0, "no lines on the light ground");
-        let layers: std::collections::BTreeSet<usize> = d.hatch.iter().map(|(l, _)| *l).collect();
-        assert!(layers.len() >= 3, "cross-hatched ({layers:?})");
-        let longest = d.hatch.iter().map(|(_, s)| s.len()).max().unwrap();
-        assert!(longest >= 12, "lines run, they are not dots ({longest})");
     }
 
     #[test]

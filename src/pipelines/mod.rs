@@ -8,6 +8,8 @@ pub mod instantstyle;
 pub mod multiperson;
 pub mod controlnet_annotator;
 pub mod depth;
+pub mod normals;
+pub mod materials;
 pub mod embedding;
 pub mod hed;
 pub mod lineart;
