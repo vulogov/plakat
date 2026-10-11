@@ -9,7 +9,7 @@ plakat paint from picture.png --plan auto --medium durer --seed 42
 plakat paint from picture.png --plan auto --medium durer --seed 42 --oldpaper true
 plakat paint from picture.png --plan auto --medium durer --seed 42 --normals auto --depth auto
 plakat paint from hare.png --plan auto --medium durer --seed 42 --normals auto --materials "fur: hare"
-plakat paint from portrait.png --plan auto --medium durer --seed 42 --normals auto --follow 0.3
+plakat paint from portrait.png --plan auto --medium durer --seed 42 --normals auto --materials skin
 ```
 
 ## What it is good for
@@ -17,8 +17,9 @@ plakat paint from portrait.png --plan auto --medium durer --seed 42 --normals au
 **Machinery, architecture, hard surfaces** — this is where the plate is at its best, with the defaults: the
 form-following hatch wraps a tyre, a lamp, a pipe; the cast shadow lies level on the ground; the glints are
 clean paper. **Portraits and animals** need to be told more: name the fur (`--materials "fur: …"`), and
-hold the hatch back from circling the nose and cheeks like a contour map (`--follow 0.3`). A face is
-otherwise cut like any other surface.
+name the skin (`--materials skin` — the faces are found by the face detector), so that the hatch does not
+circle the nose and cheeks like a contour map: on skin it is held at rest, on the diagonal, while the rest
+of the picture follows its form. Without a skin mask, `--follow 0.3` holds the whole plate back instead.
 
 It follows the deterministic model of `plakat paint`: no weights and no diffusion, only geometry computed
 from the picture and the seed. Every cut is a stroke in the score, and `plakat paint replay` reproduces the
@@ -62,12 +63,13 @@ armature has already smoothed away the detail a burin draws.
    would cut through the meshes and close them. The layers together ink the tone asked for.
 6. **Flicks, and a little stipple.** Below a hair's worth of tone a line is not made thinner — it is broken.
    The first layer breaks into short flicks whose length carries the tone, and at its lightest into dots,
-   ever sparser, so a form passes into the light through stipple instead of over an edge. The first
-   crossing also enters as a narrow band of dots; the second crossing begins as a line. The tone curve has
-   a toe — the lightest tones fall off no faster than three tenths of the value — so the dots reach well
-   into the lights before the paper is bare.
-7. **No rings.** A hatch line may turn through about a right angle over its length, then the burin lifts and
-   a new line begins: round a tyre the hatch is arcs, never a closed ring, and no whorl can form.
+   ever sparser — evenly, all the way down to the paper — so a form passes into the light through stipple
+   instead of over an edge, and a lit cheek or a white sleeve keeps its form to the white point. Each
+   crossing also enters as a narrow band of dots: a layer that began at a line's full width would draw its
+   own edge, a seam along the tone it starts at. The tone curve has a toe — the lightest tones fall off no
+   faster than three tenths of the value — so the dots reach well into the lights before the paper is bare.
+7. **No rings.** A hatch line may turn through about a right angle over its whole length, then the burin
+   lifts and a new line begins: round a tyre the hatch is arcs, never a closed ring, and no whorl can form.
 
 Line spacing is 1/300 of the sheet's long side (7 px at 2048); a contour is 1 to 6 px wide at that size.
 
@@ -88,14 +90,17 @@ Two things are read from it, both in the normal's own units, so nothing depends 
 
 - Where the surface **turns** — its facing swings much more one way than the other: a barrel, a tyre, a limb
   — the cuts run that way, round the form. A sphere, which turns alike every way, and a form finer than a
-  hatch could wrap are left to the picture's edges; so is the crease between two faces.
-- Where the surface is steady and **tilted** away from the viewer — the ground above all, a wall seen aslant
-  — and no edge of the picture leads the line, the cuts lie level with it: a cast shadow is laid in strokes
-  that lie on the ground.
-
+  hatch could wrap are left to the picture's edges; so is the crease between two faces. So is the **halo** an
+  estimated map leaves beside a silhouette, where the background's normals tilt away from a head and die off
+  over a short distance: that is no surface, and on a passage the picture leaves flat nothing turns there.
+- Where the surface is steady, flat and **tilted up or down** — the ground, a table, a road — and no edge of
+  the picture leads the line, the cuts lie level with it: a cast shadow is laid in strokes that lie on the
+  ground. A wall seen aslant, tilted sideways, is not the ground: its lines stay on the diagonal rather
+  than turning vertical beside every head.
 - Where the surface neither turns nor tilts — a wall behind a head, the flat face of a machine — the cuts
   are **straight**, on the resting diagonal, whatever the picture's values do there: the drift of a light or
-  the grain of a canvas does not bend the hatching of a flat surface.
+  the grain of a canvas does not bend the hatching of a flat surface, not even by a few degrees — the
+  hatch of a flat surface is ruled.
 
 The normals lead the line; they do not change the tone. Given together with `--depth`, the normals set the
 direction and the depth sets what is far.
@@ -109,18 +114,24 @@ materials are **named, in words**, and the masks are found for you:
 ```
 --materials "fur: hare"
 --materials "glass: headlamp, gauge; metal: engine"
+--materials skin
+--materials "skin: hands; fur: collar"
 ```
 
 `kind: thing, thing; kind: thing`. For every thing named, OWL-ViT finds its instances in the picture and
 MobileSAM outlines each — the models `plakat remove --what` uses; nothing new is fetched if you have used
-it. The map is saved beside the output as `<out>.materials.png`, in the kinds' colours; look at it, retouch
-it if you like, and give it back as `--materials map.png`. Where two masks overlap, the thing written first
-keeps the pixel. A thing that is not found is reported and left out.
+it. `skin` needs no thing named: the **faces** are found by the face detector (SCRFD, the one
+`--preserve-face` uses), each box widened to take in the forehead and the neck, and outlined the same way;
+things written after `skin:` (hands, an arm) are found by word as the other kinds are. The map is saved
+beside the output as `<out>.materials.png`, in the kinds' colours; look at it, retouch it if you like, and
+give it back as `--materials map.png`. Where two masks overlap, the thing written first keeps the pixel. A
+thing that is not found is reported and left out.
 
 | kind | how it is cut |
 |---|---|
-| `fur` (hair, feathers) | cut in **short hairs**, each 5 to 12 line spacings long and its own length, each straying up to ±14° from the coat, lying over one another and not in ranks; they run the way the coat grows — the direction its own strands agree on — and the crossings only lean off it (±17° instead of 60° and 120°), so the hairs lie beside one another even in shadow |
+| `fur` (hair, feathers) | cut in **short hairs**, each 5 to 12 line spacings long and its own length, each straying up to ±20° from the coat, lying over one another and not in ranks; a contour through the coat is hairs too — pieces three to eight spacings long with air between, not one taut line; they run the way the coat grows — the direction its own strands agree on, read at the scale of a lock and, where no lock says, of a flank — and never round the body under it as a hatch would, nor along the lines of equal tone round a light patch of the coat (that is the grain of a sawn trunk, not fur): where the coat says nothing they rest on the diagonal; the crossings only lean off the coat (±17° instead of 60° and 120°), so the hairs lie beside one another even in shadow |
 | `glass`, `metal` | polished: light and middle tones open to the paper, the darks stay, a light needs to outshine its surroundings only half as much to be left as a clean glint, and the line is **ruled** — its weight does not waver with the hand, and it is never broken into flicks or dots: into the light it runs on as an unbroken hair |
+| `skin` (a face, a hand) | the hatch is **held at rest**: it does not follow the form the picture, the normals or the depth describe, and does not lie level as on the ground — every tone's line is on the engraver's diagonal and its crossings a third of a turn off it, as if `--follow 0` held there alone. Only the **firm edges** are drawn as contours — an eye, a nostril, the lips, the silhouette; an edge weaker than half a firm one (the turn of a cheek, the shadow under a brow) is no contour on skin, however long, and is left to the hatch, so a face is not a contour map. The tone, the flicks and the dots are as on any surface |
 
 Whole objects ("hare", "wheel") are found firmly. Parts of a machine ("headlamp", "gauge") are found only
 faintly, and some ("engine", "pipe") not at all — the detector is a small one. The report says which.
@@ -169,13 +180,14 @@ ages the same way.
 
 | flag | effect |
 |---|---|
-| `--follow F` (default 1) | how far the hatch follows the form: 1 wraps every surface; 0 is a ruled plate — every line on the diagonal or level on the ground, only the contours bend. A portrait wants about 0.3 |
+| `--follow F` (default 1) | how far the hatch follows the form: 1 wraps every surface; 0 is a ruled plate — every line on the diagonal or level on the ground, only the contours bend. A portrait wants `--materials skin` instead, which holds only the face; without it, about 0.3 |
+| `--white F` (default 0.9) | the **white point**, as a share of the picture's values: what lies at or above it is clean paper. A picture with a broad light that is cut as bare paper — a white dress, a bright sky — wants more of it cut: 0.98. Below the white point the lightest tones thin into ever sparser dots before the paper is reached |
 | `--contour F` (medium default 0.55) | how much of the edge map becomes drawn line: lower keeps only the main lines, higher draws every fold and rivet; 0 = no contours |
 | `--budget N` (plan ×3 by default, 360 000 at most) | the cap on cuts; when the hatch would exceed it the spacing widens to fit, so a small budget gives an open plate |
 | `--seed N` | where the lines start and where the flicks break |
 | `--oldpaper true` | the aged sheet and the plate mark |
 | `--normals auto\|FILE` | the picture's surfaces: the cuts wrap the form and lie level on the ground (see above) |
-| `--materials SPEC\|FILE` | what things are made of, in words: fur is cut along the coat, glass and metal open their lights (see above) |
+| `--materials SPEC\|FILE` | what things are made of, in words: fur is cut along the coat, glass and metal open their lights, skin (the faces, found by the face detector) holds the hatch at rest (see above) |
 | `--depth auto\|FILE` | the picture's relief: the far part is cut lighter; without `--normals` it also turns the cuts |
 | `--palette sumi` | forced: the plate is black on paper whatever the picture's colours |
 
@@ -186,12 +198,18 @@ ages the same way.
   `--depth` alone the turn shows on thin rounded parts (a tyre, a pipe) and hardly on broad ones (a head, a
   lamp). With `--normals` it shows on both; small parts (spokes, levers) are finer than a hatch can wrap and
   keep the edge direction.
-- **Materials are told apart only where they are named** (`--materials`), and only three kinds: fur, glass,
-  metal. Leather, rubber and cloth are cut as plain surfaces. The detector finds whole objects well and
-  small parts of a machine poorly.
+- **Materials are told apart only where they are named** (`--materials`), and only four kinds: fur, glass,
+  metal, skin. Leather, rubber and cloth are cut as plain surfaces. The detector finds whole objects well
+  and small parts of a machine poorly. The face detector finds faces, not hands or arms: those are named
+  after `skin:` and found by word, less surely.
 - **An estimated normal map is a guess**, good on a head, a limb, a tyre, poorer on fine machinery; the
   estimate is made with a mirrored margin so the picture's border casts no wall, but the saved map is
   worth a look, and can be retouched and given back as a file.
 - **Low-resolution or heavily compressed sources** show their blocks as steps in the edge of a tone.
-- **A face** is cut like any other surface, from the picture at full detail; there is no separate portrait
-  pass. Lit skin is mostly paper with flicks.
+- **A face** is cut from the picture at full detail; there is no separate portrait pass. Named as skin it is
+  hatched on the diagonal and only its firm edges are drawn; unnamed it is cut like any other surface, and
+  follows the form. Lit skin is flicks thinning into stipple; what lies above the white point is paper, so a
+  face lit to the picture's brightest wants `--white 0.98`.
+- **The lightest tones are stippled to the paper**, so a sheet whose own tint lies a little under the white
+  point — the yellowed paper of an old drawing — gets a sparse dusting of dots at its darkest corners. Bring
+  the white point down (`--white 0.8`) or clean the sheet first.

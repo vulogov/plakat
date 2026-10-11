@@ -831,17 +831,25 @@ pub struct FromArgs {
     #[arg(long, value_name = "auto|FILE")]
     pub normals: Option<String>,
     /// MATERIALS for an engraving (`--medium durer`), named in words: `"fur: hare; glass: lamp lens; metal:
-    /// engine, exhaust pipe"` — kinds `fur`, `glass`, `metal`; the masks are found by OWL-ViT and MobileSAM
-    /// (GPU) and saved beside the output as `<out>.materials.png`. Or a path to such a saved map. Fur is cut
-    /// along the coat with crossings that only lean off it; glass and metal open their lights to the paper.
+    /// engine, exhaust pipe; skin"` — kinds `fur`, `glass`, `metal`, `skin`; the masks are found by OWL-ViT and
+    /// MobileSAM (GPU) and saved beside the output as `<out>.materials.png`. `skin` needs no thing named: the
+    /// faces are found by the face detector (`skin: hands` adds things found by word). Or a path to such a
+    /// saved map. Fur is cut along the coat with crossings that only lean off it; glass and metal open their
+    /// lights to the paper; on skin the hatch is held at rest and does not follow the form.
     #[arg(long, value_name = "SPEC|FILE")]
     pub materials: Option<String>,
     /// FOLLOW (0..1, default 1) for an engraving (`--medium durer`): how far the hatch follows the form. 1 = the
     /// lines wrap every surface the picture, the normals or the depth describe; 0 = a ruled plate, every line
-    /// on the engraver's diagonal or level on the ground, only the contours bending. A portrait, where lines
-    /// circling the nose and cheeks read as a contour map, wants about 0.3; machinery and architecture want 1.
+    /// on the engraver's diagonal or level on the ground, only the contours bending. Machinery and architecture
+    /// want 1; a portrait wants the face held at rest and the rest of the picture following — `--materials skin`
+    /// — or, without it, about 0.3.
     #[arg(long, value_name = "F")]
     pub follow: Option<f32>,
+    /// WHITE POINT (0.5..1, default 0.9) for an engraving (`--medium durer`): the share of the picture's values
+    /// at or above which the paper is left clean — the highlight clipping threshold. A picture with a broad
+    /// light (a white dress, a bright sky) that is cut as bare paper wants more of it cut: 0.98.
+    #[arg(long, value_name = "F")]
+    pub white: Option<f32>,
     /// CONTRAST (0.5..2, 1 = neutral): a painting-safe finish grade — S-curve tonal contrast, recorded for replay.
     #[arg(long)]
     pub contrast: Option<f32>,
@@ -2616,6 +2624,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             params.follow = f.clamp(0.0, 1.0);
         } else {
             println!("{}  --follow is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
+        }
+    }
+    if let Some(f) = a.white {
+        if params.engrave {
+            params.white = f.clamp(0.5, 1.0);
+        } else {
+            println!("{}  --white is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
         }
     }
     if let Some(m) = a.materials.as_deref() {

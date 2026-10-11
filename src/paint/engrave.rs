@@ -66,6 +66,9 @@ pub const FUR: u8 = 1;
 /// GLASS and METAL: polished, so the lights are open paper and only the darks are cut.
 pub const GLASS: u8 = 2;
 pub const METAL: u8 = 3;
+/// SKIN (a face, a hand): the hatch is held at rest — the diagonal — and does not follow the form, which on a
+/// face reads as a contour map round the nose and cheeks. The contours still bend; only the tone's lines are ruled.
+pub const SKIN: u8 = 4;
 
 /// A planned plate.
 pub struct Plate {
@@ -92,6 +95,12 @@ const DEEPEST: f32 = 0.78;
 /// and below `DOTS` of a hair, dots, so a form passes into the light through stipple, not over an edge.
 const FLICK: f32 = 0.2;
 const DOTS: f32 = 0.5;
+/// ... and below `FLICK` the dots go on thinning, evenly, all the way to the paper: there is no tone so light
+/// that it has no dot at all, so the light rolls off through an ever sparser stipple instead of stopping at an
+/// edge — a lit cheek, a white sleeve, keep their form. `BARE` is the share of a hair below which a tone is not
+/// even a dot: a little above nothing, so the faint unevenness of a sheet of old paper, a whisker under the
+/// white point, is not dusted over.
+const BARE: f32 = 0.03;
 /// A highlight is clean paper, not a faint tone: a spot among the lightest `LIT` of the subject that is also
 /// lighter than its surroundings by `GLINT` is not cut at all. (A broad light — a lit cheek, a white dress — is
 /// not a highlight: it is modelled, lightly.)
@@ -103,8 +112,9 @@ const GLINT: f32 = 0.16;
 /// layer ends. The fade is kept gentle: a dark far wall must still read darker than a near half-tone.
 const FAR_LIGHTER: f32 = 0.3;
 const FAR_FINER: f32 = 0.3;
-/// How far below a hair's worth the first crossing still cuts, as dots: the edge of a shadow is stippled before
-/// it is hatched. Only there — stipple everywhere is dust, not form.
+/// How far below a hair's worth a crossing still cuts, as dots: the edge of a shadow is stippled before it is
+/// hatched, and the deepest crossing enters the same way — a layer that began at a hair's full width would
+/// draw its own edge, a seam along the tone it starts at. Only there — stipple everywhere is dust, not form.
 const STIPPLE: f32 = 0.6;
 /// How much a line's weight wavers along it with the pressure of the hand.
 const HAND: f32 = 0.14;
@@ -130,7 +140,20 @@ const TOE: f32 = 0.3;
 const SWEEP: f32 = 1.6;
 /// How far each hair of fur may stray from the coat's direction (the full spread, in radians): hairs lie over
 /// one another, not in ranks.
-const FUR_SPREAD: f32 = 0.5;
+const FUR_SPREAD: f32 = 0.7;
+/// A contour that runs through fur is not one line but a run of hairs: pieces so many spacings long (least,
+/// most), with a gap of about one spacing between them.
+const FUR_PIECE: (f32, f32) = (3.0, 8.0);
+/// An estimated normal map fades out across a silhouette: beside a head the background's normals tilt away
+/// from it and die off over a short distance — a HALO that is no surface, and whose "curvature" would be cut as
+/// a fan of lines radiating from the head. The halo is known by its tilt SHRINKING along its own direction (a
+/// convex surface's tilt grows toward its silhouette) by at least this much, in the normal's units over one
+/// side of the sheet. The inside of a fold, concave, is given up with it: its lines are led by its edges.
+const HALO: (f32, f32) = (0.3, 1.2);
+/// The level rule is for the GROUND: a surface tilted up or down (a floor, a table, a road) is hatched along
+/// its lines of equal depth. A wall seen aslant — tilted sideways — is not: its lines would turn vertical
+/// beside every head. How much of the tilt must be vertical (least, full).
+const UPHILL: (f32, f32) = (0.3, 0.7);
 /// Reading a normal map. The grain it is smoothed past, as a share of the sheet's long side (one part in ...);
 /// how far the normal must swing more one way than the other, per side of the sheet, before a surface is taken
 /// to TURN (from ... to fully); the swing past which it is a crease or a step, not a surface; and how far a
@@ -140,10 +163,14 @@ const NORMAL_GRAIN: usize = 128;
 const TURNS: (f32, f32) = (3.0, 8.0);
 const CREASE: f32 = 40.0;
 const TILTED: (f32, f32) = (0.35, 0.65);
-/// How strictly a surface the normals call flat and facing the viewer is hatched straight.
-const STRAIGHT: f32 = 0.9;
+/// How strictly a surface the normals call flat and facing the viewer is hatched straight: wholly. What is left
+/// of the picture's own drift at 0.9 is a line that leans a few degrees this way and that along a wall — a
+/// wave, on a surface that has none.
+const STRAIGHT: f32 = 1.0;
 /// A hair of FUR is a short stroke: so many spacings long, each way from where it starts.
 const HAIR_LENGTH: (f32, f32) = (2.5, 6.0);
+/// On skin, an edge weaker than this share of a firm one is not a contour at all (see `plan`).
+const SKIN_FAINT: f32 = 0.5;
 
 /// The share of the paper layer `k` inks where the plate's tone is `t`: the layers fill in order, each taking
 /// what the ones before it left, so `k` crossings together ink exactly `t`.
@@ -208,25 +235,30 @@ impl Flow {
     /// `ground` (at the sheet's resolution, 0..1) is where a tone lies alone on open paper: a cast shadow, the
     /// earth under the subject. There the line rests level instead of on the diagonal.
     /// `follow` (0..1) is how far the cuts follow the form at all: at 0 the plate is ruled — every hatch line on
-    /// the resting diagonal, or level on the ground — and only the contours bend.
-    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32) -> Flow {
+    /// the resting diagonal, or level on the ground — and only the contours bend. `held` (at the sheet's
+    /// resolution, 0..1) is where the hatch is held at rest whatever `follow` says: skin, and fur (whose own
+    /// direction, the coat's, is read on top).
+    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, held: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32) -> Flow {
         let long = w.max(h);
         let f = long.div_ceil(512).max(1);
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
         let mut small = vec![0f32; sw * sh];
         let mut level = vec![0f32; sw * sh];
+        let mut rest = vec![0f32; sw * sh];
         let mut count = vec![0f32; sw * sh];
         for y in 0..h {
             for x in 0..w {
                 let i = (y / f) * sw + x / f;
                 small[i] += value[y * w + x];
                 level[i] += ground[y * w + x];
+                rest[i] += held.map_or(0.0, |m| m[y * w + x]);
                 count[i] += 1.0;
             }
         }
-        for ((s, l), c) in small.iter_mut().zip(level.iter_mut()).zip(&count) {
+        for (((s, l), r), c) in small.iter_mut().zip(level.iter_mut()).zip(rest.iter_mut()).zip(&count) {
             *s /= c.max(1.0);
             *l /= c.max(1.0);
+            *r = (*r / c.max(1.0)).clamp(0.0, 1.0);
         }
         let (gx, gy, _) = sobel(&small, sw, sh);
         let n = sw * sh;
@@ -250,12 +282,13 @@ impl Flow {
             // ... and only near the edges that give it: far inside a flat face the little orientation that reaches
             // it is the lighting's drift, and following that grains the face like wood.
             let e = ((jxx[i] + jyy[i]) / energy / 1.5).clamp(0.0, 1.0);
-            let form = follow * t * t * (3.0 - 2.0 * t) * e * e * (3.0 - 2.0 * e);
+            let form = follow * (1.0 - rest[i]) * t * t * (3.0 - 2.0 * t) * e * e * (3.0 - 2.0 * e);
             // The edge's tangent is the gradient's orientation turned a quarter: the doubled angle negated.
             let (fc, fs) = if disc > 1e-12 { (-a / disc, -b / disc) } else { (0.0, -1.0) };
             led[i] = form;
-            // At rest the line lies on the diagonal — or level, on open ground.
-            let g = level[i].clamp(0.0, 1.0);
+            // At rest the line lies on the diagonal — or level, on open ground. A cheek's shadow stands alone on
+            // the paper as a cast shadow does, but it is no ground: on skin the rest is the diagonal.
+            let g = level[i].clamp(0.0, 1.0) * (1.0 - rest[i]);
             let (rc, rs) = (g, g - 1.0);
             let rest = (rc * rc + rs * rs).sqrt().max(1e-6);
             c2[i] = form * fc + (1.0 - form) * rc / rest;
@@ -263,30 +296,36 @@ impl Flow {
         }
         // The normals say which way a surface turns outright; the relief only implies it, so it is asked second.
         if let Some(normals) = normals.filter(|m| m.w >= 2 && m.h >= 2 && m.n.len() == m.w * m.h) {
-            turn_with_the_normals(&mut c2, &mut s2, &led, sw, sh, normals, STRAIGHT, follow);
+            turn_with_the_normals(&mut c2, &mut s2, &led, &rest, sw, sh, normals, STRAIGHT, follow);
         } else if let Some(relief) = relief.filter(|r| r.w >= 2 && r.h >= 2 && r.z.len() == r.w * r.h) {
-            turn_with_the_form(&mut c2, &mut s2, &led, sw, sh, relief, follow);
+            turn_with_the_form(&mut c2, &mut s2, &led, &rest, sw, sh, relief, follow);
         }
         // FUR grows its own way, whatever the form under it does: there the line takes the direction the coat's
-        // own strands run in, read at the scale of a lock, wherever the strands agree on one.
+        // own strands run in, read at the scale of a lock, wherever the strands agree on one — and where they do
+        // not, the way the coat as a whole runs there, read at the scale of a flank. Not the form's: a hair does
+        // not follow the lines of equal tone round a light patch of the coat, which would ring it like the grain
+        // of a sawn trunk; it lies the way its neighbours lie.
         if let Some(fur) = fur {
-            let lock = ((long as f32 / 110.0 / f as f32).round() as usize).max(2);
             let (mut a, mut b, mut e) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
             for i in 0..n {
                 a[i] = gx[i] * gx[i] - gy[i] * gy[i];
                 b[i] = 2.0 * gx[i] * gy[i];
                 e[i] = gx[i] * gx[i] + gy[i] * gy[i];
             }
-            let (a, b, e) = (blur(&a, sw, sh, lock, 2), blur(&b, sw, sh, lock, 2), blur(&e, sw, sh, lock, 2));
-            for y in 0..sh {
-                for x in 0..sw {
-                    let i = y * sw + x;
-                    let len = (a[i] * a[i] + b[i] * b[i]).sqrt();
-                    let agree = ((len / (e[i] + 1e-12) - 0.15) / 0.3).clamp(0.0, 1.0);
-                    let t = fur[(y * f).min(h - 1) * w + (x * f).min(w - 1)] * agree;
-                    if len > 1e-12 {
-                        c2[i] += (-a[i] / len - c2[i]) * t;
-                        s2[i] += (-b[i] / len - s2[i]) * t;
+            let at = |r: usize| (blur(&a, sw, sh, r, 2), blur(&b, sw, sh, r, 2), blur(&e, sw, sh, r, 2));
+            let flank = at(((long as f32 / 30.0 / f as f32).round() as usize).max(3));
+            let lock = at(((long as f32 / 110.0 / f as f32).round() as usize).max(2));
+            for (a, b, e) in [&flank, &lock] {
+                for y in 0..sh {
+                    for x in 0..sw {
+                        let i = y * sw + x;
+                        let len = (a[i] * a[i] + b[i] * b[i]).sqrt();
+                        let agree = ((len / (e[i] + 1e-12) - 0.15) / 0.3).clamp(0.0, 1.0);
+                        let t = fur[(y * f).min(h - 1) * w + (x * f).min(w - 1)] * agree;
+                        if len > 1e-12 {
+                            c2[i] += (-a[i] / len - c2[i]) * t;
+                            s2[i] += (-b[i] / len - s2[i]) * t;
+                        }
                     }
                 }
             }
@@ -318,7 +357,9 @@ impl Flow {
 /// And where a flat surface RECEDES — the ground under the subject above all — and no edge of the picture leads
 /// the line, the cuts rest level with it, along the lines of equal depth, instead of on the diagonal: a cast
 /// shadow is laid in strokes that lie on the ground.
-fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, relief: Relief, follow: f32) {
+///
+/// `held` (0..1 a cell) is where neither rule is applied — the hatch stays at rest there.
+fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], held: &[f32], sw: usize, sh: usize, relief: Relief, follow: f32) {
     let n = sw * sh;
     // The depth at the flow's resolution, smoothed past the estimator's grain and an 8-bit map's steps.
     let mut z = vec![0f32; n];
@@ -393,7 +434,7 @@ fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh
         let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
         let firm = ((bend[i] / typical - 0.7) / 1.0).clamp(0.0, 1.0);
         let t = agree * firm;
-        let t = follow * t * t * (3.0 - 2.0 * t);
+        let t = follow * (1.0 - held[i]) * t * t * (3.0 - 2.0 * t);
         if len > 1e-9 {
             c2[i] += (vx[i] / len - c2[i]) * t;
             s2[i] += (vy[i] / len - s2[i]) * t;
@@ -404,7 +445,7 @@ fn turn_with_the_form(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh
         // ... and only where the surface really is flat: a turning one has its own direction, however weak.
         let flat = 1.0 - ((bend[i] / typical - 0.3) / 0.7).clamp(0.0, 1.0);
         let one_way = (((sx[i] * sx[i] + sy[i] * sy[i]).sqrt() / steep[i].max(1e-12) - 0.45) / 0.25).clamp(0.0, 1.0);
-        let u = 0.85 * sloped * one_way * flat * (1.0 - t) * (1.0 - led[i]);
+        let u = 0.85 * sloped * one_way * flat * (1.0 - t) * (1.0 - led[i]) * (1.0 - held[i]);
         if level > 1e-12 {
             c2[i] += (lx[i] / level - c2[i]) * u;
             s2[i] += (ly[i] / level - s2[i]) * u;
@@ -433,7 +474,8 @@ impl FormFlow {
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
         let (mut c2, mut s2) = (vec![0f32; sw * sh], vec![0f32; sw * sh]);
         // A brush is led only where the normals speak; a flat wall is left to the painter.
-        turn_with_the_normals(&mut c2, &mut s2, &vec![0f32; sw * sh], sw, sh, normals, 0.0, 1.0);
+        let none = vec![0f32; sw * sh];
+        turn_with_the_normals(&mut c2, &mut s2, &none, &none, sw, sh, normals, 0.0, 1.0);
         Some(FormFlow { w: sw, h: sh, scale: (sw as f32 / w as f32, sh as f32 / h as f32), c2: blur(&c2, sw, sh, 2, 2), s2: blur(&s2, sw, sh, 2, 2) })
     }
 
@@ -458,8 +500,9 @@ impl FormFlow {
 /// picture leads the line, the cuts lie across the tilt, level with the surface.
 ///
 /// Everything is measured in the normal's own units (how far it swings over one side of the sheet), so no
-/// threshold depends on the picture.
-fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize, sh: usize, normals: Normals, straight: f32, follow: f32) {
+/// threshold depends on the picture. `held` (0..1 a cell) is where neither rule is applied — skin — and the
+/// hatch stays at rest.
+fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], held: &[f32], sw: usize, sh: usize, normals: Normals, straight: f32, follow: f32) {
     let n = sw * sh;
     let (mut nx, mut ny) = (vec![0f32; n], vec![0f32; n]);
     for y in 0..sh {
@@ -479,10 +522,11 @@ fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize,
     let (nx, ny) = (blur(&nx, sw, sh, r, 3), blur(&ny, sw, sh, r, 3));
     let at = |v: &[f32], x: usize, y: usize| v[y.min(sh - 1) * sw + x.min(sw - 1)];
     let (mut vx, mut vy, mut bend, mut swing) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
-    let (mut lx, mut ly) = (vec![0f32; n], vec![0f32; n]);
+    let (mut lx, mut ly, mut up, mut fade) = (vec![0f32; n], vec![0f32; n], vec![0f32; n], vec![0f32; n]);
     let d = r.max(1);
     // A difference over `2d` cells, as the normal's swing over one side of the sheet.
     let side = sw.max(sh) as f32 / (2 * d) as f32;
+    let tilt: Vec<f32> = nx.iter().zip(&ny).map(|(x, y)| (x * x + y * y).sqrt()).collect();
     for y in 0..sh {
         for x in 0..sw {
             let (xm, xp, ym, yp) = (x.saturating_sub(d), x + d, y.saturating_sub(d), y + d);
@@ -498,6 +542,11 @@ fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize,
             // The doubled angle of the level line: the tilt's own, turned a quarter.
             lx[i] = -(nx[i] * nx[i] - ny[i] * ny[i]);
             ly[i] = -2.0 * nx[i] * ny[i];
+            // How much of the tilt is up or down the sheet (the ground's) rather than sideways (a wall's).
+            up[i] = ny[i] * ny[i] / (tilt[i] * tilt[i]).max(1e-6);
+            // How fast the tilt dies away along its own direction: a halo's does, a convex surface's grows.
+            let (mx, my) = ((at(&tilt, xp, y) - at(&tilt, xm, y)) * side, (at(&tilt, x, yp) - at(&tilt, x, ym)) * side);
+            fade[i] = -(mx * nx[i] + my * ny[i]) / tilt[i].max(1e-3);
         }
     }
     // The crease between two faces and the step between two objects swing the normal harder than any surface
@@ -514,31 +563,39 @@ fn turn_with_the_normals(c2: &mut [f32], s2: &mut [f32], led: &[f32], sw: usize,
         ly[i] *= keep;
     }
     let (vx, vy, bend) = (blur(&vx, sw, sh, wide, 3), blur(&vy, sw, sh, wide, 3), blur(&bend, sw, sh, wide, 3));
+    let (up, fade) = (blur(&up, sw, sh, wide, 2), blur(&fade, sw, sh, wide, 2));
     let broad = wide * 3;
     let (lx, ly) = (blur(&lx, sw, sh, broad, 3), blur(&ly, sw, sh, broad, 3));
     for i in 0..n {
         let len = (vx[i] * vx[i] + vy[i] * vy[i]).sqrt();
         let agree = ((len / bend[i].max(1e-9) - 0.5) / 0.3).clamp(0.0, 1.0);
         let firm = ((bend[i] - TURNS.0) / (TURNS.1 - TURNS.0)).clamp(0.0, 1.0);
+        // The halo of a silhouette is no surface: a tilt that dies away along its own direction is no
+        // curvature, and nothing turns there — the surface is as flat as the picture says.
+        let halo = ((fade[i] - HALO.0) / (HALO.1 - HALO.0)).clamp(0.0, 1.0);
+        let bend = bend[i] * (1.0 - halo);
+        let firm = firm * (1.0 - halo);
         let t = agree * firm;
-        let t = follow * t * t * (3.0 - 2.0 * t);
+        let t = follow * (1.0 - held[i]) * t * t * (3.0 - 2.0 * t);
         if len > 1e-9 {
             c2[i] += (vx[i] / len - c2[i]) * t;
             s2[i] += (vy[i] / len - s2[i]) * t;
         }
-        // The tilt is squared in `lx`,`ly`: their length is the squared tilt where it holds one way.
+        // A surface that neither turns nor tilts — a wall behind a head, the flat face of a machine — is hatched
+        // STRAIGHT, on the resting diagonal: whatever orientation the picture's values have there is the drift
+        // of its light or the grain of its canvas, and following it bends the lines of a surface that is flat.
+        let still = 1.0 - (bend / TURNS.0).clamp(0.0, 1.0);
+        // The tilt is squared in `lx`,`ly`: their length is the squared tilt where it holds one way. Only a
+        // FLAT surface tilted up or down — the ground — rests the line level: a halo bends, a wall tilts sideways.
         let level = (lx[i] * lx[i] + ly[i] * ly[i]).sqrt();
         let tilted = ((level.sqrt() - TILTED.0) / (TILTED.1 - TILTED.0)).clamp(0.0, 1.0);
-        let u = 0.85 * tilted * (1.0 - t) * (1.0 - led[i]);
+        let uphill = ((up[i] - UPHILL.0) / (UPHILL.1 - UPHILL.0)).clamp(0.0, 1.0);
+        let u = 0.85 * tilted * uphill * still * (1.0 - t) * (1.0 - led[i]) * (1.0 - held[i]);
         if level > 1e-12 {
             c2[i] += (lx[i] / level - c2[i]) * u;
             s2[i] += (ly[i] / level - s2[i]) * u;
         }
-        // A surface that neither turns nor tilts — a wall behind a head, the flat face of a machine — is hatched
-        // STRAIGHT, on the resting diagonal: whatever orientation the picture's values have there is the drift
-        // of its light or the grain of its canvas, and following it bends the lines of a surface that is flat.
-        let still = 1.0 - (bend[i] / TURNS.0).clamp(0.0, 1.0);
-        let plain = straight * still * (1.0 - tilted) * (1.0 - t);
+        let plain = straight * still * (1.0 - tilted * uphill) * (1.0 - t);
         c2[i] -= c2[i] * plain;
         s2[i] += (-1.0 - s2[i]) * plain;
     }
@@ -604,9 +661,8 @@ impl Field<'_> {
         if p[0] < 0.0 || p[1] < 0.0 || p[0] >= self.w as f32 || p[1] >= self.h as f32 {
             return false;
         }
-        // The first layer and the first crossing run on below a hair's worth of tone, where they are cut as
-        // flicks and as dots (see `plan`).
-        let least = [FLICK, STIPPLE, 1.0][layer] * self.hair;
+        // Every layer runs on below a hair's worth of tone, where it is cut as flicks and as dots (see `plan`).
+        let least = [BARE, STIPPLE, STIPPLE][layer] * self.hair;
         !self.wall[p[1] as usize * self.w + p[0] as usize] && self.width(p, layer) >= least
     }
 
@@ -621,6 +677,9 @@ impl Field<'_> {
         let hair = HAIR_LENGTH.0 + (HAIR_LENGTH.1 - HAIR_LENGTH.0) * (own(0xF0E) + 0.5);
         let max_steps = (self.spacing * if fur > 0.5 { hair } else { 90.0 }) as usize;
         let mut line: Vec<[f32; 2]> = Vec::new();
+        // The turn the line has made so far, over BOTH its halves: it is one line, and its whole length turns
+        // no further than `SWEEP`.
+        let mut used = 0f32;
         for sign in [-1.0f32, 1.0] {
             let d0 = self.flow.dir(start[0], start[1], turn);
             let mut prev = [d0[0] * sign, d0[1] * sign];
@@ -637,7 +696,7 @@ impl Field<'_> {
                     break;
                 }
                 swept += (prev[0] * d[1] - prev[1] * d[0]).clamp(-1.0, 1.0).asin();
-                if swept.abs() > SWEEP {
+                if swept.abs() + used > SWEEP {
                     break;
                 }
                 p = [p[0] + d[0], p[1] + d[1]];
@@ -647,6 +706,7 @@ impl Field<'_> {
                 pts.push(p);
                 prev = d;
             }
+            used += swept.abs();
             if sign < 0.0 {
                 pts.reverse();
                 line = pts;
@@ -828,10 +888,12 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     cur
 }
 
-/// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `follow` (0..1) how far
-/// the hatch follows the form (0 = a ruled plate, every line on the diagonal or level on the ground); `budget` caps the
-/// number of cuts — when the hatch would not fit, its spacing widens until it does.
-pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, follow: f32, budget: usize, seed: u64) -> Plate {
+/// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `white` (0.5..1) is the
+/// WHITE POINT, as a share of the picture's values: what lies at or above it is clean paper (0.9 by default; a
+/// white dress wants more of the picture cut, 0.98); `follow` (0..1) how far the hatch follows the form (0 = a
+/// ruled plate, every line on the diagonal or level on the ground); `budget` caps the number of cuts — when
+/// the hatch would not fit, its spacing widens until it does.
+pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, white: f32, follow: f32, budget: usize, seed: u64) -> Plate {
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
@@ -845,7 +907,7 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     let mut sorted: Vec<f32> = value.iter().step_by(7).copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let q = |f: f32| sorted[((sorted.len() as f32 - 1.0) * f) as usize];
-    let white = q(0.90);
+    let white = q(white.clamp(0.5, 1.0));
     let black = q(0.02).min(white - 0.2);
     // Tone is a broader thing than line: it is read off the picture a little out of focus, so a hatch does not
     // break on the grain of a canvas or the blocks of a JPEG. The contours keep the sharp reading.
@@ -886,13 +948,13 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         run += n;
         *r = run / total;
     }
-    // MATERIALS, where they were named: how far each point is fur, and how far polished.
+    // MATERIALS, where they were named: how far each point is fur, how far polished, and how far skin.
     let made_of = |kinds: &[u8]| -> Option<Vec<f32>> {
         let m = materials.filter(|m| m.w >= 1 && m.h >= 1 && m.kind.len() == m.w * m.h)?;
         let is: Vec<f32> = (0..w * h).map(|i| if kinds.contains(&m.kind[((i / w) * m.h / h).min(m.h - 1) * m.w + ((i % w) * m.w / w).min(m.w - 1)]) { 1.0 } else { 0.0 }).collect();
         is.iter().any(|v| *v > 0.0).then(|| blur(&is, w, h, ((long / 400.0) as usize).max(1), 2))
     };
-    let (fur, polished) = (made_of(&[FUR]), made_of(&[GLASS, METAL]));
+    let (fur, polished, skin) = (made_of(&[FUR]), made_of(&[GLASS, METAL]), made_of(&[SKIN]));
     let key = (MIDDLE_TONE / DEEPEST).ln() / 0.5f32.ln();
     let tone: Vec<f32> = (0..w * h)
         .map(|i| {
@@ -928,18 +990,43 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         strengths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let strong = strengths.get(strengths.len() * 95 / 100).copied().unwrap_or(1.0).max(1e-6);
         // A line is worth drawing by its length AND its strength: a short firm edge is a rivet, a long faint
-        // one the turn of a cheek, but a short faint one is craquelure, grain, noise — an engraver leaves it.
-        let weight = |c: &Vec<[f32; 2]>| c.iter().map(|p| (at(p) / strong).min(1.0)).sum::<f32>() * 2.0;
-        let mut chains: Vec<&Vec<[f32; 2]>> = chains.iter().filter(|c| weight(c) >= long / 140.0).collect();
+        // one the fold of a sleeve, but a short faint one is craquelure, grain, noise — an engraver leaves it.
+        // On SKIN a faint edge is no contour however long: the turn of a cheek, the shadow under a brow, is
+        // modelled by the hatch, not outlined — outlined, a face is a contour map. Its firm edges (an eye, a
+        // nostril, the line of the lips, the silhouette) are drawn as everywhere: a chain is cut where it runs
+        // faint over skin, and what is left of it is judged on its own.
+        let at_skin = |p: &[f32; 2]| skin.as_ref().map_or(0.0, |s| s[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
+        let faint = |p: &[f32; 2]| at_skin(p) > 0.5 && at(p) / strong < SKIN_FAINT;
+        let weight = |c: &[[f32; 2]]| c.iter().map(|p| (at(p) / strong).min(1.0)).sum::<f32>() * 2.0;
+        let mut chains: Vec<&[[f32; 2]]> = chains.iter().flat_map(|c| c.split(faint)).filter(|c| weight(c) >= long / 140.0).collect();
         chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
         let base = (long / 800.0).clamp(0.8, 3.0);
-        for chain in chains {
+        let nominal = (long / 300.0).max(3.0);
+        for (ci, chain) in chains.into_iter().enumerate() {
             // A burin's groove is a V: the line enters as a needle, swells where the edge is firm, and leaves
             // as a needle.
             let finer = |p: &[f32; 2]| 1.0 - FAR_FINER * far.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
             let mut widths: Vec<f32> = chain.iter().map(|p| finer(p) * base * (0.45 + 1.6 * (at(p) / strong).min(1.0).powf(1.2))).collect();
-            swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
-            pieces(0, &taut(chain), &widths, &mut cuts);
+            let at_fur = |p: &[f32; 2]| fur.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
+            if chain.iter().map(at_fur).sum::<f32>() > 0.5 * chain.len() as f32 {
+                // Through fur a contour is no single line: the edge of a coat is hairs, lying end to end with
+                // air between — pieces of their own length, each entering and leaving as a needle.
+                let line = taut(chain);
+                let (mut a, mut k) = (0usize, 0u64);
+                while a + 2 < line.len() {
+                    let own = |salt: u64| jitter(seed ^ salt, (ci as u64) << 16 | k) + 0.5;
+                    let run = (nominal * (FUR_PIECE.0 + (FUR_PIECE.1 - FUR_PIECE.0) * own(0xFA1))) as usize;
+                    let b = (a + run.max(3)).min(line.len() - 1);
+                    let mut ws = widths[a..=b].to_vec();
+                    swell(&mut ws, 4, base * 0.2, ((b - a) / 3).max(2));
+                    pieces(0, &line[a..=b], &ws, &mut cuts);
+                    a = b + (nominal * (0.6 + 0.8 * own(0xFA2))) as usize;
+                    k += 1;
+                }
+            } else {
+                swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
+                pieces(0, &taut(chain), &widths, &mut cuts);
+            }
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
             for pair in chain.windows(2) {
                 for p in [pair[0], [(pair[0][0] + pair[1][0]) * 0.5, (pair[0][1] + pair[1][1]) * 0.5], pair[1]] {
@@ -958,7 +1045,15 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
     // HATCH: the layers, at a spacing that fits the budget.
     // A tone that lies alone on open paper — little around it is dark — is a shadow on the ground.
     let ground: Vec<f32> = around.iter().map(|a| ((0.42 - a) / 0.2).clamp(0.0, 1.0)).collect();
-    let flow = Flow::new(&value, w, h, &ground, fur.as_deref(), relief, normals, follow.clamp(0.0, 1.0));
+    // Skin and fur alike hold the hatch at rest: a face is not wrapped in lines, and a coat's hairs do not run
+    // round the body under it as a hatch would — they lie the way the coat runs, which the flow reads on top.
+    let held: Option<Vec<f32>> = match (&skin, &fur) {
+        (Some(s), Some(f)) => Some(s.iter().zip(f).map(|(a, b)| a.max(*b)).collect()),
+        (Some(s), None) => Some(s.clone()),
+        (None, Some(f)) => Some(f.clone()),
+        (None, None) => None,
+    };
+    let flow = Flow::new(&value, w, h, &ground, fur.as_deref(), held.as_deref(), relief, normals, follow.clamp(0.0, 1.0));
     let room = budget.saturating_sub(cuts.len());
     let mut spacing = (long / 300.0).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
@@ -989,7 +1084,13 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
                         return at % period < period * part;
                     }
                     let nth = (at / pitch) as u64;
-                    let often = if layer == 0 { 0.25 + 0.75 * (part - FLICK) / (DOTS - FLICK) } else { (part - STIPPLE) / (1.0 - STIPPLE) };
+                    // The first layer's dots thin out, and below a flick's worth go on thinning, evenly, to the
+                    // paper: the light rolls off through stipple to the end.
+                    let often = if layer == 0 {
+                        if part >= FLICK { 0.25 + 0.75 * (part - FLICK) / (DOTS - FLICK) } else { 0.25 * ((part - BARE) / (FLICK - BARE)).max(0.0) }
+                    } else {
+                        (part - STIPPLE) / (1.0 - STIPPLE)
+                    };
                     at % pitch < dot && jitter(seed ^ 0xD07 ^ layer as u64, (li as u64) << 20 | nth) + 0.5 < often
                 };
                 // The hand: a line's weight breathes along it.
@@ -1056,7 +1157,7 @@ mod tests {
 
     #[test]
     fn a_dark_mass_is_cross_hatched_and_the_ground_stays_paper() {
-        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, 1.0, 50_000, 7);
+        let plate = plan(&two_masses(160, 160), None, None, None, 0.6, 0.9, 1.0, 50_000, 7);
         let hatch: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer > 0).collect();
         assert!(!hatch.is_empty(), "the dark mass is engraved");
         let outside = hatch.iter().flat_map(|c| c.path.iter()).filter(|p| !(p[0] > 36.0 && p[0] < 124.0 && p[1] > 36.0 && p[1] < 124.0)).count();
@@ -1068,7 +1169,7 @@ mod tests {
 
     #[test]
     fn lines_of_a_layer_keep_their_distance() {
-        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, 1.0, 50_000, 7);
+        let plate = plan(&two_masses(200, 200), None, None, None, 0.0, 0.9, 1.0, 50_000, 7);
         let first: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 1).collect();
         let total: f32 = first.iter().map(|c| c.path.len() as f32 * 2.0).sum();
         // A 100-px square ruled every `spacing` holds about 100·100/spacing of line; a tangle holds far more.
@@ -1080,7 +1181,7 @@ mod tests {
     #[test]
     fn a_small_budget_opens_the_plate() {
         let img = two_masses(200, 200);
-        let (full, tight) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, None, None, None, 0.0, 1.0, 60, 7));
+        let (full, tight) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, None, None, 0.0, 0.9, 1.0, 60, 7));
         assert!(tight.cuts.len() <= 60, "the budget holds ({})", tight.cuts.len());
         assert!(tight.spacing > full.spacing, "by widening the spacing");
     }
@@ -1088,7 +1189,7 @@ mod tests {
     #[test]
     fn the_same_seed_cuts_the_same_plate() {
         let img = two_masses(120, 90);
-        let (a, b) = (plan(&img, None, None, None, 0.5, 1.0, 20_000, 3), plan(&img, None, None, None, 0.5, 1.0, 20_000, 3));
+        let (a, b) = (plan(&img, None, None, None, 0.5, 0.9, 1.0, 20_000, 3), plan(&img, None, None, None, 0.5, 0.9, 1.0, 20_000, 3));
         assert_eq!(a.cuts.len(), b.cuts.len());
         assert!(a.cuts.iter().zip(&b.cuts).all(|(x, y)| x.path == y.path && x.w0 == y.w0 && x.w1 == y.w1));
     }
@@ -1108,7 +1209,7 @@ mod tests {
         let made = std::env::var("PLAKAT_ENGRAVE_MATERIALS").ok().map(|p| image::open(p).unwrap().to_rgb8());
         let kind: Option<Vec<u8>> = made.as_ref().map(crate::pipelines::materials::from_png);
         let materials = made.as_ref().zip(kind.as_ref()).map(|(m, kind)| Materials { w: m.width() as usize, h: m.height() as usize, kind });
-        let plate = plan(&img, relief, normals, materials, 0.55, 1.0, 360_000, 42);
+        let plate = plan(&img, relief, normals, materials, 0.55, 0.9, 1.0, 360_000, 42);
         let (w, h) = (img.width() as i64, img.height() as i64);
         let mut sheet = image::GrayImage::from_pixel(w as u32, h as u32, image::Luma([250]));
         // The stroke rasteriser's footprint for a flat-ended one-point brush: two lanes a pixel across the width.
@@ -1157,7 +1258,7 @@ mod tests {
             }
             dy / (dx + dy).max(1e-6)
         };
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 1.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 0.9, 1.0, 50_000, 7));
         assert!(upright(&flat) < 0.56, "without the relief the cuts rest on the diagonal ({})", upright(&flat));
         assert!(upright(&round) > 0.68, "round the cylinder they turn upright ({})", upright(&round));
     }
@@ -1185,10 +1286,29 @@ mod tests {
                 [0.0, t, (1.0 - t * t).sqrt()]
             })
             .collect();
-        let (flat, round) = (plan(&img, None, None, None, 0.0, 1.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 1.0, 50_000, 7));
+        let (flat, round) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 50_000, 7));
         let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
         assert!(band(&flat) < 0.56, "without the normals the cuts rest on the diagonal ({})", band(&flat));
         assert!(band(&round) > 0.8, "round the bar they turn upright ({})", band(&round));
+    }
+
+    #[test]
+    fn skin_holds_the_hatch_at_rest_whatever_the_normals_say() {
+        // The same bar, its normals swinging across it — but named skin: the cuts keep the diagonal there.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let n: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let t = (((i / w) as f32 - 100.0) / 24.0).clamp(-0.95, 0.95);
+                [0.0, t, (1.0 - t * t).sqrt()]
+            })
+            .collect();
+        let kind = vec![SKIN; w * h];
+        let normals = Normals { w, h, n: &n };
+        let (round, held) = (plan(&img, None, Some(normals), None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 50_000, 7));
+        let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
+        assert!(band(&round) > 0.8, "round the bar the cuts turn upright ({})", band(&round));
+        assert!(band(&held) > 0.4 && band(&held) < 0.6, "on skin they rest on the diagonal ({})", band(&held));
     }
 
     #[test]
@@ -1197,12 +1317,12 @@ mod tests {
         let (w, h) = (200usize, 200usize);
         let img = two_masses(w as u32, h as u32);
         let n = vec![[0.0f32, -0.8, 0.6]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 1.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 50_000, 7);
         let level = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(level < 0.2, "on the ground the cuts lie level ({level})");
         // A plane facing the viewer says nothing: the diagonal stands.
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 1.0, 50_000, 7);
+        let plate = plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 0.9, 1.0, 50_000, 7);
         let rest = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
         assert!(rest > 0.4 && rest < 0.6, "a wall facing the viewer keeps the diagonal ({rest})");
     }
@@ -1244,7 +1364,7 @@ mod tests {
             let d = (lie(plate, 1) - lie(plate, 2)).abs() % std::f32::consts::PI;
             d.min(std::f32::consts::PI - d)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
         assert!(apart(&plain) > 0.85, "a plain surface is crossed at a third of a turn ({})", apart(&plain));
         assert!(apart(&furred) < 0.45, "fur's crossing only leans off the coat ({})", apart(&furred));
         assert!(lie(&furred, 1).abs() < 0.2, "and the coat is cut along its strands ({})", lie(&furred, 1));
@@ -1260,7 +1380,7 @@ mod tests {
         let kind = vec![METAL; w * h];
         // The ink laid between two verticals: every point of every cut, by the cut's width.
         let ink = |plate: &Plate, x: (f32, f32)| plate.cuts.iter().map(|c| c.path.iter().filter(|p| p[0] > x.0 && p[0] < x.1).count() as f32 * (c.w0 + c.w1) * 0.5).sum::<f32>();
-        let (plain, polished) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
+        let (plain, polished) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
         let (mid, deep) = (ink(&polished, (10.0, 80.0)) / ink(&plain, (10.0, 80.0)), ink(&polished, (155.0, 190.0)) / ink(&plain, (155.0, 190.0)));
         assert!(ink(&plain, (10.0, 80.0)) > 100.0, "the plain middle tone is cut at all");
         assert!(mid < 0.7, "the middle tone opens ({mid})");
@@ -1277,7 +1397,7 @@ mod tests {
             image::Rgb([v, v, v])
         });
         let facing = vec![[0.0f32, 0.0, 1.0]; w * h];
-        let (led, flat) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 1.0, 80_000, 7));
+        let (led, flat) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, Some(Normals { w, h, n: &facing }), None, 0.0, 0.9, 1.0, 80_000, 7));
         let (by_picture, by_normals) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&flat, (60.0, 140.0), (60.0, 140.0)));
         assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
         assert!(by_normals > 0.4 && by_normals < 0.6, "a flat wall keeps the diagonal ({by_normals})");
@@ -1303,7 +1423,7 @@ mod tests {
             }
             runs.into_iter().fold(0f32, f32::max)
         };
-        let (plain, furred) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 1.0, 80_000, 7));
+        let (plain, furred) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 80_000, 7));
         assert!(longest(&plain) > 60.0, "a plain mass is cut in long lines ({})", longest(&plain));
         assert!(longest(&furred) < 2.0 * HAIR_LENGTH.1 * furred.spacing + 4.0, "fur in hairs ({} at spacing {})", longest(&furred), furred.spacing);
     }
@@ -1316,11 +1436,13 @@ mod tests {
             let v = (40.0 + 195.0 * x as f32 / w as f32) as u8;
             image::Rgb([v, v, v])
         });
-        let plate = plan(&img, None, None, None, 0.0, 1.0, 80_000, 7);
+        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7);
         let last = plate.cuts.iter().flat_map(|c| c.path.iter().map(|p| p[0])).fold(0f32, f32::max);
         let dots = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() <= 3).count();
         let lines = plate.cuts.iter().filter(|c| c.path[0][0] > last - 25.0 && c.path.len() > 3).count();
-        assert!(last > 170.0, "the ramp is cut well into its lights ({last})");
+        // The white point is the ramp's tenth-lightest value, at x = 216: the dots run on to within a few
+        // pixels of it, not to a bare band short of it.
+        assert!(last > 202.0, "the ramp is cut to the paper's edge ({last})");
         assert!(dots > lines, "its last band is dots ({dots} dots, {lines} lines)");
     }
 
@@ -1337,7 +1459,7 @@ mod tests {
             let r = (((i % w) as f32 - 100.0).powi(2) + ((i / w) as f32 - 100.0).powi(2)).sqrt();
             0.3 + 0.6 * (1.0 - (r / 60.0).powi(2)).max(0.0).sqrt()
         }).collect();
-        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 1.0, 80_000, 7);
+        let plate = plan(&img, Some(Relief { w, h, z: &z }), None, None, 0.0, 0.9, 1.0, 80_000, 7);
         let sweep = |c: &Cut| {
             let mut s = 0f32;
             for t in c.path.windows(3) {
@@ -1358,25 +1480,153 @@ mod tests {
             let v = if x < 30 || x > 170 || y < 30 || y > 170 { 235 } else if x % 16 < 8 { 15 } else { 80 };
             image::Rgb([v, v, v])
         });
-        let (led, ruled) = (plan(&img, None, None, None, 0.0, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.0, 80_000, 7));
+        let (led, ruled) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.9, 0.0, 80_000, 7));
         let (by_picture, by_rule) = (upright_in(&led, (60.0, 140.0), (60.0, 140.0)), upright_in(&ruled, (60.0, 140.0), (60.0, 140.0)));
         assert!(by_picture > 0.62, "alone, the picture's stripes lead ({by_picture})");
         assert!(by_rule > 0.4 && by_rule < 0.6, "ruled, the diagonal ({by_rule})");
     }
 
     #[test]
+    fn the_white_point_is_a_lever() {
+        // Paper, a broad light grey, a dark mass. With the white point at the picture's tenth-lightest value
+        // the light grey is cut (lightly); brought down to it, the light grey is paper.
+        let (w, h) = (200usize, 200usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if y < 80 { 235 } else if x < 40 { 40 } else { 200 };
+            image::Rgb([v, v, v])
+        });
+        let in_light = |p: &Plate| p.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 80.0 && p[1] > 100.0).count();
+        let (cut, bare) = (plan(&img, None, None, None, 0.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, None, 0.0, 0.5, 1.0, 80_000, 7));
+        assert!(in_light(&cut) > 200, "the light grey is cut ({})", in_light(&cut));
+        assert_eq!(in_light(&bare), 0, "with the white point brought down to it, the light grey is paper");
+    }
+
+    #[test]
+    fn a_silhouettes_halo_turns_nothing() {
+        // A dark disc on a mid grey wall, paper above. The normals say the wall is flat — except beside the disc,
+        // where they tilt away from it and die off, as an estimated map's do. The wall beside the disc keeps
+        // the diagonal.
+        let (w, h) = (240usize, 240usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let (dx, dy) = (x as f32 - 120.0, y as f32 - 120.0);
+            let v = if y < 40 { 235 } else if dx * dx + dy * dy < 40.0 * 40.0 { 40 } else { 120 };
+            image::Rgb([v, v, v])
+        });
+        let n: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let (dx, dy) = ((i % w) as f32 - 120.0, (i / w) as f32 - 120.0);
+                let r = (dx * dx + dy * dy).sqrt();
+                let tilt = if r < 40.0 { 0.0 } else { 0.6 * (1.0 - (r - 40.0) / 50.0).clamp(0.0, 1.0) };
+                let (x, y) = (tilt * dx / r.max(1e-3), tilt * dy / r.max(1e-3));
+                [x, y, (1.0 - x * x - y * y).max(0.0).sqrt()]
+            })
+            .collect();
+        let plate = plan(&img, None, Some(Normals { w, h, n: &n }), None, 0.0, 0.9, 1.0, 80_000, 7);
+        // The band to the left of the disc: a fan would run level there (radial) or upright (level on the tilt).
+        let beside = upright_in(&plate, (40.0, 75.0), (105.0, 135.0));
+        assert!(beside > 0.38 && beside < 0.62, "beside the disc the wall keeps the diagonal ({beside})");
+    }
+
+    #[test]
+    fn a_wall_seen_aslant_keeps_the_diagonal() {
+        // The ground tilts up and rests the line level; a wall tilted sideways by as much does not — its lines
+        // would turn vertical.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let wall = vec![[0.8f32, 0.0, 0.6]; w * h];
+        let plate = plan(&img, None, Some(Normals { w, h, n: &wall }), None, 0.0, 0.9, 1.0, 50_000, 7);
+        let on_wall = upright_in(&plate, (70.0, 130.0), (70.0, 130.0));
+        assert!(on_wall > 0.38 && on_wall < 0.62, "a wall seen aslant is hatched on the diagonal ({on_wall})");
+    }
+
+    #[test]
+    fn a_contour_through_fur_is_hairs() {
+        // The edge of a dark mass, drawn: one taut line — but through fur, pieces with air between them.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let kind = vec![FUR; w * h];
+        let longest = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).map(|c| c.path.windows(2).map(|s| ((s[1][0] - s[0][0]).powi(2) + (s[1][1] - s[0][1]).powi(2)).sqrt()).sum::<f32>()).fold(0f32, f32::max);
+        let (line, hairs) = (plan(&img, None, None, None, 0.6, 0.9, 1.0, 50_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 0.6, 0.9, 1.0, 50_000, 7));
+        assert!(longest(&line) > 30.0, "a drawn contour runs on ({})", longest(&line));
+        assert!(longest(&hairs) <= FUR_PIECE.1 * 3.0 + 2.0, "through fur it is pieces ({})", longest(&hairs));
+        assert!(hairs.cuts.iter().any(|c| c.layer == 0), "the pieces are still drawn");
+    }
+
+    #[test]
     fn a_highlight_is_clean_paper() {
-        // A light strip that outshines the dark around it is a highlight: the plate leaves it uncut.
-        let img = RgbImage::from_fn(200, 200, |x, y| if x > 40 && x < 160 && y > 40 && y < 160 { let v = if x < 52 { 205 } else { 50 }; image::Rgb([v, v, v]) } else { image::Rgb([235, 232, 226]) });
-        let plate = plan(&img, None, None, None, 0.0, 1.0, 50_000, 7);
-        let lit = plate.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 44.0 && p[0] < 49.0).count();
+        // A light strip that outshines the dark around it is a highlight: the plate leaves it uncut. (The strip
+        // is read a few pixels out of focus, so its edges carry a trace of tone: the clean paper is judged
+        // inside the fringe.)
+        let img = RgbImage::from_fn(800, 800, |x, y| if x > 160 && x < 640 && y > 160 && y < 640 { let v = if x < 186 { 205 } else { 50 }; image::Rgb([v, v, v]) } else { image::Rgb([235, 232, 226]) });
+        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 200_000, 7);
+        // The strip's side toward the paper is a tone dying away, and thins into dots; the side against the
+        // dark is the glint, and is clean.
+        let lit = plate.cuts.iter().filter(|c| c.layer > 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 173.0 && p[0] < 179.0 && p[1] > 200.0 && p[1] < 600.0).count();
         assert_eq!(lit, 0, "nothing is cut in the highlight");
         assert!(plate.cuts.iter().any(|c| c.layer > 0), "the rest is engraved");
     }
 
     #[test]
+    fn the_deepest_crossing_enters_as_dots() {
+        // A long ramp out of the black: the third layer's lightest band is dots, not lines a hair wide — a
+        // layer that began at its full width would draw its own edge, a seam along the tone it starts at.
+        let (w, h) = (2400usize, 64usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, _| {
+            let v = (10.0 + 100.0 * x as f32 / w as f32) as u8;
+            image::Rgb([v, v, v])
+        });
+        let plate = plan(&img, None, None, None, 0.0, 0.9, 1.0, 400_000, 7);
+        let deepest: Vec<&Cut> = plate.cuts.iter().filter(|c| c.layer == 3).collect();
+        let end = |c: &Cut| c.path.iter().map(|p| p[0]).fold(0f32, f32::max);
+        let last = deepest.iter().map(|c| end(c)).fold(0f32, f32::max);
+        let dots = deepest.iter().filter(|c| end(c) > last - 20.0 && c.path.len() <= 3).count();
+        let lines = deepest.iter().filter(|c| end(c) > last - 20.0 && c.path.len() > 3).count();
+        assert!(last > 100.0, "the third layer reaches out of the black ({last})");
+        assert!(dots > lines, "its last band is dots ({dots} dots, {lines} lines)");
+    }
+
+    #[test]
+    fn fur_holds_the_hatch_at_rest_whatever_the_normals_say() {
+        // The bar with its normals swinging across it, named fur: a coat's hairs do not run round the body under
+        // it as a hatch would. With no strands to read, they rest on the diagonal.
+        let (w, h) = (200usize, 200usize);
+        let img = two_masses(w as u32, h as u32);
+        let n: Vec<[f32; 3]> = (0..w * h)
+            .map(|i| {
+                let t = (((i / w) as f32 - 100.0) / 24.0).clamp(-0.95, 0.95);
+                [0.0, t, (1.0 - t * t).sqrt()]
+            })
+            .collect();
+        let kind = vec![FUR; w * h];
+        let normals = Normals { w, h, n: &n };
+        let (round, coat) = (plan(&img, None, Some(normals), None, 0.0, 0.9, 1.0, 50_000, 7), plan(&img, None, Some(normals), Some(Materials { w, h, kind: &kind }), 0.0, 0.9, 1.0, 50_000, 7));
+        let band = |p: &Plate| upright_in(p, (70.0, 130.0), (90.0, 110.0));
+        assert!(band(&round) > 0.8, "round the bar the cuts turn upright ({})", band(&round));
+        assert!(band(&coat) > 0.3 && band(&coat) < 0.7, "in fur they do not ({})", band(&coat));
+    }
+
+    #[test]
+    fn on_skin_a_faint_edge_is_no_contour() {
+        // A soft step down the middle of a light field, and a small dark square on it, three times as firm an
+        // edge. Plain, the step is a long faint contour and is drawn; on skin it is left to the hatch, and the
+        // square is drawn as everywhere.
+        let (w, h) = (240usize, 240usize);
+        let img = RgbImage::from_fn(w as u32, h as u32, |x, y| {
+            let v = if (180..188).contains(&x) && (60..68).contains(&y) { 40 } else if x < 120 { 150 } else { 200 };
+            image::Rgb([v, v, v])
+        });
+        let kind = vec![SKIN; w * h];
+        let (plain, skin) = (plan(&img, None, None, None, 1.0, 0.9, 1.0, 80_000, 7), plan(&img, None, None, Some(Materials { w, h, kind: &kind }), 1.0, 0.9, 1.0, 80_000, 7));
+        let step = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).flat_map(|c| c.path.iter()).filter(|p| (p[0] - 120.0).abs() < 5.0 && p[1] > 20.0 && p[1] < 220.0).count();
+        let square = |p: &Plate| p.cuts.iter().filter(|c| c.layer == 0).flat_map(|c| c.path.iter()).filter(|p| p[0] > 174.0 && p[0] < 194.0 && p[1] > 54.0 && p[1] < 74.0).count();
+        assert!(step(&plain) > 100, "plain, the soft step is drawn ({})", step(&plain));
+        assert_eq!(step(&skin), 0, "on skin it is not");
+        assert!(square(&skin) > 12, "the firm edge is drawn on skin too ({})", square(&skin));
+    }
+
+    #[test]
     fn blank_paper_is_left_alone() {
-        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, 1.0, 5_000, 7);
+        let plate = plan(&RgbImage::from_pixel(64, 64, image::Rgb([230, 228, 220])), None, None, None, 0.6, 0.9, 1.0, 5_000, 7);
         assert!(plate.cuts.is_empty(), "nothing to cut ({})", plate.cuts.len());
     }
 }

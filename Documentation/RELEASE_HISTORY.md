@@ -36,10 +36,37 @@ per-cycle commits carry the rationale + before/after.
 - **`--normals` also leads the brush** of the painting media (oil, watercolour, …), when given: on a passage
   the picture gives no direction of its own, strokes turn round the form and lie level on the ground. Off by
   default — without the flag every medium paints exactly as before.
-- **`--follow F`** holds an engraving's hatch back from the form: 1 (the default) wraps every surface, 0 is a
-  ruled plate, and a portrait — where lines circling the nose and cheeks read as a contour map — wants
-  about 0.3. The plate is at its best on machinery and architecture with the defaults; see "What it is
-  good for" in [PAINT_DURER.md](PAINT_DURER.md).
+- **`--materials skin` holds the hatch at rest on a face.** The faces are found by the face detector
+  (SCRFD) and outlined by MobileSAM — nothing to name; on them every tone's line is on the engraver's
+  diagonal and no rule of form, normals or depth turns it, so a portrait's nose and cheeks are no longer
+  circled like a contour map while the rest of the picture follows its form. `skin: hands` adds things found
+  by word.
+- **`--white F` is the white point** — the highlight clipping threshold, as a share of the picture's values
+  (0.9 by default, as before). A broad light the plate left as bare paper — a white dress — is cut with
+  0.98. Below the white point the lightest tones now thin into ever sparser dots — evenly, almost to the
+  paper itself — instead of stopping at a flick's worth, so a lit cheek and a white sleeve keep their form.
+- **Every crossing enters as dots.** The third layer used to begin at a line's full width, which drew a seam
+  along the tone it started at — a vertical line across a dark background. It now enters through a band of
+  stipple like the second.
+- **A flat surface is ruled.** Where the normals call a surface flat and facing the viewer, nothing of the
+  picture's own drift is left in the hatch; the few degrees that were made waves across a plain background.
+- **Fur lies its own way.** The hairs of a coat no longer run round the body under it as a hatch would, nor
+  along the lines of equal tone round a light patch of the coat (which ringed it like a sawn trunk): they
+  run the way the strands run, read at the scale of a lock and of a flank, and rest on the diagonal where
+  the coat says nothing.
+- **On skin only firm edges are contours.** An edge weaker than half a firm one — the turn of a cheek, the
+  shadow under a brow — is left to the hatch, however long; an eye, a nostril, the lips, the silhouette are
+  drawn as before.
+- A hatch line's turn is now counted over its whole length, both halves from where it starts, so none
+  wraps further than about a right angle.
+- **A flat background stays ruled beside a head.** An estimated normal map fades out across a silhouette;
+  that halo is no surface, and the hatch no longer fans out from it. The level rule is kept for the ground —
+  a surface tilted up or down — and a wall seen aslant is hatched on the diagonal, not turned vertical.
+- **A contour through fur is hairs**, not one taut line: pieces three to eight spacings long with air
+  between, each entering and leaving as a needle; and the hairs of a coat stray further from it (±20°).
+- **`--follow F`** holds the whole plate's hatch back from the form: 1 (the default) wraps every surface, 0 is a
+  ruled plate; a portrait without a skin mask wants about 0.3. The plate is at its best on machinery and
+  architecture with the defaults; see "What it is good for" in [PAINT_DURER.md](PAINT_DURER.md).
 - An engraving's deepest shadows are made by heavier lines (to two fifths of the spacing), still with paper
   in every mesh; between a crossed shadow and the stippled light lies a band of one-way hatching; the tone
   curve has a toe, so the dots reach well into the lights before the paper is bare; no hatch line turns
