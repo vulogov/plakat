@@ -5338,7 +5338,16 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
     // (Only a COLOUR is split by its lightness. A grey is one ink however dark — its darkness is its depth — or
     // the picture's neutrals, a pale ground and a dark head of hair, take the inks its colours need: a green
     // vest left without one is printed in the ground's grey and the hair's brown, in stains.)
-    let lab: Vec<[f32; 3]> = hue.pixels().map(|px| { let l = color::srgb_to_lab(px.0); [l.a, l.b, l.l * 0.35 * (l.a.hypot(l.b) / INK_COLOURED).min(1.0)] }).collect();
+    // (And a colour in SHADOW is still that colour: a brown robe's shaded half has a third of its lit half's
+    // chroma, and told by chroma as it stands it is the grey of the dark room behind it — the figure is gone
+    // into the window. A dark's chroma is read as what it would be in the light.)
+    // (The inks are FOUND in the colours as they stand; it is only which ink a point is given that reads a
+    // dark so — as far toward each ink as its darkness allows, and no further: a shaded brown is the brown
+    // ink's, not, its chroma raised blindly, the red's. And a dark with no colour to speak of is left a grey:
+    // the room is not the robe's brown.)
+    let told = |l: color::Lab, k: f32| [l.a * k, l.b * k, l.l * 0.35 * (l.a.hypot(l.b) * k / INK_COLOURED).min(1.0)];
+    let seen_as: Vec<color::Lab> = hue.pixels().map(|px| color::srgb_to_lab(px.0)).collect();
+    let lab: Vec<[f32; 3]> = seen_as.iter().map(|l| told(*l, 1.0)).collect();
     let samples: Vec<usize> = (0..w * h).step_by(13).filter(|&i| !paper(i) && !on_face(i)).collect();
     let d2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
     let mean = samples.iter().fold([0f32; 3], |m, &i| [m[0] + lab[i][0], m[1] + lab[i][1], m[2] + lab[i][2]]).map(|v| v / samples.len().max(1) as f32);
@@ -5381,6 +5390,14 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
     };
     // Each point's mass: its ink and its depth (0 = the lightest tint), or paper.
     const PAPER: u8 = u8::MAX;
+    let eyes: Vec<([f32; 2], f32)> = p.features.iter().flat_map(|f| {
+        let at = |k: usize| [f[k][0] * w as f32, f[k][1] * h as f32];
+        let (le, re, lm, rm) = (at(0), at(1), at(3), at(4));
+        let tall = ((lm[0] + rm[0] - le[0] - re[0]) * 0.5).hypot((lm[1] + rm[1] - le[1] - re[1]) * 0.5);
+        let r = 0.3 * (re[0] - le[0]).hypot(re[1] - le[1]).max(0.9 * tall);
+        [(le, r), (re, r)]
+    }).collect();
+    let at_eye = |i: usize| eyes.is_empty() || eyes.iter().any(|(c, r)| ((i % w) as f32 - c[0]).hypot((i / w) as f32 - c[1]) < *r);
     let mut mass: Vec<u8> = (0..w * h)
         .map(|i| {
             if paper(i) {
@@ -5393,7 +5410,9 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
             // brown is nearest it — the wall's, the coat's — and comes out a mask of that.
             // (What is all but black on it — a pupil, a nostril — is a mark of its own, in the picture's ink; the
             // shadow side of a face is not: the luma is linear, and a thirtieth of the range is a black.)
-            if on_face(i) && luma[i] > lo + 0.03 * (top - lo) {
+            // (... and, where the face's features are known, only at an eye: the dark of a brow's end or of a
+            // lock on a forehead is a blot on the flesh.)
+            if on_face(i) && (luma[i] > lo + 0.03 * (top - lo) || !at_eye(i)) {
                 return (inks.len() * depths) as u8;
             }
             // (... in the picture's darkest ink: an all but black thing has no colour to choose an ink by, and a
@@ -5401,7 +5420,10 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
             if on_face(i) {
                 return (darkest * depths + depth) as u8;
             }
-            (nearest(lab[i], &inks) * depths + depth) as u8
+            let l = seen_as[i];
+            let (chroma2, most) = (l.a * l.a + l.b * l.b, 1.0 + ((35.0 / l.l.max(1.0)).clamp(1.0, 2.2) - 1.0) * ((l.a.hypot(l.b) - 6.0) / 6.0).clamp(0.0, 1.0));
+            let ink = (0..inks.len()).fold((0usize, f32::MAX), |b, j| { let d = d2(told(l, ((l.a * inks[j][0] + l.b * inks[j][1]) / chroma2.max(1e-6)).clamp(1.0, most)), inks[j]); if d < b.1 { (j, d) } else { b } }).0;
+            (ink * depths + depth) as u8
         })
         .collect();
     // A wash's edge is a brush's, clean: each point takes the mass most of its neighbourhood has, so no edge is
@@ -5646,6 +5668,33 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
             }
         }
     }
+    // A SHADOW'S EDGE on a wall is cut with a rounder knife than a window frame: between two BROAD masses —
+    // the wall, the shadow lying on it, the dark of a room — the boundary is the picture's light ending, read
+    // through the grain of the plaster, a stair of teeth no stencil has. A point of a broad mass goes to the
+    // broad mass that MOST of a wide neighbourhood is — more than half of it, not merely the most: a window
+    // frame between a room and a wall has neither on more than half its surroundings, and stays a frame.
+    {
+        let mut area = [0usize; 256];
+        for &m in &mass {
+            area[m as usize] += 1;
+        }
+        let broad: Vec<usize> = (0..inks.len() * depths).filter(|&m| area[m] > w * h / 200).collect();
+        if broad.len() >= 2 {
+            let sigma = (long * 0.008).max(2.0);
+            let mut best = mass.clone();
+            let mut most = vec![0u8; w * h];
+            for &m in &broad {
+                let is = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if mass[y as usize * w + x as usize] as usize == m { 255 } else { 0 }]));
+                for (i, px) in imageops::blur(&is, sigma).pixels().enumerate() {
+                    if px.0[0] > most[i].max(140) && broad.contains(&(mass[i] as usize)) && !on_face(i) {
+                        most[i] = px.0[0];
+                        best[i] = m as u8;
+                    }
+                }
+            }
+            mass = best;
+        }
+    }
     // A glaze is the colour of ITS depth of ITS ink, one colour the sheet over — a print's ink, not a mean of
     // whatever lies under each shape.
     let n_inks = inks.len() + usize::from(skin.is_some());
@@ -5741,7 +5790,7 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
 const FACE_SMALL: f32 = 0.04;
 const FACE_LARGE: f32 = 0.16;
 /// How far a contour's width is its own in the light, and in the deepest shadow.
-const LINE_WEIGHT: (f32, f32) = (0.5, 3.0);
+const LINE_WEIGHT: (f32, f32) = (0.4, 3.6);
 /// Below this share of the way from `FACE_SMALL` to `FACE_LARGE` a face is a FAR one: not traced, but put down
 /// in a few strokes — and no more of them than this.
 const FACE_FAR: f32 = 0.25;
@@ -5838,19 +5887,72 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                     // Along the eyes, and down the face.
                     let u = if apart > 0.35 * s { [(re[0] - le[0]) / apart, (re[1] - le[1]) / apart] } else { [(mouth[1] - eyes[1]) / tall.max(1e-3), -(mouth[0] - eyes[0]) / tall.max(1e-3)] };
                     let v = { let v = [-u[1], u[0]]; if v[0] * (mouth[0] - eyes[0]) + v[1] * (mouth[1] - eyes[1]) < 0.0 { [-v[0], -v[1]] } else { v } };
-                    let mut stroke = |c: [f32; 2], along: [f32; 2], half: f32, width: f32| {
+                    let dash = |c: [f32; 2], along: [f32; 2], half: f32, width: f32| {
                         let width = width.max(1.2);
-                        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[c[0] - along[0] * half, c[1] - along[1] * half], [c[0] + along[0] * half, c[1] + along[1] * half]], w0: width, w1: width * 0.65 });
+                        crate::paint::engrave::Cut { layer: 0, path: vec![[c[0] - along[0] * half, c[1] - along[1] * half], [c[0] + along[0] * half, c[1] + along[1] * half]], w0: width, w1: width * 0.65 }
                     };
-                    let open = { let j = ((mouth[1] as usize).clamp(cy, cy + ch - 1) - cy) * cw + ((mouth[0] as usize).clamp(cx, cx + cw - 1) - cx); ((value(&soft, j) - value(&sharp, j)) / 30.0).clamp(0.0, 1.0) };
+                    // ... and each is the SHAPE it has in the picture, not a sign for it: at a feature the dark
+                    // that stands off the face round it — the socket of an eye under its brow, the shadow under
+                    // a nose, a mouth shut or open — is spotted in as a brush spots a black, whole. That is what
+                    // tells one small face from another: where its darks lie, and how large. (Only where the
+                    // picture has no dark there is the feature a stroke.)
+                    let fine = imageops::blur(&crop, (size * 0.012).max(0.7));
+                    let round = imageops::blur(&crop, (size * 0.1).max(2.0));
+                    let stands: Vec<f32> = (0..cw * ch).map(|j| if off[j] { 0.0 } else { value(&round, j) - value(&fine, j) }).collect();
+                    let mut inked = vec![false; cw * ch];
+                    // ... put down as ONE stroke each: the dark is found, and the stroke lies where it lies
+                    // and as long as it is, no wider than `most` — a blot of pixels is a hole, a stroke is a mark.
+                    let mut spot = |c: [f32; 2], r: f32, most: f32| -> Option<crate::paint::engrave::Cut> {
+                        let (lx, ly) = (c[0] - cx as f32, c[1] - cy as f32);
+                        let (x0, x1) = ((lx - r).max(0.0) as usize, ((lx + r) as usize).min(cw - 1));
+                        let (y0, y1) = ((ly - r).max(0.0) as usize, ((ly + r) as usize).min(ch - 1));
+                        let far = |j: usize| ((j % cw) as f32 + 0.5 - lx).hypot((j / cw) as f32 + 0.5 - ly);
+                        let mut seed = (usize::MAX, 8.0f32);
+                        for y in y0..=y1 {
+                            for x in x0..=x1 {
+                                let j = y * cw + x;
+                                if far(j) <= 0.6 * r && !inked[j] && stands[j] > seed.1 {
+                                    seed = (j, stands[j]);
+                                }
+                            }
+                        }
+                        if seed.0 == usize::MAX {
+                            return None;
+                        }
+                        let mut stack = vec![seed.0];
+                        inked[seed.0] = true;
+                        let mut part = Vec::new();
+                        while let Some(j) = stack.pop() {
+                            part.push(j);
+                            let (x, y) = (j % cw, j / cw);
+                            for k in [(x > 0).then(|| j - 1), (x + 1 < cw).then(|| j + 1), (y > 0).then(|| j - cw), (y + 1 < ch).then(|| j + cw)].into_iter().flatten() {
+                                if !inked[k] && stands[k] > 0.45 * seed.1 && far(k) <= r {
+                                    inked[k] = true;
+                                    stack.push(k);
+                                }
+                            }
+                        }
+                        let sum: f32 = part.iter().map(|&j| stands[j]).sum();
+                        let at = part.iter().fold([0f32; 2], |m, &j| [m[0] + stands[j] * (j % cw) as f32, m[1] + stands[j] * (j / cw) as f32]).map(|v| v / sum);
+                        let lie = part.iter().fold([0f32; 3], |m, &j| { let (dx, dy) = ((j % cw) as f32 - at[0], (j / cw) as f32 - at[1]); [m[0] + stands[j] * dx * dx, m[1] + stands[j] * dy * dy, m[2] + stands[j] * dx * dy] }).map(|v| v / sum);
+                        let (mid, half) = ((lie[0] + lie[1]) * 0.5, (((lie[0] - lie[1]) * 0.5).powi(2) + lie[2] * lie[2]).sqrt());
+                        let (along, across) = ((mid + half).max(0.0).sqrt(), (mid - half).max(0.0).sqrt());
+                        let (sn, cs) = (0.5 * (2.0 * lie[2]).atan2(lie[0] - lie[1])).sin_cos();
+                        let reach = (along * 1.7).clamp(r * 0.35, r);
+                        let width = (across * 2.0).clamp(1.4, most.max(1.4));
+                        let (x, y) = (cx as f32 + at[0] + 0.5, cy as f32 + at[1] + 0.5);
+                        Some(crate::paint::engrave::Cut { layer: 0, path: vec![[x - cs * reach, y - sn * reach], [x + cs * reach, y + sn * reach]], w0: width, w1: width * 0.7 })
+                    };
                     for eye in if apart > 0.35 * s { vec![le, re] } else { vec![eyes] } {
-                        stroke(eye, u, s * 0.15, s * 0.085);
-                        stroke([eye[0] - v[0] * s * 0.24, eye[1] - v[1] * s * 0.24], u, s * 0.2, s * 0.04);
+                        features.push(spot(eye, s * 0.2, s * 0.1).unwrap_or_else(|| dash(eye, u, s * 0.15, s * 0.085)));
+                        if let Some(cut) = spot([eye[0] - v[0] * s * 0.25, eye[1] - v[1] * s * 0.25], s * 0.13, s * 0.05) {
+                            features.push(cut);
+                        }
                     }
-                    stroke([nose[0] + v[0] * s * 0.07, nose[1] + v[1] * s * 0.07], u, s * 0.1, s * 0.04);
+                    features.push(spot([nose[0] + v[0] * s * 0.1, nose[1] + v[1] * s * 0.1], s * 0.14, s * 0.06).unwrap_or_else(|| dash([nose[0] + v[0] * s * 0.07, nose[1] + v[1] * s * 0.07], u, s * 0.1, s * 0.04)));
                     let wide = (rm[0] - lm[0]).hypot(rm[1] - lm[1]);
                     let along = if wide > 0.2 * s { [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide] } else { u };
-                    stroke(mouth, along, (wide * 0.5).max(s * 0.14), s * (0.05 + 0.12 * open));
+                    features.push(spot(mouth, (wide * 0.6).max(s * 0.2), s * 0.12).unwrap_or_else(|| dash(mouth, along, (wide * 0.5).max(s * 0.14), s * 0.05)));
                     continue;
                 }
                 let mark = (darker.iter().fold(0f32, |m, v| m.max(*v)) * 0.4).max(4.0);
@@ -5925,7 +6027,49 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                         }
                     };
                     quiet(lm, rm, wide * 0.4);
-                    quiet(eyes, [eyes[0] + (nose[0] - eyes[0]) * 0.7, eyes[1] + (nose[1] - eyes[1]) * 0.7], apart * 0.2);
+                    // (The whole length of the nose, its sides with it — a nose is its underside: the nostrils and
+                    // the wings. And the furrow from it to the lip, and the hollows under the eyes: shading, each.)
+                    let toward = |a: [f32; 2], b: [f32; 2], f: f32| [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+                    quiet(toward(eyes, nose, 0.15), toward(eyes, nose, 0.8), apart * 0.3);
+                    // (... and the tip and the wings, read as edges, are a scrawl: the nose is its two nostrils,
+                    // each one short stroke where its dark lies.)
+                    quiet(nose, nose, apart * 0.42);
+                    let level = [(re[0] - le[0]) / apart, (re[1] - le[1]) / apart];
+                    let fall = { let l = (nose[0] - eyes[0]).hypot(nose[1] - eyes[1]).max(1e-3); [(nose[0] - eyes[0]) / l, (nose[1] - eyes[1]) / l] };
+                    let shade = imageops::blur(&crop, (apart * 0.12).max(1.5));
+                    for side in [-1.0f32, 1.0] {
+                        let c = [nose[0] + level[0] * side * apart * 0.17 + fall[0] * apart * 0.05, nose[1] + level[1] * side * apart * 0.17 + fall[1] * apart * 0.05];
+                        let r = apart * 0.12;
+                        let (x0, x1) = (((c[0] - r).max(cx as f32)) as usize, ((c[0] + r) as usize).min(cx + cw - 1));
+                        let (y0, y1) = (((c[1] - r).max(cy as f32)) as usize, ((c[1] + r) as usize).min(cy + ch - 1));
+                        let mut m = [0f32; 6];
+                        for y in y0..=y1 {
+                            for x in x0..=x1 {
+                                if ((x as f32 - c[0]).hypot(y as f32 - c[1])) > r {
+                                    continue;
+                                }
+                                let (a, b) = (sharp.get_pixel((x - cx) as u32, (y - cy) as u32).0, shade.get_pixel((x - cx) as u32, (y - cy) as u32).0);
+                                let d = ((0.299 * (b[0] as f32 - a[0] as f32) + 0.587 * (b[1] as f32 - a[1] as f32) + 0.114 * (b[2] as f32 - a[2] as f32)) - 6.0).max(0.0);
+                                m = [m[0] + d, m[1] + d * x as f32, m[2] + d * y as f32, m[3] + d * (x * x) as f32, m[4] + d * (y * y) as f32, m[5] + d * (x * y) as f32];
+                            }
+                        }
+                        if m[0] < 20.0 {
+                            continue;
+                        }
+                        let at = [m[1] / m[0], m[2] / m[0]];
+                        let lie = [m[3] / m[0] - at[0] * at[0], m[4] / m[0] - at[1] * at[1], m[5] / m[0] - at[0] * at[1]];
+                        let (mid, half) = ((lie[0] + lie[1]) * 0.5, (((lie[0] - lie[1]) * 0.5).powi(2) + lie[2] * lie[2]).sqrt());
+                        let reach = ((mid + half).max(0.0).sqrt() * 1.5).clamp(apart * 0.04, apart * 0.1);
+                        let (sn, cs) = (0.5 * (2.0 * lie[2]).atan2(lie[0] - lie[1])).sin_cos();
+                        let width = (size * 0.009).max(1.8);
+                        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[at[0] - cs * reach, at[1] - sn * reach], [at[0] + cs * reach, at[1] + sn * reach]], w0: width * 0.6, w1: width });
+                    }
+                    let lips = [(lm[0] + rm[0]) * 0.5, (lm[1] + rm[1]) * 0.5];
+                    quiet(toward(nose, lips, 0.35), toward(nose, lips, 0.8), apart * 0.14);
+                    for eye in [le, re] {
+                        let c = [eye[0] + fall[0] * apart * 0.36, eye[1] + fall[1] * apart * 0.36];
+                        quiet([c[0] - level[0] * apart * 0.3, c[1] - level[1] * apart * 0.3], [c[0] + level[0] * apart * 0.3, c[1] + level[1] * apart * 0.3], apart * 0.16);
+                    }
                     let along = [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide];
                     let across = [-along[1], along[0]];
                     let n = ((wide / 4.0) as usize).clamp(12, 80);
@@ -5947,8 +6091,8 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                             let here = dark(at(t, o as i32 - k));
                             for q in o.saturating_sub(2)..(o + 3).min(m) {
                                 let c = cost[(t - 1) * m + q];
-                                if c < f32::MAX && c + here + 6.0 * (o as f32 - q as f32).abs() < cost[t * m + o] {
-                                    cost[t * m + o] = c + here + 6.0 * (o as f32 - q as f32).abs();
+                                if c < f32::MAX && c + here + 3.5 * (o as f32 - q as f32).abs() < cost[t * m + o] {
+                                    cost[t * m + o] = c + here + 3.5 * (o as f32 - q as f32).abs();
                                     from[t * m + o] = q;
                                 }
                             }
@@ -5960,7 +6104,7 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                     }
                     let raw: Vec<[f32; 2]> = (0..=n).map(|t| at(t, way[t] as i32 - k)).collect();
                     let line: Vec<[f32; 2]> = (0..=n).map(|t| { let (a, b, c) = (raw[t.saturating_sub(1)], raw[t], raw[(t + 1).min(n)]); [(a[0] + 2.0 * b[0] + c[0]) * 0.25, (a[1] + 2.0 * b[1] + c[1]) * 0.25] }).collect();
-                    let base = (size * 0.008).max(1.8);
+                    let base = (size * 0.011).max(2.2);
                     let weight = |t: usize| base * (0.3 + 0.7 * (std::f32::consts::PI * t as f32 / n as f32).sin());
                     let mut a = 0usize;
                     while a < n {
@@ -5968,6 +6112,13 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                         features.push(crate::paint::engrave::Cut { layer: 0, path: line[a..=b].to_vec(), w0: weight(a), w1: weight(b) });
                         a = b;
                     }
+                    // ... and the lip under it: one short stroke where its shadow lies, or the mouth is a slit.
+                    let below = if across[0] * (lips[0] - eyes[0]) + across[1] * (lips[1] - eyes[1]) < 0.0 { [-across[0], -across[1]] } else { across };
+                    let under = (0..10).map(|k| 0.14 + 0.02 * k as f32).fold((f32::MAX, 0.22f32), |m, f| { let v = dark([lips[0] + below[0] * wide * f, lips[1] + below[1] * wide * f]); if v < m.0 { (v, f) } else { m } }).1;
+                    let c = [lips[0] + below[0] * wide * under, lips[1] + below[1] * wide * under];
+                    let end = |k: f32| [c[0] + along[0] * wide * 0.17 * k - below[0] * wide * 0.015, c[1] + along[1] * wide * 0.17 * k - below[1] * wide * 0.015];
+                    features.push(crate::paint::engrave::Cut { layer: 0, path: vec![end(-1.0), c], w0: base * 0.3, w1: base * 0.55 });
+                    features.push(crate::paint::engrave::Cut { layer: 0, path: vec![c, end(1.0)], w0: base * 0.55, w1: base * 0.3 });
                 }
             }
         }

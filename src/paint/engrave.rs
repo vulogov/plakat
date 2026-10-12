@@ -185,9 +185,10 @@ const STRAIGHT: f32 = 1.0;
 /// deepest shadow is cut to (one layer, lying one way — `HAND_OVER`, where a crossing would begin: a pen's shadow
 /// is a ruled tone over the wash, and a crossing lays a flat grid over every surface alike), and how much
 /// finer a line it still draws than an engraver would (a chain's least weight, as a share of the sheet).
-const PEN_FROM: f32 = 0.3;
+const PEN_FROM: f32 = 0.42;
 const PEN_DEEPEST: f32 = HAND_OVER;
 const PEN_FINE: f32 = 300.0;
+const PEN_COARSE: f32 = 200.0;
 /// A hair of FUR is a short stroke: so many spacings long, each way from where it starts.
 const HAIR_LENGTH: (f32, f32) = (2.5, 6.0);
 /// On skin, an edge weaker than this share of a firm one is not a contour at all (see `plan`).
@@ -1104,7 +1105,10 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
         let at_skin = |p: &[f32; 2]| skin.as_ref().map_or(0.0, |s| s[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
         let faint = |p: &[f32; 2]| pen.is_none() && at_skin(p) > 0.5 && at(p) / strong < SKIN_FAINT;
         let weight = |c: &[[f32; 2]]| c.iter().map(|p| (at(p) / strong).min(1.0)).sum::<f32>() * 2.0;
-        let mut chains: Vec<&[[f32; 2]]> = chains.iter().flat_map(|c| c.split(faint)).filter(|c| weight(c) >= long / if pen.is_some() { PEN_FINE } else { 140.0 }).collect();
+        // (A pen's finest lines are a face's — the lid of an eye, a nostril. Off a face the finest are specks on
+        // a tint: a stitch, a pore of a wall.)
+        let skinned = |c: &[[f32; 2]]| c.iter().map(at_skin).sum::<f32>() > 0.5 * c.len() as f32;
+        let mut chains: Vec<&[[f32; 2]]> = chains.iter().flat_map(|c| c.split(faint)).filter(|c| weight(c) >= long / if pen.is_none() { 140.0 } else if skinned(c) { PEN_FINE } else { PEN_COARSE }).collect();
         chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
         let base = (long / 800.0).clamp(0.8, 3.0);
         let nominal = (long / 300.0).max(3.0);
@@ -1120,7 +1124,27 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
             if pen.is_some() {
                 let short = chain.len() < (long / 12.0) as usize;
                 let on_skin = chain.iter().map(at_skin).sum::<f32>() > 0.5 * chain.len() as f32;
-                if short && !on_skin && chain.iter().filter(|p| passed[cell(p)] >= 2).count() * 10 > chain.len() * 6 {
+                if short && !on_skin && chain.iter().filter(|p| passed[cell(p)] >= 1).count() * 10 > chain.len() * 5 {
+                    continue;
+                }
+                // Nor does a pen OUTLINE a stitch: a short line that doubles back on itself round a sliver — the
+                // rim of one rib of a knitted band, of one lock — is a worm lying on the tint. (A pane of a
+                // window is as short and as closed, but it holds an area; a sliver holds none.)
+                let run: f32 = chain.windows(2).map(|s| (s[1][0] - s[0][0]).hypot(s[1][1] - s[0][1])).sum();
+                let (a, b) = (chain[0], chain[chain.len() - 1]);
+                let n = chain.len() as f32;
+                let mean = chain.iter().fold([0f32; 2], |m, p| [m[0] + p[0] / n, m[1] + p[1] / n]);
+                let lie = chain.iter().fold([0f32; 3], |m, p| { let (dx, dy) = (p[0] - mean[0], p[1] - mean[1]); [m[0] + dx * dx / n, m[1] + dy * dy / n, m[2] + dx * dy / n] });
+                let (mid, half) = ((lie[0] + lie[1]) * 0.5, (((lie[0] - lie[1]) * 0.5).powi(2) + lie[2] * lie[2]).sqrt());
+                let sliver = (mid - half).max(0.0) < 0.16 * (mid + half);
+                let closed = (b[0] - a[0]).hypot(b[1] - a[1]) < 0.3 * run;
+                if !on_skin && chain.len() < (long / 6.0) as usize && closed && sliver {
+                    continue;
+                }
+                // ... nor follow a row of them, to and fro: a line several times longer than the place it
+                // stays in is a scribble.
+                let (lo, hi) = chain.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]));
+                if !on_skin && run > if closed { 3.2 } else { 2.2 } * (hi[0] - lo[0]).hypot(hi[1] - lo[1]) {
                     continue;
                 }
                 let mut last = usize::MAX;
@@ -1135,7 +1159,10 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
             // A burin's groove is a V: the line enters as a needle, swells where the edge is firm, and leaves
             // as a needle.
             let finer = |p: &[f32; 2]| 1.0 - FAR_FINER * far.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
-            let mut widths: Vec<f32> = chain.iter().map(|p| finer(p) * base * (0.45 + 1.6 * (at(p) / strong).min(1.0).powf(1.2))).collect();
+            // (A pen's line is less the contrast it separates than a burin's: its weight is the hand's, leant on
+            // in a shadow — see the drawing's own rule — and a faint edge under a chin is not a hair for being faint.)
+            let (least, more) = if pen.is_some() { (0.8, 0.9) } else { (0.45, 1.6) };
+            let mut widths: Vec<f32> = chain.iter().map(|p| finer(p) * base * (least + more * (at(p) / strong).min(1.0).powf(1.2))).collect();
             let at_fur = |p: &[f32; 2]| fur.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
             if chain.iter().map(at_fur).sum::<f32>() > 0.5 * chain.len() as f32 {
                 // Through fur a contour is no single line: the edge of a coat is hairs, lying end to end with
@@ -1197,7 +1224,7 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     let grain: Option<Vec<f32>> = pen.map(|_| (0..w * h).map(|i| fur.as_ref().map_or(0.0, |f| f[i]).max(1.0 - skin.as_ref().map_or(0.0, |s| s[i]))).collect());
     let flow = Flow::new(&value, w, h, &ground, grain.as_deref().or(fur.as_deref()), held.as_deref(), relief, normals, follow.clamp(0.0, 1.0), pen.is_some());
     let room = budget.saturating_sub(cuts.len());
-    let mut spacing = (long / if pen.is_some() { 240.0 } else { 300.0 }).max(3.0);
+    let mut spacing = (long / if pen.is_some() { 200.0 } else { 300.0 }).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
     for _ in 0..8 {
         hatch.clear();
