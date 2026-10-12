@@ -370,20 +370,22 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     bleed: 0.35,
     body: 0.32,
     impasto: 0.0,
-    chroma: 1.5,
+    chroma: 1.15,
     dry_shift: 0.08,
-    granulate: 0.16,
+    granulate: 0.05,
     sheen: 0.0,
     lift: 0.2,
     default_palette: "limited-landscape",
     broken: 0.0,
-    contour: 0.4,
+    contour: 1.0,
     families: Families::Unified,
     subtractive: false,
     mark_model: MarkModel::Continuous,
-    // Flat cumulative glazes (eight levels, each covering everything as dark or darker), from the keyed picture
-    // at pixel scale — the masks of an early colour-book print — then the coloured line.
-    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: Some(8), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: true },
+    // A DRAWING, TINTED: the picture's generalised masses in four inks found in the picture, three flat glazes
+    // deep, the lights left as paper (see `book_tints`) — then the pen line that carries the picture, planned as
+    // an engraving plans its contours (see `book_line`).
+    // `budget_scale` 6: the line is the picture, and a swelling line is recorded as several cuts.
+    mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 6.0, levels: Some(3), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: true },
     finish_policy: FinishPolicy::BackToFront,
 };
 

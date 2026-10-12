@@ -181,6 +181,13 @@ const TILTED: (f32, f32) = (0.35, 0.65);
 /// of the picture's own drift at 0.9 is a line that leans a few degrees this way and that along a wall — a
 /// wave, on a surface that has none.
 const STRAIGHT: f32 = 1.0;
+/// A PEN DRAWING (see `drawing`): the tone its hatch begins at — the shadows, not the half-tones — the tone its
+/// deepest shadow is cut to (one layer, lying one way — `HAND_OVER`, where a crossing would begin: a pen's shadow
+/// is a ruled tone over the wash, and a crossing lays a flat grid over every surface alike), and how much
+/// finer a line it still draws than an engraver would (a chain's least weight, as a share of the sheet).
+const PEN_FROM: f32 = 0.3;
+const PEN_DEEPEST: f32 = HAND_OVER;
+const PEN_FINE: f32 = 300.0;
 /// A hair of FUR is a short stroke: so many spacings long, each way from where it starts.
 const HAIR_LENGTH: (f32, f32) = (2.5, 6.0);
 /// On skin, an edge weaker than this share of a firm one is not a contour at all (see `plan`).
@@ -251,8 +258,9 @@ impl Flow {
     /// `follow` (0..1) is how far the cuts follow the form at all: at 0 the plate is ruled — every hatch line on
     /// the resting diagonal, or level on the ground — and only the contours bend. `held` (at the sheet's
     /// resolution, 0..1) is where the hatch is held at rest whatever `follow` says: skin, and fur (whose own
-    /// direction, the coat's, is read on top).
-    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, held: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32) -> Flow {
+    /// direction, the coat's, is read on top). `grained`: `fur` is no coat but whatever has a grain, read only
+    /// where the grain is strong enough to be seen.
+    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, held: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32, grained: bool) -> Flow {
         let long = w.max(h);
         let f = long.div_ceil(512).max(1);
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
@@ -335,7 +343,10 @@ impl Flow {
                         let i = y * sw + x;
                         let len = (a[i] * a[i] + b[i] * b[i]).sqrt();
                         let agree = ((len / (e[i] + 1e-12) - 0.15) / 0.3).clamp(0.0, 1.0);
-                        let t = fur[(y * f).min(h - 1) * w + (x * f).min(w - 1)] * agree;
+                        // (A grain is something SEEN: in a flat dark the strands that agree are the noise's, and
+                        // followed, they grain a window's shadow like a sawn board.)
+                        let seen = if grained { ((e[i] / energy - 0.6) / 1.2).clamp(0.0, 1.0) } else { 1.0 };
+                        let t = fur[(y * f).min(h - 1) * w + (x * f).min(w - 1)] * agree * seen;
                         if len > 1e-12 {
                             c2[i] += (-a[i] / len - c2[i]) * t;
                             s2[i] += (-b[i] / len - s2[i]) * t;
@@ -922,6 +933,21 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
 /// ruled plate, every line on the diagonal or level on the ground); `budget` caps the number of cuts — when
 /// the hatch would not fit, its spacing widens until it does.
 pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, white: Option<f32>, follow: f32, budget: usize, seed: u64) -> Plate {
+    cut(picture, relief, normals, materials, contour, white, follow, budget, seed, None)
+}
+
+/// A PEN DRAWING of the picture, for a medium that draws a line over its own washes: the plate's contours —
+/// with the finer ones an engraver leaves out, the joints of a wall, the folds of a sleeve: a pen draws
+/// texture — and a hatch in the SHADOWS only, `shade` (0..1) of an engraving's weight there, lying one
+/// way. The lights and the middle tones are left to the washes.
+///
+/// With `normals` the hatch turns with the form, as an engraving's does. `materials` name the SKIN: a face is
+/// drawn, not shaded — its contours all kept, the faint ones too, and no hatch laid over it.
+pub fn drawing(picture: &RgbImage, normals: Option<Normals>, materials: Option<Materials>, contour: f32, shade: f32, budget: usize, seed: u64) -> Plate {
+    cut(picture, None, normals, materials, contour, None, 1.0, budget, seed, Some(shade.clamp(0.0, 1.0)))
+}
+
+fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, materials: Option<Materials>, contour: f32, white: Option<f32>, follow: f32, budget: usize, seed: u64, pen: Option<f32>) -> Plate {
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
@@ -1076,13 +1102,36 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         // nostril, the line of the lips, the silhouette) are drawn as everywhere: a chain is cut where it runs
         // faint over skin, and what is left of it is judged on its own.
         let at_skin = |p: &[f32; 2]| skin.as_ref().map_or(0.0, |s| s[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
-        let faint = |p: &[f32; 2]| at_skin(p) > 0.5 && at(p) / strong < SKIN_FAINT;
+        let faint = |p: &[f32; 2]| pen.is_none() && at_skin(p) > 0.5 && at(p) / strong < SKIN_FAINT;
         let weight = |c: &[[f32; 2]]| c.iter().map(|p| (at(p) / strong).min(1.0)).sum::<f32>() * 2.0;
-        let mut chains: Vec<&[[f32; 2]]> = chains.iter().flat_map(|c| c.split(faint)).filter(|c| weight(c) >= long / 140.0).collect();
+        let mut chains: Vec<&[[f32; 2]]> = chains.iter().flat_map(|c| c.split(faint)).filter(|c| weight(c) >= long / if pen.is_some() { PEN_FINE } else { 140.0 }).collect();
         chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
         let base = (long / 800.0).clamp(0.8, 3.0);
         let nominal = (long / 300.0).max(3.0);
+        // A PEN hints at a texture, it does not trace it: the stitches of a knitted vest, the grain of a wall,
+        // every lock of a head of hair are short edges crowding one another, and drawn each, they are a scribble
+        // over the tint. The long lines are drawn first; a short one that runs where two lines already pass is
+        // left out. (Not on skin: an eye is short lines close together, and all of them are the eye.)
+        let crowd = (long / 60.0).max(8.0);
+        let (gw, gh) = ((w as f32 / crowd) as usize + 1, (h as f32 / crowd) as usize + 1);
+        let mut passed = vec![0u8; gw * gh];
+        let cell = |p: &[f32; 2]| ((p[1] / crowd) as usize).min(gh - 1) * gw + ((p[0] / crowd) as usize).min(gw - 1);
         for (ci, chain) in chains.into_iter().enumerate() {
+            if pen.is_some() {
+                let short = chain.len() < (long / 25.0) as usize;
+                let on_skin = chain.iter().map(at_skin).sum::<f32>() > 0.5 * chain.len() as f32;
+                if short && !on_skin && chain.iter().filter(|p| passed[cell(p)] >= 2).count() * 10 > chain.len() * 6 {
+                    continue;
+                }
+                let mut last = usize::MAX;
+                for p in chain {
+                    let c = cell(p);
+                    if c != last {
+                        passed[c] = passed[c].saturating_add(1);
+                        last = c;
+                    }
+                }
+            }
             // A burin's groove is a V: the line enters as a needle, swells where the edge is firm, and leaves
             // as a needle.
             let finer = |p: &[f32; 2]| 1.0 - FAR_FINER * far.as_ref().map_or(0.0, |f| f[(p[1] as usize).min(h - 1) * w + (p[0] as usize).min(w - 1)]);
@@ -1105,7 +1154,9 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
                 }
             } else {
                 swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
-                pieces(0, &taut(chain), &widths, &mut cuts);
+                // (A pen's line is one sweep of the hand: pulled taut once more, so it does not tremble.)
+                let line = if pen.is_some() { taut(&taut(&taut(chain))) } else { taut(chain) };
+                pieces(0, &line, &widths, &mut cuts);
             }
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
             for pair in chain.windows(2) {
@@ -1116,12 +1167,18 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
                     }
                 }
             }
-            if cuts.len() >= budget * 2 / 5 {
+            if cuts.len() >= budget / 5 * 2 {
                 break;
             }
         }
     }
 
+    // A PEN shades only its shadows: the tone below `PEN_FROM` is the washes', and what is above it is spread
+    // over one layer and the beginning of a crossing.
+    let tone: Vec<f32> = match pen {
+        Some(shade) => tone.iter().enumerate().map(|(i, t)| ((t - PEN_FROM) / (DEEPEST - PEN_FROM)).clamp(0.0, 1.0) * PEN_DEEPEST * shade * (1.0 - skin.as_ref().map_or(0.0, |s| s[i]))).collect(),
+        None => tone,
+    };
     // HATCH: the layers, at a spacing that fits the budget.
     // A tone that lies alone on open paper — little around it is dark — is a shadow on the ground.
     let ground: Vec<f32> = around.iter().map(|a| ((0.42 - a) / 0.2).clamp(0.0, 1.0)).collect();
@@ -1133,9 +1190,14 @@ pub fn plan(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>
         (None, Some(f)) => Some(f.clone()),
         (None, None) => None,
     };
-    let flow = Flow::new(&value, w, h, &ground, fur.as_deref(), held.as_deref(), relief, normals, follow.clamp(0.0, 1.0));
+    // A PEN's hatch lies along the GRAIN of what it shades, everywhere but on skin: the locks of a head of hair,
+    // the folds of a sleeve, the courses of a wall each have a direction of their own, and a shadow ruled across
+    // them on one diagonal is a screen laid over the drawing, not the drawing's. Where a thing has no grain the
+    // line rests as before.
+    let grain: Option<Vec<f32>> = pen.map(|_| (0..w * h).map(|i| fur.as_ref().map_or(0.0, |f| f[i]).max(1.0 - skin.as_ref().map_or(0.0, |s| s[i]))).collect());
+    let flow = Flow::new(&value, w, h, &ground, grain.as_deref().or(fur.as_deref()), held.as_deref(), relief, normals, follow.clamp(0.0, 1.0), pen.is_some());
     let room = budget.saturating_sub(cuts.len());
-    let mut spacing = (long / 300.0).max(3.0);
+    let mut spacing = (long / if pen.is_some() { 240.0 } else { 300.0 }).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
     for _ in 0..8 {
         hatch.clear();

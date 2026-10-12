@@ -2634,7 +2634,32 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             println!("{}  --white is an engraving's lever (--medium durer); ignored for this medium", style("·").yellow());
         }
     }
-    if let Some(m) = a.materials.as_deref() {
+    // An early book illustration DRAWS its faces — one flesh tint, a few clean lines, no shading over them — so
+    // it must know its skin: the faces, found by the face detector and outlined by MobileSAM, as `durer
+    // --materials skin` finds them. A material map given as a file is read instead.
+    if params.book {
+        match a.materials.as_deref().filter(|m| std::path::Path::new(m).is_file()) {
+            Some(m) => {
+                let map = image::open(m).with_context(|| format!("opening the material map {m}"))?.to_rgb8();
+                params.materials = Some((map.width(), map.height(), crate::pipelines::materials::from_png(&map)));
+            }
+            None => {
+                // (Named materials are found besides — `--materials "fur: hair"` draws a head of hair in strands —
+                // the skin first, so nothing else claims a face.)
+                let mut things = crate::pipelines::materials::parse("skin")?;
+                if let Some(m) = a.materials.as_deref() {
+                    things.extend(crate::pipelines::materials::parse(m)?.into_iter().filter(|t| !t.1.is_empty()));
+                }
+                let device = crate::device::select("auto")?;
+                let (mw, mh, map) = crate::pipelines::materials::material_map(&a.input, &things, &device).await.context("finding the faces")?;
+                if map.iter().any(|k| *k != 0) {
+                    let side = a.out.with_extension("materials.png");
+                    crate::pipelines::materials::to_png(&map, mw, mh).save(&side).with_context(|| format!("saving {}", side.display()))?;
+                    params.materials = Some((mw, mh, map));
+                }
+            }
+        }
+    } else if let Some(m) = a.materials.as_deref() {
         if !params.engrave {
             println!("{}  --materials tell an engraving (--medium durer) what it cuts; ignored for this medium", style("·").yellow());
         } else if std::path::Path::new(m).is_file() {
@@ -2684,7 +2709,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         // The wash edges BLOOM (the cauliflower rim where a wash dries) unless `--edge-pool` was set; the
         // watercolour spatters a little unless `--splatter` was set.
         if a.edge_pool.is_none() {
-            params.edge_pool = 0.3;
+            // A tint in a book is flat: only a breath of the rim a wash dries with.
+            params.edge_pool = if params.book { 0.1 } else { 0.3 };
         }
         if !params.book && a.splatter.is_none() {
             params.splatter = 0.25;
@@ -2699,7 +2725,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.reserve.is_none() {
             let mut lum: Vec<f32> = img.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
             lum.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-            let (qn, lo) = if params.book { (85, 0.6) } else { (88, 0.5) };
+            // (A tinted drawing leaves more of the sheet: its lightest quarter.)
+            let (qn, lo) = if params.book { (76, 0.55) } else { (88, 0.5) };
             let q = lum.get(lum.len() * qn / 100).copied().unwrap_or(0.8);
             params.reserve = Some(q.clamp(lo, 0.9));
             println!("{}  luminous medium → paper reserved above luma {:.2} (the lightest ~15% of the keyed picture)", style("·").dim(), params.reserve.unwrap_or(0.0));
