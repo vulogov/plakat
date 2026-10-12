@@ -2656,6 +2656,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     let side = a.out.with_extension("materials.png");
                     crate::pipelines::materials::to_png(&map, mw, mh).save(&side).with_context(|| format!("saving {}", side.display()))?;
                     params.materials = Some((mw, mh, map));
+                    // ... and where each face's eyes, nose and mouth are: a far face is drawn from those.
+                    params.features = crate::pipelines::materials::face_features(&a.input, &device).await.context("finding the faces' features")?;
                 }
             }
         }

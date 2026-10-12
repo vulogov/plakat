@@ -230,6 +230,9 @@ pub struct PaintParams {
     /// What the picture's things are made of, for an engraving (`engrave::Materials`): width, height, a kind per
     /// pixel (0 = nothing said).
     pub materials: Option<(u32, u32, Vec<u8>)>,
+    /// The features of the picture's faces, for the book illustration: per face its left eye, right eye, nose
+    /// tip and the two corners of its mouth, as shares of the picture's width and height. Empty = not known.
+    pub features: Vec<[[f32; 2]; 5]>,
     /// FOLLOW (0..1, default 1) for an engraving: how far the hatch follows the form. 0 = a ruled plate — every
     /// line on the resting diagonal or level on the ground, only the contours bend; a portrait wants about 0.3.
     pub follow: f32,
@@ -411,7 +414,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
     }
 }
 
@@ -5404,7 +5407,7 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
     // A wash's edge is a brush's, clean: each point takes the mass most of its neighbourhood has, so no edge is
     // ragged with the picture's grain.
     {
-        let sigma = (long * 0.0035).max(1.0);
+        let sigma = (long * 0.005).max(1.0);
         let mut best = vec![0u8; w * h];
         let mut most = vec![0u8; w * h];
         let mut present = [false; 256];
@@ -5475,7 +5478,13 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
         // (... by the PICTURE's colour there, only its grain off: the masses are read off a picture smoothed
         // until a pale vest and the pale ground behind its shoulder are one flat colour, and that smoothing
         // cannot say which of the two a point is.)
-        let seen: Vec<[f32; 2]> = imageops::blur(source, (long * 0.004).max(1.0)).pixels().map(|px| { let l = color::srgb_to_lab(px.0); [l.a, l.b] }).collect();
+        let unsharp = imageops::blur(source, (long * 0.004).max(1.0));
+        let seen: Vec<[f32; 2]> = unsharp.pixels().map(|px| { let l = color::srgb_to_lab(px.0); [l.a, l.b] }).collect();
+        // (And a step is read off the picture too: the smoothing that makes the masses keeps every edge it
+        // finds, and so turns the soft edge of a tree's shadow on a wall into a cliff — a soft shadow then
+        // stands on the wall as a hard-edged block. In the picture it is a drift, and the wall is one tint.)
+        let stepped = luma_map(&unsharp);
+        let at = |x: i64, y: i64| stepped[y.clamp(0, h as i64 - 1) as usize * w + x.clamp(0, w as i64 - 1) as usize];
         let cell = (long / 32.0).max(8.0) as usize;
         let (gw, gh) = (w.div_ceil(cell), h.div_ceil(cell));
         let mut near = vec![[0f64; 3]; gw * gh];
@@ -5490,7 +5499,20 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
                 if sum[2] > 0.0 { [(sum[0] / sum[2]) as f32, (sum[1] / sum[2]) as f32] } else { sheet }
             })
             .collect();
-        let at = |x: i64, y: i64| luma[y.clamp(0, h as i64 - 1) as usize * w + x.clamp(0, w as i64 - 1) as usize];
+        // THE GROUND'S HAZE is the sheet, point by point, before the masses are judged — where the ground IS the
+        // sheet (the picture had no light of its own to be the paper, see `reserve`): what is of the colour
+        // of the paper near it and hardly darker than paper, a ground falling off toward a corner, is no tint,
+        // whatever mass it was read into. (Judged as a mass, a haze lying against a pale vest is one mass with
+        // the vest, and stays or goes with it. Where the picture has its own lights, a wall of the paper's
+        // colour is a wall, and is left to the masses.)
+        if reserve != p.reserve {
+            for i in 0..w * h {
+                let there = sheet_there[(i / w / cell) * gw + (i % w) / cell];
+                if mass[i] != PAPER && (mass[i] as usize) < inks.len() * depths && !on_face(i) && top - stepped[i] < 0.75 * step && (seen[i][0] - there[0]).hypot(seen[i][1] - there[1]) < SHEET_MASS {
+                    mass[i] = PAPER;
+                }
+            }
+        }
         for _ in 0..3 {
             // The masses as they stand: each point's mass, and each mass's area.
             let mut of = vec![u32::MAX; w * h];
@@ -5719,7 +5741,7 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
 const FACE_SMALL: f32 = 0.04;
 const FACE_LARGE: f32 = 0.16;
 /// How far a contour's width is its own in the light, and in the deepest shadow.
-const LINE_WEIGHT: (f32, f32) = (0.55, 2.4);
+const LINE_WEIGHT: (f32, f32) = (0.5, 3.0);
 /// Below this share of the way from `FACE_SMALL` to `FACE_LARGE` a face is a FAR one: not traced, but put down
 /// in a few strokes — and no more of them than this.
 const FACE_FAR: f32 = 0.25;
@@ -5799,6 +5821,38 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                     darker[j] = (value(&soft, j) - value(&sharp, j)).max(0.0);
                     drawn.put_pixel((cx + j % cw) as u32, (cy + j / cw) as u32, *plain.get_pixel((j % cw) as u32, (j / cw) as u32));
                 }
+                // Where the detector says the features ARE, they are drawn there, as a hand sets a small face
+                // down: a stroke for each eye and a lighter one for the brow over it, a tick under the nose,
+                // the line of the mouth from corner to corner — fuller where the mouth is open. (A face seen
+                // from the side has its eyes all but in one place: one eye is drawn.)
+                let known = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).find(|f| {
+                    let (x, y) = (f[2][0] as usize, f[2][1] as usize);
+                    x >= cx && y >= cy && x < cx + cw && y < cy + ch && !off[(y - cy) * cw + (x - cx)]
+                });
+                if let Some([le, re, nose, lm, rm]) = known {
+                    let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+                    let (eyes, mouth) = (mid(le, re), mid(lm, rm));
+                    let apart = (re[0] - le[0]).hypot(re[1] - le[1]);
+                    let tall = (mouth[0] - eyes[0]).hypot(mouth[1] - eyes[1]);
+                    let s = apart.max(tall * 0.9).max(4.0);
+                    // Along the eyes, and down the face.
+                    let u = if apart > 0.35 * s { [(re[0] - le[0]) / apart, (re[1] - le[1]) / apart] } else { [(mouth[1] - eyes[1]) / tall.max(1e-3), -(mouth[0] - eyes[0]) / tall.max(1e-3)] };
+                    let v = { let v = [-u[1], u[0]]; if v[0] * (mouth[0] - eyes[0]) + v[1] * (mouth[1] - eyes[1]) < 0.0 { [-v[0], -v[1]] } else { v } };
+                    let mut stroke = |c: [f32; 2], along: [f32; 2], half: f32, width: f32| {
+                        let width = width.max(1.2);
+                        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[c[0] - along[0] * half, c[1] - along[1] * half], [c[0] + along[0] * half, c[1] + along[1] * half]], w0: width, w1: width * 0.65 });
+                    };
+                    let open = { let j = ((mouth[1] as usize).clamp(cy, cy + ch - 1) - cy) * cw + ((mouth[0] as usize).clamp(cx, cx + cw - 1) - cx); ((value(&soft, j) - value(&sharp, j)) / 30.0).clamp(0.0, 1.0) };
+                    for eye in if apart > 0.35 * s { vec![le, re] } else { vec![eyes] } {
+                        stroke(eye, u, s * 0.15, s * 0.085);
+                        stroke([eye[0] - v[0] * s * 0.24, eye[1] - v[1] * s * 0.24], u, s * 0.2, s * 0.04);
+                    }
+                    stroke([nose[0] + v[0] * s * 0.07, nose[1] + v[1] * s * 0.07], u, s * 0.1, s * 0.04);
+                    let wide = (rm[0] - lm[0]).hypot(rm[1] - lm[1]);
+                    let along = if wide > 0.2 * s { [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide] } else { u };
+                    stroke(mouth, along, (wide * 0.5).max(s * 0.14), s * (0.05 + 0.12 * open));
+                    continue;
+                }
                 let mark = (darker.iter().fold(0f32, |m, v| m.max(*v)) * 0.4).max(4.0);
                 let mut taken = vec![false; cw * ch];
                 // Each dark feature: its weight, where it lies, how it lies (its second moments).
@@ -5837,6 +5891,84 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
                     let (x, y) = (cx as f32 + at[0] + 0.5, cy as f32 + at[1] + 0.5);
                     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[x - c * reach, y - s * reach], [x + c * reach, y + s * reach]], w0: width, w1: width * 0.6 });
                 }
+            } else if let Some([le, re, nose, lm, rm]) = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).find(|f| {
+                let (x, y) = (f[2][0] as usize, f[2][1] as usize);
+                x >= cx && y >= cy && x < cx + cw && y < cy + ch && near[y * sw + x]
+            }) {
+                // A NEAR FACE's mouth is one line: the dark between the lips, from corner to corner. Read as
+                // edges, a mouth is the rims of its shading — the bow of the upper lip, the shadow at a corner,
+                // the fold under the lower lip — joined into a line no mouth has, and a calm mouth comes out
+                // a grimace. So the mouth is found where the detector says its corners are: the darkest way
+                // from one to the other is drawn, swelling to its middle, and round it the picture is read with
+                // nothing in it. The bridge of the nose likewise: its shading is no line.
+                let wide = (rm[0] - lm[0]).hypot(rm[1] - lm[1]);
+                let apart = (re[0] - le[0]).hypot(re[1] - le[1]);
+                if wide >= 8.0 && apart >= 8.0 {
+                    let eyes = [(le[0] + re[0]) * 0.5, (le[1] + re[1]) * 0.5];
+                    let calm = imageops::blur(&crop, (wide * 0.12).max(1.5));
+                    let mut quiet = |a: [f32; 2], b: [f32; 2], r: f32| {
+                        let (x0, x1) = ((a[0].min(b[0]) - r).max(cx as f32) as usize, ((a[0].max(b[0]) + r) as usize).min(cx + cw - 1));
+                        let (y0, y1) = ((a[1].min(b[1]) - r).max(cy as f32) as usize, ((a[1].max(b[1]) + r) as usize).min(cy + ch - 1));
+                        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                        let len2 = (dx * dx + dy * dy).max(1e-6);
+                        for y in y0..=y1 {
+                            for x in x0..=x1 {
+                                let t = (((x as f32 - a[0]) * dx + (y as f32 - a[1]) * dy) / len2).clamp(0.0, 1.0);
+                                // (Fading in from its rim: an edge between the picture and the picture
+                                // smoothed is itself a line.)
+                                let k = ((r - (x as f32 - a[0] - dx * t).hypot(y as f32 - a[1] - dy * t)) / (0.6 * r)).clamp(0.0, 1.0);
+                                if k > 0.0 {
+                                    let (was, to) = (drawn.get_pixel(x as u32, y as u32).0, calm.get_pixel((x - cx) as u32, (y - cy) as u32).0);
+                                    drawn.put_pixel(x as u32, y as u32, image::Rgb([0, 1, 2].map(|c| (was[c] as f32 + (to[c] as f32 - was[c] as f32) * k).round() as u8)));
+                                }
+                            }
+                        }
+                    };
+                    quiet(lm, rm, wide * 0.4);
+                    quiet(eyes, [eyes[0] + (nose[0] - eyes[0]) * 0.7, eyes[1] + (nose[1] - eyes[1]) * 0.7], apart * 0.2);
+                    let along = [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide];
+                    let across = [-along[1], along[0]];
+                    let n = ((wide / 4.0) as usize).clamp(12, 80);
+                    let (k, by) = (10i32, wide * 0.018);
+                    let at = |t: usize, o: i32| {
+                        let f = t as f32 / n as f32;
+                        [lm[0] + (rm[0] - lm[0]) * f + across[0] * o as f32 * by, lm[1] + (rm[1] - lm[1]) * f + across[1] * o as f32 * by]
+                    };
+                    let dark = |q: [f32; 2]| { let c = sharp.get_pixel((q[0] as usize).clamp(cx, cx + cw - 1) as u32 - cx as u32, (q[1] as usize).clamp(cy, cy + ch - 1) as u32 - cy as u32).0; 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32 };
+                    let m = (2 * k + 1) as usize;
+                    let mut cost = vec![f32::MAX; (n + 1) * m];
+                    let mut from = vec![0usize; (n + 1) * m];
+                    cost[k as usize] = 0.0;
+                    for t in 1..=n {
+                        for o in 0..m {
+                            if t == n && o != k as usize {
+                                continue;
+                            }
+                            let here = dark(at(t, o as i32 - k));
+                            for q in o.saturating_sub(2)..(o + 3).min(m) {
+                                let c = cost[(t - 1) * m + q];
+                                if c < f32::MAX && c + here + 6.0 * (o as f32 - q as f32).abs() < cost[t * m + o] {
+                                    cost[t * m + o] = c + here + 6.0 * (o as f32 - q as f32).abs();
+                                    from[t * m + o] = q;
+                                }
+                            }
+                        }
+                    }
+                    let mut way = vec![k as usize; n + 1];
+                    for t in (1..=n).rev() {
+                        way[t - 1] = from[t * m + way[t]];
+                    }
+                    let raw: Vec<[f32; 2]> = (0..=n).map(|t| at(t, way[t] as i32 - k)).collect();
+                    let line: Vec<[f32; 2]> = (0..=n).map(|t| { let (a, b, c) = (raw[t.saturating_sub(1)], raw[t], raw[(t + 1).min(n)]); [(a[0] + 2.0 * b[0] + c[0]) * 0.25, (a[1] + 2.0 * b[1] + c[1]) * 0.25] }).collect();
+                    let base = (size * 0.008).max(1.8);
+                    let weight = |t: usize| base * (0.3 + 0.7 * (std::f32::consts::PI * t as f32 / n as f32).sin());
+                    let mut a = 0usize;
+                    while a < n {
+                        let b = (a + 3).min(n);
+                        features.push(crate::paint::engrave::Cut { layer: 0, path: line[a..=b].to_vec(), w0: weight(a), w1: weight(b) });
+                        a = b;
+                    }
+                }
             }
         }
     }
@@ -5862,7 +5994,10 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
         let side = |k: f32| shadow[((pt[1] + k * dx / len * aside).max(0.0) as usize).min(sh - 1) * sw + ((pt[0] - k * dy / len * aside).max(0.0) as usize).min(sw - 1)];
         let dark = side(1.0).min(side(-1.0));
         let round = about[((pt[1].max(0.0) as usize) / 8).min(ah - 1) * aw + ((pt[0].max(0.0) as usize) / 8).min(aw - 1)];
-        let t = (((round - dark) / 0.22).clamp(0.0, 1.0) * 0.65 + (1.0 - dark).powf(1.5) * 0.45).min(1.0);
+        // (... or below what faces it a little way across the line: under a jaw the shadow is soft, and what
+        // lies about it — a dark collar, a shirt — is darker still.)
+        let facing = (side(3.0) - side(-3.0)).abs() / 0.25;
+        let t = (((round - dark) / 0.15).max(facing).clamp(0.0, 1.0) * 0.65 + (1.0 - dark).powf(1.5) * 0.45).min(1.0);
         LINE_WEIGHT.0 + (LINE_WEIGHT.1 - LINE_WEIGHT.0) * t
     };
     let materials = skin.as_ref().map(|kind| crate::paint::engrave::Materials { w: drawn.width() as usize, h: drawn.height() as usize, kind });

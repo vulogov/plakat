@@ -1118,7 +1118,7 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
         let cell = |p: &[f32; 2]| ((p[1] / crowd) as usize).min(gh - 1) * gw + ((p[0] / crowd) as usize).min(gw - 1);
         for (ci, chain) in chains.into_iter().enumerate() {
             if pen.is_some() {
-                let short = chain.len() < (long / 25.0) as usize;
+                let short = chain.len() < (long / 12.0) as usize;
                 let on_skin = chain.iter().map(at_skin).sum::<f32>() > 0.5 * chain.len() as f32;
                 if short && !on_skin && chain.iter().filter(|p| passed[cell(p)] >= 2).count() * 10 > chain.len() * 6 {
                     continue;

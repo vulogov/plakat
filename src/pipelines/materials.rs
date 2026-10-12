@@ -131,6 +131,19 @@ async fn faces(image: &Path, device: &Device) -> Result<Vec<[f32; 4]>> {
         .collect())
 }
 
+/// The FEATURES of the faces in `image`, by the same detector: for each face its eyes, the tip of its nose and
+/// the corners of its mouth (left eye, right eye, nose, left mouth, right mouth), as shares of the picture's
+/// width and height. A far face is drawn from these — a stroke where each feature is — not traced from a few
+/// dozen pixels of shading. Empty when none is found or the detector is not to be had.
+pub async fn face_features(image: &Path, device: &Device) -> Result<Vec<[[f32; 2]; 5]>> {
+    let Some(weights) = crate::pipelines::scrfd::resolve_scrfd_weights().await.context("resolving the face-detector weights")? else {
+        return Ok(Vec::new());
+    };
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(&weights, crate::pipelines::scrfd::SCRFDConfig::default(), device, candle_core::DType::F32).context("loading the face detector")?;
+    let (w, h) = image::image_dimensions(image)?;
+    Ok(det.detect(image).context("detecting faces")?.iter().map(|f| f.landmarks.map(|p| [p[0] / w as f32, p[1] / h as f32])).collect())
+}
+
 pub fn to_png(map: &[u8], w: u32, h: u32) -> RgbImage {
     RgbImage::from_fn(w, h, |x, y| Rgb(KINDS.iter().find(|k| k.1 == map[(y * w + x) as usize]).map_or([0, 0, 0], |k| k.2)))
 }
