@@ -928,6 +928,55 @@ fn taut(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
     cur
 }
 
+/// Pull a pen's line STRAIGHT: a pen's line is one sweep of the hand, and where the edge it follows is a
+/// rule or an arc, the line is one too — the trace of a speckled, riveted metal edge, smoothed, is still a
+/// tremble, and a jaw traced through the grain of the skin is a shiver. The chain is reduced to the corners
+/// a hand would keep (those that stand off the straight run by more than `tol`), each run between them laid
+/// straight, point for point, and the corners eased once.
+fn straight(pts: &[[f32; 2]], tol: f32) -> Vec<[f32; 2]> {
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (dx, dy) = (pts[b][0] - pts[a][0], pts[b][1] - pts[a][1]);
+        let len = dx.hypot(dy).max(1e-4);
+        let (mut far, mut at) = (0f32, a);
+        for i in a + 1..b {
+            let d = ((pts[i][0] - pts[a][0]) * dy - (pts[i][1] - pts[a][1]) * dx).abs() / len;
+            if d > far {
+                far = d;
+                at = i;
+            }
+        }
+        if far > tol {
+            keep[at] = true;
+            stack.push((a, at));
+            stack.push((at, b));
+        }
+    }
+    let mut out = pts.to_vec();
+    let (mut a, mut i) = (0usize, 1usize);
+    while i < n {
+        if keep[i] {
+            for k in a + 1..i {
+                let t = (k - a) as f32 / (i - a) as f32;
+                out[k] = [pts[a][0] + (pts[i][0] - pts[a][0]) * t, pts[a][1] + (pts[i][1] - pts[a][1]) * t];
+            }
+            a = i;
+        }
+        i += 1;
+    }
+    taut(&out)
+}
+
 /// Plan the plate for a picture. `contour` (0..1) is how much of the edge map is drawn; `white` (0.5..1) is the
 /// WHITE POINT, as a share of the picture's values: what lies at or above it is clean paper (`None` finds the
 /// paper in the picture — see `PAPER_SHARE`; a white dress wants more of the picture cut, 0.98); `follow` (0..1) how far the hatch follows the form (0 = a
@@ -1181,8 +1230,8 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
                 }
             } else {
                 swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
-                // (A pen's line is one sweep of the hand: pulled taut once more, so it does not tremble.)
-                let line = if pen.is_some() { taut(&taut(&taut(chain))) } else { taut(chain) };
+                // (A pen's line is one sweep of the hand: a rule where the edge is a rule, an arc where it is an arc.)
+                let line = if pen.is_some() { straight(chain, (long / 600.0).max(1.5)) } else { taut(chain) };
                 pieces(0, &line, &widths, &mut cuts);
             }
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
