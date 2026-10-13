@@ -61,7 +61,8 @@ pub async fn material_map(image: &Path, things: &[(u8, String)], device: &Device
     let (w, h) = image::image_dimensions(image).with_context(|| format!("opening {}", image.display()))?;
     let mut map = vec![0u8; (w * h) as usize];
     let mut owl = None;
-    for (kind, thing) in things {
+    // `*` names whatever nothing else names — a picture that is all machine: `metal: *` — and is given last.
+    for (kind, thing) in things.iter().filter(|t| t.1 != "*") {
         // The boxes the thing is in, and whether they were seen only faintly.
         let (boxes, faint): (Vec<[f32; 4]>, bool) = if thing.is_empty() {
             (faces(image, device).await?, false)
@@ -105,6 +106,10 @@ pub async fn material_map(image: &Path, things: &[(u8, String)], device: &Device
             }
         }
         println!("·  materials: {what} — {found} found{}, {:.1}% of the picture", if faint { " (faintly)" } else { "" }, claimed as f32 * 100.0 / (w * h) as f32);
+    }
+    if let Some((kind, _)) = things.iter().find(|t| t.1 == "*") {
+        let rest = map.iter_mut().filter(|k| **k == 0).map(|k| *k = *kind).count();
+        println!("·  materials: the rest — {:.1}% of the picture", rest as f32 * 100.0 / (w * h) as f32);
     }
     Ok((w, h, map))
 }

@@ -260,8 +260,11 @@ impl Flow {
     /// the resting diagonal, or level on the ground — and only the contours bend. `held` (at the sheet's
     /// resolution, 0..1) is where the hatch is held at rest whatever `follow` says: skin, and fur (whose own
     /// direction, the coat's, is read on top). `grained`: `fur` is no coat but whatever has a grain, read only
-    /// where the grain is strong enough to be seen.
-    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, held: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32, grained: bool) -> Flow {
+    /// where the grain is strong enough to be seen. `polished` (at the sheet's resolution, 0..1), with `grained`:
+    /// metal and glass, which have no grain, but whose CONSTRUCTION the line follows — the spokes of a wheel,
+    /// the ring of its rim — read only where an edge is as strong as a contour, never off the drift of a
+    /// reflection.
+    fn new(value: &[f32], w: usize, h: usize, ground: &[f32], fur: Option<&[f32]>, held: Option<&[f32]>, polished: Option<&[f32]>, relief: Option<Relief>, normals: Option<Normals>, follow: f32, grained: bool) -> Flow {
         let long = w.max(h);
         let f = long.div_ceil(512).max(1);
         let (sw, sh) = (w.div_ceil(f), h.div_ceil(f));
@@ -338,7 +341,17 @@ impl Flow {
             let at = |r: usize| (blur(&a, sw, sh, r, 2), blur(&b, sw, sh, r, 2), blur(&e, sw, sh, r, 2));
             let flank = at(((long as f32 / 30.0 / f as f32).round() as usize).max(3));
             let lock = at(((long as f32 / 110.0 / f as f32).round() as usize).max(2));
-            for (a, b, e) in [&flank, &lock] {
+            for (k, (a, b, e)) in [&flank, &lock].into_iter().enumerate() {
+                // On polished metal an edge counts only against the picture's strongest: the mean, on a sheet
+                // that is mostly open paper, is next to nothing, and against it a bonnet's reflections pass.
+                // And it is read close, at the scale of a lock: a rim turns the line that lies on the rim, not
+                // the body's a flank away, which would wrap the body in rings round every seam.
+                let polished = polished.filter(|_| grained && k == 1);
+                let contour = polished.map(|_| {
+                    let mut sorted = e.clone();
+                    sorted.sort_by(|p, q| p.total_cmp(q));
+                    sorted[(sorted.len() * 97 / 100).min(sorted.len() - 1)].max(1e-12)
+                });
                 for y in 0..sh {
                     for x in 0..sw {
                         let i = y * sw + x;
@@ -347,7 +360,12 @@ impl Flow {
                         // (A grain is something SEEN: in a flat dark the strands that agree are the noise's, and
                         // followed, they grain a window's shadow like a sawn board.)
                         let seen = if grained { ((e[i] / energy - 0.6) / 1.2).clamp(0.0, 1.0) } else { 1.0 };
-                        let t = fur[(y * f).min(h - 1) * w + (x * f).min(w - 1)] * agree * seen;
+                        let p = (y * f).min(h - 1) * w + (x * f).min(w - 1);
+                        let mut t = fur[p] * agree * seen;
+                        if let (Some(m), Some(contour)) = (polished, contour) {
+                            let built = ((e[i] / contour - 0.03) / 0.09).clamp(0.0, 1.0);
+                            t = t.max(m[p] * agree * built);
+                        }
                         if len > 1e-12 {
                             c2[i] += (-a[i] / len - c2[i]) * t;
                             s2[i] += (-b[i] / len - s2[i]) * t;
@@ -1127,7 +1145,9 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
             let x = BY_RANK * r + (1.0 - BY_RANK) * d;
             let t = DEEPEST * x.powf(key + (skin_key - key) * face).max(TOE * x);
             // ... and its light and middle tones open to the paper, while its darks stay: polish is contrast.
-            lighter * t * (1.0 - POLISH * shine * (1.0 - t / DEEPEST))
+            // (A pen's hatch is a hard thing's whole modelling — its tints are one local colour — so for the
+            // pen the polish does not open the tone.)
+            lighter * t * (1.0 - if pen.is_some() { 0.0 } else { POLISH } * shine * (1.0 - t / DEEPEST))
         })
         .collect();
     // The half-tone band: beside a shadow, a tone already begun is carried at single-hatch weight.
@@ -1173,6 +1193,11 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
             if pen.is_some() {
                 let short = chain.len() < (long / 12.0) as usize;
                 let on_skin = chain.iter().map(at_skin).sum::<f32>() > 0.5 * chain.len() as f32;
+                // A pen does not draw a line shorter than a stitch unless it is a firm one — a rivet, a
+                // nostril: the short faint ones are the knit of a vest and the specks of a hub, a scribble.
+                if !on_skin && chain.len() < (long / 35.0) as usize && weight(chain) < 1.4 * chain.len() as f32 {
+                    continue;
+                }
                 if short && !on_skin && chain.iter().filter(|p| passed[cell(p)] >= 1).count() * 10 > chain.len() * 5 {
                     continue;
                 }
@@ -1186,14 +1211,14 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
                 let lie = chain.iter().fold([0f32; 3], |m, p| { let (dx, dy) = (p[0] - mean[0], p[1] - mean[1]); [m[0] + dx * dx / n, m[1] + dy * dy / n, m[2] + dx * dy / n] });
                 let (mid, half) = ((lie[0] + lie[1]) * 0.5, (((lie[0] - lie[1]) * 0.5).powi(2) + lie[2] * lie[2]).sqrt());
                 let sliver = (mid - half).max(0.0) < 0.16 * (mid + half);
-                let closed = (b[0] - a[0]).hypot(b[1] - a[1]) < 0.3 * run;
+                let closed = (b[0] - a[0]).hypot(b[1] - a[1]) < 0.5 * run;
                 if !on_skin && chain.len() < (long / 6.0) as usize && closed && sliver {
                     continue;
                 }
                 // ... nor follow a row of them, to and fro: a line several times longer than the place it
                 // stays in is a scribble.
                 let (lo, hi) = chain.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), p| ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]));
-                if !on_skin && run > if closed { 3.2 } else { 2.2 } * (hi[0] - lo[0]).hypot(hi[1] - lo[1]) {
+                if !on_skin && run > if closed { 3.2 } else if chain.len() < (long / 8.0) as usize { 1.9 } else { 2.2 } * (hi[0] - lo[0]).hypot(hi[1] - lo[1]) {
                     continue;
                 }
                 let mut last = usize::MAX;
@@ -1252,7 +1277,9 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     // A PEN shades only its shadows: the tone below `PEN_FROM` is the washes', and what is above it is spread
     // over one layer and the beginning of a crossing.
     let tone: Vec<f32> = match pen {
-        Some(shade) => tone.iter().enumerate().map(|(i, t)| ((t - PEN_FROM) / (DEEPEST - PEN_FROM)).clamp(0.0, 1.0) * PEN_DEEPEST * shade * (1.0 - skin.as_ref().map_or(0.0, |s| s[i]))).collect(),
+        // (... and on a hard surface it begins higher up the tone: the turn of a cylinder from the light is
+        // the hatch's to show, the tints having left it one colour.)
+        Some(shade) => tone.iter().enumerate().map(|(i, t)| { let from = PEN_FROM * (1.0 - 0.35 * polished.as_ref().map_or(0.0, |p| p[i])); ((t - from) / (DEEPEST - from)).clamp(0.0, 1.0) * PEN_DEEPEST * shade * (1.0 - skin.as_ref().map_or(0.0, |s| s[i])) }).collect(),
         None => tone,
     };
     // HATCH: the layers, at a spacing that fits the budget.
@@ -1270,8 +1297,11 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     // the folds of a sleeve, the courses of a wall each have a direction of their own, and a shadow ruled across
     // them on one diagonal is a screen laid over the drawing, not the drawing's. Where a thing has no grain the
     // line rests as before.
-    let grain: Option<Vec<f32>> = pen.map(|_| (0..w * h).map(|i| fur.as_ref().map_or(0.0, |f| f[i]).max(1.0 - skin.as_ref().map_or(0.0, |s| s[i]))).collect());
-    let flow = Flow::new(&value, w, h, &ground, grain.as_deref().or(fur.as_deref()), held.as_deref(), relief, normals, follow.clamp(0.0, 1.0), pen.is_some());
+    // (... nor on polished metal and glass, which have no grain: there the hatch is ruled, turns with the
+    // normals where they are known, and follows only the thing's construction — a wheel's spokes, its rim —
+    // where an edge is as strong as a contour: a flow read off a bonnet's reflections is wood grain on steel.)
+    let grain: Option<Vec<f32>> = pen.map(|_| (0..w * h).map(|i| fur.as_ref().map_or(0.0, |f| f[i]).max((1.0 - skin.as_ref().map_or(0.0, |s| s[i])) * (1.0 - polished.as_ref().map_or(0.0, |p| p[i])))).collect());
+    let flow = Flow::new(&value, w, h, &ground, grain.as_deref().or(fur.as_deref()), held.as_deref(), if pen.is_some() { polished.as_deref() } else { None }, relief, normals, follow.clamp(0.0, 1.0), pen.is_some());
     let room = budget.saturating_sub(cuts.len());
     let mut spacing = (long / if pen.is_some() { 200.0 } else { 300.0 }).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();

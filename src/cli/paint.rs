@@ -834,8 +834,11 @@ pub struct FromArgs {
     /// engine, exhaust pipe; skin"` — kinds `fur`, `glass`, `metal`, `skin`; the masks are found by OWL-ViT and
     /// MobileSAM (GPU) and saved beside the output as `<out>.materials.png`. `skin` needs no thing named: the
     /// faces are found by the face detector (`skin: hands` adds things found by word). Or a path to such a
-    /// saved map. Fur is cut along the coat with crossings that only lean off it; glass and metal open their
-    /// lights to the paper; on skin the hatch is held at rest and does not follow the form.
+    /// saved map; `metal: *` names whatever nothing else names. Fur is cut along the coat with crossings that
+    /// only lean off it; glass and metal open their lights to the paper; on skin the hatch is held at rest and
+    /// does not follow the form. For `--medium early-book-illustration` the faces, metal and glass are found
+    /// unasked; a hard thing is tinted one colour inside each line and modelled by the hatch — a machine the
+    /// detector cannot name wants `--materials "metal: *"`.
     #[arg(long, value_name = "SPEC|FILE")]
     pub materials: Option<String>,
     /// FOLLOW (0..1, default 1) for an engraving (`--medium durer`): how far the hatch follows the form. 1 = the
@@ -2646,7 +2649,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             None => {
                 // (Named materials are found besides — `--materials "fur: hair"` draws a head of hair in strands —
                 // the skin first, so nothing else claims a face.)
-                let mut things = crate::pipelines::materials::parse("skin")?;
+                // (... and the hard things, metal and glass: a machine is tinted one local colour inside its
+                // lines and modelled by the hatch, not cut into tints by its lights.)
+                let mut things = crate::pipelines::materials::parse("skin; metal: machine, metal; glass: glass")?;
                 if let Some(m) = a.materials.as_deref() {
                     things.extend(crate::pipelines::materials::parse(m)?.into_iter().filter(|t| !t.1.is_empty()));
                 }
