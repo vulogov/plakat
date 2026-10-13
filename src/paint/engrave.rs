@@ -363,8 +363,12 @@ impl Flow {
                         let p = (y * f).min(h - 1) * w + (x * f).min(w - 1);
                         let mut t = fur[p] * agree * seen;
                         if let (Some(m), Some(contour)) = (polished, contour) {
-                            let built = ((e[i] / contour - 0.03) / 0.09).clamp(0.0, 1.0);
-                            t = t.max(m[p] * agree * built);
+                            // (... and only where the edges AGREE outright — the two rims of a ring, the two
+                            // sides of a spoke. The clutter of an engine, every fin and bolt at its own angle,
+                            // leaves the line ruled.)
+                            let built = ((e[i] / contour - 0.06) / 0.14).clamp(0.0, 1.0);
+                            let parallel = ((len / (e[i] + 1e-12) - 0.5) / 0.3).clamp(0.0, 1.0);
+                            t = t.max(m[p] * parallel * built);
                         }
                         if len > 1e-12 {
                             c2[i] += (-a[i] / len - c2[i]) * t;
@@ -1213,6 +1217,12 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
                 let sliver = (mid - half).max(0.0) < 0.16 * (mid + half);
                 let closed = (b[0] - a[0]).hypot(b[1] - a[1]) < 0.5 * run;
                 if !on_skin && chain.len() < (long / 6.0) as usize && closed && sliver {
+                    continue;
+                }
+                // ... nor a HOOK: a short line that comes back toward where it began — the rim of one rib of
+                // the knit, of one fin of an engine — is a curl lying on the tint unless it is a firm edge,
+                // a pane's, a rivet's, that holds its area.
+                if !on_skin && chain.len() < (long / 10.0) as usize && closed && weight(chain) < 1.6 * chain.len() as f32 {
                     continue;
                 }
                 // ... nor follow a row of them, to and fro: a line several times longer than the place it

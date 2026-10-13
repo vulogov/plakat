@@ -5681,8 +5681,12 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
                 // nearest neighbour was a smaller patch like itself: on a bonnet the lights lie in a row.)
                 // (... and kin there is by COLOUR, not by ink: a machine of one colour has its four inks told
                 // apart by lightness alone, and its shadow side printed in the darker grey is still the bonnet.)
+                // (... and a SMALL patch of any colour: a glint of brass read off a grey engine, a reflection's
+                // warmth on a bonnet, has no line round it either, and a thing that has no line round it is
+                // not a thing the pen drew — the plate under it is one tint. A brass fitting that IS a thing
+                // has its contour, and keeps its colour inside it.)
                 if by_line.is_some() && hard_of[id] * 2 > area[id] {
-                    let alike = |k: u32| (own_of[id][1] - own_of[k as usize][1]).hypot(own_of[id][2] - own_of[k as usize][2]) < 12.0;
+                    let alike = |k: u32| small < 0.01 || (own_of[id][1] - own_of[k as usize][1]).hypot(own_of[id][2] - own_of[k as usize][2]) < 12.0;
                     if let Some((&other, &(shared, _, _, walled))) = against[id].iter().filter(|(k, _)| area[**k as usize] > area[id] && label_of[**k as usize] != PAPER && alike(**k)).max_by_key(|(k, v)| (v.0, std::cmp::Reverse(**k))) {
                         if hard_of[other as usize] * 2 > area[other as usize] && walled * 2 < shared {
                             to[id] = Some(label_of[other as usize]);
@@ -5783,13 +5787,16 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
                 continue;
             }
             let mut count = [0u32; 256];
-            let mut n = 0u32;
+            let (mut n, mut on_hard) = (0u32, 0u32);
             for &i in px.iter().filter(|&&i| mass[i] != PAPER && !on_face(i)) {
                 count[mass[i] as usize] += 1;
                 n += 1;
+                on_hard += u32::from(hard(i));
             }
             let top = (0..256).max_by_key(|&m| (count[m], std::cmp::Reverse(m))).unwrap_or(0);
-            if n > 0 && count[top] * 100 >= n * 45 {
+            // (On metal, whatever the vote: inside a closed contour a hard surface is one plate, its light and
+            // shade the hatch's to give.)
+            if n > 0 && (count[top] * 100 >= n * 45 || on_hard * 2 > n) {
                 for &i in &px {
                     if mass[i] != PAPER && !on_face(i) {
                         mass[i] = top as u8;
