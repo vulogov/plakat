@@ -75,6 +75,9 @@ pub struct Plate {
     pub cuts: Vec<Cut>,
     /// The line spacing the plate ended on (it widens when the cuts would not fit the budget).
     pub spacing: f32,
+    /// A PEN's half-tone SCREEN (see `SCREEN_PITCH`): the dots of the black plate as rings, one ring each,
+    /// separated by a `[NaN, NaN]` point, to be filled as one wash. Empty for a burin's plate.
+    pub screen: Vec<[f32; 2]>,
 }
 
 /// The paper each hatch layer may ink at full weight in the deepest shadow. Every layer stays open — a line is
@@ -189,6 +192,25 @@ const PEN_FROM: f32 = 0.42;
 const PEN_DEEPEST: f32 = HAND_OVER;
 const PEN_FINE: f32 = 300.0;
 const PEN_COARSE: f32 = 200.0;
+/// ... and the tone from which a pen's shadow is no hatch but a SOLID: the dark of a room behind a window, the
+/// inside of an engine, the shadow under a wing, the darkest locks of a head of hair are spotted in whole, as a
+/// brush spots a black, with the lights left — not netted over with lines. A shape of such dark smaller than
+/// this share of the sheet's long side, squared, is the line's own and is not filled.
+const PEN_SOLID: f32 = 0.56;
+const PEN_SOLID_LEAST: f32 = 60.0;
+/// A pen's half-tone SCREEN (see `cut`): the dots' pitch as a share of the sheet's long side; below this much
+/// grain or construction seen the shadow is screened, not hatched; and how much of the pitch the largest dot is.
+const SCREEN_PITCH: f32 = 140.0;
+const SCREEN_FULL: f32 = 0.9;
+/// ... and the smallest dot printed, as a share of the pitch: below it the screen is not a screen but a
+/// sprinkle of specks, and the shadow is left to the tint.
+const SCREEN_LEAST: f32 = 0.22;
+/// ... and the tone of the picture (0..1, see `DEEPEST`) at which the screen begins — below it the shadow is
+/// the colour plates' — rising to a full dot at `PEN_SOLID`, where the black is laid solid.
+const SCREEN_FROM: f32 = 0.36;
+/// How far a pen's line is pulled straight (see `straight`), as a share of the sheet's long side: off a face
+/// a rule is a rule and an arc an arc, on a face the lines are small and their turns are the features.
+const PEN_STRAIGHT: (f32, f32) = (350.0, 600.0);
 /// A hair of FUR is a short stroke: so many spacings long, each way from where it starts.
 const HAIR_LENGTH: (f32, f32) = (2.5, 6.0);
 /// On skin, an edge weaker than this share of a firm one is not a contour at all (see `plan`).
@@ -359,7 +381,11 @@ impl Flow {
                         let agree = ((len / (e[i] + 1e-12) - 0.15) / 0.3).clamp(0.0, 1.0);
                         // (A grain is something SEEN: in a flat dark the strands that agree are the noise's, and
                         // followed, they grain a window's shadow like a sawn board.)
-                        let seen = if grained { ((e[i] / energy - 0.6) / 1.2).clamp(0.0, 1.0) } else { 1.0 };
+                        // (... and seen PLAINLY, for a pen: the fall of a sleeve, the courses of a wall, have a
+                        // grain of a sort, and a hatch that follows every faint one waves over the whole sheet
+                        // and breaks the form it should sit on. The locks of hair, the ribs of a knit, stand
+                        // well above the mean; a wall's drift does not.)
+                        let seen = if grained { ((e[i] / energy - 1.0) / 1.5).clamp(0.0, 1.0) } else { 1.0 };
                         let p = (y * f).min(h - 1) * w + (x * f).min(w - 1);
                         let mut t = fur[p] * agree * seen;
                         if let (Some(m), Some(contour)) = (polished, contour) {
@@ -380,7 +406,6 @@ impl Flow {
         }
         Flow { w: sw, h: sh, scale: 1.0 / f as f32, c2: blur(&c2, sw, sh, 2, 2), s2: blur(&s2, sw, sh, 2, 2) }
     }
-
 
     /// The unit direction at a sheet position, turned by the layer's angle (`sin`, `cos`).
     fn dir(&self, x: f32, y: f32, turn: (f32, f32)) -> [f32; 2] {
@@ -1023,7 +1048,7 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     let (w, h) = (picture.width() as usize, picture.height() as usize);
     let long = w.max(h) as f32;
     if w < 8 || h < 8 {
-        return Plate { cuts: Vec::new(), spacing: 0.0 };
+        return Plate { cuts: Vec::new(), spacing: 0.0, screen: Vec::new() };
     }
     // The value the plate is cut from: the picture, with the texture a burin does not follow smoothed away.
     let value = blur(&value_map(picture), w, h, ((long / 900.0).round() as usize).max(1), 3);
@@ -1266,7 +1291,7 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
             } else {
                 swell(&mut widths, 10, base * 0.2, ((long / 90.0) as usize).min(chain.len() / 3).max(3));
                 // (A pen's line is one sweep of the hand: a rule where the edge is a rule, an arc where it is an arc.)
-                let line = if pen.is_some() { straight(chain, (long / 600.0).max(1.5)) } else { taut(chain) };
+                let line = if pen.is_some() { straight(chain, (long / if at_skin(&chain[chain.len() / 2]) > 0.5 { PEN_STRAIGHT.1 } else { PEN_STRAIGHT.0 }).max(1.5)) } else { taut(chain) };
                 pieces(0, &line, &widths, &mut cuts);
             }
             // A hatch line stops at a drawn contour (thickened, so a diagonal step cannot slip through).
@@ -1284,12 +1309,73 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
         }
     }
 
+    // A PEN FILLS its deepest shadow (see `PEN_SOLID`): a shape of the deepest dark, off the skin, is laid solid
+    // as rows of a broad line, each lying over the last, kept a pixel inside its edge so the fill ends at the
+    // line and does not run out over it. The hatch is not laid under a fill.
+    let mut filled = vec![false; w * h];
+    if pen.is_some() {
+        let least = ((long / PEN_SOLID_LEAST) as usize).pow(2).max(16);
+        // (The shape a brush spots in, not the pixels' tone: its edge is rounded at the brush's own scale, a
+        // sliver of dark is no shape at all, and a pinhole of light in it is filled with the rest.)
+        let deep: Vec<f32> = (0..w * h).map(|i| if tone[i] >= PEN_SOLID && skin.as_ref().map_or(0.0, |s| s[i]) < 0.5 { 1.0 } else { 0.0 }).collect();
+        let deep: Vec<bool> = blur(&deep, w, h, ((long / 300.0) as usize).max(2), 2).iter().map(|d| *d > 0.5).collect();
+        let mut seen = vec![false; w * h];
+        for start in 0..w * h {
+            if seen[start] || !deep[start] {
+                continue;
+            }
+            let (mut px, mut stack) = (Vec::new(), vec![start]);
+            seen[start] = true;
+            while let Some(i) = stack.pop() {
+                px.push(i);
+                let (x, y) = (i % w, i / w);
+                for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
+                    if !seen[j] && deep[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+            if px.len() < least {
+                continue;
+            }
+            for &i in &px {
+                let (x, y) = (i % w, i / w);
+                if x > 0 && x + 1 < w && y > 0 && y + 1 < h && deep[i - 1] && deep[i + 1] && deep[i - w] && deep[i + w] {
+                    filled[i] = true;
+                }
+            }
+        }
+        // (Each row lies well over the last: a round pen's edge is soft, and rows that only touch are stripes.)
+        let step = ((long / 800.0).clamp(0.8, 3.0) * 0.9).max(1.2);
+        let mut y = (jitter(seed ^ 0xF177, 0) + 0.5) * step;
+        while (y as usize) < h {
+            let row = y as usize;
+            let mut x = 0usize;
+            while x < w {
+                if !filled[row * w + x] {
+                    x += 1;
+                    continue;
+                }
+                let x0 = x;
+                while x + 1 < w && filled[row * w + x + 1] {
+                    x += 1;
+                }
+                if x > x0 {
+                    cuts.push(Cut { layer: 1, path: vec![[x0 as f32 + 0.5, y], [x as f32 + 0.5, y]], w0: step * 2.6, w1: step * 2.6 });
+                }
+                x += 1;
+            }
+            y += step;
+        }
+    }
     // A PEN shades only its shadows: the tone below `PEN_FROM` is the washes', and what is above it is spread
     // over one layer and the beginning of a crossing.
+    let raw = pen.map(|_| tone.clone());
     let tone: Vec<f32> = match pen {
         // (... and on a hard surface it begins higher up the tone: the turn of a cylinder from the light is
         // the hatch's to show, the tints having left it one colour.)
-        Some(shade) => tone.iter().enumerate().map(|(i, t)| { let from = PEN_FROM * (1.0 - 0.35 * polished.as_ref().map_or(0.0, |p| p[i])); ((t - from) / (DEEPEST - from)).clamp(0.0, 1.0) * PEN_DEEPEST * shade * (1.0 - skin.as_ref().map_or(0.0, |s| s[i])) }).collect(),
+        Some(shade) => tone.iter().enumerate().map(|(i, t)| { if filled[i] { return 0.0; } let from = PEN_FROM * (1.0 - 0.35 * polished.as_ref().map_or(0.0, |p| p[i])); ((t - from) / (DEEPEST - from)).clamp(0.0, 1.0) * PEN_DEEPEST * shade * (1.0 - skin.as_ref().map_or(0.0, |s| s[i])) }).collect(),
         None => tone,
     };
     // HATCH: the layers, at a spacing that fits the budget.
@@ -1312,6 +1398,49 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     // where an edge is as strong as a contour: a flow read off a bonnet's reflections is wood grain on steel.)
     let grain: Option<Vec<f32>> = pen.map(|_| (0..w * h).map(|i| fur.as_ref().map_or(0.0, |f| f[i]).max((1.0 - skin.as_ref().map_or(0.0, |s| s[i])) * (1.0 - polished.as_ref().map_or(0.0, |p| p[i])))).collect());
     let flow = Flow::new(&value, w, h, &ground, grain.as_deref().or(fur.as_deref()), held.as_deref(), if pen.is_some() { polished.as_deref() } else { None }, relief, normals, follow.clamp(0.0, 1.0), pen.is_some());
+    // A PEN's HALF-TONE is a SCREEN: where the shadow is not the deepest (that is filled, above) and not on
+    // skin (a face is drawn, and dots on a cheek are a rash), the tone from `SCREEN_FROM` up is a printer's
+    // dot screen on a lattice turned half a right angle — the black plate's angle — each dot round, as large
+    // as the tone there, none smaller than a dot the eye reads as a screen, coarse enough to be seen as the
+    // screen of a cheap print. A head of hair, a knit, the fins of an engine, a wheel's rim are screened like
+    // everything else: a pen's hatch, wavering along a grain or a construction, is a scribble over the tint,
+    // not the drawing's — the plate has no hatch.
+    let mut tone = tone;
+    let mut screen: Vec<[f32; 2]> = Vec::new();
+    if let Some(raw) = &raw {
+        let pitch = (long / SCREEN_PITCH).max(5.0);
+        let screened: Vec<bool> = (0..w * h).map(|i| !filled[i] && raw[i] >= SCREEN_FROM && skin.as_ref().map_or(0.0, |s| s[i]) < 0.5).collect();
+        let s2 = std::f32::consts::FRAC_1_SQRT_2;
+        let mut u = 0.5 * pitch;
+        while u < (w + h) as f32 * s2 {
+            let mut v = -(w as f32) * s2 + 0.5 * pitch;
+            while v < h as f32 * s2 {
+                let (x, y) = ((u - v) * s2, (u + v) * s2);
+                v += pitch;
+                if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+                    continue;
+                }
+                let i = y as usize * w + x as usize;
+                if !screened[i] {
+                    continue;
+                }
+                // A dot's area is the tone: its radius goes as the root.
+                let r = pitch * 0.5 * ((raw[i] - SCREEN_FROM) / (PEN_SOLID - SCREEN_FROM)).clamp(0.0, 1.0).sqrt() * SCREEN_FULL;
+                if r < SCREEN_LEAST * pitch {
+                    continue;
+                }
+                for k in 0..12 {
+                    let a = std::f32::consts::TAU * k as f32 / 12.0;
+                    screen.push([x + r * a.cos(), y + r * a.sin()]);
+                }
+                screen.push([f32::NAN, f32::NAN]);
+            }
+            u += pitch;
+        }
+        for i in (0..w * h).filter(|&i| screened[i]) {
+            tone[i] = 0.0;
+        }
+    }
     let room = budget.saturating_sub(cuts.len());
     let mut spacing = (long / if pen.is_some() { 200.0 } else { 300.0 }).max(3.0);
     let mut hatch: Vec<Cut> = Vec::new();
@@ -1389,7 +1518,7 @@ fn cut(picture: &RgbImage, relief: Option<Relief>, normals: Option<Normals>, mat
     }
     hatch.truncate(room);
     cuts.extend(hatch);
-    Plate { cuts, spacing }
+    Plate { cuts, spacing, screen }
 }
 
 #[cfg(test)]

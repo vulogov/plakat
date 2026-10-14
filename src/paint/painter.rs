@@ -2272,7 +2272,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         if p.book {
             // (The line is planned first — the washes keep to it — and drawn last, over them.)
             let plan = book_plan(source, p, p.budget - p.budget * 2 / 5);
-            book_tints(&mut canvas, &mut score, source, n_stages_total, p, protect_all.as_deref(), Some(&plan), &mut placed, &mut k, progress);
+            print_plates(&mut canvas, &mut score, source, n_stages_total, p, &mut placed, &mut k, progress);
             book = Some(plan);
         } else if !wc_brush {
             wash_passes(&mut canvas, &mut score, input, source, n_stages_total, p, protect_all.as_deref(), &mut placed, &mut k, progress);
@@ -5238,6 +5238,10 @@ fn dp(pts: &[[f32; 2]], tol: f32, out: &mut Vec<[f32; 2]>) {
 /// names skin — each face found by the face detector and outlined by MobileSAM (see
 /// `pipelines::materials`), so the lit side of a face and its shadow side are one thing, and hair is not it.
 /// Returns the skin, and the face whole: the skin with what it encloses — the eyes, the brows, the mouth.
+/// The scale of the cells the material map names the skin in, as a share of the sheet's long side: the skin's
+/// edge is rounded at it (see `book_skin`).
+const SKIN_CELL: f32 = 0.005;
+
 fn book_skin(p: &PaintParams, w: usize, h: usize) -> Option<(Vec<bool>, Vec<bool>)> {
     let (mw, mh, kind) = p.materials.as_ref()?;
     let (mw, mh) = (*mw as usize, *mh as usize);
@@ -5248,6 +5252,13 @@ fn book_skin(p: &PaintParams, w: usize, h: usize) -> Option<(Vec<bool>, Vec<bool
     if !skin.iter().any(|s| *s) {
         return None;
     }
+    // The map names the skin in coarse cells (however it is scaled when it arrives); a face is not a stair.
+    // Its edge is rounded at the scale of the cells before anything is read from it — the flesh plate and the
+    // line of the head alike.
+    let skin: Vec<bool> = {
+        let is = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if skin[y as usize * w + x as usize] { 255 } else { 0 }]));
+        imageops::blur(&is, (w.max(h) as f32 * SKIN_CELL).max(1.0)).pixels().map(|px| px.0[0] > 127).collect()
+    };
     // Whatever is not skin and cannot be reached from the sheet's edge without crossing skin is the face's.
     let mut outside = vec![false; w * h];
     let mut stack: Vec<usize> = (0..w).flat_map(|x| [x, (h - 1) * w + x]).chain((0..h).flat_map(|y| [y * w, y * w + w - 1])).filter(|&i| !skin[i]).collect();
@@ -5267,194 +5278,246 @@ fn book_skin(p: &PaintParams, w: usize, h: usize) -> Option<(Vec<bool>, Vec<bool
     Some((skin, whole))
 }
 
-/// How many INKS an early book illustration is tinted with: the picture's own main colours, found in it (a
-/// face has a flesh tint besides).
+/// How many INKS an early book illustration is printed in besides the black: the picture's own main colours,
+/// found in it by k-means (a face has a flesh ink besides).
 const BOOK_INKS: usize = 4;
-/// ... and how far apart they are printed: inks nearer one another than this (Lab) have their chroma raised
-/// until the nearest two are this far apart — by no more than `INK_SPREAD` times, a tint is still the
-/// picture's colour. Four inks that can hardly be told apart are one ink.
-const INK_APART: f32 = 22.0;
-const INK_SPREAD: f32 = 1.7;
-/// The chroma (Lab) from which a colour is a colour: below it, it is more and more a grey, and a grey is one
-/// ink whatever its lightness.
-const INK_COLOURED: f32 = 20.0;
-/// How far (Lab a, b) a light may be from the colour of the sheet and still be the sheet — a paper's own
-/// drift — and how far a whole mass may be, to be given back to the sheet it lies against: a light green
-/// vest is green to its lightest.
-const SHEET_COLOUR: f32 = 9.0;
-const SHEET_MASS: f32 = 6.0;
+/// ... found by hue and chroma (Lab a, b) and, at this share of its weight, by lightness: an ink is a hue, and
+/// how dark a point is, is mostly how much of the ink it takes — but a dark red coat against a pink wall is
+/// another ink.
+const INK_LIGHTNESS: f32 = 0.35;
+/// A printed ink is a CLEAN colour, not the photograph's mean: every ink is mixed with its chroma raised this
+/// far over the picture's, so a pink is a pink and a green a green, and the sheet does not go grey.
+const INK_CLEAN: f32 = 1.3;
+/// METAL is printed in a cold grey: where the material map names it, a dull colour on it — the warmth a lamp
+/// or a reflection gives a bonnet — is the metal's own grey, its chroma cut to this share and its hue pulled this
+/// far (Lab b) toward the blue. A STRONG colour on metal is paint, and keeps its colour: the cooling fades out
+/// from `METAL_COOL_UP_TO.0` to `.1` of chroma.
+const METAL_COOL: (f32, f32) = (0.3, -6.0);
+const METAL_COOL_UP_TO: (f32, f32) = (12.0, 24.0);
+/// PAPER is what is lighter than this (Lab L) and of no colour (chroma under this): a white wall, the sky, the
+/// ground a portrait stands against.
+const PAPER_L: f32 = 80.0;
+const PAPER_CHROMA: f32 = 14.0;
+/// The BASE COLOUR is read off the picture flattened by a KUWAHARA filter at this radius (a share of the long
+/// side): the texture inside a thing goes, its edges stay sharp — then it is separated into inks, each one
+/// flat plate. An island of a plate smaller than `PLATE_ISLAND` of the long side, squared, goes to its
+/// neighbour. The flesh plate's weight, and a colour plate's.
+const PLATE_SMOOTH: f32 = 0.004;
+const PLATE_ISLAND: f32 = 0.011;
+const PLATE_WEIGHT: (f32, f32) = (0.35, 0.95);
+/// THE KEY: the black line, read from the picture lightly smoothed (a bilateral at `KEY_SMOOTH`) by an
+/// ADAPTIVE LOCAL THRESHOLD — ink where the grey is `KEY_ADAPT` under its mean over `KEY_LOCAL` of the long
+/// side round it — which draws the thin lines of an eye, a nostril, a lip in the shadow as readily as in the
+/// light. The broken lines are CLOSED with a kernel of `KEY_CLOSE` px, specks under `KEY_SPECK` of the long
+/// side, squared, are dropped, and the line is given `KEY_WEIGHT` px of weight. A flat passage darker than
+/// `KEY_BLACK` (luma 0..1) prints solid black — on skin only under `KEY_SKIN_BLACK` (an open mouth, a
+/// nostril). The plate is traced with a knife's tolerance of `KEY_TOL` and printed with `KEY_GAIN` of gain.
+const KEY_SMOOTH: f32 = 0.0015;
+const KEY_LOCAL: f32 = 0.012;
+const KEY_ADAPT: f32 = 0.09;
+const KEY_CLOSE: usize = 2;
+const KEY_SPECK: f32 = 0.007;
+const KEY_WEIGHT: usize = 1;
+/// The least half-width (px) a face's built stroke is stamped at.
+const KEY_FEATURE_LEAST: f32 = 1.3;
+const KEY_BLACK: f32 = 0.18;
+const KEY_SKIN_BLACK: f32 = 0.1;
+/// ... and on skin the adaptive line needs this much contrast: the hollow of an eye, the shadow under a
+/// cheekbone are a face's modelling, not its lines — those the built features draw.
+const KEY_SKIN_ADAPT: f32 = 0.16;
+const KEY_TOL: f32 = 0.0007;
+const KEY_GAIN: f32 = 0.0004;
+/// THE SHADE is the only screen. Where the picture lies within `SHADE_BAND` of its luma AND is `SHADE_BELOW`
+/// darker than the colour printed there, a lattice of black dots at 45° (pitch `SCREEN_PITCH` of the long
+/// side) grows from `SCREEN_LEAST` of the pitch toward `SCREEN_FULL` of half of it as the shadow deepens
+/// toward the solid black. Never on a face smaller than a portrait (one whose eyes are `SHADE_PORTRAIT` of
+/// the long side apart), never within `SHADE_OFF_FEATURE` of the eyes' distance round an eye or the mouth,
+/// and on a portrait's skin only under `SHADE_SKIN_TO`: the light of a face is its flat flesh, and its
+/// features are the key's.
+const SHADE_BAND: (f32, f32) = (0.2, 0.6);
+const SHADE_BELOW: f32 = 0.06;
+const SHADE_SKIN_TO: f32 = 0.42;
+const SHADE_PORTRAIT: f32 = 0.04;
+const SHADE_OFF_FEATURE: f32 = 0.45;
+const SCREEN_PITCH: f32 = 120.0;
+const SCREEN_FULL: f32 = 0.9;
+const SCREEN_LEAST: f32 = 0.25;
+/// How far out of REGISTER the colour plates and the shade print, as a share of the sheet's long side: each
+/// is shifted its own way by between six and fourteen tenths of this against the key, which is not shifted —
+/// the gaps and the overlaps lie on the clothes and the architecture, and the faces stay held by the line.
+const MISREGISTER: f32 = 700.0;
+/// How far a plate's ink spreads into the paper past its edge (a share of the long side): the dot gain of a
+/// cheap paper.
+const INK_SPREAD_EDGE: f32 = 0.0012;
 
-/// The TINTS of an early book illustration (line and watercolour): the picture's generalised masses, each in
-/// one of `BOOK_INKS` colours found in the picture itself, laid as flat transparent glazes — the lightest over
-/// its ink's whole region, each darker one over what is at least as dark — with the lights left as paper.
-///
-/// The masses are read off the picture smoothed to wash scale, not off its pixels: a tint is a shape a brush
-/// laid, and a mass too small to be one is given to its neighbour, so a sheet is a few hundred washes whatever
-/// the picture's detail. The detail is the LINE's (see `book_line`).
-fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_stages_total: usize, p: &PaintParams, protect: Option<&[bool]>, plan: Option<&BookPlan>, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
+/// A KUWAHARA filter at radius `r` (px): of the four square windows a pixel is a corner of, the mean of the
+/// one with the least variance — the texture inside a thing is flattened, its edges are kept sharp. Run at a
+/// reduced resolution when the radius is large (by integral images, so the cost is bounded).
+fn kuwahara(img: &RgbImage, r: f32) -> RgbImage {
+    let (w, h) = img.dimensions();
+    let scale = (5.0 / r.max(1.0)).min(1.0);
+    let (sw, sh) = ((w as f32 * scale).round().max(2.0) as u32, (h as f32 * scale).round().max(2.0) as u32);
+    let sm = if scale < 1.0 { imageops::resize(img, sw, sh, imageops::FilterType::Triangle) } else { img.clone() };
+    let r = (r * scale).round().max(1.0) as i64;
+    let (sw, sh) = (sw as usize, sh as usize);
+    let stride = sw + 1;
+    let mut s = vec![[0f64; 6]; stride * (sh + 1)];
+    for y in 0..sh {
+        for x in 0..sw {
+            let c = sm.get_pixel(x as u32, y as u32).0;
+            let i = (y + 1) * stride + x + 1;
+            let mut v = [c[0] as f64, c[1] as f64, c[2] as f64, (c[0] as f64).powi(2), (c[1] as f64).powi(2), (c[2] as f64).powi(2)];
+            for k in 0..6 {
+                v[k] += s[i - 1][k] + s[i - stride][k] - s[i - stride - 1][k];
+            }
+            s[i] = v;
+        }
+    }
+    let mut out = RgbImage::new(sw as u32, sh as u32);
+    for y in 0..sh as i64 {
+        for x in 0..sw as i64 {
+            let mut best = (f64::MAX, [0f64; 3]);
+            for (dx, dy) in [(-r, -r), (0, -r), (-r, 0), (0, 0)] {
+                let (x0, x1) = ((x + dx).clamp(0, sw as i64 - 1) as usize, (x + dx + r).clamp(0, sw as i64 - 1) as usize + 1);
+                let (y0, y1) = ((y + dy).clamp(0, sh as i64 - 1) as usize, (y + dy + r).clamp(0, sh as i64 - 1) as usize + 1);
+                let n = ((x1 - x0) * (y1 - y0)) as f64;
+                let mut v = [0f64; 6];
+                for k in 0..6 {
+                    v[k] = s[y1 * stride + x1][k] - s[y0 * stride + x1][k] - s[y1 * stride + x0][k] + s[y0 * stride + x0][k];
+                }
+                let mean = [v[0] / n, v[1] / n, v[2] / n];
+                let var = (v[3] / n - mean[0] * mean[0]) + (v[4] / n - mean[1] * mean[1]) + (v[5] / n - mean[2] * mean[2]);
+                if var < best.0 {
+                    best = (var, mean);
+                }
+            }
+            out.put_pixel(x as u32, y as u32, image::Rgb([0, 1, 2].map(|k| best.1[k].round().clamp(0.0, 255.0) as u8)));
+        }
+    }
+    if scale < 1.0 { imageops::resize(&out, w, h, imageops::FilterType::Triangle) } else { out }
+}
+
+/// THE KEY PLATE (see `KEY_SMOOTH`): the black line by an adaptive local threshold of the grey, closed,
+/// cleaned of specks and weighted; with the solid blacks of the deepest passages. Returned as the rings of one
+/// wash, in register — nothing else is.
+fn key_plate(drawn: &RgbImage, skin: Option<&[bool]>, long: f32, features: &[crate::paint::engrave::Cut]) -> Vec<[f32; 2]> {
+    let (w, h) = (drawn.width() as usize, drawn.height() as usize);
+    let smooth = bilateral(drawn, (long * KEY_SMOOTH).round().max(1.0) as i32);
+    let g: Vec<f32> = smooth.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
+    let local = box_blur(&g, w as u32, h as u32, (long * KEY_LOCAL).round().max(2.0) as i32);
+    let on_skin = |i: usize| skin.map_or(false, |s| s[i]);
+    let ink: Vec<bool> = (0..w * h).map(|i| if on_skin(i) { g[i] < local[i] - KEY_SKIN_ADAPT || g[i] < KEY_SKIN_BLACK } else { g[i] < local[i] - KEY_ADAPT || g[i] < KEY_BLACK }).collect();
+    let ink = erode_bool(&dilate_bool(&ink, w, h, KEY_CLOSE), w, h, KEY_CLOSE);
+    let ink = keep_large_regions(&ink, w, h, ((long * KEY_SPECK) as usize).pow(2).max(4));
+    let mut ink = dilate_bool(&ink, w, h, KEY_WEIGHT);
+    // THE FACES' FEATURES are stamped into the plate — each built stroke at its own width, 100% black, in
+    // register: the lines that hold a face are the key's, not a brush's grey.
+    for cut in features {
+        let segs = cut.path.len().saturating_sub(1).max(1) as f32;
+        for (si, seg) in cut.path.windows(2).enumerate() {
+            let (a, b) = (seg[0], seg[1]);
+            let steps = ((b[0] - a[0]).hypot(b[1] - a[1]) * 2.0).ceil().max(1.0) as usize;
+            for s in 0..=steps {
+                let t = s as f32 / steps as f32;
+                let (x, y) = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t);
+                let along = (si as f32 + t) / segs;
+                let r = ((cut.w0 + (cut.w1 - cut.w0) * along) * 0.5).max(KEY_FEATURE_LEAST);
+                for yy in ((y - r).max(0.0) as usize)..=((y + r).max(0.0) as usize).min(h - 1) {
+                    for xx in ((x - r).max(0.0) as usize)..=((x + r).max(0.0) as usize).min(w - 1) {
+                        if (xx as f32 + 0.5 - x).hypot(yy as f32 + 0.5 - y) <= r {
+                            ink[yy * w + xx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    mask_rings(&ink, w, h, (long * KEY_TOL).max(0.8))
+}
+
+/// THE COLOUR PLATES AND THE SHADE of a print. The picture, flattened by a Kuwahara filter, is SEPARATED into
+/// `BOOK_INKS` inks by k-means in Lab (see `INK_LIGHTNESS`) and a flesh ink for the skin; paper is what is
+/// lighter than `PAPER_L` and of no colour. Each ink is ONE FLAT PLATE over the whole of its region — no
+/// levels, no screen: the base colour of a thing is even. Then THE SHADE (see `SHADE_BAND`): the one screen,
+/// black dots at 45° where the picture is a shadow on the colour printed there, never on a small face nor
+/// over an eye or a mouth. Plates and shade print a hair out of register with the key (`MISREGISTER`), and
+/// every ink spreads a little into the paper (`INK_SPREAD_EDGE`).
+fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n_stages_total: usize, p: &PaintParams, placed: &mut usize, k: &mut u64, progress: Option<&dyn Fn(PaintProgress)>) {
     let (w, h) = (source.width() as usize, source.height() as usize);
     let long = w.max(h) as f32;
-    let depths = p.armature_levels.clamp(2, 6) as usize;
-    // The masses: texture off, EDGES KEPT (an edge-preserving smooth at wash scale) — a tint that does not end
-    // where the thing it colours ends is camouflage, and the picture cannot be read through it.
-    let r_wash = (long * 0.010).max(2.0);
-    let flat = structure_armature(source, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
-    let flat = imageops::blur(&flat, (long * 0.0015).max(0.8));
-    let luma = luma_map(&flat);
-    let ab: Vec<[f32; 2]> = flat.pixels().map(|px| { let l = color::srgb_to_lab(px.0); [l.a, l.b] }).collect();
-    // The paper's value. (Where nothing of the picture is as light as that — a portrait against a grey ground,
-    // its lightest quarter a mid-light — the threshold is read as the eye's value, not the light's: the ground
-    // is the sheet, or the whole of it is washed grey and its every drift is a stain.)
-    let reserve = p.reserve.map(|rt| if (0..w * h).step_by(11).filter(|&i| luma[i] > rt).count() * 200 < w * h / 11 { rt.powf(2.2) } else { rt });
-    let sheet = {
-        let light: Vec<usize> = (0..w * h).step_by(11).filter(|&i| reserve.map_or(false, |rt| luma[i] > rt)).collect();
-        let median = |c: usize| { let mut v: Vec<f32> = light.iter().map(|&i| ab[i][c]).collect(); v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); v.get(v.len() / 2).copied().unwrap_or(0.0) };
-        [median(0), median(1)]
-    };
-    // (The whole face: an eye, a mouth, are in the flesh tint and drawn by the line.)
+    let flat = kuwahara(source, long * PLATE_SMOOTH);
     let skin = book_skin(p, w, h).map(|s| s.1);
     let on_face = |i: usize| skin.as_ref().map_or(false, |s| s[i]);
-    let paper = |i: usize| match (protect, reserve, p.from_scratch) {
-        (Some(m), _, true) => m.get(i).copied().unwrap_or(false),
-        // The paper is the picture's light where it is of the colour most of its light is (`sheet`): a pale green
-        // beside a white wall is a pale tint, not paper. And a face is one tint all over (below), so no part of it is the sheet.
-        (_, Some(rt), _) => !on_face(i) && luma[i] > rt && (ab[i][0] - sheet[0]).hypot(ab[i][1] - sheet[1]) < SHEET_COLOUR,
-        (Some(m), None, _) => m.get(i).copied().unwrap_or(false),
-        (None, None, _) => false,
-    };
-    // The depths span what is tinted: from the picture's dark (its 2nd luma percentile) up to its paper.
-    let (lo, top) = {
-        let mut sorted: Vec<f32> = (0..w * h).step_by(7).filter(|&i| !paper(i)).map(|i| luma[i]).collect();
-        if sorted.is_empty() {
-            return;
+    // What the material map names at a point, where there is one.
+    let named = |i: usize, kinds: &[u8]| p.materials.as_ref().filter(|(mw, mh, kind)| *mw > 0 && *mh > 0 && kind.len() == (*mw * *mh) as usize).map_or(false, |(mw, mh, kind)| { let (mw, mh) = (*mw as usize, *mh as usize); kinds.contains(&kind[((i / w) * mh / h).min(mh - 1) * mw + ((i % w) * mw / w).min(mw - 1)]) });
+    // METAL is a cold grey (see `METAL_COOL`): a colour on it is read, and printed, cooled.
+    let cooled = |i: usize, l: color::Lab| -> color::Lab {
+        if !named(i, &[crate::paint::engrave::METAL]) {
+            return l;
         }
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let (lo, top) = (sorted[sorted.len() * 2 / 100], sorted[(sorted.len() * 98 / 100).min(sorted.len() - 1)]);
-        if top - lo < 0.05 { (0.0, 1.0) } else { (lo, top) }
+        let keep = ((l.a.hypot(l.b) - METAL_COOL_UP_TO.0) / (METAL_COOL_UP_TO.1 - METAL_COOL_UP_TO.0)).clamp(0.0, 1.0);
+        let k = METAL_COOL.0 + (1.0 - METAL_COOL.0) * keep;
+        color::Lab { l: l.l, a: l.a * k, b: l.b * k + METAL_COOL.1 * (1.0 - keep) }
     };
-    // THE INKS: the picture's main colours — by hue and chroma (Lab a, b) and, at a third of its weight, by
-    // lightness: how dark a colour is, is mostly its depth, but a dark red coat against a pink wall is another
-    // ink. Clustered from where the picture is tinted, off the faces (theirs is the flesh tint), seeded by the
-    // farthest point from the centres so far — so the inks are the picture's most DIFFERENT colours, and the
-    // same picture always gives the same inks.
-    // An ink is a broader thing than a depth: the colour is smoothed once more (edges kept again), so the faint
-    // colour of a dark or a grey does not flicker between two inks across one surface.
-    let hue = structure_armature(&flat, (w.min(h) as f32 / r_wash).round().max(1.0) as u32, 1, 0.0);
-    // (Only a COLOUR is split by its lightness. A grey is one ink however dark — its darkness is its depth — or
-    // the picture's neutrals, a pale ground and a dark head of hair, take the inks its colours need: a green
-    // vest left without one is printed in the ground's grey and the hair's brown, in stains.)
-    // (And a colour in SHADOW is still that colour: a brown robe's shaded half has a third of its lit half's
-    // chroma, and told by chroma as it stands it is the grey of the dark room behind it — the figure is gone
-    // into the window. A dark's chroma is read as what it would be in the light.)
-    // (The inks are FOUND in the colours as they stand; it is only which ink a point is given that reads a
-    // dark so — as far toward each ink as its darkness allows, and no further: a shaded brown is the brown
-    // ink's, not, its chroma raised blindly, the red's. And a dark with no colour to speak of is left a grey:
-    // the room is not the robe's brown.)
-    let told = |l: color::Lab, k: f32| [l.a * k, l.b * k, l.l * 0.35 * (l.a.hypot(l.b) * k / INK_COLOURED).min(1.0)];
-    let seen_as: Vec<color::Lab> = hue.pixels().map(|px| color::srgb_to_lab(px.0)).collect();
-    let lab: Vec<[f32; 3]> = seen_as.iter().map(|l| told(*l, 1.0)).collect();
-    let samples: Vec<usize> = (0..w * h).step_by(13).filter(|&i| !paper(i) && !on_face(i)).collect();
+    let lab: Vec<color::Lab> = flat.pixels().enumerate().map(|(i, px)| cooled(i, color::srgb_to_lab(px.0))).collect();
+    let luma: Vec<f32> = flat.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
+    let paper: Vec<bool> = (0..w * h).map(|i| !on_face(i) && lab[i].l > PAPER_L && lab[i].a.hypot(lab[i].b) < PAPER_CHROMA).collect();
+    // THE INKS: k-means over the tinted points off the faces, seeded by the farthest point from the centres so
+    // far — the picture's most different colours — so the same picture always gives the same inks.
+    let feat = |l: &color::Lab| [l.l * INK_LIGHTNESS, l.a, l.b];
     let d2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
-    let mean = samples.iter().fold([0f32; 3], |m, &i| [m[0] + lab[i][0], m[1] + lab[i][1], m[2] + lab[i][2]]).map(|v| v / samples.len().max(1) as f32);
-    let mut inks: Vec<[f32; 3]> = vec![mean];
-    while inks.len() < BOOK_INKS {
-        let far = samples.iter().map(|&i| (i, inks.iter().map(|c| d2(lab[i], *c)).fold(f32::MAX, f32::min))).fold((usize::MAX, -1f32), |b, s| if s.1 > b.1 { s } else { b });
-        if far.0 == usize::MAX || far.1 < 36.0 {
-            break;
+    let samples: Vec<usize> = (0..w * h).step_by(7).filter(|&i| !paper[i] && !on_face(i)).collect();
+    if samples.is_empty() && skin.is_none() {
+        return;
+    }
+    let mut inks: Vec<[f32; 3]> = Vec::new();
+    if !samples.is_empty() {
+        inks.push(samples.iter().fold([0f32; 3], |m, &i| { let f = feat(&lab[i]); [m[0] + f[0], m[1] + f[1], m[2] + f[2]] }).map(|v| v / samples.len() as f32));
+        while inks.len() < BOOK_INKS {
+            let far = samples.iter().map(|&i| (i, inks.iter().map(|c| d2(feat(&lab[i]), *c)).fold(f32::MAX, f32::min))).fold((usize::MAX, -1f32), |b, s| if s.1 > b.1 { s } else { b });
+            if far.0 == usize::MAX || far.1 < 36.0 {
+                break;
+            }
+            inks.push(feat(&lab[far.0]));
         }
-        inks.push(lab[far.0]);
     }
     let nearest = |v: [f32; 3], inks: &[[f32; 3]]| (0..inks.len()).fold((0usize, f32::MAX), |b, j| { let d = d2(v, inks[j]); if d < b.1 { (j, d) } else { b } }).0;
+    let mut sum = vec![[0f64; 4]; inks.len()];
     for _ in 0..12 {
-        let mut sum = vec![[0f64; 4]; inks.len()];
+        sum.iter_mut().for_each(|s| *s = [0.0; 4]);
         for &i in &samples {
-            let j = nearest(lab[i], &inks);
-            sum[j] = [sum[j][0] + lab[i][0] as f64, sum[j][1] + lab[i][1] as f64, sum[j][2] + lab[i][2] as f64, sum[j][3] + 1.0];
+            let j = nearest(feat(&lab[i]), &inks);
+            let l = &lab[i];
+            sum[j] = [sum[j][0] + l.l as f64, sum[j][1] + l.a as f64, sum[j][2] + l.b as f64, sum[j][3] + 1.0];
         }
         for (c, s) in inks.iter_mut().zip(&sum) {
             if s[3] > 0.0 {
-                *c = [(s[0] / s[3]) as f32, (s[1] / s[3]) as f32, (s[2] / s[3]) as f32];
+                *c = feat(&color::Lab { l: (s[0] / s[3]) as f32, a: (s[1] / s[3]) as f32, b: (s[2] / s[3]) as f32 });
             }
         }
     }
-    // CONTRAST. The inks are printed far enough apart to be told from one another: where the nearest two are
-    // closer than `INK_APART`, every ink is made more of the colour it is — its chroma raised, its hue and its
-    // darkness the picture's — so a grey stays a grey and the colours stand off it and off one another.
-    let spread: Vec<[f32; 2]> = {
-        let nearest_two = (0..inks.len()).flat_map(|a| (a + 1..inks.len()).map(move |b| (a, b))).map(|(a, b)| d2(inks[a], inks[b]).sqrt()).fold(f32::MAX, f32::min);
-        let by = if inks.len() < 2 { 1.0 } else { (INK_APART / nearest_two.max(1e-3)).clamp(1.0, INK_SPREAD) };
-        inks.iter().map(|c| [c[0] * (by - 1.0), c[1] * (by - 1.0)]).collect()
-    };
-    let darkest = {
-        let mut sum = vec![[0f64; 2]; inks.len()];
-        for &i in &samples {
-            let j = nearest(lab[i], &inks);
-            sum[j] = [sum[j][0] + luma[i] as f64, sum[j][1] + 1.0];
-        }
-        (0..inks.len()).min_by(|&a, &b| (sum[a][0] / sum[a][1].max(1.0)).partial_cmp(&(sum[b][0] / sum[b][1].max(1.0))).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0)
-    };
-    // Each point's mass: its ink and its depth (0 = the lightest tint), or paper.
+    // Each ink's colour: the mean of its points, cleaned.
+    let clean = |l: color::Lab| color::Lab { l: l.l, a: l.a * INK_CLEAN, b: l.b * INK_CLEAN };
+    let mut colours: Vec<color::Lab> = inks.iter().zip(&sum).map(|(c, s)| if s[3] > 0.0 { clean(color::Lab { l: (s[0] / s[3]) as f32, a: (s[1] / s[3]) as f32, b: (s[2] / s[3]) as f32 }) } else { clean(color::Lab { l: c[0] / INK_LIGHTNESS, a: c[1], b: c[2] }) }).collect();
+    if let Some(s) = &skin {
+        let m = (0..w * h).filter(|&i| s[i]).fold([0f64; 4], |m, i| [m[0] + lab[i].l as f64, m[1] + lab[i].a as f64, m[2] + lab[i].b as f64, m[3] + 1.0]);
+        colours.push(clean(color::Lab { l: (m[0] / m[3].max(1.0)) as f32, a: (m[1] / m[3].max(1.0)) as f32, b: (m[2] / m[3].max(1.0)) as f32 }));
+    }
+    let n_inks = colours.len();
+    let flesh = skin.as_ref().map(|_| n_inks - 1);
+    // Each point's plate, or paper.
     const PAPER: u8 = u8::MAX;
-    let eyes: Vec<([f32; 2], f32)> = p.features.iter().flat_map(|f| {
-        let at = |k: usize| [f[k][0] * w as f32, f[k][1] * h as f32];
-        let (le, re, lm, rm) = (at(0), at(1), at(3), at(4));
-        let tall = ((lm[0] + rm[0] - le[0] - re[0]) * 0.5).hypot((lm[1] + rm[1] - le[1] - re[1]) * 0.5);
-        let r = 0.3 * (re[0] - le[0]).hypot(re[1] - le[1]).max(0.9 * tall);
-        [(le, r), (re, r)]
+    let mut label: Vec<u8> = (0..w * h).map(|i| {
+        if let (true, Some(f)) = (on_face(i), flesh) {
+            return f as u8;
+        }
+        if paper[i] || inks.is_empty() {
+            return PAPER;
+        }
+        nearest(feat(&lab[i]), &inks) as u8
     }).collect();
-    let at_eye = |i: usize| eyes.is_empty() || eyes.iter().any(|(c, r)| ((i % w) as f32 - c[0]).hypot((i / w) as f32 - c[1]) < *r);
-    let mut mass: Vec<u8> = (0..w * h)
-        .map(|i| {
-            if paper(i) {
-                return PAPER;
-            }
-            let depth = (((top - luma[i]) / (top - lo)).clamp(0.0, 0.999) * depths as f32) as usize;
-            // A FACE is one tint: the shapes of its light and shade, laid as washes, are a mask over it — its
-            // form is the line's.
-            // ... of an ink of its own, the flesh tint: told by hue alone, a face is the ink of whatever red or
-            // brown is nearest it — the wall's, the coat's — and comes out a mask of that.
-            // (What is all but black on it — a pupil, a nostril — is a mark of its own, in the picture's ink; the
-            // shadow side of a face is not: the luma is linear, and a thirtieth of the range is a black.)
-            // (... and, where the face's features are known, only at an eye: the dark of a brow's end or of a
-            // lock on a forehead is a blot on the flesh.)
-            if on_face(i) && (luma[i] > lo + 0.03 * (top - lo) || !at_eye(i)) {
-                return (inks.len() * depths) as u8;
-            }
-            // (... in the picture's darkest ink: an all but black thing has no colour to choose an ink by, and a
-            // pupil printed in the vest's green is a mistake.)
-            if on_face(i) {
-                return (darkest * depths + depth) as u8;
-            }
-            let l = seen_as[i];
-            let (chroma2, most) = (l.a * l.a + l.b * l.b, 1.0 + ((35.0 / l.l.max(1.0)).clamp(1.0, 2.2) - 1.0) * ((l.a.hypot(l.b) - 6.0) / 6.0).clamp(0.0, 1.0));
-            let ink = (0..inks.len()).fold((0usize, f32::MAX), |b, j| { let d = d2(told(l, ((l.a * inks[j][0] + l.b * inks[j][1]) / chroma2.max(1e-6)).clamp(1.0, most)), inks[j]); if d < b.1 { (j, d) } else { b } }).0;
-            (ink * depths + depth) as u8
-        })
-        .collect();
-    // A wash's edge is a brush's, clean: each point takes the mass most of its neighbourhood has, so no edge is
-    // ragged with the picture's grain.
-    {
-        let sigma = (long * 0.005).max(1.0);
-        let mut best = vec![0u8; w * h];
-        let mut most = vec![0u8; w * h];
-        let mut present = [false; 256];
-        for &m in &mass {
-            present[m as usize] = true;
-        }
-        for m in (0..256usize).filter(|&m| present[m]) {
-            let is = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if mass[y as usize * w + x as usize] as usize == m { 255 } else { 0 }]));
-            for (i, px) in imageops::blur(&is, sigma).pixels().enumerate() {
-                if px.0[0] > most[i] {
-                    most[i] = px.0[0];
-                    best[i] = m as u8;
-                }
-            }
-        }
-        mass = best;
-    }
-    // A mass too small to be a wash is its neighbour's: the smallest are given, twice over, to the mass they
-    // border most. (Paper too: a speck of it inside a tint is tinted, a speck of tint on the paper is paper.)
-    let least = ((w * h) as f32 * 0.001).max(24.0) as usize;
+    // ISLANDS: a plate's piece smaller than a brush's touch is its neighbour's.
+    let least = ((long * PLATE_ISLAND) as usize).pow(2).max(9);
     for _ in 0..2 {
         let mut seen = vec![false; w * h];
         let mut given: Vec<(Vec<usize>, u8)> = Vec::new();
@@ -5462,7 +5525,7 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
             if seen[start] {
                 continue;
             }
-            let own = mass[start];
+            let own = label[start];
             let (mut px, mut stack) = (Vec::new(), vec![start]);
             let mut beside = [0u32; 256];
             seen[start] = true;
@@ -5470,16 +5533,15 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
                 px.push(i);
                 let (x, y) = (i % w, i / w);
                 for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
-                    if mass[j] != own {
-                        beside[mass[j] as usize] += 1;
+                    if label[j] != own {
+                        beside[label[j] as usize] += 1;
                     } else if !seen[j] {
                         seen[j] = true;
                         stack.push(j);
                     }
                 }
             }
-            // (What is drawn dark on a face — a pupil, a nostril — is small and is no speck.)
-            if px.len() < least && !(on_face(start) && own != PAPER && (own as usize) < inks.len() * depths) {
+            if px.len() < least && !on_face(start) {
                 if let Some(to) = (0..256).max_by_key(|&m| (beside[m], std::cmp::Reverse(m))).filter(|&m| beside[m] > 0) {
                     given.push((px, to as u8));
                 }
@@ -5487,432 +5549,96 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
         }
         for (px, to) in given {
             for i in px {
-                mass[i] = to;
+                label[i] = to;
             }
         }
     }
-    // A HARD SURFACE — metal, glass, whatever the material map names so — is drawn, not shaded in tints: its
-    // colour is one local colour inside each line the pen draws, and its turn from the light is the hatch's.
-    let hard = |i: usize| p.materials.as_ref().filter(|(mw, mh, kind)| *mw > 0 && *mh > 0 && kind.len() == (*mw * *mh) as usize).map_or(false, |(mw, mh, kind)| { let (mw, mh) = (*mw as usize, *mh as usize); matches!(kind[((i / w) * mh / h).min(mh - 1) * mw + ((i % w) * mw / w).min(mw - 1)], crate::paint::engrave::METAL | crate::paint::engrave::GLASS) });
-    // THE LINE, where it was planned first: the contours, drawn a little broad.
-    let wall: Option<Vec<bool>> = plan.map(|plan| {
-        let r = (long * 0.0015).max(1.5);
-        let mut wall = vec![false; w * h];
-        // (... and the features put down by hand with them: the ring of an iris holds its dark in.)
-        for seg in plan.plate.cuts.iter().filter(|c| c.layer == 0).chain(plan.features.iter()).flat_map(|c| c.path.windows(2)) {
-            let (dx, dy) = (seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]);
-            let steps = (dx.hypot(dy) / 0.7).ceil().max(1.0) as usize;
-            for k in 0..=steps {
-                let t = k as f32 / steps as f32;
-                let (px, py) = (seg[0][0] + dx * t, seg[0][1] + dy * t);
-                for y in ((py - r).floor().max(0.0) as usize)..=((py + r).ceil().max(0.0) as usize).min(h - 1) {
-                    for x in ((px - r).floor().max(0.0) as usize)..=((px + r).ceil().max(0.0) as usize).min(w - 1) {
-                        if (x as f32 + 0.5 - px).hypot(y as f32 + 0.5 - py) <= r {
-                            wall[y * w + x] = true;
-                        }
-                    }
-                }
-            }
-        }
-        wall
-    });
-    // (... and its neighbourhood: a tint's edge lies ALONG a line when it runs this near it.)
-    let by_line: Option<Vec<bool>> = wall.as_ref().map(|wall| dilate_bool(wall, w, h, (long * 0.0035).max(2.0) as usize));
-    // A PLANE IS ONE TINT. Within one ink a change of depth is a shape of its own only where the light really
-    // ends there — a cast shadow's edge. Where the value only drifts across the boundary (the fall of light
-    // along a wall), or the darker shape is a patch lying inside the plane (the mottling of masonry, a dappled
-    // shade), there is no shape to wash: a wall cut into depths at those is blotched, not shaded. Such a mass
-    // is given to the larger mass of its ink that it lies against.
-    {
-        let step = (top - lo) / depths as f32;
-        let d = (long * 0.006).max(3.0) as i64;
-        // The sheet's colour THERE: a ground is not one colour to a photograph — it warms toward a corner, it
-        // takes the cast of what stands before it — so what is given to the sheet is judged against the paper
-        // it lies near, not against the sheet's one colour.
-        // (... by the PICTURE's colour there, only its grain off: the masses are read off a picture smoothed
-        // until a pale vest and the pale ground behind its shoulder are one flat colour, and that smoothing
-        // cannot say which of the two a point is.)
-        let unsharp = imageops::blur(source, (long * 0.004).max(1.0));
-        let seen: Vec<[f32; 2]> = unsharp.pixels().map(|px| { let l = color::srgb_to_lab(px.0); [l.a, l.b] }).collect();
-        // (And a step is read off the picture too: the smoothing that makes the masses keeps every edge it
-        // finds, and so turns the soft edge of a tree's shadow on a wall into a cliff — a soft shadow then
-        // stands on the wall as a hard-edged block. In the picture it is a drift, and the wall is one tint.)
-        let stepped = luma_map(&unsharp);
-        let at = |x: i64, y: i64| stepped[y.clamp(0, h as i64 - 1) as usize * w + x.clamp(0, w as i64 - 1) as usize];
-        let cell = (long / 32.0).max(8.0) as usize;
-        let (gw, gh) = (w.div_ceil(cell), h.div_ceil(cell));
-        let mut near = vec![[0f64; 3]; gw * gh];
-        for i in (0..w * h).filter(|&i| mass[i] == PAPER) {
-            let c = &mut near[(i / w / cell) * gw + (i % w) / cell];
-            *c = [c[0] + seen[i][0] as f64, c[1] + seen[i][1] as f64, c[2] + 1.0];
-        }
-        let sheet_there: Vec<[f32; 2]> = (0..gw * gh)
-            .map(|c| {
-                let (cx, cy) = (c % gw, c / gw);
-                let sum = (cy.saturating_sub(2)..(cy + 3).min(gh)).flat_map(|y| (cx.saturating_sub(2)..(cx + 3).min(gw)).map(move |x| y * gw + x)).fold([0f64; 3], |m, k| [m[0] + near[k][0], m[1] + near[k][1], m[2] + near[k][2]]);
-                if sum[2] > 0.0 { [(sum[0] / sum[2]) as f32, (sum[1] / sum[2]) as f32] } else { sheet }
-            })
-            .collect();
-        // THE GROUND'S HAZE is the sheet, point by point, before the masses are judged — where the ground IS the
-        // sheet (the picture had no light of its own to be the paper, see `reserve`): what is of the colour
-        // of the paper near it and hardly darker than paper, a ground falling off toward a corner, is no tint,
-        // whatever mass it was read into. (Judged as a mass, a haze lying against a pale vest is one mass with
-        // the vest, and stays or goes with it. Where the picture has its own lights, a wall of the paper's
-        // colour is a wall, and is left to the masses.)
-        if reserve != p.reserve {
-            for i in 0..w * h {
-                let there = sheet_there[(i / w / cell) * gw + (i % w) / cell];
-                if mass[i] != PAPER && (mass[i] as usize) < inks.len() * depths && !on_face(i) && top - stepped[i] < 0.75 * step && (seen[i][0] - there[0]).hypot(seen[i][1] - there[1]) < SHEET_MASS {
-                    mass[i] = PAPER;
-                }
-            }
-        }
-        for _ in 0..3 {
-            // The masses as they stand: each point's mass, and each mass's area.
-            let mut of = vec![u32::MAX; w * h];
-            let mut area: Vec<usize> = Vec::new();
-            for start in 0..w * h {
-                if of[start] != u32::MAX {
-                    continue;
-                }
-                let (id, own) = (area.len() as u32, mass[start]);
-                let (mut n, mut stack) = (0usize, vec![start]);
-                of[start] = id;
-                while let Some(i) = stack.pop() {
-                    n += 1;
-                    let (x, y) = (i % w, i / w);
-                    for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
-                        if of[j] == u32::MAX && mass[j] == own {
-                            of[j] = id;
-                            stack.push(j);
-                        }
-                    }
-                }
-                area.push(n);
-            }
-            // What each mass lies against: per neighbouring mass, the length of the shared edge and the value's
-            // step across it (read a little to either side); and the length of its whole edge.
-            let mut against: Vec<std::collections::HashMap<u32, (u32, f32, bool, u32)>> = vec![std::collections::HashMap::new(); area.len()];
-            let mut edge = vec![0u32; area.len()];
-            for y in 0..h as i64 {
-                for x in 0..w as i64 {
-                    let i = y as usize * w + x as usize;
-                    for (dx, dy) in [(1i64, 0i64), (0, 1)] {
-                        let (nx, ny) = (x + dx, y + dy);
-                        if nx >= w as i64 || ny >= h as i64 {
-                            continue;
-                        }
-                        let j = ny as usize * w + nx as usize;
-                        if of[i] == of[j] {
-                            continue;
-                        }
-                        edge[of[i] as usize] += 1;
-                        edge[of[j] as usize] += 1;
-                        // (The paper is every ink's lightest: a tint that only fades into the sheet — the
-                        // soft shadow round a head, the haze at a form's edge, the falling-off of a ground — is the sheet.
-                        // Of the sheet's own colour, that is: a pale green beside it is a pale green. Never a face.)
-                        let fades = |a: usize, b: usize| mass[a] == PAPER && mass[b] != PAPER && (mass[b] as usize) < inks.len() * depths && !on_face(b) && (ab[b][0] - sheet[0]).hypot(ab[b][1] - sheet[1]) < SHEET_COLOUR;
-                        let one_ink = mass[i] != PAPER && mass[j] != PAPER && mass[i] as usize / depths == mass[j] as usize / depths;
-                        // (Two inks side by side are kin only as far as their colours are — see below.)
-                        let kin = one_ink || fades(i, j) || fades(j, i);
-                        if !kin && (mass[i] == PAPER || mass[j] == PAPER || on_face(i) || on_face(j)) {
-                            continue;
-                        }
-                        let across = (at(x - dx * d, y - dy * d) - at(nx + dx * d, ny + dy * d)).abs();
-                        let walled = u32::from(by_line.as_ref().map_or(true, |b| b[i] || b[j]));
-                        for (a, b) in [(i, j), (j, i)] {
-                            let e = against[of[a] as usize].entry(of[b]).or_insert((0, 0.0, kin, 0));
-                            *e = (e.0 + 1, e.1 + across, kin, e.3 + walled);
-                        }
-                    }
-                }
-            }
-            let mut to: Vec<Option<u8>> = vec![None; area.len()];
-            let mut label_of = vec![0u8; area.len()];
-            // Each mass's own value and colour.
-            let mut own_of = vec![[0f64; 3]; area.len()];
-            let mut hard_of = vec![0usize; area.len()];
-            for i in 0..w * h {
-                label_of[of[i] as usize] = mass[i];
-                let o = &mut own_of[of[i] as usize];
-                *o = [o[0] + luma[i] as f64, o[1] + ab[i][0] as f64, o[2] + ab[i][1] as f64];
-                hard_of[of[i] as usize] += usize::from(hard(i));
-            }
-            let own_of: Vec<[f32; 3]> = own_of.iter().zip(&area).map(|(o, n)| o.map(|v| (v / (*n).max(1) as f64) as f32)).collect();
-            for id in 0..area.len() {
-                let own = label_of[id] as usize;
-                if own != PAPER as usize && own / depths >= inks.len() {
-                    continue;
-                }
-                let tint = own != PAPER as usize && own / depths < inks.len();
-                let within = |shared: u32| shared as f32 / edge[id].max(1) as f32;
-                let small = area[id] as f32 / (w * h) as f32;
-                // THE SHEET, beside the paper: a tint of the sheet's own colour barely darker than it — the
-                // falling-off of a ground toward a corner — or, narrower than a brush and lying along it, a
-                // good deal darker — the haze round a head of hair, the soft edge of a shoulder — is no shape
-                // anyone washed. Never a face's.
-                let on_paper: u32 = against[id].iter().filter(|(k, _)| label_of[**k as usize] == PAPER).map(|(_, v)| v.0).sum();
-                if tint && within(on_paper) > 0.25 {
-                    let pale = top - own_of[id][0];
-                    let thin = (area[id] as f32) < edge[id] as f32 * long * 0.02;
-                    let of_the_sheet = (own_of[id][1] - sheet[0]).hypot(own_of[id][2] - sheet[1]) < SHEET_MASS;
-                    if of_the_sheet && (thin && pale < 2.0 * step || pale < 0.75 * step) {
-                        to[id] = Some(PAPER);
-                        continue;
-                    }
-                }
-                // The kin it shares most of its edge with, if that one is the larger.
-                if let Some((&other, &(shared, sum, _, walled))) = against[id].iter().filter(|(_, v)| v.2).max_by_key(|(k, v)| (v.0, std::cmp::Reverse(**k))).filter(|(k, _)| area[**k as usize] > area[id]) {
-                    let step_across = sum / shared.max(1) as f32;
-                    // On a HARD surface a change of depth within one ink is kept only along a drawn line: the
-                    // fall of light across a bonnet is no edge, and the pen has not drawn one there.
-                    let unsupported = by_line.is_some() && hard_of[id] * 2 > area[id] && hard_of[other as usize] * 2 > area[other as usize] && walled * 2 < shared;
-                    let to_sheet = label_of[other as usize] == PAPER || own == PAPER as usize;
-                    let drift = step_across < if to_sheet { 0.9 } else { 0.55 } * step;
-                    // A patch: lying inside the plane — and a larger one that the plane wholly surrounds, a
-                    // darker lock in a head of hair, is as much the plane's.
-                    let patch = (within(shared) > 0.7 && small < 0.006 || within(shared) > 0.9 && small < 0.03) && step_across < 1.6 * step;
-                    if drift || patch || unsupported {
-                        to[id] = Some(label_of[other as usize]);
-                        continue;
-                    }
-                }
-                // (A hard surface's patch, again, against the LARGER kin it shares most of its edge with — the
-                // nearest neighbour was a smaller patch like itself: on a bonnet the lights lie in a row.)
-                // (... and kin there is by COLOUR, not by ink: a machine of one colour has its four inks told
-                // apart by lightness alone, and its shadow side printed in the darker grey is still the bonnet.)
-                // (... and a SMALL patch of any colour: a glint of brass read off a grey engine, a reflection's
-                // warmth on a bonnet, has no line round it either, and a thing that has no line round it is
-                // not a thing the pen drew — the plate under it is one tint. A brass fitting that IS a thing
-                // has its contour, and keeps its colour inside it.)
-                if by_line.is_some() && hard_of[id] * 2 > area[id] {
-                    let alike = |k: u32| small < 0.01 || (own_of[id][1] - own_of[k as usize][1]).hypot(own_of[id][2] - own_of[k as usize][2]) < 12.0;
-                    if let Some((&other, &(shared, _, _, walled))) = against[id].iter().filter(|(k, _)| area[**k as usize] > area[id] && label_of[**k as usize] != PAPER && alike(**k)).max_by_key(|(k, v)| (v.0, std::cmp::Reverse(**k))) {
-                        if hard_of[other as usize] * 2 > area[other as usize] && walled * 2 < shared {
-                            to[id] = Some(label_of[other as usize]);
-                            continue;
-                        }
-                    }
-                }
-                // ... whatever ink it was given: where a colour is faint — a dark, a grey — its ink is a near
-                // thing, and a lock of all but black hair in the grey's ink, lying inside the brown's, is a blot.
-                if let Some((&other, &(shared, sum, _, _))) = against[id].iter().filter(|(_, v)| !v.2).max_by_key(|(k, v)| (v.0, std::cmp::Reverse(**k))).filter(|(k, _)| area[**k as usize] > area[id]) {
-                    let alike = (own_of[id][1] - own_of[other as usize][1]).hypot(own_of[id][2] - own_of[other as usize][2]) < 12.0;
-                    if alike && within(shared) > 0.9 && small < 0.03 && sum / shared.max(1) as f32 * 1.0 < 1.6 * step {
-                        to[id] = Some(label_of[other as usize]);
-                    }
-                }
-            }
-            if to.iter().all(|t| t.is_none()) {
-                break;
-            }
-            // (What is given to the sheet goes point by point: a mass is one ink at one depth, not one thing — a
-            // ground's haze and the lit side of a pale green vest run into each other as one mass of the grey
-            // ink, and given whole, the vest went to the paper with the haze and its knitting was left as lines
-            // on a bare sheet. Only what is of the colour of the paper near it is the sheet.)
-            for i in 0..w * h {
-                if let Some(m) = to[of[i] as usize] {
-                    let there = sheet_there[(i / w / cell) * gw + (i % w) / cell];
-                    // (And the other way: paper of the sheet's own colour is not tinted for lying beside a tint —
-                    // the ground a haze was just lifted off would be given straight back to the vest before it.)
-                    let of_the_sheet = (seen[i][0] - there[0]).hypot(seen[i][1] - there[1]) < SHEET_MASS;
-                    if if m == PAPER { of_the_sheet } else { mass[i] != PAPER || !of_the_sheet } {
-                        mass[i] = m;
-                    }
-                }
-            }
+    // The luma each plate prints at: the mean of its points. A shadow is what lies darker than that.
+    let mut plate_luma = vec![[0f64; 2]; n_inks];
+    for i in 0..w * h {
+        if label[i] != PAPER {
+            let m = &mut plate_luma[label[i] as usize];
+            *m = [m[0] + luma[i] as f64, m[1] + 1.0];
         }
     }
-    // A SHADOW'S EDGE on a wall is cut with a rounder knife than a window frame: between two BROAD masses —
-    // the wall, the shadow lying on it, the dark of a room — the boundary is the picture's light ending, read
-    // through the grain of the plaster, a stair of teeth no stencil has. A point of a broad mass goes to the
-    // broad mass that MOST of a wide neighbourhood is — more than half of it, not merely the most: a window
-    // frame between a room and a wall has neither on more than half its surroundings, and stays a frame.
-    {
-        let mut area = [0usize; 256];
-        for &m in &mass {
-            area[m as usize] += 1;
-        }
-        let broad: Vec<usize> = (0..inks.len() * depths).filter(|&m| area[m] > w * h / 200).collect();
-        if broad.len() >= 2 {
-            let sigma = (long * 0.011).max(2.0);
-            // (... and only where the picture's edge is soft there: a cast shadow's edge on plaster is a
-            // penumbra, the edge of a metal box or a window frame is a step, and a step is kept to the pixel.)
-            let crisp = luma_map(&imageops::blur(source, 1.5));
-            let soft: Vec<bool> = (0..w * h).map(|i| {
-                let (x, y) = (i % w, i / w);
-                let (gx, gy) = (crisp[y * w + (x + 2).min(w - 1)] - crisp[y * w + x.saturating_sub(2)], crisp[(y + 2).min(h - 1) * w + x] - crisp[y.saturating_sub(2) * w + x]);
-                gx.hypot(gy) < 0.12
-            }).collect();
-            let mut best = mass.clone();
-            let mut most = vec![0u8; w * h];
-            for &m in &broad {
-                let is = image::GrayImage::from_fn(w as u32, h as u32, |x, y| image::Luma([if mass[y as usize * w + x as usize] as usize == m { 255 } else { 0 }]));
-                for (i, px) in imageops::blur(&is, sigma).pixels().enumerate() {
-                    if px.0[0] > most[i].max(140) && soft[i] && broad.contains(&(mass[i] as usize)) && !on_face(i) {
-                        most[i] = px.0[0];
-                        best[i] = m as u8;
-                    }
-                }
-            }
-            mass = best;
-        }
-    }
-    // THE TINTS KEEP TO THE LINE. A tint read off the light alone divides a thing by its isophotes — a machine
-    // of one colour comes out a contour map, as if modelled in clay. Where the pen has drawn a line the colour
-    // ends there: each region the contours close is one tint, the tint most of it already was. (Among the
-    // tints only: the paper is not tinted for lying in a closed region, nor a tint lifted to paper, and a face
-    // keeps its own. A region the contours leave open to half the sheet is nobody's, and is left.)
-    if let Some(wall) = &wall {
-        let mut seen = wall.clone();
-        for start in 0..w * h {
-            if seen[start] {
-                continue;
-            }
-            let (mut px, mut stack) = (Vec::new(), vec![start]);
-            seen[start] = true;
-            while let Some(i) = stack.pop() {
-                px.push(i);
-                let (x, y) = (i % w, i / w);
-                for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
-                    if !seen[j] {
-                        seen[j] = true;
-                        stack.push(j);
-                    }
-                }
-            }
-            // (A region no bigger than a rivet is the line's own; one that is an eighth of the sheet is a wall
-            // with the light falling across it, and the fall of light across a wall is no thing's edge.)
-            if px.len() < ((long * 0.008).max(4.0) as usize).pow(2) || px.len() > w * h / 8 {
-                continue;
-            }
-            let mut count = [0u32; 256];
-            let (mut n, mut on_hard) = (0u32, 0u32);
-            for &i in px.iter().filter(|&&i| mass[i] != PAPER && !on_face(i)) {
-                count[mass[i] as usize] += 1;
-                n += 1;
-                on_hard += u32::from(hard(i));
-            }
-            let top = (0..256).max_by_key(|&m| (count[m], std::cmp::Reverse(m))).unwrap_or(0);
-            // (On metal, whatever the vote: inside a closed contour a hard surface is one plate, its light and
-            // shade the hatch's to give.)
-            if n > 0 && (count[top] * 100 >= n * 45 || on_hard * 2 > n) {
-                for &i in &px {
-                    if mass[i] != PAPER && !on_face(i) {
-                        mass[i] = top as u8;
-                    }
-                }
-            }
-        }
-    }
-    // AN ISLAND of tint smaller than a brush's touch — left by the smoothing of the masses, or a glint read as a
-    // tint — is its neighbour's: the specks are gone from the plates before they are laid.
-    for _ in 0..2 {
-        let mut seen = vec![false; w * h];
-        let mut given: Vec<(Vec<usize>, u8)> = Vec::new();
-        for start in 0..w * h {
-            if seen[start] {
-                continue;
-            }
-            let own = mass[start];
-            let (mut px, mut stack) = (Vec::new(), vec![start]);
-            let mut beside = [0u32; 256];
-            seen[start] = true;
-            while let Some(i) = stack.pop() {
-                px.push(i);
-                let (x, y) = (i % w, i / w);
-                for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
-                    if mass[j] != own {
-                        beside[mass[j] as usize] += 1;
-                    } else if !seen[j] {
-                        seen[j] = true;
-                        stack.push(j);
-                    }
-                }
-            }
-            if px.len() < least && !(on_face(start) && own != PAPER && (own as usize) < inks.len() * depths) {
-                if let Some(to) = (0..256).max_by_key(|&m| (beside[m], std::cmp::Reverse(m))).filter(|&m| beside[m] > 0) {
-                    given.push((px, to as u8));
-                }
-            }
-        }
-        for (px, to) in given {
-            for i in px {
-                mass[i] = to;
-            }
-        }
-    }
-    // A glaze is the colour of ITS depth of ITS ink, one colour the sheet over — a print's ink, not a mean of
-    // whatever lies under each shape.
-    let n_inks = inks.len() + usize::from(skin.is_some());
-    let mut tint = vec![[0f64; 4]; n_inks * depths];
-    for (px, &m) in flat.pixels().zip(&mass) {
-        if m != PAPER {
-            let lin = color::srgb_to_linear(px.0);
-            let t = &mut tint[m as usize];
-            *t = [t[0] + lin[0] as f64, t[1] + lin[1] as f64, t[2] + lin[2] as f64, t[3] + 1.0];
-        }
-    }
+    let plate_luma: Vec<f32> = plate_luma.iter().map(|m| (m[0] / m[1].max(1.0)) as f32).collect();
+    // THE FACES the shade keeps off: every eye and mouth, and the whole of any face that is not a portrait.
+    let faces: Vec<([[f32; 2]; 5], f32)> = p.features.iter().map(|f| { let q = f.map(|q| [q[0] * w as f32, q[1] * h as f32]); let apart = (q[1][0] - q[0][0]).hypot(q[1][1] - q[0][1]); (q, apart) }).collect();
+    let near = |q: [f32; 2], x: f32, y: f32, r: f32| (q[0] - x).hypot(q[1] - y) < r;
+    let off_feature = |x: f32, y: f32| faces.iter().any(|(q, apart)| { let r = SHADE_OFF_FEATURE * apart; near(q[0], x, y, r) || near(q[1], x, y, r) || near([(q[3][0] + q[4][0]) * 0.5, (q[3][1] + q[4][1]) * 0.5], x, y, r) });
+    let in_portrait = |x: f32, y: f32| faces.iter().any(|(q, apart)| *apart >= SHADE_PORTRAIT * long && near(q[2], x, y, 2.5 * apart));
+    // PRINTED: the plates, then the shade, each out of register its own way.
     let n = p.palette.pigments.len();
     let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
-    // The washes take no more than two fifths of the budget — the line needs the rest — shared evenly by the
-    // depths, the largest masses first.
-    let share = (p.budget * 2 / 5 / depths).max(1);
-    // A tint's edge is all but dry: a wide wet edge over its neighbour's doubled into a dark rim round every shape.
-    let feather = (long * 0.0007).max(1.0).round();
-    for depth in 0..depths {
-        let stage = format!("wash-{}", depth + 1);
+    let feather = (long * INK_SPREAD_EDGE).max(1.0).round();
+    let shift = |ink: usize| -> [f32; 2] {
+        let a = (jitter(p.seed ^ 0x5E6, ink as u64) + 0.5) * std::f32::consts::TAU;
+        let m = long / MISREGISTER * (0.6 + 0.8 * (jitter(p.seed ^ 0x5E7, ink as u64) + 0.5));
+        [m * a.cos(), m * a.sin()]
+    };
+    let shifted = |rings: Vec<[f32; 2]>, by: [f32; 2]| -> Vec<[f32; 2]> { rings.iter().map(|q| if q[0].is_nan() { *q } else { [q[0] + by[0], q[1] + by[1]] }).collect() };
+    let pitch = (long / SCREEN_PITCH).max(5.0);
+    for stage_no in 1..=n_stages_total.max(1) {
+        let stage = format!("wash-{stage_no}");
         if let Some(pr) = progress {
-            pr(PaintProgress::Painting { pass: depth + 1, passes: depths, radius: 0.0 });
+            pr(PaintProgress::Painting { pass: stage_no, passes: n_stages_total, radius: 0.0 });
         }
-        let mut washes: Vec<(usize, usize, Vec<[f32; 2]>)> = Vec::new();
-        for ink in 0..n_inks {
-            let covered = |i: usize| mass[i] != PAPER && mass[i] as usize / depths == ink && mass[i] as usize % depths >= depth;
-            let mut seen = vec![false; w * h];
-            for start in 0..w * h {
-                if seen[start] || !covered(start) {
+        let mut lay: Vec<(Vec<[f32; 2]>, Vec<f32>)> = Vec::new();
+        if stage_no == 1 {
+            for ink in 0..n_inks {
+                let mask: Vec<bool> = (0..w * h).map(|i| label[i] != PAPER && label[i] as usize == ink).collect();
+                let rings = mask_rings(&dilate_bool(&mask, w, h, 1), w, h, (long * 0.0016).max(1.5));
+                if rings.is_empty() {
                     continue;
                 }
-                let mut mask = vec![false; w * h];
-                let (mut area, mut stack) = (0usize, vec![start]);
-                seen[start] = true;
-                while let Some(i) = stack.pop() {
-                    mask[i] = true;
-                    area += 1;
-                    let (x, y) = (i % w, i / w);
-                    for j in [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1), (y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)].into_iter().flatten() {
-                        if !seen[j] && covered(j) {
-                            seen[j] = true;
-                            stack.push(j);
-                        }
+                let weight = if Some(ink) == flesh { PLATE_WEIGHT.0 } else { PLATE_WEIGHT.1 };
+                let load = mixture_cached(&mut cache, color::lab_to_srgb(colours[ink]), &p.palette, p.charge * weight, n);
+                lay.push((shifted(rings, shift(ink)), load));
+            }
+        } else if stage_no == 2 {
+            let mut screen: Vec<[f32; 2]> = Vec::new();
+            let s2 = std::f32::consts::FRAC_1_SQRT_2;
+            let mut u = 0.5 * pitch;
+            while u < (w + h) as f32 * s2 {
+                let mut v = -(w as f32) * s2 + 0.5 * pitch;
+                while v < h as f32 * s2 {
+                    let (x, y) = ((u - v) * s2, (u + v) * s2);
+                    v += pitch;
+                    if x < 0.0 || y < 0.0 || x >= w as f32 || y >= h as f32 {
+                        continue;
                     }
+                    let i = y as usize * w + x as usize;
+                    if label[i] == PAPER || off_feature(x, y) {
+                        continue;
+                    }
+                    let to = if on_face(i) { if !in_portrait(x, y) { continue; } SHADE_SKIN_TO } else { SHADE_BAND.1 };
+                    let printed = plate_luma[label[i] as usize];
+                    if luma[i] < SHADE_BAND.0 || luma[i] >= to || luma[i] > printed - SHADE_BELOW {
+                        continue;
+                    }
+                    let r = pitch * 0.5 * SCREEN_FULL * ((printed - luma[i]) / (printed - SHADE_BAND.0).max(0.05)).clamp(0.0, 1.0).sqrt();
+                    if r < SCREEN_LEAST * pitch {
+                        continue;
+                    }
+                    for k in 0..12 {
+                        let a = std::f32::consts::TAU * k as f32 / 12.0;
+                        screen.push([x + r * a.cos(), y + r * a.sin()]);
+                    }
+                    screen.push([f32::NAN, f32::NAN]);
                 }
-                // Neighbouring washes touch: each is grown a little before its rings are traced.
-                // (Traced with a knife's tolerance: a tint's edge is cut in facets, as a stencil's or a stone's is.)
-                let rings = mask_rings(&dilate_bool(&mask, w, h, 1), w, h, (long * 0.0016).max(1.5));
-                if !rings.is_empty() {
-                    washes.push((area, ink, rings));
-                }
+                u += pitch;
+            }
+            if !screen.is_empty() {
+                let black = crate::paint::canvas::darkest_pigment(&p.palette);
+                let mut load = vec![0f32; n];
+                load[black] = p.charge * 2.0;
+                lay.push((shifted(screen, shift(n_inks)), load));
             }
         }
-        washes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        for (_, ink, rings) in washes.into_iter().take(share) {
+        for (rings, load) in lay {
             if *placed >= p.budget {
                 break;
             }
-            let t = tint[ink * depths + depth];
-            if t[3] <= 0.0 {
-                continue;
-            }
-            let colour = color::linear_to_srgb([(t[0] / t[3]) as f32, (t[1] / t[3]) as f32, (t[2] / t[3]) as f32]);
-            let colour = match spread.get(ink) {
-                Some(by) => { let l = color::srgb_to_lab(colour); color::lab_to_srgb(color::Lab { l: l.l, a: l.a + by[0], b: l.b + by[1] }) }
-                None => colour,
-            };
-            // A tint is thin: the paper shows through every glaze, and the darks are the glazes stacking.
-            // ... the lightest barely a tint, the deepest a real dark: a figure must stand off the shadow behind it.
-            let weight = 0.3 + 0.6 * (depth as f32 / (depths - 1).max(1) as f32).powi(2);
-            let load = mixture_cached(&mut cache, colour, &p.palette, p.charge * weight, n);
             canvas.fill_rings(&rings, &load, 0.75, feather);
             *k += 1;
             *placed += 1;
@@ -5922,11 +5648,11 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
             score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None });
         }
-        // The pass boundary, as the replay reproduces it: each glaze sets before the next is laid.
+        // The pass boundary, as the replay reproduces it: each plate sets before the next is laid.
         if p.bleed > 0.0 {
-            canvas.bleed_with(p.bleed * pass_bleed_taper(depth, n_stages_total), p.diffuse);
+            canvas.bleed_with(p.bleed * pass_bleed_taper(stage_no - 1, n_stages_total), p.diffuse);
         }
-        if depth + 1 < n_stages_total {
+        if stage_no < n_stages_total {
             canvas.dry(1.0 - p.dry);
         }
     }
@@ -5936,28 +5662,89 @@ fn book_tints(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, n
 /// strokes; from `FACE_LARGE` a portrait's, its features drawn in full.
 const FACE_SMALL: f32 = 0.04;
 const FACE_LARGE: f32 = 0.16;
-/// How far a contour's width is its own in the light, and in the deepest shadow.
-const LINE_WEIGHT: (f32, f32) = (0.4, 3.6);
-/// Below this share of the way from `FACE_SMALL` to `FACE_LARGE` a face is a FAR one: not traced, but put down
-/// in a few strokes — and no more of them than this.
-const FACE_FAR: f32 = 0.25;
+/// Below this share of the sheet's long side a face is a FAR one: not traced, but put down in a few strokes —
+/// and no more of them than this. A face in a window, a tenth of the sheet, is built as a near one is, at its
+/// own scale: its lids, its iris, its nose line and its mouth, from where the detector finds them.
+const FACE_FAR: f32 = 0.045;
+/// ... and below this share it is a face in a window: built, and nothing traced inside its outline.
+const FACE_MID: f32 = 0.1;
 const FACE_STROKES: usize = 4;
+/// How much heavier a face in a window has its features drawn than a portrait has, for its size: a sign for
+/// an eye in a crowd is a stroke, not a hair.
+const FACE_BOLD: f32 = 1.2;
 
-/// The LINE's plan: the picture read for the pen (its faces brought out at their own scale, their features set
-/// down), and the plate cut from it. Planned BEFORE the tints are laid, so the tints keep to the line (see
-/// `book_tints`), and drawn after them (`book_line`).
-struct BookPlan {
-    drawn: RgbImage,
-    near_face: Option<Vec<bool>>,
-    features: Vec<crate::paint::engrave::Cut>,
-    plate: crate::paint::engrave::Plate,
+/// Round a face in a window the picture is read with nothing in it: the head, as the detector named it,
+/// grown by a share of its size, is set to the picture smoothed — so the planner traces neither the shading
+/// inside it nor its silhouette, which is drawn as one line (see `head_outline`).
+fn head_quiet(drawn: &mut RgbImage, crop: &RgbImage, off: &[bool], cw: usize, ch: usize, cx: usize, cy: usize, size: f32) {
+    let band: Vec<bool> = dilate_bool(&off.iter().map(|o| !o).collect::<Vec<bool>>(), cw, ch, (size * 0.045).max(2.0) as usize);
+    let plain = imageops::blur(crop, (size * 0.12).max(1.5));
+    for j in (0..cw * ch).filter(|&j| band[j]) {
+        drawn.put_pixel((cx + j % cw) as u32, (cy + j / cw) as u32, *plain.get_pixel((j % cw) as u32, (j / cw) as u32));
+    }
 }
 
-/// The LINE of an early book illustration: the picture's drawing, planned as the engraving plans its contours
-/// (joined, pulled taut, each entering and leaving as a needle), drawn with a pen over the dry tints in a dark
-/// ink of the colour it crosses — brown on a coat, blue-grey in a shadow. The line carries the picture; the
-/// tints only colour it.
-fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
+/// A FACE'S OUTLINE, for a face in a window: the head as the detector named it — a few coarse cells — rounded
+/// at the face's own scale into one closed line: the jaw, the hairline, the neck, as a hand draws a head
+/// before it puts the features in. The line is the plate's edge too: the flesh tint ends where it runs.
+fn head_outline(off: &[bool], cw: usize, ch: usize, cx: usize, cy: usize, size: f32) -> Vec<crate::paint::engrave::Cut> {
+    let is = image::GrayImage::from_fn(cw as u32, ch as u32, |x, y| image::Luma([if off[y as usize * cw + x as usize] { 0 } else { 255 }]));
+    let mask: Vec<bool> = imageops::blur(&is, (size * 0.05).max(1.5)).pixels().map(|px| px.0[0] > 127).collect();
+    let rings = mask_rings(&mask, cw, ch, 1.0);
+    let mut out = Vec::new();
+    for ring in rings.split(|q| q[0].is_nan()) {
+        let n = ring.len();
+        if n < 8 {
+            continue;
+        }
+        // The ring, a point to the pixel; smoothed twice round its whole length; then one point in a few.
+        let mut dense: Vec<[f32; 2]> = Vec::new();
+        for i in 0..n {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            let k = (b[0] - a[0]).hypot(b[1] - a[1]).ceil().max(1.0) as usize;
+            for s in 0..k {
+                let t = s as f32 / k as f32;
+                dense.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            }
+        }
+        let n = dense.len();
+        if (n as f32) < size * 1.2 {
+            continue;
+        }
+        let win = ((size * 0.04) as usize).max(2);
+        for _ in 0..2 {
+            let src = dense.clone();
+            for i in 0..n {
+                let mut acc = [0f32; 2];
+                for k in 0..=2 * win {
+                    let j = (i + n + k - win) % n;
+                    acc[0] += src[j][0];
+                    acc[1] += src[j][1];
+                }
+                dense[i] = [acc[0] / (2 * win + 1) as f32, acc[1] / (2 * win + 1) as f32];
+            }
+        }
+        let every = ((size * 0.03) as usize).max(2);
+        let mut path: Vec<[f32; 2]> = dense.iter().step_by(every).map(|q| [q[0] + cx as f32, q[1] + cy as f32]).collect();
+        path.push(path[0]);
+        let width = (size * 0.016).max(1.8);
+        out.push(crate::paint::engrave::Cut { layer: 0, path, w0: width, w1: width });
+    }
+    out
+}
+
+/// The KEY plate's plan: the faces' features, built from the detector's points (each a stroke of the black),
+/// the black plate itself as rings (its lines and its solids, see `key_plate`), and the black screen. Planned
+/// before the colour plates are laid, printed after them (`book_line`).
+struct BookPlan {
+    key: Vec<[f32; 2]>,
+}
+
+/// The KEY of an early book illustration: the picture's drawing in black. The picture is read with its faces
+/// brought out at their own scale — a portrait's features sharpened, a face in a window built from the
+/// detector's points and the picture inside it read with nothing in it — and the key plate is cut from that
+/// reading (see `key_plate`).
+fn book_plan(source: &RgbImage, p: &PaintParams, _budget: usize) -> BookPlan {
     let long = source.width().max(source.height()) as f32;
     // The line is read off the source with its grain off, not off the washes' masses: it is what they left out.
     let mut drawn = imageops::blur(source, (long / 1000.0).max(0.8));
@@ -5996,7 +5783,9 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
             }
             let size = (px.len() as f32).sqrt();
             let large = ((size / long - FACE_SMALL) / (FACE_LARGE - FACE_SMALL)).clamp(0.0, 1.0);
-            let focus = (size * (0.03 - 0.023 * large)).max(long / 1000.0).max(0.8);
+            // (... and a small face read as sharp as its features are small: an eye twelve pixels wide is gone
+            // in a blur of three.)
+            let focus = (size * (0.007 + 0.008 * (1.0 - large))).max(long / 1000.0).max(0.8);
             let broad = (size * 0.06).max(long * 0.004).max(1.5);
             let raise = 0.4 + 1.1 * large;
             let pad = (broad * 3.0).ceil() as usize;
@@ -6014,7 +5803,7 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
             // as a draughtsman puts it: its outline, and one stroke for each of its darkest features — an eye, an
             // eye, the mouth, the shadow under the nose — laid along the feature. Inside its outline the picture
             // is read with nothing in it, so the planner draws no line there.
-            if large < FACE_FAR {
+            if size / long < FACE_FAR {
                 let mut off = vec![true; cw * ch];
                 for &i in &px {
                     off[(i / sw - cy) * cw + (i % sw - cx)] = false;
@@ -6031,11 +5820,17 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                 // down: a stroke for each eye and a lighter one for the brow over it, a tick under the nose,
                 // the line of the mouth from corner to corner — fuller where the mouth is open. (A face seen
                 // from the side has its eyes all but in one place: one eye is drawn.)
-                let known = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).find(|f| {
+                let known: Vec<[[f32; 2]; 5]> = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).filter(|f| {
                     let (x, y) = (f[2][0] as usize, f[2][1] as usize);
                     x >= cx && y >= cy && x < cx + cw && y < cy + ch && !off[(y - cy) * cw + (x - cx)]
-                });
-                if let Some([le, re, nose, lm, rm]) = known {
+                }).collect();
+                if !known.is_empty() {
+                    // The head first: its outline, one line, and round it the picture read with nothing in it.
+                    head_quiet(&mut drawn, &crop, &off, cw, ch, cx, cy, size);
+                    features.extend(head_outline(&off, cw, ch, cx, cy, size));
+                }
+                // (Every face the detector found in this piece of skin — two heads together are one piece.)
+                for [le, re, nose, lm, rm] in known.iter().copied() {
                     let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
                     let (eyes, mouth) = (mid(le, re), mid(lm, rm));
                     let apart = (re[0] - le[0]).hypot(re[1] - le[1]);
@@ -6115,7 +5910,13 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                         let half = match spot(eye, s * 0.2, s * 0.1) { Some(c) => ((c.path[1][0] - c.path[0][0]).hypot(c.path[1][1] - c.path[0][1]) * 0.5).clamp(s * 0.09, s * 0.17), None => s * 0.12 };
                         let half = half * (1.0 - 0.45 * (si * yaw).max(0.0));
                         let (sn, cs) = (0.3 * yaw * si).sin_cos();
-                        features.push(dash(eye, [u[0] * cs + v[0] * sn, u[1] * cs + v[1] * sn], half, s * 0.1));
+                        let along = [u[0] * cs + v[0] * sn, u[1] * cs + v[1] * sn];
+                        features.push(dash(eye, along, half, s * 0.1));
+                        // ... and the BROW over it, where the picture has one: a lighter dash a little above.
+                        let brow = [eye[0] - v[0] * s * 0.2, eye[1] - v[1] * s * 0.2];
+                        if lit(brow) < lit([eye[0] + v[0] * s * 0.3, eye[1] + v[1] * s * 0.3]) - 10.0 {
+                            features.push(dash(brow, along, half * 1.1, s * 0.06));
+                        }
                     }
                     let side = if lit([nose[0] - u[0] * s * 0.2, nose[1] - u[1] * s * 0.2]) < lit([nose[0] + u[0] * s * 0.2, nose[1] + u[1] * s * 0.2]) { -1.0 } else { 1.0 };
                     let at = |f: f32, out: f32, down: f32| [eyes[0] + (nose[0] - eyes[0]) * f + u[0] * side * s * out + v[0] * s * down, eyes[1] + (nose[1] - eyes[1]) * f + u[1] * side * s * out + v[1] * s * down];
@@ -6125,6 +5926,8 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     let along = if wide > 0.2 * s { [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide] } else { u };
                     let open = { let j = ((mouth[1] as usize).clamp(cy, cy + ch - 1) - cy) * cw + ((mouth[0] as usize).clamp(cx, cx + cw - 1) - cx); (stands[j] / 30.0).clamp(0.0, 1.0) };
                     features.push(dash(mouth, along, (wide * 0.5).max(s * 0.14), s * (0.05 + 0.1 * open)));
+                }
+                if !known.is_empty() {
                     continue;
                 }
                 let mark = (darker.iter().fold(0f32, |m, v| m.max(*v)) * 0.4).max(4.0);
@@ -6165,10 +5968,28 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     let (x, y) = (cx as f32 + at[0] + 0.5, cy as f32 + at[1] + 0.5);
                     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[x - c * reach, y - s * reach], [x + c * reach, y + s * reach]], w0: width, w1: width * 0.6 });
                 }
-            } else if let Some([le, re, nose, lm, rm]) = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).find(|f| {
-                let (x, y) = (f[2][0] as usize, f[2][1] as usize);
-                x >= cx && y >= cy && x < cx + cw && y < cy + ch && near[y * sw + x]
-            }) {
+            } else {
+                let faces: Vec<[[f32; 2]; 5]> = p.features.iter().map(|f| f.map(|q| [q[0] * sw as f32, q[1] * sh as f32])).filter(|f| {
+                    let (x, y) = (f[2][0] as usize, f[2][1] as usize);
+                    x >= cx && y >= cy && x < cx + cw && y < cy + ch && near[y * sw + x]
+                }).collect();
+                // A FACE IN A WINDOW — between a far face and a portrait — is built as a near one, from the
+                // detector's points; but inside its outline the picture is read with nothing in it, as a far
+                // face is: at that size the shading of a cheek, the furrows round a mouth, the fringe of a
+                // beard are edges the planner would trace, and a built face with a traced one over it is a tangle.
+                // Its outline is one line, the head's, drawn before the features are put in; its features are
+                // drawn BOLD, a sign for each, as the illustrators of the thirties drew a face in a crowd.
+                let mid = size / long < FACE_MID;
+                if mid && !faces.is_empty() {
+                    let mut off = vec![true; cw * ch];
+                    for &i in &px {
+                        off[(i / sw - cy) * cw + (i % sw - cx)] = false;
+                    }
+                    head_quiet(&mut drawn, &crop, &off, cw, ch, cx, cy, size);
+                    features.extend(head_outline(&off, cw, ch, cx, cy, size));
+                }
+                // (Every face the detector found in this piece of skin — two heads together are one piece.)
+                for [le, re, nose, lm, rm] in faces {
                 // A NEAR FACE's mouth is one line: the dark between the lips, from corner to corner. Read as
                 // edges, a mouth is the rims of its shading — the bow of the upper lip, the shadow at a corner,
                 // the fold under the lower lip — joined into a line no mouth has, and a calm mouth comes out
@@ -6177,6 +5998,9 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                 // nothing in it. The bridge of the nose likewise: its shading is no line.
                 let wide = (rm[0] - lm[0]).hypot(rm[1] - lm[1]);
                 let apart = (re[0] - le[0]).hypot(re[1] - le[1]);
+                // (A face in a window is measured by its own eyes, not by the piece of skin it shares; and its
+                // marks are heavier for its size.)
+                let (size, bold) = if mid { ((apart * 2.6).min(size), FACE_BOLD) } else { (size, 1.0) };
                 if wide >= 8.0 && apart >= 8.0 {
                     let eyes = [(le[0] + re[0]) * 0.5, (le[1] + re[1]) * 0.5];
                     let calm = imageops::blur(&crop, (wide * 0.12).max(1.5));
@@ -6214,7 +6038,7 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     let shaded = |q: [f32; 2]| { let c = shade.get_pixel((q[0] as usize).clamp(cx, cx + cw - 1) as u32 - cx as u32, (q[1] as usize).clamp(cy, cy + ch - 1) as u32 - cy as u32).0; 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32 };
                     let side = if shaded([nose[0] - level[0] * apart * 0.3, nose[1] - level[1] * apart * 0.3]) < shaded([nose[0] + level[0] * apart * 0.3, nose[1] + level[1] * apart * 0.3]) { -1.0 } else { 1.0 };
                     let at = |f: f32, out: f32, down: f32| [eyes[0] + (nose[0] - eyes[0]) * f + level[0] * side * apart * out + fall[0] * apart * down, eyes[1] + (nose[1] - eyes[1]) * f + level[1] * side * apart * out + fall[1] * apart * down];
-                    let nw = (size * 0.007).max(1.6);
+                    let nw = (size * 0.007 * bold).max(1.6);
                     // ... and BROKEN: a short stroke at the brow and the turn of the wing at the tip, the bridge
                     // between them left to the paper as the light on it. Drawn whole, the line is a grown man's nose.
                     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![at(0.3, 0.08, 0.0), at(0.5, 0.1, 0.0)], w0: nw * 0.55, w1: nw * 0.35 });
@@ -6243,7 +6067,7 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                         let (mid, half) = ((lie[0] + lie[1]) * 0.5, (((lie[0] - lie[1]) * 0.5).powi(2) + lie[2] * lie[2]).sqrt());
                         let reach = ((mid + half).max(0.0).sqrt() * 1.5).clamp(apart * 0.04, apart * 0.1);
                         let (sn, cs) = (0.5 * (2.0 * lie[2]).atan2(lie[0] - lie[1])).sin_cos();
-                        let width = (size * 0.009).max(1.8);
+                        let width = (size * 0.009 * bold).max(1.8);
                         features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[at[0] - cs * reach, at[1] - sn * reach], [at[0] + cs * reach, at[1] + sn * reach]], w0: width * 0.6, w1: width });
                     }
                     let lips = [(lm[0] + rm[0]) * 0.5, (lm[1] + rm[1]) * 0.5];
@@ -6260,13 +6084,23 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     // read from the picture: the opening is what round the detector's eye is not skin, the
                     // iris the dark in it.
                     let pick = |q: [f32; 2]| { let c = sharp.get_pixel((q[0] as usize).clamp(cx, cx + cw - 1) as u32 - cx as u32, (q[1] as usize).clamp(cy, cy + ch - 1) as u32 - cy as u32).0; [c[0] as f32, c[1] as f32, c[2] as f32] };
-                    let eyebase = (size * 0.012).max(2.0);
+                    let eyebase = (size * 0.012 * bold).max(2.0);
                     for (eye, outward) in [(le, -1.0f32), (re, 1.0)] {
                         let at = |u: f32, v: f32| [eye[0] + level[0] * u + fall[0] * v, eye[1] + level[1] * u + fall[1] * v];
                         // Skin is the cheek under the eye.
                         let cheek = { let c = shade.get_pixel((eye[0] + fall[0] * apart * 0.3).clamp(cx as f32, (cx + cw - 1) as f32) as u32 - cx as u32, (eye[1] + fall[1] * apart * 0.3).clamp(cy as f32, (cy + ch - 1) as f32) as u32 - cy as u32).0; [c[0] as f32, c[1] as f32, c[2] as f32] };
                         let value = |c: [f32; 3]| 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
                         let skin_v = value(cheek);
+                        // THE BROW of a face in a window: the dark over the eye — the darkest level between a
+                        // seventh and a third of the eyes' distance above it — one stroke from over the inner
+                        // corner out past the outer, heavier at the inner end. (A portrait's brow is traced.)
+                        if mid {
+                            let row = |v: f32| (-3..=3).map(|k| shaded(at(k as f32 * apart * 0.08, v))).sum::<f32>() / 7.0;
+                            let (bv, bd) = (3..=7).map(|k| -apart * 0.05 * k as f32).fold((0.0f32, f32::MAX), |m, v| { let d = row(v); if d < m.1 { (v, d) } else { m } });
+                            if bd < skin_v - 12.0 {
+                                features.push(crate::paint::engrave::Cut { layer: 0, path: vec![at(-outward * apart * 0.28, bv + apart * 0.03), at(0.0, bv - apart * 0.015), at(outward * apart * 0.32, bv + apart * 0.02)], w0: eyebase, w1: eyebase * 0.5 });
+                            }
+                        }
                         // (Not skin: the white of the eye, well lighter than the cheek, or the iris and the
                         // lashes, well darker — not a shade of the skin, which the hollow under the brow is.)
                         let not_skin = |q: [f32; 2]| { let v = value(pick(q)); v > skin_v + 22.0 || v < skin_v - 45.0 };
@@ -6290,6 +6124,10 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                         for u in rx as usize + 1..cols.len() { if cols[u].is_some() { hi = u; gap = 0; } else { gap += 1; if gap > 2 { break; } } }
                         let width = (hi - lo) as f32;
                         if width < apart * 0.22 || !cols[rx as usize].is_some() {
+                            // (A shut eye — a face that shouts, that squints into the sun — has no opening to
+                            // read: it is one line, the lid, a little longer toward the outer corner.)
+                            quiet(at(-apart * 0.3, 0.0), at(apart * 0.3, 0.0), apart * 0.12);
+                            features.push(crate::paint::engrave::Cut { layer: 0, path: vec![at(-outward * apart * 0.14, 0.0), at(outward * apart * 0.1, -apart * 0.01), at(outward * apart * 0.2, apart * 0.01)], w0: eyebase * 0.45, w1: eyebase * 0.7 });
                             continue;
                         }
                         // Fill the gaps and smooth the lids.
@@ -6394,7 +6232,7 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     }
                     let raw: Vec<[f32; 2]> = (0..=n).map(|t| at(t, way[t] as i32 - k)).collect();
                     let line: Vec<[f32; 2]> = (0..=n).map(|t| { let (a, b, c) = (raw[t.saturating_sub(1)], raw[t], raw[(t + 1).min(n)]); [(a[0] + 2.0 * b[0] + c[0]) * 0.25, (a[1] + 2.0 * b[1] + c[1]) * 0.25] }).collect();
-                    let base = (size * 0.011).max(2.2);
+                    let base = (size * 0.011 * bold).max(2.2);
                     let weight = |t: usize| base * (0.3 + 0.7 * (std::f32::consts::PI * t as f32 / n as f32).sin());
                     let mut a = 0usize;
                     while a < n {
@@ -6410,86 +6248,28 @@ fn book_plan(source: &RgbImage, p: &PaintParams, budget: usize) -> BookPlan {
                     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![end(-1.0), c], w0: base * 0.3, w1: base * 0.55 });
                     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![c, end(1.0)], w0: base * 0.55, w1: base * 0.3 });
                 }
+                }
             }
         }
     }
-    let normals = p.normals.as_ref().map(|(w, h, n)| crate::paint::engrave::Normals { w: *w as usize, h: *h as usize, n });
-    // The faces, as the planner's skin: drawn, not shaded. And whatever else the material map names — a head
-    // of hair named fur is drawn as hair, in strands lying the way it grows.
-    let named = |i: usize| p.materials.as_ref().filter(|(mw, mh, kind)| *mw > 0 && *mh > 0 && kind.len() == (*mw * *mh) as usize).map_or(0, |(mw, mh, kind)| { let (mw, mh) = (*mw as usize, *mh as usize); kind[((i / sw) * mh / sh).min(mh - 1) * mw + ((i % sw) * mw / sw).min(mw - 1)] });
-    // (With or without a face: a machine's wheels named metal are drawn as metal, no one's face in the picture.)
-    let skin: Option<Vec<u8>> = match (&face, &p.materials) {
-        (Some(m), _) => Some(m.iter().enumerate().map(|(i, v)| if *v { crate::paint::engrave::SKIN } else { named(i) }).collect()),
-        (None, Some(_)) => Some((0..sw * sh).map(named).collect()),
-        (None, None) => None,
-    };
-    let materials = skin.as_ref().map(|kind| crate::paint::engrave::Materials { w: drawn.width() as usize, h: drawn.height() as usize, kind });
-    let plate = crate::paint::engrave::drawing(&drawn, normals, materials, p.contour.max(0.3), 1.0, budget, p.seed);
-    BookPlan { drawn, near_face, features, plate }
+    let key = key_plate(&drawn, face.as_deref(), long, &features);
+    BookPlan { key }
 }
 
-/// The LINE drawn: the plan's features and plate, each cut in a dark ink of the colour it crosses, a contour's
-/// weight the shadow it runs in.
+/// THE KEY PLATE PRINTED, over everything and in register: the black line, its solids and the faces' features
+/// as one wash, with the dot gain of a black ink on a cheap paper.
 fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p: &PaintParams, placed: &mut usize, plan: BookPlan) {
     let long = source.width().max(source.height()) as f32;
-    let (sw, sh) = (source.width() as usize, source.height() as usize);
-    let BookPlan { drawn, near_face, features, plate } = plan;
-    // THE WEIGHT OF THE LINE is the shadow it runs through: a pen is leant on under a chin, in a fold, along
-    // the dark side of a thing, and barely touches the paper where the light falls.
-    // (The shadow a line is IN, not the darkness of the picture there: under a chin the skin is hardly darker
-    // than the cheek, but it is the darker side of its edge and darker than what lies about it — while the
-    // lit side of a jaw against a pale ground is neither. So a line's weight is how far the darker side of the
-    // edge it follows is below its surroundings, and a little of how dark that side is outright.)
-    let eye = |im: &RgbImage| -> Vec<f32> { luma_map(im).iter().map(|v| v.clamp(0.0, 1.0).powf(1.0 / 2.2)).collect() };
-    let shadow = eye(&imageops::blur(source, (long * 0.003).max(1.0)));
-    let (aw, ah) = ((sw / 8).max(1), (sh / 8).max(1));
-    let about = eye(&imageops::blur(&imageops::resize(source, aw as u32, ah as u32, imageops::FilterType::Triangle), (long * 0.03 / 8.0).max(1.0)));
-    let aside = (long * 0.004).max(2.0);
-    let leant = |pt: [f32; 2], to: [f32; 2]| {
-        let (dx, dy) = (to[0] - pt[0], to[1] - pt[1]);
-        let len = dx.hypot(dy).max(1e-3);
-        let side = |k: f32| shadow[((pt[1] + k * dx / len * aside).max(0.0) as usize).min(sh - 1) * sw + ((pt[0] - k * dy / len * aside).max(0.0) as usize).min(sw - 1)];
-        let dark = side(1.0).min(side(-1.0));
-        let round = about[((pt[1].max(0.0) as usize) / 8).min(ah - 1) * aw + ((pt[0].max(0.0) as usize) / 8).min(aw - 1)];
-        // (... or below what faces it a little way across the line: under a jaw the shadow is soft, and what
-        // lies about it — a dark collar, a shirt — is darker still.)
-        let facing = (side(3.0) - side(-3.0)).abs() / 0.25;
-        // (Mostly the shadow it is in against what is about it, and a little its own darkness: on a machine
-        // that is dark all over, the pen is leant on under the wheels and in the joints, not everywhere.)
-        let t = (((round - dark) / 0.15).max(facing).clamp(0.0, 1.0) * 0.75 + (1.0 - dark).powf(1.5) * 0.3).min(1.0);
-        // (A thin line is the rule and a heavy one the accent: most of a pen drawing is hair-lines.)
-        LINE_WEIGHT.0 + (LINE_WEIGHT.1 - LINE_WEIGHT.0) * t.powf(1.7)
-    };
-    let n = p.palette.pigments.len();
-    let mut cache: std::collections::HashMap<u32, Vec<f32>> = std::collections::HashMap::new();
-    let brush = BrushConfig { k_pickup: 0.0, bristles: 1, streak: 0.0, round: 1.0, flat_ends: true, ..p.brush };
-    // (The far faces' strokes first: they are the picture's, whatever the budget leaves of the hatch.)
-    let own = features.len();
-    for (at, cut) in features.into_iter().chain(plate.cuts).enumerate() {
-        if *placed >= p.budget {
-            break;
-        }
-        if cut.path.len() < 2 {
-            continue;
-        }
-        let stage = if cut.layer == 0 { "contour".to_string() } else { format!("hatch-{}", cut.layer - 1) };
-        let m = cut.path[cut.path.len() / 2];
-        let under = color::srgb_to_linear(drawn.get_pixel((m[0].max(0.0) as u32).min(drawn.width() - 1), (m[1].max(0.0) as u32).min(drawn.height() - 1)).0);
-        let ink = color::linear_to_srgb([under[0] * 0.14, under[1] * 0.14, under[2] * 0.14]);
-        let load = mixture_cached(&mut cache, ink, &p.palette, p.charge * 2.4, n);
-        // A pen's line is finer than a burin's.
-        // ... and finest on a face, whose features are small.
-        let fine = if near_face.as_ref().map_or(false, |f| f[(m[1].max(0.0) as usize).min(drawn.height() as usize - 1) * drawn.width() as usize + (m[0].max(0.0) as usize).min(drawn.width() as usize - 1)]) { 0.75 } else { 0.85 };
-        // (A contour's; a hatch line is a hair whatever it crosses — its tone is in its spacing.)
-        let last = cut.path.len() - 1;
-        let (l0, l1) = if cut.layer == 0 && at >= own { (leant(cut.path[0], cut.path[1]), leant(cut.path[last], cut.path[last - 1])) } else { (1.0, 1.0) };
-        let fine = if at < own { 1.0 } else { fine };
-        let (w0, w1) = ((cut.w0 * fine * l0).max(1.0), (cut.w1 * fine * l1).max(1.0));
-        let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        let s = Stroke { path: cut.path, width0: w0, width1: w1, load, pressure: 1.0, wetness: 0.0 };
-        s.rasterize(canvas, &brush);
+    let BookPlan { key } = plan;
+    let black = crate::paint::canvas::darkest_pigment(&p.palette);
+    let mut load = vec![0f32; p.palette.pigments.len()];
+    load[black] = p.charge * 2.4;
+    let mix: Vec<(String, f32)> = vec![(p.palette.pigments[black].name.to_string(), load[black])];
+    let gain = (long * KEY_GAIN).max(0.5).round();
+    if !key.is_empty() && *placed < p.budget {
+        canvas.fill_rings(&key, &load, 0.0, gain);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage, spline: s.path, w0, w1, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, tgt: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "key".into(), spline: key, w0: gain, w1: 0.0, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, tgt: None });
     }
 }
 

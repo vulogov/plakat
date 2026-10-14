@@ -2716,8 +2716,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         // The wash edges BLOOM (the cauliflower rim where a wash dries) unless `--edge-pool` was set; the
         // watercolour spatters a little unless `--splatter` was set.
         if a.edge_pool.is_none() {
-            // A tint in a book is flat: only a breath of the rim a wash dries with.
-            params.edge_pool = if params.book { 0.1 } else { 0.3 };
+            // A printed plate is flat: no rim dries on it.
+            params.edge_pool = if params.book { 0.0 } else { 0.3 };
         }
         if !params.book && a.splatter.is_none() {
             params.splatter = 0.25;
