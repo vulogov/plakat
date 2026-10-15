@@ -51,9 +51,22 @@ pub struct BrushConfig {
     /// DRY-BRUSH SKIPPING (0 = off): a bristle with little water touches only the raised fibres of the
     /// paper — the drier the bristle, the fewer fibres it reaches — so a dry mark is broken by the tooth
     /// along its drag instead of printing as a solid, gritty band. The amount scales how high the fibres
-    /// stand. A loaded wet brush floods the hollows and is never broken.
+    /// stand. A loaded wet brush floods the hollows and is never broken. A bristle whose charge has run out
+    /// (the dry tail of a depleting mark) skips as a dry one does.
     pub skip: f32,
+    /// THE COMMA (0 = off): the hand's pressure along the mark — nothing at the touch, hardest a third of the
+    /// way along, lifting to nothing at the end (sin(π·t^k) with the peak at t = 0.3) — so the mark swells
+    /// where it is pressed and thins to a tail: a drop, a comma, as a round brush leaves them. The amount
+    /// is how far the width and the deposit follow that pressure.
+    pub comma: f32,
+    /// CREST (0..1, 0 = off): a dry brush dragged over a DRIED, textured layer catches only the tops of the
+    /// relief — the deposit at a pixel is scaled by how far its paint stands above its neighbours (a 5×5
+    /// mean), so the colour sits on the ridges and the furrows keep what was there. Per stroke, in the record.
+    pub crest: f32,
 }
+
+/// The exponent that sets the comma's peak at t = 0.3 (ln 0.5 / ln 0.3).
+const COMMA_K: f32 = 0.5757;
 
 impl Default for BrushConfig {
     fn default() -> Self {
@@ -61,7 +74,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0 }
     }
 }
 
@@ -177,7 +190,14 @@ impl Stroke {
             }
             let (perpx, perpy) = (-dy, dx);
             let t = if pts.len() > 1 { i as f32 / (pts.len() - 1) as f32 } else { 0.0 };
-            let width = self.width0 + (self.width1 - self.width0) * t;
+            // THE COMMA (see `BrushConfig::comma`): the pressure along the mark, swelling the width and the
+            // deposit where the hand presses and lifting them toward the ends.
+            let press = if brush.comma > 0.0 && !brush.flat_ends {
+                1.0 - brush.comma.clamp(0.0, 1.0) * (1.0 - (std::f32::consts::PI * t.powf(COMMA_K)).sin().max(0.0))
+            } else {
+                1.0
+            };
+            let width = (self.width0 + (self.width1 - self.width0) * t) * (0.5 + 0.5 * press);
 
             // Ends taper: the first/last ~22% of the stroke deposits less, so a mark has soft ROUND tips, not a
             // rectangular butt (the "blocky patch" tell). Deeper falloff = more organic marks.
@@ -185,7 +205,7 @@ impl Stroke {
                 1.0
             } else {
                 let e = (t.min(1.0 - t) / 0.22).clamp(0.0, 1.0);
-                0.15 + 0.85 * e * e
+                (0.15 + 0.85 * e * e) * press
             };
             // At a tapered/narrow width many adjacent lanes round to the SAME pixel; skip the duplicates so a
             // wide stroke doesn't re-deposit the same pixel dozens of times (the block-in's dominant cost).
@@ -292,13 +312,37 @@ impl Stroke {
         // wetness, not the bristle's running one: that decays along every stroke, and read there the tail of
         // every long wash went dry and the whole sheet stippled and darkened.
         if brush.skip > 0.0 {
-            let dryness = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
+            // ...and on a mark laid DRY, a bristle whose charge has run out — the dry tail of a depleting
+            // mark — reaches only the raised fibres, so the tail breaks on the tooth instead of thinning
+            // evenly. A wet mark is never broken, charge or no charge: water floods the hollows. (Full from
+            // 0.45 wet down, fading out to nothing at 0.6.)
+            let base = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
+            let spent = 1.0 - (Self::load_norm(load) / Self::load_norm(&self.load).max(1e-6)).clamp(0.0, 1.0);
+            let dryness = base.max(spent * spent * (base * 4.0).min(1.0));
             if dryness > 0.0 {
                 let thr = brush.skip.clamp(0.0, 1.0) * dryness * 0.9;
                 let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
                 let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
                 df *= t * t * (3.0 - 2.0 * t);
             }
+        }
+        if brush.crest > 0.0 {
+            // The dry brush over the ridges (see `BrushConfig::crest`): paint only where this pixel's relief
+            // stands above the mean of its 5×5 neighbourhood, by a smoothstep over a third of that mean.
+            let (w, h) = (canvas.w as i64, canvas.h as i64);
+            let (cx, cy) = (px as i64, py as i64);
+            let mut sum = 0.0f32;
+            let mut cnt = 0.0f32;
+            for yy in (cy - 2).max(0)..=(cy + 2).min(h - 1) {
+                for xx in (cx - 2).max(0)..=(cx + 2).min(w - 1) {
+                    sum += canvas.height[(yy * w + xx) as usize];
+                    cnt += 1.0;
+                }
+            }
+            let mean = sum / cnt.max(1.0);
+            let t = ((canvas.height[p] - mean) / (0.35 * mean + 1e-4)).clamp(0.0, 1.0);
+            let catch = t * t * (3.0 - 2.0 * t);
+            df *= 1.0 - brush.crest.clamp(0.0, 1.0) * (1.0 - catch);
         }
         if brush.film_cap > 0.0 {
             let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
@@ -396,6 +440,26 @@ mod tests {
     }
 
     #[test]
+    fn a_depleting_dry_mark_breaks_at_its_tail_and_a_wet_one_never() {
+        // A mark laid dry with a fast-depleting charge: its tail (the last third) is more broken than its
+        // head; the same mark laid wet is solid to the end however the charge runs out.
+        let mark = |wet: f32, skip: f32, deplete: f32| -> Vec<f32> {
+            let mut c = Canvas::white(120, 16, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[4.0, 8.0], [116.0, 8.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: wet };
+            let brush = BrushConfig { skip, deplete, ..BrushConfig::default() };
+            s.rasterize(&mut c, &brush);
+            (6..114).map(|x| c.saturation_at(x as u32, 8)).collect()
+        };
+        let gaps = |m: &[f32]| m.iter().filter(|&&f| f < 1e-4).count();
+        let dry = mark(0.4, 0.4, 2.0);
+        let (head, tail) = dry.split_at(dry.len() / 3);
+        let tail = &tail[tail.len() / 2..];
+        assert!(gaps(tail) > gaps(head), "the depleted tail is more broken than the head ({} vs {} bare pixels)", gaps(tail), gaps(head));
+        // Wet: whatever bare pixels an emptied brush leaves, the skip adds none.
+        assert_eq!(gaps(&mark(0.9, 0.4, 2.0)), gaps(&mark(0.9, 0.0, 2.0)), "a wet mark is never broken by the tooth");
+    }
+
+    #[test]
     fn is_deterministic() {
         let brush = BrushConfig::default();
         let s = Stroke { path: vec![[2.0, 10.0], [30.0, 12.0]], width0: 5.0, width1: 3.0, load: red_load(), pressure: 0.9, wetness: 1.0 };
@@ -427,5 +491,26 @@ mod tests {
         let picked = srgb_to_lab(banded.color_at(14, 15)).l;
 
         assert!(picked < control - 1.0, "carrying picked-up black darkens the later deposit ({picked} vs control {control})");
+    }
+
+    #[test]
+    fn a_crest_mark_paints_the_ridge_tops_and_leaves_the_furrows() {
+        // A ridge of paint across the canvas; a crest mark dragged over it leaves its colour on the ridge
+        // and none in the flat beside it, where an ordinary mark paints both alike.
+        let lay = |crest: f32| {
+            let mut c = Canvas::white(60, 40, palette::ZORN, 0.9);
+            let ridge = Stroke { path: vec![[5.0, 20.0], [55.0, 20.0]], width0: 3.0, width1: 3.0, load: vec![0.0, 0.0, 0.0, 4.0], pressure: 1.0, wetness: 0.3 };
+            ridge.rasterize(&mut c, &BrushConfig { viscosity: 2.0, k_pickup: 0.0, ..BrushConfig::default() });
+            c.dry(1.0);
+            let mark = Stroke { path: vec![[30.0, 5.0], [30.0, 35.0]], width0: 4.0, width1: 4.0, load: red_load(), pressure: 1.0, wetness: 0.3 };
+            mark.rasterize(&mut c, &BrushConfig { crest, k_pickup: 0.0, ..BrushConfig::default() });
+            let red = |x: u32, y: u32| c.conc_at(x, y)[1];
+            (red(30, 20), red(30, 10))
+        };
+        let (on_ridge, in_flat) = lay(1.0);
+        assert!(on_ridge > 0.05, "the crest mark lays its red on the ridge ({on_ridge})");
+        assert!(in_flat < on_ridge * 0.05, "and none in the flat beside it ({in_flat} vs {on_ridge})");
+        let (plain_ridge, plain_flat) = lay(0.0);
+        assert!(plain_flat > plain_ridge * 0.5, "an ordinary mark paints both alike ({plain_flat} vs {plain_ridge})");
     }
 }

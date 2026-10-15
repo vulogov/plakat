@@ -311,12 +311,28 @@ dry tail over the layer beneath); and along the subject's silhouette the finest 
 translucent overlap, not a cut edge. On a face, where the picture is smooth at the brush's scale, the paint is
 **sfumato** (`sfumato 0.7`): the fine passes thin there with the ladder and the marks that remain go on broad,
 wet, half-charged and picking up the paint beneath, so the skin is fused, not hatched into a grain; one more
-**glaze pass** after the ladder (`glaze_pass 0.3` — a mid brush, every mark a thin wet film over everything)
-unifies the detail under one tone; and the mark's length is spread as a Gaussian (`vary 0.35`), wider where the
-picture is flat. **Every one of these is a plan key** — tune them in the plan, not in the source: see the
-recommended plan in `PAINT_EXAMPLES.md`.
+**glaze pass** after the ladder (`glaze_pass 0.3` — a mid brush, every mark a thin wet film over everything but the faces and hair, which their own tier finishes)
+unifies the detail under one tone — leaving the sharp contrasts alone, so the accents stand crisp over the film;
+and the mark's length is spread as a Gaussian (`vary 0.35`), wider where the picture is flat. The hand's
+**pressure** runs along the mark (`comma 0.5`): the width and the deposit swell a third of the way along and
+lift toward the ends, so a round brush leaves drops and commas, not tubes; a bristle whose charge has run out
+skips on the tooth as a dry one does, so a depleting mark's tail breaks instead of thinning evenly; and on a
+face under the sfumato the drift of hue is wider, so the fused skin is not one interpolated gradient. The
+picture has a **hierarchy**: in the shadows, off the faces, a mark lands only where the canvas is plainly
+wrong, never to chase a small tone, and the marks that land run longer, wider and calm — no dry skip, no hue
+drift (`shade 0.6`) — so the dark masses rest and the detail is kept for the light; the block-in is laid as an **imprimatura** (`imprimatura 0.6` — darker and warmer than the
+picture, toward a burnt umber), the underpainting that shows between the later marks, in a dry mark's skips
+and the thinned shadows; and each mark's **body** is spread as a Gaussian (`body_vary 0.3`): one thick and
+opaque, standing high, the next thinner, wetter and translucent. On the finest pass and the glaze pass the
+subject's edge is **lost** where it lies in shadow (`lost 0.6`): the mark's colour is the picture blurred wide
+across the seam and the mark runs across it, so a dark figure meets its dark ground in one tone, not a drawn
+outline; one more pass after the glaze is a **dry brush over the ridges** (`crest 0.4`, the share of its
+seeds): a fine brush, where the relief is broken, a lighter, warmer tint that catches only the tops of the
+relief beneath (the stroke's `crest`, in the record), the texture lit without a new shape; and the thickest marks in the light fling **spatter** (`spatter 0.5`): a drop
+or three off the lift-off along the mark's direction, round thick dots of its own paint. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
+`PAINT_EXAMPLES.md`.
 - Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
-- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `crest 0.4` · `spatter 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
 - Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson

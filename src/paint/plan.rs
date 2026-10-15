@@ -211,14 +211,37 @@ pub struct PaintPlan {
     /// SFUMATO (0..1): on a face, where the picture is smooth (a cheek, a forehead), the fine passes thin and
     /// the marks that remain go on broad, wet, half-charged and picking up the paint beneath — fused, not
     /// hatched. GLAZE PASS (0..1, the charge): one more pass at the end with a mid brush, every mark thin and
-    /// wet over everything, unifying the detail under one tone. VARY (0..1): a Gaussian spread of the mark's
-    /// length, wider where the picture is flat.
+    /// wet over everything but the faces and hair, unifying the detail under one tone. VARY (0..1): a Gaussian spread of the mark's
+    /// length, wider where the picture is flat. COMMA (0..1): the hand's pressure along the mark — the width
+    /// and the deposit swell a third of the way along and lift toward the ends, a drop or a comma.
     #[serde(default)]
     pub sfumato: Option<f32>,
     #[serde(default)]
     pub glaze_pass: Option<f32>,
     #[serde(default)]
     pub vary: Option<f32>,
+    #[serde(default)]
+    pub comma: Option<f32>,
+    /// SHADE (0..1): in the shadows, off the faces, the fine passes thin and the marks run longer, wider and
+    /// calm — the detail kept for the light. IMPRIMATURA (0..1): the block-in laid darker and warmer (toward
+    /// burnt umber), the underpainting that shows between the later marks. BODY VARY (σ): a Gaussian spread
+    /// of each mark's body — thick and opaque, or thinner, wetter and translucent.
+    #[serde(default)]
+    pub shade: Option<f32>,
+    #[serde(default)]
+    pub imprimatura: Option<f32>,
+    #[serde(default)]
+    pub body_vary: Option<f32>,
+    /// LOST (0..1): the subject's edge lost where it lies in shadow — the finest pass and the glaze pass paint
+    /// the mean of both sides across the seam. CREST (0..1): one more pass after the glaze, this share of its
+    /// seeds a fine brush dragged dry over the relief, a lighter warmer tint on the ridges' tops. SPATTER
+    /// (0..1): thick drops flung off the thickest marks.
+    #[serde(default)]
+    pub lost: Option<f32>,
+    #[serde(default)]
+    pub crest: Option<f32>,
+    #[serde(default)]
+    pub spatter: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -311,6 +334,13 @@ impl Default for PaintPlan {
             sfumato: None,
             glaze_pass: None,
             vary: None,
+            comma: None,
+            shade: None,
+            imprimatura: None,
+            body_vary: None,
+            lost: None,
+            crest: None,
+            spatter: None,
             notes: Vec::new(),
         }
     }
@@ -398,7 +428,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -724,6 +754,13 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             sfumato: None,
             glaze_pass: None,
             vary: None,
+            comma: None,
+            shade: None,
+            imprimatura: None,
+            body_vary: None,
+            lost: None,
+            crest: None,
+            spatter: None,
         notes,
     }
 }

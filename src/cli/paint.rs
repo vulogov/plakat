@@ -1594,6 +1594,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.vary = plan.medium.vary;
     params.brush.ridges = plan.medium.ridges;
     params.brush.deplete = plan.medium.deplete;
+    params.brush.comma = plan.medium.comma;
+    params.shade = plan.medium.shade;
+    params.imprimatura = plan.medium.imprimatura;
+    params.body_vary = plan.medium.body_vary;
+    params.lost = plan.medium.lost;
+    params.crest = plan.medium.crest;
+    params.spatter = plan.medium.spatter;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2328,6 +2335,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.vary = m.vary;
         params.brush.ridges = m.ridges;
         params.brush.deplete = m.deplete;
+        params.brush.comma = m.comma;
+        params.shade = m.shade;
+        params.imprimatura = m.imprimatura;
+        params.body_vary = m.body_vary;
+        params.lost = m.lost;
+        params.crest = m.crest;
+        params.spatter = m.spatter;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2348,9 +2362,16 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.loose { params.loose = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.glaze { params.glaze = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.deplete { params.brush.deplete = v.clamp(0.0, 10.0); }
+        if let Some(v) = pl.comma { params.brush.comma = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sfumato { params.sfumato = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.glaze_pass { params.glaze_pass = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.vary { params.vary = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.shade { params.shade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.imprimatura { params.imprimatura = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.body_vary { params.body_vary = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.lost { params.lost = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.crest { params.crest = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.spatter { params.spatter = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {

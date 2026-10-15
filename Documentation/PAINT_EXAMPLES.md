@@ -91,7 +91,8 @@ plakat paint from photo.png --medium charcoal --palette sumi \
 # ── ACRYLIC ──────────────────────────────────────────────────────────────────
 # Opaque plastic colour in layers, each dry before the next: a thin wash block-in, flat crisp-edged marks on
 # top, a dry-brush finish and a loose hand off the faces, thick accent dabs at the sharp contrasts; darkens on
-# drying; the skin fused where it is smooth, a glaze pass over all. Best painted from scratch with a PLAN —
+# drying; the skin fused where it is smooth, a glaze pass over all but the faces, the shadows calm and broad over
+# a dark warm imprimatura, the edges lost in shadow, a dry brush over the ridges, a few thick drops. Best painted from scratch with a PLAN —
 # the face and figure tiers (fine brushes on the face, broad on the background) and every layer dial as a
 # plan key, tuned there rather than in the source. The recommended plan:
 #
@@ -101,7 +102,9 @@ plakat paint from photo.png --medium charcoal --palette sumi \
 #   shadow_floor: 0.16         detail_len: 0.5          infill: follow          rigger: 0.35      hotspot: 0.5
 #   dry: 1.0                   wash_in: 0.5             wet_cap: 0.45           scumble: 1.0      skip: 0.3
 #   deplete: 1.8               turbulence: 8            accent: 1.0             loose: 0.5        vary: 0.35
-#   broken: 0.15               sfumato: 0.7             glaze: 0.6              glaze_pass: 0.3
+#   broken: 0.15               sfumato: 0.7             glaze: 0.6              glaze_pass: 0.3   comma: 0.5
+#   shade: 0.6                 imprimatura: 0.6         body_vary: 0.3          lost: 0.6         crest: 0.4
+#   spatter: 0.5
 #   impasto: 0.3               ridges: 0.3              impasto_map: 1.0        sheen: 0.2
 #
 plakat paint from photo.png --medium acrylic --plan acrylic.hjson -o out-acrylic.png

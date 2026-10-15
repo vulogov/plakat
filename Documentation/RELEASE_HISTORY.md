@@ -31,9 +31,28 @@ per-cycle commits carry the rationale + before/after.
   the paint beneath, free to cross the seam — so the figure meets its ground in a translucent overlap. On a
   face, where the picture is smooth, the paint is **sfumato** — fewer fine marks, broad, wet, half-charged,
   fused — so the skin is not hatched into a grain; a **glaze pass** after the ladder lays a thin wet film over
-  everything; the mark's length is spread as a Gaussian, wider where the picture is flat. **Every layer dial is
+  everything but the faces and hair (its mid brush smudged a small head's cheek) and the sharp contrasts (so
+  the accents stand crisp over it); the mark's length is spread as a Gaussian, wider where the picture is
+  flat; the hand's **pressure runs along the mark** (`comma`, a brush field in the score's header) — the width
+  and the deposit swell a third of the way along and lift toward the ends, a drop or a comma; a bristle whose
+  charge has run out skips on the tooth as a dry one does; and on a face under the sfumato the drift of hue
+  is wider. The picture has a **hierarchy**: in the shadows, off the faces, a mark lands only where the
+  canvas is plainly wrong, never to chase a small tone, and the marks that land run longer, wider and calm —
+  no dry skip, no hue drift (`shade`) — so the dark masses rest and the detail is kept for the light; the block-in is laid as an **imprimatura** (darker and warmer than the
+  picture, toward a burnt umber), the underpainting that shows between the later marks; and each mark's
+  **body** is spread as a Gaussian (`body_vary`) — thick and opaque, or thinner, wetter and translucent, its
+  viscosity in the record. On the finest pass and the glaze pass the subject's edge is **lost** where it lies
+  in shadow (`lost`): the mark's colour is the picture blurred wide across the seam and the mark runs across
+  it, a dark figure meeting its dark ground in one tone; one more pass after the glaze is a **dry brush over
+  the ridges** (`crest`, a per-stroke field in the record): a fine brush where the relief is broken, a
+  lighter, warmer tint that catches only the tops of the relief beneath; and the thickest marks in the light fling **spatter** (`spatter`): a
+  drop or three off the lift-off, round thick dots of the mark's own paint, ordinary strokes in the score.
+  Two diagnostic hooks, `PLAKAT_PAINT_ARMATURE_DUMP` and `PLAKAT_PAINT_REFERENCE_DUMP`, save the armature and
+  each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
+  highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
+  head was eased down into a beige sliver). **Every layer dial is
   a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
-  `broken`, `sfumato`, `glaze_pass`, `vary`), tuned in the plan; the recommended acrylic plan is in
+  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `crest`, `spatter`), tuned in the plan; the recommended acrylic plan is in
   `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
   fixed 0.5. Every other medium is byte-identical.
 

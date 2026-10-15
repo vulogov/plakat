@@ -219,11 +219,40 @@ pub struct MediumProfile {
     /// beneath — the skin fused, not hatched into a grain.
     pub sfumato: f32,
     /// GLAZE PASS (0..1, 0 = off — the charge): one more pass after the ladder, a mid brush, every mark a thin
-    /// wet film laid over everything (no restate gate), unifying the detail under one tone.
+    /// wet film laid over the ground and the clothes (no restate gate), unifying the detail under one tone —
+    /// never over a face or hair, where its mid brush smudged a small head's features.
     pub glaze_pass: f32,
     /// VARY (0..1, 0 = off): a Gaussian spread of the mark's length (σ in log length), wider where the
     /// picture is flat — no two marks the same.
     pub vary: f32,
+    /// COMMA (0..1, 0 = off): the hand's pressure along the mark — the width and the deposit swell a third of
+    /// the way along and lift toward the ends, a drop or a comma (see `BrushConfig::comma`).
+    pub comma: f32,
+    /// SHADE (0..1, 0 = off): in the shadows, off the faces and hair, a restating mark lands only where the
+    /// canvas is plainly wrong (the restate floor raised `1 + 4·shade·shadow`, against the committed shadows'
+    /// drop of it), and the marks that land run longer and wider, laid calm — no dry skip, no hue drift — so
+    /// the dark masses rest and the detail is kept for the light, where the eye goes.
+    pub shade: f32,
+    /// IMPRIMATURA (0..1, 0 = off): the block-in is laid darker and warmer than the picture — pulled toward a
+    /// burnt umber — so what shows between the later marks (a dry mark's skips, the thinned shadows, the
+    /// seams) is the dark warm underpainting of a classical picture, not the picture's own colour.
+    pub imprimatura: f32,
+    /// BODY VARY (σ, 0 = off): a Gaussian spread of each mark's body in its log — one mark thick and opaque,
+    /// the next thinner, wetter and translucent — the paint's consistency never the same twice on the brush.
+    pub body_vary: f32,
+    /// LOST (0..1, 0 = off): on the finest ladder pass and the glaze pass, along the subject's silhouette where
+    /// the picture is in shadow, a mark's colour is the picture blurred wide across the seam, its path grows
+    /// along that blur and may cross the seam, and its charge is `0.4 + 0.6·lost` — the edge between a dark
+    /// figure and its dark ground lost, as a painter rubs it out with a finger.
+    pub lost: f32,
+    /// CREST (0..1, the share): one more pass after the glaze, a fine brush (the ladder's third-finest), off
+    /// the faces and hair, where the relief is broken — this share of its seeds are a dry brush dragged over
+    /// the dried relief, a lighter, warmer tint that catches only the ridges' tops (see `BrushConfig::crest`),
+    /// the texture lit without a new shape.
+    pub crest: f32,
+    /// SPATTER (0..1, 0 = off): the thickest marks, in the light and off the faces, fling a drop or three off
+    /// their lift-off along the mark's direction — round thick dots of the mark's own paint, standing up.
+    pub spatter: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -272,6 +301,13 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -313,6 +349,13 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -354,6 +397,13 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -436,6 +486,13 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -486,6 +543,13 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -531,6 +595,13 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -572,6 +643,13 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -616,6 +694,13 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -657,6 +742,13 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -701,6 +793,13 @@ pub const DURER: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -746,6 +845,13 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -790,6 +896,13 @@ pub const PENCIL: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -836,6 +949,13 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -877,6 +997,13 @@ pub const PASTEL: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -918,6 +1045,13 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     sfumato: 0.0,
     glaze_pass: 0.0,
     vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -965,6 +1099,13 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     sfumato: 0.7,
     glaze_pass: 0.3,
     vary: 0.35,
+    comma: 0.5,
+    shade: 0.6,
+    imprimatura: 0.6,
+    body_vary: 0.3,
+    lost: 0.6,
+    crest: 0.4,
+    spatter: 0.5,
 };
 
 /// Every declared medium.
@@ -1106,7 +1247,7 @@ mod tests {
     fn only_the_acrylic_lays_its_layers_dry() {
         // The layer fields are neutral on every other medium: those paint exactly as they did before them.
         for m in ALL.iter().filter(|m| m.name != "acrylic") {
-            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
         }
         assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
         assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);
