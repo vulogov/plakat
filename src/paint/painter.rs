@@ -5612,16 +5612,13 @@ fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage,
     let flat = kuwahara(source, long * PLATE_SMOOTH);
     let luma: Vec<f32> = flat.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
     let mut skin = book_skin(p, w, h).map(|s| s.1);
-    // THE SMALL HEADS (see `Head`): each is its egg — the flesh plate is cut to the template, not to the
-    // detector's cells — less its hair, which is the key's; and each has its light.
-    let heads: Vec<(Head, Option<[f32; 2]>, Vec<usize>)> = p.features.iter().map(|f| f.map(|q| [q[0] * w as f32, q[1] * h as f32])).filter(|f| Head::apart(f) / long < FACE_PATTERN).map(|f| {
-        let head = Head::of(&f);
-        let hair = head.hair(&luma, w, h);
-        let light = head.light(&luma, w, h);
-        (head, light, hair)
-    }).collect();
+    // THE SMALL HEADS (see `Head`): each is its egg, fitted — the flesh plate is cut to the head, not to the
+    // detector's cells — less its hair, which is the key's; and all stand in
+    // the scene's one light. (Read off the source, as the key reads them, so the plate's edge is the line's.)
+    let luma_source = sheet_luma(source);
+    let (heads, scene) = small_heads(p, &luma_source, w, h);
     if let Some(s) = skin.as_mut() {
-        for (head, _, hair) in &heads {
+        for (_, head) in &heads {
             let (x0, x1, y0, y1) = head.bounds(w, h, 1.0);
             for y in y0..=y1 {
                 for x in x0..=x1 {
@@ -5631,7 +5628,7 @@ fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage,
                     }
                 }
             }
-            for &i in hair {
+            for i in head.hair(&luma_source, w, h) {
                 s[i] = false;
             }
         }
@@ -5758,13 +5755,12 @@ fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage,
     }).collect();
     // THE SHADOW SIDE of each small head (see `HEAD_SHADE`), flat: the flesh under the darkest ink.
     if let Some(sp) = shade_plate {
-        for (head, light, _) in &heads {
-            let Some(l) = light else { continue };
+        for (_, head) in &heads {
             let (x0, x1, y0, y1) = head.bounds(w, h, 1.0);
             for y in y0..=y1 {
                 for x in x0..=x1 {
                     let i = y * w + x;
-                    if on_face(i) && head.in_shadow([x as f32 + 0.5, y as f32 + 0.5], *l) {
+                    if on_face(i) && head.in_shadow([x as f32 + 0.5, y as f32 + 0.5], scene) {
                         label[i] = sp as u8;
                     }
                 }
@@ -6131,21 +6127,22 @@ fn head_outline(off: &[bool], cw: usize, ch: usize, cx: usize, cy: usize, size: 
         }
         let every = ((size * 0.03) as usize).max(2);
         let pts: Vec<[f32; 2]> = dense.iter().step_by(every).map(|q| [q[0] + cx as f32, q[1] + cy as f32]).collect();
-        lost_and_found(&pts, (size * 0.02).max(2.4), light, &mut out);
+        lost_and_found(&pts, (size * 0.02).max(2.4), light, &[], &mut out);
     }
     out
 }
 
 /// A closed ring of points drawn LOST AND FOUND (see `HEAD_LOST`): the weight at each point is the full
 /// `base` in the shade, thinning by degrees toward the light, and gone where the light falls; the kept runs
-/// are cut into short strokes on layer 1, which the key stamps at their own width down to a hair.
-fn lost_and_found(pts: &[[f32; 2]], base: f32, light: Option<[f32; 2]>, out: &mut Vec<crate::paint::engrave::Cut>) {
+/// are cut into short strokes on layer 1, which the key stamps at their own width down to a hair. A point's
+/// weight is further scaled by `keep` (0..1 each, or none), where the ring's own reading says the line gives out.
+fn lost_and_found(pts: &[[f32; 2]], base: f32, light: Option<[f32; 2]>, keep: &[f32], out: &mut Vec<crate::paint::engrave::Cut>) {
     let n = pts.len();
     if n < 4 {
         return;
     }
     let c = pts.iter().fold([0f32; 2], |m, q| [m[0] + q[0], m[1] + q[1]]).map(|v| v / n as f32);
-    let heft: Vec<f32> = pts.iter().map(|q| match light {
+    let heft: Vec<f32> = pts.iter().enumerate().map(|(j, q)| keep.get(j).copied().unwrap_or(1.0) * match light {
         None => 1.0,
         Some(l) => {
             let (dx, dy) = (q[0] - c[0], q[1] - c[1]);
@@ -6193,15 +6190,38 @@ const FACE_PATTERN: f32 = 0.035;
 const HEAD_EGG: (f32, f32, f32) = (0.3, 1.2, 1.6);
 const HEAD_JAW: f32 = 0.3;
 const HEAD_TURN: f32 = 0.4;
+/// ... and the egg is FITTED to the head (see `Head::fit`), since no two heads are one egg and a head bent
+/// forward or back is no egg at all: along each of `HEAD_RAYS` rays from the egg's centre the picture's luma
+/// is read `HEAD_FIT_PROBE` of the scale wide, from `HEAD_FIT_SPAN.0` to `HEAD_FIT_SPAN.1` of the egg's radius
+/// — never nearer than `HEAD_FIT_CROWN` over the eyes, where the face's edge on its hair is not the head's —
+/// and the rim goes to the strongest step, each radius it stands from the egg costing it `HEAD_FIT_PRIOR` of
+/// luma; a step under `HEAD_FIT_EDGE` is none, and the egg stays. The radii are smoothed round the head. The
+/// step left at the rim is kept: the CHIN's line, over `HEAD_CHIN` of the egg's height under its centre, is
+/// drawn only as strong as that step — where the chin runs into the neck with no step of the luma, no line.
+const HEAD_RAYS: usize = 48;
+const HEAD_FIT_PROBE: f32 = 0.04;
+const HEAD_FIT_SPAN: (f32, f32) = (0.75, 1.35);
+const HEAD_FIT_CROWN: f32 = 0.9;
+const HEAD_FIT_PRIOR: f32 = 0.25;
+const HEAD_FIT_EDGE: f32 = 0.06;
+const HEAD_CHIN: f32 = 0.6;
 /// ... the HAIR is the mass over the egg, grown by `HEAD_HAIR_GROW`, above `HEAD_HAIR_DOWN` of the scale
 /// under the eyes, that is not skin and lies `HEAD_HAIR_DARK` (luma) under the skin — printed solid black, as
 /// the thirties printed a small head's hair; none unless a quarter of the egg's crown is it (a bald head
 /// has none). And the SHADOW SIDE of the head is flat: the flesh with the darkest ink over it, a crescent —
-/// what lies in the egg but outside the egg moved `HEAD_SHADE` of the scale toward the light.
+/// what lies in the egg but outside the egg moved `HEAD_SHADE` of the scale toward the light, its edge
+/// wavering by `HEAD_SHADE_WOBBLE` of the egg round the head as a brush would leave it, not a cut.
 const HEAD_HAIR_GROW: f32 = 1.15;
 const HEAD_HAIR_DOWN: f32 = 0.75;
 const HEAD_HAIR_DARK: f32 = 0.15;
 const HEAD_SHADE: f32 = 0.45;
+const HEAD_SHADE_WOBBLE: f32 = 0.06;
+/// The SCENE's light, one for every small head on the sheet: the way the heads' own lights agree on — each
+/// head's light (see `Head::light`) a unit vote, taken when the votes' sum keeps `SCENE_LIGHT_AGREE` of their
+/// count — and otherwise the illustrator's light, `SCENE_LIGHT`, from the upper left. No head has its shadow
+/// cast its own way.
+const SCENE_LIGHT: [f32; 2] = [-0.6, -0.8];
+const SCENE_LIGHT_AGREE: f32 = 0.5;
 /// The PATTERN's measures, in scales (the eyes' distance): an eye's dash half-length and width and its
 /// pupil's dot; the brow's height over the eye and its width; the nose line's width at the bridge and at the
 /// tip; the mouth's least half-length and its width shut.
@@ -6209,6 +6229,12 @@ const PATTERN_EYE: (f32, f32, f32) = (0.2, 0.12, 0.2);
 const PATTERN_BROW: (f32, f32) = (0.3, 0.07);
 const PATTERN_NOSE: (f32, f32) = (0.05, 0.09);
 const PATTERN_MOUTH: (f32, f32) = (0.28, 0.07);
+/// ... and the BROW and the MOUTH are each a CURVE read off the picture, not a rule: the dark of the feature,
+/// in a window `PATTERN_FIT.0` of the scale across round where the pattern sets it, is fitted by a parabola
+/// along the feature, and the pattern's line bends as the parabola does — raised, knit, smiling, turned down
+/// — as far as the window's dark is sure (its mean, in values, against `PATTERN_FIT.1`); the bend is held
+/// within `PATTERN_FIT.2` of the scale. The pupil stands off the eye's middle with the turn of the head.
+const PATTERN_FIT: (f32, f32, f32) = (0.12, 8.0, 0.12);
 
 struct Head {
     eyes: [f32; 2],
@@ -6216,6 +6242,9 @@ struct Head {
     v: [f32; 2],
     s: f32,
     yaw: f32,
+    /// The rim's radius on each ray, in egg radii, and the step of the luma across the rim there.
+    r: [f32; HEAD_RAYS],
+    edge: [f32; HEAD_RAYS],
 }
 
 impl Head {
@@ -6230,7 +6259,66 @@ impl Head {
         let v = { let v = [-u[1], u[0]]; if v[0] * (mouth[0] - eyes[0]) + v[1] * (mouth[1] - eyes[1]) < 0.0 { [-v[0], -v[1]] } else { v } };
         let yaw = (((nose[0] - eyes[0]) * u[0] + (nose[1] - eyes[1]) * u[1]) / (apart * 0.5).max(1.0)).clamp(-1.0, 1.0);
         let s = (apart / (1.0 - 0.25 * yaw.abs())).max(tall * 0.9).max(4.0);
-        Head { eyes, u, v, s, yaw }
+        Head { eyes, u, v, s, yaw, r: [1.0; HEAD_RAYS], edge: [0.0; HEAD_RAYS] }
+    }
+    /// The egg FITTED to the head (see `HEAD_FIT_PROBE`).
+    fn fit(face: &[[f32; 2]; 5], luma: &[f32], w: usize, h: usize) -> Head {
+        let mut head = Head::of(face);
+        let probe = (head.s * HEAD_FIT_PROBE).max(1.0);
+        let sample = |q: [f32; 2]| -> Option<f32> {
+            let (x0, x1) = ((q[0] - probe).max(0.0) as usize, ((q[0] + probe).max(0.0) as usize).min(w - 1));
+            let (y0, y1) = ((q[1] - probe).max(0.0) as usize, ((q[1] + probe).max(0.0) as usize).min(h - 1));
+            let mut m = [0f32; 2];
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    if (x as f32 + 0.5 - q[0]).hypot(y as f32 + 0.5 - q[1]) <= probe {
+                        m = [m[0] + luma[y * w + x], m[1] + 1.0];
+                    }
+                }
+            }
+            (m[1] > 0.0 && q[0] >= 0.0 && q[1] >= 0.0 && q[0] < w as f32 && q[1] < h as f32).then(|| m[0] / m[1])
+        };
+        const STEP: f32 = 0.025;
+        const ACROSS: usize = 3;
+        let mut r = [1.0f32; HEAD_RAYS];
+        for k in 0..HEAD_RAYS {
+            let phi = std::f32::consts::TAU * k as f32 / HEAD_RAYS as f32;
+            let lo = if phi.sin() < 0.0 { HEAD_FIT_SPAN.0.max(HEAD_FIT_CROWN) } else { HEAD_FIT_SPAN.0 };
+            let ts: Vec<f32> = (0..).map(|i| lo + STEP * i as f32).take_while(|t| *t <= HEAD_FIT_SPAN.1 + 1e-4).collect();
+            let ls: Vec<Option<f32>> = ts.iter().map(|&t| sample(head.rim_at(phi, t))).collect();
+            let mut best: Option<(f32, f32, f32)> = None;
+            for i in ACROSS..ts.len().saturating_sub(ACROSS) {
+                let (Some(a), Some(b)) = (ls[i - ACROSS], ls[i + ACROSS]) else { continue };
+                let g = (b - a).abs();
+                let score = g - HEAD_FIT_PRIOR * (ts[i] - 1.0).abs();
+                if g >= HEAD_FIT_EDGE && best.map_or(true, |(bs, _, _)| score > bs) {
+                    best = Some((score, ts[i], g));
+                }
+            }
+            if let Some((_, t, _)) = best {
+                r[k] = t;
+            }
+        }
+        // Smoothed round the head, twice, five rays at a time.
+        for _ in 0..2 {
+            let src = r;
+            for k in 0..HEAD_RAYS {
+                let at = |d: i64| src[((k as i64 + d).rem_euclid(HEAD_RAYS as i64)) as usize];
+                r[k] = ((at(-2) + at(2)) + 2.0 * (at(-1) + at(1)) + 3.0 * at(0)) / 9.0;
+            }
+        }
+        head.r = r.map(|t| t.clamp(HEAD_FIT_SPAN.0, HEAD_FIT_SPAN.1));
+        // The step across the rim as fitted.
+        for k in 0..HEAD_RAYS {
+            let phi = std::f32::consts::TAU * k as f32 / HEAD_RAYS as f32;
+            let t = head.r[k];
+            let d = STEP * ACROSS as f32;
+            head.edge[k] = match (sample(head.rim_at(phi, t - d)), sample(head.rim_at(phi, t + d))) {
+                (Some(a), Some(b)) => (b - a).abs(),
+                _ => 0.0,
+            };
+        }
+        head
     }
     /// The eyes' distance of a face, as the detector gives it.
     fn apart(face: &[[f32; 2]; 5]) -> f32 {
@@ -6244,24 +6332,35 @@ impl Head {
         let (dx, dy) = (p[0] - self.eyes[0], p[1] - self.eyes[1]);
         ((dx * self.u[0] + dy * self.u[1]) / self.s, (dx * self.v[0] + dy * self.v[1]) / self.s)
     }
-    /// How far out a point lies on the egg: 1 on its rim.
+    /// The rim's radius at angle `phi`, in egg radii, between the rays.
+    fn radius(&self, phi: f32) -> f32 {
+        let f = phi.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * HEAD_RAYS as f32;
+        let (k, t) = ((f.floor() as usize) % HEAD_RAYS, f - f.floor());
+        self.r[k] * (1.0 - t) + self.r[(k + 1) % HEAD_RAYS] * t
+    }
+    /// How far out a point lies on the head: 1 on its rim.
     fn egg(&self, a: f32, b: f32) -> f32 {
         let ey = (b - HEAD_EGG.0) / HEAD_EGG.2;
         let ex = (a + HEAD_TURN * self.yaw) / (HEAD_EGG.1 * (1.0 - HEAD_JAW * ey.max(0.0).powi(2)));
-        (ex * ex + ey * ey).sqrt()
+        (ex * ex + ey * ey).sqrt() / self.radius(ey.atan2(ex))
     }
-    /// The egg's rim at angle `phi` (0 at the right, down the face at a quarter turn).
-    fn rim(&self, phi: f32) -> [f32; 2] {
+    /// The point at angle `phi` (0 at the right, down the face at a quarter turn) and `t` egg radii out.
+    fn rim_at(&self, phi: f32, t: f32) -> [f32; 2] {
         let (ey, ex) = phi.sin_cos();
+        let (ey, ex) = (ey * t, ex * t);
         self.at(-HEAD_TURN * self.yaw + HEAD_EGG.1 * ex * (1.0 - HEAD_JAW * ey.max(0.0).powi(2)), HEAD_EGG.0 + HEAD_EGG.2 * ey)
+    }
+    /// The head's rim at angle `phi`.
+    fn rim(&self, phi: f32) -> [f32; 2] {
+        self.rim_at(phi, self.radius(phi))
     }
     fn centre(&self) -> [f32; 2] {
         self.at(-HEAD_TURN * self.yaw, HEAD_EGG.0)
     }
-    /// The egg's bounding box on a sheet of `w` by `h`, grown by `grow`.
+    /// The head's bounding box on a sheet of `w` by `h`, grown by `grow`.
     fn bounds(&self, w: usize, h: usize, grow: f32) -> (usize, usize, usize, usize) {
         let c = self.centre();
-        let r = self.s * HEAD_EGG.2 * grow + 1.0;
+        let r = self.s * HEAD_EGG.2 * grow * self.r.iter().fold(1.0f32, |m, t| m.max(*t)) + 1.0;
         (((c[0] - r).max(0.0) as usize).min(w - 1), ((c[0] + r).max(0.0) as usize).min(w - 1), ((c[1] - r).max(0.0) as usize).min(h - 1), ((c[1] + r).max(0.0) as usize).min(h - 1))
     }
     /// The FACE's luma: the mean over the egg's band from the eyes to the chin, which is face whatever the
@@ -6328,36 +6427,70 @@ impl Head {
         (len >= self.s * 2.5 * HEAD_LIT_LEAST).then(|| [d[0] / len, d[1] / len])
     }
     /// Whether a sheet point lies on the head's SHADOW SIDE (see `HEAD_SHADE`): in the egg, but out of the
-    /// egg moved toward the light — a crescent on the side the light leaves.
+    /// egg moved toward the light — a crescent on the side the light leaves, its edge wavering.
     fn in_shadow(&self, q: [f32; 2], light: [f32; 2]) -> bool {
         let (a, b) = self.local(q);
+        if self.egg(a, b) > 1.0 {
+            return false;
+        }
         let (la, lb) = (light[0] * self.u[0] + light[1] * self.u[1], light[0] * self.v[0] + light[1] * self.v[1]);
-        self.egg(a, b) <= 1.0 && self.egg(a - HEAD_SHADE * la, b - HEAD_SHADE * lb) > 1.0
+        let (a, b) = (a - HEAD_SHADE * la, b - HEAD_SHADE * lb);
+        let phi = ((b - HEAD_EGG.0) / HEAD_EGG.2).atan2((a + HEAD_TURN * self.yaw) / HEAD_EGG.1);
+        let wobble = 0.5 * (3.0 * phi + 1.3).sin() + 0.3 * (7.0 * phi + 0.4).sin() + 0.2 * (11.0 * phi + 2.1).sin();
+        self.egg(a, b) > 1.0 + HEAD_SHADE_WOBBLE * wobble
     }
+}
+
+/// The small heads of a sheet (see `Head`), fitted, and the SCENE's light (see `SCENE_LIGHT`).
+fn small_heads(p: &PaintParams, luma: &[f32], w: usize, h: usize) -> (Vec<([[f32; 2]; 5], Head)>, [f32; 2]) {
+    let long = w.max(h) as f32;
+    let heads: Vec<([[f32; 2]; 5], Head)> = p.features.iter().map(|f| f.map(|q| [q[0] * w as f32, q[1] * h as f32])).filter(|f| Head::apart(f) / long < FACE_PATTERN).map(|f| { let head = Head::fit(&f, luma, w, h); (f, head) }).collect();
+    let votes: Vec<[f32; 2]> = heads.iter().filter_map(|(_, head)| head.light(luma, w, h)).collect();
+    let sum = votes.iter().fold([0f32; 2], |m, l| [m[0] + l[0], m[1] + l[1]]);
+    let len = sum[0].hypot(sum[1]);
+    let scene = if !votes.is_empty() && len >= SCENE_LIGHT_AGREE * votes.len() as f32 { [sum[0] / len, sum[1] / len] } else { let l = SCENE_LIGHT[0].hypot(SCENE_LIGHT[1]); [SCENE_LIGHT[0] / l, SCENE_LIGHT[1] / l] };
+    (heads, scene)
+}
+
+/// The luma of the sheet, 0..1, as the small heads are read.
+fn sheet_luma(source: &RgbImage) -> Vec<f32> {
+    source.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect()
 }
 
 /// A FACE BY THE PATTERN of the thirties, in a crowd or a window: the head by template (see `Head`), its line
 /// lost and found; the neck; the hair a solid mass; and the features, each a sign — a dash for each eye
 /// with its dark, the brow an arc over it, one line for the nose down its shadow side, the mouth from corner
 /// to corner — set where the detector's points put them and sized by the scale, the picture read only for
-/// the measures that tell one face from the next: how long an eye's dark is, which side the light leaves,
-/// how far the mouth is open.
-fn pattern_face(face: &[[f32; 2]; 5], crop: &RgbImage, off: &[bool], cx: usize, cy: usize, cw: usize, ch: usize, luma: &[f32], sw: usize, sh: usize, features: &mut Vec<crate::paint::engrave::Cut>) {
+/// the measures that tell one face from the next: how the brow and the mouth bend, how far the mouth is
+/// open. The light is the scene's.
+fn pattern_face(face: &[[f32; 2]; 5], head: &Head, scene: [f32; 2], crop: &RgbImage, off: &[bool], cx: usize, cy: usize, cw: usize, ch: usize, luma: &[f32], sw: usize, sh: usize, features: &mut Vec<crate::paint::engrave::Cut>) {
     let [le, re, nose, lm, rm] = *face;
-    let head = Head::of(face);
     let (s, u, v, eyes, yaw) = (head.s, head.u, head.v, head.eyes, head.yaw);
     let mouth = [(lm[0] + rm[0]) * 0.5, (lm[1] + rm[1]) * 0.5];
     let apart = Head::apart(face);
-    // THE HEAD: the egg's rim, lost on the lit side; the neck, two light lines under the jaw.
-    let light = head.light(luma, sw, sh);
-    let rim: Vec<[f32; 2]> = (0..48).map(|k| head.rim(std::f32::consts::TAU * k as f32 / 48.0)).collect();
-    lost_and_found(&rim, (s * 0.05).max(2.4), light, features);
+    let pixel = |q: [f32; 2]| ((q[1].max(0.0) as usize).min(sh - 1)) * sw + ((q[0].max(0.0) as usize).min(sw - 1));
+    let hair: std::collections::HashSet<usize> = head.hair(luma, sw, sh).into_iter().collect();
+    // THE HEAD: the rim, lost on the lit side, gone in the hair, and at the chin as strong as the step there
+    // (see `HEAD_CHIN`); the neck, two light lines under the jaw.
+    let rim: Vec<[f32; 2]> = (0..HEAD_RAYS).map(|k| head.rim(std::f32::consts::TAU * k as f32 / HEAD_RAYS as f32)).collect();
+    let keep: Vec<f32> = (0..HEAD_RAYS).map(|k| {
+        let phi = std::f32::consts::TAU * k as f32 / HEAD_RAYS as f32;
+        if hair.contains(&pixel(head.rim_at(phi, head.r[k] * 0.9))) {
+            0.0
+        } else if phi.sin() > HEAD_CHIN {
+            (head.edge[k] / HEAD_FIT_EDGE).clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }).collect();
+    lost_and_found(&rim, (s * 0.05).max(2.4), Some(scene), &keep, features);
     let turn = -HEAD_TURN * yaw;
+    let chin = head.radius(std::f32::consts::FRAC_PI_2);
     for side in [-1.0f32, 1.0] {
-        features.push(crate::paint::engrave::Cut { layer: 1, path: vec![head.at(turn + side * 0.5, 1.72), head.at(turn + side * 0.52, 2.0), head.at(turn + side * 0.55, 2.3)], w0: (s * 0.035).max(1.6), w1: (s * 0.03).max(1.4) });
+        let b0 = HEAD_EGG.0 + HEAD_EGG.2 * chin;
+        features.push(crate::paint::engrave::Cut { layer: 1, path: vec![head.at(turn + side * 0.5, b0 - 0.18), head.at(turn + side * 0.52, b0 + 0.1), head.at(turn + side * 0.55, b0 + 0.4)], w0: (s * 0.035).max(1.6), w1: (s * 0.03).max(1.4) });
     }
     // THE HAIR, row by row.
-    let hair = head.hair(luma, sw, sh);
     if !hair.is_empty() {
         let mut rows: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
         for &i in &hair {
@@ -6376,36 +6509,92 @@ fn pattern_face(face: &[[f32; 2]; 5], crop: &RgbImage, off: &[bool], cx: usize, 
             }
         }
     }
-    // THE FEATURES, each a sign at its measure of the scale: the picture is read only for which side of the
-    // nose the light leaves and how far the mouth is open.
+    // THE FEATURES, each a sign at its measure of the scale, bent as the picture bends them (see `PATTERN_FIT`).
     let value = |im: &RgbImage, j: usize| { let c = im.get_pixel((j % cw) as u32, (j / cw) as u32).0; 0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32 };
-    let dash = |c: [f32; 2], along: [f32; 2], half: f32, width: f32| {
-        let width = width.max(1.6);
-        crate::paint::engrave::Cut { layer: 0, path: vec![[c[0] - along[0] * half, c[1] - along[1] * half], [c[0] + along[0] * half, c[1] + along[1] * half]], w0: width, w1: width * 0.65 }
-    };
     let fine = imageops::blur(crop, (s * 0.03).max(0.7));
     let round = imageops::blur(crop, (s * 0.25).max(2.0));
     let stands = |j: usize| if off[j] { 0.0 } else { value(&round, j) - value(&fine, j) };
-    let lit = |q: [f32; 2]| { let j = ((q[1] as usize).clamp(cy, cy + ch - 1) - cy) * cw + ((q[0] as usize).clamp(cx, cx + cw - 1) - cx); value(&round, j) };
-    // The eyes: a dash each with the pupil's dot in it, the far eye's shorter as the head turns, both tilted
-    // with the turn; and the BROW, an arc over each.
+    // A curve read off the picture: the dark of a feature in a window `half` along `along` and `across` down,
+    // round `c`, fitted b = c0 + c1·A + c2·A² (A the way along, -1..1; b down the face, in pixels), weighted by
+    // how far each point stands under its surroundings — and how sure the window's dark is, 0..1.
+    let fit_curve = |c: [f32; 2], along: [f32; 2], half: f32, across: f32| -> Option<([f32; 3], f32)> {
+        let down = { let d = [-along[1], along[0]]; if d[0] * v[0] + d[1] * v[1] < 0.0 { [-d[0], -d[1]] } else { d } };
+        let reach = half.max(across) + 1.0;
+        let (x0, x1) = ((c[0] - reach).max(cx as f32) as usize, ((c[0] + reach).max(0.0) as usize).min(cx + cw - 1));
+        let (y0, y1) = ((c[1] - reach).max(cy as f32) as usize, ((c[1] + reach).max(0.0) as usize).min(cy + ch - 1));
+        let mut m = [0f64; 9];
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let (dx, dy) = (x as f32 + 0.5 - c[0], y as f32 + 0.5 - c[1]);
+                let (a, b) = (dx * along[0] + dy * along[1], dx * down[0] + dy * down[1]);
+                if a.abs() > half || b.abs() > across || hair.contains(&(y * sw + x)) {
+                    continue;
+                }
+                let wgt = stands((y - cy) * cw + (x - cx)).max(0.0) as f64;
+                let (aa, b) = ((a / half) as f64, b as f64);
+                m = [m[0] + wgt, m[1] + wgt * aa, m[2] + wgt * aa * aa, m[3] + wgt * aa * aa * aa, m[4] + wgt * aa * aa * aa * aa, m[5] + wgt * b, m[6] + wgt * aa * b, m[7] + wgt * aa * aa * b, m[8] + 1.0];
+            }
+        }
+        if m[8] < 6.0 || m[0] <= 0.0 {
+            return None;
+        }
+        let (s0, s1, s2, s3, s4) = (m[0], m[1], m[2], m[3], m[4]);
+        let det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+        if det.abs() < 1e-9 * s0.powi(3).max(1e-12) {
+            return None;
+        }
+        let solve = |r: [f64; 3]| {
+            let c0 = r[0] * (s2 * s4 - s3 * s3) - s1 * (r[1] * s4 - s3 * r[2]) + s2 * (r[1] * s3 - s2 * r[2]);
+            let c1 = s0 * (r[1] * s4 - s3 * r[2]) - r[0] * (s1 * s4 - s3 * s2) + s2 * (s1 * r[2] - r[1] * s2);
+            let c2 = s0 * (s2 * r[2] - r[1] * s3) - s1 * (s1 * r[2] - r[1] * s2) + r[0] * (s1 * s3 - s2 * s2);
+            [(c0 / det) as f32, (c1 / det) as f32, (c2 / det) as f32]
+        };
+        let c = solve([m[5], m[6], m[7]]);
+        if c.iter().any(|x| !x.is_finite()) {
+            return None;
+        }
+        Some((c, ((m[0] / m[8]) as f32 / PATTERN_FIT.1).clamp(0.0, 1.0)))
+    };
+    // The pattern's curve bent toward the picture's as far as the dark is sure, the bend held within bounds.
+    let bent = |base: [f32; 3], fit: Option<([f32; 3], f32)>, hold: [f32; 3]| -> [f32; 3] {
+        match fit {
+            None => base,
+            Some((c, sure)) => { let mut out = base; for i in 0..3 { let to = c[i].clamp(base[i] - hold[i], base[i] + hold[i]); out[i] = base[i] + sure * (to - base[i]); } out }
+        }
+    };
+    let curve = |c: [f32; 2], along: [f32; 2], half: f32, k: [f32; 3], w0: f32, w1: f32| -> crate::paint::engrave::Cut {
+        let down = { let d = [-along[1], along[0]]; if d[0] * v[0] + d[1] * v[1] < 0.0 { [-d[0], -d[1]] } else { d } };
+        let path = [-1.0f32, -0.5, 0.0, 0.5, 1.0].iter().map(|&aa| { let b = k[0] + k[1] * aa + k[2] * aa * aa; [c[0] + along[0] * aa * half + down[0] * b, c[1] + along[1] * aa * half + down[1] * b] }).collect();
+        crate::paint::engrave::Cut { layer: 0, path, w0, w1 }
+    };
+    let hold = s * PATTERN_FIT.2;
+    // The eyes: a dash each with the pupil's dot in it, stood off the middle with the turn, the far eye's
+    // shorter as the head turns, both tilted with the turn; and the BROW, a curve over each.
     for (eye, si) in if apart > 0.35 * s { vec![(le, -1.0f32), (re, 1.0)] } else { vec![(eyes, 0.0)] } {
         let half = s * PATTERN_EYE.0 * (1.0 - 0.45 * (si * yaw).max(0.0));
         let (sn, cs) = (0.3 * yaw * si).sin_cos();
         let along = [u[0] * cs + v[0] * sn, u[1] * cs + v[1] * sn];
-        features.push(dash(eye, along, half, s * PATTERN_EYE.1));
-        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[eye[0] - along[0] * s * 0.03, eye[1] - along[1] * s * 0.03], [eye[0] + along[0] * s * 0.03, eye[1] + along[1] * s * 0.03]], w0: s * PATTERN_EYE.2, w1: s * PATTERN_EYE.2 });
-        let brow = |t: f32, lift: f32| [eye[0] + along[0] * t - v[0] * s * (PATTERN_BROW.0 + lift), eye[1] + along[1] * t - v[1] * s * (PATTERN_BROW.0 + lift)];
-        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![brow(-half * 1.3, -0.04), brow(0.0, 0.02), brow(half * 1.35, -0.03)], w0: (s * PATTERN_BROW.1).max(1.6), w1: (s * PATTERN_BROW.1 * 0.7).max(1.4) });
+        let width = (s * PATTERN_EYE.1).max(1.6);
+        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[eye[0] - along[0] * half, eye[1] - along[1] * half], [eye[0] + along[0] * half, eye[1] + along[1] * half]], w0: width, w1: width * 0.65 });
+        let look = yaw * half * 0.35;
+        features.push(crate::paint::engrave::Cut { layer: 0, path: vec![[eye[0] + along[0] * (look - s * 0.03), eye[1] + along[1] * (look - s * 0.03)], [eye[0] + along[0] * (look + s * 0.03), eye[1] + along[1] * (look + s * 0.03)]], w0: s * PATTERN_EYE.2, w1: s * PATTERN_EYE.2 });
+        let brow_c = [eye[0] - v[0] * s * PATTERN_BROW.0, eye[1] - v[1] * s * PATTERN_BROW.0];
+        let brow_half = half * 1.3;
+        let k = bent([-0.02 * s, 0.0, 0.055 * s], fit_curve(brow_c, along, brow_half, s * PATTERN_FIT.0), [hold * 0.7, hold, hold]);
+        features.push(curve(brow_c, along, brow_half, k, (s * PATTERN_BROW.1).max(1.6), (s * PATTERN_BROW.1 * 0.7).max(1.4)));
     }
-    // The nose: one line down its shadow side; the mouth: a line from corner to corner, fuller when open.
-    let side = if lit([nose[0] - u[0] * s * 0.2, nose[1] - u[1] * s * 0.2]) < lit([nose[0] + u[0] * s * 0.2, nose[1] + u[1] * s * 0.2]) { -1.0 } else { 1.0 };
+    // The nose: one line down the side the scene's light leaves; the mouth: a curve from corner to corner,
+    // fuller when open.
+    let side = if scene[0] * u[0] + scene[1] * u[1] < 0.0 { 1.0 } else { -1.0 };
     let at = |f: f32, out: f32, down: f32| [eyes[0] + (nose[0] - eyes[0]) * f + u[0] * side * s * out + v[0] * s * down, eyes[1] + (nose[1] - eyes[1]) * f + u[1] * side * s * out + v[1] * s * down];
     features.push(crate::paint::engrave::Cut { layer: 0, path: vec![at(0.25, 0.05, 0.0), at(0.65, 0.08, 0.0), at(1.0, 0.14, 0.03)], w0: (s * PATTERN_NOSE.0).max(1.4), w1: (s * PATTERN_NOSE.1).max(1.8) });
     let wide = (rm[0] - lm[0]).hypot(rm[1] - lm[1]);
     let along = if wide > 0.2 * s { [(rm[0] - lm[0]) / wide, (rm[1] - lm[1]) / wide] } else { u };
     let open = { let j = ((mouth[1] as usize).clamp(cy, cy + ch - 1) - cy) * cw + ((mouth[0] as usize).clamp(cx, cx + cw - 1) - cx); (stands(j) / 30.0).clamp(0.0, 1.0) };
-    features.push(dash(mouth, along, (wide * 0.5).max(s * PATTERN_MOUTH.0), s * (PATTERN_MOUTH.1 + 0.1 * open)));
+    let half = (wide * 0.5).max(s * PATTERN_MOUTH.0);
+    let k = bent([0.0, 0.0, 0.0], fit_curve(mouth, along, half, s * PATTERN_FIT.0), [hold * 0.5, hold, hold]);
+    let width = (s * (PATTERN_MOUTH.1 + 0.1 * open)).max(1.6);
+    features.push(curve(mouth, along, half, k, width, width * 0.65));
 }
 
 /// The KEY plate's plan: the faces' features, built from the detector's points (each a stroke of the black),
@@ -6425,11 +6614,14 @@ fn book_plan(source: &RgbImage, p: &PaintParams, _budget: usize) -> BookPlan {
     let mut drawn = imageops::blur(source, (long / 1000.0).max(0.8));
     // (The face with its features: an eye is drawn, not hatched.)
     let face = book_skin(p, source.width() as usize, source.height() as usize).map(|f| f.1);
-    let luma_sheet: Vec<f32> = source.pixels().map(|px| (0.299 * px.0[0] as f32 + 0.587 * px.0[1] as f32 + 0.114 * px.0[2] as f32) / 255.0).collect();
+    let luma_sheet = sheet_luma(source);
     // A FACE is drawn from the picture at its sharpest, its features brought out: an eye, a nostril, the line of
     // a mouth are faint edges beside a window frame's, and judged with the whole sheet they are left out — the
     // face comes out a blank or a mask. On skin the picture's local contrast is raised before the line is planned.
     let (sw, sh) = (source.width() as usize, source.height() as usize);
+    // The small heads, fitted, and the one light they all stand in (see `small_heads`).
+    let (heads, scene) = small_heads(p, &luma_sheet, sw, sh);
+    let head_of = |f: &[[f32; 2]; 5]| heads.iter().find(|(g, _)| g == f).map(|(_, head)| head);
     let near_face = face.as_ref().map(|skin| dilate_bool(skin, sw, sh, (long * 0.003) as usize));
     // ... and it is drawn at ITS OWN scale: a face that fills the sheet and a face in a far window are each a
     // few lines — the eyes, the nose, the mouth, the jaw. So each face is read out of focus by a share of its
@@ -6505,7 +6697,9 @@ fn book_plan(source: &RgbImage, p: &PaintParams, _budget: usize) -> BookPlan {
                     // features by the pattern.
                     head_quiet(&mut drawn, &crop, &off, cw, ch, cx, cy, size);
                     for f in &known {
-                        pattern_face(f, &crop, &off, cx, cy, cw, ch, &luma_sheet, sw, sh, &mut features);
+                        let fitted;
+                        let head = match head_of(f) { Some(head) => head, None => { fitted = Head::fit(f, &luma_sheet, sw, sh); &fitted } };
+                        pattern_face(f, head, scene, &crop, &off, cx, cy, cw, ch, &luma_sheet, sw, sh, &mut features);
                     }
                 }
                 if !known.is_empty() {
@@ -6574,7 +6768,9 @@ fn book_plan(source: &RgbImage, p: &PaintParams, _budget: usize) -> BookPlan {
                         features.extend(head_outline(&off, cw, ch, cx, cy, size, head_light(&crop, &off, cw, ch, size)));
                     }
                     for f in &pattern {
-                        pattern_face(f, &crop, &off, cx, cy, cw, ch, &luma_sheet, sw, sh, &mut features);
+                        let fitted;
+                        let head = match head_of(f) { Some(head) => head, None => { fitted = Head::fit(f, &luma_sheet, sw, sh); &fitted } };
+                        pattern_face(f, head, scene, &crop, &off, cx, cy, cw, ch, &luma_sheet, sw, sh, &mut features);
                     }
                 }
                 // (Every face the detector found in this piece of skin — two heads together are one piece.)
