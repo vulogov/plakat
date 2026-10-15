@@ -8,6 +8,35 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.5.0 — in development
+
+### `plakat paint`
+
+- **`--medium acrylic` is painted in layers like the indirect oil, each dry before the next.** The medium
+  profile now says how its LAYERS go on (`dries`, `wash_in`, `wet_cap`, `scumble`, `skip`), and the acrylic
+  uses them: the canvas dries fully between passes (nothing beneath is picked up or stirred); the block-in is a
+  thin, flooded wash underpainting at two thirds of the charge; every later mark goes on no wetter than 0.45
+  and sits on the dried layer as a flat patch with a crisp edge; the finest pass, off the faces, is dragged
+  dry — a thinner charge, raked, no pickup — over a brush that skips on the canvas's tooth; a synthetic flat
+  brush with a square edge; no wet bloom; the colour dries darker (−0.05) under a satin sheen and a thin
+  relief. The flow of every pass is turned by a low-frequency **turbulence** (±8°, halved on a face), so the
+  marks are never quite parallel; on the finest pass an **accent** — a short, thick, opaque dab set off the flow
+  at its own angle — goes where the picture's local contrast is sharp; and off the subject and the faces the
+  painting is **loose** — longer, wider marks on the broad passes and the restating passes thinned with the
+  ladder — so the background is the big brush's flat patches and the face the small brush's. The paint has
+  **body**: a heavy relief with bristle ridges, its thickness following the picture (lights thick, shadows
+  thin, a face laid smooth), relit with its micro-shadows under a satin sheen; a mark's **charge runs out
+  along it** (`deplete`, a brush field in the score's header), thick at the start and a dry tail over the
+  layer beneath; and along the subject's silhouette the finest pass lays **glazes** — thin, wet, picking up
+  the paint beneath, free to cross the seam — so the figure meets its ground in a translucent overlap. On a
+  face, where the picture is smooth, the paint is **sfumato** — fewer fine marks, broad, wet, half-charged,
+  fused — so the skin is not hatched into a grain; a **glaze pass** after the ladder lays a thin wet film over
+  everything; the mark's length is spread as a Gaussian, wider where the picture is flat. **Every layer dial is
+  a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
+  `broken`, `sfumato`, `glaze_pass`, `vary`), tuned in the plan; the recommended acrylic plan is in
+  `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
+  fixed 0.5. Every other medium is byte-identical.
+
 ## What's new in 7.4.0 — Early book illustration: a thirties four-colour book plate printed from the picture, its faces drawn by the pattern
 
 ### `plakat paint`

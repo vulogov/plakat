@@ -59,9 +59,10 @@ pub struct PaintArgs {
     #[arg(long, default_value_t = 0.0)]
     pub fill: f32,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (fully wet-into-wet, the
-    /// masses smear into mud); 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy look.
-    #[arg(long, default_value_t = 0.5)]
-    pub dry: f32,
+    /// masses smear into mud); 1 = bone dry (crisp overlays). Default: the medium's (0.5 for most; acrylic
+    /// dries fully) — the main dial against a muddy look.
+    #[arg(long)]
+    pub dry: Option<f32>,
     /// SHADOW FLOOR (0..0.45): the value re-key lifts the SHADOW family into a narrow band above this floor instead of
     /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
     #[arg(long)]
@@ -261,7 +262,7 @@ pub struct SpecArgs {
     pub diffuse: Option<f32>,
     pub threads: usize,
     pub fill: f32,
-    pub dry: f32,
+    pub dry: Option<f32>,
     pub shadow_floor: Option<f32>,
     pub detail_length: Option<f32>,
     pub coverage: f32,
@@ -717,9 +718,10 @@ pub struct FromArgs {
     #[arg(long = "new", num_args = 0..=1, default_missing_value = "true", default_value_t = false, action = clap::ArgAction::Set)]
     pub new_painting: bool,
     /// INTER-PASS DRYING (0..1): how much the canvas dries between passes. 0 = never (masses smear into mud);
-    /// 1 = bone dry (crisp overlays). Default 0.5 — the main dial against a muddy/washed look.
-    #[arg(long, default_value_t = 0.5)]
-    pub dry: f32,
+    /// 1 = bone dry (crisp overlays). Default: the medium's (0.5 for most; acrylic dries fully) — the main dial
+    /// against a muddy/washed look.
+    #[arg(long)]
+    pub dry: Option<f32>,
     /// SHADOW FLOOR (0..0.45): the value re-key lifts the SHADOW family into a narrow band above this floor instead of
     /// stretching darks to black (RFC §3.3 — a shadow mass is solid, never crushed). Default 0.16 (plan-tunable).
     #[arg(long)]
@@ -1577,7 +1579,22 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.diffuse = spec.diffuse.or(a.diffuse).unwrap_or(0.0).clamp(-1.0, 1.0);
     params.threads = spec.threads.unwrap_or(a.threads);
     params.fill = spec.fill.unwrap_or(a.fill).clamp(0.0, 1.0);
-    params.dry = a.dry.clamp(0.0, 1.0);
+    // The LAYERS as the medium lays them (see `MediumProfile::dries`): `--dry` overrides the drying.
+    params.dry = a.dry.unwrap_or(plan.medium.dries).clamp(0.0, 1.0);
+    params.wash_in = plan.medium.wash_in;
+    params.wet_cap = plan.medium.wet_cap;
+    params.scumble = plan.medium.scumble;
+    params.brush.skip = plan.medium.skip;
+    params.turbulence = plan.medium.turbulence;
+    params.accent = plan.medium.accent;
+    params.loose = plan.medium.loose;
+    params.glaze = plan.medium.glaze;
+    params.sfumato = plan.medium.sfumato;
+    params.glaze_pass = plan.medium.glaze_pass;
+    params.vary = plan.medium.vary;
+    params.brush.ridges = plan.medium.ridges;
+    params.brush.deplete = plan.medium.deplete;
+    params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
@@ -1956,6 +1973,8 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let mut budget_explicit = a.budget != 1500;
     let mut plan_text: Option<String> = None;
     let mut plan_path: Option<std::path::PathBuf> = None;
+    // The plan's LAYER dials (see `PaintPlan::dry`…), applied over the medium's own once the medium is set.
+    let mut layer_plan: Option<crate::paint::plan::PaintPlan> = None;
     if let Some(spec) = a.plan.clone() {
         let plan = if spec == "auto" {
             let analysis = analyze_image(&a.input, a.medium.as_deref().unwrap_or("watercolour"), &a.palette, a.new_painting).await?;
@@ -2041,6 +2060,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.impasto.is_none() {
             a.impasto = plan.impasto;
         }
+        if a.dry.is_none() {
+            a.dry = plan.dry;
+        }
+        if a.broken.is_none() {
+            a.broken = plan.broken;
+        }
+        layer_plan = Some(plan.clone());
         // The plain dials: the plan's value applies where the command line left the default.
         if let Some(v) = plan.stroke_width {
             if (a.stroke_width - 1.0).abs() < 1e-6 { a.stroke_width = v; }
@@ -2287,6 +2313,22 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.brush.k_pickup = m.pickup;
         params.broken = m.broken;
         params.contour = m.contour;
+        // The LAYERS as the medium lays them (see `MediumProfile::dries`, `wash_in`, `wet_cap`, `scumble`, `skip`).
+        params.dry = m.dries;
+        params.wash_in = m.wash_in;
+        params.wet_cap = m.wet_cap;
+        params.scumble = m.scumble;
+        params.brush.skip = m.skip;
+        params.turbulence = m.turbulence;
+        params.accent = m.accent;
+        params.loose = m.loose;
+        params.glaze = m.glaze;
+        params.sfumato = m.sfumato;
+        params.glaze_pass = m.glaze_pass;
+        params.vary = m.vary;
+        params.brush.ridges = m.ridges;
+        params.brush.deplete = m.deplete;
+        params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
             params.reserve = Some(0.72);
@@ -2295,6 +2337,20 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         }
         mark = Some(m.mark);
         println!("{}  medium: {} (full technique)", style("·").dim(), m.name);
+    }
+    // The plan's layer dials over the medium's own (see `PaintPlan::dry`): each absent = the medium's.
+    if let Some(pl) = &layer_plan {
+        if let Some(v) = pl.wash_in { params.wash_in = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.wet_cap { params.wet_cap = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.scumble { params.scumble = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.turbulence { params.turbulence = v.clamp(0.0, 90.0); }
+        if let Some(v) = pl.accent { params.accent = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.loose { params.loose = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.glaze { params.glaze = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.deplete { params.brush.deplete = v.clamp(0.0, 10.0); }
+        if let Some(v) = pl.sfumato { params.sfumato = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.glaze_pass { params.glaze_pass = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.vary { params.vary = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {
@@ -2345,7 +2401,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             println!("{}  palette: monochrome medium → its own grey (sumi)", style("·").dim());
         }
     }
-    params.dry = a.dry.clamp(0.0, 1.0);
+    if let Some(d) = a.dry {
+        params.dry = d.clamp(0.0, 1.0);
+    }
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
     params.detail_coherence = a.detail_coherence.clamp(0.0, 1.0);
@@ -2448,7 +2506,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
     let luminous_new = a.new_painting && a.medium.as_deref().and_then(crate::paint::medium::MediumProfile::by_name).map(|m| m.mark.luminous).unwrap_or(false);
     // (The impasto map too: a face is laid smooth and thin whatever the light says, so it must know where
     // the faces are.)
-    let mapped_impasto = a.impasto_map.map_or(false, |v| v > 0.0);
+    let mapped_impasto = a.impasto_map.map_or(params.impasto_map > 0.0, |v| v > 0.0);
     if a.preserve_face.is_some() || a.armature_face.is_some() || luminous_new || mapped_impasto {
         if let Some((m, e)) = build_face_mask_ext(&a.input, w, h).await? {
             params.face_mask = Some(m);
@@ -2726,7 +2784,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         // `--dry` was set; and the paper is reserved RELATIVE to the KEYED picture: its lightest ~15% stays
         // paper (measured on the picture the painter reads — judged before the key, a lifted picture went
         // almost all paper). `--reserve` overrides.
-        if (a.dry - 0.5).abs() < 1e-6 {
+        if a.dry.is_none() {
             params.dry = 1.0;
         }
         if a.reserve.is_none() {
@@ -2750,7 +2808,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         use crate::paint::painter::WetTechnique as T;
         let (tech, dry, bl, diffuse) = technique_of(t)?;
         params.technique = tech;
-        if (a.dry - 0.5).abs() < 1e-6 {
+        if a.dry.is_none() {
             params.dry = dry;
         }
         if a.bleed.is_none() {

@@ -181,6 +181,44 @@ pub struct PaintPlan {
     /// is built from. Few and clean; many stacked transparent layers are mud.
     #[serde(default)]
     pub levels: Option<u32>,
+    /// THE LAYERS, as the plan decides them (each absent = the medium's own; see `MediumProfile`): `dry` — how
+    /// far the canvas dries between passes; `wash_in` — the block-in thinned to a wash; `wet_cap` — the
+    /// wettest a later mark goes on; `scumble` — the finest pass dry-brushed off the faces; `turbulence` — the
+    /// flow turned by a low-frequency noise, in degrees; `accent` — thick short dabs at the sharp contrasts;
+    /// `loose` — longer, wider, fewer marks off the subject; `glaze` — translucent overlaps along the
+    /// subject's silhouette; `deplete` — how fast a mark's charge runs out along it; `broken` — the drift of
+    /// hue from mark to mark.
+    #[serde(default)]
+    pub dry: Option<f32>,
+    #[serde(default)]
+    pub wash_in: Option<f32>,
+    #[serde(default)]
+    pub wet_cap: Option<f32>,
+    #[serde(default)]
+    pub scumble: Option<f32>,
+    #[serde(default)]
+    pub turbulence: Option<f32>,
+    #[serde(default)]
+    pub accent: Option<f32>,
+    #[serde(default)]
+    pub loose: Option<f32>,
+    #[serde(default)]
+    pub glaze: Option<f32>,
+    #[serde(default)]
+    pub deplete: Option<f32>,
+    #[serde(default)]
+    pub broken: Option<f32>,
+    /// SFUMATO (0..1): on a face, where the picture is smooth (a cheek, a forehead), the fine passes thin and
+    /// the marks that remain go on broad, wet, half-charged and picking up the paint beneath — fused, not
+    /// hatched. GLAZE PASS (0..1, the charge): one more pass at the end with a mid brush, every mark thin and
+    /// wet over everything, unifying the detail under one tone. VARY (0..1): a Gaussian spread of the mark's
+    /// length, wider where the picture is flat.
+    #[serde(default)]
+    pub sfumato: Option<f32>,
+    #[serde(default)]
+    pub glaze_pass: Option<f32>,
+    #[serde(default)]
+    pub vary: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -260,6 +298,19 @@ impl Default for PaintPlan {
             detail_restate: None,
             hdr_amount: None,
             levels: None,
+            dry: None,
+            wash_in: None,
+            wet_cap: None,
+            scumble: None,
+            turbulence: None,
+            accent: None,
+            loose: None,
+            glaze: None,
+            deplete: None,
+            broken: None,
+            sfumato: None,
+            glaze_pass: None,
+            vary: None,
             notes: Vec::new(),
         }
     }
@@ -346,6 +397,11 @@ impl PaintPlan {
         }
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
+        }
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
         }
         match &self.analysis {
             Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
@@ -655,6 +711,19 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             detail_restate: None,
             hdr_amount: None,
             levels: None,
+            dry: None,
+            wash_in: None,
+            wet_cap: None,
+            scumble: None,
+            turbulence: None,
+            accent: None,
+            loose: None,
+            glaze: None,
+            deplete: None,
+            broken: None,
+            sfumato: None,
+            glaze_pass: None,
+            vary: None,
         notes,
     }
 }

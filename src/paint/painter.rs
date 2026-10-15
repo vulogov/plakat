@@ -67,6 +67,9 @@ impl BrushProfile {
             "tempera" => BrushProfile { radius_scale: 0.60, len: 0.60, streak: 0.15, round: 0.65, waver: 0.06 },
             // broad, long, soft, thin — watercolour / sky washes
             "wash" => BrushProfile { radius_scale: 1.30, len: 1.60, streak: 0.15, round: 0.85, waver: 0.10 },
+            // A synthetic flat for acrylic: smooth, evenly loaded lanes, a square edge, a steady hand — the
+            // mark is a flat patch with a crisp edge, not a raked or a feathered one.
+            "acrylic" => BrushProfile { radius_scale: 1.00, len: 1.00, streak: 0.30, round: 0.40, waver: 0.05 },
             _ => BrushProfile { radius_scale: 0.95, len: 1.00, streak: 0.50, round: 0.70, waver: 0.12 },
         }
     }
@@ -409,12 +412,33 @@ pub struct PaintParams {
     pub warmth: f32,
     /// CLARITY (0..1, 0 = off): gentle LOCAL contrast (large-radius unsharp) — NOT edge sharpening.
     pub clarity: f32,
+    /// WASH-IN (0..1): the block-in laid as a thin, flooded wash (see `MediumProfile::wash_in`). 0 = full charge.
+    pub wash_in: f32,
+    /// WET CAP (0..1, 1 = none): the wettest a mark after the block-in goes on (see `MediumProfile::wet_cap`).
+    pub wet_cap: f32,
+    /// SCUMBLE (0..1, 0 = off): the finest pass dry-brushed off the faces (see `MediumProfile::scumble`).
+    pub scumble: f32,
+    /// TURBULENCE (degrees, 0 = off): the flow turned by a low-frequency noise (see `MediumProfile::turbulence`).
+    pub turbulence: f32,
+    /// ACCENTS (0..1, 0 = off): thick short dabs at the sharp contrasts on the finest pass (see `MediumProfile::accent`).
+    pub accent: f32,
+    /// LOOSE (0..1, 0 = off): longer, wider marks off the subject on the broad passes (see `MediumProfile::loose`).
+    pub loose: f32,
+    /// GLAZE (0..1, 0 = off): translucent overlapping marks along the subject's silhouette on the finest pass
+    /// (see `MediumProfile::glaze`).
+    pub glaze: f32,
+    /// SFUMATO (0..1, 0 = off): the skin fused where it is smooth (see `MediumProfile::sfumato`).
+    pub sfumato: f32,
+    /// GLAZE PASS (0..1, 0 = off): one thin wet pass over everything after the ladder (see `MediumProfile::glaze_pass`).
+    pub glaze_pass: f32,
+    /// VARY (0..1, 0 = off): a Gaussian spread of the mark's length (see `MediumProfile::vary`).
+    pub vary: f32,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0 }
     }
 }
 
@@ -1885,6 +1909,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         }
         None => passes,
     };
+    // THE GLAZE PASS (see `MediumProfile::glaze_pass`): one more pass after the ladder, a mid brush, every mark
+    // a thin wet film over everything — a stage of its own in the score, so the replay crosses it alike.
+    let passes: Vec<PassSpec> = if p.glaze_pass > 0.0 && !p.density && !p.luminous && !passes.is_empty() {
+        let mut passes = passes;
+        let mid = passes.get(1).or(passes.first()).map(|q| q.radius).unwrap_or(p.min_brush * 2.0);
+        passes.push(PassSpec { face_only: false, radius: mid, budget: (p.budget / 6).max(64), stage: "glaze".into() });
+        passes
+    } else {
+        passes
+    };
+    let ladder_len = passes.iter().filter(|q| q.stage != "glaze").count();
     // The schedule goes into the score so a replay crosses every pass boundary the paint crossed — a pass that
     // lays no stroke included. Density media run no passes (the drawing is laid by `ink_drawing`).
     // A luminous medium: the washes (one stage per level), then the two finest brush passes at a fraction of
@@ -2303,6 +2338,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // The first pass is a block-in: it covers the whole canvas so no white ground survives. Later passes
         // only restate where the canvas is still wrong.
         let block_in = layer == 0;
+        // The last pass OF THE LADDER (the glaze pass after it is no ladder pass: no accents, no scumble on it).
+        let last_pass = layer + 1 == ladder_len;
+        let glazing = pass.stage == "glaze";
         if placed >= p.budget {
             break;
         }
@@ -2452,6 +2490,38 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             }
             None => (gx, gy),
         };
+        // TURBULENCE (see `MediumProfile::turbulence`): the flow turned by a low-frequency field of noise —
+        // a few waves across the sheet, deterministic, the same at every pass — by up to the medium's angle
+        // either way, halved on a face. The magnitude is kept (it feeds the detail gate).
+        let (gx, gy) = if p.turbulence > 0.0 {
+            let (mut gx, mut gy) = (gx, gy);
+            let (a, b, c, d) = turbulence_waves(w.max(h) as f32);
+            let amp = p.turbulence.to_radians();
+            for i in 0..gx.len() {
+                let (x, y) = ((i % w as usize) as f32, (i / w as usize) as f32);
+                let n = 0.5 * ((a * x + 1.3 * (b * y).sin()).sin() + (c * y + 0.9 * (d * x).sin()).sin());
+                let face = p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let (sn, cs) = (amp * n * (1.0 - 0.5 * face)).sin_cos();
+                let (x0, y0) = (gx[i], gy[i]);
+                gx[i] = x0 * cs - y0 * sn;
+                gy[i] = x0 * sn + y0 * cs;
+            }
+            (gx, gy)
+        } else {
+            (gx, gy)
+        };
+        // ACCENTS (see `MediumProfile::accent`): the sharp contrasts of the finest pass's reference, at the
+        // brush's own scale — where the dab goes down thick.
+        // The picture's local RANGE at the brush's scale: the accents' map on the finest pass, and the measure of
+        // "smooth here" for the sfumato and the length's spread on every pass after the block-in.
+        let range_map: Option<Vec<f32>> = (!block_in && (p.sfumato > 0.0 || p.vary > 0.0 || (p.accent > 0.0 && last_pass))).then(|| local_range(&luma, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize));
+        let accent_map: Option<&Vec<f32>> = if p.accent > 0.0 && last_pass && !block_in { range_map.as_ref() } else { None };
+        // GLAZE (see `MediumProfile::glaze`): the band two brush widths each side of the subject's silhouette.
+        let glaze_band: Option<Vec<bool>> = (p.glaze > 0.0 && last_pass && !block_in).then(|| p.region_mask.as_deref()).flatten().map(|m| {
+            let r = (radius * 2.0).ceil().max(2.0) as usize;
+            let inv: Vec<bool> = m.iter().map(|b| !b).collect();
+            dilate_bool(m, w as usize, h as usize, r).iter().zip(dilate_bool(&inv, w as usize, h as usize, r)).map(|(a, b)| *a && b).collect()
+        });
         // BRUSH for this pass: the composition layer's `layer_brush` if set, else the intelligent per-role
         // default. HIGH-FIDELITY uses a clean, low-waver, short-tracking brush at every pass so strokes lie down
         // as disciplined marks that follow the reference — not the loose, wavering, streaky invention.
@@ -2605,7 +2675,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         return None;
                     }
                 }
-                if !block_in && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
+                if !block_in && !glazing && !p.density && rgb_dist(cv.color_at(ix, iy), target) < restate_floor {
                     return None;
                 }
                 // A watercolour stroke is a GLAZE over what is there: it never lands where the paper is already
@@ -2727,12 +2797,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // taper to a point, so what escapes is a filament, not a bulge. Letting them all cross turned
                 // the outline into a fuzzy blob — the discipline is that most strands still stop at the seam.
                 let strand_out = hair > 0.35 && jitter(p.seed ^ 0x9E37_79B9, k.wrapping_add(11)) + 0.5 < 0.35;
+                let glazed = glaze_band.as_ref().map_or(false, |b| b.get(region_i).copied().unwrap_or(false));
                 let region = if let Some(m) = p.paint_mask.as_deref() {
                     Some((m, true))
                 } else if !wc_mass_masks.is_empty() {
                     let lbl = wc_mass.as_ref().map(|(l, _)| l[region_i] as usize).unwrap_or(0);
                     Some((wc_mass_masks[lbl].as_slice(), true))
-                } else if strand_out {
+                } else if strand_out || glazed {
                     None
                 } else {
                     p.region_mask.as_deref().map(|m| (m, m.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false)))
@@ -2752,10 +2823,41 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // so on a texture the marks stay short and on an edge they run. (Measured: 60% of the 4 px marks
                 // were under 10 px — every edge printed as a chain of beads.)
                 let fine_len = if wc_wash && fine && !wcb_broad { wcb_finelen } else { 1.0 };
-                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
+                // LOOSE (see `MediumProfile::loose`): off the subject and the faces, the broad passes' marks run
+                // longer and wider — the free hand on the background. ACCENT (see `MediumProfile::accent`): at a
+                // sharp contrast on the finest pass the mark is a short thick dab, set off the flow at its own angle.
+                let off_subject = !on_face && subj < 0.5;
+                let range_here = range_map.as_ref().and_then(|m| m.get(region_i)).copied().unwrap_or(0.5);
+                // SFUMATO (see `MediumProfile::sfumato`): a smooth passage of a face — the fine passes thin there
+                // with the ladder, and what remains is laid broad, wet and thin (below).
+                let smooth_face = p.sfumato > 0.0 && !block_in && !glazing && on_face && hair <= 0.0 && range_here < SFUMATO_FLAT;
+                if smooth_face && jitter(p.seed ^ 0x5F0_4A70, k.wrapping_add(19)) + 0.5 > 1.0 - p.sfumato * depth_t {
+                    return None;
+                }
+                // VARY (see `MediumProfile::vary`): the mark's length spread as a Gaussian in its log, wider where
+                // the picture is flat — three uniform draws summed (σ 0.5), scaled.
+                let lvar = if p.vary > 0.0 && !block_in {
+                    let g = 2.0 * (jitter(p.seed ^ 0x6A55, k.wrapping_add(23)) + jitter(p.seed ^ 0x6A56, k.wrapping_add(29)) + jitter(p.seed ^ 0x6A57, k.wrapping_add(31)));
+                    let flat = (1.0 - (range_here / 0.3).clamp(0.0, 1.0)) * 0.6 + 0.4;
+                    lvar * (p.vary * g * flat).exp().clamp(0.4, 2.5)
+                } else {
+                    lvar
+                };
+                // ... and off the subject the restating passes THIN with the ladder — the finest keeps `1 − loose`
+                // of its marks there — so the background stays the broad brush's flat patches, not a thousand
+                // small corrections blended over them. (A deterministic skip by the stroke's own key: replay-exact.)
+                if p.loose > 0.0 && !block_in && off_subject && jitter(p.seed ^ 0x1005E, k.wrapping_add(17)) + 0.5 > 1.0 - p.loose * depth_t {
+                    return None;
+                }
+                let loose_here = if p.loose > 0.0 && !detail && off_subject { 1.0 + p.loose } else { 1.0 };
+                let accented = accent_map.map_or(false, |m| m.get(region_i).copied().unwrap_or(0.0) > ACCENT_EDGE);
+                let rw = rw * if p.loose > 0.0 && !detail && off_subject { 1.0 + 0.3 * p.loose } else { 1.0 } * if smooth_face { 1.0 + 0.6 * p.sfumato } else { 1.0 };
+                let path = grow_path(cx, cy, radius, &gx, &gy, &reference, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
+                // An accent dab is set at its own angle, off the flow: the path turned about its middle.
+                let path = if accented { turn_path(&path, (jitter(p.seed ^ 0xACCE_17, k.wrapping_add(13)) * 2.0 * ACCENT_TURN).to_radians(), w, h) } else { path };
                 // Laid less wet (0.7, jittered) so strokes sit ON the canvas rather than dissolving into the wet
                 // paint beneath — distinct marks, not a smear. Some wetness remains for light harmonisation.
                 // DETAIL marks are laid DRIER still: a fine accent that resolves a feature (an eye, a window, a
@@ -2883,6 +2985,51 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                     None => load,
                 };
+                // THE LAYERS OF A FAST-DRYING PAINT (acrylic; see `MediumProfile::wash_in`, `wet_cap`, `scumble`):
+                // the block-in is a thin flooded wash; every mark after it goes on no wetter than the cap, a flat
+                // patch on a dried layer; and the finest pass, off the faces, is dragged DRY — a thinner charge,
+                // raked, no pickup — over the layer beneath. Each is in the stroke as laid (its charge, its
+                // wetness, its streak, its pickup), so the replay lays it alike.
+                let scumbled = p.scumble > 0.0 && last_pass && !block_in && !on_face && hair <= 0.0 && !accented && !glazed && !glazing;
+                if glazing {
+                    // The glaze pass: a soft round, no pickup, a thin film.
+                    stroke_brush.k_pickup = 0.0;
+                    stroke_brush.streak = stroke_brush.streak.min(0.15);
+                    stroke_brush.round = stroke_brush.round.max(0.85);
+                } else if smooth_face {
+                    // Sfumato: a soft round, picking up the paint beneath, so the marks fuse.
+                    stroke_brush.k_pickup = 0.35 * p.sfumato;
+                    stroke_brush.streak = stroke_brush.streak.min(0.2);
+                    stroke_brush.round = stroke_brush.round.max(0.85);
+                }
+                if glazed {
+                    // Thin and wet, picking up the paint beneath: a translucent overlap across the seam.
+                    stroke_brush.k_pickup = 0.3 * p.glaze;
+                }
+                if accented {
+                    // Thick, opaque, laid on nearly dry: the dab stands up.
+                    stroke_brush.viscosity = p.brush.viscosity * (1.0 + 1.5 * p.accent);
+                    stroke_brush.k_pickup = 0.0;
+                }
+                let (wet, load) = if block_in && p.wash_in > 0.0 {
+                    (wet.max(0.85), load.iter().map(|v| v * (1.0 - 0.7 * p.wash_in)).collect::<Vec<f32>>())
+                } else if glazing {
+                    (wet.max(0.65), load.iter().map(|v| v * p.glaze_pass).collect::<Vec<f32>>())
+                } else if smooth_face {
+                    (wet.max(0.7), load.iter().map(|v| v * (1.0 - 0.5 * p.sfumato)).collect::<Vec<f32>>())
+                } else if glazed {
+                    (wet.max(0.55), load.iter().map(|v| v * (1.0 - 0.55 * p.glaze)).collect::<Vec<f32>>())
+                } else if accented {
+                    (wet.min(0.3), load)
+                } else if scumbled {
+                    stroke_brush.streak = stroke_brush.streak.max(0.8);
+                    stroke_brush.k_pickup = 0.0;
+                    (wet.min(0.15), load.iter().map(|v| v * (1.0 - 0.45 * p.scumble)).collect::<Vec<f32>>())
+                } else if !block_in && p.wet_cap < 1.0 {
+                    (wet.min(p.wet_cap), load)
+                } else {
+                    (wet, load)
+                };
                 // IMPASTO MAPPED TO THE PICTURE (`impasto_map`): the thickness of the paint is a decision about
                 // the picture, not a global texture — the LIGHTS are laid thick and the shadows thin (the paint
                 // stands where the light falls; a shadow is a glaze), the SUBJECT thick and the background thin
@@ -2937,13 +3084,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // A pickup the stroke's own brush differs in from the header's is part of how it was laid.
                     // The dry brush zeroes it; left unrecorded, replay rebuilt every dry-brush mark with the
                     // header's pickup and drifted — the unrecorded-bristles bug again.
-                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush { Some(stroke_brush.k_pickup) } else { None },
+                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush || scumbled || accented || glazed || glazing || smooth_face { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                     kd: (wcb_broad || wc_wash).then_some(stroke_brush.k_deposit),
                     cap: ((wcb_broad || wc_wash) && stroke_brush.film_cap > 0.0).then_some(stroke_brush.film_cap),
                     flat: stroke_brush.flat_ends,
                     hold: stroke_brush.hold_charge,
-                    visc: (p.impasto_map > 0.0).then_some(stroke_brush.viscosity),
+                    visc: (p.impasto_map > 0.0 || accented).then_some(stroke_brush.viscosity),
                     tgt: Some(target),
                 })
             }
@@ -3214,6 +3361,34 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
 
 /// The fraction of the medium's bleed applied after pass `layer` of `n`: full on the block-in, none on the
 /// finest pass (linear in between). Shared with the score replay so both apply the identical schedule.
+/// An ACCENT (see `MediumProfile::accent`) goes where the finest pass's reference has a local range of luma
+/// over `ACCENT_EDGE` at the brush's scale, and is turned off the flow by up to `ACCENT_TURN` degrees either way.
+const ACCENT_EDGE: f32 = 0.22;
+const ACCENT_TURN: f32 = 35.0;
+/// A face is SMOOTH (see `MediumProfile::sfumato`) where the local range of luma at the brush's scale is under this.
+const SFUMATO_FLAT: f32 = 0.12;
+
+/// The TURBULENCE field's wave numbers (see `MediumProfile::turbulence`) for a sheet of `long` pixels: four
+/// incommensurate waves, the longest a ninth of the sheet.
+fn turbulence_waves(long: f32) -> (f32, f32, f32, f32) {
+    let lam = (long / 9.0).max(8.0);
+    let k = std::f32::consts::TAU / lam;
+    (k, k / 0.73, k / 1.21, k / 0.61)
+}
+
+/// A path turned about its middle by `angle`, kept on the sheet.
+fn turn_path(path: &[[f32; 2]], angle: f32, w: u32, h: u32) -> Vec<[f32; 2]> {
+    if path.len() < 2 {
+        return path.to_vec();
+    }
+    let c = path.iter().fold([0f32; 2], |m, q| [m[0] + q[0], m[1] + q[1]]).map(|v| v / path.len() as f32);
+    let (sn, cs) = angle.sin_cos();
+    path.iter().map(|q| {
+        let (dx, dy) = (q[0] - c[0], q[1] - c[1]);
+        [(c[0] + dx * cs - dy * sn).clamp(0.0, w as f32 - 1.0), (c[1] + dx * sn + dy * cs).clamp(0.0, h as f32 - 1.0)]
+    }).collect()
+}
+
 pub fn pass_bleed_taper(layer: usize, n: usize) -> f32 {
     if n <= 1 {
         1.0

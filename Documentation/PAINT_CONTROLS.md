@@ -289,17 +289,41 @@ bleed: 0.35
 contour: 0.4
 ```
 
-### Acrylic — `medium: acrylic`  🎯 *fast-dry, plastic sheen, darkens on drying*
-Opaque plastic colour, **fast‑dry** (clean stacked layers, little wet blend), a **plastic sheen**, and a slight
-**darken on drying**; permanent (no lifting).
-- Defaults: `body 1.0` · `impasto 0.35` · `sheen 0.20` · `dry_shift −0.03` · `pickup 0.15` · `lift 0.0` · `chroma 1.10`.
-- Tune: `sheen` for gloss; `impasto` for thick relief; keep `pickup`/`bleed` low (fast‑dry).
+### Acrylic — `medium: acrylic`  🎯 *fast-dry, layered like the indirect oil, darkens on drying*
+Opaque plastic colour painted in LAYERS, each **dry before the next** goes on: the block-in is a thin, flooded
+**wash underpainting** (`wash_in 0.5` — 65 % of the charge), every later mark goes on no wetter than `wet_cap
+0.45` and sits on the dried layer as a **flat patch with a crisp edge** (no pickup, no bleed, no blending), the
+**finest pass is dragged dry** off the faces (`scumble 1` — a thinner charge, raked, no pickup) over a brush
+that **skips on the canvas's tooth** (`skip 0.3`); a synthetic flat brush (smooth lanes, a square edge); the
+colour **dries darker** (`dry_shift −0.05`) under a satin sheen and a thin relief; permanent (no lifting). The
+flow of every pass is turned by a low-frequency **turbulence** of ±8° (halved on a face), so the marks are never
+quite parallel; on the finest pass an **accent** — a short, thick, opaque dab set off the flow at its own angle —
+goes where the picture's local contrast is sharp (a glint, a hard edge); and off the subject and the faces the
+painting is **loose**: the broad passes' marks run half again as long and wider, and the restating passes thin
+with the ladder (the finest keeps half its marks there) — the background is the big brush's flat patches, the
+subject the small brush's. Best as `--new --plan auto` (the painting from scratch with the face and figure
+tiers: the face gets the fine armature and the finest brushes, the background the broad ones). The paint has
+**body**: a heavy relief (`impasto 0.45`) with bristle **ridges** (`ridges 0.5`) and a thickness that follows the
+picture (`impasto_map 0.6` — lights thick, shadows thin, the subject thick, a face laid smooth), relit with its
+micro-shadows under a satin sheen; a mark's charge **runs out along it** (`deplete 1.8` — thick at the start, a
+dry tail over the layer beneath); and along the subject's silhouette the finest pass lays **glazes** (`glaze
+0.6` — thin, wet, picking up the paint beneath, free to cross the seam), so the figure meets its ground in a
+translucent overlap, not a cut edge. On a face, where the picture is smooth at the brush's scale, the paint is
+**sfumato** (`sfumato 0.7`): the fine passes thin there with the ladder and the marks that remain go on broad,
+wet, half-charged and picking up the paint beneath, so the skin is fused, not hatched into a grain; one more
+**glaze pass** after the ladder (`glaze_pass 0.3` — a mid brush, every mark a thin wet film over everything)
+unifies the detail under one tone; and the mark's length is spread as a Gaussian (`vary 0.35`), wider where the
+picture is flat. **Every one of these is a plan key** — tune them in the plan, not in the source: see the
+recommended plan in `PAINT_EXAMPLES.md`.
+- Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson
 medium: acrylic
-style: fidelity
-impasto: 0.4
-sheen: 0.25
+new: true
+impasto: 0.2
+sheen: 0.2
 ```
 
 ### Tempera — `medium: tempera`  🎯 *fine cross-hatched build-up (egg tempera)*
@@ -334,7 +358,7 @@ stroke_width: 0.8
 | tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · short strokes, each pass cross-hatched 45° | pigment  | verdaccio |
 | pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
-| acrylic       | 1.00 | 0.05  | 0.05   | 0.15    | 1.10   | −0.03     | 0.00      | 0.20  | 0.00 | 0.10   | 0.00    | continuous | pigment  | split-primary |
+| acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
 
 Every value is a **default** — set the same‑named field in the spec (or the CLI flag) to override it. The score
 records the applied `bleed` / `opacity` / `impasto` so a re‑render (`plakat paint replay`) reproduces the

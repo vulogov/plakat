@@ -42,6 +42,9 @@ pub struct BrushConfig {
     /// A loaded WASH brush holds its charge along the whole stroke (no dry-brush tail) — with or without
     /// the end taper.
     pub hold_charge: bool,
+    /// CHARGE DEPLETION (1 = the brush's own): a multiplier on how fast a lane's load runs out along the mark —
+    /// above 1 the mark goes down thick at the start and thins to a dry tail over the layer beneath.
+    pub deplete: f32,
     /// BRISTLE RIDGES (0 = off): the paint a lane leaves stands as high as that lane was loaded relative to
     /// its neighbours, so a stroke's relief is striated across its width. The amount scales the striation.
     pub ridges: f32,
@@ -58,7 +61,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, ridges: 0.0, skip: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0 }
     }
 }
 
@@ -160,7 +163,7 @@ impl Stroke {
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
         // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
         // fraction of what it deposits, so a long stroke lays paint along its whole travel.
-        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { (CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) };
+        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { ((CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) * brush.deplete.max(0.0)).min(1.0) };
 
         for i in 0..pts.len() {
             let p = pts[i];
