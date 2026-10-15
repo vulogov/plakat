@@ -8,6 +8,57 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.4.0 — Early book illustration: a thirties four-colour book plate printed from the picture, its faces drawn by the pattern
+
+### `plakat paint`
+
+- **`--medium early-book-illustration` is a printed plate now, not a wash.** The medium used to be flat
+  glazes through masks with a coloured line; it is now planned as a thirties four-colour book plate: a
+  **key** in black cut from the picture, **four flat inks** found in the picture, the lights left as the
+  **paper**, and one black **screen** in the shadows — each printed as a plate of its own, a pixel out of
+  register under the key, which stays in register. Still deterministic, still replayed byte-exact from its
+  score; the painting media and `durer` are byte-identical to 7.3.0.
+- **The key is the picture's drawing.** Its form is an adaptive local threshold on the grey, closed and
+  cleared of speck; the line is **heavy where the picture is dark on either side and thin where it is
+  light**, the weight averaged along the stroke, never thinner than a feature's floor; it is **pulled
+  straight where the edge is a rule or an arc**; a short line that curls back on itself, a loop round a
+  sliver, a line that scribbles in one place, and a short line where one already passes are not drawn.
+- **Four inks found in the picture.** The base colour is the Kuwahara-smoothed picture split by k-means
+  into three colour inks and a flesh, each one flat plate with no levels. The **overprint of two or three
+  inks is a plate of its own**, its colour the palette's pigments mixed as the press would mix them, so a
+  brown coat is red under grey and never a dotted brown; an undecided point goes with the sure points round
+  it, and a wall's shading is decided for the whole wall, not patch by patch. A small patch of any ink with
+  no line at its edge goes into the plate under it; a shaded colour is given the ink it would be in the
+  light; the edge between two broad tints is cut round only where the picture's edge is soft.
+- **One screen, in the shadows only.** A black 45° screen lies where the picture is darker than the plate
+  printed there — never on a face smaller than a portrait, nor round the eyes and mouth. No rim dries on a
+  printed plate.
+- **A near face is built, not traced.** One heavy upper lid that flicks past the outer corner, a light lower
+  lid, the iris a ring cut off by the lids over its dark — a dark eye filled, with one glint high on the
+  left in both eyes; the pupil a dot; the nose one line down its shadow side, broken at the bridge, and its
+  two nostrils; the mouth one calm line between its corners. Round each the picture is read with nothing in
+  it, so no brow runs into a nose.
+- **A small head is the pattern of the thirties.** A face whose eyes are under 3.5 % of the sheet apart is
+  drawn from the detector's five points: an **egg** set on the eyes, scaled by their distance, turned by the
+  nose, and **fitted to the head** — along each ray from its centre the rim goes to the strongest step of
+  the picture, smoothed round the head, so no two heads are one egg; the egg is the flesh plate's edge and
+  the head's line, **lost on the lit side and found in the shadow**, the chin drawn only as strong as its
+  step from the neck; the **hair one solid black mass**; a dash and a dot for each eye, the pupil stood off
+  the middle with the turn; **the brow and the mouth each a parabola** fitted to the dark of the feature,
+  the pattern's line bending to it as far as that dark is sure — knit, raised, smiling, turned down; one
+  nose line down the shadow side; a **flat crescent of shadow** — the flesh under the darkest ink, its edge
+  wavering as a brush leaves it — away from the **scene's one light**, which the heads agree on; and no
+  screen on it. A face in a window between a crowd's and a portrait's has one head line and bold features.
+- **A hard surface is one tint; metal is ruled.** `--materials "metal: *"` names everything the detector
+  leaves unnamed as metal: inside a closed contour a hard surface is one flat tint, a tint's edge on metal
+  and glass is allowed only along a drawn line, and the pen's hatch on polished metal turns with the
+  construction — a wheel's rim, its spokes — only where the edges are parallel and strong, and is ruled on a
+  flat plane. Skin comes from the face detector; `--normals` turns the hatch with the form.
+- **Known limits.** A beard on a small head is not told from the face — in a warm light its colour, its
+  saturation and the detector's mask are the skin's — so it is printed as the picture's plate under a drawn
+  chin; a small head turned far to the side fits the template worse; coats are still screened rather than
+  hatched.
+
 ## What's new in 7.3.0 — Dürer: an engraving cut from the picture itself, reading its relief, its surfaces and what things are made of
 
 ### `plakat paint`

@@ -61,7 +61,8 @@ pub async fn material_map(image: &Path, things: &[(u8, String)], device: &Device
     let (w, h) = image::image_dimensions(image).with_context(|| format!("opening {}", image.display()))?;
     let mut map = vec![0u8; (w * h) as usize];
     let mut owl = None;
-    for (kind, thing) in things {
+    // `*` names whatever nothing else names — a picture that is all machine: `metal: *` — and is given last.
+    for (kind, thing) in things.iter().filter(|t| t.1 != "*") {
         // The boxes the thing is in, and whether they were seen only faintly.
         let (boxes, faint): (Vec<[f32; 4]>, bool) = if thing.is_empty() {
             (faces(image, device).await?, false)
@@ -106,6 +107,10 @@ pub async fn material_map(image: &Path, things: &[(u8, String)], device: &Device
         }
         println!("·  materials: {what} — {found} found{}, {:.1}% of the picture", if faint { " (faintly)" } else { "" }, claimed as f32 * 100.0 / (w * h) as f32);
     }
+    if let Some((kind, _)) = things.iter().find(|t| t.1 == "*") {
+        let rest = map.iter_mut().filter(|k| **k == 0).map(|k| *k = *kind).count();
+        println!("·  materials: the rest — {:.1}% of the picture", rest as f32 * 100.0 / (w * h) as f32);
+    }
     Ok((w, h, map))
 }
 
@@ -129,6 +134,19 @@ async fn faces(image: &Path, device: &Device) -> Result<Vec<[f32; 4]>> {
             [(x0 - bw * FACE_ROOM[1]).max(0.0), (y0 - bh * FACE_ROOM[0]).max(0.0), (x1 + bw * FACE_ROOM[1]).min(w as f32), (y1 + bh * FACE_ROOM[2]).min(h as f32)]
         })
         .collect())
+}
+
+/// The FEATURES of the faces in `image`, by the same detector: for each face its eyes, the tip of its nose and
+/// the corners of its mouth (left eye, right eye, nose, left mouth, right mouth), as shares of the picture's
+/// width and height. A far face is drawn from these — a stroke where each feature is — not traced from a few
+/// dozen pixels of shading. Empty when none is found or the detector is not to be had.
+pub async fn face_features(image: &Path, device: &Device) -> Result<Vec<[[f32; 2]; 5]>> {
+    let Some(weights) = crate::pipelines::scrfd::resolve_scrfd_weights().await.context("resolving the face-detector weights")? else {
+        return Ok(Vec::new());
+    };
+    let det = crate::pipelines::scrfd::SCRFDDetector::load(&weights, crate::pipelines::scrfd::SCRFDConfig::default(), device, candle_core::DType::F32).context("loading the face detector")?;
+    let (w, h) = image::image_dimensions(image)?;
+    Ok(det.detect(image).context("detecting faces")?.iter().map(|f| f.landmarks.map(|p| [p[0] / w as f32, p[1] / h as f32])).collect())
 }
 
 pub fn to_png(map: &[u8], w: u32, h: u32) -> RgbImage {
