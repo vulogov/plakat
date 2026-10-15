@@ -51,13 +51,26 @@ per-cycle commits carry the rationale + before/after.
   (Depth-Anything) and a far passage in shadow loses its edges wherever it lies, the farther the more contrast
   it may hold and the wider the blur, the background softening itself by its distance; and the thickest marks in the light fling **spatter** (`spatter`): a
   drop or three off the lift-off, round thick dots of the mark's own paint, ordinary strokes in the score, a
-  fast mark's flying farther and smearing ahead into a **tail** (`tail`).
+  fast mark's flying farther and smearing ahead into a **tail** (`tail`). The glaze marks lay a share of their
+  paint as a **film over** the dried layer (`film`, the stroke's `over` in the record): the canvas keeps a film
+  of its own above the paint, read by the two-layer Kubelka-Munk solution (a layer of finite thickness over a
+  substrate, `pigment::layer_over`), so a thin glaze tints a heavy passage by its own transmittance instead of
+  being outweighed in the mix, and a later opaque mark folds the film into the layer beneath; the dry marks
+  **split** into two to four bristle bundles as they dry out and the faster they go (`split`, in the record);
+  and the canvas **sags** under the thick paint at output (`sag`, in the score's header): a broad shallow dip
+  under every heavy passage and a slow unevenness of the cloth, a gentle swell of the light over the sheet;
+  and a **gloss** on the peaks (`gloss`, in the header): a sharp glint only where the thick paint stands
+  above its surround and high against the sheet's peak. The bundles of a split mark differ in **tint**
+  (`tint`, in the record), each clump of bristles with its own slight variant of the load; and off the
+  subject, on the broad passes, a share of the marks are a **palette knife** (`knife`, in the record): a flat
+  blade full width with square ends that shears the paint standing under it to a plateau and lays its own
+  flat, thick and nearly dry — smooth planes with sharp edges cut into the relief.
   Two diagnostic hooks, `PLAKAT_PAINT_ARMATURE_DUMP` and `PLAKAT_PAINT_REFERENCE_DUMP`, save the armature and
   each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
   highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
   head was eased down into a beige sliver). **Every layer dial is
   a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
-  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`), tuned in the plan; the recommended acrylic plan is in
+  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`, `film`, `split`, `sag`, `gloss`, `tint`, `knife`), tuned in the plan; the recommended acrylic plan is in
   `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
   fixed 0.5. Every other medium is byte-identical.
 

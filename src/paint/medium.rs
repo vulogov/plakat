@@ -268,6 +268,33 @@ pub struct MediumProfile {
     /// mark for its width is a fast one — the faster, the farther it flies and the longer it stretches along
     /// its flight, a round head and a thinning tail ahead of it; a slow dab's drops stay round.
     pub tail: f32,
+    /// FILM (0..1, 0 = off): the glaze marks — the glaze pass, the sink wash, the lost edges, the overlaps
+    /// along the silhouette — lay this share of their deposit as a translucent FILM over the dried paint
+    /// instead of mixing into it (see `BrushConfig::over`): the two-layer Kubelka-Munk solution reads the
+    /// film by its own transmittance over the layer beneath, so a thin glaze tints a heavy passage the way
+    /// it does on a real canvas, where mixed in it was outweighed and read as a muddy average.
+    pub film: f32,
+    /// SPLIT (0..1, 0 = off): the dry marks — the scumble, the crest, the hair strands — comb into two to
+    /// four bundles with bare canvas between them as they dry out and the faster they go (see
+    /// `BrushConfig::split`): the clumped bristles of a half-dry brush parting along the mark.
+    pub split: f32,
+    /// SAG (0..1, 0 = off): at output, the stretched canvas gives under the weight of the thick paint — a
+    /// broad shallow dip under every heavy passage and a slow unevenness of the cloth on its bars, a gentle
+    /// swell of the light over the whole sheet (see `Finish::sag`).
+    pub sag: f32,
+    /// GLOSS (0..1, 0 = off): at output, a sharp specular on the PEAKS of the thick paint — acrylic dries with
+    /// a gloss on the highest points of a heavy mark where the body of the sheet is satin (`sheen`), so the
+    /// crests glint under the lamp and the thin passages stay matte (see `Finish::gloss`).
+    pub gloss: f32,
+    /// TINT (0..1, 0 = off): the bundles of a split mark differ a little in tone — the paint not mixed to one
+    /// colour on the palette, each clump of bristles carrying its own (see `BrushConfig::tint`) — so the
+    /// combed lines of a hair or a feather are not one colour repeated. Needs `split`.
+    pub tint: f32,
+    /// KNIFE (0..1, the share): off the subject, on the broad passes, this share of the marks are laid with a
+    /// PALETTE KNIFE instead of a brush (see `BrushConfig::knife`): a flat blade full width with square ends
+    /// that shears the paint standing under it down to a plateau and lays its own flat, thick and nearly dry —
+    /// smooth planes with sharp edges cut into the relief, against the brushed faces.
+    pub knife: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -326,6 +353,12 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -377,6 +410,12 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -428,6 +467,12 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -520,6 +565,12 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -580,6 +631,12 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -635,6 +692,12 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -686,6 +749,12 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -740,6 +809,12 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -791,6 +866,12 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -845,6 +926,12 @@ pub const DURER: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -900,6 +987,12 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -954,6 +1047,12 @@ pub const PENCIL: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1010,6 +1109,12 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1061,6 +1166,12 @@ pub const PASTEL: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1112,6 +1223,12 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     aerial: 0.0,
     sink: 0.0,
     tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1169,6 +1286,12 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     aerial: 0.6,
     sink: 0.5,
     tail: 0.6,
+    film: 0.7,
+    split: 0.5,
+    sag: 0.4,
+    gloss: 0.5,
+    tint: 0.4,
+    knife: 0.3,
 };
 
 /// Every declared medium.
@@ -1310,7 +1433,7 @@ mod tests {
     fn only_the_acrylic_lays_its_layers_dry() {
         // The layer fields are neutral on every other medium: those paint exactly as they did before them.
         for m in ALL.iter().filter(|m| m.name != "acrylic") {
-            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
         }
         assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
         assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);

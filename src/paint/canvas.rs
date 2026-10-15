@@ -22,6 +22,11 @@ pub const GROUND_CONC: f32 = 0.25;
 /// becomes opaque — which is what restores deep darks, bright lights, and saturated colour. Without this the
 /// ground stays a permanent proportion of every pixel and the whole painting washes out to mid-value.
 const OPACITY_K: f32 = 1.6;
+/// The optical thickness of a FILM laid over the paint (see `Canvas::deposit_over`) per unit of its amount —
+/// a glaze is THIN: a unit of a light film veils the layer beneath by about a tenth, a dark one tints it
+/// by its own absorption and lets most of the light through. (Set to the paint's own covering it made every
+/// lost edge and glaze a light scratch over the darks.)
+const OVER_K: f32 = 0.15;
 
 /// A pigment canvas over a fixed palette basis.
 #[derive(Clone)]
@@ -34,6 +39,10 @@ pub struct Canvas {
     /// pigment RATIO of the visible film: a new deposit COVERS what lies beneath (see [`Canvas::deposit`]), so
     /// this is not a running sum over every stroke ever laid.
     conc: Vec<f32>,
+    /// The FILM over the paint (see `deposit_over`): its own concentration vector per pixel, and its amount.
+    /// Empty until a film is first laid.
+    over_conc: Vec<f32>,
+    over_film: Vec<f32>,
     /// Per-pixel paint AMOUNT (the sum of every deposit, minus wipes), row-major. Drives the film-build opacity
     /// over the ground and the tooth saturation; kept apart from `conc` so covering a light block-in with a
     /// dark restatement changes the film's colour without thinning it.
@@ -117,7 +126,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -274,6 +283,44 @@ impl Canvas {
         (y as usize * self.w as usize + x as usize) * self.n
     }
 
+    /// Lay a concentration delta as a FILM OVER the paint at a pixel (see `BrushConfig::over`): it is not mixed
+    /// into the layer beneath but kept as its own translucent layer, read at output by the two-layer
+    /// Kubelka-Munk solution (`pigment::layer_over`) — a glaze over a dried passage tints it by its own
+    /// transmittance instead of being outweighed by the heavy paint under it. A later ordinary deposit folds
+    /// the film into the layer beneath first (the new paint covers it). The paint amount and the height grow as
+    /// for any deposit. Buffers are allotted on first use, so a canvas that never takes a film carries none.
+    pub fn deposit_over(&mut self, x: u32, y: u32, delta: &[f32], height: f32) {
+        let px = (self.w * self.h) as usize;
+        if self.over_film.is_empty() {
+            self.over_conc = vec![0.0; px * self.n];
+            self.over_film = vec![0.0; px];
+        }
+        let i = self.idx(x, y);
+        let amount: f32 = delta.iter().take(self.n).map(|d| d.max(0.0)).sum();
+        for c in 0..self.n {
+            self.over_conc[i + c] += delta.get(c).copied().unwrap_or(0.0).max(0.0);
+        }
+        let p = y as usize * self.w as usize + x as usize;
+        self.over_film[p] += amount;
+        self.film[p] += amount;
+        self.height[p] += height.max(0.0);
+    }
+
+    /// Fold the film over a pixel into the layer beneath (an ordinary deposit is about to cover it): the film's
+    /// pigment joins the layer by the same film-build law, and the film is cleared.
+    fn fold_over(&mut self, i: usize, p: usize) {
+        let amount = self.over_film[p];
+        if amount <= 0.0 {
+            return;
+        }
+        let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
+        for c in 0..self.n {
+            self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + self.over_conc[i + c];
+            self.over_conc[i + c] = 0.0;
+        }
+        self.over_film[p] = 0.0;
+    }
+
     /// The concentration vector at a pixel.
     pub fn conc_at(&self, x: u32, y: u32) -> &[f32] {
         let i = self.idx(x, y);
@@ -302,6 +349,10 @@ impl Canvas {
                 self.conc[i + c] += delta.get(c).copied().unwrap_or(0.0).max(0.0);
             }
         } else {
+            let p = y as usize * self.w as usize + x as usize;
+            if !self.over_film.is_empty() && amount > 0.0 {
+                self.fold_over(i, p);
+            }
             let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
             for c in 0..self.n {
                 self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
@@ -337,6 +388,12 @@ impl Canvas {
             self.conc[i + c] *= 1.0 - s;
         }
         let p = y as usize * self.w as usize + x as usize;
+        if !self.over_film.is_empty() {
+            for c in 0..self.n {
+                self.over_conc[i + c] *= 1.0 - s;
+            }
+            self.over_film[p] *= 1.0 - s;
+        }
         self.film[p] *= 1.0 - s;
         self.height[p] *= 1.0 - s;
     }
@@ -1013,11 +1070,23 @@ impl Canvas {
             }
             return color::linear_to_srgb(out);
         }
-        let paint = pigment::mix_linear(self.palette.pigments, conc);
-        let alpha = 1.0 - (-self.opacity_k * self.opacity * total).exp();
-        let mut out = [0f32; 3];
-        for c in 0..3 {
-            out[c] = alpha * paint[c] + (1.0 - alpha) * self.ground_lin[c];
+        let p = y as usize * self.w as usize + x as usize;
+        let over = self.over_film.get(p).copied().unwrap_or(0.0);
+        // The paint beneath the film: its own amount, not the film's.
+        let total = total - over.max(0.0);
+        let mut out = self.ground_lin;
+        if total > 1e-4 {
+            let paint = pigment::mix_linear(self.palette.pigments, conc);
+            let alpha = 1.0 - (-self.opacity_k * self.opacity * total).exp();
+            for c in 0..3 {
+                out[c] = alpha * paint[c] + (1.0 - alpha) * self.ground_lin[c];
+            }
+        }
+        if over > 1e-5 {
+            // The FILM over it (see `deposit_over`): a layer of finite thickness the light passes through twice.
+            let i = self.idx(x, y);
+            let ks = pigment::ks_of(pigment::mix_linear(self.palette.pigments, &self.over_conc[i..i + self.n]));
+            out = pigment::layer_over(ks, OVER_K * self.opacity * over, out);
         }
         color::linear_to_srgb(out)
     }
@@ -1142,7 +1211,7 @@ impl Canvas {
             }
         }
         // IMPASTO + SHEEN relight from the paint HEIGHT — and the CANVAS WEAVE beneath it.
-        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 {
+        if f.impasto > 1e-4 || f.sheen > 1e-4 || f.weave > 1e-4 || f.sag > 1e-4 || f.gloss > 1e-4 {
             // Normalise the relief against a ROBUST height (the 98th percentile), not the single peak: one
             // heavy crossing of strokes set the scale for the whole sheet and flattened every other ridge.
             let peak = if f.relief_robust {
@@ -1178,6 +1247,23 @@ impl Canvas {
             } else {
                 (1.0, Vec::new())
             };
+            // THE SAG (see `Finish::sag`): the cloth's dip under the heavy paint — the relief blurred wide (a
+            // fortieth of the short side, twice over), normalised to its own deepest — read as a height taken
+            // AWAY, so the light swells toward every heavy passage; and the cloth's unevenness on its bars, a
+            // slow noise that scales the dip from place to place. Not gated by the paint amount: the cloth
+            // sags under bare passages too.
+            let sag = f.sag.clamp(0.0, 1.0);
+            let (sag_map, sag_r) = if sag > 0.0 {
+                let r = (w.min(h) / 40).max(4);
+                let wide = Self::box_blur_f(&Self::box_blur_f(&self.height, w, h, r), w, h, r);
+                let mx = wide.iter().copied().fold(0.0_f32, f32::max).max(1e-6);
+                (wide.iter().map(|v| v / mx).collect::<Vec<f32>>(), r as f32)
+            } else {
+                (Vec::new(), 1.0)
+            };
+            // THE GLOSS (see `Finish::gloss`): the paint's height against its 5×5 surround, for the peaks.
+            let gloss = f.gloss.clamp(0.0, 1.0);
+            let mean5: Vec<f32> = if gloss > 0.0 { Self::box_blur_f(&self.height, w, h, 2) } else { Vec::new() };
             let linen = |x: f32, y: f32| -> f32 {
                 // Domain warp: a slow drift of the cloth, ± a period over ~40 periods.
                 // (±1.5 periods over ~12: at a 10 px period on a 4096 sheet the earlier ±1 over 40 was a
@@ -1241,6 +1327,26 @@ impl Canvas {
                         let facing_w = (dwx * lx + dwy * ly) * period / 2.2;
                         let cover = (-4.0 * local_h[y * w + x] / h50).exp();
                         shade += 0.9 * weave * facing_w * cover;
+                    }
+                    if gloss > 0.0 && facing > 0.0 {
+                        // A narrow glint on a peak: the facing to the fourth (over 0.35 of it), where the paint
+                        // stands above its surround (a smoothstep over a third of the mean) and high against
+                        // the sheet's peak (from 0.45 of it up).
+                        let hp = self.height[y * w + x];
+                        let m = mean5[y * w + x];
+                        let t = ((hp - m) / (0.35 * m + 1e-4)).clamp(0.0, 1.0);
+                        let peakness = t * t * (3.0 - 2.0 * t);
+                        let tall = ((hp / peak - 0.45) / 0.4).clamp(0.0, 1.0);
+                        let fc = (facing / 0.35).clamp(0.0, 1.0);
+                        shade += gloss * fc * fc * fc * fc * peakness * tall * amt;
+                    }
+                    if sag > 0.0 {
+                        // The dip's slope, over the blur's own radius so a full dip reads as a half-unit tilt.
+                        let sx = -(sag_map[y * w + xr] - sag_map[y * w + xl]) * sag_r * 0.5;
+                        let sy = -(sag_map[yb * w + x] - sag_map[yt * w + x]) * sag_r * 0.5;
+                        let short = w.min(h) as f32;
+                        let uneven = 0.7 + 0.6 * (value_noise(x as f32 / (short / 6.0), y as f32 / (short / 6.0), f.seed ^ 0x5A6) - 0.5);
+                        shade += 0.8 * sag * uneven * (sx * lx + sy * ly);
                     }
                     let shade = shade.clamp(-0.55, 0.85);
                     if shade.abs() < 1e-4 {
@@ -1365,6 +1471,16 @@ pub struct Finish {
     /// CANVAS WEAVE (0 = none): the linen's threads under the paint, seen in the relight where the paint is
     /// thin or bare — a built-up passage covers them entirely.
     pub weave: f32,
+    /// CANVAS SAG (0 = none): the stretched cloth gives under the weight of the thick paint — a broad, shallow
+    /// depression under every heavy passage (the relief blurred wide, taken as a dip) and a slow unevenness of
+    /// the cloth on its bars (a low-frequency noise) — read in the relight as a gentle swell of the light over
+    /// the whole sheet, bare passages too, the way a real canvas is never quite flat.
+    pub sag: f32,
+    /// GLOSS (0 = none): the sharp specular on the PEAKS of the thick paint — acrylic dries with a gloss on
+    /// the highest points of a heavy mark where the body of the sheet is satin. A narrow highlight (the
+    /// facing to the fourth power) only where the paint stands above its 5×5 surround and high against the
+    /// sheet's own peak, so the thick marks' crests glint under the lamp and the thin passages stay matte.
+    pub gloss: f32,
     /// Finish grade — a painting-safe tonal grade (naturalize's safe subset), recorded for replay.
     /// CONTRAST (0.5..2, 1 = neutral): S-curve around mid-grey.
     pub contrast: f32,
@@ -1378,7 +1494,7 @@ pub struct Finish {
 
 impl Default for Finish {
     fn default() -> Self {
-        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
+        Self { impasto: 0.0, relief_robust: false, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, plate_mark: false, weave: 0.0, sag: 0.0, gloss: 0.0, contrast: 1.0, warmth: 0.0, clarity: 0.0, seed: 0 }
     }
 }
 

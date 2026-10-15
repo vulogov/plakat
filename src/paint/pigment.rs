@@ -34,6 +34,38 @@ fn ks_from_linear(r: LinRgb) -> [f32; 3] {
     ks
 }
 
+/// The per-channel `K/S` of a (linear) colour — the inverse of [`linear_from_ks`], for a film's optics.
+pub fn ks_of(r: LinRgb) -> [f32; 3] {
+    ks_from_linear(r)
+}
+
+/// A FILM OF FINITE THICKNESS laid OVER a substrate (the two-layer Kubelka-Munk solution): a glaze over a
+/// dried layer is not mixed into it — it is a translucent layer the light passes through twice. Per channel,
+/// for a film of `K/S` and optical thickness `sx` (scattering × thickness) over a substrate of reflectance
+/// `base`: `a = 1 + K/S`, `b = √(a² − 1)`, the film's own reflectance `R = sinh(b·sx) / (a·sinh(b·sx) +
+/// b·cosh(b·sx))` and transmittance `T = b / (…)`, and the whole `R + T²·base / (1 − R·base)`. At `sx → 0` the
+/// substrate shows unchanged; at `sx → ∞` the film hides it and reads as its own masstone. A yellow film over
+/// blue reads green — the subtractive result a concentration average of the two cannot give at a glaze's
+/// thinness, because there the heavy layer beneath outweighs it.
+pub fn layer_over(ks: [f32; 3], sx: f32, base: LinRgb) -> LinRgb {
+    let sx = sx.max(0.0);
+    if sx <= 0.0 {
+        return base;
+    }
+    let mut out = [0f32; 3];
+    for c in 0..3 {
+        let a = 1.0 + ks[c].max(0.0);
+        let b = (a * a - 1.0).max(1e-8).sqrt();
+        let (s, co) = ((b * sx).min(40.0).sinh(), (b * sx).min(40.0).cosh());
+        let den = (a * s + b * co).max(1e-6);
+        let r = (s / den).clamp(0.0, 1.0);
+        let t = (b / den).clamp(0.0, 1.0);
+        let bs = base[c].clamp(0.0, 1.0);
+        out[c] = (r + t * t * bs / (1.0 - r * bs).max(1e-4)).clamp(0.0, 1.0);
+    }
+    out
+}
+
 /// Reflectance from `K/S`: `R = 1 + K/S − √((K/S)² + 2·K/S)`.
 fn linear_from_ks(ks: [f32; 3]) -> LinRgb {
     let mut r = [0f32; 3];
@@ -147,6 +179,23 @@ mod tests {
         // …whereas a naive RGB average would be a desaturated grey-purple (G is NOT the max there).
         let rgb_avg = [(30 + 240) / 2, (50 + 220) / 2, (180 + 30) / 2];
         assert!(!(rgb_avg[1] > rgb_avg[0] && rgb_avg[1] > rgb_avg[2]), "RGB average is not green: {rgb_avg:?}");
+    }
+
+    #[test]
+    fn a_thin_yellow_film_over_blue_reads_green_and_a_thick_one_reads_yellow() {
+        // A glaze is a layer OVER the dried paint: a thin yellow film over a heavy blue passage turns it green
+        // — where a concentration average of one yellow unit into ten of blue barely moves it off blue — and
+        // laid thick enough the film hides the blue and reads as its own yellow; none at all leaves the blue.
+        let blue = mix_linear(&[BLUE], &[1.0]);
+        let ks = ks_of(mix_linear(&[YELLOW], &[1.0]));
+        let none = layer_over(ks, 0.0, blue);
+        assert_eq!(none, blue, "no film, the substrate unchanged");
+        let thin = color::linear_to_srgb(layer_over(ks, 0.3, blue));
+        assert!(thin[1] > thin[2] && thin[1] > thin[0], "a thin yellow film over blue is green: {thin:?}");
+        let mixed = mix(&[BLUE, YELLOW], &[10.0, 1.0]);
+        assert!(mixed[2] > mixed[1], "one yellow in ten blue, averaged, is still blue: {mixed:?}");
+        let thick = color::linear_to_srgb(layer_over(ks, 50.0, blue));
+        assert!(thick[0] > 200 && thick[1] > 180 && thick[2] < 80, "a thick film hides the blue and is the yellow: {thick:?}");
     }
 
     #[test]

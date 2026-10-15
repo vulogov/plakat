@@ -252,6 +252,23 @@ pub struct PaintPlan {
     pub sink: Option<f32>,
     #[serde(default)]
     pub tail: Option<f32>,
+    /// FILM (0..1): the glaze marks laid as a translucent film over the dried paint, read by the two-layer
+    /// Kubelka-Munk solution. SPLIT (0..1): the dry fast marks combed into bundles. SAG (0..1): the canvas
+    /// sagging under the thick paint, in the relight.
+    #[serde(default)]
+    pub film: Option<f32>,
+    #[serde(default)]
+    pub split: Option<f32>,
+    #[serde(default)]
+    pub sag: Option<f32>,
+    /// GLOSS (0..1): a sharp specular on the peaks of the thick paint. TINT (0..1): the bundles of a split
+    /// mark differ in tone. KNIFE (0..1): the share of the broad marks off the subject laid with a palette knife.
+    #[serde(default)]
+    pub gloss: Option<f32>,
+    #[serde(default)]
+    pub tint: Option<f32>,
+    #[serde(default)]
+    pub knife: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -354,6 +371,12 @@ impl Default for PaintPlan {
             aerial: None,
             sink: None,
             tail: None,
+            film: None,
+            split: None,
+            sag: None,
+            gloss: None,
+            tint: None,
+            knife: None,
             notes: Vec::new(),
         }
     }
@@ -441,7 +464,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -777,6 +800,12 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             aerial: None,
             sink: None,
             tail: None,
+            film: None,
+            split: None,
+            sag: None,
+            gloss: None,
+            tint: None,
+            knife: None,
         notes,
     }
 }

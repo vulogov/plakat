@@ -335,10 +335,26 @@ ridges and runs off their tops (a negative `crest` in the record); the lost edge
 the farther the more contrast it may hold and the wider the blur its marks take — the background softens
 itself by its distance, and the relief thins toward the far planes; and the thickest marks in the light fling **spatter** (`spatter 0.5`): a drop
 or three off the lift-off along the mark's direction, round thick dots of its own paint, a fast mark's (a long
-one for its width) flying farther and smearing ahead into a **tail** (`tail 0.6`). **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
+one for its width) flying farther and smearing ahead into a **tail** (`tail 0.6`). The glaze marks (the glaze
+pass, the sink wash, the lost edges, the silhouette overlaps) lay a share of their paint as a **film over** the
+dried layer (`film 0.7`): the engine mixes pigment by Kubelka-Munk already, but a glaze mixed into a heavy
+passage is outweighed by it — laid as its own layer, read by the two-layer Kubelka-Munk solution (a film of
+finite thickness over a substrate, the stroke's `over` in the record), a thin yellow over blue reads green
+and a cool wash over a warm shadow stays a cool veil; the dry marks (the scumble, the crest, the hair strands)
+**split** into two to four bristle bundles with bare canvas between as they dry out and the faster they go
+(`split 0.5`, the stroke's `split` in the record); and at output the canvas **sags** under the thick paint
+(`sag 0.4`): a broad shallow dip under every heavy passage and a slow unevenness of the cloth on its bars, a
+gentle swell of the light over the whole sheet, recorded in the score's header; and a **gloss** on the peaks
+(`gloss 0.5`, in the header too): a sharp glint only where the thick paint stands above its surround and high
+against the sheet's own peak, the crests of the heavy marks glossy and the thin passages matte. The bundles of a
+split mark differ a little in **tint** (`tint 0.4`, the stroke's `tint`): each clump of bristles carries its
+own slight variant of the load. Off the subject, on the broad passes, a share of the marks are a **palette
+knife** (`knife 0.3`, the stroke's `knife`): a flat blade full width with square ends that shears the paint
+standing under it down to a plateau and lays its own flat, thick and nearly dry — smooth planes with sharp
+edges cut into the relief, against the brushed faces. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
 `PAINT_EXAMPLES.md`.
 - Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
-- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `film 0.7` · `split 0.5` · `tint 0.4` · `knife 0.3` · `sag 0.4` · `gloss 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
 - Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson

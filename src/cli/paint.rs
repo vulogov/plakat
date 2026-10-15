@@ -1604,6 +1604,12 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.aerial = plan.medium.aerial;
     params.sink = plan.medium.sink;
     params.tail = plan.medium.tail;
+    params.film = plan.medium.film;
+    params.split = plan.medium.split;
+    params.sag = plan.medium.sag;
+    params.gloss = plan.medium.gloss;
+    params.tint = plan.medium.tint;
+    params.knife = plan.medium.knife;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2348,6 +2354,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.aerial = m.aerial;
         params.sink = m.sink;
         params.tail = m.tail;
+        params.film = m.film;
+        params.split = m.split;
+        params.sag = m.sag;
+        params.gloss = m.gloss;
+        params.tint = m.tint;
+        params.knife = m.knife;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2381,6 +2393,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.aerial { params.aerial = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sink { params.sink = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.tail { params.tail = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.film { params.film = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.split { params.split = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sag { params.sag = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.gloss { params.gloss = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.tint { params.tint = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.knife { params.knife = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {
