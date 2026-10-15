@@ -1601,6 +1601,9 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.lost = plan.medium.lost;
     params.crest = plan.medium.crest;
     params.spatter = plan.medium.spatter;
+    params.aerial = plan.medium.aerial;
+    params.sink = plan.medium.sink;
+    params.tail = plan.medium.tail;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2342,6 +2345,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.lost = m.lost;
         params.crest = m.crest;
         params.spatter = m.spatter;
+        params.aerial = m.aerial;
+        params.sink = m.sink;
+        params.tail = m.tail;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2372,6 +2378,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.lost { params.lost = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.crest { params.crest = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.spatter { params.spatter = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.aerial { params.aerial = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sink { params.sink = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.tail { params.tail = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {
@@ -2685,6 +2694,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let map = image::open(d).with_context(|| format!("opening the depth map {d}"))?.to_luma8();
             params.relief = Some((map.width(), map.height(), map.pixels().map(|p| p.0[0] as f32 / 255.0).collect()));
         }
+    }
+    // AERIAL LOST EDGES (see `MediumProfile::aerial`): the far planes need a DEPTH map — estimated here
+    // (Depth-Anything, at the working size, normalised so the nearest is 1) and handed to the painter as its
+    // `depth`, which also thins the relief toward the far planes. A matte-derived depth (`recede`) gives way
+    // to the real one. Saved as `depth.png` into the reference-dump directory when that hook is set.
+    if params.aerial > 0.0 && params.lost > 0.0 && !params.engrave {
+        println!("{}  aerial: estimating depth (Depth-Anything)…", style("◆").cyan());
+        let device = crate::device::select("auto")?;
+        let z = crate::pipelines::depth::DepthPipeline::load(device).await.context("loading Depth-Anything for the aerial lost edges")?.depth_map(&a.input, w, h).context("estimating the depth")?;
+        let z = resize_depth(&z, (w, h), (w, h));
+        if let Ok(dir) = std::env::var("PLAKAT_PAINT_REFERENCE_DUMP") {
+            let side = std::path::Path::new(&dir).join("depth.png");
+            let _ = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(z[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0).round() as u8])).save(&side);
+        }
+        params.depth = Some(z);
     }
     if let Some(d) = a.normals.as_deref() {
         if params.density && !params.engrave {

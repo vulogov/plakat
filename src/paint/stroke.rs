@@ -61,7 +61,9 @@ pub struct BrushConfig {
     pub comma: f32,
     /// CREST (0..1, 0 = off): a dry brush dragged over a DRIED, textured layer catches only the tops of the
     /// relief — the deposit at a pixel is scaled by how far its paint stands above its neighbours (a 5×5
-    /// mean), so the colour sits on the ridges and the furrows keep what was there. Per stroke, in the record.
+    /// mean), so the colour sits on the ridges and the furrows keep what was there. NEGATIVE (−1..0), the
+    /// wash into the furrows: the deposit is scaled by how far the paint lies BELOW its neighbours, so a
+    /// thin liquid colour settles in the hollows and runs off the ridges. Per stroke, in the record.
     pub crest: f32,
 }
 
@@ -326,9 +328,11 @@ impl Stroke {
                 df *= t * t * (3.0 - 2.0 * t);
             }
         }
-        if brush.crest > 0.0 {
+        if brush.crest != 0.0 {
             // The dry brush over the ridges (see `BrushConfig::crest`): paint only where this pixel's relief
             // stands above the mean of its 5×5 neighbourhood, by a smoothstep over a third of that mean.
+            // NEGATIVE, the wash into the furrows: paint only where the relief lies BELOW that mean — a thin
+            // liquid colour that settles in the hollows and runs off the ridges.
             let (w, h) = (canvas.w as i64, canvas.h as i64);
             let (cx, cy) = (px as i64, py as i64);
             let mut sum = 0.0f32;
@@ -340,9 +344,10 @@ impl Stroke {
                 }
             }
             let mean = sum / cnt.max(1.0);
-            let t = ((canvas.height[p] - mean) / (0.35 * mean + 1e-4)).clamp(0.0, 1.0);
+            let above = canvas.height[p] - mean;
+            let t = ((if brush.crest > 0.0 { above } else { -above }) / (0.35 * mean + 1e-4)).clamp(0.0, 1.0);
             let catch = t * t * (3.0 - 2.0 * t);
-            df *= 1.0 - brush.crest.clamp(0.0, 1.0) * (1.0 - catch);
+            df *= 1.0 - brush.crest.abs().clamp(0.0, 1.0) * (1.0 - catch);
         }
         if brush.film_cap > 0.0 {
             let cap = Self::load_norm(&self.load) * brush.k_deposit * brush.film_cap;
@@ -512,5 +517,23 @@ mod tests {
         assert!(in_flat < on_ridge * 0.05, "and none in the flat beside it ({in_flat} vs {on_ridge})");
         let (plain_ridge, plain_flat) = lay(0.0);
         assert!(plain_flat > plain_ridge * 0.5, "an ordinary mark paints both alike ({plain_flat} vs {plain_ridge})");
+    }
+
+    #[test]
+    fn a_sink_mark_settles_beside_the_ridge_and_runs_off_its_top() {
+        // The same ridge; a wash with a NEGATIVE crest dragged over it leaves its colour in the hollow at
+        // the ridge's foot and none on the ridge's top — and none in the flat far from any relief, where
+        // there is no hollow to settle in.
+        let mut c = Canvas::white(60, 40, palette::ZORN, 0.9);
+        let ridge = Stroke { path: vec![[5.0, 20.0], [55.0, 20.0]], width0: 3.0, width1: 3.0, load: vec![0.0, 0.0, 0.0, 4.0], pressure: 1.0, wetness: 0.3 };
+        ridge.rasterize(&mut c, &BrushConfig { viscosity: 2.0, k_pickup: 0.0, ..BrushConfig::default() });
+        c.dry(1.0);
+        let mark = Stroke { path: vec![[30.0, 5.0], [30.0, 35.0]], width0: 4.0, width1: 4.0, load: red_load(), pressure: 1.0, wetness: 0.7 };
+        mark.rasterize(&mut c, &BrushConfig { crest: -1.0, k_pickup: 0.0, ..BrushConfig::default() });
+        let red = |x: u32, y: u32| c.conc_at(x, y)[1];
+        let (on_ridge, at_foot, in_flat) = (red(30, 20), red(30, 23), red(30, 8));
+        assert!(at_foot > 0.05, "the wash settles at the ridge's foot ({at_foot})");
+        assert!(on_ridge < at_foot * 0.1, "and runs off its top ({on_ridge} vs {at_foot})");
+        assert!(in_flat < at_foot * 0.05, "and finds no hollow in the flat ({in_flat} vs {at_foot})");
     }
 }

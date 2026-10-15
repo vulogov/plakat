@@ -445,12 +445,18 @@ pub struct PaintParams {
     pub crest: f32,
     /// SPATTER (0..1, 0 = off): thick drops flung off the thickest marks (see `MediumProfile::spatter`).
     pub spatter: f32,
+    /// AERIAL (0..1, 0 = off): the lost edges by depth, from `depth` (see `MediumProfile::aerial`).
+    pub aerial: f32,
+    /// SINK (0..1, 0 = off): a wash into the furrows of the relief in the shadow (see `MediumProfile::sink`).
+    pub sink: f32,
+    /// TAIL (0..1, 0 = off): a spatter drop stretched by the mark's speed (see `MediumProfile::tail`).
+    pub tail: f32,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0 }
     }
 }
 
@@ -1188,6 +1194,13 @@ fn imprimatura_tone(target: Srgb, amt: f32) -> Srgb {
 
 /// The CREST tint (see `MediumProfile::crest`): the picture's colour a third lighter and a little warmer —
 /// the pale ochre a dry brush drags over the tops of a dried relief.
+/// The SINK wash's colour (see `MediumProfile::sink`): the picture a fifth darker and a little cooler — a thin
+/// cool shadow wash rubbed into the furrows of a dried, warm underpainting.
+fn sink_tone(target: Srgb) -> Srgb {
+    let lin = color::srgb_to_linear(target);
+    color::linear_to_srgb([(lin[0] * 0.8 * 0.94).min(1.0), (lin[1] * 0.8).min(1.0), (lin[2] * 0.8 * 1.06).min(1.0)])
+}
+
 fn crest_tone(target: Srgb) -> Srgb {
     let lin = color::srgb_to_linear(target);
     let out = [(lin[0] * 1.3 * 1.06).min(1.0), (lin[1] * 1.3).min(1.0), (lin[2] * 1.3 * 0.94).min(1.0)];
@@ -1966,8 +1979,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     };
     // THE CREST PASS (see `MediumProfile::crest`): after the glaze, a fine brush dragged dry over the dried
     // relief where it is broken — the ladder's third-finest brush, so the marks are small enough to follow a
-    // sweater's weave or a feather and the pass dense enough to light it.
-    let passes: Vec<PassSpec> = if p.crest > 0.0 && !p.density && !p.luminous && !passes.is_empty() {
+    // sweater's weave or a feather and the pass dense enough to light it. The same pass carries the wash into
+    // the furrows in the shadow (`sink`).
+    let passes: Vec<PassSpec> = if (p.crest > 0.0 || p.sink > 0.0) && !p.density && !p.luminous && !passes.is_empty() {
         let mut passes = passes;
         let ladder: Vec<f32> = passes.iter().filter(|q| q.stage != "glaze").map(|q| q.radius).collect();
         let r = ladder.get(ladder.len().saturating_sub(3)).copied().unwrap_or(p.min_brush * 3.0).max(p.min_brush);
@@ -2037,7 +2051,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // paints decisively (see the stroke loop). The shadow/light boundary is DERIVED FROM THIS IMAGE'S OWN value
     // distribution (percentiles) — a fact — so it adapts to any image (dark, light, high-key, low-key) instead of
     // a hardcoded threshold. None = off.
-    let shadow = (p.commit_shadows > 0.0 || p.shade > 0.0 || p.lost > 0.0).then(|| {
+    let shadow = (p.commit_shadows > 0.0 || p.shade > 0.0 || p.lost > 0.0 || p.crest > 0.0 || p.sink > 0.0).then(|| {
         let luma = luma_map(input);
         let mut sorted = luma.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -2598,13 +2612,28 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // ...and only where the seam is a LOW contrast — both sides dark (the picture's value range across the
         // band under 0.2): a dark figure against a white ground is in shadow by the picture's own reckoning,
         // and the mean of its two sides painted across it was a grey halo round the whole chick.
-        let lost_band: Option<Vec<bool>> = (p.lost > 0.0 && (glazing || (last_pass && !block_in))).then(|| p.region_mask.as_deref()).flatten().zip(shadow.as_ref()).map(|(m, sh)| {
+        // AERIAL (see `MediumProfile::aerial`): by DEPTH the band is no longer the silhouette's alone — a far
+        // passage in shadow is in it wherever it lies, the farther the more contrast its edges may hold
+        // (the gate opens from 0.2 by half the distance), and its mark takes a wider blur. `far` is the
+        // pixel's distance times the amount; past 0.3 of it the passage is lost on its own.
+        let far: Option<Vec<f32>> = (p.lost > 0.0 && p.aerial > 0.0).then(|| p.depth.as_deref()).flatten().map(|d| d.iter().map(|z| (1.0 - z.clamp(0.0, 1.0)) * p.aerial).collect());
+        let lost_band: Option<Vec<bool>> = (p.lost > 0.0 && (glazing || (last_pass && !block_in)) && (p.region_mask.is_some() || far.is_some())).then(|| shadow.as_ref()).flatten().map(|sh| {
             let r = lost_r.ceil().max(2.0) as usize;
-            let inv: Vec<bool> = m.iter().map(|b| !b).collect();
             let range = local_range(&luma, w as usize, h as usize, (lost_r * 1.5).round().max(2.0) as usize);
-            dilate_bool(m, w as usize, h as usize, r).iter().zip(dilate_bool(&inv, w as usize, h as usize, r)).zip(sh.iter()).zip(range.iter()).map(|(((a, b), s), rg)| *a && b && *s > 0.5 && *rg < 0.2).collect()
+            let seam: Option<Vec<bool>> = p.region_mask.as_deref().map(|m| {
+                let inv: Vec<bool> = m.iter().map(|b| !b).collect();
+                dilate_bool(m, w as usize, h as usize, r).iter().zip(dilate_bool(&inv, w as usize, h as usize, r)).map(|(a, b)| *a && b).collect()
+            });
+            (0..sh.len())
+                .map(|i| {
+                    let f = far.as_ref().and_then(|v| v.get(i)).copied().unwrap_or(0.0);
+                    let on_seam = seam.as_ref().and_then(|s| s.get(i)).copied().unwrap_or(false);
+                    sh[i] > 0.5 && (on_seam || f > 0.3) && range.get(i).copied().unwrap_or(1.0) < 0.2 + 0.5 * f
+                })
+                .collect()
         });
         let lost_ref: Option<RgbImage> = lost_band.is_some().then(|| imageops::blur(input, (lost_r * 1.7).max(1.0)));
+        let lost_ref_far: Option<RgbImage> = (lost_band.is_some() && far.is_some()).then(|| imageops::blur(input, (lost_r * 1.7 * (1.0 + 2.0 * p.aerial)).max(1.0)));
         // THE CREST PASS reads the RELIEF the ladder left (the canvas's own heights, against their 95th
         // percentile): a dry brush catches where the paint stands up and is broken at the brush's scale, not
         // where the picture is busy — and in the light only, a lighter tint over a shadow was a grey veil.
@@ -2617,7 +2646,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         });
         // SPATTER (see `MediumProfile::spatter`): the lift-off points of this pass's thickest marks, each with
         // its direction, width, charge and viscosity — the drops are flung after the pass (below).
-        let spats: std::cell::RefCell<Vec<([f32; 2], [f32; 2], f32, Vec<f32>, f32, u64)>> = std::cell::RefCell::new(Vec::new());
+        let spats: std::cell::RefCell<Vec<([f32; 2], [f32; 2], f32, Vec<f32>, f32, u64, f32)>> = std::cell::RefCell::new(Vec::new());
         // BRUSH for this pass: the composition layer's `layer_brush` if set, else the intelligent per-role
         // default. HIGH-FIDELITY uses a clean, low-waver, short-tracking brush at every pass so strokes lie down
         // as disciplined marks that follow the reference — not the loose, wavering, streaky invention.
@@ -2706,7 +2735,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let lost_here = lost_band.as_ref().map_or(false, |b| b.get(iy as usize * w as usize + ix as usize).copied().unwrap_or(false))
                     && p.face_mask.as_deref().and_then(|m| m.get(iy as usize * w as usize + ix as usize)).copied().unwrap_or(0.0) <= 0.35
                     && p.hair_mask.as_deref().and_then(|m| m.get(iy as usize * w as usize + ix as usize)).copied().unwrap_or(0.0) <= 0.0;
-                let target = match (&lost_ref, lost_here) {
+                // ...a far passage (`aerial`) takes the wider blur.
+                let far_here = lost_here && far.as_ref().and_then(|v| v.get(iy as usize * w as usize + ix as usize)).copied().unwrap_or(0.0) > 0.3;
+                let lost_pick: Option<&RgbImage> = if far_here { lost_ref_far.as_ref().or(lost_ref.as_ref()) } else { lost_ref.as_ref() };
+                let target = match (lost_pick, lost_here) {
                     (Some(lr), true) => lr.get_pixel(ix, iy).0,
                     _ => target,
                 };
@@ -2872,10 +2904,17 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     && p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0) <= 0.0
                     && crest_relief.as_deref().and_then(|b| b.get(region_i)).copied().unwrap_or(0.0) > 0.25
                     && jitter(p.seed ^ 0xC2E5_7, k.wrapping_add(53)) + 0.5 < p.crest;
-                if cresting && !crest_here {
+                // SINK (see `MediumProfile::sink`): on the same pass, in the SHADOW, where the relief is broken
+                // (a lower bar than the crest's — the shadows are laid thin), a share of the seeds a thin wet
+                // wash, darker and cooler, that settles only in the furrows (a negative `crest`).
+                let sink_here = p.sink > 0.0 && cresting && !crest_here && !on_face && !lost_here && sh_raw >= 0.5
+                    && p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0) <= 0.0
+                    && crest_relief.as_deref().and_then(|b| b.get(region_i)).copied().unwrap_or(0.0) > 0.08
+                    && jitter(p.seed ^ 0x51_4B, k.wrapping_add(61)) + 0.5 < p.sink;
+                if cresting && !crest_here && !sink_here {
                     return None; // the crest pass lays nothing else
                 }
-                let target = if crest_here { crest_tone(target) } else { target };
+                let target = if crest_here { crest_tone(target) } else if sink_here { sink_tone(target) } else { target };
                 let load_target = if drift > 0.0 && !(wc_brush && wcb_broken <= 0.0) { broken_color(target, drift, p.seed, k) } else { target };
                 // IMPRIMATURA (see `MediumProfile::imprimatura`): the block-in laid darker and warmer than the
                 // picture, toward a burnt umber — the underpainting that shows between the later marks.
@@ -2999,7 +3038,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let rw = rw * if p.loose > 0.0 && !detail && off_subject { 1.0 + 0.3 * p.loose } else { 1.0 } * if smooth_face { 1.0 + 0.6 * p.sfumato } else { 1.0 } * (1.0 + 0.3 * shaded);
                 // (A lost mark grows its path along the wide blur it is coloured from, so it runs across the seam
                 // instead of stopping at it.)
-                let path = grow_path(cx, cy, radius, &gx, &gy, if lost_here { lost_ref.as_ref().unwrap_or(&reference) } else { &reference }, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
+                let path = grow_path(cx, cy, radius, &gx, &gy, if lost_here { lost_pick.unwrap_or(&reference) } else { &reference }, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
                 let path = waver_path(&path, b_waver * rw, p.seed, k);
@@ -3143,6 +3182,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.k_pickup = 0.0;
                     stroke_brush.streak = stroke_brush.streak.max(0.7);
                     stroke_brush.crest = 1.0;
+                } else if sink_here {
+                    // The wash into the furrows: a soft round, no pickup, settling only below the ridges.
+                    stroke_brush.k_pickup = 0.0;
+                    stroke_brush.streak = stroke_brush.streak.min(0.15);
+                    stroke_brush.round = stroke_brush.round.max(0.85);
+                    stroke_brush.crest = -1.0;
                 } else if glazing {
                     // The glaze pass: a soft round, no pickup, a thin film.
                     stroke_brush.k_pickup = 0.0;
@@ -3168,6 +3213,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 } else if crest_here {
                     // Dry and thin: a scumble that lands only where the relief stands up.
                     (wet.min(0.2), load.iter().map(|v| v * 0.6).collect::<Vec<f32>>())
+                } else if sink_here {
+                    // Wet and thin: a translucent wash that runs into the hollows.
+                    (wet.max(0.7), load.iter().map(|v| v * 0.4).collect::<Vec<f32>>())
                 } else if lost_here {
                     // The lost edge: a wet mark of the two sides' mean, `0.4 + 0.6·lost` of the charge, across the seam.
                     (wet.max(0.65), load.iter().map(|v| v * (0.4 + 0.6 * p.lost)).collect::<Vec<f32>>())
@@ -3256,7 +3304,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     if dl > 1e-4 {
                         dx /= dl;
                         dy /= dl;
-                        spats.borrow_mut().push((e, [dx, dy], s.width0, s.load.clone(), stroke_brush.viscosity, k));
+                        // The mark's SPEED (see `MediumProfile::tail`): its length for its width — a dab of
+                        // two widths is slow (0), a sweep of six widths fast (1).
+                        let plen: f32 = s.path.windows(2).map(|q| ((q[1][0] - q[0][0]).powi(2) + (q[1][1] - q[0][1]).powi(2)).sqrt()).sum();
+                        let speed = ((plen / s.width0.max(1e-3) - 2.0) / 4.0).clamp(0.0, 1.0) * p.tail;
+                        spats.borrow_mut().push((e, [dx, dy], s.width0, s.load.clone(), stroke_brush.viscosity, k, speed));
                     }
                 }
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
@@ -3279,14 +3331,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // A pickup the stroke's own brush differs in from the header's is part of how it was laid.
                     // The dry brush zeroes it; left unrecorded, replay rebuilt every dry-brush mark with the
                     // header's pickup and drifted — the unrecorded-bristles bug again.
-                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush || scumbled || accented || glazed || glazing || smooth_face || crest_here || lost_here { Some(stroke_brush.k_pickup) } else { None },
+                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush || scumbled || accented || glazed || glazing || smooth_face || crest_here || sink_here || lost_here { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                     kd: (wcb_broad || wc_wash).then_some(stroke_brush.k_deposit),
                     cap: ((wcb_broad || wc_wash) && stroke_brush.film_cap > 0.0).then_some(stroke_brush.film_cap),
                     flat: stroke_brush.flat_ends,
                     hold: stroke_brush.hold_charge,
                     visc: (p.impasto_map > 0.0 || accented || body != 1.0).then_some(stroke_brush.viscosity),
-                    crest: crest_here.then_some(stroke_brush.crest),
+                    crest: (crest_here || sink_here).then_some(stroke_brush.crest),
                     tgt: Some(target),
                 })
             }
@@ -3417,14 +3469,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             brush.round = 1.0;
             brush.k_pickup = 0.0;
             let list: Vec<_> = spats.borrow_mut().drain(..).collect();
-            for (end, dir, w0, load, visc, kk) in list {
+            for (end, dir, w0, load, visc, kk, speed) in list {
                 if flung >= cap || placed >= p.budget {
                     break;
                 }
                 let n_drops = 1 + ((jitter(p.seed ^ 0xD20_95, kk) + 0.5) * 3.0) as usize;
                 for j in 0..n_drops.min(3) {
                     let kj = kk.wrapping_mul(31).wrapping_add(j as u64 * 7 + 1);
-                    let dist = w0 * (2.0 + 6.0 * (jitter(p.seed ^ 0xD20_96, kj) + 0.5));
+                    // A fast mark's drop flies farther (`tail`: up to twice as far)...
+                    let dist = w0 * (2.0 + 6.0 * (jitter(p.seed ^ 0xD20_96, kj) + 0.5)) * (1.0 + speed);
                     let side = w0 * 1.5 * jitter(p.seed ^ 0xD20_97, kj);
                     let x = end[0] + dir[0] * dist - dir[1] * side;
                     let y = end[1] + dir[1] * dist + dir[0] * side;
@@ -3440,11 +3493,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // width plus a sheet unit and a half, spread ×0.6–1.4.
                     let unit = (w.min(h) as f32 / 1024.0).max(0.5);
                     let r = ((w0 * 0.25 + unit * 1.5) * (0.6 + 0.8 * (jitter(p.seed ^ 0xD20_98, kj) + 0.5))).max(1.0);
-                    // A drop is round, or barely an oval along its flight: a longer path read as a dash.
-                    let len = r * (0.2 + 0.8 * (jitter(p.seed ^ 0xD20_99, kj) + 0.5));
+                    // A slow mark's drop is round, or barely an oval along its flight (a longer path read as
+                    // a dash); a fast mark's (`tail`) stretches up to four times as long along its flight and
+                    // thins ahead to a tail — a round head where it landed, the smear in front of it.
+                    let len = r * (0.2 + 0.8 * (jitter(p.seed ^ 0xD20_99, kj) + 0.5)) * (1.0 + 3.0 * speed);
                     let mut b = brush;
                     b.viscosity = visc * 2.0;
-                    let s = Stroke { path: vec![[x, y], [x + dir[0] * len, y + dir[1] * len]], width0: 2.0 * r, width1: 2.0 * r, load: load.iter().map(|v| v * 1.2).collect(), pressure: 1.0, wetness: 0.55 };
+                    let s = Stroke { path: vec![[x, y], [x + dir[0] * len, y + dir[1] * len]], width0: 2.0 * r, width1: 2.0 * r * (1.0 - 0.7 * speed), load: load.iter().map(|v| v * 1.2).collect(), pressure: 1.0, wetness: 0.55 };
                     s.rasterize(&mut canvas, &b);
                     let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(pi, v)| (p.palette.pigments[pi].name.to_string(), *v)).collect();
                     placed += 1;

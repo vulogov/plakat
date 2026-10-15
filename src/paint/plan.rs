@@ -242,6 +242,16 @@ pub struct PaintPlan {
     pub crest: Option<f32>,
     #[serde(default)]
     pub spatter: Option<f32>,
+    /// AERIAL (0..1): the lost edges by depth — a depth map is estimated, and far shadowed passages lose
+    /// their edges by their distance, off the subject's silhouette too. SINK (0..1): on the crest pass, in
+    /// the shadow, this share of its seeds a thin cool wash that settles only in the furrows of the relief.
+    /// TAIL (0..1): a spatter drop stretched along its flight by the speed of the mark that flung it.
+    #[serde(default)]
+    pub aerial: Option<f32>,
+    #[serde(default)]
+    pub sink: Option<f32>,
+    #[serde(default)]
+    pub tail: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -341,6 +351,9 @@ impl Default for PaintPlan {
             lost: None,
             crest: None,
             spatter: None,
+            aerial: None,
+            sink: None,
+            tail: None,
             notes: Vec::new(),
         }
     }
@@ -428,7 +441,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -761,6 +774,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             lost: None,
             crest: None,
             spatter: None,
+            aerial: None,
+            sink: None,
+            tail: None,
         notes,
     }
 }

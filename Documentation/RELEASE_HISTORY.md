@@ -45,14 +45,19 @@ per-cycle commits carry the rationale + before/after.
   in shadow (`lost`): the mark's colour is the picture blurred wide across the seam and the mark runs across
   it, a dark figure meeting its dark ground in one tone; one more pass after the glaze is a **dry brush over
   the ridges** (`crest`, a per-stroke field in the record): a fine brush where the relief is broken, a
-  lighter, warmer tint that catches only the tops of the relief beneath; and the thickest marks in the light fling **spatter** (`spatter`): a
-  drop or three off the lift-off, round thick dots of the mark's own paint, ordinary strokes in the score.
+  lighter, warmer tint that catches only the tops of the relief beneath; on the same pass, in the shadow, a
+  **wash into the furrows** (`sink`): a thin cool wash that settles only below the ridges and runs off their
+  tops (a negative `crest` in the record); the lost edges go **by depth** (`aerial`): a depth map is estimated
+  (Depth-Anything) and a far passage in shadow loses its edges wherever it lies, the farther the more contrast
+  it may hold and the wider the blur, the background softening itself by its distance; and the thickest marks in the light fling **spatter** (`spatter`): a
+  drop or three off the lift-off, round thick dots of the mark's own paint, ordinary strokes in the score, a
+  fast mark's flying farther and smearing ahead into a **tail** (`tail`).
   Two diagnostic hooks, `PLAKAT_PAINT_ARMATURE_DUMP` and `PLAKAT_PAINT_REFERENCE_DUMP`, save the armature and
   each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
   highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
   head was eased down into a beige sliver). **Every layer dial is
   a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
-  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `crest`, `spatter`), tuned in the plan; the recommended acrylic plan is in
+  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`), tuned in the plan; the recommended acrylic plan is in
   `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
   fixed 0.5. Every other medium is byte-identical.
 

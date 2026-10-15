@@ -253,6 +253,21 @@ pub struct MediumProfile {
     /// SPATTER (0..1, 0 = off): the thickest marks, in the light and off the faces, fling a drop or three off
     /// their lift-off along the mark's direction — round thick dots of the mark's own paint, standing up.
     pub spatter: f32,
+    /// AERIAL (0..1, 0 = off): the lost edges by DEPTH. A depth map is estimated for the picture, and where
+    /// a passage lies far and in shadow the `lost` treatment is no longer kept to the subject's silhouette:
+    /// the farther the passage, the more contrast its edges may hold and still be lost, and the wider the
+    /// blur the mark takes its colour from — the background softens itself by its distance, an aerial
+    /// perspective without a mask. Needs `lost` above zero.
+    pub aerial: f32,
+    /// SINK (0..1, the share): on the crest pass, in the shadow, where the relief is broken — this share of
+    /// its seeds a thin wet wash, darker and cooler than the picture, that settles only in the furrows of
+    /// the relief and runs off the ridges (a negative `BrushConfig::crest`): the shadow's texture deepened
+    /// the way a wash is rubbed into a dried impasto.
+    pub sink: f32,
+    /// TAIL (0..1, 0 = off): a spatter drop's shape follows the SPEED of the mark that flung it — a long
+    /// mark for its width is a fast one — the faster, the farther it flies and the longer it stretches along
+    /// its flight, a round head and a thinning tail ahead of it; a slow dab's drops stay round.
+    pub tail: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -308,6 +323,9 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -356,6 +374,9 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -404,6 +425,9 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -493,6 +517,9 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -550,6 +577,9 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -602,6 +632,9 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -650,6 +683,9 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -701,6 +737,9 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -749,6 +788,9 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -800,6 +842,9 @@ pub const DURER: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -852,6 +897,9 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -903,6 +951,9 @@ pub const PENCIL: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -956,6 +1007,9 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1004,6 +1058,9 @@ pub const PASTEL: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1052,6 +1109,9 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     lost: 0.0,
     crest: 0.0,
     spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1106,6 +1166,9 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     lost: 0.6,
     crest: 0.4,
     spatter: 0.5,
+    aerial: 0.6,
+    sink: 0.5,
+    tail: 0.6,
 };
 
 /// Every declared medium.
@@ -1247,7 +1310,7 @@ mod tests {
     fn only_the_acrylic_lays_its_layers_dry() {
         // The layer fields are neutral on every other medium: those paint exactly as they did before them.
         for m in ALL.iter().filter(|m| m.name != "acrylic") {
-            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
         }
         assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
         assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);

@@ -328,11 +328,17 @@ subject's edge is **lost** where it lies in shadow (`lost 0.6`): the mark's colo
 across the seam and the mark runs across it, so a dark figure meets its dark ground in one tone, not a drawn
 outline; one more pass after the glaze is a **dry brush over the ridges** (`crest 0.4`, the share of its
 seeds): a fine brush, where the relief is broken, a lighter, warmer tint that catches only the tops of the
-relief beneath (the stroke's `crest`, in the record), the texture lit without a new shape; and the thickest marks in the light fling **spatter** (`spatter 0.5`): a drop
-or three off the lift-off along the mark's direction, round thick dots of its own paint. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
+relief beneath (the stroke's `crest`, in the record), the texture lit without a new shape; on the same pass, in
+the shadow, a **wash into the furrows** (`sink 0.5`, the share): a thin cool wash that settles only below the
+ridges and runs off their tops (a negative `crest` in the record); the lost edges go **by depth** (`aerial
+0.6`): a depth map is estimated (Depth-Anything) and a far passage in shadow loses its edges wherever it lies,
+the farther the more contrast it may hold and the wider the blur its marks take — the background softens
+itself by its distance, and the relief thins toward the far planes; and the thickest marks in the light fling **spatter** (`spatter 0.5`): a drop
+or three off the lift-off along the mark's direction, round thick dots of its own paint, a fast mark's (a long
+one for its width) flying farther and smearing ahead into a **tail** (`tail 0.6`). **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
 `PAINT_EXAMPLES.md`.
 - Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
-- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `crest 0.4` · `spatter 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
 - Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson
