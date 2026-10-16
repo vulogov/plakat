@@ -43,6 +43,11 @@ pub struct Canvas {
     /// Empty until a film is first laid.
     over_conc: Vec<f32>,
     over_film: Vec<f32>,
+    /// PIGMENT HIDING (see `with_hiding`): how much each pigment's unit covers (1 = the film-build law as
+    /// it stands), the amount of it, and the paint's amount per pixel weighted by it. Empty = off.
+    hide_c: Vec<f32>,
+    hiding: f32,
+    film_eff: Vec<f32>,
     /// Per-pixel paint AMOUNT (the sum of every deposit, minus wipes), row-major. Drives the film-build opacity
     /// over the ground and the tooth saturation; kept apart from `conc` so covering a light block-in with a
     /// dark restatement changes the film's colour without thinning it.
@@ -126,7 +131,7 @@ impl Canvas {
         // deposited pigment) so an opaque stroke hides it by film build rather than mixing with it forever.
         let gsum: f32 = g.iter().sum();
         let ground_lin = if gsum > 0.0 { pigment::mix_linear(palette.pigments, &g) } else { color::srgb_to_linear([255, 255, 255]) };
-        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
+        Self { w, h, palette, conc: vec![0.0; px * n], over_conc: Vec::new(), over_film: Vec::new(), hide_c: Vec::new(), hiding: 0.0, film_eff: Vec::new(), film: vec![0.0; px], film_mark: Vec::new(), conc_mark: Vec::new(), height: vec![0.0; px], wetness: vec![0.0; px], tooth: vec![tooth.clamp(0.0, 1.0); px], ground_lin, opacity: 1.0, opacity_k: OPACITY_K, transmittance: false, ln_r: Vec::new(), clip: None, n }
     }
 
     /// Mean film-build opacity over the canvas (0 = bare ground everywhere, 1 = fully hidden) — how much of the
@@ -205,6 +210,33 @@ impl Canvas {
     }
 
     /// Switch the TRANSMITTANCE film on (see the field). Builder-style.
+    /// PIGMENT-SPECIFIC HIDING (0..1, 0 = off): the film-build law covers by the paint's AMOUNT alone; with
+    /// this on, each pigment's unit covers by its own hiding power (`Pigment::hiding`) scaled toward one by
+    /// `1 − amount` — a cadmium laid thick hides what is under it, an ultramarine or a lake laid as thick
+    /// stays a translucent glaze over it, and the ground shows through a lake's film as it does not through
+    /// a cadmium's. Off, the arithmetic is the old one to the bit.
+    pub fn with_hiding(mut self, amount: f32) -> Self {
+        let a = amount.clamp(0.0, 1.0);
+        self.hiding = a;
+        if a > 0.0 {
+            self.hide_c = self.palette.pigments.iter().map(|p| 1.0 - a * (1.0 - p.hiding())).collect();
+            self.film_eff = vec![0.0; (self.w * self.h) as usize];
+        } else {
+            self.hide_c = Vec::new();
+            self.film_eff = Vec::new();
+        }
+        self
+    }
+
+    /// The paint amount of a deposit weighted by each pigment's hiding (see `with_hiding`); the plain amount
+    /// when the hiding is off.
+    fn hiding_amount(&self, delta: &[f32], amount: f32) -> f32 {
+        if self.hiding <= 0.0 {
+            return amount;
+        }
+        delta.iter().take(self.n).zip(&self.hide_c).map(|(d, h)| d.max(0.0) * h).sum()
+    }
+
     pub fn with_transmittance(mut self, on: bool) -> Self {
         self.transmittance = on;
         self.ln_r = if on {
@@ -303,6 +335,9 @@ impl Canvas {
         let p = y as usize * self.w as usize + x as usize;
         self.over_film[p] += amount;
         self.film[p] += amount;
+        if self.hiding > 0.0 {
+            self.film_eff[p] += self.hiding_amount(delta, amount);
+        }
         self.height[p] += height.max(0.0);
     }
 
@@ -353,9 +388,14 @@ impl Canvas {
             if !self.over_film.is_empty() && amount > 0.0 {
                 self.fold_over(i, p);
             }
-            let hide = 1.0 - (-self.opacity_k * self.opacity * amount).exp();
+            // ...by the pigments' own hiding when that is on (see `with_hiding`).
+            let amount_h = self.hiding_amount(delta, amount);
+            let hide = 1.0 - (-self.opacity_k * self.opacity * amount_h).exp();
             for c in 0..self.n {
                 self.conc[i + c] = self.conc[i + c] * (1.0 - hide) + delta.get(c).copied().unwrap_or(0.0).max(0.0);
+            }
+            if self.hiding > 0.0 {
+                self.film_eff[p] += amount_h;
             }
         }
         let p = y as usize * self.w as usize + x as usize;
@@ -393,6 +433,9 @@ impl Canvas {
                 self.over_conc[i + c] *= 1.0 - s;
             }
             self.over_film[p] *= 1.0 - s;
+        }
+        if self.hiding > 0.0 {
+            self.film_eff[p] *= 1.0 - s;
         }
         self.film[p] *= 1.0 - s;
         self.height[p] *= 1.0 - s;
@@ -1072,8 +1115,10 @@ impl Canvas {
         }
         let p = y as usize * self.w as usize + x as usize;
         let over = self.over_film.get(p).copied().unwrap_or(0.0);
-        // The paint beneath the film: its own amount, not the film's.
+        // The paint beneath the film: its own amount, not the film's — and by the pigments' own hiding when
+        // that is on (the pixel's mean hiding, the weighted amount over the plain).
         let total = total - over.max(0.0);
+        let total = if self.hiding > 0.0 { total * (self.film_eff[p] / self.film[p].max(1e-6)).clamp(0.0, 1.0) } else { total };
         let mut out = self.ground_lin;
         if total > 1e-4 {
             let paint = pigment::mix_linear(self.palette.pigments, conc);
@@ -1657,6 +1702,25 @@ pub fn coolest_pigment(palette: &Palette) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_the_hiding_on_a_lake_laid_thick_lets_the_ground_through_and_a_cadmium_does_not() {
+        // The split-primary palette: cadmium-yellow (0) opaque, ultramarine (4) a glazing pigment. The same
+        // unit of each over white, with and without the pigments' own hiding: the cadmium covers alike
+        // both ways; the ultramarine with the hiding on lies lighter — the ground through its film.
+        let pal = crate::paint::palette::SPLIT_PRIMARY;
+        let n = pal.pigments.len();
+        let lay = |hiding: f32, idx: usize| {
+            let mut c = Canvas::white(4, 4, pal, 0.9).with_hiding(hiding);
+            let mut d = vec![0.0; n];
+            d[idx] = 1.5;
+            c.deposit(1, 1, &d, 0.0);
+            let p = c.color_at(1, 1);
+            p[0] as f32 * 0.299 + p[1] as f32 * 0.587 + p[2] as f32 * 0.114
+        };
+        assert_eq!(lay(0.0, 0), lay(1.0, 0), "a cadmium covers the same with the hiding on");
+        assert!(lay(1.0, 4) > lay(0.0, 4) + 10.0, "an ultramarine laid as thick lets the white through ({} vs {})", lay(1.0, 4), lay(0.0, 4));
+    }
 
     #[test]
     fn old_paper_keeps_the_picture_and_ages_the_sheet() {

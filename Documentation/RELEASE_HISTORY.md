@@ -64,13 +64,19 @@ per-cycle commits carry the rationale + before/after.
   (`tint`, in the record), each clump of bristles with its own slight variant of the load; and off the
   subject, on the broad passes, a share of the marks are a **palette knife** (`knife`, in the record): a flat
   blade full width with square ends that shears the paint standing under it to a plateau and lays its own
-  flat, thick and nearly dry — smooth planes with sharp edges cut into the relief.
+  flat, thick and nearly dry — smooth planes with sharp edges cut into the relief; a share of them **skim**
+  (`skim`): the blade at a low angle with little paint, pressed less and catching only the relief's tops, a
+  torn, holed plane. Each pigment covers by its own **hiding** power (`hiding`, in the header; `Pigment::hiding`):
+  the cadmiums, whites and earths opaque, the lakes and the organic blues and greens translucent laid thick, a
+  pigment the picture named read from its masstone, the film-build law weighted by it. The brush is **twisted**
+  along every hair strand and a share of the finest marks (`twist`, in the record): its flat turned toward its
+  edge by up to a quarter turn from one end, the width running from the brush's breadth to a line.
   Two diagnostic hooks, `PLAKAT_PAINT_ARMATURE_DUMP` and `PLAKAT_PAINT_REFERENCE_DUMP`, save the armature and
   each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
   highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
   head was eased down into a beige sliver). **Every layer dial is
   a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
-  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`, `film`, `split`, `sag`, `gloss`, `tint`, `knife`), tuned in the plan; the recommended acrylic plan is in
+  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`, `film`, `split`, `sag`, `gloss`, `tint`, `knife`, `skim`, `twist`, `hiding`), tuned in the plan; the recommended acrylic plan is in
   `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
   fixed 0.5. Every other medium is byte-identical.
 

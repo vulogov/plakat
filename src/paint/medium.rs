@@ -295,6 +295,19 @@ pub struct MediumProfile {
     /// that shears the paint standing under it down to a plateau and lays its own flat, thick and nearly dry —
     /// smooth planes with sharp edges cut into the relief, against the brushed faces.
     pub knife: f32,
+    /// HIDING (0..1, 0 = off): each pigment covers by its OWN hiding power (`Pigment::hiding`) instead of the
+    /// paint's amount alone — the cadmiums, the whites and the earths opaque, the lakes and the organic blues
+    /// and greens translucent laid thick, a pigment the picture named read from its masstone — scaled toward
+    /// the plain law by `1 − hiding`; in the score's header.
+    pub hiding: f32,
+    /// TWIST (0..1): the brush turned in the fingers along the mark (see `BrushConfig::twist`) — on every
+    /// hair strand, and on this share of the finest pass's marks off the faces — the width running from the
+    /// brush's breadth to a line, the calligraphic mark.
+    pub twist: f32,
+    /// SKIM (0..1, the share): this share of the knife marks SKIM — the blade at a low angle with little
+    /// paint, pressed less and catching only the relief's tops, so the plane it lays is torn and holed over a
+    /// low relief: old plaster, the glints on water. Needs `knife`.
+    pub skim: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -359,6 +372,9 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -416,6 +432,9 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -473,6 +492,9 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -571,6 +593,9 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -637,6 +662,9 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -698,6 +726,9 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -755,6 +786,9 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -815,6 +849,9 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -872,6 +909,9 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -932,6 +972,9 @@ pub const DURER: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -993,6 +1036,9 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1053,6 +1099,9 @@ pub const PENCIL: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1115,6 +1164,9 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1172,6 +1224,9 @@ pub const PASTEL: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1229,6 +1284,9 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     gloss: 0.0,
     tint: 0.0,
     knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1292,6 +1350,9 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     gloss: 0.5,
     tint: 0.4,
     knife: 0.3,
+    hiding: 0.5,
+    twist: 0.5,
+    skim: 0.4,
 };
 
 /// Every declared medium.
@@ -1433,7 +1494,7 @@ mod tests {
     fn only_the_acrylic_lays_its_layers_dry() {
         // The layer fields are neutral on every other medium: those paint exactly as they did before them.
         for m in ALL.iter().filter(|m| m.name != "acrylic") {
-            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife, m.hiding, m.twist, m.skim], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
         }
         assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
         assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);

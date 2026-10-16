@@ -269,6 +269,14 @@ pub struct PaintPlan {
     pub tint: Option<f32>,
     #[serde(default)]
     pub knife: Option<f32>,
+    /// HIDING (0..1): each pigment covers by its own hiding power. TWIST (0..1): the brush turned along the
+    /// hair strands and this share of the finest marks. SKIM (0..1): the share of the knife marks that skim.
+    #[serde(default)]
+    pub hiding: Option<f32>,
+    #[serde(default)]
+    pub twist: Option<f32>,
+    #[serde(default)]
+    pub skim: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -377,6 +385,9 @@ impl Default for PaintPlan {
             gloss: None,
             tint: None,
             knife: None,
+            hiding: None,
+            twist: None,
+            skim: None,
             notes: Vec::new(),
         }
     }
@@ -464,7 +475,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -806,6 +817,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             gloss: None,
             tint: None,
             knife: None,
+            hiding: None,
+            twist: None,
+            skim: None,
         notes,
     }
 }

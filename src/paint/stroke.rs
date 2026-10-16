@@ -83,6 +83,11 @@ pub struct BrushConfig {
     /// 30th percentile of the height along its path) by this share before laying its own paint flat, so a
     /// knife mark is a smooth plane with sharp edges cut into the relief. Per stroke, in the record.
     pub knife: f32,
+    /// TWIST (0..1, 0 = off): the brush turned in the fingers along the mark — its flat held full to the
+    /// motion at one end and turned toward its edge by up to a quarter turn at the other (which end, by
+    /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
+    /// mark that opens from a point or draws out to one. Per stroke, in the record.
+    pub twist: f32,
 }
 
 /// The exponent that sets the comma's peak at t = 0.3 (ln 0.5 / ln 0.3).
@@ -94,7 +99,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0 }
     }
 }
 
@@ -219,6 +224,8 @@ impl Stroke {
                 }
             }
         }
+        // THE TWIST (see `BrushConfig::twist`): how far the brush turns along this mark, and from which end.
+        let twist_turn = if brush.twist > 0.0 { brush.twist.clamp(0.0, 1.0) * if lane_hash(seed, 0x7E15) < 0.5 { -1.0 } else { 1.0 } } else { 0.0 };
         // THE KNIFE (see `BrushConfig::knife`): the plateau the blade shears the standing paint toward — the
         // 30th percentile of the height along the path, so the blade rides on the lower paint and cuts the
         // ridges that stand above it.
@@ -263,6 +270,14 @@ impl Stroke {
                 1.0
             };
             let width = (self.width0 + (self.width1 - self.width0) * t) * (0.5 + 0.5 * press);
+            // THE TWIST (see `BrushConfig::twist`): the brush turned toward its edge along the mark, its
+            // breadth across the motion falling with the cosine of the turn — never under a quarter.
+            let width = if twist_turn != 0.0 {
+                let tt = if twist_turn > 0.0 { t } else { 1.0 - t };
+                width * (twist_turn.abs() * std::f32::consts::FRAC_PI_2 * tt).cos().abs().max(0.25)
+            } else {
+                width
+            };
 
             // Ends taper: the first/last ~22% of the stroke deposits less, so a mark has soft ROUND tips, not a
             // rectangular butt (the "blocky patch" tell). Deeper falloff = more organic marks.
@@ -716,5 +731,22 @@ mod tests {
         assert!(plain.len() >= 4 && tinted.len() >= 4, "the mark lays lanes ({} / {})", plain.len(), tinted.len());
         assert!(spread(&plain) < 0.01, "without the tint every lane carries one mix (spread {})", spread(&plain));
         assert!(spread(&tinted) > 0.05, "with it the bundles differ (spread {})", spread(&tinted));
+    }
+
+    #[test]
+    fn a_twisted_mark_runs_from_the_brushs_breadth_to_a_line_where_a_plain_one_keeps_its_width() {
+        // A long mark of one width; with the twist on, one end of it is far narrower than the other, where
+        // the plain mark is as wide at both.
+        let widths = |twist: f32| {
+            let mut c = Canvas::white(140, 40, palette::ZORN, 0.9);
+            let s = Stroke { path: vec![[5.0, 20.0], [125.0, 20.0]], width0: 14.0, width1: 14.0, load: red_load(), pressure: 1.0, wetness: 0.8 };
+            s.rasterize(&mut c, &BrushConfig { twist, k_pickup: 0.0, ..BrushConfig::default() });
+            let across = |x: u32| (5..35).filter(|&y| c.conc_at(x, y)[1] > 0.01).count();
+            (across(22), across(108))
+        };
+        let (a0, b0) = widths(0.0);
+        let (a1, b1) = widths(1.0);
+        assert!((a0 as i32 - b0 as i32).abs() <= 2, "a plain mark is as wide at both ends ({a0} / {b0})");
+        assert!(a1.min(b1) * 2 < a1.max(b1), "a twisted mark narrows to a line at one end ({a1} / {b1})");
     }
 }

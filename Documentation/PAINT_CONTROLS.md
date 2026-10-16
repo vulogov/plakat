@@ -351,10 +351,18 @@ split mark differ a little in **tint** (`tint 0.4`, the stroke's `tint`): each c
 own slight variant of the load. Off the subject, on the broad passes, a share of the marks are a **palette
 knife** (`knife 0.3`, the stroke's `knife`): a flat blade full width with square ends that shears the paint
 standing under it down to a plateau and lays its own flat, thick and nearly dry — smooth planes with sharp
-edges cut into the relief, against the brushed faces. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
+edges cut into the relief, against the brushed faces; a share of the knife marks **skim** (`skim 0.4`): the
+blade at a low angle with little paint, pressed less and catching only the relief's tops (the stroke's `crest`),
+a torn, holed plane. Each pigment covers by its own **hiding** power (`hiding 0.5`, in the header): the
+cadmiums, whites and earths opaque, the lakes and the organic blues and greens translucent laid thick, a
+pigment the picture named read from its masstone (dark and saturated = a lake), so a glaze of a lake lets the
+ground and the paint beneath through where a cadmium hides them. The brush is **twisted** in the fingers along
+every hair strand and a share of the finest marks off the faces (`twist 0.5`, the stroke's `twist`): its flat
+turned toward its edge by up to a quarter turn from one end, the width running from the brush's breadth to a
+line, the calligraphic mark. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
 `PAINT_EXAMPLES.md`.
 - Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
-- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `film 0.7` · `split 0.5` · `tint 0.4` · `knife 0.3` · `sag 0.4` · `gloss 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `film 0.7` · `split 0.5` · `tint 0.4` · `knife 0.3` · `skim 0.4` · `twist 0.5` · `hiding 0.5` · `sag 0.4` · `gloss 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
 - Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson

@@ -1610,6 +1610,9 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.gloss = plan.medium.gloss;
     params.tint = plan.medium.tint;
     params.knife = plan.medium.knife;
+    params.hiding = plan.medium.hiding;
+    params.twist = plan.medium.twist;
+    params.skim = plan.medium.skim;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2360,6 +2363,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.gloss = m.gloss;
         params.tint = m.tint;
         params.knife = m.knife;
+        params.hiding = m.hiding;
+        params.twist = m.twist;
+        params.skim = m.skim;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2399,6 +2405,9 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.gloss { params.gloss = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.tint { params.tint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.knife { params.knife = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.hiding { params.hiding = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.twist { params.twist = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.skim { params.skim = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {

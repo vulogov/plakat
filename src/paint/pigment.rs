@@ -98,6 +98,35 @@ impl Pigment {
         let mean = (ks[0] + ks[1] + ks[2]) / 3.0;
         1.0 / (1.0 + TINT_DAMP * mean)
     }
+
+    /// The pigment's HIDING POWER (0..1, 1 = opaque): how much of the paint beneath a unit of this pigment
+    /// covers. The real pigments are known by name — the cadmiums, the whites and the earths opaque, the
+    /// lakes and the organic blues and greens (ultramarine, phthalo, quinacridone, alizarin, viridian) the
+    /// glazing pigments that stay translucent laid thick. A pigment the picture named (`img-N`) or any other
+    /// is read from its masstone: a scattering pigment is light, an absorbing one dark and saturated, so the
+    /// hiding falls with the darkness and the chroma — a dark saturated colourant is a lake.
+    pub fn hiding(&self) -> f32 {
+        let n = self.name.to_ascii_lowercase();
+        let by_name: Option<f32> = [
+            ("titanium", 1.0), ("cadmium", 1.0), ("ochre", 0.9), ("sand", 0.9), ("lemon", 0.7), ("ivory-black", 0.75), ("paynes", 0.6), ("slate", 0.7),
+            ("sienna", 0.5), ("umber", 0.5), ("olive", 0.6), ("sky-blue", 0.8), ("lavender", 0.7), ("rose-madder", 0.5), ("cerulean", 0.8), ("teal", 0.5),
+            ("ultramarine", 0.3), ("phthalo", 0.3), ("quinacridone", 0.25), ("alizarin", 0.2), ("viridian", 0.3), ("indigo", 0.35), ("dioxazine", 0.3),
+            ("sap-green", 0.35), ("deep-green", 0.35), ("terre-verte", 0.4),
+        ]
+        .iter()
+        .find(|(key, _)| n.contains(key))
+        .map(|(_, h)| *h);
+        by_name.unwrap_or_else(|| {
+            let r = color::srgb_to_linear(self.masstone);
+            let luma = color::linear_luma(r).clamp(0.0, 1.0);
+            let mx = r[0].max(r[1]).max(r[2]).max(1e-4);
+            let sat = (mx - r[0].min(r[1]).min(r[2])) / mx;
+            // The chroma counts only past a third of it: a cream or a buff is not a lake; and the darkness
+            // alone takes no more than half — a dark earth or a black is half-opaque, a dark SATURATED
+            // colourant the lake.
+            ((0.5 + 0.5 * luma.sqrt()) * (1.0 - 0.5 * ((sat - 0.3).max(0.0) / 0.7))).clamp(0.15, 1.0)
+        })
+    }
 }
 
 /// Mix pigments in the given (non-negative) concentrations under Kubelka-Munk, returning the resulting sRGB.
@@ -196,6 +225,16 @@ mod tests {
         assert!(mixed[2] > mixed[1], "one yellow in ten blue, averaged, is still blue: {mixed:?}");
         let thick = color::linear_to_srgb(layer_over(ks, 50.0, blue));
         assert!(thick[0] > 200 && thick[1] > 180 && thick[2] < 80, "a thick film hides the blue and is the yellow: {thick:?}");
+    }
+
+    #[test]
+    fn the_hiding_power_knows_the_cadmiums_from_the_lakes_and_reads_the_rest_from_the_masstone() {
+        assert_eq!(YELLOW.hiding(), 1.0, "a cadmium is opaque");
+        assert_eq!(WHITE.hiding(), 1.0, "a white is opaque");
+        assert!(BLUE.hiding() < 0.4, "ultramarine is a glazing pigment ({})", BLUE.hiding());
+        let navy = Pigment { name: "img-3", masstone: [20, 30, 90] };
+        let cream = Pigment { name: "img-4", masstone: [240, 230, 200] };
+        assert!(navy.hiding() < 0.5 && cream.hiding() > 0.9, "a dark saturated unknown is a lake ({}), a light one covers ({})", navy.hiding(), cream.hiding());
     }
 
     #[test]
