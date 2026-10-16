@@ -89,9 +89,32 @@ plakat paint from photo.png --medium charcoal --palette sumi \
     --contour 0.3 --granulate 0.35 -o out-charcoal.png
 
 # ── ACRYLIC ──────────────────────────────────────────────────────────────────
-# Opaque plastic colour, fast-dry (clean stacked layers), plastic sheen, darkens on drying.
-plakat paint from photo.png --medium acrylic --palette image \
-    --sheen 0.25 --impasto 0.4 --dry-shift -0.03 -o out-acrylic.png
+# Opaque plastic colour in layers, each dry before the next: a thin wash block-in, flat crisp-edged marks on
+# top, a dry-brush finish and a loose hand off the faces, thick accent dabs at the sharp contrasts; darkens on
+# drying; the skin fused where it is smooth, a glaze pass over all but the faces, the shadows calm and broad over
+# a dark warm imprimatura, the edges lost in shadow and by depth, a dry brush over the ridges and a cool wash
+# into the furrows, the glazes a film over the dried paint, the dry marks split into bristle bundles of
+# their own tints, a few thick drops with tails, a palette knife off the subject that sometimes skims, the
+# brush twisted along the hair, each pigment hiding by its own power, the canvas sagging under the thick
+# paint and glossy on its peaks. Best painted from scratch with a PLAN —
+# the face and figure tiers (fine brushes on the face, broad on the background) and every layer dial as a
+# plan key, tuned there rather than in the source. The recommended plan:
+#
+#   medium: acrylic            palette: image           style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 1.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          rigger: 0.35      hotspot: 0.5
+#   dry: 1.0                   wash_in: 0.5             wet_cap: 0.45           scumble: 1.0      skip: 0.3
+#   deplete: 1.8               turbulence: 8            accent: 1.0             loose: 0.5        vary: 0.35
+#   broken: 0.15               sfumato: 0.7             glaze: 0.6              glaze_pass: 0.3   comma: 0.5
+#   shade: 0.6                 imprimatura: 0.6         body_vary: 0.3          lost: 0.6         crest: 0.4
+#   spatter: 0.5               tail: 0.6                aerial: 0.6             sink: 0.5
+#   film: 0.7                  split: 0.5               tint: 0.4               knife: 0.3        skim: 0.4
+#   twist: 0.5                 hiding: 0.5
+#   impasto: 0.3               ridges: 0.3              impasto_map: 1.0        sheen: 0.2         sag: 0.4
+#   gloss: 0.5
+#
+plakat paint from photo.png --medium acrylic --plan acrylic.hjson -o out-acrylic.png
 
 # ── TEMPERA ──────────────────────────────────────────────────────────────────
 # Fine cross-hatched build-up (egg tempera), low bleed, subtle body. Palette: verdaccio.

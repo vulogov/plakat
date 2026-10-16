@@ -34,6 +34,38 @@ fn ks_from_linear(r: LinRgb) -> [f32; 3] {
     ks
 }
 
+/// The per-channel `K/S` of a (linear) colour — the inverse of [`linear_from_ks`], for a film's optics.
+pub fn ks_of(r: LinRgb) -> [f32; 3] {
+    ks_from_linear(r)
+}
+
+/// A FILM OF FINITE THICKNESS laid OVER a substrate (the two-layer Kubelka-Munk solution): a glaze over a
+/// dried layer is not mixed into it — it is a translucent layer the light passes through twice. Per channel,
+/// for a film of `K/S` and optical thickness `sx` (scattering × thickness) over a substrate of reflectance
+/// `base`: `a = 1 + K/S`, `b = √(a² − 1)`, the film's own reflectance `R = sinh(b·sx) / (a·sinh(b·sx) +
+/// b·cosh(b·sx))` and transmittance `T = b / (…)`, and the whole `R + T²·base / (1 − R·base)`. At `sx → 0` the
+/// substrate shows unchanged; at `sx → ∞` the film hides it and reads as its own masstone. A yellow film over
+/// blue reads green — the subtractive result a concentration average of the two cannot give at a glaze's
+/// thinness, because there the heavy layer beneath outweighs it.
+pub fn layer_over(ks: [f32; 3], sx: f32, base: LinRgb) -> LinRgb {
+    let sx = sx.max(0.0);
+    if sx <= 0.0 {
+        return base;
+    }
+    let mut out = [0f32; 3];
+    for c in 0..3 {
+        let a = 1.0 + ks[c].max(0.0);
+        let b = (a * a - 1.0).max(1e-8).sqrt();
+        let (s, co) = ((b * sx).min(40.0).sinh(), (b * sx).min(40.0).cosh());
+        let den = (a * s + b * co).max(1e-6);
+        let r = (s / den).clamp(0.0, 1.0);
+        let t = (b / den).clamp(0.0, 1.0);
+        let bs = base[c].clamp(0.0, 1.0);
+        out[c] = (r + t * t * bs / (1.0 - r * bs).max(1e-4)).clamp(0.0, 1.0);
+    }
+    out
+}
+
 /// Reflectance from `K/S`: `R = 1 + K/S − √((K/S)² + 2·K/S)`.
 fn linear_from_ks(ks: [f32; 3]) -> LinRgb {
     let mut r = [0f32; 3];
@@ -65,6 +97,35 @@ impl Pigment {
         let ks = self.ks();
         let mean = (ks[0] + ks[1] + ks[2]) / 3.0;
         1.0 / (1.0 + TINT_DAMP * mean)
+    }
+
+    /// The pigment's HIDING POWER (0..1, 1 = opaque): how much of the paint beneath a unit of this pigment
+    /// covers. The real pigments are known by name — the cadmiums, the whites and the earths opaque, the
+    /// lakes and the organic blues and greens (ultramarine, phthalo, quinacridone, alizarin, viridian) the
+    /// glazing pigments that stay translucent laid thick. A pigment the picture named (`img-N`) or any other
+    /// is read from its masstone: a scattering pigment is light, an absorbing one dark and saturated, so the
+    /// hiding falls with the darkness and the chroma — a dark saturated colourant is a lake.
+    pub fn hiding(&self) -> f32 {
+        let n = self.name.to_ascii_lowercase();
+        let by_name: Option<f32> = [
+            ("titanium", 1.0), ("cadmium", 1.0), ("ochre", 0.9), ("sand", 0.9), ("lemon", 0.7), ("ivory-black", 0.75), ("paynes", 0.6), ("slate", 0.7),
+            ("sienna", 0.5), ("umber", 0.5), ("olive", 0.6), ("sky-blue", 0.8), ("lavender", 0.7), ("rose-madder", 0.5), ("cerulean", 0.8), ("teal", 0.5),
+            ("ultramarine", 0.3), ("phthalo", 0.3), ("quinacridone", 0.25), ("alizarin", 0.2), ("viridian", 0.3), ("indigo", 0.35), ("dioxazine", 0.3),
+            ("sap-green", 0.35), ("deep-green", 0.35), ("terre-verte", 0.4),
+        ]
+        .iter()
+        .find(|(key, _)| n.contains(key))
+        .map(|(_, h)| *h);
+        by_name.unwrap_or_else(|| {
+            let r = color::srgb_to_linear(self.masstone);
+            let luma = color::linear_luma(r).clamp(0.0, 1.0);
+            let mx = r[0].max(r[1]).max(r[2]).max(1e-4);
+            let sat = (mx - r[0].min(r[1]).min(r[2])) / mx;
+            // The chroma counts only past a third of it: a cream or a buff is not a lake; and the darkness
+            // alone takes no more than half — a dark earth or a black is half-opaque, a dark SATURATED
+            // colourant the lake.
+            ((0.5 + 0.5 * luma.sqrt()) * (1.0 - 0.5 * ((sat - 0.3).max(0.0) / 0.7))).clamp(0.15, 1.0)
+        })
     }
 }
 
@@ -147,6 +208,33 @@ mod tests {
         // …whereas a naive RGB average would be a desaturated grey-purple (G is NOT the max there).
         let rgb_avg = [(30 + 240) / 2, (50 + 220) / 2, (180 + 30) / 2];
         assert!(!(rgb_avg[1] > rgb_avg[0] && rgb_avg[1] > rgb_avg[2]), "RGB average is not green: {rgb_avg:?}");
+    }
+
+    #[test]
+    fn a_thin_yellow_film_over_blue_reads_green_and_a_thick_one_reads_yellow() {
+        // A glaze is a layer OVER the dried paint: a thin yellow film over a heavy blue passage turns it green
+        // — where a concentration average of one yellow unit into ten of blue barely moves it off blue — and
+        // laid thick enough the film hides the blue and reads as its own yellow; none at all leaves the blue.
+        let blue = mix_linear(&[BLUE], &[1.0]);
+        let ks = ks_of(mix_linear(&[YELLOW], &[1.0]));
+        let none = layer_over(ks, 0.0, blue);
+        assert_eq!(none, blue, "no film, the substrate unchanged");
+        let thin = color::linear_to_srgb(layer_over(ks, 0.3, blue));
+        assert!(thin[1] > thin[2] && thin[1] > thin[0], "a thin yellow film over blue is green: {thin:?}");
+        let mixed = mix(&[BLUE, YELLOW], &[10.0, 1.0]);
+        assert!(mixed[2] > mixed[1], "one yellow in ten blue, averaged, is still blue: {mixed:?}");
+        let thick = color::linear_to_srgb(layer_over(ks, 50.0, blue));
+        assert!(thick[0] > 200 && thick[1] > 180 && thick[2] < 80, "a thick film hides the blue and is the yellow: {thick:?}");
+    }
+
+    #[test]
+    fn the_hiding_power_knows_the_cadmiums_from_the_lakes_and_reads_the_rest_from_the_masstone() {
+        assert_eq!(YELLOW.hiding(), 1.0, "a cadmium is opaque");
+        assert_eq!(WHITE.hiding(), 1.0, "a white is opaque");
+        assert!(BLUE.hiding() < 0.4, "ultramarine is a glazing pigment ({})", BLUE.hiding());
+        let navy = Pigment { name: "img-3", masstone: [20, 30, 90] };
+        let cream = Pigment { name: "img-4", masstone: [240, 230, 200] };
+        assert!(navy.hiding() < 0.5 && cream.hiding() > 0.9, "a dark saturated unknown is a lake ({}), a light one covers ({})", navy.hiding(), cream.hiding());
     }
 
     #[test]

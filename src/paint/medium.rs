@@ -170,6 +170,144 @@ pub struct MediumProfile {
     /// The physical character of the medium's mark (see [`MarkCharacter`]).
     pub mark: MarkCharacter,
     pub finish_policy: FinishPolicy,
+    // ── How the LAYERS go on (the multi-layer behaviour of the paint; the painter's pass loop reads these) ──
+    /// INTER-PASS DRYING (0..1): how far the canvas dries between passes when `--dry` is not given — 0.5 for
+    /// a paint that stays open (oil), 1 for one that is dry before the next layer (acrylic: each pass a
+    /// clean overlay, nothing beneath is picked up or stirred).
+    pub dries: f32,
+    /// WASH-IN (0..1): the block-in laid THIN — a diluted first layer, flooded, carrying `1 − 0.7·wash_in` of
+    /// the charge — the acrylic painter's wash underpainting, which the opaque layers cover where they
+    /// restate and leave showing where they do not. 0 = the block-in at full charge.
+    pub wash_in: f32,
+    /// WET CAP (0..1, 1 = none): the wettest a mark after the block-in may go on. A fast-drying paint sits
+    /// ON the layer beneath as a flat opaque patch — it neither dissolves into it nor wets it for the next
+    /// mark — so its marks are capped dry; an oil mark goes on as wet as the pass asks.
+    pub wet_cap: f32,
+    /// SCUMBLE (0..1, 0 = off): the finest pass, off the faces, goes on as a DRY BRUSH — a thinner charge,
+    /// nearly dry, raked, no pickup — the broken drag over a dried layer that acrylic is painted with on
+    /// hair, foliage, cloth and ground. The faces keep their clean fine marks.
+    pub scumble: f32,
+    /// DRY-BRUSH SKIP (0..1, 0 = off) of the brush: a mark laid drier than 0.6 wet touches only the standing
+    /// fibres of the canvas (see `BrushConfig::skip`) — in the score's header, so the replay skips alike.
+    pub skip: f32,
+    /// TURBULENCE (degrees, 0 = off): a low-frequency field of noise turns every pass's flow by up to this
+    /// much either way — the marks of a hand are never quite parallel; on a face the turn is halved.
+    pub turbulence: f32,
+    /// ACCENTS (0..1, 0 = off): on the finest pass, where the picture's local contrast is sharp — a glint, a
+    /// hard edge — the mark is a short, thick, opaque dab set off the flow at its own angle: the impasto
+    /// accent that reads as a touch of paint, not as a trace of the edge.
+    pub accent: f32,
+    /// LOOSE (0..1, 0 = off): off the subject and the faces the broad passes' marks run longer and wider, and
+    /// the restating passes thin with the ladder (the finest keeps `1 − loose` of its marks there) — the
+    /// background is painted with the big brush and a free hand, the subject with the small one.
+    pub loose: f32,
+    /// RIDGES (0..1, 0 = off) of the brush: each bristle lane's paint stands as high as it was loaded, the
+    /// mark's section plowed to its edges (see `BrushConfig::ridges`) — in the score's header.
+    pub ridges: f32,
+    /// IMPASTO MAP (0..1, 0 = off): the paint's thickness follows the picture — lights thick and shadows thin,
+    /// the subject thick and the background thin, a face laid smooth (see `PaintParams::impasto_map`).
+    pub impasto_map: f32,
+    /// DEPLETE (1 = the brush's own): how fast a mark's charge runs out along it (see `BrushConfig::deplete`)
+    /// — a heavy-body paint goes down thick at the start of the mark and thins to a dry tail.
+    pub deplete: f32,
+    /// GLAZE (0..1, 0 = off): on the finest pass, the marks seeded along the subject's silhouette (within two
+    /// brush widths of it) are thin and wet, pick up the paint beneath, and may cross it — a translucent
+    /// overlap that softens the seam between the figure and its ground instead of a cut edge.
+    pub glaze: f32,
+    /// SFUMATO (0..1, 0 = off): on a face, where the picture is smooth at the brush's scale, the fine passes
+    /// thin with the ladder and the marks that remain go on broad, wet, half-charged, picking up the paint
+    /// beneath — the skin fused, not hatched into a grain.
+    pub sfumato: f32,
+    /// GLAZE PASS (0..1, 0 = off — the charge): one more pass after the ladder, a mid brush, every mark a thin
+    /// wet film laid over the ground and the clothes (no restate gate), unifying the detail under one tone —
+    /// never over a face or hair, where its mid brush smudged a small head's features.
+    pub glaze_pass: f32,
+    /// VARY (0..1, 0 = off): a Gaussian spread of the mark's length (σ in log length), wider where the
+    /// picture is flat — no two marks the same.
+    pub vary: f32,
+    /// COMMA (0..1, 0 = off): the hand's pressure along the mark — the width and the deposit swell a third of
+    /// the way along and lift toward the ends, a drop or a comma (see `BrushConfig::comma`).
+    pub comma: f32,
+    /// SHADE (0..1, 0 = off): in the shadows, off the faces and hair, a restating mark lands only where the
+    /// canvas is plainly wrong (the restate floor raised `1 + 4·shade·shadow`, against the committed shadows'
+    /// drop of it), and the marks that land run longer and wider, laid calm — no dry skip, no hue drift — so
+    /// the dark masses rest and the detail is kept for the light, where the eye goes.
+    pub shade: f32,
+    /// IMPRIMATURA (0..1, 0 = off): the block-in is laid darker and warmer than the picture — pulled toward a
+    /// burnt umber — so what shows between the later marks (a dry mark's skips, the thinned shadows, the
+    /// seams) is the dark warm underpainting of a classical picture, not the picture's own colour.
+    pub imprimatura: f32,
+    /// BODY VARY (σ, 0 = off): a Gaussian spread of each mark's body in its log — one mark thick and opaque,
+    /// the next thinner, wetter and translucent — the paint's consistency never the same twice on the brush.
+    pub body_vary: f32,
+    /// LOST (0..1, 0 = off): on the finest ladder pass and the glaze pass, along the subject's silhouette where
+    /// the picture is in shadow, a mark's colour is the picture blurred wide across the seam, its path grows
+    /// along that blur and may cross the seam, and its charge is `0.4 + 0.6·lost` — the edge between a dark
+    /// figure and its dark ground lost, as a painter rubs it out with a finger.
+    pub lost: f32,
+    /// CREST (0..1, the share): one more pass after the glaze, a fine brush (the ladder's third-finest), off
+    /// the faces and hair, where the relief is broken — this share of its seeds are a dry brush dragged over
+    /// the dried relief, a lighter, warmer tint that catches only the ridges' tops (see `BrushConfig::crest`),
+    /// the texture lit without a new shape.
+    pub crest: f32,
+    /// SPATTER (0..1, 0 = off): the thickest marks, in the light and off the faces, fling a drop or three off
+    /// their lift-off along the mark's direction — round thick dots of the mark's own paint, standing up.
+    pub spatter: f32,
+    /// AERIAL (0..1, 0 = off): the lost edges by DEPTH. A depth map is estimated for the picture, and where
+    /// a passage lies far and in shadow the `lost` treatment is no longer kept to the subject's silhouette:
+    /// the farther the passage, the more contrast its edges may hold and still be lost, and the wider the
+    /// blur the mark takes its colour from — the background softens itself by its distance, an aerial
+    /// perspective without a mask. Needs `lost` above zero.
+    pub aerial: f32,
+    /// SINK (0..1, the share): on the crest pass, in the shadow, where the relief is broken — this share of
+    /// its seeds a thin wet wash, darker and cooler than the picture, that settles only in the furrows of
+    /// the relief and runs off the ridges (a negative `BrushConfig::crest`): the shadow's texture deepened
+    /// the way a wash is rubbed into a dried impasto.
+    pub sink: f32,
+    /// TAIL (0..1, 0 = off): a spatter drop's shape follows the SPEED of the mark that flung it — a long
+    /// mark for its width is a fast one — the faster, the farther it flies and the longer it stretches along
+    /// its flight, a round head and a thinning tail ahead of it; a slow dab's drops stay round.
+    pub tail: f32,
+    /// FILM (0..1, 0 = off): the glaze marks — the glaze pass, the sink wash, the lost edges, the overlaps
+    /// along the silhouette — lay this share of their deposit as a translucent FILM over the dried paint
+    /// instead of mixing into it (see `BrushConfig::over`): the two-layer Kubelka-Munk solution reads the
+    /// film by its own transmittance over the layer beneath, so a thin glaze tints a heavy passage the way
+    /// it does on a real canvas, where mixed in it was outweighed and read as a muddy average.
+    pub film: f32,
+    /// SPLIT (0..1, 0 = off): the dry marks — the scumble, the crest, the hair strands — comb into two to
+    /// four bundles with bare canvas between them as they dry out and the faster they go (see
+    /// `BrushConfig::split`): the clumped bristles of a half-dry brush parting along the mark.
+    pub split: f32,
+    /// SAG (0..1, 0 = off): at output, the stretched canvas gives under the weight of the thick paint — a
+    /// broad shallow dip under every heavy passage and a slow unevenness of the cloth on its bars, a gentle
+    /// swell of the light over the whole sheet (see `Finish::sag`).
+    pub sag: f32,
+    /// GLOSS (0..1, 0 = off): at output, a sharp specular on the PEAKS of the thick paint — acrylic dries with
+    /// a gloss on the highest points of a heavy mark where the body of the sheet is satin (`sheen`), so the
+    /// crests glint under the lamp and the thin passages stay matte (see `Finish::gloss`).
+    pub gloss: f32,
+    /// TINT (0..1, 0 = off): the bundles of a split mark differ a little in tone — the paint not mixed to one
+    /// colour on the palette, each clump of bristles carrying its own (see `BrushConfig::tint`) — so the
+    /// combed lines of a hair or a feather are not one colour repeated. Needs `split`.
+    pub tint: f32,
+    /// KNIFE (0..1, the share): off the subject, on the broad passes, this share of the marks are laid with a
+    /// PALETTE KNIFE instead of a brush (see `BrushConfig::knife`): a flat blade full width with square ends
+    /// that shears the paint standing under it down to a plateau and lays its own flat, thick and nearly dry —
+    /// smooth planes with sharp edges cut into the relief, against the brushed faces.
+    pub knife: f32,
+    /// HIDING (0..1, 0 = off): each pigment covers by its OWN hiding power (`Pigment::hiding`) instead of the
+    /// paint's amount alone — the cadmiums, the whites and the earths opaque, the lakes and the organic blues
+    /// and greens translucent laid thick, a pigment the picture named read from its masstone — scaled toward
+    /// the plain law by `1 − hiding`; in the score's header.
+    pub hiding: f32,
+    /// TWIST (0..1): the brush turned in the fingers along the mark (see `BrushConfig::twist`) — on every
+    /// hair strand, and on this share of the finest pass's marks off the faces — the width running from the
+    /// brush's breadth to a line, the calligraphic mark.
+    pub twist: f32,
+    /// SKIM (0..1, the share): this share of the knife marks SKIM — the blade at a low angle with little
+    /// paint, pressed less and catching only the relief's tops, so the plane it lays is torn and holed over a
+    /// low relief: old plaster, the glints on water. Needs `knife`.
+    pub skim: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -203,6 +341,40 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -229,6 +401,40 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -255,6 +461,40 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -322,6 +562,40 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
         book: false,
     },
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -357,6 +631,40 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     // that carries the detail the washes leave out.
     mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 1.0, levels: Some(8), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: false },
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -387,6 +695,40 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     // `budget_scale` 6: the line is the picture, and a swelling line is recorded as several cuts.
     mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.3, charge: 0.8, hatch_angle: 0.0, monochrome: false, engrave: false, budget_scale: 6.0, levels: Some(3), reserve: Some(0.72), ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: true, book: true },
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -413,6 +755,40 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -442,6 +818,40 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     // paper left as the light — in the ink's own grey, never the picture's colours.
     mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.2, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: true, luminous: false, book: false },
     finish_policy: FinishPolicy::BackToFront,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -468,6 +878,40 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     mark_model: MarkModel::Density,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -497,6 +941,40 @@ pub const DURER: MediumProfile = MediumProfile {
     // The burin. `budget_scale` 3: a swelling line is recorded as several cuts, so a plate needs the count.
     mark: MarkCharacter { role: None, stroke_len: 1.0, stroke_width: 1.0, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: true, budget_scale: 3.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -527,6 +1005,40 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     // tempera net of colour, matte and even.
     mark: MarkCharacter { role: Some("tempera"), stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -556,6 +1068,40 @@ pub const PENCIL: MediumProfile = MediumProfile {
     // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
     mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.5, charge: 0.45, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -587,6 +1133,40 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     // GRAPHITE: a dry point — thin, short, directional grey strokes that leave the paper, in its own grey.
     mark: MarkCharacter { role: Some("pencil"), stroke_len: 0.9, stroke_width: 0.6, charge: 0.9, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -613,6 +1193,40 @@ pub const PASTEL: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous,
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -639,8 +1253,47 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     mark_model: MarkModel::Continuous, // tonal smudge, not hatch
     mark: MarkCharacter::BRUSH,
     finish_policy: FinishPolicy::Uniform,
+    dries: 0.5,
+    wash_in: 0.0,
+    wet_cap: 1.0,
+    scumble: 0.0,
+    skip: 0.0,
+    turbulence: 0.0,
+    accent: 0.0,
+    loose: 0.0,
+    ridges: 0.0,
+    impasto_map: 0.0,
+    deplete: 1.0,
+    glaze: 0.0,
+    sfumato: 0.0,
+    glaze_pass: 0.0,
+    vary: 0.0,
+    comma: 0.0,
+    shade: 0.0,
+    imprimatura: 0.0,
+    body_vary: 0.0,
+    lost: 0.0,
+    crest: 0.0,
+    spatter: 0.0,
+    aerial: 0.0,
+    sink: 0.0,
+    tail: 0.0,
+    film: 0.0,
+    split: 0.0,
+    sag: 0.0,
+    gloss: 0.0,
+    tint: 0.0,
+    knife: 0.0,
+    hiding: 0.0,
+    twist: 0.0,
+    skim: 0.0,
 };
 
+/// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
+/// block-in, the masses, the restatements, the accents — but each layer DRY before the next goes on: nothing
+/// is picked up, nothing blends, a mark sits on the one beneath as a flat patch with a crisp edge; the last
+/// layer is dragged dry over the canvas's tooth off the faces; no wet bloom; the colour dries a little
+/// darker and flatter than it went on, under a satin sheen and a thin relief.
 pub const ACRYLIC: MediumProfile = MediumProfile {
     name: "acrylic",
     value_direction: ValueDirection::MidOut,
@@ -648,23 +1301,58 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     white_source: WhiteSource::Pigment,
     reversibility: Reversibility::None, // FAST-DRY — no reworking, layers stack cleanly
     stage_budget: 6,
-    pickup: 0.05, // fast-drying: a mark sits on top, it does not lift the one beneath // little wet blend (dries fast)
-    bleed: 0.05,
-    body: 1.0,     // opaque plastic
-    impasto: 0.15, // a thin relief — acrylic is flatter than oil
-    chroma: 1.10,  // vivid plastic colour
-    dry_shift: -0.03, // darkens slightly on drying
+    pickup: 0.05, // fast-drying: a mark sits on top, it does not lift the one beneath
+    bleed: 0.0,   // no wet bloom: a dried acrylic edge is where the brush stopped
+    body: 1.0,    // opaque plastic
+    impasto: 0.3, // a heavy-body relief: the marks stand, with their micro-shadows, under the light
+    chroma: 1.05,  // vivid, but it dries a touch flatter than it goes on
+    dry_shift: -0.05, // dries darker
     granulate: 0.0,
-    sheen: 0.2, // plastic sheen
-    lift: 0.0,  // permanent once dry
+    sheen: 0.2, // satin
+    lift: 0.0,   // permanent once dry
     default_palette: "split-primary",
-    broken: 0.1, // little optical mixing: flat, even colour
+    broken: 0.15, // a little drift of hue from mark to mark: flat, even colour, never a fill
     contour: 0.0,
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous,
-    mark: MarkCharacter::BRUSH,
+    // A synthetic flat: smooth lanes, a square edge, a steady hand (see `BrushProfile::named`).
+    mark: MarkCharacter { role: Some("acrylic"), ..MarkCharacter::BRUSH },
     finish_policy: FinishPolicy::Uniform,
+    dries: 1.0,
+    wash_in: 0.5,
+    wet_cap: 0.45,
+    scumble: 1.0,
+    skip: 0.3,
+    turbulence: 8.0,
+    accent: 1.0,
+    loose: 0.5,
+    ridges: 0.3,
+    impasto_map: 1.0,
+    deplete: 1.8,
+    glaze: 0.6,
+    sfumato: 0.7,
+    glaze_pass: 0.3,
+    vary: 0.35,
+    comma: 0.5,
+    shade: 0.6,
+    imprimatura: 0.6,
+    body_vary: 0.3,
+    lost: 0.6,
+    crest: 0.4,
+    spatter: 0.5,
+    aerial: 0.6,
+    sink: 0.5,
+    tail: 0.6,
+    film: 0.7,
+    split: 0.5,
+    sag: 0.4,
+    gloss: 0.5,
+    tint: 0.4,
+    knife: 0.3,
+    hiding: 0.5,
+    twist: 0.5,
+    skim: 0.4,
 };
 
 /// Every declared medium.
@@ -800,6 +1488,17 @@ mod tests {
         let si = s.iter().position(|x| *x == Stage::ShadowMass).unwrap();
         let li = s.iter().position(|x| *x == Stage::LightMass).unwrap();
         assert!(si < li, "shadow mass precedes light mass");
+    }
+
+    #[test]
+    fn only_the_acrylic_lays_its_layers_dry() {
+        // The layer fields are neutral on every other medium: those paint exactly as they did before them.
+        for m in ALL.iter().filter(|m| m.name != "acrylic") {
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife, m.hiding, m.twist, m.skim], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+        }
+        assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
+        assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);
+        assert_eq!(ACRYLIC.mark.role, Some("acrylic"));
     }
 
     #[test]

@@ -289,17 +289,87 @@ bleed: 0.35
 contour: 0.4
 ```
 
-### Acrylic — `medium: acrylic`  🎯 *fast-dry, plastic sheen, darkens on drying*
-Opaque plastic colour, **fast‑dry** (clean stacked layers, little wet blend), a **plastic sheen**, and a slight
-**darken on drying**; permanent (no lifting).
-- Defaults: `body 1.0` · `impasto 0.35` · `sheen 0.20` · `dry_shift −0.03` · `pickup 0.15` · `lift 0.0` · `chroma 1.10`.
-- Tune: `sheen` for gloss; `impasto` for thick relief; keep `pickup`/`bleed` low (fast‑dry).
+### Acrylic — `medium: acrylic`  🎯 *fast-dry, layered like the indirect oil, darkens on drying*
+Opaque plastic colour painted in LAYERS, each **dry before the next** goes on: the block-in is a thin, flooded
+**wash underpainting** (`wash_in 0.5` — 65 % of the charge), every later mark goes on no wetter than `wet_cap
+0.45` and sits on the dried layer as a **flat patch with a crisp edge** (no pickup, no bleed, no blending), the
+**finest pass is dragged dry** off the faces (`scumble 1` — a thinner charge, raked, no pickup) over a brush
+that **skips on the canvas's tooth** (`skip 0.3`); a synthetic flat brush (smooth lanes, a square edge); the
+colour **dries darker** (`dry_shift −0.05`) under a satin sheen and a thin relief; permanent (no lifting). The
+flow of every pass is turned by a low-frequency **turbulence** of ±8° (halved on a face), so the marks are never
+quite parallel; on the finest pass an **accent** — a short, thick, opaque dab set off the flow at its own angle —
+goes where the picture's local contrast is sharp (a glint, a hard edge); and off the subject and the faces the
+painting is **loose**: the broad passes' marks run half again as long and wider, and the restating passes thin
+with the ladder (the finest keeps half its marks there) — the background is the big brush's flat patches, the
+subject the small brush's. Best as `--new --plan auto` (the painting from scratch with the face and figure
+tiers: the face gets the fine armature and the finest brushes, the background the broad ones). The paint has
+**body**: a heavy relief (`impasto 0.45`) with bristle **ridges** (`ridges 0.5`) and a thickness that follows the
+picture (`impasto_map 0.6` — lights thick, shadows thin, the subject thick, a face laid smooth), relit with its
+micro-shadows under a satin sheen; a mark's charge **runs out along it** (`deplete 1.8` — thick at the start, a
+dry tail over the layer beneath); and along the subject's silhouette the finest pass lays **glazes** (`glaze
+0.6` — thin, wet, picking up the paint beneath, free to cross the seam), so the figure meets its ground in a
+translucent overlap, not a cut edge. On a face, where the picture is smooth at the brush's scale, the paint is
+**sfumato** (`sfumato 0.7`): the fine passes thin there with the ladder and the marks that remain go on broad,
+wet, half-charged and picking up the paint beneath, so the skin is fused, not hatched into a grain; one more
+**glaze pass** after the ladder (`glaze_pass 0.3` — a mid brush, every mark a thin wet film over everything but the faces and hair, which their own tier finishes)
+unifies the detail under one tone — leaving the sharp contrasts alone, so the accents stand crisp over the film;
+and the mark's length is spread as a Gaussian (`vary 0.35`), wider where the picture is flat. The hand's
+**pressure** runs along the mark (`comma 0.5`): the width and the deposit swell a third of the way along and
+lift toward the ends, so a round brush leaves drops and commas, not tubes; a bristle whose charge has run out
+skips on the tooth as a dry one does, so a depleting mark's tail breaks instead of thinning evenly; and on a
+face under the sfumato the drift of hue is wider, so the fused skin is not one interpolated gradient. The
+picture has a **hierarchy**: in the shadows, off the faces, a mark lands only where the canvas is plainly
+wrong, never to chase a small tone, and the marks that land run longer, wider and calm — no dry skip, no hue
+drift (`shade 0.6`) — so the dark masses rest and the detail is kept for the light; the block-in is laid as an **imprimatura** (`imprimatura 0.6` — darker and warmer than the
+picture, toward a burnt umber), the underpainting that shows between the later marks, in a dry mark's skips
+and the thinned shadows; and each mark's **body** is spread as a Gaussian (`body_vary 0.3`): one thick and
+opaque, standing high, the next thinner, wetter and translucent. On the finest pass and the glaze pass the
+subject's edge is **lost** where it lies in shadow (`lost 0.6`): the mark's colour is the picture blurred wide
+across the seam and the mark runs across it, so a dark figure meets its dark ground in one tone, not a drawn
+outline; one more pass after the glaze is a **dry brush over the ridges** (`crest 0.4`, the share of its
+seeds): a fine brush, where the relief is broken, a lighter, warmer tint that catches only the tops of the
+relief beneath (the stroke's `crest`, in the record), the texture lit without a new shape; on the same pass, in
+the shadow, a **wash into the furrows** (`sink 0.5`, the share): a thin cool wash that settles only below the
+ridges and runs off their tops (a negative `crest` in the record); the lost edges go **by depth** (`aerial
+0.6`): a depth map is estimated (Depth-Anything) and a far passage in shadow loses its edges wherever it lies,
+the farther the more contrast it may hold and the wider the blur its marks take — the background softens
+itself by its distance, and the relief thins toward the far planes; and the thickest marks in the light fling **spatter** (`spatter 0.5`): a drop
+or three off the lift-off along the mark's direction, round thick dots of its own paint, a fast mark's (a long
+one for its width) flying farther and smearing ahead into a **tail** (`tail 0.6`). The glaze marks (the glaze
+pass, the sink wash, the lost edges, the silhouette overlaps) lay a share of their paint as a **film over** the
+dried layer (`film 0.7`): the engine mixes pigment by Kubelka-Munk already, but a glaze mixed into a heavy
+passage is outweighed by it — laid as its own layer, read by the two-layer Kubelka-Munk solution (a film of
+finite thickness over a substrate, the stroke's `over` in the record), a thin yellow over blue reads green
+and a cool wash over a warm shadow stays a cool veil; the dry marks (the scumble, the crest, the hair strands)
+**split** into two to four bristle bundles with bare canvas between as they dry out and the faster they go
+(`split 0.5`, the stroke's `split` in the record); and at output the canvas **sags** under the thick paint
+(`sag 0.4`): a broad shallow dip under every heavy passage and a slow unevenness of the cloth on its bars, a
+gentle swell of the light over the whole sheet, recorded in the score's header; and a **gloss** on the peaks
+(`gloss 0.5`, in the header too): a sharp glint only where the thick paint stands above its surround and high
+against the sheet's own peak, the crests of the heavy marks glossy and the thin passages matte. The bundles of a
+split mark differ a little in **tint** (`tint 0.4`, the stroke's `tint`): each clump of bristles carries its
+own slight variant of the load. Off the subject, on the broad passes, a share of the marks are a **palette
+knife** (`knife 0.3`, the stroke's `knife`): a flat blade full width with square ends that shears the paint
+standing under it down to a plateau and lays its own flat, thick and nearly dry — smooth planes with sharp
+edges cut into the relief, against the brushed faces; a share of the knife marks **skim** (`skim 0.4`): the
+blade at a low angle with little paint, pressed less and catching only the relief's tops (the stroke's `crest`),
+a torn, holed plane. Each pigment covers by its own **hiding** power (`hiding 0.5`, in the header): the
+cadmiums, whites and earths opaque, the lakes and the organic blues and greens translucent laid thick, a
+pigment the picture named read from its masstone (dark and saturated = a lake), so a glaze of a lake lets the
+ground and the paint beneath through where a cadmium hides them. The brush is **twisted** in the fingers along
+every hair strand and a share of the finest marks off the faces (`twist 0.5`, the stroke's `twist`): its flat
+turned toward its edge by up to a quarter turn from one end, the width running from the brush's breadth to a
+line, the calligraphic mark. **Every one of these is a plan key** — tune them in the plan, not in the source: see the recommended plan in
+`PAINT_EXAMPLES.md`.
+- Defaults: `dry 1.0` · `body 1.0` · `impasto 0.3` · `sheen 0.2` · `dry_shift −0.05` · `pickup 0.05` · `bleed 0` · `lift 0.0` · `chroma 1.05` · `broken 0.15`.
+- Layer keys (plan keys; the medium's own values when absent): `dry 1` · `wash_in 0.5` · `wet_cap 0.45` · `scumble 1` · `skip 0.3` · `turbulence 8` · `accent 1` · `loose 0.5` · `vary 0.35` · `broken 0.15` · `sfumato 0.7` · `glaze 0.6` · `glaze_pass 0.3` · `comma 0.5` · `shade 0.6` · `imprimatura 0.6` · `body_vary 0.3` · `lost 0.6` · `aerial 0.6` · `crest 0.4` · `sink 0.5` · `spatter 0.5` · `tail 0.6` · `film 0.7` · `split 0.5` · `tint 0.4` · `knife 0.3` · `skim 0.4` · `twist 0.5` · `hiding 0.5` · `sag 0.4` · `gloss 0.5` · `deplete 1.8` · `ridges 0.3` · `impasto_map 1` · `impasto 0.3` · `sheen 0.2`.
+- Tune: `--dry` below 1 lets the layers blend (an oil habit); `--skip 0` for a smooth canvas; `sheen` for gloss; `impasto` for relief.
 
 ```hjson
 medium: acrylic
-style: fidelity
-impasto: 0.4
-sheen: 0.25
+new: true
+impasto: 0.2
+sheen: 0.2
 ```
 
 ### Tempera — `medium: tempera`  🎯 *fine cross-hatched build-up (egg tempera)*
@@ -334,7 +404,7 @@ stroke_width: 0.8
 | tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · short strokes, each pass cross-hatched 45° | pigment  | verdaccio |
 | pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
-| acrylic       | 1.00 | 0.05  | 0.05   | 0.15    | 1.10   | −0.03     | 0.00      | 0.20  | 0.00 | 0.10   | 0.00    | continuous | pigment  | split-primary |
+| acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
 
 Every value is a **default** — set the same‑named field in the spec (or the CLI flag) to override it. The score
 records the applied `bleed` / `opacity` / `impasto` so a re‑render (`plakat paint replay`) reproduces the

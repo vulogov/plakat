@@ -8,6 +8,78 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.5.0 — Acrylic: the painting laid in dry layers, the paint given body, pigment and a hand
+
+### `plakat paint`
+
+- **`--medium acrylic` is painted in layers like the indirect oil, each dry before the next.** The medium
+  profile now says how its LAYERS go on (`dries`, `wash_in`, `wet_cap`, `scumble`, `skip`), and the acrylic
+  uses them: the canvas dries fully between passes (nothing beneath is picked up or stirred); the block-in is a
+  thin, flooded wash underpainting at two thirds of the charge; every later mark goes on no wetter than 0.45
+  and sits on the dried layer as a flat patch with a crisp edge; the finest pass, off the faces, is dragged
+  dry — a thinner charge, raked, no pickup — over a brush that skips on the canvas's tooth; a synthetic flat
+  brush with a square edge; no wet bloom; the colour dries darker (−0.05) under a satin sheen and a thin
+  relief. The flow of every pass is turned by a low-frequency **turbulence** (±8°, halved on a face), so the
+  marks are never quite parallel; on the finest pass an **accent** — a short, thick, opaque dab set off the flow
+  at its own angle — goes where the picture's local contrast is sharp; and off the subject and the faces the
+  painting is **loose** — longer, wider marks on the broad passes and the restating passes thinned with the
+  ladder — so the background is the big brush's flat patches and the face the small brush's. The paint has
+  **body**: a heavy relief with bristle ridges, its thickness following the picture (lights thick, shadows
+  thin, a face laid smooth), relit with its micro-shadows under a satin sheen; a mark's **charge runs out
+  along it** (`deplete`, a brush field in the score's header), thick at the start and a dry tail over the
+  layer beneath; and along the subject's silhouette the finest pass lays **glazes** — thin, wet, picking up
+  the paint beneath, free to cross the seam — so the figure meets its ground in a translucent overlap. On a
+  face, where the picture is smooth, the paint is **sfumato** — fewer fine marks, broad, wet, half-charged,
+  fused — so the skin is not hatched into a grain; a **glaze pass** after the ladder lays a thin wet film over
+  everything but the faces and hair (its mid brush smudged a small head's cheek) and the sharp contrasts (so
+  the accents stand crisp over it); the mark's length is spread as a Gaussian, wider where the picture is
+  flat; the hand's **pressure runs along the mark** (`comma`, a brush field in the score's header) — the width
+  and the deposit swell a third of the way along and lift toward the ends, a drop or a comma; a bristle whose
+  charge has run out skips on the tooth as a dry one does; and on a face under the sfumato the drift of hue
+  is wider. The picture has a **hierarchy**: in the shadows, off the faces, a mark lands only where the
+  canvas is plainly wrong, never to chase a small tone, and the marks that land run longer, wider and calm —
+  no dry skip, no hue drift (`shade`) — so the dark masses rest and the detail is kept for the light; the block-in is laid as an **imprimatura** (darker and warmer than the
+  picture, toward a burnt umber), the underpainting that shows between the later marks; and each mark's
+  **body** is spread as a Gaussian (`body_vary`) — thick and opaque, or thinner, wetter and translucent, its
+  viscosity in the record. On the finest pass and the glaze pass the subject's edge is **lost** where it lies
+  in shadow (`lost`): the mark's colour is the picture blurred wide across the seam and the mark runs across
+  it, a dark figure meeting its dark ground in one tone; one more pass after the glaze is a **dry brush over
+  the ridges** (`crest`, a per-stroke field in the record): a fine brush where the relief is broken, a
+  lighter, warmer tint that catches only the tops of the relief beneath; on the same pass, in the shadow, a
+  **wash into the furrows** (`sink`): a thin cool wash that settles only below the ridges and runs off their
+  tops (a negative `crest` in the record); the lost edges go **by depth** (`aerial`): a depth map is estimated
+  (Depth-Anything) and a far passage in shadow loses its edges wherever it lies, the farther the more contrast
+  it may hold and the wider the blur, the background softening itself by its distance; and the thickest marks in the light fling **spatter** (`spatter`): a
+  drop or three off the lift-off, round thick dots of the mark's own paint, ordinary strokes in the score, a
+  fast mark's flying farther and smearing ahead into a **tail** (`tail`). The glaze marks lay a share of their
+  paint as a **film over** the dried layer (`film`, the stroke's `over` in the record): the canvas keeps a film
+  of its own above the paint, read by the two-layer Kubelka-Munk solution (a layer of finite thickness over a
+  substrate, `pigment::layer_over`), so a thin glaze tints a heavy passage by its own transmittance instead of
+  being outweighed in the mix, and a later opaque mark folds the film into the layer beneath; the dry marks
+  **split** into two to four bristle bundles as they dry out and the faster they go (`split`, in the record);
+  and the canvas **sags** under the thick paint at output (`sag`, in the score's header): a broad shallow dip
+  under every heavy passage and a slow unevenness of the cloth, a gentle swell of the light over the sheet;
+  and a **gloss** on the peaks (`gloss`, in the header): a sharp glint only where the thick paint stands
+  above its surround and high against the sheet's peak. The bundles of a split mark differ in **tint**
+  (`tint`, in the record), each clump of bristles with its own slight variant of the load; and off the
+  subject, on the broad passes, a share of the marks are a **palette knife** (`knife`, in the record): a flat
+  blade full width with square ends that shears the paint standing under it to a plateau and lays its own
+  flat, thick and nearly dry — smooth planes with sharp edges cut into the relief; a share of them **skim**
+  (`skim`): the blade at a low angle with little paint, pressed less and catching only the relief's tops, a
+  torn, holed plane. Each pigment covers by its own **hiding** power (`hiding`, in the header; `Pigment::hiding`):
+  the cadmiums, whites and earths opaque, the lakes and the organic blues and greens translucent laid thick, a
+  pigment the picture named read from its masstone, the film-build law weighted by it. The brush is **twisted**
+  along every hair strand and a share of the finest marks (`twist`, in the record): its flat turned toward its
+  edge by up to a quarter turn from one end, the width running from the brush's breadth to a line.
+  Two diagnostic hooks, `PLAKAT_PAINT_ARMATURE_DUMP` and `PLAKAT_PAINT_REFERENCE_DUMP`, save the armature and
+  each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
+  highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
+  head was eased down into a beige sliver). **Every layer dial is
+  a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `skip`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
+  `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`, `film`, `split`, `sag`, `gloss`, `tint`, `knife`, `skim`, `twist`, `hiding`), tuned in the plan; the recommended acrylic plan is in
+  `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
+  fixed 0.5. Every other medium is byte-identical.
+
 ## What's new in 7.4.0 — Early book illustration: a thirties four-colour book plate printed from the picture, its faces drawn by the pattern
 
 ### `plakat paint`

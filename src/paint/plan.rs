@@ -181,6 +181,102 @@ pub struct PaintPlan {
     /// is built from. Few and clean; many stacked transparent layers are mud.
     #[serde(default)]
     pub levels: Option<u32>,
+    /// THE LAYERS, as the plan decides them (each absent = the medium's own; see `MediumProfile`): `dry` — how
+    /// far the canvas dries between passes; `wash_in` — the block-in thinned to a wash; `wet_cap` — the
+    /// wettest a later mark goes on; `scumble` — the finest pass dry-brushed off the faces; `turbulence` — the
+    /// flow turned by a low-frequency noise, in degrees; `accent` — thick short dabs at the sharp contrasts;
+    /// `loose` — longer, wider, fewer marks off the subject; `glaze` — translucent overlaps along the
+    /// subject's silhouette; `deplete` — how fast a mark's charge runs out along it; `broken` — the drift of
+    /// hue from mark to mark.
+    #[serde(default)]
+    pub dry: Option<f32>,
+    #[serde(default)]
+    pub wash_in: Option<f32>,
+    #[serde(default)]
+    pub wet_cap: Option<f32>,
+    #[serde(default)]
+    pub scumble: Option<f32>,
+    #[serde(default)]
+    pub turbulence: Option<f32>,
+    #[serde(default)]
+    pub accent: Option<f32>,
+    #[serde(default)]
+    pub loose: Option<f32>,
+    #[serde(default)]
+    pub glaze: Option<f32>,
+    #[serde(default)]
+    pub deplete: Option<f32>,
+    #[serde(default)]
+    pub broken: Option<f32>,
+    /// SFUMATO (0..1): on a face, where the picture is smooth (a cheek, a forehead), the fine passes thin and
+    /// the marks that remain go on broad, wet, half-charged and picking up the paint beneath — fused, not
+    /// hatched. GLAZE PASS (0..1, the charge): one more pass at the end with a mid brush, every mark thin and
+    /// wet over everything but the faces and hair, unifying the detail under one tone. VARY (0..1): a Gaussian spread of the mark's
+    /// length, wider where the picture is flat. COMMA (0..1): the hand's pressure along the mark — the width
+    /// and the deposit swell a third of the way along and lift toward the ends, a drop or a comma.
+    #[serde(default)]
+    pub sfumato: Option<f32>,
+    #[serde(default)]
+    pub glaze_pass: Option<f32>,
+    #[serde(default)]
+    pub vary: Option<f32>,
+    #[serde(default)]
+    pub comma: Option<f32>,
+    /// SHADE (0..1): in the shadows, off the faces, the fine passes thin and the marks run longer, wider and
+    /// calm — the detail kept for the light. IMPRIMATURA (0..1): the block-in laid darker and warmer (toward
+    /// burnt umber), the underpainting that shows between the later marks. BODY VARY (σ): a Gaussian spread
+    /// of each mark's body — thick and opaque, or thinner, wetter and translucent.
+    #[serde(default)]
+    pub shade: Option<f32>,
+    #[serde(default)]
+    pub imprimatura: Option<f32>,
+    #[serde(default)]
+    pub body_vary: Option<f32>,
+    /// LOST (0..1): the subject's edge lost where it lies in shadow — the finest pass and the glaze pass paint
+    /// the mean of both sides across the seam. CREST (0..1): one more pass after the glaze, this share of its
+    /// seeds a fine brush dragged dry over the relief, a lighter warmer tint on the ridges' tops. SPATTER
+    /// (0..1): thick drops flung off the thickest marks.
+    #[serde(default)]
+    pub lost: Option<f32>,
+    #[serde(default)]
+    pub crest: Option<f32>,
+    #[serde(default)]
+    pub spatter: Option<f32>,
+    /// AERIAL (0..1): the lost edges by depth — a depth map is estimated, and far shadowed passages lose
+    /// their edges by their distance, off the subject's silhouette too. SINK (0..1): on the crest pass, in
+    /// the shadow, this share of its seeds a thin cool wash that settles only in the furrows of the relief.
+    /// TAIL (0..1): a spatter drop stretched along its flight by the speed of the mark that flung it.
+    #[serde(default)]
+    pub aerial: Option<f32>,
+    #[serde(default)]
+    pub sink: Option<f32>,
+    #[serde(default)]
+    pub tail: Option<f32>,
+    /// FILM (0..1): the glaze marks laid as a translucent film over the dried paint, read by the two-layer
+    /// Kubelka-Munk solution. SPLIT (0..1): the dry fast marks combed into bundles. SAG (0..1): the canvas
+    /// sagging under the thick paint, in the relight.
+    #[serde(default)]
+    pub film: Option<f32>,
+    #[serde(default)]
+    pub split: Option<f32>,
+    #[serde(default)]
+    pub sag: Option<f32>,
+    /// GLOSS (0..1): a sharp specular on the peaks of the thick paint. TINT (0..1): the bundles of a split
+    /// mark differ in tone. KNIFE (0..1): the share of the broad marks off the subject laid with a palette knife.
+    #[serde(default)]
+    pub gloss: Option<f32>,
+    #[serde(default)]
+    pub tint: Option<f32>,
+    #[serde(default)]
+    pub knife: Option<f32>,
+    /// HIDING (0..1): each pigment covers by its own hiding power. TWIST (0..1): the brush turned along the
+    /// hair strands and this share of the finest marks. SKIM (0..1): the share of the knife marks that skim.
+    #[serde(default)]
+    pub hiding: Option<f32>,
+    #[serde(default)]
+    pub twist: Option<f32>,
+    #[serde(default)]
+    pub skim: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -260,6 +356,38 @@ impl Default for PaintPlan {
             detail_restate: None,
             hdr_amount: None,
             levels: None,
+            dry: None,
+            wash_in: None,
+            wet_cap: None,
+            scumble: None,
+            turbulence: None,
+            accent: None,
+            loose: None,
+            glaze: None,
+            deplete: None,
+            broken: None,
+            sfumato: None,
+            glaze_pass: None,
+            vary: None,
+            comma: None,
+            shade: None,
+            imprimatura: None,
+            body_vary: None,
+            lost: None,
+            crest: None,
+            spatter: None,
+            aerial: None,
+            sink: None,
+            tail: None,
+            film: None,
+            split: None,
+            sag: None,
+            gloss: None,
+            tint: None,
+            knife: None,
+            hiding: None,
+            twist: None,
+            skim: None,
             notes: Vec::new(),
         }
     }
@@ -346,6 +474,11 @@ impl PaintPlan {
         }
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
+        }
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim)] {
+            if let Some(v) = v {
+                o.push_str(&format!("{k}: {v:.2}\n"));
+            }
         }
         match &self.analysis {
             Some(Artefact::On(true)) => o.push_str("analysis: true\n"),
@@ -655,6 +788,38 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             detail_restate: None,
             hdr_amount: None,
             levels: None,
+            dry: None,
+            wash_in: None,
+            wet_cap: None,
+            scumble: None,
+            turbulence: None,
+            accent: None,
+            loose: None,
+            glaze: None,
+            deplete: None,
+            broken: None,
+            sfumato: None,
+            glaze_pass: None,
+            vary: None,
+            comma: None,
+            shade: None,
+            imprimatura: None,
+            body_vary: None,
+            lost: None,
+            crest: None,
+            spatter: None,
+            aerial: None,
+            sink: None,
+            tail: None,
+            film: None,
+            split: None,
+            sag: None,
+            gloss: None,
+            tint: None,
+            knife: None,
+            hiding: None,
+            twist: None,
+            skim: None,
         notes,
     }
 }
