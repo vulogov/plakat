@@ -8,7 +8,7 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.5.0 — in development
+## What's new in 7.5.0 — Acrylic: the painting laid in dry layers, the paint given body, pigment and a hand
 
 ### `plakat paint`
 
@@ -75,7 +75,7 @@ per-cycle commits carry the rationale + before/after.
   each pass's reference. The **hotspot** finish no longer takes an island of the ground beside a dark subject for a
   highlight: a highlight is brighter than its ring on every side (a patch of white sky beside the chick's
   head was eased down into a beige sliver). **Every layer dial is
-  a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
+  a plan key** (`dry`, `wash_in`, `wet_cap`, `scumble`, `skip`, `turbulence`, `accent`, `loose`, `glaze`, `deplete`,
   `broken`, `sfumato`, `glaze_pass`, `vary`, `comma`, `shade`, `imprimatura`, `body_vary`, `lost`, `aerial`, `crest`, `sink`, `spatter`, `tail`, `film`, `split`, `sag`, `gloss`, `tint`, `knife`, `skim`, `twist`, `hiding`), tuned in the plan; the recommended acrylic plan is in
   `PAINT_EXAMPLES.md`. `--dry` now defaults to the medium's drying (0.5 for every other medium, as before) instead of a
   fixed 0.5. Every other medium is byte-identical.
