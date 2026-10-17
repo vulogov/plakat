@@ -308,6 +308,108 @@ pub struct MediumProfile {
     /// paint, pressed less and catching only the relief's tops, so the plane it lays is torn and holed over a
     /// low relief: old plaster, the glints on water. Needs `knife`.
     pub skim: f32,
+    /// HATCH (0..1, 0 = off): the restating passes lay HATCH lines — the tempera mark: straight (the hand's
+    /// waver and the flow's curve taken out by this much), narrowed toward a line of one width end to end,
+    /// longer for it, semi-opaque (`1 − 0.3·hatch` of the charge), dry, no pickup — so the form is built in a
+    /// net of fine parallel strokes, each pass crossed at the medium's `hatch_angle`, the layers showing
+    /// through one another as egg tempera is painted.
+    pub hatch: f32,
+    /// VERDACCIO (0..1, 0 = off): the flesh underpainted in the greenish grey of the Italian panel painters
+    /// (terre verte, white, a little ochre and black): on the faces the block-in and the first restating pass
+    /// are laid in that tone at the picture's value, and the later passes in the half-tones and shadows are
+    /// pulled toward it and thinned, so the green shows through the hatched flesh where the form turns.
+    pub verdaccio: f32,
+    /// DISHES (the count, 0 = off): Cennini's dishes — each colour mixed in advance in this many value steps
+    /// (a dark, a middle, a light, …) and every restating mark laid in the nearest step, never a tone between,
+    /// so the modelling goes in steps the hatching softens; the block-in and the veils are not stepped.
+    pub dishes: f32,
+    /// LIGHTS (0..1, the share): on the finest pass, on the subject, where the picture is in its top values —
+    /// this share of the marks are the LIGHTS hatched in: the picture's colour lifted toward white (the lead
+    /// white of the tempera painter's highest dish), laid narrower and thinner, the last touches on a face
+    /// and a fold of drapery.
+    pub lights: f32,
+    /// CROSS (degrees, 0 = the medium's `hatch_angle × layer`): the hatching turned OFF THE FORM by this
+    /// step a hatched pass — the first hatched pass along the form (the local flow, the structure tensor's
+    /// isophote), the next `+cross`, then `−2·cross`, then `+3·cross` off it, alternating sides — so the net
+    /// of hatching wraps the volume at the panel painter's angles (15°, 30°, 45° off the form) instead of
+    /// lying over it as one grid turned 45° a pass. Needs `hatch`.
+    pub cross: f32,
+    /// DITHER (0..1, 0 = off): the dishes chosen stochastically between the two nearest where a value lies
+    /// between them — the chance of the upper dish the value's fraction of the way to it, blended toward the
+    /// nearest by `1 − dither` — so the bands between the dishes break into an optical mixture of marks of
+    /// both (a lamp's halo in rings at 0, a graded mixture at 1). Not the block-in (its flat local tones stay),
+    /// and growing in over the finer half of the ladder — it is the hatching's mixture; on the broad
+    /// restatements two dishes side by side were a chequer of planks. Needs `dishes`.
+    pub dither: f32,
+    /// SOLID (0..1, 0 = off): the hatch's charge keyed to the value — at 0 every hatch line `1 − 0.3·hatch`
+    /// of the charge; at 1 a line in the picture's lightest value keeps that thinness (a glaze over the
+    /// light) and a line in its darkest carries `1 + 0.3·hatch` (laid covering), linear between — so the
+    /// deep shadows build a solid dark in layers and the lights stay veils. Needs `hatch`.
+    pub solid: f32,
+    /// FLESH (0..1, 0 = off): the verdaccio held to the WARM colours — the pull taken away by this share
+    /// as the local colour goes cold or neutral (CIELAB a* and b* below ~2, fully warm above ~10/12), so
+    /// a cold or grey passage inside the face's region (a hat, a wall, metal) keeps its own underpainting.
+    /// Needs `verdaccio`.
+    pub flesh: f32,
+    /// SPAN (0..1, 0 = off): the hatch's LENGTH keyed to how much the form changes within the brush's reach
+    /// (the reference's value range there) — on a flat passage (a sky, a wall) the line runs up to
+    /// `1 + 0.5·span` of its length, the long calm stroke, and where the form is busy (a face, a hand, small
+    /// folds) down to `1 − 0.5·span`, the short hatching. Needs `hatch`.
+    pub span: f32,
+    /// EDGE (0..1, 0 = off): the hatching held to a strong contour — near a plain edge (the value range within
+    /// the brush's reach above ~0.15, fully at 0.5) the crossing turn is taken back toward the edge's own
+    /// direction by this share and the mark stops sooner on a change of colour, so the hatching runs parallel
+    /// to the silhouette and does not fringe across it. Needs `hatch`.
+    pub edge: f32,
+    /// GLINT (0..1, 0 = off): the pure LIGHTS set last — on the finer half of the ladder, where the picture is
+    /// in its top twentieth of values (a star, the sun through the leaves, a lamp), the mark is lifted toward
+    /// white by `0.4·glint`, laid narrower (`1 − 0.3·glint`), dry, with the full covering charge
+    /// (`1 + 0.3·glint`) and standing thicker (its viscosity `1 + 1.5·glint`) — the dry, nearly raised touch
+    /// the panel painter sets the final highlights with.
+    pub glint: f32,
+    /// SMOOTH (0..1, 0 = off): the CALM passages — where the form changes little within the brush's reach (a
+    /// sky, a wall, still water; the reference softened by half the radius first, so a star in a still sky
+    /// is not a change of form) — built up in soft veils instead of hatched: by the key's share of the
+    /// passage's flatness the dishes relax toward the picture's own gradation (the block-in's too, so a sky is
+    /// not banded), the hatching gives way (no straightening, no narrowing to a line), and the restating mark
+    /// goes on wetter, shorter (a dab, not a plank across a gradient) and barely thinner so it
+    /// blends into its neighbours — the smooth mottled ground of a panel's sky, over which the glints stay
+    /// crisp dots and the contours (`edge`) stay sharp. The ground's only (scaled by `1 − subject`): a
+    /// subject's dark mass is committed paint, built solid in its steps.
+    pub smooth: f32,
+    /// THE BOLE (0..1, 0 = off): the imprimatura laid by LOCAL tone, not one flat colour. A panel painter
+    /// began on a coloured ground — a bole, a toned gesso — and the first lay-in was itself a tonal statement:
+    /// the dark masses toned dark, the sky toned to its own colour. Here, before the block-in of a new
+    /// painting, the sheet is laid in cells (a thirty-second of the short side) with the picture's own SHADOW
+    /// tone at that scale — the mean colour of the cell's darker quarter of pixels; a toned ground is darker
+    /// than the lights, and a mean tone round a star or a lamp glowed and lifted the broad marks over it —
+    /// smoothed over the neighbouring cells and then spread as a CONTINUOUS field — interpolated between the
+    /// cells' centres and laid in fine cells of a quarter of their side, each solved exactly — each cell's
+    /// colour the ground's mean colour pulled toward that shadow tone by this key, laid thin (three tenths
+    /// of the charge), edge to edge, so no cell edge is a line. Where a broad mark
+    /// leaves a gap or goes on thin, what shows is the picture's local shadow tone, not a flat brown — and the
+    /// block-in's marks, mixing by concentration with the thin bole beneath, are pulled toward the tone they
+    /// lie on. Recorded as wash cells in the score (stage `ground`), replayed to the bit.
+    pub bole: f32,
+    /// THE RAMP (0..1, 0 = off): the colour of a mark FOLLOWS THE PICTURE along its path. A mark takes one
+    /// colour at its seed; across a gradient — a sky, the ground falling into shadow — that flat colour laid
+    /// as a plank is the dab structure that no veil hides. With the ramp, the brush's charge drifts along
+    /// the mark from the seed's colour toward the picture's colour at the mark's end (the seed's own tone
+    /// transforms kept, the picture's end-to-start difference added in linear light by the key's share), so
+    /// the broad passes model the form before the fine ones hatch it. Full on the soft marks, fading as the
+    /// hatching takes over (`1 − hatch`); off the glazes, the lost edges, the hair, the accents and the glints.
+    /// The end mix rides in the score (`mix2`); without it a record is one colour as ever.
+    pub ramp: f32,
+    /// THE UMBRA (0..1, 0 = off): the shadow is one modelled mass, not steps. The dishes space the picture's
+    /// values perceptually between its darkest and lightest; on a night scene the whole foreground falls in
+    /// the darkest step, and the marks either side of its boundary were a chequer of black and dark grey
+    /// planks that no veil hid. Within this share of the darkest dish's interval a tone is laid as it is —
+    /// continuous, the shadow modelled by its own gradation (and by the ramp along the mark) — and the
+    /// dishes step the lights above it, as a panel painter lays the shadow mass in one tone and builds the
+    /// lights up in steps. Off the subject the shadow mass is laid CALM (see `smooth`) however busy the
+    /// picture is there — built up in veils, its planks dissolved — as the sky is: a lamp-raked gravel
+    /// foreground is one dark mass, not a rake of filbert marks.
+    pub umbra: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -375,6 +477,21 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -435,6 +552,21 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -495,6 +627,21 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -596,6 +743,21 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -665,6 +827,21 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -729,6 +906,21 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -789,6 +981,21 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -852,6 +1059,21 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -912,6 +1134,21 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -975,12 +1212,27 @@ pub const DURER: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
     name: "tempera",
     value_direction: ValueDirection::DarkToLight,
-    opacity: Opacity::Transparent,
+    opacity: Opacity::Mixed, // semi-opaque: a dark is built in layers, not a glaze over the gesso
     white_source: WhiteSource::Pigment,
     reversibility: Reversibility::None,
     // Tempera builds in a few deliberate hatched layers, not 40 — a budget of 40 fragmented into ~37 degenerate
@@ -988,7 +1240,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     stage_budget: 6,
     pickup: 0.05,
     bleed: 0.03,
-    body: 0.85,
+    body: 0.9,
     impasto: 0.12,
     chroma: 0.95,
     dry_shift: 0.0,
@@ -1001,13 +1253,15 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     families: Families::Split,
     subtractive: false,
     mark_model: MarkModel::Continuous, // an opaque PAINTING built in short hatched colour strokes — not a pen drawing (the density model is pen-and-ink)
-    // EGG TEMPERA: form built in SHORT strokes, each restating pass cross-hatched 45° off the last — the classic
-    // tempera net of colour, matte and even.
-    mark: MarkCharacter { role: Some("tempera"), stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
+    // EGG TEMPERA (7.6.0): the ladder's own brushes — a flat block-in that covers the gesso, the restatements
+    // and the detail each with their brush — the form built in SHORT strokes, each restating pass cross-hatched
+    // 45° off the last: the classic tempera net of colour, matte and even. The tempera's own layers are below
+    // (`hatch`, `verdaccio`, `dishes`, `lights`), its dials in the plan.
+    mark: MarkCharacter { role: None, stroke_len: 0.6, stroke_width: 0.7, charge: 1.0, hatch_angle: 0.7854, monochrome: false, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 1.0, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
-    dries: 0.5,
-    wash_in: 0.0,
-    wet_cap: 1.0,
+    dries: 1.0, // dry in seconds: nothing beneath is picked up or stirred
+    wash_in: 0.3,
+    wet_cap: 0.35,
     scumble: 0.0,
     skip: 0.0,
     turbulence: 0.0,
@@ -1039,6 +1293,21 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.8,
+    verdaccio: 0.6,
+    dishes: 5.0,
+    lights: 0.5,
+    cross: 15.0,
+    dither: 0.7,
+    solid: 0.7,
+    flesh: 0.8,
+    span: 0.6,
+    edge: 0.7,
+    glint: 0.6,
+    smooth: 0.9,
+    bole: 1.0,
+    ramp: 0.7,
+    umbra: 1.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1102,6 +1371,21 @@ pub const PENCIL: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1167,6 +1451,21 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1227,6 +1526,21 @@ pub const PASTEL: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1287,6 +1601,21 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     hiding: 0.0,
     twist: 0.0,
     skim: 0.0,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1353,6 +1682,21 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     hiding: 0.5,
     twist: 0.5,
     skim: 0.4,
+    hatch: 0.0,
+    verdaccio: 0.0,
+    dishes: 0.0,
+    lights: 0.0,
+    cross: 0.0,
+    dither: 0.0,
+    solid: 0.0,
+    flesh: 0.0,
+    span: 0.0,
+    edge: 0.0,
+    glint: 0.0,
+    smooth: 0.0,
+    bole: 0.0,
+    ramp: 0.0,
+    umbra: 0.0,
 };
 
 /// Every declared medium.
@@ -1493,12 +1837,22 @@ mod tests {
     #[test]
     fn only_the_acrylic_lays_its_layers_dry() {
         // The layer fields are neutral on every other medium: those paint exactly as they did before them.
-        for m in ALL.iter().filter(|m| m.name != "acrylic") {
-            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife, m.hiding, m.twist, m.skim], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
+        for m in ALL.iter().filter(|m| m.name != "acrylic" && m.name != "tempera") {
+            assert_eq!([m.dries, m.wash_in, m.wet_cap, m.scumble, m.skip, m.turbulence, m.accent, m.loose, m.ridges, m.impasto_map, m.deplete, m.glaze, m.sfumato, m.glaze_pass, m.vary, m.comma, m.shade, m.imprimatura, m.body_vary, m.lost, m.crest, m.spatter, m.aerial, m.sink, m.tail, m.film, m.split, m.sag, m.gloss, m.tint, m.knife, m.hiding, m.twist, m.skim, m.hatch, m.verdaccio, m.dishes, m.lights, m.cross, m.dither, m.solid, m.flesh, m.span, m.edge, m.glint, m.smooth, m.bole, m.ramp, m.umbra], [0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "{} keeps the open-paint defaults", m.name);
         }
         assert_eq!(ACRYLIC.dries, 1.0, "acrylic is dry before the next layer");
         assert!(ACRYLIC.wash_in > 0.0 && ACRYLIC.wet_cap < 1.0 && ACRYLIC.scumble > 0.0 && ACRYLIC.bleed == 0.0);
         assert_eq!(ACRYLIC.mark.role, Some("acrylic"));
+        // The tempera (7.6.0) lays its own layers: dry, a thin wash block-in, capped wet, hatched, the flesh
+        // underpainted in verdaccio, the tones in dishes, the lights hatched in — and no acrylic layer.
+        assert_eq!(TEMPERA.dries, 1.0);
+        assert!(TEMPERA.wash_in > 0.0 && TEMPERA.wet_cap < 1.0 && TEMPERA.hatch > 0.0 && TEMPERA.verdaccio > 0.0 && TEMPERA.dishes >= 2.0 && TEMPERA.lights > 0.0);
+        assert!(TEMPERA.cross > 0.0 && TEMPERA.cross <= 45.0 && TEMPERA.dither > 0.0 && TEMPERA.solid > 0.0 && TEMPERA.flesh > 0.0 && TEMPERA.span > 0.0 && TEMPERA.edge > 0.0 && TEMPERA.glint > 0.0 && TEMPERA.smooth > 0.0 && TEMPERA.bole > 0.0 && TEMPERA.bole <= 1.0 && TEMPERA.ramp > 0.0 && TEMPERA.ramp <= 1.0 && TEMPERA.umbra > 0.0 && TEMPERA.umbra <= 1.0, "the hatching off the form, the dishes dithered, the dark hatch solid, the verdaccio held to the flesh");
+        assert!(TEMPERA.scumble == 0.0 && TEMPERA.knife == 0.0 && TEMPERA.impasto_map == 0.0 && TEMPERA.spatter == 0.0 && TEMPERA.sag == 0.0 && TEMPERA.gloss == 0.0);
+        assert_eq!(TEMPERA.mark.role, None, "the tempera paints with the ladder's own brushes");
+        for m in ALL.iter().filter(|m| m.name != "tempera") {
+            assert_eq!([m.hatch, m.verdaccio, m.dishes, m.lights, m.cross, m.dither, m.solid, m.flesh, m.span, m.edge, m.glint, m.smooth, m.bole, m.ramp, m.umbra], [0.0; 15], "{} has no tempera layer", m.name);
+        }
     }
 
     #[test]

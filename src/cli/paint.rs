@@ -1613,6 +1613,21 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.hiding = plan.medium.hiding;
     params.twist = plan.medium.twist;
     params.skim = plan.medium.skim;
+    params.hatch = plan.medium.hatch;
+    params.verdaccio = plan.medium.verdaccio;
+    params.dishes = plan.medium.dishes;
+    params.lights = plan.medium.lights;
+    params.cross = plan.medium.cross;
+    params.dither = plan.medium.dither;
+    params.solid = plan.medium.solid;
+    params.flesh = plan.medium.flesh;
+    params.span = plan.medium.span;
+    params.edge = plan.medium.edge;
+    params.glint = plan.medium.glint;
+    params.smooth = plan.medium.smooth;
+    params.bole = plan.medium.bole;
+    params.ramp = plan.medium.ramp;
+    params.umbra = plan.medium.umbra;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2366,6 +2381,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.hiding = m.hiding;
         params.twist = m.twist;
         params.skim = m.skim;
+        params.hatch = m.hatch;
+        params.verdaccio = m.verdaccio;
+        params.dishes = m.dishes;
+        params.lights = m.lights;
+        params.cross = m.cross;
+        params.dither = m.dither;
+        params.solid = m.solid;
+        params.flesh = m.flesh;
+        params.span = m.span;
+        params.edge = m.edge;
+        params.glint = m.glint;
+        params.smooth = m.smooth;
+        params.bole = m.bole;
+        params.ramp = m.ramp;
+        params.umbra = m.umbra;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2408,6 +2438,21 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.hiding { params.hiding = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.twist { params.twist = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.skim { params.skim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.hatch { params.hatch = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.verdaccio { params.verdaccio = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dishes { params.dishes = if v >= 2.0 { v.min(32.0).round() } else { 0.0 }; }
+        if let Some(v) = pl.lights { params.lights = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.cross { params.cross = v.clamp(0.0, 90.0); }
+        if let Some(v) = pl.dither { params.dither = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.solid { params.solid = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.flesh { params.flesh = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.span { params.span = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.edge { params.edge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.glint { params.glint = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.smooth { params.smooth = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bole { params.bole = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ramp { params.ramp = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.umbra { params.umbra = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {

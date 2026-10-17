@@ -170,6 +170,14 @@ impl Stroke {
 
     /// Rasterise the stroke onto the canvas, evolving each bristle's load by deposit + pickup as it travels.
     pub fn rasterize(&self, canvas: &mut Canvas, brush: &BrushConfig) {
+        self.rasterize_ramp(canvas, brush, None)
+    }
+
+    /// `rasterize`, with the brush's charge RAMPED along the mark (see `MediumProfile::ramp`): when `load_end`
+    /// is given, every lane's load drifts from the stroke's `load` toward it in proportion to the distance
+    /// travelled — the colour at the start where the mark begins, the colour at the end where it lifts, the
+    /// pickup and depletion riding on top as ever. `None` is `rasterize` to the bit.
+    pub fn rasterize_ramp(&self, canvas: &mut Canvas, brush: &BrushConfig, load_end: Option<&[f32]>) {
         let pts = densify(&self.path);
         if pts.is_empty() || self.load.is_empty() {
             return;
@@ -249,9 +257,19 @@ impl Stroke {
         let speed = if split > 0.0 { ((pts.len() as f32 / maxw - 2.0) / 4.0).clamp(0.0, 1.0) } else { 0.0 };
         let dry_base = ((0.6 - self.wetness) / 0.6).clamp(0.0, 1.0);
         let start_norm: Vec<f32> = if split > 0.0 { bload.iter().map(|l| Self::load_norm(l).max(1e-6)).collect() } else { Vec::new() };
+        // THE RAMP: the per-lane shift laid on each step is the end-to-start difference times the step's share
+        // of the path, so over the whole mark the lane has drifted from the one charge to the other.
+        let ramp: Option<Vec<f32>> = load_end.filter(|_| pts.len() > 1).map(|le| (0..n.min(self.load.len()).min(le.len())).map(|c| (le[c] - self.load[c]) / (pts.len() - 1) as f32).collect());
 
         for i in 0..pts.len() {
             let p = pts[i];
+            if let (Some(step), true) = (&ramp, i > 0) {
+                for lane in bload.iter_mut() {
+                    for (c, d) in step.iter().enumerate() {
+                        lane[c] = (lane[c] + d).max(0.0);
+                    }
+                }
+            }
             // Local direction (forward difference), and the perpendicular the bristles spread along.
             let q = if i + 1 < pts.len() { pts[i + 1] } else { pts[i.saturating_sub(1)] };
             let (mut dx, mut dy) = (q[0] - p[0], q[1] - p[1]);
@@ -531,6 +549,26 @@ mod tests {
         let s = Stroke { path: vec![[3.0, 10.0], [56.0, 10.0]], width0: 5.0, width1: 5.0, load: red_load(), pressure: 1.0, wetness: 1.0 };
         s.rasterize(&mut c, &BrushConfig::default());
         assert!(c.height[10 * 60 + 6] > c.height[10 * 60 + 52], "more paint near the loaded start than the dry end");
+    }
+
+    #[test]
+    fn the_ramp_drifts_the_mark_from_its_own_charge_to_the_end_charge() {
+        // Red at the start, white at the end: the mark reads red where it begins and far lighter where it
+        // lifts; without an end charge `rasterize_ramp` is `rasterize` to the bit.
+        let path = vec![[3.0, 10.0], [116.0, 10.0]];
+        let mut ramped = Canvas::white(120, 20, palette::ZORN, 0.9);
+        let s = Stroke { path: path.clone(), width0: 6.0, width1: 6.0, load: red_load(), pressure: 1.0, wetness: 1.0 };
+        s.rasterize_ramp(&mut ramped, &BrushConfig::default(), Some(&[0.0, 0.0, 0.0, 4.0]));
+        let start = srgb_to_lab(ramped.color_at(8, 10));
+        let end = srgb_to_lab(ramped.color_at(111, 10));
+        assert!(start.a > 3.0, "the start is the red it was charged with (a* {})", start.a);
+        assert!(end.l > start.l + 4.0 && end.a < start.a - 3.0, "the end has drifted toward the white: L {} → {}, a* {} → {}", start.l, end.l, start.a, end.a);
+        let mut plain = Canvas::white(120, 20, palette::ZORN, 0.9);
+        s.rasterize(&mut plain, &BrushConfig::default());
+        let mut none = Canvas::white(120, 20, palette::ZORN, 0.9);
+        s.rasterize_ramp(&mut none, &BrushConfig::default(), None);
+        assert_eq!(plain.to_image().into_raw(), none.to_image().into_raw(), "no end charge: the plain rasterize to the bit");
+        assert_ne!(plain.to_image().into_raw(), ramped.to_image().into_raw());
     }
 
     #[test]

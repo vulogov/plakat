@@ -372,15 +372,85 @@ impasto: 0.2
 sheen: 0.2
 ```
 
-### Tempera — `medium: tempera`  🎯 *fine cross-hatched build-up (egg tempera)*
-Fine, semi‑opaque **cross‑hatching**; many small disciplined marks, little blending.
-- Defaults: `opacity 0.85` · `bleed 0.03` · `pickup 0.05` · `impasto 0.12` · density marks · many stages tolerated.
-- Tune: `stroke_width` down (→0.8) and moderate `stroke_length` for fine hatching; keep `bleed`/`pickup` low.
+### Tempera — `medium: tempera`  🎯 *egg tempera on a gesso panel: dry layers, hatched (7.6.0)*
+The panel painting as egg tempera is handled: the paint **dries in seconds**, so nothing beneath is ever picked
+up or stirred (`dry 1.0`, `wet_cap 0.35`); the block-in is a wash that covers the white gesso (`wash_in`), laid
+with the ladder's own flat brush; and every restating pass is **hatched** (`hatch`) — the mark a straight line
+of one width end to end, longer for it, dry and semi-opaque, the hatching growing with the ladder from its
+middle, so the broad restatements lay the form's masses along the flow and the finest pass is all hatching.
+The hatching **crosses the form** (`cross`, degrees): the direction is the local flow (the structure tensor's
+isophote — along the form, across the gradient), and each hatched pass is turned off it by its own step,
+alternating sides — along the form, then +15°, −30°, +45° — so the net wraps the volume at the panel
+painter's angles instead of lying over it as one grid turned 45° a pass (at `cross 0` the profile's
+`hatch_angle × layer`). The hatch's charge is keyed to the value (`solid`): a veil in the picture's lightest
+value, covering in its darkest, so the deep shadows are built solid in layers and the lights stay thin. The
+hatch's length follows how busy the form is within the brush's reach (`span`): long calm lines on a sky or a
+wall, short hatching on a face, a hand, small folds. Near a plain contour (`edge`) the crossing turn is taken
+back toward the edge's own direction and the mark stops sooner on a change of colour, so the hatching runs
+parallel to the silhouette and does not fringe across it. The pure lights are set last (`glint`): on the finer
+half of the ladder, in the picture's top twentieth of values — a star, the sun through the leaves, a lamp —
+the mark is lifted toward white, laid narrower, dry, with the full covering charge and standing thicker, the
+raised final touch; a glint on an isolated light smaller than the brush (a small star) is a stamp, a dot,
+not a mark grown along the flow. The **calm passages** are built up in soft veils, not hatched (`smooth`): where the form
+changes little within the brush's reach — a sky, a wall, still water — the dishes relax toward the picture's
+own gradation (the block-in's too, so a sky is not banded), the hatching gives way, and the restating mark goes
+on wetter, shorter and thinner so it blends into its neighbours: the smooth mottled ground of a panel's sky,
+over which the glints stay crisp dots and the contours stay sharp. The calm is the ground's only — a subject's
+dark mass (a black cat) stays committed paint, built solid in its steps. A new painting begins on the **bole**
+(`bole`): before the block-in the sheet is laid thin with the picture's own shadow tone as a continuous field (the
+mean of each cell's darker quarter, smoothed and interpolated between the cells — a toned ground is darker
+than the lights), the ground's mean colour pulled toward it by the key, so a gap between broad marks shows the local shadow tone and not a
+flat brown, and the block-in's marks, mixing by concentration with the thin bole beneath them, are pulled
+toward the tone they lie on (stage `ground` in the score). The **shadow is one modelled mass** (`umbra`):
+within that share of the darkest dish's interval a tone is laid as it is, continuous, the dishes step the
+lights above it, and off the subject the shadow is laid calm however busy the picture is there (built in
+veils, as the sky is) — a night's foreground is no longer a chequer of black and dark-grey planks. A mark's colour
+**follows the picture along its path** (`ramp`): the brush's charge drifts from the seed's colour toward the
+picture's colour at the mark's end by the key's share, so the broad passes model a gradient — a sky, the
+ground falling into shadow — instead of laying flat planks across it; full on the soft marks, fading as the
+hatching takes over, off the glazes, lost edges, hair, accents and glints; the end mix rides in the score
+(`mix2`). The flesh is underpainted in **verdaccio** (`verdaccio`): on a face the block-in and the first restatement are the
+greenish grey of the panel painters (terre verte, white, a little ochre and black) at the picture's value, and
+the later passes in the half-tones and shadows are pulled toward it and laid thinner, so the green shows
+through the hatched flesh where the form turns; held to the **warm** colours (`flesh`) — where the picture's
+own colour inside the face's region is cold or neutral (a hat, a wall, metal; CIELAB a*, b*) the pull is taken
+away. The tones go in **dishes** (`dishes`, a count): each colour mixed in advance in that many value steps
+between the picture's own darkest and lightest values, and every mark — the block-in's flat local tones too —
+laid in the nearest one, the veils alone keeping the picture's gradation: the stepped modelling of a panel,
+softened by the hatching over it; **dithered** after the block-in (`dither`) — where a value lies between two
+dishes the mark draws between them by its fraction of the way, so the band between two steps (a lamp's halo
+in rings) breaks into an optical mixture of marks of both. The **lights** are hatched in last (`lights`): on
+the finest pass, on the subject's top values, a share of the marks are the picture's colour lifted toward
+white, narrower and thinner. No impasto, no knife, no spatter, no sag: a thin matte skin on a smooth panel.
+Every other medium is byte-identical. The recommended plan is in `PAINT_EXAMPLES.md`; tune there, not in the
+source.
+- Defaults: `body 0.9` · `bleed 0.03` · `pickup 0.05` · `impasto 0.12` · `dries 1.0` · `wash_in 0.3` · `wet_cap 0.35` · `hatch 0.8` · `verdaccio 0.6` · `dishes 5` · `lights 0.5` · `cross 15` · `dither 0.7` · `solid 0.7` · `flesh 0.8` · `span 0.6` · `edge 0.7` · `glint 0.6` · `smooth 0.9` · `bole 1.0` · `ramp 0.7` · `umbra 1.0` · the ladder's own brushes (flat → filbert → round).
+- Layer keys: `dry`, `wash_in`, `wet_cap`, `hatch`, `verdaccio`, `dishes`, `lights`, `cross`, `dither`, `solid`, `flesh`, `span`, `edge`, `glint`, `smooth`, `bole`, `ramp`, `umbra`, plus the shared ones (`deplete`, `turbulence`, `loose`, `shade`, `vary`, `body_vary`, `broken`, `glaze`, `glaze_pass`, `film`, `lost`, `aerial`, `twist`, `hiding`).
 
 ```hjson
 medium: tempera
-style: fidelity
-stroke_width: 0.8
+palette: image
+new: true
+dry: 1.0
+wash_in: 0.15
+wet_cap: 0.3
+hatch: 0.8
+verdaccio: 0.6
+dishes: 5
+lights: 0.5
+cross: 15
+dither: 0.7
+solid: 0.7
+flesh: 0.8
+span: 0.6
+edge: 0.7
+glint: 0.6
+smooth: 0.9
+bole: 1.0
+ramp: 0.7
+umbra: 1.0
+glaze_pass: 0.0
+hotspot: 0.2
 ```
 
 ---
@@ -401,7 +471,7 @@ stroke_width: 0.8
 | durer         | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.70    | density · copperplate: even cuts along the form, swelling with tone, crossed in the darks | reserved | sumi (always) |
 | pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · graphite point: thin grey directional strokes, its own grey | reserved | sumi (always) |
 | black-pencil  | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · the graphite mark with a soft dark point | reserved | sumi (always) |
-| tempera       | 0.85 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.10      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · short strokes, each pass cross-hatched 45° | pigment  | verdaccio |
+| tempera       | 0.90 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.07      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · dry layers on a gesso panel: a covering wash block-in, the restatements hatched in straight lines turned off the form by steps, long on the flat and short on the busy, parallel to the contours, solid in the darks, the warm flesh over verdaccio, the tones in dithered dishes, the lights hatched in and the pure lights set dry and raised, the calm passages soft veils | pigment  | verdaccio |
 | pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
 | acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
