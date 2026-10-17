@@ -117,9 +117,31 @@ plakat paint from photo.png --medium charcoal --palette sumi \
 plakat paint from photo.png --medium acrylic --plan acrylic.hjson -o out-acrylic.png
 
 # ── TEMPERA ──────────────────────────────────────────────────────────────────
-# Fine cross-hatched build-up (egg tempera), low bleed, subtle body. Palette: verdaccio.
-plakat paint from photo.png --medium tempera --palette verdaccio \
-    --stroke-width 0.8 -o out-tempera.png
+# Egg tempera on a gesso panel (7.6.0): the paint dry in seconds, so nothing beneath is stirred; a wash
+# block-in that covers the gesso, every restating pass hatched in straight lines of one width turned off the
+# form by steps (along it, +15°, −30°, +45°), long on the flat and short on the busy, parallel to the plain
+# contours, the hatching growing with the ladder and its charge solid in the darks; the warm flesh over a
+# verdaccio underpainting that shows through the half-tones; the tones in Cennini's dishes, dithered between
+# the steps; the lights hatched in toward white and the pure lights set last, dry and raised; the calm
+# passages (a sky, a wall) built up in soft veils, not hatched; no impasto.
+# Best painted from scratch with a PLAN — the face and figure tiers and every layer dial a plan key, tuned
+# there rather than in the source. The recommended plan:
+#
+#   medium: tempera            palette: image           style: legible
+#   new: true                  armature: 768            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 1.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          rigger: 0.35      hotspot: 0.2
+#   dry: 1.0                   wash_in: 0.15            wet_cap: 0.3            deplete: 1.2
+#   hatch: 0.8                 verdaccio: 0.6           dishes: 5               lights: 0.5
+#   cross: 15                  dither: 0.7              solid: 0.7              flesh: 0.8
+#   span: 0.6                  edge: 0.7                glint: 0.6              smooth: 0.9
+#   bole: 1.0                  ramp: 0.7                umbra: 1.0
+#   turbulence: 4              loose: 0.1               shade: 0.1              vary: 0.2         body_vary: 0.1
+#   broken: 0.05               glaze: 0.3               glaze_pass: 0.0         film: 0.6         lost: 0.3
+#   aerial: 0.3                twist: 0.3               hiding: 0.0
+#   impasto: 0.05              ridges: 0.0              impasto_map: 0.0        sheen: 0.05
+#
+plakat paint from photo.png --medium tempera --plan tempera.hjson -o out-tempera.png
 ```
 
 ---

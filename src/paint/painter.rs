@@ -469,12 +469,42 @@ pub struct PaintParams {
     pub twist: f32,
     /// SKIM (0..1, 0 = off): the share of the knife marks that skim, catching only the relief's tops (see `MediumProfile::skim`).
     pub skim: f32,
+    /// HATCH (0..1, 0 = off): the restating passes lay straight hatch lines of one width (see `MediumProfile::hatch`).
+    pub hatch: f32,
+    /// VERDACCIO (0..1, 0 = off): the flesh underpainted in a greenish grey (see `MediumProfile::verdaccio`).
+    pub verdaccio: f32,
+    /// DISHES (the count, 0 = off): the restating marks laid in this many value steps (see `MediumProfile::dishes`).
+    pub dishes: f32,
+    /// LIGHTS (0..1, the share): the lights hatched in toward white on the finest pass (see `MediumProfile::lights`).
+    pub lights: f32,
+    /// CROSS (degrees, 0 = off): the hatching turned off the form by this step a hatched pass, alternating sides (see `MediumProfile::cross`).
+    pub cross: f32,
+    /// DITHER (0..1, 0 = off): the dishes chosen stochastically between the two nearest (see `MediumProfile::dither`).
+    pub dither: f32,
+    /// SOLID (0..1, 0 = off): the hatch's charge keyed to the value, covering in the darks (see `MediumProfile::solid`).
+    pub solid: f32,
+    /// FLESH (0..1, 0 = off): the verdaccio held to the warm colours (see `MediumProfile::flesh`).
+    pub flesh: f32,
+    /// SPAN (0..1, 0 = off): the hatch's length keyed to how busy the form is (see `MediumProfile::span`).
+    pub span: f32,
+    /// EDGE (0..1, 0 = off): the hatching held parallel to a strong contour (see `MediumProfile::edge`).
+    pub edge: f32,
+    /// GLINT (0..1, 0 = off): the pure lights set last, dry, covering and raised (see `MediumProfile::glint`).
+    pub glint: f32,
+    /// SMOOTH (0..1, 0 = off): the calm passages built up in soft veils, not hatched (see `MediumProfile::smooth`).
+    pub smooth: f32,
+    /// THE BOLE (0..1, 0 = off): the imprimatura laid by local tone before the block-in (see `MediumProfile::bole`).
+    pub bole: f32,
+    /// THE RAMP (0..1, 0 = off): a mark's colour follows the picture along its path (see `MediumProfile::ramp`).
+    pub ramp: f32,
+    /// THE UMBRA (0..1, 0 = off): the darkest dish's tones laid continuous, not stepped (see `MediumProfile::umbra`).
+    pub umbra: f32,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0 }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0 }
     }
 }
 
@@ -792,7 +822,7 @@ fn pool_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 streak: brush.streak,
                 round: brush.round,
                 pickup: Some(0.0),
-                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
 }
@@ -900,7 +930,7 @@ fn leak_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 let s = Stroke { path: pth, width0: w0, width1: w1, load: vec![0.0; np], pressure: 1.0, wetness: lw };
                 s.wipe(canvas, &brush, lw * p.lift);
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix: Vec::new(), wet: lw, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: true, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix: Vec::new(), wet: lw, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
             }
         } else {
             // A dark run: the pigment a drip collects on its way down, well above the wash's own charge.
@@ -910,7 +940,7 @@ fn leak_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, plac
                 s.rasterize(canvas, &brush);
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
                 *placed += 1;
-                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix, wet, press: pr, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "leak".into(), spline: s.path, w0, w1, taper: 0.0, mix, wet, press: pr, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
             }
         }
         laid += 1;
@@ -1223,6 +1253,305 @@ fn crest_tone(target: Srgb) -> Srgb {
     let lin = color::srgb_to_linear(target);
     let out = [(lin[0] * 1.3 * 1.06).min(1.0), (lin[1] * 1.3).min(1.0), (lin[2] * 1.3 * 0.94).min(1.0)];
     color::linear_to_srgb(out)
+}
+
+/// The VERDACCIO tone (see `MediumProfile::verdaccio`): the picture's colour pulled `amt` of the way toward the
+/// greenish grey of the panel painters' flesh underpainting (terre verte, white, a little ochre and black) at
+/// its own value, a tenth darker at full strength — the green ground the hatched flesh is built over.
+fn verdaccio_tone(target: Srgb, amt: f32) -> Srgb {
+    let a = amt.clamp(0.0, 1.0);
+    if a <= 1e-3 {
+        return target;
+    }
+    let lin = color::srgb_to_linear(target);
+    let l = color::linear_luma(lin).max(1e-4);
+    let lt = l * (1.0 - 0.1 * a);
+    let verd = color::srgb_to_linear([128, 134, 104]);
+    let vl = color::linear_luma(verd).max(1e-4);
+    let mut out = [0f32; 3];
+    for i in 0..3 {
+        out[i] = (((lin[i] / l) * (1.0 - a) + (verd[i] / vl) * a) * lt).clamp(0.0, 1.0);
+    }
+    color::linear_to_srgb(out)
+}
+
+/// The DISHES (see `MediumProfile::dishes`): the colour's lightness (its luma to the 1/2.2) snapped to the
+/// nearest of `n` steps between the picture's own darkest and lightest values (`lo`, `hi`, as lumas — its 5th
+/// and 95th percentiles), the colour rescaled to it — the tone mixed in advance in a dish; the lightest dish is
+/// the picture's own light, never a white (a pale sky snapped to white hatched itself in chalk).
+///
+/// DITHER (see `MediumProfile::dither`): where the value lies between two dishes, the upper is taken when its
+/// fraction of the way exceeds a threshold — `0.5` (the nearest) at `dither` 0, the mark's own draw `u` (0..1,
+/// so the chance is the fraction itself) at 1, between them between — the band between two dishes broken into
+/// marks of both.
+fn dish_tone(target: Srgb, n: f32, lo: f32, hi: f32, dither: f32, u: f32) -> Srgb {
+    if n < 2.0 {
+        return target;
+    }
+    let lin = color::srgb_to_linear(target);
+    let l = color::linear_luma(lin).max(1e-4);
+    let steps = n.round() - 1.0;
+    let (light, llo, lhi) = (l.powf(1.0 / 2.2), lo.max(0.0).powf(1.0 / 2.2), hi.min(1.0).powf(1.0 / 2.2));
+    if lhi <= llo + 1e-3 {
+        return target;
+    }
+    let rel = ((light - llo) / (lhi - llo)).clamp(0.0, 1.0);
+    let q = rel * steps;
+    let (base, frac) = (q.floor(), q - q.floor());
+    let threshold = 0.5 + (u.clamp(0.0, 1.0) - 0.5) * dither.clamp(0.0, 1.0);
+    let dish = if frac > threshold { base + 1.0 } else { base };
+    let lq = (llo + dish.min(steps) / steps * (lhi - llo)).max(0.02);
+    let sc = (lq / light.max(0.02)).powf(2.2);
+    color::linear_to_srgb([(lin[0] * sc).min(1.0), (lin[1] * sc).min(1.0), (lin[2] * sc).min(1.0)])
+}
+
+/// Where a tone lies on the dishes' scale (see `dish_tone`): its position 0..1 between the picture's `lo` and
+/// `hi` values in gamma space (the dishes are spaced perceptually), times the number of steps — so a value
+/// below 1 is within the DARKEST dish's interval. The UMBRA (see `MediumProfile::umbra`) keeps the tones
+/// below that share of the first step continuous.
+fn dish_pos(target: Srgb, n: f32, lo: f32, hi: f32) -> f32 {
+    if n < 2.0 {
+        return 0.0;
+    }
+    let l = color::linear_luma(color::srgb_to_linear(target)).max(1e-4);
+    let (light, llo, lhi) = (l.powf(1.0 / 2.2), lo.max(0.0).powf(1.0 / 2.2), hi.min(1.0).powf(1.0 / 2.2));
+    if lhi <= llo + 1e-3 {
+        return 0.0;
+    }
+    ((light - llo) / (lhi - llo)).clamp(0.0, 1.0) * (n.round() - 1.0)
+}
+
+/// Whether the light at `(x, y)` is ISOLATED at the brush's scale: within a box of the brush's radius the
+/// pixels at least half as light as the seed cover less than two fifths of the disc — a star, a lamp's
+/// point, a light smaller than the brush. A halo, a window, a lit wall is not.
+fn isolated_light(luma: &[f32], w: usize, h: usize, x: f32, y: f32, r: f32) -> bool {
+    if w == 0 || h == 0 {
+        return false;
+    }
+    let (cx, cy) = ((x.round() as i64).clamp(0, w as i64 - 1), (y.round() as i64).clamp(0, h as i64 - 1));
+    let rr = (r.round() as i64).max(1);
+    let seed = luma[cy as usize * w + cx as usize];
+    if seed <= 1e-3 {
+        return false;
+    }
+    let (mut lit, mut all) = (0usize, 0usize);
+    for yy in (cy - rr).max(0)..=(cy + rr).min(h as i64 - 1) {
+        for xx in (cx - rr).max(0)..=(cx + rr).min(w as i64 - 1) {
+            let (dx, dy) = ((xx - cx) as f32, (yy - cy) as f32);
+            if dx * dx + dy * dy > (rr as f32) * (rr as f32) {
+                continue;
+            }
+            all += 1;
+            if luma[yy as usize * w + xx as usize] >= 0.5 * seed {
+                lit += 1;
+            }
+        }
+    }
+    all > 0 && (lit as f32) < 0.4 * all as f32
+}
+
+/// The CROSS turn (see `MediumProfile::cross`): the angle (radians) the `hk`-th hatched pass is turned off the
+/// form — 0 on the first, then `+cross`, `−2·cross`, `+3·cross` degrees, alternating sides.
+fn cross_turn(hk: usize, cross_deg: f32) -> f32 {
+    let sign = if hk % 2 == 1 { 1.0 } else { -1.0 };
+    sign * hk as f32 * cross_deg.to_radians()
+}
+
+/// The hatch's CHARGE factor (see `MediumProfile::solid`): `1 − 0.3·hatch` at `solid` 0; at 1, that thinness in
+/// the picture's lightest value (`v` 1) and `1 + 0.3·hatch` in its darkest (`v` 0), linear between.
+fn hatch_charge(hatch: f32, solid: f32, v: f32) -> f32 {
+    let s = solid.clamp(0.0, 1.0);
+    1.0 - 0.3 * hatch * ((1.0 - s) + s * (2.0 * v.clamp(0.0, 1.0) - 1.0))
+}
+
+/// The WARMTH of a colour (see `MediumProfile::flesh`), 0..1: 0 for a cold or neutral one (CIELAB a* or b* at
+/// or below 2), 1 for a plainly warm one (a* 10 and b* 12 and above — the flesh tones, the warm earths), the
+/// product of the two ramps between.
+fn warmth_of(c: Srgb) -> f32 {
+    let lab = color::srgb_to_lab(c);
+    ((lab.a - 2.0) / 8.0).clamp(0.0, 1.0) * ((lab.b - 2.0) / 10.0).clamp(0.0, 1.0)
+}
+
+/// How BUSY the form is (see `MediumProfile::span`), 0..1 from the reference's value range within the brush's
+/// reach: flat at 0, fully busy at a range of 0.3 and above.
+fn busy_of(range: f32) -> f32 {
+    (range / 0.3).clamp(0.0, 1.0)
+}
+
+/// How near a plain EDGE (see `MediumProfile::edge`), 0..1 from the same range: nothing below 0.15, fully at
+/// 0.5 and above — only a real contour, not the modelling.
+fn edge_of(range: f32) -> f32 {
+    ((range - 0.15) / 0.35).clamp(0.0, 1.0)
+}
+
+/// The hatch's LENGTH factor (see `MediumProfile::span`): `1 + 0.5·span` on a flat passage, `1 − 0.5·span`
+/// where the form is busy, linear between.
+fn span_length(span: f32, busy: f32) -> f32 {
+    1.0 + 0.5 * span.clamp(0.0, 1.0) * (1.0 - 2.0 * busy.clamp(0.0, 1.0))
+}
+
+/// Two tones blended `t` of the way from the first to the second, in linear light.
+fn blend_tone(a: Srgb, b: Srgb, t: f32) -> Srgb {
+    let t = t.clamp(0.0, 1.0);
+    let (la, lb) = (color::srgb_to_linear(a), color::srgb_to_linear(b));
+    color::linear_to_srgb([la[0] + (lb[0] - la[0]) * t, la[1] + (lb[1] - la[1]) * t, la[2] + (lb[2] - la[2]) * t])
+}
+
+/// The bole's thickness, as a share of the charge: thin — a toned ground, not a layer of paint.
+const BOLE_CHARGE: f32 = 0.3;
+/// The bole's wetness as laid (it dries with the pass boundary after it).
+const BOLE_WET: f32 = 0.9;
+
+/// THE BOLE (see `MediumProfile::bole`): the imprimatura laid by local shadow tone as a CONTINUOUS field.
+/// The sheet in cells of a thirty-second of its short side; each cell's SHADOW tone is the mean colour of
+/// its darker quarter of pixels (a toned ground is darker than the lights; a mean tone round a star or a
+/// lamp glowed), the tones smoothed over the neighbouring cells (a three-by-three mean), and the field
+/// interpolated between the cells' centres and laid in FINE cells of a quarter of their side, edge to edge,
+/// no feather (a bloom over the neighbour's fill doubled the deposit along every seam, and a coarse cell's
+/// own edge was a line — each a grid through the thin marks of a dark sky), each fine cell filled with
+/// the ground's colour pulled by `bole` toward the field's tone there, the mix solved exactly (the
+/// quantised cache's steps were a grid too), thin. Recorded as wash cells (stage `ground`). Returns the
+/// cells laid.
+fn lay_bole(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, placed: &mut usize, k: &mut u64) -> usize {
+    let ground = match p.ground {
+        Some(g) => g,
+        None => return 0,
+    };
+    let (w, h) = (input.width() as usize, input.height() as usize);
+    if w == 0 || h == 0 {
+        return 0;
+    }
+    let cell = ((w.min(h) as f32 / 32.0).round() as usize).max(8);
+    let (cols, rows) = ((w + cell - 1) / cell, (h + cell - 1) / cell);
+    // 1. Each cell's shadow tone, in linear light.
+    let mut tones: Vec<[f32; 3]> = Vec::with_capacity(cols * rows);
+    let mut px: Vec<(f32, [f32; 3])> = Vec::with_capacity(cell * cell);
+    for r in 0..rows {
+        for c in 0..cols {
+            let (x0, y0) = (c * cell, r * cell);
+            let (x1, y1) = ((x0 + cell).min(w), (y0 + cell).min(h));
+            px.clear();
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let lin = color::srgb_to_linear(input.get_pixel(x as u32, y as u32).0);
+                    px.push((color::linear_luma(lin), lin));
+                }
+            }
+            px.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let q = (px.len() / 4).max(1).min(px.len());
+            let mut acc = [0.0f32; 3];
+            for (_, lin) in &px[..q] {
+                for ch in 0..3 {
+                    acc[ch] += lin[ch];
+                }
+            }
+            tones.push([acc[0] / q as f32, acc[1] / q as f32, acc[2] / q as f32]);
+        }
+    }
+    // 2. Smoothed over the neighbours.
+    let smoothed: Vec<[f32; 3]> = (0..rows * cols)
+        .map(|i| {
+            let (r, c) = ((i / cols) as i64, (i % cols) as i64);
+            let mut acc = [0.0f32; 3];
+            let mut cnt = 0.0f32;
+            for dr in -1..=1i64 {
+                for dc in -1..=1i64 {
+                    let (rr, cc) = (r + dr, c + dc);
+                    if rr >= 0 && rr < rows as i64 && cc >= 0 && cc < cols as i64 {
+                        let t = tones[rr as usize * cols + cc as usize];
+                        for ch in 0..3 {
+                            acc[ch] += t[ch];
+                        }
+                        cnt += 1.0;
+                    }
+                }
+            }
+            [acc[0] / cnt, acc[1] / cnt, acc[2] / cnt]
+        })
+        .collect();
+    // 3. The field between the cells' centres, read at a point.
+    let field_at = |x: f32, y: f32| -> [f32; 3] {
+        let (fx, fy) = (((x / cell as f32) - 0.5).clamp(0.0, (cols - 1) as f32), ((y / cell as f32) - 0.5).clamp(0.0, (rows - 1) as f32));
+        let (c0, r0) = (fx.floor() as usize, fy.floor() as usize);
+        let (c1, r1) = ((c0 + 1).min(cols - 1), (r0 + 1).min(rows - 1));
+        let (tx, ty) = (fx - c0 as f32, fy - r0 as f32);
+        let (a, b, c, d) = (smoothed[r0 * cols + c0], smoothed[r0 * cols + c1], smoothed[r1 * cols + c0], smoothed[r1 * cols + c1]);
+        let mut out = [0.0f32; 3];
+        for ch in 0..3 {
+            out[ch] = (a[ch] * (1.0 - tx) + b[ch] * tx) * (1.0 - ty) + (c[ch] * (1.0 - tx) + d[ch] * tx) * ty;
+        }
+        out
+    };
+    // 4. The fine cells laid.
+    let fine = (cell / 4).max(4);
+    let n = p.palette.pigments.len();
+    let charge = p.charge * BOLE_CHARGE;
+    let mut laid = 0usize;
+    let mut y0 = 0usize;
+    while y0 < h {
+        let y1 = (y0 + fine).min(h);
+        let mut x0 = 0usize;
+        while x0 < w {
+            let x1 = (x0 + fine).min(w);
+            let shadow = color::linear_to_srgb(field_at((x0 + x1) as f32 * 0.5, (y0 + y1) as f32 * 0.5));
+            let colour = blend_tone(ground, shadow, p.bole.clamp(0.0, 1.0));
+            let m = mixer::solve_mixture(&p.palette, colour, 3.min(n));
+            let mut load = vec![0f32; n];
+            for (pi, wgt) in m.pigments.iter().zip(&m.weights) {
+                load[*pi] += wgt * charge;
+            }
+            if load.iter().any(|v| *v > 0.0) {
+                let ring = vec![[x0 as f32, y0 as f32], [x1 as f32, y0 as f32], [x1 as f32, y1 as f32], [x0 as f32, y1 as f32]];
+                canvas.fill_rings(&ring, &load, BOLE_WET, 0.0);
+                *k += 1;
+                *placed += 1;
+                laid += 1;
+                let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "ground".into(), spline: ring, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: BOLE_WET, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: Some(colour), mix2: None });
+            }
+            x0 += fine;
+        }
+        y0 += fine;
+    }
+    laid
+}
+
+/// The LIGHTS (see `MediumProfile::lights`): the picture's colour lifted `amt` of the way toward white — the
+/// lead white hatched into the top values.
+fn lights_tone(target: Srgb, amt: f32) -> Srgb {
+    let a = amt.clamp(0.0, 1.0);
+    let lin = color::srgb_to_linear(target);
+    color::linear_to_srgb([lin[0] + (1.0 - lin[0]) * a, lin[1] + (1.0 - lin[1]) * a, lin[2] + (1.0 - lin[2]) * a])
+}
+
+/// A HATCH line (see `MediumProfile::hatch`): the path pulled `amt` of the way onto the straight line through its
+/// first point along its overall direction (first point to last), its length kept — the flow's curve and the
+/// hand's waver taken out of the tempera mark.
+fn straighten_path(path: &[[f32; 2]], amt: f32, w: u32, h: u32) -> Vec<[f32; 2]> {
+    if path.len() < 3 || amt <= 1e-3 {
+        return path.to_vec();
+    }
+    let a = amt.clamp(0.0, 1.0);
+    let (p0, pn) = (path[0], path[path.len() - 1]);
+    let (mut dx, mut dy) = (pn[0] - p0[0], pn[1] - p0[1]);
+    let dl = (dx * dx + dy * dy).sqrt();
+    if dl < 1e-3 {
+        return path.to_vec();
+    }
+    dx /= dl;
+    dy /= dl;
+    // The arc length along the path, so a curved path straightened keeps its length (a chord is shorter).
+    let mut arc = 0f32;
+    let mut out = Vec::with_capacity(path.len());
+    for (i, q) in path.iter().enumerate() {
+        if i > 0 {
+            arc += ((q[0] - path[i - 1][0]).powi(2) + (q[1] - path[i - 1][1]).powi(2)).sqrt();
+        }
+        let sx = p0[0] + dx * arc;
+        let sy = p0[1] + dy * arc;
+        out.push([(q[0] + (sx - q[0]) * a).clamp(0.0, w as f32 - 1.0), (q[1] + (sy - q[1]) * a).clamp(0.0, h as f32 - 1.0)]);
+    }
+    out
 }
 
 fn broken_color(target: Srgb, amt: f32, seed: u64, k: u64) -> Srgb {
@@ -2103,7 +2432,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // (The same field drives the IMPASTO MAP's texture term: thick where the form is broken, thin where it
     // is smooth — so a cheek or a sky is laid smooth and a beard or bark stands up.)
     // The picture's own value range for the impasto map (linear luma, 5th–95th percentile).
-    let (map_lo, map_hi) = if p.impasto_map > 0.0 {
+    let (map_lo, map_hi) = if p.impasto_map > 0.0 || p.lights > 0.0 || p.dishes >= 2.0 || (p.solid > 0.0 && p.hatch > 0.0) {
         let mut v: Vec<f32> = input.pixels().map(|px| color::linear_luma(color::srgb_to_linear(px.0))).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         (v[v.len() / 20], v[v.len() * 19 / 20])
@@ -2425,6 +2754,39 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     } else {
         passes
     };
+    // THE BOLE (see `MediumProfile::bole`): a new painting's imprimatura laid by local tone before the
+    // block-in, as wash cells in the score — its own stage, crossed as every pass boundary is.
+    let bole_stage = if p.bole > 0.0 && p.from_scratch && p.ground.is_some() && !p.density && !p.luminous && !wc_brush && !passes.is_empty() {
+        let laid = lay_bole(&mut canvas, &mut score, input, p, &mut placed, &mut k);
+        if laid > 0 {
+            if let Some(st) = &mut score.header.stages {
+                st.insert(0, "ground".into());
+            }
+            let b_n = passes.len() + 1;
+            if bleed_eff > 0.0 {
+                canvas.bleed_with(bleed_eff * pass_bleed_taper(0, b_n), p.diffuse);
+            }
+            if let Some((fs, fr, fm, fg, fe)) = score.header.flow {
+                if let Some(t) = flow_taper(0, b_n) {
+                    canvas.flow(fs * t, fr, fm, fg, fe);
+                }
+            }
+            if let Some((cs, cr)) = score.header.collide {
+                let (st, at) = collide_schedule(cs, 0, b_n);
+                if st > 0.0 {
+                    canvas.collide(st, cr, collide_hold.as_deref(), at);
+                }
+            }
+            if b_n > 1 {
+                canvas.dry(1.0 - p.dry);
+            }
+            stats.push(PassStat { stage: "ground".into(), radius: 0.0, strokes: laid, seconds: 0.0 });
+            lap("bole", &mut prof_acc, &mut prof_t);
+        }
+        usize::from(laid > 0)
+    } else {
+        0
+    };
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
         let pass_t0 = std::time::Instant::now();
@@ -2527,15 +2889,58 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         };
         lap("pass:reference", &mut prof_acc, &mut prof_t);
         let luma = luma_map(&reference);
+        // The RANGE field (see `MediumProfile::span`, `edge`): how much the reference's value changes within
+        // the hatching brush's reach — flat where it is low, busy or at a contour where it is high. Only for a
+        // hatched medium with one of the two keys set.
+        // (The reference is first softened by half the radius, so a star or a lamp in a still sky does not
+        // make the whole of its reach a busy passage — a point of light is not a change of form.)
+        let range_field: Option<Vec<f32>> = if (p.hatch > 0.0 && !block_in && (p.span > 0.0 || p.edge > 0.0)) || p.smooth > 0.0 {
+            let soft = box_blur(&luma, w, h, (radius * 0.5).round().max(1.0) as i32);
+            Some(local_range(&soft, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize))
+        } else {
+            None
+        };
         // Coherent flow (structure tensor). Fidelity + detail keep it TIGHT (small sigma) so strokes hug local
         // edges; coarse legible passes smooth it so masses follow gross form.
         let sigma = if detail || fidelity { 2 } else { (radius * 0.9).round().clamp(2.0, 24.0) as i32 };
         let (gx, gy) = coherent_gradient(&luma, w, h, sigma, p.infill);
         // CROSS-HATCH: rotate this pass's flow by the medium's hatch angle × layer, so successive restatements
         // cross the form at the classic angles instead of all lying along it (tempera's woven net).
+        // (A hatched medium (`hatch`) turns the broad restatements less and the finest fully — its underlayers
+        // lay the masses along the form, its crossing is for the hatching; the turn is scaled by the pass's
+        // depth in the ladder, 0 on the widest brush, 1 on the narrowest. Unscaled where `hatch` is 0.)
+        // CROSS (see `MediumProfile::cross`): with `cross` set the turn is not the layer's multiple of the hatch
+        // angle but the hatched pass's own step off the form — the first hatched pass along it, then +cross,
+        // −2·cross, +3·cross — the net wrapping the volume at the panel painter's angles.
         let (gx, gy) = if p.hatch_angle.abs() > 1e-3 && !block_in {
-            let (sn, cs) = (p.hatch_angle * layer as f32).sin_cos();
-            (gx.iter().zip(&gy).map(|(x, y)| x * cs - y * sn).collect::<Vec<f32>>(), gx.iter().zip(&gy).map(|(x, y)| x * sn + y * cs).collect::<Vec<f32>>())
+            let turn_of = |r: f32| -> f32 {
+                let (rc, rf) = (passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius), passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius));
+                if rc > rf + 1e-6 { ((((rc - r) / (rc - rf)).clamp(0.0, 1.0) - 0.25) / 0.75).clamp(0.0, 1.0) } else { 1.0 }
+            };
+            let turn_scale = if p.hatch > 0.0 { turn_of(radius) } else { 1.0 };
+            let angle = if p.hatch > 0.0 && p.cross > 0.0 {
+                let hk = passes.iter().take(layer).skip(1).filter(|q| turn_of(q.radius.max(p.min_brush)) > 0.0).count();
+                cross_turn(hk, p.cross) * turn_scale
+            } else {
+                p.hatch_angle * layer as f32 * turn_scale
+            };
+            // EDGE (see `MediumProfile::edge`): near a plain contour the turn is taken back toward the edge's
+            // own direction (the flow there IS the edge), by the key's share of the edge's strength.
+            match &range_field {
+                Some(rf) if p.edge > 0.0 => {
+                    let (mut ox, mut oy) = (Vec::with_capacity(gx.len()), Vec::with_capacity(gx.len()));
+                    for i in 0..gx.len() {
+                        let (sn, cs) = (angle * (1.0 - p.edge * edge_of(rf[i]))).sin_cos();
+                        ox.push(gx[i] * cs - gy[i] * sn);
+                        oy.push(gx[i] * sn + gy[i] * cs);
+                    }
+                    (ox, oy)
+                }
+                _ => {
+                    let (sn, cs) = angle.sin_cos();
+                    (gx.iter().zip(&gy).map(|(x, y)| x * cs - y * sn).collect::<Vec<f32>>(), gx.iter().zip(&gy).map(|(x, y)| x * sn + y * cs).collect::<Vec<f32>>())
+                }
+            }
         } else {
             (gx, gy)
         };
@@ -2828,6 +3233,25 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // ground in the darkest hole and left the toned ground showing as a pale patch.)
                 let shaded = if p.shade > 0.0 && !block_in && !glazing && !cresting && !on_face && p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0) <= 0.0 { (p.shade * sh_raw).clamp(0.0, 1.0) } else { 0.0 };
                 let restate_floor = restate_floor * (1.0 + 4.0 * shaded);
+                // SPAN, EDGE and SMOOTH (see `MediumProfile::span`, `edge`, `smooth`): the form's range within
+                // the brush's reach here — flat where it is low, busy or at a contour where it is high.
+                let form_range = range_field.as_deref().and_then(|f| f.get(region_i)).copied().unwrap_or(0.0);
+                let edge_here = if p.edge > 0.0 { p.edge * edge_of(form_range) } else { 0.0 };
+                // SMOOTH: how CALM this passage is — the key's share of its flatness. On a calm passage the
+                // dishes relax to the picture's own gradation, the hatching gives way to a soft thin wash that
+                // blends, the marks never straightened — a sky, a wall, a still water built up in veils.
+                // Off the subject only: a subject's dark mass (a black cat) is committed paint, built solid in
+                // its steps; the calm is the ground's — the sky, the wall, the water behind it.
+                // THE UMBRA (see `MediumProfile::umbra`): the tone lies within that share of the darkest dish —
+                // the shadow mass. Its tones are laid continuous (below), and off the subject it is laid CALM
+                // however busy the picture is there: a shadow is one modelled mass built in veils, not a
+                // chequer of the broad pass's planks (a night's gravel foreground, raked by the lamps).
+                let in_umbra = p.umbra > 0.0 && p.dishes >= 2.0 && dish_pos(target, p.dishes, map_lo, map_hi) < p.umbra;
+                let flat_here = if in_umbra { 1.0 } else { 1.0 - busy_of(form_range) };
+                let calm = if p.smooth > 0.0 && !glazing && !cresting && !lost_here { p.smooth * flat_here * (1.0 - subj.clamp(0.0, 1.0)) } else { 0.0 };
+                // A calm passage is restated where the panel is only a little wrong — the gradation is built
+                // up in veils of small marks, not left to the broad pass's few flat ones.
+                let restate_floor = restate_floor * (1.0 - 0.6 * calm);
                 if let Some(st) = &structure {
                     // Off the faces and the subject the fine brushes restate STRUCTURE, not tone. With no human
                     // face in the picture (two lions) the subject is not a likeness to protect: there the
@@ -2884,7 +3308,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // modelling), while a structureless BACKGROUND passage (open sky, a flat wall) is held far
                     // stricter so stray detail marks don't speckle it — the sky-speckle tell.
                     let thresh = p.detail_coherence * (1.0 + 1.6 * (1.0 - subj));
-                    if coh < thresh {
+                    // (A CALM passage of a smoothed medium is exempt: its veils of small marks are the point —
+                    // the sky of a tempera panel is built in them, and gated it stayed the broad pass's dabs.)
+                    if coh < thresh && calm < 0.3 {
                         return None;
                     }
                 }
@@ -2937,6 +3363,57 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     return None; // the crest pass lays nothing else
                 }
                 let target = if crest_here { crest_tone(target) } else if sink_here { sink_tone(target) } else { target };
+                // VERDACCIO (see `MediumProfile::verdaccio`): on a face (not its hair) the block-in and the first
+                // restating pass are laid in the greenish grey at the picture's value; the later passes, where
+                // the form turns into the half-tone and the shadow, are pulled toward it and thinned (below), so
+                // the green ground shows through the hatched flesh. Never the veils.
+                let hair_here = p.hair_mask.as_deref().and_then(|m| m.get(region_i).copied()).unwrap_or(0.0) > 0.0;
+                // FLESH (see `MediumProfile::flesh`): the pull held to the warm colours — taken away by that
+                // share as the picture's own colour here goes cold or neutral.
+                let verd = if p.verdaccio > 0.0 && on_face && !hair_here && !glazing && !cresting {
+                    let v = if layer <= 1 { p.verdaccio } else { 0.35 * p.verdaccio * sh_raw.clamp(0.0, 1.0) };
+                    if p.flesh > 0.0 { v * (1.0 - p.flesh * (1.0 - warmth_of(target))) } else { v }
+                } else {
+                    0.0
+                };
+                let target = if verd > 0.0 { verdaccio_tone(target, verd) } else { target };
+                // The mark's value in the picture's own range (0 its darkest, 1 its lightest).
+                let rel_v = ((tluma - map_lo) / (map_hi - map_lo).max(0.05)).clamp(0.0, 1.0);
+                // DISHES (see `MediumProfile::dishes`): a mark is laid in the nearest of the mixed tones, never
+                // one between — the block-in too (a panel's underpainting is each passage's one flat local
+                // tone; over a graded wash every stepped mark showed its edge); the veils and the lost edges
+                // keep the picture's own gradation. DITHER (see `MediumProfile::dither`): after the block-in
+                // the dish is drawn between the two nearest by the value's fraction, so a band breaks into a
+                // mixture of marks of both.
+                let mut dish_far = false;
+                // THE UMBRA: within the darkest dish's interval the tone is laid as it is — the shadow is one
+                // modelled mass, not two steps of planks (a night scene's whole foreground fell in the first
+                // step and was a chequer of black and dark grey).
+                let target = if p.dishes >= 2.0 && !glazing && !cresting && !lost_here && !in_umbra {
+                    // (The dither is for the hatching's optical mixture — the finer half of the ladder; on the
+                    // broad restatements two dishes side by side were a chequer of planks across a sky.)
+                    let dither_here = p.dither * ((depth_t - 0.25) / 0.5).clamp(0.0, 1.0);
+                    let (dither, u) = if block_in || dither_here <= 0.0 { (0.0, 0.5) } else { (dither_here, jitter(p.seed ^ 0xD1_7E8, k.wrapping_add(83)) + 0.5) };
+                    let dished = dish_tone(target, p.dishes, map_lo, map_hi, dither, u);
+                    // The dither took the FARTHER dish: that mark is laid as a veil (half the charge, below) —
+                    // the optical mixture is thin hatching of the neighbouring tone, not a speck of it (a
+                    // quarter-range grey laid full on a black cat was a white fleck).
+                    dish_far = dither > 0.0 && dished != dish_tone(target, p.dishes, map_lo, map_hi, 0.0, 0.5);
+                    // SMOOTH: on a calm passage the dish relaxes toward the picture's own tone by the calm.
+                    if calm > 1e-3 { blend_tone(dished, target, calm) } else { dished }
+                } else {
+                    target
+                };
+                // LIGHTS (see `MediumProfile::lights`): on the finest pass, on the subject, in the picture's top
+                // values, this share of the marks are hatched in toward white — narrower and thinner (below).
+                let lit = p.lights > 0.0 && last_pass && !block_in && !glazing && !cresting && !lost_here && (on_face || subj > 0.5) && !hair_here
+                    && rel_v > 0.6 && jitter(p.seed ^ 0x11_647, k.wrapping_add(79)) + 0.5 < p.lights;
+                let target = if lit { lights_tone(target, 0.35 * p.lights * ((rel_v - 0.6) / 0.4).clamp(0.0, 1.0)) } else { target };
+                // GLINT (see `MediumProfile::glint`): on the finer half of the ladder, in the picture's top
+                // twentieth of values, the mark is a pure light — lifted toward white here, laid narrower,
+                // dry, covering and raised (below).
+                let glinted = p.glint > 0.0 && !block_in && !glazing && !cresting && !lost_here && !hair_here && depth_t > 0.5 && rel_v > 0.95;
+                let target = if glinted { lights_tone(target, 0.4 * p.glint) } else { target };
                 let load_target = if drift > 0.0 && !(wc_brush && wcb_broken <= 0.0) { broken_color(target, drift, p.seed, k) } else { target };
                 // IMPRIMATURA (see `MediumProfile::imprimatura`): the block-in laid darker and warmer than the
                 // picture, toward a burnt umber — the underpainting that shows between the later marks.
@@ -2967,6 +3444,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 } else {
                     mixture_cached(cache, load_target, &p.palette, p.charge * (1.0 + 1.1 * sh), n)
                 };
+                // The mark's charge as solved, before the per-mark scalings below — the RAMP's end mix (see
+                // `MediumProfile::ramp`) is scaled by the same factors, as the ratio of the laid load to this.
+                let ramp_base: f32 = load.iter().map(|v| v.max(0.0)).sum();
+                // ...the flesh over the verdaccio laid thinner where the form turns (the half-tone's hatching
+                // lets the green through), by `0.4·verdaccio·shadow`.
+                let load: Vec<f32> = if verd > 0.0 && layer > 1 { let t = 1.0 - 0.4 * p.verdaccio * sh_raw.clamp(0.0, 1.0); load.iter().map(|v| v * t).collect() } else { load };
                 // The brush watercolour: broad passes are WASHES — transparent (a fraction of the charge), flooded,
                 // wide and long so they overlap into one wet mass, and they never lift the layer beneath.
                 let wcb_broad = wc_brush && !fine;
@@ -3058,12 +3541,33 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let loose_here = if p.loose > 0.0 && !detail && off_subject { 1.0 + p.loose } else { 1.0 } * (1.0 + 0.6 * shaded);
                 let accented = !lost_here && accent_map.map_or(false, |m| m.get(region_i).copied().unwrap_or(0.0) > ACCENT_EDGE);
                 let rw = rw * if p.loose > 0.0 && !detail && off_subject { 1.0 + 0.3 * p.loose } else { 1.0 } * if smooth_face { 1.0 + 0.6 * p.sfumato } else { 1.0 } * (1.0 + 0.3 * shaded);
+                // HATCH (see `MediumProfile::hatch`): every restating mark a hatch line — narrowed toward a line
+                // (`1 − 0.45·hatch` of the width, the lights narrower still), longer for it, straight (below),
+                // of one width end to end, dry, no pickup, `1 − 0.3·hatch` of the charge. Not the block-in,
+                // the veils, an accent or a lost edge.
+                // The hatch grows with the ladder: the broad restatements lay the form's masses along the flow
+                // (the underlayers of a panel are washes — straightened, they were planks across a night sky),
+                // the finest pass is all hatching — the amount is `hatch · (depth_t − 1/4)/(3/4)`, nothing on
+                // the widest two brushes, the key's value on the narrowest.
+                // SMOOTH: on a calm passage the hatching gives way by the calm — a soft wash, not a line.
+                let hatch_here = p.hatch * ((depth_t - 0.25) / 0.75).clamp(0.0, 1.0) * (1.0 - calm);
+                let hatched = hatch_here > 1e-3 && !block_in && !glazing && !cresting && !accented && !lost_here && !smooth_face;
+                let rw = if hatched { (rw * (1.0 - 0.45 * hatch_here) * if lit { 0.8 } else { 1.0 }).max(p.min_brush * 0.5) } else { rw };
+                let rw = if glinted { (rw * (1.0 - 0.3 * p.glint)).max(p.min_brush * 0.5) } else { rw };
+                // SPAN: the hatch long on a flat passage, short where the form is busy.
+                let span_here = if hatched && p.span > 0.0 { span_length(p.span, busy_of(form_range)) } else { 1.0 };
                 // (A lost mark grows its path along the wide blur it is coloured from, so it runs across the seam
                 // instead of stopping at it.)
-                let path = grow_path(cx, cy, radius, &gx, &gy, if lost_here { lost_pick.unwrap_or(&reference) } else { &reference }, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 }).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 });
+                let path = grow_path(cx, cy, radius, &gx, &gy, if lost_here { lost_pick.unwrap_or(&reference) } else { &reference }, target, protect_all.as_deref(), region, hard_ref, (len_mul * p.stroke_len * lvar * (1.0 + 1.1 * hair) * fine_len * loose_here * if accented { 0.5 } else { 1.0 } * if wcb_broad { wcb_len } else { 1.0 } * if hatched { 1.0 + 0.6 * hatch_here } else { 1.0 } * span_here * (1.0 - 0.5 * calm)).max(0.2), STOP_TOL * (1.0 - 0.6 * soft) * if wc_brush { wcb_stop } else { 1.0 } * if hatched { 1.0 - 0.6 * edge_here } else { 1.0 });
+                // A GLINT on an ISOLATED light (see `MediumProfile::glint`) — a small star, the point of a lamp, a
+                // light smaller than the brush — is a STAMP: the flow field has no direction at a point, and
+                // the mark grown along it was a dash where the picture has a dot.
+                let path = if glinted && isolated_light(&luma, w as usize, h as usize, cx, cy, rw) { vec![[cx, cy], [cx + 0.6, cy + 0.2]] } else { path };
                 // WAVER: a real hand doesn't draw a ruler-straight line — displace the path with a little smooth
                 // wobble (a characteristic, not an error). Applied to the recorded path, so replay is exact.
-                let path = waver_path(&path, b_waver * rw, p.seed, k);
+                let path = waver_path(&path, b_waver * rw * if hatched { 1.0 - hatch_here } else { 1.0 }, p.seed, k);
+                // A hatch line is straight: the flow's curve taken out.
+                let path = if hatched { straighten_path(&path, hatch_here, w, h) } else { path };
                 // An accent dab is set at its own angle, off the flow: the path turned about its middle.
                 let path = if accented { turn_path(&path, (jitter(p.seed ^ 0xACCE_17, k.wrapping_add(13)) * 2.0 * ACCENT_TURN).to_radians(), w, h) } else { path };
                 // Laid less wet (0.7, jittered) so strokes sit ON the canvas rather than dissolving into the wet
@@ -3246,6 +3750,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // Thin and wet, picking up the paint beneath: a translucent overlap across the seam.
                     stroke_brush.k_pickup = 0.3 * p.glaze;
                 }
+                if hatched {
+                    // The tempera hatch: a clean, even, small brush that lifts nothing beneath it.
+                    stroke_brush.k_pickup *= 1.0 - hatch_here;
+                    stroke_brush.streak = stroke_brush.streak.min(0.2 + 0.3 * (1.0 - hatch_here));
+                    stroke_brush.round = stroke_brush.round.max(0.6);
+                }
                 if accented {
                     // Thick, opaque, laid on nearly dry: the dab stands up.
                     stroke_brush.viscosity = p.brush.viscosity * (1.0 + 1.5 * p.accent);
@@ -3298,11 +3808,37 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.streak = stroke_brush.streak.max(0.8);
                     stroke_brush.k_pickup = 0.0;
                     (wet.min(0.15), load.iter().map(|v| v * (1.0 - 0.45 * p.scumble)).collect::<Vec<f32>>())
+                } else if glinted {
+                    // The glint: dry, the full covering charge, standing thicker — the final highlight's touch.
+                    stroke_brush.viscosity = p.brush.viscosity * (1.0 + 1.5 * p.glint);
+                    stroke_brush.k_pickup = 0.0;
+                    (wet.min(0.1), load.iter().map(|v| v * (1.0 + 0.3 * p.glint)).collect::<Vec<f32>>())
+                } else if hatched {
+                    // The hatch: dry, semi-opaque — the layers show through one another; the lights thinner still.
+                    // SOLID (see `MediumProfile::solid`): the charge keyed to the value, covering in the darks.
+                    let t = hatch_charge(hatch_here, p.solid, rel_v) * if lit { 0.8 } else { 1.0 };
+                    (wet.min(if p.wet_cap < 1.0 { p.wet_cap } else { 0.35 }), load.iter().map(|v| v * t).collect::<Vec<f32>>())
                 } else if !block_in && p.wet_cap < 1.0 {
                     (wet.min(p.wet_cap), load)
                 } else {
                     (wet, load)
                 };
+                // SMOOTH (see `MediumProfile::smooth`): on a calm passage the restating mark is a soft thin
+                // wash — wetter by the calm so it blends into its neighbours, `1 − 0.6·calm` of the charge so
+                // the tone is built up in veils — the still sky and the wall of a panel. Not the block-in, the
+                // veils, a glint (the star stays a crisp dot) or an accent.
+                // The committed shadow's extra charge (`1 + 1.1·sh`) is given back by the calm too: a still
+                // dark sky is built in veils like a light one, not in opaque planks.
+                let (wet, load) = if calm > 1e-3 && !block_in && !glazing && !cresting && !glinted && !accented && !knifed {
+                    // (Barely thinner: a thin mark on a toned ground showed the ground between the marks as a
+                    // chequer of the ground's colour; the smoothness is the relaxed dish and the short mark.)
+                    let t = (1.0 - 0.15 * calm) * (1.0 - 0.5 * calm * (1.0 - 1.0 / (1.0 + 1.1 * sh)));
+                    (wet.max(0.75 * calm).min(0.85), load.iter().map(|v| v * t).collect::<Vec<f32>>())
+                } else {
+                    (wet, load)
+                };
+                // DITHER: the mark that took the farther dish is a veil of it — half the charge.
+                let load = if dish_far && !block_in { load.iter().map(|v| v * 0.5).collect::<Vec<f32>>() } else { load };
                 // BODY VARY (see `MediumProfile::body_vary`): the mark's body spread as a Gaussian in its log —
                 // a thick one goes down with its full charge and stands high (the viscosity, below), a thin one
                 // carries less, wetter, and melts into the layer beneath. Not the block-in, the glaze pass or an
@@ -3356,8 +3892,26 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.viscosity *= body;
                 }
                 // A strand ends in a POINT (a hair has a tip); a mass mark lifts off at about half its width.
-                let s = Stroke { path, width0: rw, width1: (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair)), load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
-                s.rasterize(cv, &stroke_brush);
+                let width1 = (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair));
+                let width1 = if hatched { width1 + (rw - width1) * hatch_here } else { width1 };
+                let s = Stroke { path, width0: rw, width1, load, pressure: pvar.clamp(0.4, 1.0), wetness: wet };
+                // THE RAMP (see `MediumProfile::ramp`): the brush's charge drifts along the mark toward the
+                // picture's colour at the mark's end — the seed's own tone (its transforms kept) plus the
+                // picture's end-to-start difference in linear light, by the key's share. Full on the soft
+                // marks, fading as the hatching takes over; off the glazes, lost edges, hair, accents, glints.
+                let ramp_here = if p.ramp > 0.0 && !glazing && !cresting && !lost_here && !glinted && !accented && !knifed && hair <= 0.0 && s.path.len() >= 2 { p.ramp * (1.0 - hatch_here) } else { 0.0 };
+                let load_end: Option<Vec<f32>> = (ramp_here > 1e-3).then(|| {
+                    let e = s.path[s.path.len() - 1];
+                    let (ex, ey) = (e[0].round().clamp(0.0, (reference.width() - 1) as f32) as u32, e[1].round().clamp(0.0, (reference.height() - 1) as f32) as u32);
+                    let re = color::srgb_to_linear(reference.get_pixel(ex, ey).0);
+                    let rs = color::srgb_to_linear(reference.get_pixel(cx.round().clamp(0.0, (reference.width() - 1) as f32) as u32, cy.round().clamp(0.0, (reference.height() - 1) as f32) as u32).0);
+                    let lt = color::srgb_to_linear(load_target);
+                    let end = color::linear_to_srgb([(lt[0] + ramp_here * (re[0] - rs[0])).clamp(0.0, 1.0), (lt[1] + ramp_here * (re[1] - rs[1])).clamp(0.0, 1.0), (lt[2] + ramp_here * (re[2] - rs[2])).clamp(0.0, 1.0)]);
+                    let scale = s.load.iter().map(|v| v.max(0.0)).sum::<f32>() / ramp_base.max(1e-6);
+                    mixture_cached(cache, end, &p.palette, p.charge * (1.0 + 1.1 * sh) * scale, n)
+                });
+                s.rasterize_ramp(cv, &stroke_brush, load_end.as_deref());
+                let ramp_mix: Option<Vec<(String, f32)>> = load_end.as_ref().map(|le| le.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect());
                 // SPATTER (see `MediumProfile::spatter`): the thickest marks (a body above 1.5), in the light,
                 // off the faces and hair, fling a drop or three off their lift-off — noted here, flung after
                 // the pass, in the mark's own order.
@@ -3398,13 +3952,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     // A pickup the stroke's own brush differs in from the header's is part of how it was laid.
                     // The dry brush zeroes it; left unrecorded, replay rebuilt every dry-brush mark with the
                     // header's pickup and drifted — the unrecorded-bristles bug again.
-                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush || scumbled || accented || glazed || glazing || smooth_face || crest_here || sink_here || lost_here || knifed { Some(stroke_brush.k_pickup) } else { None },
+                    pickup: if detail || hair > 0.0 || p.technique == WetTechnique::DryOnDry || wc_brush || scumbled || accented || glazed || glazing || smooth_face || crest_here || sink_here || lost_here || knifed || hatched { Some(stroke_brush.k_pickup) } else { None },
                     bristles: (hair > 0.0).then_some(stroke_brush.bristles),
                     kd: (wcb_broad || wc_wash).then_some(stroke_brush.k_deposit),
                     cap: ((wcb_broad || wc_wash) && stroke_brush.film_cap > 0.0).then_some(stroke_brush.film_cap),
                     flat: stroke_brush.flat_ends,
                     hold: stroke_brush.hold_charge,
-                    visc: (p.impasto_map > 0.0 || accented || knifed || body != 1.0).then_some(stroke_brush.viscosity),
+                    visc: (p.impasto_map > 0.0 || accented || knifed || glinted || body != 1.0).then_some(stroke_brush.viscosity),
                     crest: (crest_here || sink_here || skimmed).then_some(stroke_brush.crest),
                     over: (stroke_brush.over > 0.0).then_some(stroke_brush.over),
                     split: (stroke_brush.split > 0.0).then_some(stroke_brush.split),
@@ -3412,6 +3966,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     knife: (stroke_brush.knife > 0.0).then_some(stroke_brush.knife),
                     twist: (stroke_brush.twist > 0.0).then_some(stroke_brush.twist),
                     tgt: Some(target),
+                    mix2: ramp_mix,
                 })
             }
         };
@@ -3577,7 +4132,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     placed += 1;
                     in_pass += 1;
                     flung += 1;
-                    score.strokes.push(StrokeRecord { id: placed as u32, wipe: false, wash: false, stage: pass.stage.clone(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: s.wetness, press: 1.0, streak: b.streak, round: b.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: Some(b.viscosity), crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+                    score.strokes.push(StrokeRecord { id: placed as u32, wipe: false, wash: false, stage: pass.stage.clone(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.0, mix, wet: s.wetness, press: 1.0, streak: b.streak, round: b.round, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: Some(b.viscosity), crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
                 }
             }
             if flung > 0 {
@@ -3602,7 +4157,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // drops must be laid on the same side of that crossing), as that pass's own marks — a drop in a wash
         // blooms, one on dry paper stays sharp. (At the end, on a dried sheet, every drop was a hard dot.)
         // (A luminous paint's brush passes come after its wash stages: their taper index continues from them.)
-        let (b_idx, b_n) = if p.luminous { (wash_stages + layer, n_stages_total) } else { (layer, passes.len()) };
+        let (b_idx, b_n) = if p.luminous { (wash_stages + layer, n_stages_total) } else { (layer + bole_stage, passes.len() + bole_stage) };
         if wc_wash && p.splatter > 0.0 && !splattered_wet && flow_taper(b_idx, b_n).is_some() && flow_taper(b_idx + 1, b_n).is_none() {
             splatter_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k, &pass.stage, true);
             splattered_wet = true;
@@ -3907,7 +4462,7 @@ fn silhouette_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImag
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
 }
@@ -4162,7 +4717,7 @@ fn hotspot_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, p
                 streak: p.brush.streak,
                 round: p.brush.round,
                 pickup: None,
-                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
     if laid > 0 {
@@ -4324,7 +4879,7 @@ fn rigger_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p
                 pickup: Some(0.0),
                 bristles: Some(1),
                 kd: None,
-                cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
 }
@@ -4407,7 +4962,7 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
                 wet: s.wetness,
                 press: s.pressure,
                 streak: brush.streak,
-                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
 }
@@ -4541,7 +5096,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         } else {
             // THE DROP'S COLOUR is the brush's — the wash being flicked, i.e. the picture's colour at this
             // spot, a shade deeper — not the palette's darkest pigment. On a white snow scene the ink drops
@@ -4587,7 +5142,7 @@ fn splatter_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage,
                 wet: s.wetness,
                 press: 1.0,
                 streak: 0.0,
-                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+                round: 1.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
         }
     }
 }
@@ -4735,7 +5290,7 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
             let s = Stroke { path, width0: ir * 1.5, width1: ir * 0.6, load, pressure: 1.0, wetness: 0.15 };
             s.rasterize(canvas, &dry);
             *placed += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0), bristles: Some(dry.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "ink".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), amt)], wet: s.wetness, press: s.pressure, streak: dry.streak, round: dry.round, pickup: Some(0.0), bristles: Some(dry.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
             if let Some(pr) = progress { if *placed % 64 == 0 { pr(PaintProgress::Placed(*placed)); } }
         }
     }
@@ -4901,7 +5456,7 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
         return 0;
     }
     canvas.set_clip_rings(&clip_rings);
-    let clip_rec = |spline: Vec<[f32; 2]>, id: usize| StrokeRecord { id: id as u32, wipe: true, wash: true, stage: stage.into(), spline, w0: 0.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 0.0, streak: 0.0, round: 0.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None };
+    let clip_rec = |spline: Vec<[f32; 2]>, id: usize| StrokeRecord { id: id as u32, wipe: true, wash: true, stage: stage.into(), spline, w0: 0.0, w1: 0.0, taper: 0.0, mix: Vec::new(), wet: 0.0, press: 0.0, streak: 0.0, round: 0.0, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None };
     score.strokes.push(clip_rec(clip_rings, *placed));
     let mut laid = 0usize;
     let mut tt = if single { (tmin + tmax) * 0.5 } else { tmin + spacing * 0.5 };
@@ -4961,7 +5516,7 @@ fn wc_sweep_mass(canvas: &mut Canvas, score: &mut StrokeScore, mask: &[bool], w:
             s.rasterize(canvas, brush);
             *placed += 1;
             laid += 1;
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: stage.into(), spline: s.path, w0: width, w1, taper: 0.3, mix: mix.clone(), wet, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(brush.k_pickup), bristles: Some(brush.bristles), kd: Some(brush.k_deposit), cap: (brush.film_cap > 0.0).then_some(brush.film_cap), flat: brush.flat_ends, hold: brush.hold_charge, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: stage.into(), spline: s.path, w0: width, w1, taper: 0.3, mix: mix.clone(), wet, press: 1.0, streak: brush.streak, round: brush.round, pickup: Some(brush.k_pickup), bristles: Some(brush.bristles), kd: Some(brush.k_deposit), cap: (brush.film_cap > 0.0).then_some(brush.film_cap), flat: brush.flat_ends, hold: brush.hold_charge, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
         }
         if single {
             break;
@@ -4996,7 +5551,7 @@ fn wc_touch_up(canvas: &mut Canvas, score: &mut StrokeScore, piece: &[bool], w: 
     *k += 1;
     *placed += 1;
     let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.into(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+    score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.into(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
 }
 
 fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], means: &[Srgb], w: usize, h: usize, paper: Option<&[bool]>, p: &PaintParams, feather_px: f32, wet: f32, sweep_stages: Option<(f32, usize)>, input_keyed: &RgbImage, placed: &mut usize, k: &mut u64) {
@@ -5168,7 +5723,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
                                 *k += 1;
                                 *placed += 1;
                                 let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-                                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+                                score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: 0.0, w1: 0.0, taper: 0.0, mix, wet: 0.3, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
                             }
                         }
                     }
@@ -5196,7 +5751,7 @@ fn wc_fill_masses(canvas: &mut Canvas, score: &mut StrokeScore, labels: &[u16], 
         *k += 1;
         *placed += 1;
         let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "wash".into(), spline: rings, w0: feather_px, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "wash".into(), spline: rings, w0: feather_px, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
     }
 }
 
@@ -5671,7 +6226,7 @@ fn wash_passes(canvas: &mut Canvas, score: &mut StrokeScore, reference: &RgbImag
                 pr(PaintProgress::Placed(*placed));
             }
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
         }
         // The pass boundary, as the stroke passes cross it (and as the replay reproduces it).
         // The pass boundary as the replay reproduces it: the taper over EVERY stage of the painting (the washes
@@ -6578,7 +7133,7 @@ fn print_plates(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage,
                 pr(PaintProgress::Placed(*placed));
             }
             let mix: Vec<(String, f32)> = load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
-            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+            score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: stage.clone(), spline: rings, w0: feather, w1: 0.0, taper: 0.0, mix, wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
         }
         // The pass boundary, as the replay reproduces it: each plate sets before the next is laid.
         if p.bleed > 0.0 {
@@ -7636,7 +8191,7 @@ fn book_line(canvas: &mut Canvas, score: &mut StrokeScore, source: &RgbImage, p:
     if !key.is_empty() && *placed < p.budget {
         canvas.fill_rings(&key, &load, 0.0, gain);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "key".into(), spline: key, w0: gain, w1: 0.0, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: true, stage: "key".into(), spline: key, w0: gain, w1: 0.0, taper: 0.0, mix, wet: 0.0, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
     }
 }
 
@@ -7691,7 +8246,7 @@ fn ink_contours(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
         let s = Stroke { path, width0: width, width1: width, load: load_here, pressure: 0.9, wetness: wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "contour".into(), spline: s.path, w0: width, w1: width, taper: 0.15, mix, wet, press: 0.9, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
     }
 }
 
@@ -7755,7 +8310,7 @@ fn ink_drawing(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, s
             streak: brush.streak,
             round: brush.round,
             pickup: None,
-            bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, });
+            bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, });
     }
 }
 
@@ -7789,7 +8344,7 @@ fn engraving(canvas: &mut Canvas, score: &mut StrokeScore, picture: &RgbImage, p
                 pr(PaintProgress::Placed(*placed));
             }
         }
-        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage, spline: s.path, w0: cut.w0, w1: cut.w1, taper: 0.0, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage, spline: s.path, w0: cut.w0, w1: cut.w1, taper: 0.0, mix: vec![(p.palette.pigments[ink].name.to_string(), load[ink])], wet: 0.0, press: 1.0, streak: brush.streak, round: brush.round, pickup: None, bristles: Some(brush.bristles), kd: None, cap: None, flat: true, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
     }
 }
 
@@ -8604,6 +9159,235 @@ mod hdr_tests {
 }
 
 #[cfg(test)]
+mod tempera_tests {
+    use super::*;
+
+    fn luma(c: Srgb) -> f32 {
+        color::linear_luma(color::srgb_to_linear(c))
+    }
+
+    #[test]
+    fn the_verdaccio_is_greener_at_the_value_and_off_at_zero() {
+        let flesh = [222, 170, 140];
+        assert_eq!(verdaccio_tone(flesh, 0.0), flesh, "amount 0 changes nothing");
+        let v = verdaccio_tone(flesh, 1.0);
+        assert!(v[1] as i32 > v[0] as i32 - 8 && v[1] > v[2], "greenish grey, not flesh: {v:?}");
+        assert!((luma(v) - luma(flesh) * 0.9).abs() < 0.03, "a tenth darker at the picture's value: {} vs {}", luma(v), luma(flesh));
+        let half = verdaccio_tone(flesh, 0.5);
+        assert!(half[0] > v[0] && half[0] < flesh[0], "half way keeps half the flesh: {half:?}");
+    }
+
+    #[test]
+    fn the_dishes_snap_the_value_and_keep_the_colour() {
+        let c = [180, 120, 60];
+        assert_eq!(dish_tone(c, 0.0, 0.0, 1.0, 0.0, 0.5), c, "no dishes changes nothing");
+        assert_eq!(dish_tone(c, 1.0, 0.0, 1.0, 0.0, 0.5), c);
+        // Five dishes: the lightness goes to one of 0, 1/4, 1/2, 3/4, 1 — a ramp of 64 colours lands on ≤ 5 values.
+        let mut seen: Vec<i32> = Vec::new();
+        for i in 0..64 {
+            let g = (i * 4) as u8;
+            let out = dish_tone([g, g, g], 5.0, 0.0, 1.0, 0.0, 0.5);
+            let l = (luma(out).powf(1.0 / 2.2) * 100.0).round() as i32;
+            // (The darkest dish has a floor of 0.02 lightness, so the near-blacks spread over 0–3 of 100.)
+            if !seen.iter().any(|v| (v - l).abs() <= 3) {
+                seen.push(l);
+            }
+        }
+        assert!(seen.len() <= 5, "five dishes: {seen:?}");
+        let out = dish_tone(c, 5.0, 0.0, 1.0, 0.0, 0.5);
+        let ratio = |q: Srgb| { let l = color::srgb_to_linear(q); [l[0] / l[1].max(1e-4), l[2] / l[1].max(1e-4)] };
+        let (a, b) = (ratio(c), ratio(out));
+        assert!((a[0] - b[0]).abs() < 0.08 * a[0] && (a[1] - b[1]).abs() < 0.08 * a[0].max(a[1]), "the colour is kept: {a:?} vs {b:?}");
+        // Within the picture's range: a pale sky in a picture whose lightest value is that sky snaps to
+        // itself, not to white.
+        let sky = [170, 200, 235];
+        let hi = luma(sky);
+        let snapped = dish_tone(sky, 5.0, 0.02, hi, 0.0, 0.5);
+        assert!(snapped[2] < 245 && (luma(snapped) - hi).abs() < 0.02, "the lightest dish is the picture's light: {snapped:?}");
+    }
+
+    #[test]
+    fn the_dither_draws_between_the_two_nearest_dishes_by_the_fraction() {
+        // A grey 0.3 of the way from dish 1 to dish 2 (five dishes over 0..1): the nearest is dish 1; dithered
+        // at 1, about 30 in 100 draws land on dish 2 — never a third dish.
+        let light: f32 = (1.0 + 0.3) / 4.0;
+        let lin = light.powf(2.2);
+        let c = color::linear_to_srgb([lin, lin, lin]);
+        let nearest = dish_tone(c, 5.0, 0.0, 1.0, 0.0, 0.9);
+        assert_eq!(nearest, dish_tone(c, 5.0, 0.0, 1.0, 0.0, 0.1), "at dither 0 the draw is ignored");
+        let (mut upper, mut other) = (0, 0);
+        for i in 0..100 {
+            let u = (i as f32 + 0.5) / 100.0;
+            let out = dish_tone(c, 5.0, 0.0, 1.0, 1.0, u);
+            let l = luma(out).powf(1.0 / 2.2);
+            if (l - 0.5).abs() < 0.03 { upper += 1 } else if (l - 0.25).abs() < 0.03 { } else { other += 1 }
+        }
+        assert_eq!(other, 0, "only the two nearest dishes");
+        assert!((20..=40).contains(&upper), "about 30 of 100 on the upper dish: {upper}");
+        // Half dithered: the draws nearer the middle decide — fewer land on the upper dish than at 1, more than at 0.
+        let half = (0..100).filter(|i| { let u = (*i as f32 + 0.5) / 100.0; (luma(dish_tone(c, 5.0, 0.0, 1.0, 0.5, u)).powf(1.0 / 2.2) - 0.5).abs() < 0.03 }).count();
+        assert!(half > 0 && half < upper, "half way between: {half} of {upper}");
+    }
+
+    #[test]
+    fn the_cross_turns_off_the_form_alternating_sides() {
+        let d = |hk: usize| cross_turn(hk, 15.0).to_degrees().round() as i32;
+        assert_eq!([d(0), d(1), d(2), d(3), d(4)], [0, 15, -30, 45, -60]);
+        assert_eq!(cross_turn(3, 0.0), 0.0);
+    }
+
+    #[test]
+    fn the_solid_hatch_covers_in_the_darks_and_veils_the_lights() {
+        assert!((hatch_charge(0.8, 0.0, 0.0) - 0.76).abs() < 1e-5 && (hatch_charge(0.8, 0.0, 1.0) - 0.76).abs() < 1e-5, "at 0 the value is ignored");
+        assert!((hatch_charge(0.8, 1.0, 1.0) - 0.76).abs() < 1e-5, "the lightest value keeps the veil");
+        assert!((hatch_charge(0.8, 1.0, 0.0) - 1.24).abs() < 1e-5, "the darkest covers");
+        assert!((hatch_charge(0.8, 1.0, 0.5) - 1.0).abs() < 1e-5, "the middle the full charge");
+        assert!(hatch_charge(0.8, 0.5, 0.0) > 0.76 && hatch_charge(0.8, 0.5, 0.0) < 1.24);
+    }
+
+    #[test]
+    fn the_flesh_is_warm_and_the_sky_and_the_grey_are_not() {
+        assert!(warmth_of([222, 170, 140]) > 0.9, "flesh: {}", warmth_of([222, 170, 140]));
+        assert!(warmth_of([196, 150, 110]) > 0.9, "a warm earth: {}", warmth_of([196, 150, 110]));
+        assert_eq!(warmth_of([120, 160, 220]), 0.0, "a sky blue is cold");
+        assert_eq!(warmth_of([128, 128, 128]), 0.0, "a grey is neutral");
+        assert_eq!(warmth_of([110, 140, 110]), 0.0, "a green is not flesh");
+        let w = warmth_of([160, 140, 120]);
+        assert!(w > 0.0 && w < 0.9, "a warm grey is between: {w}");
+    }
+
+    #[test]
+    fn the_span_runs_long_on_the_flat_and_short_on_the_busy() {
+        assert_eq!(span_length(0.0, 0.0), 1.0);
+        assert_eq!(span_length(0.0, 1.0), 1.0);
+        assert!((span_length(1.0, busy_of(0.0)) - 1.5).abs() < 1e-5, "flat: half again as long");
+        assert!((span_length(1.0, busy_of(0.3)) - 0.5).abs() < 1e-5, "busy: half");
+        assert!((span_length(1.0, busy_of(0.15)) - 1.0).abs() < 1e-5, "between: unchanged");
+        assert!((span_length(0.6, busy_of(0.0)) - 1.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_calm_passage_relaxes_the_dish_toward_the_picture() {
+        let c = [120, 150, 200];
+        let dished = dish_tone(c, 5.0, 0.0, 1.0, 0.0, 0.5);
+        assert_ne!(dished, c, "the dish moves the tone");
+        assert_eq!(blend_tone(dished, c, 0.0), dished, "no calm: the dish");
+        let back = blend_tone(dished, c, 1.0);
+        assert!((0..3).all(|i| (back[i] as i32 - c[i] as i32).abs() <= 1), "full calm: the picture's own tone, {back:?} vs {c:?}");
+        let half = blend_tone(dished, c, 0.5);
+        assert!((0..3).all(|i| { let (a, b, m) = (dished[i] as i32, c[i] as i32, half[i] as i32); (m >= a.min(b) - 1) && (m <= a.max(b) + 1) }), "half way between: {half:?}");
+    }
+
+    #[test]
+    fn the_bole_lays_the_local_tone_thin_and_replays_to_the_bit() {
+        // A picture dark on the left, light on the right; the ground its mean. The bole at 1 lays each side its
+        // own tone (the left darker than the right, both off the flat mean), thin; the score's wash cells
+        // replay to the same canvas byte for byte, and at 0 nothing is laid.
+        let (w, h) = (96u32, 48u32);
+        let img = RgbImage::from_fn(w, h, |x, _| image::Rgb(if x < w / 2 { [40, 36, 60] } else { [190, 170, 120] }));
+        let tone: Srgb = [120, 108, 92];
+        let mut p = PaintParams::new(crate::paint::palette::ZORN, 100);
+        p.ground = Some(tone);
+        p.bole = 1.0;
+        p.from_scratch = true;
+        let header = ScoreHeader { version: 1, palette: "zorn".into(), pigments: Vec::new(), medium: "tempera".into(), seed: 1, width: w, height: h, tooth: 0.85, ground: Some(tone), brush: BrushConfig::default(), bleed: 0.0, diffuse: 0.0, stages: None, dry: 1.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, lift: 1.0, transmittance: false, flow: None, weave: 0.0, sag: 0.0, gloss: 0.0, hiding: 0.0, collide: None, hold_mask: None };
+        let mut canvas = Canvas::toned(w, h, crate::paint::palette::ZORN, tone, 0.85).with_opacity(1.0);
+        let mut score = StrokeScore { header: header.clone(), strokes: Vec::new() };
+        let (mut placed, mut k) = (0usize, 0u64);
+        let laid = lay_bole(&mut canvas, &mut score, &img, &p, &mut placed, &mut k);
+        assert!(laid >= 4, "cells laid: {laid}");
+        assert_eq!(score.strokes.len(), laid);
+        assert!(score.strokes.iter().all(|s| s.wash && s.stage == "ground" && s.mix2.is_none()));
+        let left = luma(canvas.color_at(12, 24));
+        let right = luma(canvas.color_at(84, 24));
+        let flat = luma(tone);
+        assert!(left < flat && right > flat, "each side toward its own tone, off the flat mean: {left} < {flat} < {right}");
+        assert!(right - left > 0.08, "the two tones apart: {left} vs {right}");
+        let replayed = score.replay(w, h).expect("replays");
+        assert_eq!(replayed.to_image().into_raw(), canvas.to_image().into_raw(), "the wash cells replay to the bit");
+        // Half way, each cell's colour is half the mean, half the local tone; at 0 it would be the mean itself
+        // (the painter never lays it at 0).
+        assert_eq!(blend_tone(tone, [40, 36, 60], 0.0), tone);
+        let half = blend_tone(tone, [40, 36, 60], 0.5);
+        assert!(luma(half) < flat && luma(half) > luma([40, 36, 60]), "half way: {half:?}");
+        let _ = header;
+    }
+
+    #[test]
+    fn the_umbra_keeps_the_darkest_dish_continuous() {
+        // Five dishes over the full range: a position under 1 is the darkest step; the umbra at 1 covers the
+        // whole of it, at 0.5 its lower half, and the lights are never in it.
+        let dark = color::linear_to_srgb([0.03, 0.03, 0.03]);
+        let darker = color::linear_to_srgb([0.002, 0.002, 0.002]);
+        let mid = [128, 128, 128];
+        assert!(dish_pos(darker, 5.0, 0.0, 1.0) < 0.5, "{}", dish_pos(darker, 5.0, 0.0, 1.0));
+        assert!(dish_pos(dark, 5.0, 0.0, 1.0) < 1.0 && dish_pos(dark, 5.0, 0.0, 1.0) > 0.5, "{}", dish_pos(dark, 5.0, 0.0, 1.0));
+        assert!(dish_pos(mid, 5.0, 0.0, 1.0) > 1.5, "{}", dish_pos(mid, 5.0, 0.0, 1.0));
+        assert_eq!(dish_pos(mid, 1.0, 0.0, 1.0), 0.0, "no dishes, no scale");
+        assert_ne!(dish_tone(dark, 5.0, 0.0, 1.0, 0.0, 0.5), dark, "without the umbra the dark tone is snapped to a step");
+    }
+
+    #[test]
+    fn a_small_star_is_isolated_and_a_lit_wall_is_not() {
+        // A 2-px star on a dark field within a 4-px brush: isolated. A field lit all over: not. A dark seed: never.
+        let (w, h) = (32usize, 32usize);
+        let mut star = vec![0.02f32; w * h];
+        for y in 15..=17 {
+            for x in 15..=17 {
+                star[y * w + x] = 0.9;
+            }
+        }
+        assert!(isolated_light(&star, w, h, 16.0, 16.0, 4.0));
+        assert!(!isolated_light(&star, w, h, 16.0, 16.0, 1.0), "a brush no bigger than the star sees no dark round it");
+        let wall = vec![0.8f32; w * h];
+        assert!(!isolated_light(&wall, w, h, 16.0, 16.0, 4.0));
+        let dark = vec![0.0f32; w * h];
+        assert!(!isolated_light(&dark, w, h, 16.0, 16.0, 4.0));
+    }
+
+    #[test]
+    fn the_edge_is_only_a_plain_contour() {
+        assert_eq!(edge_of(0.0), 0.0);
+        assert_eq!(edge_of(0.15), 0.0, "the modelling's range is not an edge");
+        assert!((edge_of(0.325) - 0.5).abs() < 1e-5);
+        assert_eq!(edge_of(0.5), 1.0);
+        assert_eq!(edge_of(0.9), 1.0);
+    }
+
+    #[test]
+    fn the_lights_lift_toward_white() {
+        let c = [200, 160, 120];
+        assert_eq!(lights_tone(c, 0.0), c);
+        let l = lights_tone(c, 0.5);
+        assert!(l[0] > c[0] && l[1] > c[1] && l[2] > c[2] && l[2] < 255, "lifted, not white: {l:?}");
+        assert!(l[2] as i32 - c[2] as i32 > l[0] as i32 - c[0] as i32, "the dark channel rises most (toward white, not a tint)");
+    }
+
+    #[test]
+    fn a_hatch_line_is_straight_and_keeps_its_length() {
+        // A quarter circle of radius 40: straightened at 1 it is a straight line of the arc's length.
+        let path: Vec<[f32; 2]> = (0..=20).map(|i| { let t = i as f32 / 20.0 * std::f32::consts::FRAC_PI_2; [50.0 + 40.0 * t.cos(), 50.0 + 40.0 * t.sin()] }).collect();
+        let arc = |q: &[[f32; 2]]| q.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f32>();
+        assert_eq!(straighten_path(&path, 0.0, 200, 200), path, "amount 0 changes nothing");
+        let out = straighten_path(&path, 1.0, 200, 200);
+        assert!((arc(&out) - arc(&path)).abs() < 0.5, "the length is kept: {} vs {}", arc(&out), arc(&path));
+        // Every point lies on the chord's line through the first point.
+        let (p0, pn) = (path[0], path[path.len() - 1]);
+        let (dx, dy) = (pn[0] - p0[0], pn[1] - p0[1]);
+        let dl = (dx * dx + dy * dy).sqrt();
+        for q in &out {
+            let off = ((q[0] - p0[0]) * dy - (q[1] - p0[1]) * dx).abs() / dl;
+            assert!(off < 0.01, "on the line: {q:?} is {off} off");
+        }
+        let half = straighten_path(&path, 0.5, 200, 200);
+        let mid = half[10];
+        let off_half = ((mid[0] - p0[0]) * dy - (mid[1] - p0[1]) * dx).abs() / dl;
+        let off_curve = ((path[10][0] - p0[0]) * dy - (path[10][1] - p0[1]) * dx).abs() / dl;
+        assert!(off_half > 0.3 * off_curve && off_half < 0.7 * off_curve, "half way: {off_half} of {off_curve}");
+    }
+}
+
+#[cfg(test)]
 mod transmittance_tests {
     use super::*;
     use crate::paint::palette;
@@ -8684,9 +9468,9 @@ mod transmittance_tests {
             strokes: Vec::new(),
         };
         let name = |i: usize| pal.pigments[i].name.to_string();
-        sc.strokes.push(StrokeRecord { id: 1, wipe: false, wash: true, stage: "wash".into(), spline: vec![[4.0, 4.0], [40.0, 4.0], [40.0, 40.0], [4.0, 40.0]], w0: 0.0, w1: 0.0, taper: 0.0, mix: vec![(name(1), 0.8), (name(2), 0.3)], wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
-        sc.strokes.push(StrokeRecord { id: 2, wipe: false, wash: false, stage: "block-in".into(), spline: vec![[6.0, 20.0], [24.0, 22.0], [42.0, 20.0]], w0: 12.0, w1: 7.0, taper: 0.4, mix: vec![(name(3), 1.7)], wet: 0.6, press: 0.9, streak: 0.05, round: 0.6, pickup: Some(0.0), bristles: None, kd: Some(0.51), cap: Some(1.0), flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
-        sc.strokes.push(StrokeRecord { id: 3, wipe: false, wash: false, stage: "block-in".into(), spline: vec![[8.0, 30.0], [40.0, 32.0]], w0: 5.0, w1: 3.0, taper: 0.4, mix: vec![(name(0), 0.9)], wet: 0.5, press: 1.0, streak: 0.3, round: 0.7, pickup: Some(0.1), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None });
+        sc.strokes.push(StrokeRecord { id: 1, wipe: false, wash: true, stage: "wash".into(), spline: vec![[4.0, 4.0], [40.0, 4.0], [40.0, 40.0], [4.0, 40.0]], w0: 0.0, w1: 0.0, taper: 0.0, mix: vec![(name(1), 0.8), (name(2), 0.3)], wet: 0.75, press: 1.0, streak: 0.0, round: 1.0, pickup: Some(0.0), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
+        sc.strokes.push(StrokeRecord { id: 2, wipe: false, wash: false, stage: "block-in".into(), spline: vec![[6.0, 20.0], [24.0, 22.0], [42.0, 20.0]], w0: 12.0, w1: 7.0, taper: 0.4, mix: vec![(name(3), 1.7)], wet: 0.6, press: 0.9, streak: 0.05, round: 0.6, pickup: Some(0.0), bristles: None, kd: Some(0.51), cap: Some(1.0), flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
+        sc.strokes.push(StrokeRecord { id: 3, wipe: false, wash: false, stage: "block-in".into(), spline: vec![[8.0, 30.0], [40.0, 32.0]], w0: 5.0, w1: 3.0, taper: 0.4, mix: vec![(name(0), 0.9)], wet: 0.5, press: 1.0, streak: 0.3, round: 0.7, pickup: Some(0.1), bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None });
         let mem = sc.replay(48, 48).unwrap().to_image().into_raw();
         let text = sc.to_text();
         assert!(text.contains("trans=1") && text.contains("kd=0.51") && text.contains("cap=1"), "the film flag and the wash brush's fields are written");

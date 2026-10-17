@@ -8,6 +8,130 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.6.0 — Tempera: the panel painted in hatched dry layers over a bole
+
+### `plakat paint`
+
+- **`--medium tempera` is painted as egg tempera on a gesso panel, in dry layers with the ladder's own
+  brushes.** The medium no longer paints every pass with one small brush: the block-in is the ladder's flat,
+  covering the gesso with a wash (`wash_in`), the restatements the filbert and the detail the round, and the
+  paint is dry in seconds — the canvas dries fully between passes (`dries 1.0`) and every later mark goes on
+  no wetter than the cap (`wet_cap`), a dry mark on a dry one, nothing beneath picked up or stirred. Every
+  restating pass is **hatched** (`hatch`): the mark a straight line (the flow's curve and the hand's waver
+  taken out, its length kept), narrowed toward a line of one width end to end, longer for it, dry,
+  semi-opaque (`1 − 0.3·hatch` of the charge), no pickup, each pass crossed 45° off the last by the profile's
+  `hatch_angle` — and the hatching grows with the ladder from its middle (`hatch · (depth_t − ¼)/¾`, the
+  crossing turn scaled the same), so the broad restatements lay the form's masses along the flow as a panel's
+  underlayers are washed in and the finest pass is all hatching. The flesh is underpainted in
+  **verdaccio** (`verdaccio`): on a face the block-in and the first restatement are laid in the greenish grey of
+  the Italian panel painters (terre verte, white, a little ochre and black) at the picture's value, and the
+  later passes in the half-tones and shadows are pulled toward it (`0.35·verdaccio·shadow`) and laid thinner
+  (`1 − 0.4·verdaccio·shadow` of the charge), so the green shows through the hatched flesh where the form
+  turns. The tones go in **dishes** (`dishes`, a count): Cennini's dishes — each colour mixed in advance in
+  that many value steps between the picture's own darkest and lightest values and every restating mark laid
+  in the nearest one (the colour's lightness snapped, its hue and chroma kept; the lightest dish the picture's
+  own light, never a white), never a tone between — the block-in too, each passage's one flat local tone as a
+  panel is underpainted; the veils and the lost edges keep the picture's own gradation, and the stepped
+  modelling is softened by the hatching over it. The **lights** are hatched in last (`lights`): on
+  the finest pass, on the subject (the faces included), where the picture is in its top values, this share of
+  the marks are the picture's colour lifted toward white — the lead white of the highest dish — laid narrower
+  and thinner. The profile is semi-opaque (`Opacity::Mixed`, body 0.9), so a night is built in layers and
+  not glazed over the gesso; no impasto map, no knife, no spatter, no sag — a thin matte skin on a smooth
+  panel. **Every layer dial is a plan key** (`hatch`, `verdaccio`, `dishes`, `lights`, with the shared `dry`,
+  `wash_in`, `wet_cap`, `deplete`, `turbulence`, `loose`, `shade`, `vary`, `body_vary`, `broken`, `glaze`,
+  `glaze_pass`, `film`, `lost`, `aerial`, `twist`, `hiding`), tuned in the plan; the recommended tempera plan
+  is in `PAINT_EXAMPLES.md`. Every other medium is byte-identical (the acrylic with its plan, the indirect
+  oil, the watercolour, the pen, the Dürer and the book checked against their 7.5.0 sheets).
+- **The tempera's hatching crosses the form, its dishes dither, its dark hatch is solid and its verdaccio is
+  held to the flesh.** The hatching's direction is the local flow — the structure tensor's isophote, along the
+  form and across the gradient — and with `cross` (degrees) each hatched pass is turned off it by its own step,
+  alternating sides: the first hatched pass along the form, then +15°, −30°, +45°, so the net wraps the volume
+  at the panel painter's angles instead of lying over a night sky as one grid turned 45° a pass (at 0 the
+  profile's `hatch_angle × layer` as before). The dishes **dither** (`dither`): after the block-in, where a
+  value lies between two dishes the mark draws between the two nearest by its fraction of the way (the draw's
+  threshold ½ at 0, the mark's own draw at 1), so the band between two steps — a lamp's halo in rings — breaks
+  into an optical mixture of marks of both while every mark is still one dish (the dither is the hatching's,
+  on the finer half of the ladder — on the broad restatements two dishes side by side were a chequer of
+  planks across a sky; and the mark that took the FARTHER dish is laid at half its charge, a veil of the
+  neighbouring tone and not a speck of it — a quarter-range grey laid full on a black cat was a white fleck).
+  The hatch's charge is keyed to
+  the value (`solid`): `1 − 0.3·hatch` of the charge in the picture's lightest value, up to `1 + 0.3·hatch`
+  in its darkest, linear between — the deep shadows (a black cat, a night) built solid in layers, the lights
+  veils. The verdaccio is held to the **warm** colours (`flesh`): the pull taken away by that share where the
+  picture's own colour inside the face's region is cold or neutral (CIELAB a*, b* at or below 2; fully warm
+  above ~10/12), so a hat, a wall or metal keeps its own underpainting. Four plan keys (`cross`, `dither`,
+  `solid`, `flesh`); every other medium byte-identical.
+- **The tempera's hatch runs long on the flat and short on the busy, holds to the contours, and sets its pure
+  lights dry and raised.** A range field is read for each hatched pass — how much the reference's value changes
+  within the brush's reach (its local range at 1.5 radii). With `span` the hatch's length follows it:
+  `1 + 0.5·span` on a flat passage (a sky, a wall — the long calm stroke), `1 − 0.5·span` where the form is
+  busy (a face, a hand, small folds — the short hatching), linear between. With `edge`, near a plain contour
+  (a range above 0.15, fully at 0.5 — the modelling's own range is not an edge) the crossing turn is taken
+  back toward the edge's own direction — the flow there is the edge — by the key's share of the edge's
+  strength, and the mark stops sooner on a change of colour (`1 − 0.6·edge` of the tolerance), so the hatching
+  runs parallel to a silhouette and does not fringe across it (a black cat against a bright window). With
+  `glint`, on the finer half of the ladder, where the picture is in its top twentieth of values (a star, the
+  sun through the leaves, a lamp), the mark is a pure light: lifted toward white by `0.4·glint`, laid narrower
+  (`1 − 0.3·glint`), dry (wet ≤ 0.1), with the full covering charge (`1 + 0.3·glint`), no pickup, and standing
+  thicker (its viscosity `1 + 1.5·glint`, in the score) — the dry, nearly raised touch the final highlights are
+  set with. Three plan keys (`span`, `edge`, `glint`); every other medium byte-identical.
+- **The tempera's calm passages are built up in soft veils, not hatched.** With `smooth`, where the form
+  changes little within the brush's reach (the same range field, read for the block-in too, the reference
+  first softened by half the radius so a star or a lamp in a still sky is not a change of form) the passage is
+  CALM by the key's share of its flatness, and on a calm passage the dishes relax toward the picture's own
+  tone (blended in linear light by the calm — the block-in's too, so a sky is not cut into bands), the
+  hatching gives way by the calm (no straightening, no narrowing to a line, no crossing), and the restating
+  mark goes on wetter (`0.75·calm`, capped at 0.85), shorter (`1 − 0.5·calm` of its length — a dab, not a
+  plank across a gradient) and barely thinner (`1 − 0.15·calm` of its charge — thinner, it showed the toned
+  ground between the marks), half of the committed shadow's extra charge
+  (`1 + 1.1·sh`) given back by the calm as well, so it blends into its neighbours and the tone is built up in
+  veils — the smooth mottled ground of a panel's night sky, over which the glints stay crisp dots (a glint is
+  never calmed, and never laid on hair — the sheen on a black cat's fur is hatched, not flecked) and the
+  contours stay sharp (`edge`). The calm is the GROUND's: it is scaled by `1 − subject`, so a subject's dark
+  mass (a black cat) stays committed paint built solid in its steps (calmed, it went translucent). A calm
+  passage is also let through the two gates that keep a structureless background to the broad pass's few
+  flat marks — the restate floor is lowered by `1 − 0.6·calm` and the detail passes' coherence gate is open
+  where the calm is above 0.3 — so the sky is built up in veils of the small brushes, not left as dabs. One plan key
+  (`smooth`); every other medium byte-identical. The recommended plan also sets `hotspot 0.2` (a star is a
+  dot and not a ring) and `broken 0.05` (a night sky one colour in veils, not a chequer of brown and navy
+  planks).
+- **The tempera begins on a bole, and its marks follow the picture along their path.** The broad passes'
+  flat dabs in a dark foreground showed through every veil: each mark one colour from its seed, laid as a
+  plank across the gradient, and between them the toned ground — one flat mean colour, brown on a night
+  scene. Three keys. The **bole** (`bole`): before the block-in of a new painting the sheet is laid in cells (a
+  thirty-second of the short side, edge to edge) with the picture's own
+  SHADOW tone at that scale — the mean colour of each cell's darker quarter (a toned ground is darker than
+  the lights; a mean tone, blurred, glowed round every star and lifted the broad marks over it into pale
+  planks) — the ground's mean colour pulled toward it by the key, thin (three tenths of the charge), so a gap
+  shows the local shadow tone and the block-in's marks, mixing by concentration with the thin bole beneath,
+  are pulled toward the tone they lie on; wash cells in the score under their own stage
+  (`ground`), crossed as every pass boundary is, replayed to the bit. The **ramp** (`ramp`): the brush's
+  charge drifts along the mark from the seed's colour toward the picture's colour at the mark's end (the
+  seed's own tone transforms kept, the picture's end-to-start difference added in linear light by the key's
+  share, the end mix scaled by the same per-mark factors as the start's) — one mark carries the gradient, so
+  the broad passes model the form before the fine ones hatch it; full on the soft marks, fading as the
+  hatching takes over (`1 − hatch`), off the glazes, lost edges, hair, accents and glints. The stroke record
+  carries the end mix (`mix2`), the rasteriser shifts every lane's load by its share per step (`rasterize_ramp`;
+  without an end mix it is `rasterize` to the bit). The **umbra** (`umbra`): the dishes space the picture's
+  values perceptually between its darkest and lightest, and on a night scene the whole foreground fell in
+  the darkest of five steps — the marks either side of its boundary a chequer of black and dark-grey planks
+  that no veil hid (the real cause of the "inaccurate brushwork in the dark spots"); within the key's share
+  of the darkest dish's interval a tone is laid as it is, continuous, the shadow modelled by its own
+  gradation and by the ramp along the mark, and the dishes step the lights above it; and off the subject
+  the shadow mass is laid CALM (`smooth`'s calm, whatever the picture's business there — the fine marks had
+  been laid in their thousands over a lamp-raked gravel foreground and the broad filberts still showed
+  through them), so it is built up in veils as the sky is. The bole's cell tones are smoothed over their
+  neighbours and spread as a continuous field — interpolated between the cells' centres and laid in fine
+  cells of a quarter of their side, each mix solved exactly, no feather (the quantised mixture cache's
+  steps, the feather's bloom doubling the deposit along every seam, and the cells' own edges each showed
+  as a faint grid in a dark sky). A glint on an ISOLATED light — a small star, a lamp's point, a light
+  smaller than the brush (within the brush's radius the pixels at least half as light as the seed cover
+  under two fifths of the disc) — is a stamp, not a mark grown along the flow field: the field has no
+  direction at a point, and the small stars were dashes. The recommended plan turns the velatura pass OFF (`glaze_pass 0`): the canvas dumped after
+  every pass showed the ladder's last pass smooth and whole, and the glaze pass after it laying mid-size
+  flat marks over the finished dark masses — those were the planks no veil hid; the ladder's own veils are
+  the tempera's glazing, and the silhouette glaze (`glaze`) stays. Every other medium byte-identical.
+
 ## What's new in 7.5.0 — Acrylic: the painting laid in dry layers, the paint given body, pigment and a hand
 
 ### `plakat paint`

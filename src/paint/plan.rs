@@ -277,6 +277,48 @@ pub struct PaintPlan {
     pub twist: Option<f32>,
     #[serde(default)]
     pub skim: Option<f32>,
+    /// The tempera's layers: HATCH (0..1): the restating marks straight hatch lines of one width. VERDACCIO
+    /// (0..1): the flesh underpainted in a greenish grey. DISHES (a count): the marks laid in this many value
+    /// steps. LIGHTS (0..1): the share of the finest marks on the subject's top values hatched in toward white.
+    /// CROSS (degrees): the hatching turned off the form by this step a hatched pass, alternating sides. DITHER
+    /// (0..1): the dishes drawn stochastically between the two nearest. SOLID (0..1): the hatch's charge keyed
+    /// to the value, covering in the darks. FLESH (0..1): the verdaccio held to the warm colours.
+    #[serde(default)]
+    pub hatch: Option<f32>,
+    #[serde(default)]
+    pub verdaccio: Option<f32>,
+    #[serde(default)]
+    pub dishes: Option<f32>,
+    #[serde(default)]
+    pub lights: Option<f32>,
+    #[serde(default)]
+    pub cross: Option<f32>,
+    #[serde(default)]
+    pub dither: Option<f32>,
+    #[serde(default)]
+    pub solid: Option<f32>,
+    #[serde(default)]
+    pub flesh: Option<f32>,
+    /// SPAN (0..1): the hatch's length keyed to how busy the form is. EDGE (0..1): the hatching held parallel
+    /// to a strong contour. GLINT (0..1): the pure lights set last, dry, covering, narrower, raised.
+    #[serde(default)]
+    pub span: Option<f32>,
+    #[serde(default)]
+    pub edge: Option<f32>,
+    #[serde(default)]
+    pub glint: Option<f32>,
+    /// SMOOTH (0..1): the calm passages built up in soft veils, their dishes relaxed, not hatched.
+    #[serde(default)]
+    pub smooth: Option<f32>,
+    /// THE BOLE (0..1): the imprimatura of a new painting laid by local tone, not one flat colour.
+    #[serde(default)]
+    pub bole: Option<f32>,
+    /// THE RAMP (0..1): a mark's colour follows the picture along its path, from its seed to its end.
+    #[serde(default)]
+    pub ramp: Option<f32>,
+    /// THE UMBRA (0..1): within this share of the darkest dish the tones are laid continuous, not stepped.
+    #[serde(default)]
+    pub umbra: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -388,6 +430,21 @@ impl Default for PaintPlan {
             hiding: None,
             twist: None,
             skim: None,
+            hatch: None,
+            verdaccio: None,
+            dishes: None,
+            lights: None,
+            cross: None,
+            dither: None,
+            solid: None,
+            flesh: None,
+            span: None,
+            edge: None,
+            glint: None,
+            smooth: None,
+            bole: None,
+            ramp: None,
+            umbra: None,
             notes: Vec::new(),
         }
     }
@@ -475,7 +532,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -820,6 +877,21 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             hiding: None,
             twist: None,
             skim: None,
+            hatch: None,
+            verdaccio: None,
+            dishes: None,
+            lights: None,
+            cross: None,
+            dither: None,
+            solid: None,
+            flesh: None,
+            span: None,
+            edge: None,
+            glint: None,
+            smooth: None,
+            bole: None,
+            ramp: None,
+            umbra: None,
         notes,
     }
 }
