@@ -207,20 +207,39 @@ opacity: 0.5
 pickup: 0.15
 ```
 
-### Gouache — `medium: gouache`  🎯 *matte opaque, flat washes + crisp marks*
+### Gouache — `medium: gouache`  🎯 *layered opaque body colour: rewetted seams, chalky lights, a flat brush and a liner (7.9.0)*
 Opaque **matte** body colour; flat even coverage; crisp opaque marks laid light‑over‑dark (back‑to‑front); no
-gloss.
-- Defaults: `opacity 1.0` · `impasto 0.15` (matte, slight body) · `bleed 0.05` · `pickup 0.80`.
-- Tune: `pickup` down (→0.4) for flatter poster‑like blocks; `stroke_width` up for broad flat fills; keep
-  `bleed` low and `impasto` low (matte, not oily).
-- Good with: `style: legible`, opaque palettes (`split-primary`, `earth`).
+gloss. From 7.9.0 it is painted in **layers**, each dry before the next (the acrylic's machinery through the
+plan), the colours **premixed in value steps** and drawn along the mark (the tempera's `dishes` and `ramp`), the
+calm passages graded (`smooth`), and four mechanisms of its own:
+- **Rewet** (`rewet`, 0..1, in the score's header): gouache's gum stays soluble — a wet mark lifts this share of
+  the DRIED paint beneath into its load, by its own wetness and how empty it is, so the layers fuse at their
+  seams instead of sitting as cut-out shapes.
+- **Chalk tint** (`chalk_tint`, 0..1): a light is mixed with white, and white takes the colour's chroma — the
+  target's chroma cut by up to `0.6·chalk_tint`, rising from L* 55 to 95, off the faces.
+- **Flat brush** (`flat_brush`, 0..1): on the passes before the finest, off the faces and the hair, this share of
+  the marks on a flat passage (by its flatness) are a flat brush's patch — a square chisel end, full to its end,
+  straighter: a field, a wall, a sail.
+- **Liner** (`liner`, 0..1): after the ladder the LONG thin structures the brushwork lost — a rigging line, a
+  stay, a wire: the rigger's ridge, oriented over a long window, traced along itself both ways (snapped onto its
+  crest, stopping at a 12° turn a step or 30° in all), and laid as ONE thin mark in its mean colour only if it
+  runs a thirtieth of the sheet — a texture's curls are not lines. Each a record (stage `liner`).
+- The value **settles** on drying with a NEGATIVE `dry_shift` (the darks a shade lighter, the lights a shade
+  darker — a positive one is a plain lightening).
+- `saliency` and `focus_detail` are plan keys from 7.9.0 (they were flags only): the fine brush in the focus.
+- Defaults: `rewet 0.3` · `chalk_tint 0.5` · `flat_brush 0.5` · `liner 0.5` · `opacity 1.0` · `impasto 0.15` ·
+  `bleed 0.05` · `pickup 0.80`; every other medium has the four at 0. The recommended plan is in `PAINT_EXAMPLES.md`.
+- Tune: `dishes` down for a flatter poster, up (with `smooth`) for graded skies; `focus_detail` down for a
+  broader periphery; `rewet` up for softer seams; `liner` 0 and `rigger` up for a finer, wirier drawing.
 
 ```hjson
 medium: gouache
-opacity: 1.0
-impasto: 0.15
-pickup: 0.45
-stroke_width: 1.2
+palette: image
+new: true
+dry: 1.0
+dishes: 10
+rewet: 0.3
+liner: 0.5
 ```
 
 ### Ink wash — `medium: ink-wash`  🎯 *graded monochrome washes (sumi-e)*

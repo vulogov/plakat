@@ -115,6 +115,14 @@ pub struct PaintPlan {
     /// GRANULATE (0..1): pigment settling into the paper's tooth.
     #[serde(default)]
     pub granulate: Option<f32>,
+    /// SALIENCY (0..1): the restating passes dense only in the focal, high-structure passages, thinned where
+    /// the picture is flat and out of focus (`--saliency`).
+    #[serde(default)]
+    pub saliency: Option<f32>,
+    /// FOCUS DETAIL (0..1): the crisp detail tier fired only inside the focal region, the rest loose
+    /// (`--focus-detail`).
+    #[serde(default)]
+    pub focus_detail: Option<f32>,
     /// BRUSH LADDER: keep only this many of the COARSEST brushes. A watercolour is broad decisive washes and
     /// a few darks, not a fine brush going back over them — but how far to cut is a judgement about the
     /// picture (cut too hard and a lit face is left as bare reserved paper), so it lives here.
@@ -364,6 +372,14 @@ pub struct PaintPlan {
     pub sweep_wave: Option<f32>,
     /// PAPER KNEE (0..1): a broad light mass the paper (`MediumProfile::paper_knee`).
     pub paper_knee: Option<f32>,
+    /// REWET (0..1): a dried layer lifted by a wet mark (`MediumProfile::rewet`).
+    pub rewet: Option<f32>,
+    /// CHALK TINT (0..1): the lights mixed with white, chalky (`MediumProfile::chalk_tint`).
+    pub chalk_tint: Option<f32>,
+    /// FLAT BRUSH (0..1): the flat passages in a flat brush's patches (`MediumProfile::flat_brush`).
+    pub flat_brush: Option<f32>,
+    /// LINER (0..1): the long thin lines in a liner's single stroke (`MediumProfile::liner`).
+    pub liner: Option<f32>,
     /// THE SMALLEST BRUSH (px): the ladder's finest rung and the floor under every mark — the tool's own
     /// limit (a stick of chalk cannot make a one-pixel mark). Overrides the CLI default (2) only.
     pub min_brush: Option<f32>,
@@ -432,6 +448,8 @@ impl Default for PaintPlan {
             edge_pool: None,
             oldpaper: None,
             granulate: None,
+            saliency: None,
+            focus_detail: None,
             ladder_keep: None,
             leak: None,
             hdr: None,
@@ -520,6 +538,10 @@ impl Default for PaintPlan {
             stump_feather: None,
             sweep_wave: None,
             paper_knee: None,
+            rewet: None,
+            chalk_tint: None,
+            flat_brush: None,
+            liner: None,
             min_brush: None,
             pickup: None,
             bleed: None,
@@ -572,7 +594,7 @@ impl PaintPlan {
         if let Some(t) = &self.technique {
             o.push_str(&format!("technique: {t}\n"));
         }
-        for (k, v) in [("splatter", self.splatter), ("edge_pool", self.edge_pool), ("granulate", self.granulate)] {
+        for (k, v) in [("splatter", self.splatter), ("edge_pool", self.edge_pool), ("granulate", self.granulate), ("saliency", self.saliency), ("focus_detail", self.focus_detail)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -610,7 +632,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -904,6 +926,8 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             edge_pool: None,
             oldpaper: None,
             granulate: None,
+            saliency: None,
+            focus_detail: None,
             ladder_keep: None,
             leak: None,
             hdr: None,
@@ -992,6 +1016,10 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             stump_feather: None,
             sweep_wave: None,
             paper_knee: None,
+            rewet: None,
+            chalk_tint: None,
+            flat_brush: None,
+            liner: None,
             min_brush: None,
             pickup: None,
             bleed: None,

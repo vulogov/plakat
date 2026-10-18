@@ -63,6 +63,28 @@ plakat paint from photo.png --medium watercolour --palette image \
 plakat paint from photo.png --medium gouache --palette image \
     --style legible --impasto 0.15 --broken 0.3 -o out-gouache.png
 
+# Layered gouache (7.9.0): each layer dry before the next, opaque over the one beneath, the colours premixed
+# in value steps and drawn along the mark, the dried layer rewetted at the seams, the lights chalky with
+# white, the flat passages in a flat brush's square patches, the long thin lines in a liner's single stroke,
+# the fine brush in the focus only, the paper's grain under the paint. The plan:
+#
+#   medium: gouache            palette: image           style: legible
+#   new: true                  armature: 768            armature_face: 768      armature_body: 768
+#   semantic: true             sam: true                families: true          commit_shadows: 1.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          hotspot: 0.3
+#   rigger: 0.0                liner: 0.5               focus_detail: 0.5
+#   dry: 1.0                   pickup: 0.0              rewet: 0.3              bleed: 0.0
+#   wash_in: 0.3               wet_cap: 0.45            scumble: 0.5            skip: 0.2         deplete: 1.2
+#   dishes: 10                 dither: 0.0              ramp: 0.7               hiding: 0.0       broken: 0.1
+#   turbulence: 4              loose: 0.3               vary: 0.3               comma: 0.3        body_vary: 0.1
+#   smooth: 1.0                lost: 0.0                glaze: 0.0              glaze_pass: 0.0
+#   impasto: 0.05              ridges: 0.0              impasto_map: 0.0        sheen: 0.0
+#   granulate: 0.12            dry_shift: -0.08         chalk_tint: 0.5         flat_brush: 0.5
+#   (rigger 0 — it traced a wheat field's ridges as thin light curls; dishes 6 banded a sky into a posterize,
+#   dishes 0 was a soft photograph; dry_shift negative — the value settles toward the middle)
+#
+plakat paint from photo.png --medium gouache --plan gouache.hjson -o out-gouache.png
+
 # ── INK WASH (sumi-e) ────────────────────────────────────────────────────────
 # Graded monochrome washes, very fluid bleed. Default palette: sumi (black+white).
 plakat paint from photo.png --medium ink-wash --palette sumi \

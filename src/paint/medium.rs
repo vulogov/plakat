@@ -531,6 +531,24 @@ pub struct MediumProfile {
     /// picture only (by the square of its light end against the paper), so a broad light mass (snow) is the
     /// paper with a touch of grain and the hatching kept for the half-tones. Needs `paper`.
     pub paper_knee: f32,
+    /// REWET (0..1, 0 = off): a dried layer softens again under a wet mark — gouache's gum stays soluble — so
+    /// the mark lifts this share of the paint beneath into its load, by its own wetness and how empty it is,
+    /// and the layers fuse at their seams instead of sitting as cut-out shapes. In the score's header.
+    pub rewet: f32,
+    /// CHALK TINT (0..1, 0 = off): a light is mixed with white, and white takes the colour's chroma — the
+    /// target's chroma (CIELAB a*, b*) cut by up to `0.6·chalk_tint`, rising by a smoothstep from L* 55 to 95,
+    /// off the faces: the chalky, pastel-matte lights of a body colour.
+    pub chalk_tint: f32,
+    /// FLAT BRUSH (0..1, 0 = off): on the passes before the finest, off the faces and the hair, this share of
+    /// the marks on a flat passage (by its flatness) are laid with a flat brush — a square chisel end (the
+    /// mark full to its end, round 0) and straighter by half the key: a field, a wall, a sail in flat patches.
+    pub flat_brush: f32,
+    /// LINER (0..1, 0 = off): after the ladder a liner lays the LONG thin structures the brushwork lost — a
+    /// rope, a rigging line, a mast's stay, a fence wire: a ridge at the thin scale (lighter or darker than both
+    /// its sides) that agrees with its own direction over a long window, traced along itself while the ridge
+    /// holds and the line turns gently, and laid as ONE thin mark only if it runs a thirtieth of the sheet —
+    /// the short curls of a texture (a wheat field's ears) are not lines. Its own colour, the mean along it.
+    pub liner: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -634,6 +652,10 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -730,6 +752,10 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -826,6 +852,10 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.3,  // the gum stays soluble: a wet mark lifts the layer beneath
+    chalk_tint: 0.5, // the lights mixed with white, chalky
+    flat_brush: 0.5, // the flat passages in a flat brush's square patches
+    liner: 0.5,  // the long thin lines in a liner's single stroke
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -963,6 +993,10 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1068,6 +1102,10 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1168,6 +1206,10 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1264,6 +1306,10 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1363,6 +1409,10 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1459,6 +1509,10 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1558,6 +1612,10 @@ pub const DURER: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -1660,6 +1718,10 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1759,6 +1821,10 @@ pub const PENCIL: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1860,6 +1926,10 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1956,6 +2026,10 @@ pub const PASTEL: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2052,6 +2126,10 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     stump_feather: 1.0, // the stump fades toward a face, crosses a lost edge
     sweep_wave: 4.0, // the sweeps on an arm's arc
     paper_knee: 0.5, // a broad light mass the paper
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2154,6 +2232,10 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     stump_feather: 0.0,
     sweep_wave: 0.0,
     paper_knee: 0.0,
+    rewet: 0.0,
+    chalk_tint: 0.0,
+    flat_brush: 0.0,
+    liner: 0.0,
 };
 
 /// Every declared medium.
@@ -2317,6 +2399,9 @@ mod tests {
             assert_eq!([m.chalk, m.side, m.blend, m.skin, m.carnation, m.small, m.anchor, m.trim, m.small_min], [0.0; 9], "{} has no pastel layer", m.name);
             if m.name != "charcoal" {
                 assert_eq!([m.paper, m.erase, m.touch, m.velvet, m.paper_top, m.sweep, m.stump, m.dust, m.stump_edge, m.stump_feather, m.sweep_wave, m.paper_knee], [0.0; 12], "{} has no charcoal layer", m.name);
+            }
+            if m.name != "gouache" {
+                assert_eq!([m.rewet, m.chalk_tint, m.flat_brush, m.liner], [0.0; 4], "{} has no gouache layer", m.name);
             }
         }
     }

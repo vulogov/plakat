@@ -97,6 +97,10 @@ pub struct BrushConfig {
     /// DUST (0..1, 0 = off): under the `chalk`, a hollow the stick's reach misses still takes this share of
     /// the reach's deposit — the charcoal's dust settling into the paper's tooth. In the header.
     pub dust: f32,
+    /// REWET (0..1, 0 = off): the mark lifts this share of a DRIED layer's paint into its load, by its own
+    /// wetness and how empty it is — gouache's gum softens again under water (the wet canvas's pickup is
+    /// `k_pickup`'s). In the header.
+    pub rewet: f32,
 }
 
 /// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
@@ -113,7 +117,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0 }
     }
 }
 
@@ -584,7 +588,8 @@ impl Stroke {
         // Pickup: lift wet canvas pigment into the load (the dirty brush). Scales with how empty the brush is.
         let cw = canvas.wetness[p];
         let empty = (1.0 - Self::load_norm(load) / brush.load_max.max(1e-3)).clamp(0.0, 1.0);
-        let pf = brush.k_pickup * cw * empty;
+        // (REWET — see `BrushConfig::rewet`: the dried paint softened by the mark's own water.)
+        let pf = brush.k_pickup * cw * empty + if brush.rewet > 0.0 { brush.rewet * (1.0 - cw).max(0.0) * (*bwet).clamp(0.0, 1.0) * empty } else { 0.0 };
         if pf > 0.0 {
             let cconc = canvas.conc_at(px, py); // borrow directly — no clone
             let csum = cconc.iter().map(|c| c.max(0.0)).sum::<f32>().max(1e-6);

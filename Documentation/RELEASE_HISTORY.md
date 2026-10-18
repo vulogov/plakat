@@ -8,6 +8,25 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
+
+### `plakat paint`
+
+- **`--medium gouache` is layered opaque body colour.** Painted in layers, each dry before the next and opaque
+  over the one beneath (the acrylic's machinery through the plan), the colours premixed in value steps and drawn
+  along the mark (the tempera's `dishes` and `ramp`), the calm passages graded (`smooth`), and four mechanisms of
+  its own, each a plan key and 0 in every other medium (all of them byte-identical). **Rewet** (`rewet`, in the
+  score's header): gouache's gum stays soluble, so a wet mark lifts a share of the dried paint beneath into its
+  load — by its own wetness and how empty it is — and the layers fuse at their seams instead of sitting as cut-out
+  shapes. **Chalk tint** (`chalk_tint`): a light is mixed with white and loses its chroma, rising from L* 55 to
+  95, off the faces. **Flat brush** (`flat_brush`): on the passes before the finest a share of the marks on a flat
+  passage are a flat brush's square patch, full to its end and straighter. **Liner** (`liner`): after the ladder
+  the long thin structures the brushwork lost — a rigging line, a stay — traced along themselves both ways and
+  laid as one thin mark in their mean colour, only if they run a thirtieth of the sheet (the rigger drew a wheat
+  field's ridges as curls; a texture's curls never run that far straight). The value settles on drying with a
+  negative `dry_shift`. `saliency` and `focus_detail` are plan keys now (the fine brush in the focus only — a
+  third to a half fewer marks). Every score replays to the bit.
+
 ## What's new in 7.8.0 — Charcoal: a stick on white paper — the paper is the light, the stump the dark
 
 ### `plakat paint`
