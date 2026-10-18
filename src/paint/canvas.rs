@@ -1616,7 +1616,7 @@ fn hash01(ix: i64, iy: i64, seed: u64) -> f32 {
 
 /// Smooth VALUE NOISE in `[0,1]`: hashed lattice points, smoothstep-interpolated. Correlated across neighbouring
 /// pixels (unlike a per-pixel hash), so it reads as clustered mottle rather than static.
-fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
+pub(crate) fn value_noise(fx: f32, fy: f32, seed: u64) -> f32 {
     let x0 = fx.floor() as i64;
     let y0 = fy.floor() as i64;
     let tx = fx - x0 as f32;

@@ -94,6 +94,9 @@ pub struct BrushConfig {
     /// tooth already is (the filled hollows count as reached; past three fifths full the chalk no longer
     /// holds and slides over what is there, down to a seventh of its deposit). In the header, for the medium.
     pub chalk: f32,
+    /// DUST (0..1, 0 = off): under the `chalk`, a hollow the stick's reach misses still takes this share of
+    /// the reach's deposit — the charcoal's dust settling into the paper's tooth. In the header.
+    pub dust: f32,
 }
 
 /// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
@@ -110,7 +113,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0 }
     }
 }
 
@@ -519,6 +522,8 @@ impl Stroke {
             let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
             let t = ((relief - thr + 0.06) / 0.12).clamp(0.0, 1.0);
             let catch = t * t * (3.0 - 2.0 * t);
+            // The DUST (see `BrushConfig::dust`): the hollows take a share of the reach's deposit.
+            let catch = if brush.dust > 0.0 { catch.max(brush.dust.clamp(0.0, 1.0) * reach) } else { catch };
             let slide = ((fill - CHALK_FULL) / (1.0 - CHALK_FULL)).clamp(0.0, 1.0);
             df *= (1.0 - c * (1.0 - catch)) * (1.0 - c * CHALK_SLIP * slide);
         }

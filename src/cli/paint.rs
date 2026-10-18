@@ -1637,6 +1637,18 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.anchor = plan.medium.anchor;
     params.trim = plan.medium.trim;
     params.small_min = plan.medium.small_min;
+    params.paper = plan.medium.paper;
+    params.erase = plan.medium.erase;
+    params.touch = plan.medium.touch;
+    params.velvet = plan.medium.velvet;
+    params.paper_top = plan.medium.paper_top;
+    params.sweep = plan.medium.sweep;
+    params.stump = plan.medium.stump;
+    params.brush.dust = plan.medium.dust;
+    params.stump_edge = plan.medium.stump_edge;
+    params.stump_feather = plan.medium.stump_feather;
+    params.sweep_wave = plan.medium.sweep_wave;
+    params.paper_knee = plan.medium.paper_knee;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2420,6 +2432,18 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.anchor = m.anchor;
         params.trim = m.trim;
         params.small_min = m.small_min;
+        params.paper = m.paper;
+        params.erase = m.erase;
+        params.touch = m.touch;
+        params.velvet = m.velvet;
+        params.paper_top = m.paper_top;
+        params.sweep = m.sweep;
+        params.stump = m.stump;
+        params.brush.dust = m.dust;
+        params.stump_edge = m.stump_edge;
+        params.stump_feather = m.stump_feather;
+        params.sweep_wave = m.sweep_wave;
+        params.paper_knee = m.paper_knee;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2486,6 +2510,19 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.anchor { params.anchor = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.trim { params.trim = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.small_min { params.small_min = v.clamp(0.0, 4096.0); }
+        if let Some(v) = pl.contour { params.contour = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.paper { params.paper = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.erase { params.erase = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.touch { params.touch = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.velvet { params.velvet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.paper_top { params.paper_top = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sweep { params.sweep = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.stump { params.stump = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.dust { params.brush.dust = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.stump_edge { params.stump_edge = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.stump_feather { params.stump_feather = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sweep_wave { params.sweep_wave = v.clamp(0.0, 30.0); }
+        if let Some(v) = pl.paper_knee { params.paper_knee = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
     }

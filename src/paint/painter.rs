@@ -517,6 +517,28 @@ pub struct PaintParams {
     pub trim: f32,
     /// SMALL'S FLOOR (px, 0 = none): a crowd's face left to the plain ladder (see `MediumProfile::small_min`).
     pub small_min: f32,
+    /// PAPER (0..1, 0 = off): the light is the paper, charcoal only darkens (see `MediumProfile::paper`).
+    pub paper: f32,
+    /// ERASE (0..1, 0 = off): the kneaded eraser (see `MediumProfile::erase`).
+    pub erase: f32,
+    /// TOUCH (0..1, 0 = off): the pressure follows the value (see `MediumProfile::touch`).
+    pub touch: f32,
+    /// VELVET (0..1, 0 = off): the darkest share one velvet black (see `MediumProfile::velvet`).
+    pub velvet: f32,
+    /// PAPER TOP (0..1, 0 = off): the picture's light end is the paper (see `MediumProfile::paper_top`).
+    pub paper_top: f32,
+    /// SWEEP (0..1, 0 = off): the flat passages in calm sweeps (see `MediumProfile::sweep`).
+    pub sweep: f32,
+    /// STUMP (0..1, 0 = off): the dark masses rubbed with a stump (see `MediumProfile::stump`).
+    pub stump: f32,
+    /// STUMP EDGE (0..1, 0 = off): the stump holds at a contrast (see `MediumProfile::stump_edge`).
+    pub stump_edge: f32,
+    /// STUMP FEATHER (0..1, 0 = off): the stump's soft stop (see `MediumProfile::stump_feather`).
+    pub stump_feather: f32,
+    /// SWEEP WAVE (degrees, 0 = off): the sweeps on an arm's arc (see `MediumProfile::sweep_wave`).
+    pub sweep_wave: f32,
+    /// PAPER KNEE (0..1, 0 = off): a broad light mass the paper (see `MediumProfile::paper_knee`).
+    pub paper_knee: f32,
     /// The FACE's own extent (px) — the face detector's box, not the soft focal mask (whose extent is the
     /// head and shoulders' halo). `None`: read from the mask.
     pub face_extent: Option<f32>,
@@ -525,7 +547,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, face_extent: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, face_extent: None }
     }
 }
 
@@ -1437,9 +1459,9 @@ const BOLE_WET: f32 = 0.9;
 /// skin alone (`skin`, after the finest pass — the portrait's skin blended last, its accents the eyes, the
 /// nose and the mouth, which stay busy). Returns the rubs laid.
 #[allow(clippy::too_many_arguments)]
-fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, luma: &[f32], range_field: Option<&[f32]>, gx: &[f32], gy: &[f32], reference: &RgbImage, protect: Option<&[bool]>, radius: f32, stage: &str, faces_only: bool, placed: &mut usize, k: &mut u64) -> usize {
+fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, luma: &[f32], range_field: Option<&[f32]>, gx: &[f32], gy: &[f32], reference: &RgbImage, protect: Option<&[bool]>, radius: f32, stage: &str, faces_only: bool, stump: bool, placed: &mut usize, k: &mut u64) -> usize {
     let (w, h) = (canvas.w, canvas.h);
-    if w == 0 || h == 0 || p.blend <= 0.0 || luma.len() < (w * h) as usize {
+    if w == 0 || h == 0 || (if stump { p.stump <= 0.0 } else { p.blend <= 0.0 }) || luma.len() < (w * h) as usize {
         return 0;
     }
     let owned: Vec<f32>;
@@ -1478,6 +1500,18 @@ fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, lum
     // ...and a reach of its own: the rub's path grows from the finger's radius, not the stick's (grown from a
     // four-pixel stick's it was thirteen pixels each way, shorter than the lights it was to fuse).
     let fr = width / 1.8;
+    // STUMP EDGE (see `MediumProfile::stump_edge`): the perceived local contrast at a finger's reach.
+    let edge_g: Option<Vec<f32>> = (stump && p.stump_edge > 0.0).then(|| {
+        let lg: Vec<f32> = luma.iter().map(|v| v.max(0.0).powf(1.0 / 2.2)).collect();
+        local_range(&lg, w as usize, h as usize, (finger * 0.5).round().max(2.0) as usize)
+    });
+    // STUMP FEATHER (see `MediumProfile::stump_feather`): the faces and the hair as a soft mask.
+    let soft_guard: Option<Vec<f32>> = (stump && p.stump_feather > 0.0).then(|| {
+        let hard: Vec<f32> = (0..(w * h) as usize)
+            .map(|i| if face_b.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(false) || p.hair_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.0 { 1.0 } else { 0.0 })
+            .collect();
+        box_blur(&hard, w, h, (finger * p.stump_feather.clamp(0.0, 1.0)).round().max(1.0) as i32)
+    });
     let (cols, rows) = ((w as f32 / step).ceil() as usize, (h as f32 / step).ceil() as usize);
     let mut laid = 0usize;
     for r in 0..rows {
@@ -1491,14 +1525,27 @@ fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, lum
             let y = ((r as f32 + 0.5 + 0.6 * jitter(p.seed ^ 0xB1E_D2, kk)) * step).clamp(0.0, h as f32 - 1.0);
             let i = (y.round() as usize * w as usize + x.round() as usize).min(luma.len() - 1);
             let on_face = face_b.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(false);
-            if (on_face && p.skin <= 0.0) || (faces_only && !on_face) || p.hair_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.0 {
+            let soft = soft_guard.as_deref().and_then(|m| m.get(i)).copied();
+            if let Some(sv) = soft {
+                // Feathered: inside the soft mask's middle the stump does not go; nearer, it fades (below).
+                if sv > 0.5 {
+                    continue;
+                }
+            } else if (stump && on_face) || (on_face && p.skin <= 0.0) || (faces_only && !on_face) || p.hair_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) > 0.0 {
                 continue;
             }
+            let on_face = on_face && soft.is_none();
             let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
             let flat = 1.0 - busy_of(range.get(i).copied().unwrap_or(1.0));
             // THE SKIN (see `MediumProfile::skin`): on a face the rub is the key's share of the flatness — the
             // cheek and the forehead, not the eyes — and stays inside the face.
             let calm = p.blend.clamp(0.0, 1.0) * flat * if on_face { p.skin.clamp(0.0, 1.0) } else { 1.0 - 0.7 * subj };
+            // THE STUMP (see `MediumProfile::stump`): by the darkness instead — the dark half of the perceived
+            // range, fully at its bottom — busy or not (a dark coat's folds are rubbed into one mass).
+            // (...and the flat passages off the subject too — a grey sky's specks of paper.)
+            let calm = if stump { p.stump.clamp(0.0, 1.0) * (1.0 - 2.0 * luma[i].max(0.0).powf(1.0 / 2.2)).clamp(0.0, 1.0).max(flat * (1.0 - subj)) } else { calm };
+            // (Held at a contrast — `stump_edge` — and fading toward a face — `stump_feather`.)
+            let calm = calm * (1.0 - p.stump_edge.clamp(0.0, 1.0) * edge_g.as_deref().and_then(|m| m.get(i)).map(|r| (r / 0.12).clamp(0.0, 1.0)).unwrap_or(0.0)) * (1.0 - soft.unwrap_or(0.0));
             // Every cell is rubbed, by its calm (below) — drawn by lot, a grass was part drawn and part smudged.
             if calm < 0.05 {
                 continue;
@@ -1507,7 +1554,7 @@ fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, lum
             // The finger stops at a face and at the hair (a rub begun in the sea beside a cheek ran along the
             // flow into it and left the sea's colour in dashes across the skin), and stays on its own side
             // of the subject's silhouette: the background is blended up to the figure, never across it.
-            let region = if on_face { face_b.as_deref().map(|m| (m, true)) } else { p.region_mask.as_deref().map(|m| (m, m.get(i).copied().unwrap_or(false))) };
+            let region = if on_face { face_b.as_deref().map(|m| (m, true)) } else if soft.is_some() { None } else { p.region_mask.as_deref().map(|m| (m, m.get(i).copied().unwrap_or(false))) };
             // The finger blends WITHIN a passage of one colour and stops at the picture's own edges as a mark
             // does (the stop reads the reference, so a chalky light the canvas holds across a smooth cheek is
             // crossed, the hair against the forehead, a black trouser against a white blouse, the sea against
@@ -1520,7 +1567,8 @@ fn blend_pass(canvas: &mut Canvas, score: &mut StrokeScore, p: &PaintParams, lum
             // A light touch, by the calm: up to `0.08·calm` on the ground (the broad passes' marks fused, not
             // wiped — at 0.3 the sea was a photograph's gradient and the sheet blocks of mud; the finger goes
             // there and back, so each pixel is touched twice), up to `0.25·calm` on a face.
-            let strength = if on_face { 0.25 * calm } else { 0.08 * calm };
+            // (The stump rubs harder than the finger: up to `0.25·calm`, the darks filled.)
+            let strength = if on_face || stump { 0.25 * calm } else { 0.08 * calm };
             let s = Stroke { path, width0: width, width1: width, load: Vec::new(), pressure: 1.0, wetness: strength };
             s.smudge(canvas, strength);
             *placed += 1;
@@ -2031,6 +2079,19 @@ pub fn ramp_field(img: &RgbImage, r: usize, levels: u32) -> Vec<f32> {
 pub const NEW_BACKGROUND_SIDE: u32 = 384;
 pub const NEW_BACKGROUND_SIDE_PLAIN: u32 = 512;
 pub const NEW_FIGURE_ACROSS: f32 = 384.0;
+/// PAPER (charcoal): the share by which the sheet must differ from the picture's value before a mark darkens
+/// it (or the eraser lifts it) — within it the place is left as it is.
+const PAPER_TOL: f32 = 0.06;
+/// PAPER (charcoal): the marks of a pass OVERLAP — each is charged for the residual at its seed, and a long
+/// mark crosses places its neighbours already darkened. Measured on the three charcoal subjects (set 4): the
+/// value came out darker by about 1.4× in optical density (ln 0.025 / ln 0.07 = 1.39 on the 50–100 band,
+/// 1.46 on 100–150) — so the residual is asked for at that root.
+const PAPER_OVERLAP: f32 = 1.4;
+/// PAPER TOP (charcoal): the most the picture's light end is lifted toward the paper — a near-white ground
+/// (the elder's, 236 against the sheet's 255: ×1.2 in linear light) reaches it; a dark picture's is not
+/// carried up to white.
+const PAPER_TOP_GAIN: f32 = 1.25;
+
 pub const NEW_FACE_ACROSS: f32 = 256.0;
 
 pub fn coarse_armature(img: &RgbImage, side: u32, levels: u32) -> RgbImage {
@@ -2637,7 +2698,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // (The same field drives the IMPASTO MAP's texture term: thick where the form is broken, thin where it
     // is smooth — so a cheek or a sky is laid smooth and a beard or bark stands up.)
     // The picture's own value range for the impasto map (linear luma, 5th–95th percentile).
-    let (map_lo, map_hi) = if p.impasto_map > 0.0 || p.lights > 0.0 || p.dishes >= 2.0 || (p.solid > 0.0 && p.hatch > 0.0) {
+    let (map_lo, map_hi) = if p.impasto_map > 0.0 || p.lights > 0.0 || p.dishes >= 2.0 || (p.solid > 0.0 && p.hatch > 0.0) || p.paper > 0.0 || p.velvet > 0.0 {
         let mut v: Vec<f32> = input.pixels().map(|px| color::linear_luma(color::srgb_to_linear(px.0))).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         (v[v.len() / 20], v[v.len() * 19 / 20])
@@ -2779,6 +2840,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     };
     let wc_mix_cache: std::cell::RefCell<std::collections::HashMap<u32, Vec<f32>>> = std::cell::RefCell::new(std::collections::HashMap::new());
     let probe_cache: std::cell::RefCell<std::collections::HashMap<(u32, u16), f32>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    // PAPER / ERASE / TOUCH / VELVET (charcoal; see `MediumProfile::paper`): the darkest pigment, the bare
+    // sheet's and the black's values, and the charge cache for the residual marks.
+    let paper_cache: std::cell::RefCell<std::collections::HashMap<(u32, u16), f32>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    let charcoal_dark = crate::paint::canvas::darkest_pigment(&p.palette);
+    let charcoal_paper_l = color::linear_luma(canvas.ground_linear());
+    let charcoal_black_l = color::linear_luma(color::srgb_to_linear(p.palette.pigments[charcoal_dark].masstone));
     let wcb_fill_feather = env_f("PLAKAT_WCB_FEATHER", 0.004);
     let wcb_fill_wet = env_f("PLAKAT_WCB_FILLWET", if wc_wash { 0.9 } else { 0.75 });
     // The bleed a brush watercolour runs with (the medium's × the knob) — the SCORE carries it, so the
@@ -3110,7 +3177,7 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // hatched medium with one of the two keys set.
         // (The reference is first softened by half the radius, so a star or a lamp in a still sky does not
         // make the whole of its reach a busy passage — a point of light is not a change of form.)
-        let range_field: Option<Vec<f32>> = if (p.hatch > 0.0 && !block_in && (p.span > 0.0 || p.edge > 0.0)) || p.smooth > 0.0 {
+        let range_field: Option<Vec<f32>> = if (p.hatch > 0.0 && !block_in && (p.span > 0.0 || p.edge > 0.0)) || p.smooth > 0.0 || (p.sweep > 0.0 && !block_in) {
             let soft = box_blur(&luma, w, h, (radius * 0.5).round().max(1.0) as i32);
             Some(local_range(&soft, w as usize, h as usize, (radius * 1.5).round().max(2.0) as usize))
         } else {
@@ -3239,6 +3306,37 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             (gx, gy)
         } else {
             (gx, gy)
+        };
+        // SWEEP (see `MediumProfile::sweep`): on a flat passage off the subject and the faces the flow is turned
+        // onto the horizontal (a stroke runs across its gradient, so the gradient onto the vertical), by the
+        // key's share of the flatness, its magnitude kept and its sign held.
+        let (gx, gy) = match (&range_field, p.sweep > 0.0 && !block_in) {
+            (Some(rf), true) => {
+                let (mut gx, mut gy) = (gx, gy);
+                for i in 0..gx.len() {
+                    let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    let face = p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                    let t = p.sweep * (1.0 - busy_of(rf.get(i).copied().unwrap_or(1.0))) * (1.0 - subj) * (1.0 - face);
+                    if t > 1e-3 {
+                        let m = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt().max(1e-3);
+                        let ty = if gy[i] < 0.0 { -m } else { m };
+                        gx[i] += (0.0 - gx[i]) * t;
+                        gy[i] += (ty - gy[i]) * t;
+                        // SWEEP WAVE (see `MediumProfile::sweep_wave`): turned by a slow wave, by the sweep's share.
+                        if p.sweep_wave > 0.0 {
+                            let (x, y) = ((i % w as usize) as f32, (i / w as usize) as f32);
+                            let l = (w.min(h) as f32 / 6.0).max(8.0);
+                            let a = p.sweep_wave.to_radians() * 2.0 * (crate::paint::canvas::value_noise(x / l, y / l, p.seed ^ 0x5EE_9A7E) - 0.5) * (t / p.sweep.max(1e-3)).min(1.0);
+                            let (sn, cs) = a.sin_cos();
+                            let (x0, y0) = (gx[i], gy[i]);
+                            gx[i] = x0 * cs - y0 * sn;
+                            gy[i] = x0 * sn + y0 * cs;
+                        }
+                    }
+                }
+                (gx, gy)
+            }
+            _ => (gx, gy),
         };
         // ACCENTS (see `MediumProfile::accent`): the sharp contrasts of the finest pass's reference, at the
         // brush's own scale — where the dab goes down thick.
@@ -3663,6 +3761,56 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // (With CARNATION a face's glint is lifted along its hue too: pure white over the warm flesh
                 // read as a pale grey-green patch beside it.)
                 let target = if glinted { if carn_here && !crowd { warm_light(target, 0.4 * p.glint, p.carnation) } else { lights_tone(target, 0.4 * p.glint) } } else { target };
+                // VELVET (see `MediumProfile::velvet`): the darkest share of the range is the darkest pigment
+                // itself, at a full press.
+                // (The share and the eraser's third are read on the PERCEIVED scale — the range in gamma: 8% of the
+                // linear range is a sRGB value of about 80, and the whole dark half-tone went to velvet.)
+                let rel_g = ((tluma.max(0.0).powf(1.0 / 2.2) - map_lo.max(0.0).powf(1.0 / 2.2)) / (map_hi.max(0.0).powf(1.0 / 2.2) - map_lo.max(0.0).powf(1.0 / 2.2)).max(0.02)).clamp(0.0, 1.0);
+                let velvet_here = p.velvet > 0.0 && !glazing && !cresting && !lost_here && rel_g < p.velvet;
+                let target = if velvet_here { p.palette.pigments[charcoal_dark].masstone } else { target };
+                // PAPER (see `MediumProfile::paper`): charcoal only darkens — a mark goes where the sheet is
+                // lighter than the picture asks, charged for the residual; where it is darker, in the lights,
+                // the ERASER (see `MediumProfile::erase`) lifts it; otherwise nothing is laid.
+                let mut paper_need: Option<f32> = None;
+                let mut erase_wet: Option<f32> = None;
+                if p.paper > 0.0 && !glazing && !cresting {
+                    let under = color::linear_luma(color::srgb_to_linear(cv.color_at(ix, iy))).max(0.004);
+                    let tl = color::linear_luma(color::srgb_to_linear(target)).max(0.004);
+                    // PAPER TOP (see `MediumProfile::paper_top`): the value read against the picture's light end.
+                    // (The gain at most PAPER_TOP_GAIN and weighted by the square of the value's share of the
+                    // light end: a night's light end is itself dark, and lifting it to the paper turned the tunnel
+                    // into a grey day.)
+                    let tl = if p.paper_top > 0.0 && map_hi > 1e-3 {
+                        let wgt = (tl / map_hi).clamp(0.0, 1.0).powi(2);
+                        let gain = 1.0 + ((charcoal_paper_l / map_hi).min(PAPER_TOP_GAIN) - 1.0).max(0.0) * wgt * p.paper_top.clamp(0.0, 1.0);
+                        (tl * gain).min(charcoal_paper_l)
+                    } else {
+                        tl
+                    };
+                    // PAPER KNEE (see `MediumProfile::paper_knee`): the top of the curve bent toward the paper, in
+                    // a light picture only.
+                    let tl = if p.paper_knee > 0.0 {
+                        let u = ((rel_g - 0.6) / 0.4).clamp(0.0, 1.0);
+                        let light = (map_hi / charcoal_paper_l.max(1e-3)).clamp(0.0, 1.0).powi(2);
+                        (tl + (charcoal_paper_l - tl).max(0.0) * p.paper_knee.clamp(0.0, 1.0) * u * u * (3.0 - 2.0 * u) * light).min(charcoal_paper_l)
+                    } else {
+                        tl
+                    };
+                    if under > tl * (1.0 + PAPER_TOL) {
+                        paper_need = Some((tl / under).clamp(0.03, 0.99).powf(1.0 / PAPER_OVERLAP));
+                    } else if p.erase > 0.0 && !block_in && !velvet_here && rel_g > 1.0 / 3.0 && under < tl * (1.0 - PAPER_TOL) && p.lift > 1e-3 {
+                        // The film that reads `l` over the paper: alpha = (paper − l)/(paper − black), and the
+                        // wipe's share takes the film from the one alpha's to the other's.
+                        let a = |l: f32| ((charcoal_paper_l - l) / (charcoal_paper_l - charcoal_black_l).max(1e-3)).clamp(1e-3, 0.999);
+                        let s = (1.0 - (1.0 - a(tl)).ln() / (1.0 - a(under)).ln()).clamp(0.0, 0.9) * p.erase;
+                        if s < 0.02 {
+                            return None;
+                        }
+                        erase_wet = Some(s / p.lift);
+                    } else {
+                        return None;
+                    }
+                }
                 let load_target = if drift > 0.0 && !(wc_brush && wcb_broken <= 0.0) { broken_color(target, drift, p.seed, k) } else { target };
                 // IMPRIMATURA (see `MediumProfile::imprimatura`): the block-in laid darker and warmer than the
                 // picture, toward a burnt umber — the underpainting that shows between the later marks.
@@ -3973,6 +4121,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     }
                     None => load,
                 };
+                // PAPER: the darkest pigment alone, charged on a scrap with this brush to read the residual,
+                // by the key's share against the plain mixture.
+                let load = match paper_need {
+                    Some(need) => {
+                        let c = charge_for(&mut paper_cache.borrow_mut(), &p.palette, 0.85, p.opacity, p.palette.pigments[charcoal_dark].masstone, need, wet, Some(&stroke_brush));
+                        let pp = p.paper.clamp(0.0, 1.0);
+                        let mut v: Vec<f32> = load.iter().map(|x| x * (1.0 - pp)).collect();
+                        v[charcoal_dark] += c * pp;
+                        v
+                    }
+                    None => load,
+                };
                 // THE LAYERS OF A FAST-DRYING PAINT (acrylic; see `MediumProfile::wash_in`, `wet_cap`, `scumble`):
                 // the block-in is a thin flooded wash; every mark after it goes on no wetter than the cap, a flat
                 // patch on a dried layer; and the finest pass, off the faces, is dragged DRY — a thinner charge,
@@ -4179,7 +4339,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let width1 = (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair));
                 let width1 = if hatched { width1 + (rw - width1) * hatch_here } else { width1 };
                 let width1 = if sided { rw } else { width1 };
-                let s = Stroke { path, width0: rw, width1, load, pressure: if sided { (pvar * (1.0 - 0.5 * p.side)).clamp(0.3, 1.0) } else { pvar.clamp(0.4, 1.0) }, wetness: wet };
+                // TOUCH (see `MediumProfile::touch`): the pressure follows the value; VELVET presses full.
+                let pressure = if sided { (pvar * (1.0 - 0.5 * p.side)).clamp(0.3, 1.0) } else { pvar.clamp(0.4, 1.0) };
+                let pressure = match paper_need {
+                    Some(_) if velvet_here => 1.0,
+                    Some(_) if p.touch > 0.0 => {
+                        let dark = (1.0 - (color::linear_luma(color::srgb_to_linear(target)) / charcoal_paper_l.max(1e-3)).clamp(0.0, 1.0).powf(1.0 / 2.2)).clamp(0.0, 1.0);
+                        pressure + (0.38 + 0.6 * dark.powf(0.7) - pressure) * p.touch.clamp(0.0, 1.0)
+                    }
+                    _ => pressure,
+                };
+                // (An eraser's lift is recorded in the stroke's wetness, as the replay reads a wipe.)
+                let s = Stroke { path, width0: rw, width1, load: if erase_wet.is_some() { Vec::new() } else { load }, pressure, wetness: erase_wet.unwrap_or(wet) };
                 // THE RAMP (see `MediumProfile::ramp`): the brush's charge drifts along the mark toward the
                 // picture's colour at the mark's end — the seed's own tone (its transforms kept) plus the
                 // picture's end-to-start difference in linear light, by the key's share. Full on the soft
@@ -4195,7 +4366,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     let scale = s.load.iter().map(|v| v.max(0.0)).sum::<f32>() / ramp_base.max(1e-6);
                     if let (true, Some((wp, wi))) = (carn_here, carnation.as_ref()) { carnation_mix(&mut carn_cache.borrow_mut(), cache, end, wp, wi, &p.palette, p.charge * (1.0 + 1.1 * sh) * scale, n, p.carnation) } else { mixture_cached(cache, end, &p.palette, p.charge * (1.0 + 1.1 * sh) * scale, n) }
                 });
-                s.rasterize_ramp(cv, &stroke_brush, load_end.as_deref());
+                if erase_wet.is_some() {
+                    // ERASE: the replay's own call — the header's brush, the strength × lift.
+                    s.wipe(cv, &p.brush, s.wetness * p.lift);
+                } else {
+                    s.rasterize_ramp(cv, &stroke_brush, load_end.as_deref());
+                }
                 let ramp_mix: Option<Vec<(String, f32)>> = load_end.as_ref().map(|le| le.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect());
                 // SPATTER (see `MediumProfile::spatter`): the thickest marks (a body above 1.5), in the light,
                 // off the faces and hair, fling a drop or three off their lift-off — noted here, flung after
@@ -4219,9 +4395,10 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 }
                 // Record the stroke into the score (mix as pigment name → value, for the non-zero pigments).
                 let mix: Vec<(String, f32)> = s.load.iter().enumerate().filter(|(_, v)| **v > 0.0).map(|(i, v)| (p.palette.pigments[i].name.to_string(), *v)).collect();
+                let mix = if erase_wet.is_some() { Vec::new() } else { mix };
                 Some(StrokeRecord {
                     id: 0,
-                    wipe: false, wash: false,
+                    wipe: erase_wet.is_some(), wash: false,
                     stage: pass.stage.clone(),
                     spline: s.path,
                     w0: s.width0,
@@ -4430,10 +4607,18 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // (The broad half of the ladder only — the underpainting is blended, the drawing over it is not; and
         // after the finest pass the skin alone, when `skin` asks for it.)
         if p.blend > 0.0 && !block_in && ((depth_t < 0.5 && !last_pass) || (last_pass && p.skin > 0.0)) && !glazing && !cresting && placed < p.budget {
-            let rubbed = blend_pass(&mut canvas, &mut score, p, &luma, range_field.as_deref(), &gx, &gy, &reference, protect_all.as_deref(), radius, &pass.stage, last_pass, &mut placed, &mut k);
+            let rubbed = blend_pass(&mut canvas, &mut score, p, &luma, range_field.as_deref(), &gx, &gy, &reference, protect_all.as_deref(), radius, &pass.stage, last_pass, false, &mut placed, &mut k);
             in_pass += rubbed;
             if rubbed > 0 {
                 tracing::info!(target: "plakat", "blend: {rubbed} rubs after pass {}", layer + 1);
+            }
+        }
+        // THE STUMP (see `MediumProfile::stump`): after the finest pass the dark masses rubbed.
+        if p.stump > 0.0 && last_pass && !glazing && !cresting && placed < p.budget {
+            let rubbed = blend_pass(&mut canvas, &mut score, p, &luma, range_field.as_deref(), &gx, &gy, &reference, protect_all.as_deref(), radius, &pass.stage, false, true, &mut placed, &mut k);
+            in_pass += rubbed;
+            if rubbed > 0 {
+                tracing::info!(target: "plakat", "stump: {rubbed} rubs after pass {}", layer + 1);
             }
         }
         // Critic verdict: if the pass didn't improve the score by `margin`, ROLL BACK the canvas + score and
@@ -9806,7 +9991,7 @@ mod pastel_tests {
         let mut score = StrokeScore { header: header.clone(), strokes: Vec::new() };
         let before = canvas.clone();
         let (mut placed, mut k) = (0usize, 0u64);
-        let laid = blend_pass(&mut canvas, &mut score, &p, &luma, None, &gx, &gy, &img, None, 6.0, "restate-1", false, &mut placed, &mut k);
+        let laid = blend_pass(&mut canvas, &mut score, &p, &luma, None, &gx, &gy, &img, None, 6.0, "restate-1", false, false, &mut placed, &mut k);
         assert!(laid >= 8, "rubs laid: {laid}");
         assert_eq!(score.strokes.len(), laid);
         assert_eq!(placed, laid);
@@ -9827,7 +10012,7 @@ mod pastel_tests {
         let mut untouched = before.clone();
         let mut s0 = StrokeScore { header, strokes: Vec::new() };
         let (mut placed0, mut k0) = (0usize, 0u64);
-        assert_eq!(blend_pass(&mut untouched, &mut s0, &p0, &luma, None, &gx, &gy, &img, None, 6.0, "restate-1", false, &mut placed0, &mut k0), 0);
+        assert_eq!(blend_pass(&mut untouched, &mut s0, &p0, &luma, None, &gx, &gy, &img, None, 6.0, "restate-1", false, false, &mut placed0, &mut k0), 0);
         assert_eq!(untouched.to_image().into_raw(), before.to_image().into_raw());
     }
 
