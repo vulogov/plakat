@@ -8,6 +8,8 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.8.0 — in development
+
 ## What's new in 7.7.0 — Pastel: chalk on a toothed paper, laid with the stick's side and rubbed with a finger
 
 ### `plakat paint`
