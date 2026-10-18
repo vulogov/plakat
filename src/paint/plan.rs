@@ -319,6 +319,32 @@ pub struct PaintPlan {
     /// THE UMBRA (0..1): within this share of the darkest dish the tones are laid continuous, not stepped.
     #[serde(default)]
     pub umbra: Option<f32>,
+    /// CHALK (0..1): the mark a stick of chalk on the paper's tooth (`MediumProfile::chalk`).
+    pub chalk: Option<f32>,
+    /// THE SIDE OF THE STICK (0..1): the broad passes' share laid with the stick's side (`MediumProfile::side`).
+    pub side: Option<f32>,
+    /// THE FINGER (0..1): the calm passages rubbed after each broad pass (`MediumProfile::blend`).
+    pub blend: Option<f32>,
+    /// THE SKIN (0..1): the finger on the faces, kept inside them (`MediumProfile::skin`).
+    pub skin: Option<f32>,
+    /// CARNATION (0..1): the flesh in warm sticks (`MediumProfile::carnation`).
+    pub carnation: Option<f32>,
+    /// SMALL (px): a face under this extent drawn at its own scale (`MediumProfile::small`).
+    pub small: Option<f32>,
+    /// ANCHOR (0..1): a small face's structural darks kept crisp (`MediumProfile::anchor`).
+    pub anchor: Option<f32>,
+    /// TRIM (0..1): the face cut by the figure's matte (`MediumProfile::trim`).
+    pub trim: Option<f32>,
+    /// SMALL'S FLOOR (px): a crowd's face under it left to the plain ladder (`MediumProfile::small_min`).
+    pub small_min: Option<f32>,
+    /// THE SMALLEST BRUSH (px): the ladder's finest rung and the floor under every mark — the tool's own
+    /// limit (a stick of chalk cannot make a one-pixel mark). Overrides the CLI default (2) only.
+    pub min_brush: Option<f32>,
+    /// PICKUP (0..1): how strongly a mark lifts wet canvas pigment into its load (`MediumProfile::pickup`) —
+    /// 0 for a stick of chalk, which carries nothing of the layer beneath.
+    pub pickup: Option<f32>,
+    /// BLEED (0..1): the wet-into-wet diffusion between the marks after each pass (`MediumProfile::bleed`).
+    pub bleed: Option<f32>,
     /// Human-readable analysis notes (why these numbers) — informational, ignored by the paint stage.
     #[serde(default)]
     pub notes: Vec<String>,
@@ -445,6 +471,18 @@ impl Default for PaintPlan {
             bole: None,
             ramp: None,
             umbra: None,
+            chalk: None,
+            side: None,
+            blend: None,
+            skin: None,
+            carnation: None,
+            small: None,
+            anchor: None,
+            trim: None,
+            small_min: None,
+            min_brush: None,
+            pickup: None,
+            bleed: None,
             notes: Vec::new(),
         }
     }
@@ -532,7 +570,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -892,6 +930,18 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             bole: None,
             ramp: None,
             umbra: None,
+            chalk: None,
+            side: None,
+            blend: None,
+            skin: None,
+            carnation: None,
+            small: None,
+            anchor: None,
+            trim: None,
+            small_min: None,
+            min_brush: None,
+            pickup: None,
+            bleed: None,
         notes,
     }
 }

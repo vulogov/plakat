@@ -28,6 +28,15 @@ const OPACITY_K: f32 = 1.6;
 /// lost edge and glaze a light scratch over the darks.)
 const OVER_K: f32 = 0.15;
 
+/// What a FINGER carries along a smudge (see [`Canvas::smudge`]): the paint it has picked up so far.
+#[derive(Clone, Debug, Default)]
+pub struct Smear {
+    conc: Vec<f32>,
+    film: f32,
+    film_eff: f32,
+    height: f32,
+}
+
 /// A pigment canvas over a fixed palette basis.
 #[derive(Clone)]
 pub struct Canvas {
@@ -439,6 +448,54 @@ impl Canvas {
         }
         self.film[p] *= 1.0 - s;
         self.height[p] *= 1.0 - s;
+    }
+
+    /// SMUDGE at a pixel (the pastelist's finger, a tortillon; see `Stroke::smudge`): no pigment of its own —
+    /// a `share` of the paint here is replaced by what the finger carries (the pixel moves that far toward
+    /// the finger's colour), and the finger's own load takes in the pixel's paint at `memory` — a small rate,
+    /// the finger's reservoir being many pixels' worth — so the colour is dragged along the finger's path and
+    /// the paint beneath blended into it; the film and the height go with it (a finger flattens the chalk it
+    /// moves). A film over the paint is folded in first. The paint is moved, not removed: a clean finger
+    /// (`None`) starts empty and fills from the first pixels it crosses, what it holds at the end stays on
+    /// it. A transmittance film (a watercolour) is left alone.
+    pub fn smudge(&mut self, x: u32, y: u32, carry: &mut Option<Smear>, share: f32, memory: f32) {
+        if self.transmittance {
+            return;
+        }
+        let s = share.clamp(0.0, 1.0);
+        let m = memory.clamp(0.0, 1.0);
+        let i = self.idx(x, y);
+        let p = y as usize * self.w as usize + x as usize;
+        if !self.over_film.is_empty() {
+            self.fold_over(i, p);
+        }
+        let n = self.n;
+        match carry {
+            None => {
+                // A clean finger fills from the first pixel at its memory's rate and takes nothing from it.
+                let mut sm = Some(Smear { conc: vec![0.0; n], film: 0.0, film_eff: 0.0, height: 0.0 });
+                self.smudge(x, y, &mut sm, 0.0, m);
+                *carry = sm;
+            }
+            Some(sm) => {
+                for c in 0..n {
+                    let a = self.conc[i + c];
+                    self.conc[i + c] = a * (1.0 - s) + sm.conc[c] * s;
+                    sm.conc[c] = sm.conc[c] * (1.0 - m) + a * m;
+                }
+                let f = self.film[p];
+                self.film[p] = f * (1.0 - s) + sm.film * s;
+                sm.film = sm.film * (1.0 - m) + f * m;
+                if self.hiding > 0.0 {
+                    let e = self.film_eff[p];
+                    self.film_eff[p] = e * (1.0 - s) + sm.film_eff * s;
+                    sm.film_eff = sm.film_eff * (1.0 - m) + e * m;
+                }
+                let h = self.height[p];
+                self.height[p] = h * (1.0 - s) + sm.height * s;
+                sm.height = sm.height * (1.0 - m) + h * m;
+            }
+        }
     }
 
     /// DRY the whole canvas between passes: scale every pixel's wetness by `keep` (0 = bone dry, 1 = leave fully

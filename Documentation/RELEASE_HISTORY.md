@@ -8,6 +8,82 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.7.0 — Pastel: chalk on a toothed paper, laid with the stick's side and rubbed with a finger
+
+### `plakat paint`
+
+- **`--medium pastel` is a stick of chalk on a toothed paper, laid with its side and rubbed with a finger.** Three
+  mechanisms, each a plan key. **Chalk** (`chalk`, the medium's, in the score's header): the deposit at a pixel
+  is keyed to the paper's grain against the mark's pressure — a light touch reaches only the raised fibres (the
+  relief runs about 0.2–0.8; the stick's reach runs from nothing at a pressure of 0.3 to the whole grain at
+  0.85, a smoothstep of ±0.06 about the threshold, so the hand's ordinary pressure fills every hollow and no
+  pixel is a hole no pass can fill) and the hollows keep the sheet's colour, a hard press fills them — and to how full
+  the tooth already is (the filled hollows count as reached; past three fifths of `SAT_FULL` the chalk slides,
+  down to 15% of its deposit), so the layers build as pastel does: the first broken on the grain, the later
+  filling it, the last barely taking; at 0 the brush to the bit. **The side of the stick** (`side`): on the
+  broad passes, off the faces and the hair, the key's share of the marks on the block-in and `side·(1 − depth)`
+  after it are laid with the stick's side — `1 + 0.6·side` of the width, round 0 and streak 0.9 (the facets),
+  full width to the end, straightened by half the key, `1 − 0.5·side` of the pressure (so the chalk catches the
+  raised grain only), `1 − 0.3·side` of the charge, dry (wet ≤ 0.1), no pickup — the pressure, width and charge
+  in the record. **The finger** (`blend`): after each broad pass (not the block-in, not the finest) the calm
+  passages are rubbed — a `smudge` record, a `wipe` stroke with a strength, that lays no pigment: the finger
+  walks its path there and back, each lane across its width carrying a smear, and at every pixel moves the
+  key's strength of the paint (its concentration, film, hiding and height) toward what it carries, the smear
+  taking the pixel in at the finger's memory (`1/width` per pixel — a finger holds about a width of chalk —
+  so a wide finger blends at a wide scale; the share and the memory were one number first, and a wide finger
+  then moved a pixel by two percent), a clean finger starting empty; the
+  cells of the finger's width every one rubbed by its calm (the picture's range within the brush's reach, the
+  reference softened by half the radius; the subject at three tenths; never the hair — drawn by lot a grass
+  was part drawn and part smudged), up to `0.08·calm` strong on the ground and `0.25·calm` on a face (at a
+  third the sea was a photograph's gradient and the sheet blocks of mud), its ends soft over the first and
+  last fifth of the path, the finger's own width on every pass (a fortieth of the sheet's short side — sized
+  to the broad pass it carried a wagon's shadow across a figure and a lit facade into a blur), after the
+  passes of the broad half of the ladder only (rubbed after the fine passes too the sheet was a blur with
+  noise on it, not a pastel: the underpainting is blended, the drawing over it is not), along the flow, stopping
+  at the picture's own edges as a mark does — the stop reads the reference, so a chalky light the canvas
+  holds across a smooth cheek is crossed while the sea against the blouse, the black against the figures
+  and the hair against the forehead are not (looser, it carried each of those across). **The skin** (`skin`): the finger on the faces
+  too — a face's calm passages (a cheek, a forehead; the eyes, the nose and the mouth read as busy and are
+  left) rubbed after the face's passes — the finest too, the skin alone, the portrait's face blended last — by the
+  key's share of their flatness, the rub kept inside the face (its region) and stopped by the hair, the
+  finger of its own size (a fortieth of the sheet's short side, or the pass's radius and four fifths when
+  that is wider), so the skin's chalky lights (the white-and-orange mixes the
+  highlights solve to, laid one pixel wide, read as a cold crap against the saturated skin) fuse into
+  modelling before the finest pass sets its accents. `Canvas::smudge` and
+  `Stroke::smudge` are new; the replay (both paths) lays the smudges in their stage. Three shared dials are plan
+  keys from here: `pickup` (the brush's pickup of wet canvas pigment — 0 for a stick of chalk), `bleed` (the
+  wet-into-wet diffusion after each pass — 0 for chalk) and `min_brush` (the ladder's finest rung and the
+  floor under every mark, standing in for the CLI default of 2 — a stick of chalk cannot make a one-pixel
+  mark, and a small face's own tier floor fell below a pixel); the pastel plan sets both to 0. (The sheet was laid toned for a while — `bole`, the tempera's key — against
+  what looked like the broad passes' average of sea and skin showing through the face's fine marks; the
+  dashes turned out to be the chalky lights, and the bole's dark-quartile tone put the grass's green under a
+  white blouse and a face in a tree's shade, so the pastel keeps its plain ground.) The plan draws on the
+  tempera's keys for the drawing over the blended underpainting: `hatch 0.8`, `cross 25`, `span 0.6`,
+  `edge 0.6` — the final strokes discrete and directional along the structure tensor's flow — and
+  `dishes 6`, `dither 0.5` — the tones a limited box of sticks, pure tones side by side that mix in the eye,
+  not an average — with `umbra 1.0`, the dark masses continuous and never dithered up (a pink speck of the
+  lighter dish on the dark sea); `granulate 0`, the grain the chalk's own on the paper's relief, no mottle
+  laid over it. **Carnation** (`carnation`): the flesh in warm sticks — on a face (the hair apart) a mark's
+  mixture is solved over the palette's warm and neutral pigments alone (a pigment whose masstone is cold in
+  CIELAB, a* or b* below −6, is left in the box; a box of its own with its own cache, mapped back to the
+  palette's indices and blended with the full mixture by the key's share), so a half-tone is darkened with an
+  umber or a black and never greyed with the sea's teal — the grey-teal cast the face's lights carried in
+  every set before; and the face's lights are lifted along their own hue (the CIELAB lightness raised, the
+  chroma kept by all but three tenths of the lift) instead of toward white, and with it the face's glints.
+  **Small** (`small`, `small_min`): a face is drawn at its own scale, read from the face detector's box (the
+  soft focal mask measured the head and shoulders' halo) — under `small` px the marks narrower, the hatching
+  thinned and one way, the half-tones held near the local tone, more of it blended; under `small_min` a
+  crowd's face is left to the plain ladder (the festival's 73 px singers lost their mouths to the softening).
+  **Anchor** (`anchor`): on a small face the darkest share of the tones around a mark (the local mean less the
+  normal quantile of the local spread) is neither held nor blended, and the blending falls off with the local
+  contrast — the eyes and the mouth keep their dry strokes. **Trim** (`trim`): the face is the detector's box
+  cut by the subject matte, and the ground's marks keep a share of their brush's radius clear of it — the pale
+  grey-green crackle on the shore woman's cheek was the box's corner in the sea mixed from the warm sticks and
+  the sea's broad block-in marks run 500–800 px across the profile, both coming through the chalk's tooth
+  (found by pixel values and the per-pass dumps). Every other medium
+  byte-identical (the tempera with its plan, the acrylic, the indirect oil, the watercolour, the pen, the Dürer
+  and the book checked against their sheets).
+
 ## What's new in 7.6.0 — Tempera: the panel painted in hatched dry layers over a bole
 
 ### `plakat paint`

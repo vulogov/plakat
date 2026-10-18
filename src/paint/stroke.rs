@@ -88,7 +88,18 @@ pub struct BrushConfig {
     /// the mark's own hash), so the width runs from the brush's full breadth to a line: the calligraphic
     /// mark that opens from a point or draws out to one. Per stroke, in the record.
     pub twist: f32,
+    /// CHALK (0..1, 0 = off): the mark is a stick of chalk on a toothed paper, not a brush — the deposit at a
+    /// pixel is keyed to the paper's grain against the mark's PRESSURE (a light touch reaches only the fibres
+    /// that stand up and the hollows stay the sheet's colour, a hard press fills them) and to how FULL the
+    /// tooth already is (the filled hollows count as reached; past three fifths full the chalk no longer
+    /// holds and slides over what is there, down to a seventh of its deposit). In the header, for the medium.
+    pub chalk: f32,
 }
+
+/// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
+/// how much of its deposit slides off a full tooth.
+const CHALK_FULL: f32 = 0.6;
+const CHALK_SLIP: f32 = 0.85;
 
 /// The exponent that sets the comma's peak at t = 0.3 (ln 0.5 / ln 0.3).
 const COMMA_K: f32 = 0.5757;
@@ -99,7 +110,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0 }
     }
 }
 
@@ -400,6 +411,54 @@ impl Stroke {
         }
     }
 
+    /// Apply this stroke as a SMUDGE (the pastelist's finger, a tortillon; see [`Canvas::smudge`]): walk the
+    /// path with a soft footprint — each lane across the width carries its own smear — and at each pixel move
+    /// `strength` of the paint there toward the smear (falling toward the width's edges as a finger's
+    /// pressure does), the smear itself taking the pixel in at the finger's MEMORY: `1 / width` per pixel, so
+    /// what it carries fades over a width of travel and a wide finger blends at a wide scale. The finger goes along the path and BACK (what it picked up on the way out it brings
+    /// home), so the blend is even in both directions. No load, no pickup: the paint is dragged along the
+    /// path and blended, the finger holding some of it.
+    pub fn smudge(&self, canvas: &mut Canvas, strength: f32) {
+        let pts = densify(&self.path);
+        let maxw = self.width0.max(self.width1).max(1.0);
+        let nb = (maxw.ceil() as usize).clamp(1, 256);
+        let share = strength.clamp(0.0, 1.0);
+        // The finger holds about a finger's width of chalk: what it carries fades over `width` pixels of
+        // travel, whatever its strength (tied to the strength, a light wide finger remembered three widths
+        // and carried the hair's dark a hundred pixels into a cheek as a block).
+        let memory = (1.0 / maxw).clamp(0.0, 0.5);
+        let mut carry: Vec<Option<crate::paint::canvas::Smear>> = vec![None; nb];
+        let there_and_back: Vec<usize> = (0..pts.len()).chain((0..pts.len()).rev()).collect();
+        // The finger lands and lifts off softly: its share fades over the first and last fifth of the path.
+        let fade = ((pts.len() as f32) * 0.2).max(1.0);
+        for &i in &there_and_back {
+            let p = pts[i];
+            let end = ((i as f32 + 0.5) / fade).min(((pts.len() - 1 - i) as f32 + 0.5) / fade).clamp(0.0, 1.0);
+            let end = end * end * (3.0 - 2.0 * end);
+            let q = if i + 1 < pts.len() { pts[i + 1] } else { pts[i.saturating_sub(1)] };
+            let (mut dx, mut dy) = (q[0] - p[0], q[1] - p[1]);
+            let dl = (dx * dx + dy * dy).sqrt();
+            if dl > 1e-4 {
+                dx /= dl;
+                dy /= dl;
+            }
+            let (perpx, perpy) = (-dy, dx);
+            let t = if pts.len() > 1 { i as f32 / (pts.len() - 1) as f32 } else { 0.0 };
+            let width = self.width0 + (self.width1 - self.width0) * t;
+            for b in 0..nb {
+                let u = (b as f32 + 0.5) / nb as f32 * 2.0 - 1.0;
+                let soft = 1.0 - u * u;
+                let off = u * 0.5 * width;
+                let x = (p[0] + perpx * off).round();
+                let y = (p[1] + perpy * off).round();
+                if x < 0.0 || y < 0.0 || x >= canvas.w as f32 || y >= canvas.h as f32 {
+                    continue;
+                }
+                canvas.smudge(x as u32, y as u32, &mut carry[b], share * self.pressure * soft * end, memory);
+            }
+        }
+    }
+
     /// One bristle touching one pixel: deposit a fraction of load, pick up wet canvas pigment, update the load.
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
@@ -442,6 +501,26 @@ impl Stroke {
                 let t = ((relief - thr + 0.12) / 0.24).clamp(0.0, 1.0);
                 df *= t * t * (3.0 - 2.0 * t);
             }
+        }
+        if brush.chalk > 0.0 {
+            // THE CHALK ON THE TOOTH (see `BrushConfig::chalk`): the stick reaches the paper's raised grain
+            // first — pressed lightly it touches only the fibres that stand up, pressed hard it fills the
+            // hollows — and as the layers fill the tooth the hollows count as reached; past the point where
+            // the tooth is full the chalk no longer holds and slides over what is there.
+            // (The relief runs from about 0.2 to 0.8 across the sheet. The stick's REACH runs from nothing at a
+            // pressure of 0.3 to the whole grain at 0.85 — the hand's ordinary pressure fills every hollow, so
+            // no pixel is a hole that no pass can ever fill (a fixed threshold left the lowest few percent of
+            // the grain bare under every mark, a crap of the sheet's colour on a black coat); the light touch
+            // of the stick's side reaches the raised half.)
+            let c = brush.chalk.clamp(0.0, 1.0);
+            let fill = (canvas.saturation_at(px, py) / SAT_FULL).clamp(0.0, 1.0);
+            let reach = ((self.pressure - 0.3) / 0.55).clamp(0.0, 1.0);
+            let thr = (0.1 + 0.7 * (1.0 - reach)) * (1.0 - fill);
+            let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+            let t = ((relief - thr + 0.06) / 0.12).clamp(0.0, 1.0);
+            let catch = t * t * (3.0 - 2.0 * t);
+            let slide = ((fill - CHALK_FULL) / (1.0 - CHALK_FULL)).clamp(0.0, 1.0);
+            df *= (1.0 - c * (1.0 - catch)) * (1.0 - c * CHALK_SLIP * slide);
         }
         if brush.crest != 0.0 {
             // The dry brush over the ridges (see `BrushConfig::crest`): paint only where this pixel's relief
@@ -786,5 +865,71 @@ mod tests {
         let (a1, b1) = widths(1.0);
         assert!((a0 as i32 - b0 as i32).abs() <= 2, "a plain mark is as wide at both ends ({a0} / {b0})");
         assert!(a1.min(b1) * 2 < a1.max(b1), "a twisted mark narrows to a line at one end ({a1} / {b1})");
+    }
+
+    #[test]
+    fn the_chalk_catches_the_raised_grain_and_slides_off_a_full_tooth() {
+        // A light touch of chalk reaches the raised fibres only — less paint than the same mark pressed hard, and
+        // less than the brush without the chalk law; and over a tooth already full the chalk slides.
+        // (A lane that skips a pixel keeps its charge for the next, so the mark's TOTAL hardly tells; what
+        // tells is its COVERAGE — the share of the band's pixels that took a fair deposit — and, over a
+        // full tooth, the deposit at the mark's head where the charge is still whole.)
+        let lay = |chalk: f32, pressure: f32, prefill: bool| -> (f32, f32) {
+            let mut c = Canvas::white(60, 20, palette::ZORN, 0.9);
+            if prefill {
+                let fill = Stroke { path: vec![[0.0, 10.0], [60.0, 10.0]], width0: 20.0, width1: 20.0, load: vec![0.0, 0.0, 0.0, 12.0], pressure: 1.0, wetness: 0.3 };
+                for _ in 0..8 {
+                    fill.rasterize(&mut c, &BrushConfig { k_pickup: 0.0, hold_charge: true, ..BrushConfig::default() });
+                }
+            }
+            let before: Vec<f32> = (0..20).flat_map(|y| (0..60).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).collect();
+            let s = Stroke { path: vec![[4.0, 10.0], [56.0, 10.0]], width0: 6.0, width1: 6.0, load: red_load(), pressure, wetness: 0.2 };
+            s.rasterize(&mut c, &BrushConfig { chalk, k_pickup: 0.0, hold_charge: true, ..BrushConfig::default() });
+            let delta: Vec<f32> = (0..20).flat_map(|y| (0..60).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y) - before[y as usize * 60 + x as usize]).collect();
+            let band: Vec<f32> = (9..=11).flat_map(|y| (8..52).map(move |x| (x, y))).map(|(x, y)| delta[y * 60 + x]).collect();
+            let peak = band.iter().copied().fold(0.0f32, f32::max).max(1e-6);
+            let coverage = band.iter().filter(|d| **d > 0.25 * peak).count() as f32 / band.len() as f32;
+            let head: f32 = (6..16).map(|x| delta[10 * 60 + x]).sum();
+            (coverage, head)
+        };
+        let (plain, _) = lay(0.0, 0.5, false);
+        let (light, _) = lay(1.0, 0.5, false);
+        let (hard, head_hard) = lay(1.0, 1.0, false);
+        assert!(light < 0.75 * plain, "a light touch of chalk breaks on the grain: coverage {light} vs the brush's {plain}");
+        assert!(hard > light + 0.15, "pressed hard the chalk fills the hollows: coverage {hard} vs {light}");
+        let (_, head_full) = lay(1.0, 1.0, true);
+        assert!(head_full < 0.4 * head_hard, "over a full tooth the chalk slides: {head_full} vs {head_hard}");
+        // The chalk at 0 is the brush to the bit.
+        let mut a = Canvas::white(30, 12, palette::ZORN, 0.9);
+        let mut b = a.clone();
+        let s = Stroke { path: vec![[2.0, 6.0], [28.0, 6.0]], width0: 5.0, width1: 4.0, load: red_load(), pressure: 0.7, wetness: 0.5 };
+        s.rasterize(&mut a, &BrushConfig::default());
+        s.rasterize(&mut b, &BrushConfig { chalk: 0.0, ..BrushConfig::default() });
+        assert_eq!(a.to_image().into_raw(), b.to_image().into_raw());
+    }
+
+    #[test]
+    fn the_finger_drags_the_paint_along_its_path_and_lays_none_of_its_own() {
+        // A red patch on the left; a finger dragged from inside it to the right carries red into the bare
+        // sheet beyond the patch, lays no pigment of its own (the film's total is conserved), and leaves the
+        // sheet untouched off its path.
+        let mut c = Canvas::white(80, 30, palette::ZORN, 0.9);
+        let patch = Stroke { path: vec![[4.0, 15.0], [30.0, 15.0]], width0: 16.0, width1: 16.0, load: red_load(), pressure: 1.0, wetness: 0.5 };
+        patch.rasterize(&mut c, &BrushConfig { k_pickup: 0.0, hold_charge: true, ..BrushConfig::default() });
+        let film_before: f32 = (0..30).flat_map(|y| (0..80).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).sum();
+        assert!(c.saturation_at(50, 15) < 1e-6, "bare beyond the patch");
+        let before_off = c.color_at(10, 3);
+        let finger = Stroke { path: vec![[20.0, 15.0], [60.0, 15.0]], width0: 8.0, width1: 8.0, load: Vec::new(), pressure: 1.0, wetness: 0.5 };
+        finger.smudge(&mut c, 0.5);
+        assert!(c.saturation_at(42, 15) > 0.01, "the red carried past the patch: {}", c.saturation_at(42, 15));
+        assert!(c.saturation_at(42, 15) > c.saturation_at(50, 15) && c.saturation_at(50, 15) > 0.0, "fading with the travel");
+        assert!(c.conc_at(42, 15)[1] > 0.0 && c.conc_at(42, 15)[0] == 0.0 && c.conc_at(42, 15)[2] == 0.0, "the carried paint is the patch's red alone");
+        let film_after: f32 = (0..30).flat_map(|y| (0..80).map(move |x| (x, y))).map(|(x, y)| c.saturation_at(x, y)).sum();
+        // (The finger's reservoir takes in at its memory and gives out at its share, so the sheet's total may
+        // drift by a hair either way; it is moved paint, not laid paint.)
+        assert!((film_after - film_before).abs() < 0.02 * film_before, "the finger moves the paint and lays none of its own: {film_before} → {film_after}");
+        assert_eq!(c.color_at(10, 3), before_off, "untouched off the path");
+        let lab = srgb_to_lab(c.color_at(42, 15));
+        assert!(lab.a > 0.2 && lab.l < srgb_to_lab(before_off).l, "the carried colour reads red, the sheet toned by it: a* {} L {}", lab.a, lab.l);
     }
 }

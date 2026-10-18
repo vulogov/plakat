@@ -79,9 +79,30 @@ plakat paint from photo.png --medium pencil --palette sumi \
     --contour 0.5 --granulate 0.2 -o out-pencil.png
 
 # ── PASTEL ───────────────────────────────────────────────────────────────────
-# Soft, chalky, high-chroma, blendable, matte. Default palette: split-primary.
-plakat paint from photo.png --medium pastel --palette image \
-    --chroma 1.15 --broken 0.4 --granulate 0.25 -o out-pastel.png
+# Soft pastel on a toothed paper (7.7.0, in development): the mark a stick of CHALK on the tooth — a light
+# touch catches the raised grain only and the hollows keep the sheet's colour, a hard press fills them, and
+# past three fifths full the tooth holds no more; the broad passes laid with the stick's SIDE (wide flat
+# sweeps at a light touch); after each broad pass the calm passages rubbed with a FINGER, the marks there
+# fused into one soft tone, nothing added or removed. Dry at once; matte; broken colour.
+# Best painted from scratch with a PLAN — every layer dial a plan key, tuned there. The plan so far:
+#
+#   medium: pastel             palette: image           style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 1.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          rigger: 0.35      hotspot: 0.3
+#   min_brush: 4.0             dry: 1.0                 pickup: 0.0             bleed: 0.0
+#   wash_in: 0.0               wet_cap: 0.2             scumble: 0.8            skip: 0.0
+#   deplete: 1.5               granulate: 0.0           chalk: 1.0              side: 0.4         blend: 0.6        skin: 0.5
+#   sfumato: 0.7               carnation: 1.0           small: 400              small_min: 100    anchor: 0.15      trim: 0.5
+#   hatch: 0.8                 cross: 25                span: 0.6               edge: 0.6         glint: 0.4
+#   lights: 0.3                dishes: 0                dither: 0.0             umbra: 1.0
+#   (the tempera's hatch and dish keys: the final strokes discrete and directional, the tones a limited box of sticks)
+#   turbulence: 6              loose: 0.15              shade: 0.3              vary: 0.3         body_vary: 0.2
+#   broken: 0.05               lost: 0.0                aerial: 0.0             hiding: 0.0       solid: 1.0
+#   (no lost edges: a pastel's silhouette is drawn, not rubbed into its ground — the marks along a jaw in
+#   shadow took the mean of the skin and the sea; the dark masses built solid so the paper's tooth is filled)
+#
+plakat paint from photo.png --medium pastel --plan pastel.hjson -o out-pastel.png
 
 # ── CHARCOAL ─────────────────────────────────────────────────────────────────
 # Dramatic soft black, smudgy, grainy tooth, contoured. Palette: sumi.
