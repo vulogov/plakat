@@ -8,7 +8,7 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.8.0 — in development
+## What's new in 7.8.0 — Charcoal: a stick on white paper — the paper is the light, the stump the dark
 
 ### `plakat paint`
 

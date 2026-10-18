@@ -79,7 +79,7 @@ plakat paint from photo.png --medium pencil --palette sumi \
     --contour 0.5 --granulate 0.2 -o out-pencil.png
 
 # ── PASTEL ───────────────────────────────────────────────────────────────────
-# Soft pastel on a toothed paper (7.7.0, in development): the mark a stick of CHALK on the tooth — a light
+# Soft pastel on a toothed paper (7.7.0): the mark a stick of CHALK on the tooth — a light
 # touch catches the raised grain only and the hollows keep the sheet's colour, a hard press fills them, and
 # past three fifths full the tooth holds no more; the broad passes laid with the stick's SIDE (wide flat
 # sweeps at a light touch); after each broad pass the calm passages rubbed with a FINGER, the marks there
@@ -109,7 +109,7 @@ plakat paint from photo.png --medium pastel --plan pastel.hjson -o out-pastel.pn
 plakat paint from photo.png --medium charcoal --palette sumi \
     --contour 0.3 --granulate 0.35 -o out-charcoal.png
 
-# A stick of charcoal on white paper (7.8.0, in development): the paper is the light — every mark in the
+# A stick of charcoal on white paper (7.8.0): the paper is the light — every mark in the
 # black alone, laid only where the sheet is lighter than the picture asks, lifted with an eraser where it went
 # darker; the pressure follows the value, the darkest share one velvet black; the dust settles into the
 # tooth; the flat passages in calm sweeps on an arm's arc; after the finest pass the darks rubbed with a
