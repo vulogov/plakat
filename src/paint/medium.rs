@@ -476,6 +476,61 @@ pub struct MediumProfile {
     /// `trim` and the warm glint stay off for the picture (the festival's 73 px singers lost their mouths
     /// and eyes to the held tone and the blending, and the clearance tore the hat's edge).
     pub small_min: f32,
+    /// PAPER (0..1, 0 = off): the LIGHT IS THE PAPER — charcoal only darkens. A mark is laid in the darkest
+    /// pigment alone, its charge solved on a scrap with the mark's own brush so that over what is there it
+    /// reads the picture's value (the residual: target over the canvas's value), and a mark is not laid
+    /// where the sheet is already as dark as the picture asks. By the key's share against the plain
+    /// mixture. (With the sumi box the lights were painted in titanium white — a grey oil, not a drawing.)
+    pub paper: f32,
+    /// ERASE (0..1, 0 = off): the KNEADED ERASER — where the sheet is darker than the picture asks in its
+    /// lights (above a third of the picture's range, on the perceived scale), off the block-in, the mark is a lift instead: a wipe
+    /// along its path whose strength takes the charcoal's film down to the target's value (by the key's
+    /// share), recorded as a `W` record and replayed to the bit. Needs `paper`.
+    pub erase: f32,
+    /// TOUCH (0..1, 0 = off): the PRESSURE follows the value — a light tone is a light touch that catches
+    /// only the paper's raised grain (the half-tones read as charcoal on a toothed sheet), a dark one a
+    /// hard press that fills the hollows; `0.38 + 0.6·darkness^0.7` (the darkness perceived: one less the value's ratio to the paper's, to 1/2.2), blended with the hand's pressure by
+    /// the key's share. Needs `paper` (and `chalk` for the grain).
+    pub touch: f32,
+    /// VELVET (0..1, 0 = off): the darkest share of the picture's range (on the perceived scale) is the darkest pigment itself,
+    /// laid at a full press — a dark frame is one velvet black, not a grey porridge of restated darks.
+    pub velvet: f32,
+    /// PAPER TOP (0..1, 0 = off): the picture's light end (its 95th percentile) IS the paper, by this share —
+    /// a mark's value read against it, so a near-white ground stays bare paper instead of a grain of grey
+    /// that stops at a line where the photograph's ground crossed the tolerance. The lift is at most ×1.25 and
+    /// weighted by the square of the value's share of the light end (a night's light end is itself dark). Needs `paper`.
+    pub paper_top: f32,
+    /// SWEEP (0..1, 0 = off): on a flat passage off the subject and the faces the flow is turned onto one
+    /// direction (the horizontal), by this share of its flatness — the sky laid in calm side-of-the-stick
+    /// sweeps instead of hatching along the noise of a flat field's flow (whirls over a grey sky).
+    pub sweep: f32,
+    /// STUMP (0..1, 0 = off): after the finest pass the DARK masses (below the middle of the perceived range)
+    /// and the flat passages off the subject are rubbed with a stump — the finger's smudge records, off the faces and the hair, stopping at the
+    /// picture's edges, by this share of the darkness — the paper's white specks in a dark passage filled
+    /// with the charcoal around them.
+    pub stump: f32,
+    /// DUST (0..1, 0 = off): the charcoal's dust settles into the paper's hollows — under the `chalk`, a
+    /// hollow the stick's reach misses still takes this share of the reach's deposit, so a light touch keeps
+    /// the grain but a pressed half-tone fills (the hollows below the reach stayed the paper's white under
+    /// every layer, a fill that never grew where nothing had been laid: white specks across a grey blanket).
+    pub dust: f32,
+    /// STUMP EDGE (0..1, 0 = off): the stump holds back where the picture's PERCEIVED local contrast stands
+    /// at a finger's reach (the gamma range, fully at 0.12), by this share — a lapel, a sleeve against a
+    /// dark ground kept, not rubbed into the mass. Needs `stump`.
+    pub stump_edge: f32,
+    /// STUMP FEATHER (0..1, 0 = off): the stump's stop at a face and the hair is soft — their mask blurred
+    /// over this share of a finger, the rub fading toward them instead of ending at a line — and it may cross
+    /// the subject's silhouette, stopped by the picture's own edges alone (a lost edge blended, a found
+    /// one kept). Needs `stump`.
+    pub stump_feather: f32,
+    /// SWEEP WAVE (degrees, 0 = off): the swept flow turned by a slow wave of up to this many degrees — a
+    /// low noise across a sixth of the sheet, the arc of an arm, not a ruler. Needs `sweep`.
+    pub sweep_wave: f32,
+    /// PAPER KNEE (0..1, 0 = off): the top of the tonal curve bent toward the paper — a value in the upper
+    /// two fifths of the perceived range pulled toward the paper by this share (a smoothstep), in a light
+    /// picture only (by the square of its light end against the paper), so a broad light mass (snow) is the
+    /// paper with a touch of grain and the hatching kept for the half-tones. Needs `paper`.
+    pub paper_knee: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -567,6 +622,18 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -651,6 +718,18 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -735,6 +814,18 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -860,6 +951,18 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -953,6 +1056,18 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1041,6 +1156,18 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1125,6 +1252,18 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1212,6 +1351,18 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1296,6 +1447,18 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1383,6 +1546,18 @@ pub const DURER: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -1473,6 +1648,18 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1560,6 +1747,18 @@ pub const PENCIL: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1649,6 +1848,18 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1733,6 +1944,18 @@ pub const PASTEL: MediumProfile = MediumProfile {
     anchor: 0.15, // the darkest sixth of a small face kept crisp
     trim: 0.5, // the face cut by the figure, the ground kept half a brush clear
     small_min: 100.0, // a crowd's face under 100 px left to the plain ladder
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1817,6 +2040,18 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 1.0,  // the light is the paper: charcoal only darkens
+    erase: 0.6,  // the kneaded eraser lifts the lights
+    touch: 0.6,  // a light tone a light touch on the grain
+    velvet: 0.08, // the darkest twelfth one velvet black
+    paper_top: 1.0, // the picture's light end is the paper
+    sweep: 0.9,  // the flat passages in calm sweeps
+    stump: 0.5,  // the dark masses rubbed with a stump
+    dust: 0.85,  // the dust settles into the hollows
+    stump_edge: 0.6, // the stump holds at a contrast
+    stump_feather: 1.0, // the stump fades toward a face, crosses a lost edge
+    sweep_wave: 4.0, // the sweeps on an arm's arc
+    paper_knee: 0.5, // a broad light mass the paper
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1907,6 +2142,18 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     anchor: 0.0,
     trim: 0.0,
     small_min: 0.0,
+    paper: 0.0,
+    erase: 0.0,
+    touch: 0.0,
+    velvet: 0.0,
+    paper_top: 0.0,
+    sweep: 0.0,
+    stump: 0.0,
+    dust: 0.0,
+    stump_edge: 0.0,
+    stump_feather: 0.0,
+    sweep_wave: 0.0,
+    paper_knee: 0.0,
 };
 
 /// Every declared medium.
@@ -2068,6 +2315,9 @@ mod tests {
         assert!(PASTEL.chalk > 0.0 && PASTEL.chalk <= 1.0 && PASTEL.side > 0.0 && PASTEL.side <= 1.0 && PASTEL.blend > 0.0 && PASTEL.blend <= 1.0 && PASTEL.skin > 0.0 && PASTEL.skin <= 1.0 && PASTEL.carnation > 0.0 && PASTEL.carnation <= 1.0 && PASTEL.small > 0.0 && PASTEL.anchor > 0.0 && PASTEL.trim > 0.0);
         for m in ALL.iter().filter(|m| m.name != "pastel") {
             assert_eq!([m.chalk, m.side, m.blend, m.skin, m.carnation, m.small, m.anchor, m.trim, m.small_min], [0.0; 9], "{} has no pastel layer", m.name);
+            if m.name != "charcoal" {
+                assert_eq!([m.paper, m.erase, m.touch, m.velvet, m.paper_top, m.sweep, m.stump, m.dust, m.stump_edge, m.stump_feather, m.sweep_wave, m.paper_knee], [0.0; 12], "{} has no charcoal layer", m.name);
+            }
         }
     }
 

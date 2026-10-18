@@ -109,6 +109,31 @@ plakat paint from photo.png --medium pastel --plan pastel.hjson -o out-pastel.pn
 plakat paint from photo.png --medium charcoal --palette sumi \
     --contour 0.3 --granulate 0.35 -o out-charcoal.png
 
+# A stick of charcoal on white paper (7.8.0, in development): the paper is the light — every mark in the
+# black alone, laid only where the sheet is lighter than the picture asks, lifted with an eraser where it went
+# darker; the pressure follows the value, the darkest share one velvet black; the dust settles into the
+# tooth; the flat passages in calm sweeps on an arm's arc; after the finest pass the darks rubbed with a
+# stump that holds at a contrast and fades toward a face. The pastel's stick, side and finger, borrowed.
+# The plan:
+#
+#   medium: charcoal           palette: sumi            style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 1.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          min_brush: 3.0
+#   dry: 1.0                   pickup: 0.0              bleed: 0.0              wash_in: 0.0      wet_cap: 0.2
+#   scumble: 0.0               deplete: 0.3             granulate: 0.0          contour: 0.0
+#   chalk: 1.0                 side: 0.5                blend: 0.6              skin: 0.5         sfumato: 0.7
+#   small: 400                 small_min: 100           anchor: 0.15            trim: 0.5
+#   hatch: 0.6                 cross: 30                span: 0.6               edge: 0.6         umbra: 1.0
+#   solid: 1.0                 loose: 0.15              lost: 0.0
+#   paper: 1.0                 erase: 0.6               touch: 0.6              velvet: 0.08
+#   paper_top: 1.0             paper_knee: 0.5          dust: 0.85
+#   sweep: 0.9                 sweep_wave: 4.0          stump: 0.5              stump_edge: 0.6   stump_feather: 1.0
+#   (dry, no pickup, no bleed: a replay to the bit; deplete 0.3 — at the pastel's 1.5 a long black mark faded
+#   to grey on the white sheet; contour 0 — the line pass drew every hair and ripple as a black worm)
+#
+plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charcoal.png
+
 # ── ACRYLIC ──────────────────────────────────────────────────────────────────
 # Opaque plastic colour in layers, each dry before the next: a thin wash block-in, flat crisp-edged marks on
 # top, a dry-brush finish and a loose hand off the faces, thick accent dabs at the sharp contrasts; darkens on

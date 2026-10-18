@@ -10,6 +10,30 @@ per-cycle commits carry the rationale + before/after.
 
 ## What's new in 7.8.0 — in development
 
+### `plakat paint`
+
+- **`--medium charcoal` is a stick of charcoal on white paper: the paper is the light, the stump the dark.**
+  The pastel's stick on the tooth, its side and its finger, borrowed through the plan in a single black, and
+  new mechanisms, each a plan key and 0 in every other medium (all of them byte-identical). **Paper**
+  (`paper`): charcoal only darkens — a mark goes where the sheet is still lighter than the picture asks, in
+  the darkest pigment alone, charged for the residual over what is there (solved on a scrap of the same
+  stroke; the overlap of a pass's marks counted as 1.4 in optical density); where it is already as dark,
+  nothing. **Erase** (`erase`): where the sheet went darker than the lights ask, a kneaded-eraser lift — a
+  wipe record whose strength takes the film back to the value. **Touch** (`touch`): the pressure follows the
+  value, a light tone a light touch on the raised grain. **Velvet** (`velvet`): the darkest perceived share one
+  black at a full press. **Paper top** (`paper_top`): the picture's light end is the paper (the lift capped
+  at ×1.25 and weighted toward the lights, so a night stays a night). **Paper knee** (`paper_knee`): the top of
+  the curve bent toward the paper in a light picture — snow is paper with a touch of grain. **Dust** (`dust`,
+  in the score's header): a hollow the stick's reach misses takes a share of the reach's deposit — the
+  hollows below the reach had stayed white under every layer, specks across a grey blanket. **Sweep**
+  (`sweep`) and **sweep wave** (`sweep_wave`, degrees): the flat passages off the subject in horizontal
+  side-of-the-stick sweeps turned by a slow wave — an arm's arc, not a ruler. **Stump** (`stump`): after the
+  finest pass the dark masses and the flat passages rubbed with a stump, holding back at a perceived contrast
+  (`stump_edge`) and fading toward a face and the hair, crossing a lost edge of the silhouette and stopped by
+  a found one (`stump_feather`). The profile's line pass is a plan key now (`contour`; it drew every hair and
+  ripple as a black worm). The thresholds read the perceived (gamma) range — 8 % of the linear range is an
+  sRGB value of about 80. Every score replays to the bit.
+
 ## What's new in 7.7.0 — Pastel: chalk on a toothed paper, laid with the stick's side and rubbed with a finger
 
 ### `plakat paint`

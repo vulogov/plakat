@@ -334,16 +334,54 @@ anchor: 0.15
 trim: 0.5
 ```
 
-### Charcoal — `medium: charcoal`  🎯 *dramatic soft black, smudgy*
+### Charcoal — `medium: charcoal`  🎯 *a stick of charcoal on white paper: the paper is the light, the stump the dark (7.8.0)*
 Rich near‑monochrome black, **smudgy** graded tones, drawn **and** shaded; lift highlights from the paper.
-- Defaults: `chroma 0.40` · `bleed 0.30` (smudge) · `contour 0.30` (draws too) · `granulate 0.35` · `lift 0.60`.
-- Tune: `bleed` up for softer smudging; `contour` up for stronger drawn lines; `palette: sumi`.
+From 7.8.0 the medium is a drawing: the pastel's stick on the tooth (`chalk`, `side`, the finger `blend`)
+in a single black, and the light left to the paper:
+- **Paper** (`paper`, 0..1): charcoal only darkens. A mark goes where the sheet is still lighter than the
+  picture asks, in the darkest pigment alone, charged for the residual over what is already there (the charge
+  solved on a scrap of the same stroke, the overlap of a pass's marks counted); where the sheet is already as
+  dark, nothing is laid.
+- **Erase** (`erase`, 0..1): where the sheet went darker than the picture's lights ask, the mark is a lift — a
+  kneaded eraser, a wipe record whose strength takes the film back toward the value (in the upper two thirds
+  of the perceived range, off the block-in).
+- **Touch** (`touch`, 0..1): the pressure follows the value — a light tone a light touch on the raised grain,
+  a dark one a full press into the hollows (`0.38 + 0.6·dark^0.7`, by this share).
+- **Velvet** (`velvet`, share of the perceived range): the darkest share one velvet black — the darkest pigment
+  itself at a full press.
+- **Paper top** (`paper_top`, 0..1): the picture's light end (its 95th percentile) is the paper, so a
+  near-white ground stays bare paper; the lift at most ×1.25 and weighted by the square of the value's share
+  of the light end (a night's light end is itself dark). **Paper knee** (`paper_knee`, 0..1): the top of the
+  curve bent toward the paper — the upper two fifths of the perceived range pulled toward it by a smoothstep,
+  in a light picture only — so a broad light mass (snow) is the paper with a touch of grain.
+- **Dust** (`dust`, 0..1, in the score's header): under the `chalk`, a hollow the stick's reach misses still
+  takes this share of the reach's deposit — the charcoal's dust settling into the tooth. A light touch keeps
+  the grain, a pressed half-tone fills it (without it the hollows below the reach stayed white under every
+  layer: white specks across a grey blanket and the snow).
+- **Sweep** (`sweep`, 0..1): on a flat passage off the subject and the faces the flow is turned onto the
+  horizontal, by this share of its flatness — the sky in calm side-of-the-stick sweeps. **Sweep wave**
+  (`sweep_wave`, degrees): the swept flow turned by a slow noise across a sixth of the sheet — an arm's arc.
+- **Stump** (`stump`, 0..1): after the finest pass the dark masses (by perceived darkness) and the flat
+  passages off the subject are rubbed with a stump — the finger's `smudge` records, `0.25·calm` strong — the
+  paper's specks in a dark passage filled. **Stump edge** (`stump_edge`, 0..1): it holds back where the
+  perceived local contrast stands at a finger's reach (fully at a gamma range of 0.12) — a lapel against the
+  dark kept. **Stump feather** (`stump_feather`, 0..1): its stop at a face and the hair is soft (their mask
+  blurred over this share of a finger), and it may cross the subject's silhouette where the picture has no
+  edge of its own — a lost edge blended, a found one kept.
+- **Contour** (`contour`): a plan key from 7.8.0 (the profile's line pass was not one); 0 in the charcoal plan.
+- Defaults: `paper 1.0` · `erase 0.6` · `touch 0.6` · `velvet 0.08` · `paper_top 1.0` · `paper_knee 0.5` ·
+  `dust 0.85` · `sweep 0.9` · `sweep_wave 4` · `stump 0.5` · `stump_edge 0.6` · `stump_feather 1.0`; every
+  other medium has them at 0. The recommended plan is in `PAINT_EXAMPLES.md`.
+- Tune: `stump` up for softer, velvet darks; `stump_edge` up to keep more of the figures in a night scene;
+  `paper_knee` up for whiter lights; `dust` down for a grainier sheet; `sweep` down for a sky that follows its
+  clouds.
 
 ```hjson
 medium: charcoal
 palette: sumi
-bleed: 0.35
-contour: 0.4
+new: true
+paper: 1.0
+stump: 0.5
 ```
 
 ### Acrylic — `medium: acrylic`  🎯 *fast-dry, layered like the indirect oil, darkens on drying*
