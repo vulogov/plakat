@@ -265,16 +265,73 @@ bleed: 0.2
 define: 0.7
 ```
 
-### Pastel — `medium: pastel`  🎯 *soft, chalky, high-chroma, blendable*
-Chalky opaque strokes, **high chroma**, laid as **broken colour** and blended where they cross; matte, slight
-tooth grain.
-- Defaults: `chroma 1.15` · `broken 0.40` · `granulate 0.25` · `pickup 0.40` · `impasto 0.10` · matte (`sheen 0`).
-- Tune: `broken` up for more shimmer; `pickup` up for softer blends; `chroma` for vividness.
+### Pastel — `medium: pastel`  🎯 *soft pastel on a toothed paper: chalk, the stick's side, the finger (7.7.0)*
+Chalky opaque marks, **high chroma**, laid as **broken colour**; matte. From 7.7.0 the medium is a stick on a
+toothed sheet, built in layers:
+- **Chalk** (`chalk`): the deposit at a pixel is keyed to the paper's grain against the mark's **pressure** — a
+  light touch reaches only the raised fibres and the hollows keep the sheet's colour, a hard press fills them —
+  and to how **full** the tooth already is (the filled hollows count as reached; past three fifths full the
+  chalk no longer holds and slides over what is there). The layers build as pastel does: the first broken on
+  the grain, the later filling it, the last barely taking. The medium's, in the score's header.
+- **The side of the stick** (`side`): on the broad passes, off the faces and the hair, this share of the marks
+  (the key's share on the block-in, falling with the ladder) are wide flat sweeps at a light touch —
+  `1 + 0.6·side` of the width, the stick's facets as streaks, full width to the end, straighter, `1 − 0.5·side`
+  of the pressure (the chalk catches the raised grain only), `1 − 0.3·side` of the charge, dry, no pickup.
+- **The finger** (`blend`): after each pass of the broad half of the ladder the **calm** passages (a sky, a
+  sea, a wall; the subject at three tenths, never a face or the hair) are rubbed along the flow — the
+  underpainting blended, the fine strokes over it left discrete — a smudge with no pigment of its own that
+  swaps a share of the paint under it with what it carries, there and back, so the marks there fuse into one
+  soft tone and nothing is added or removed. Every cell of the finger's width is rubbed by its calm, a light
+  touch (up to `0.08·calm` of the paint moved on the ground, `0.25·calm` on a face), the finger's ends soft,
+  its path stopping at the picture's own edges as a mark does (it blends within a passage, never across a
+  silhouette, a hairline or a change of colour); each rub a `smudge` record in the pass's stage, replayed to the bit.
+- **The skin** (`skin`): the finger on the **faces** — a face's calm passages (a cheek, a forehead; not the eyes,
+  which the range reads as busy) are rubbed after the face's passes — the finest too, the skin alone — by this
+  share of their flatness, the rub kept inside the face, so the skin's chalky lights fuse into modelling and
+  only the features keep their marks. The finger has a size of its own (a fortieth of the sheet's short side)
+  whatever the stick of the pass. Needs `blend`.
+- **Carnation** (`carnation`): the flesh in **warm sticks** — on a face (the hair apart) a mark's mixture is
+  solved over the palette's warm and neutral pigments alone (a pigment cold in CIELAB, a* or b* below −6, is
+  left in the box), so a half-tone is darkened with an umber or a black and never greyed with the sea's teal;
+  and the face's lights are lifted along their own hue, the chroma kept, instead of toward white — a Naples
+  yellow over the cheek, not a chalky grey. A face's glints too are lifted along their hue.
+- **Small** (`small`, px): a face whose extent (the face detector's box, not the soft focal mask) is under
+  this is drawn at its own scale, by `k = 1 − extent/small`: the marks narrower, the hatching thinned and one
+  way along the form (no cross turn), the half-tones held near the local tone, more of it blended. A portrait
+  is untouched. **Small's floor** (`small_min`, px): a crowd's face under it — a feature the width of the
+  stick — is left to the plain ladder (`small`, `anchor`, `trim` and the warm glint off).
+- **Anchor** (`anchor`, 0..1): on a small face the structural darks — the eyes, the nostrils, the mouth's
+  line, the darkest share of the tones around a mark — are neither held to the local tone nor blended, and
+  the blending falls off with the local contrast, so a lip keeps a dry stroke while a cheek is fused.
+- **Trim** (`trim`, 0..1): the face is the detector's box **cut by the figure** (the subject matte), and the
+  ground's marks keep this share of their brush's radius clear of it — the sea's broad marks no longer cross
+  a profile, and the box's corners off the head are ground, not flesh (both came through the tooth as a pale
+  grey-green crackle on the cheek).
+- Defaults: `chalk 1.0` · `side 0.5` · `blend 0.5` · `skin 0.5` · `carnation 1.0` · `small 250` · `anchor 0.15` · `trim 0.5` · `small_min 100` · `chroma 1.15` · `broken 0.40` · `granulate 0.15` ·
+  `pickup 0.40` · matte (`sheen 0`). The recommended plan is in `PAINT_EXAMPLES.md`.
+- Layer keys: `chalk`, `side`, `blend`, `skin`, `carnation`, `small`, `small_min`, `anchor`, `trim`, with the shared `dry`, `wash_in`, `wet_cap`, `scumble`, `skip`, `deplete`,
+  `granulate`, the tempera's hatch and dish keys for the final strokes and the limited box of sticks, and
+  `pickup`, `bleed` and
+  `min_brush` (plan keys from 7.7.0: a stick picks up nothing of the layer beneath and chalk does not run —
+  both 0 in the pastel plan; and the stick's own limit, 4 px on a 2048 sheet — a stick of chalk cannot make a
+  one-pixel mark, and the face tier's own floor fell below a pixel for a small face).
+- Tune: `side` up for a broader, grainier underlayer; `blend` up for softer skies and walls; `chalk` down for a
+  smoother, brush-like mark.
 
 ```hjson
 medium: pastel
-style: fidelity
-broken: 0.45
+palette: image
+new: true
+dry: 1.0
+wash_in: 0.0
+chalk: 1.0
+side: 0.6
+blend: 0.6
+carnation: 1.0
+small: 400
+small_min: 100
+anchor: 0.15
+trim: 0.5
 ```
 
 ### Charcoal — `medium: charcoal`  🎯 *dramatic soft black, smudgy*
@@ -472,7 +529,7 @@ hotspot: 0.2
 | pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · graphite point: thin grey directional strokes, its own grey | reserved | sumi (always) |
 | black-pencil  | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · the graphite mark with a soft dark point | reserved | sumi (always) |
 | tempera       | 0.90 | 0.03  | 0.05   | 0.12    | 0.95   | 0.00      | 0.07      | 0.05  | 0.30 | 0.20   | 0.00    | continuous · dry layers on a gesso panel: a covering wash block-in, the restatements hatched in straight lines turned off the form by steps, long on the flat and short on the busy, parallel to the contours, solid in the darks, the warm flesh over verdaccio, the tones in dithered dishes, the lights hatched in and the pure lights set dry and raised, the calm passages soft veils, the sheet begun on a bole of the local shadow tone, the broad mark's charge ramped along its path, the darkest dish continuous | pigment  | verdaccio |
-| pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous | pigment  | split-primary |
+| pastel        | 0.90 | 0.10  | 0.40   | 0.10    | 1.15   | 0.00      | 0.25      | 0.00  | 0.50 | 0.40   | 0.00    | continuous · a stick of chalk on the tooth (a light touch on the raised grain, a hard press in the hollows, a full tooth sliding), the broad passes with the stick's side, the calm passages rubbed with a finger | pigment  | split-primary |
 | charcoal      | 0.80 | 0.30  | 0.20   | 0.00    | 0.40   | 0.00      | 0.35      | 0.00  | 0.60 | 0.00   | 0.30    | continuous | reserved | sumi |
 | acrylic       | 1.00 | 0.00  | 0.05   | 0.30    | 1.05   | −0.05     | 0.00      | 0.20  | 0.00 | 0.15   | 0.00    | continuous · a synthetic flat, each layer dry before the next, a wash block-in, a dry-brush finish | pigment  | split-primary |
 

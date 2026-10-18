@@ -1628,6 +1628,15 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bole = plan.medium.bole;
     params.ramp = plan.medium.ramp;
     params.umbra = plan.medium.umbra;
+    params.brush.chalk = plan.medium.chalk;
+    params.side = plan.medium.side;
+    params.blend = plan.medium.blend;
+    params.skin = plan.medium.skin;
+    params.carnation = plan.medium.carnation;
+    params.small = plan.medium.small;
+    params.anchor = plan.medium.anchor;
+    params.trim = plan.medium.trim;
+    params.small_min = plan.medium.small_min;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2148,6 +2157,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.armature_face.is_none() {
             a.armature_face = plan.armature_face;
         }
+        // The plan's smallest brush stands in for the CLI default (the arg has no "unset").
+        if let Some(mb) = plan.min_brush {
+            if (a.min_brush - 2.0).abs() < 1e-6 {
+                a.min_brush = mb.clamp(1.0, 64.0);
+            }
+        }
         if a.armature_body.is_none() {
             a.armature_body = plan.armature_body;
         }
@@ -2396,6 +2411,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.bole = m.bole;
         params.ramp = m.ramp;
         params.umbra = m.umbra;
+        params.brush.chalk = m.chalk;
+        params.side = m.side;
+        params.blend = m.blend;
+        params.skin = m.skin;
+        params.carnation = m.carnation;
+        params.small = m.small;
+        params.anchor = m.anchor;
+        params.trim = m.trim;
+        params.small_min = m.small_min;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2453,6 +2477,17 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.bole { params.bole = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.ramp { params.ramp = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.umbra { params.umbra = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.chalk { params.brush.chalk = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.side { params.side = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.blend { params.blend = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.skin { params.skin = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.carnation { params.carnation = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.small { params.small = v.clamp(0.0, 4096.0); }
+        if let Some(v) = pl.anchor { params.anchor = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.trim { params.trim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.small_min { params.small_min = v.clamp(0.0, 4096.0); }
+        if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
     }
     // Reserve threshold override (`--reserve`): raise → close white holes in light passages, lower → more paper.
     if let Some(rv) = a.reserve {
@@ -2980,6 +3015,19 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.hair_mask = Some(m);
     }
 
+    // TRIM (see `MediumProfile::trim`): the face is the detector's box cut by the figure — the box's corners
+    // off the head are ground (the matte ramped from three to seven tenths; the key's share is the clearance, in the painter).
+    // (Not for a crowd's faces — see `MediumProfile::small_min`.)
+    let crowd = params.small_min > 0.0 && face_extent.map_or(false, |e| e < params.small_min);
+    if params.trim > 0.0 && !crowd {
+        if let (Some(fm), Some(sm)) = (params.face_mask.as_mut(), params.subject_mask.as_deref()) {
+            if fm.len() == sm.len() {
+                for (f, s) in fm.iter_mut().zip(sm) {
+                    *f *= ((s - 0.3) / 0.4).clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
     // DIAGNOSTIC (`PLAKAT_PAINT_MASKS=<dir>`): write the planes as found — the focal (face) mask and the subject
     // matte — as grey PNGs, to see WHERE a plane ends when a picture shows its edge. Never changes the painting.
     if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
@@ -3043,6 +3091,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         let body_side = params.armature_body_side.unwrap_or(bg_side);
         // A face's extent is the detector's own box (heads standing close merge into one region of a mask).
         let face_extent = face_extent.or_else(|| params.face_mask.as_deref().and_then(|m| painter::region_extent(m, w, h)));
+        params.face_extent = face_extent;
         if let Some(side) = tier(painter::NEW_FACE_ACROSS, face_extent, body_side) {
             params.armature_face_side = Some(side);
         }

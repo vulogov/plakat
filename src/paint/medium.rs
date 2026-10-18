@@ -410,6 +410,72 @@ pub struct MediumProfile {
     /// picture is there — built up in veils, its planks dissolved — as the sky is: a lamp-raked gravel
     /// foreground is one dark mass, not a rake of filbert marks.
     pub umbra: f32,
+    /// CHALK (0..1, 0 = off): the mark is a stick of CHALK on a toothed paper (see `BrushConfig::chalk`) — the
+    /// deposit keyed to the paper's grain against the mark's pressure (a light touch reaches only the raised
+    /// fibres and the hollows keep the sheet's colour, a hard press fills them) and to how full the tooth is
+    /// (past three fifths full the chalk slides over what is there), so the layers build as pastel does: the
+    /// first ones broken on the grain, the later ones filling it, the last barely taking. The medium's, in
+    /// the score's header.
+    pub chalk: f32,
+    /// THE SIDE OF THE STICK (0..1, 0 = off): on the broad passes, off the faces and the hair, this share of the
+    /// marks (the key's share on the block-in, falling with the ladder) are laid with the stick's SIDE — a
+    /// wide flat sweep (`1 + 0.6·side` of the width, the stick's facets as streaks, full width to the end,
+    /// straighter by half the key) at a light touch (`1 − 0.5·side` of the pressure, so the chalk catches the
+    /// raised grain only), `1 − 0.3·side` of the charge, dry, no pickup. The pressure in the record.
+    pub side: f32,
+    /// THE FINGER (0..1, 0 = off): after each pass of the broad half of the ladder the CALM passages are
+    /// rubbed — a smudge along the flow with no pigment of its own that moves a share of the paint under it
+    /// toward what it carries (see `Stroke::smudge`), so the underpainting's broad marks fuse into soft masses
+    /// (a sky, a wall, a still water) while the fine passes over them stay discrete strokes and the busy
+    /// passages, the faces and the hair keep their marks. The finger a fortieth of the sheet's short side;
+    /// every cell of it rubbed by its calm (the key's share of its flatness, the subject at three tenths),
+    /// `0.08·calm` strong, stopping at the picture's edges. Each rub a `smudge` record, replayed to the bit.
+    pub blend: f32,
+    /// THE SKIN (0..1, 0 = off): the finger on the FACES — a face's calm passages (a cheek, a forehead; not the
+    /// eyes, the nose, the mouth, which the range reads as busy) are rubbed after the face's broad passes by
+    /// this share of their flatness — after the finest pass too, the skin alone — the rub kept inside the
+    /// face (it never crosses the hairline or the silhouette), so the skin's lights and half-tones fuse into
+    /// modelling and only the busy features (the eyes, the nose, the mouth) keep their marks — the pastel
+    /// portrait's blended skin. Needs `blend`. Each rub a `smudge` record.
+    pub skin: f32,
+    /// CARNATION (0..1, 0 = off): the flesh in WARM sticks — on a face (the hair apart) a mark's mixture is
+    /// solved over the palette's warm and neutral pigments alone (a pigment whose masstone is cold in CIELAB,
+    /// a* or b* below −6 — a teal, a blue, a green — is left in the box), so a half-tone is darkened with an
+    /// umber or a black and never greyed with the sea's teal; and the LIGHTS on a face are lifted along their
+    /// own hue (the lightness raised, the chroma kept by all but three tenths of the lift) instead of toward
+    /// white — a Naples yellow over the cheek, not a chalky grey. The key's share: at 1 the cold pigments are
+    /// shut out and the lift is all hue; between, the two mixtures are blended by it.
+    pub carnation: f32,
+    /// SMALL (px, 0 = off): the SMALL-DETAIL threshold — a face whose extent (the detector's median face
+    /// width) is under this many pixels is handled at its own scale, by `k = 1 − extent/small`: its marks
+    /// narrower (`1 − 0.5·k` of the width), its hatching thinned (`1 − k`) and never turned off the form (the
+    /// cross turn taken away by `k` on the face, the strokes one way along the flow — a cross-hatched net on a
+    /// small face was a scale of grit), its half-tones held to the local tone (the mark's CIELAB lightness
+    /// clamped within `6 + 24·(1 − k)` of the picture's local mean there — a dark stroke across a lit cheek
+    /// read as a cold scar), and more of it blended (the sfumato's flat gate widened by `1 + 2k`, its share
+    /// raised halfway to one by `k`). A large face (a portrait) is untouched.
+    pub small: f32,
+    /// ANCHOR (0..1, 0 = off): on a SMALL face the structural darks are not softened — the eyes, the
+    /// nostrils, the line of the mouth. A mark whose tone falls in this share of the darkest values around
+    /// it (below the local mean by the matching normal quantile of the local spread, measured over the same
+    /// box as `small`'s mean) is not held to the local tone and not thinned by the sfumato; and the
+    /// sfumato's widened gate and raised share fall off with the local contrast, so a sharp step (a lip,
+    /// the eye's slit, the jaw's edge) keeps its dry stroke and only the cheek and brow are blended.
+    pub anchor: f32,
+    /// TRIM (0..1, 0 = off): the face is the detector's box CUT BY THE FIGURE — the face mask multiplied by
+    /// the subject matte (ramped from three to seven tenths), so the box's corners off the head (the sea in
+    /// front of a profile) are ground, not flesh — and the ground's marks keep CLEAR of the face: within this
+    /// share of the pass's brush radius around it a ground mark is not seeded and its path stops. Untrimmed,
+    /// the box's corners took the face's tier and its warm sticks (the sea's teal mixed from the warm
+    /// pigments alone was a grey-olive slab under the cheek), and the sea's broad block-in marks ran their
+    /// whole length across the cheek; the chalk's tooth let both through every later layer as a pale
+    /// grey-green crackle. (A full radius left a halo of ground around the profile; half closes it.)
+    pub trim: f32,
+    /// SMALL'S FLOOR (px, 0 = none): a face under this extent is a crowd's face — a few marks the size of
+    /// the stick, which a softening only wipes out — and is left to the plain ladder: `small`, `anchor`,
+    /// `trim` and the warm glint stay off for the picture (the festival's 73 px singers lost their mouths
+    /// and eyes to the held tone and the blending, and the clearance tore the hat's edge).
+    pub small_min: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -492,6 +558,15 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -567,6 +642,15 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -642,6 +726,15 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -758,6 +851,15 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -842,6 +944,15 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -921,6 +1032,15 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -996,6 +1116,15 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1074,6 +1203,15 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1149,6 +1287,15 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1227,6 +1374,15 @@ pub const DURER: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -1308,6 +1464,15 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     bole: 1.0,
     ramp: 0.7,
     umbra: 1.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1386,6 +1551,15 @@ pub const PENCIL: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -1466,6 +1640,15 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -1541,6 +1724,15 @@ pub const PASTEL: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 1.0,  // the stick on the tooth
+    side: 0.5,   // the broad passes with the stick's side
+    blend: 0.5,  // the calm passages rubbed with a finger
+    skin: 0.5,   // the faces blended with a finger
+    carnation: 1.0, // the flesh in warm sticks
+    small: 250.0, // a face under 250 px drawn at its own scale
+    anchor: 0.15, // the darkest sixth of a small face kept crisp
+    trim: 0.5, // the face cut by the figure, the ground kept half a brush clear
+    small_min: 100.0, // a crowd's face under 100 px left to the plain ladder
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -1616,6 +1808,15 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -1697,6 +1898,15 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     bole: 0.0,
     ramp: 0.0,
     umbra: 0.0,
+    chalk: 0.0,
+    side: 0.0,
+    blend: 0.0,
+    skin: 0.0,
+    carnation: 0.0,
+    small: 0.0,
+    anchor: 0.0,
+    trim: 0.0,
+    small_min: 0.0,
 };
 
 /// Every declared medium.
@@ -1852,6 +2062,12 @@ mod tests {
         assert_eq!(TEMPERA.mark.role, None, "the tempera paints with the ladder's own brushes");
         for m in ALL.iter().filter(|m| m.name != "tempera") {
             assert_eq!([m.hatch, m.verdaccio, m.dishes, m.lights, m.cross, m.dither, m.solid, m.flesh, m.span, m.edge, m.glint, m.smooth, m.bole, m.ramp, m.umbra], [0.0; 15], "{} has no tempera layer", m.name);
+        }
+        // The pastel (7.7.0) lays its own: the chalk on the tooth, the side of the stick, the finger — and no
+        // other medium has them.
+        assert!(PASTEL.chalk > 0.0 && PASTEL.chalk <= 1.0 && PASTEL.side > 0.0 && PASTEL.side <= 1.0 && PASTEL.blend > 0.0 && PASTEL.blend <= 1.0 && PASTEL.skin > 0.0 && PASTEL.skin <= 1.0 && PASTEL.carnation > 0.0 && PASTEL.carnation <= 1.0 && PASTEL.small > 0.0 && PASTEL.anchor > 0.0 && PASTEL.trim > 0.0);
+        for m in ALL.iter().filter(|m| m.name != "pastel") {
+            assert_eq!([m.chalk, m.side, m.blend, m.skin, m.carnation, m.small, m.anchor, m.trim, m.small_min], [0.0; 9], "{} has no pastel layer", m.name);
         }
     }
 
