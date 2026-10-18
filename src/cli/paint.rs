@@ -1649,6 +1649,10 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.stump_feather = plan.medium.stump_feather;
     params.sweep_wave = plan.medium.sweep_wave;
     params.paper_knee = plan.medium.paper_knee;
+    params.brush.rewet = plan.medium.rewet;
+    params.chalk_tint = plan.medium.chalk_tint;
+    params.flat_brush = plan.medium.flat_brush;
+    params.liner = plan.medium.liner;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2150,6 +2154,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if a.granulate.is_none() {
             a.granulate = plan.granulate;
         }
+        if a.saliency.is_none() {
+            a.saliency = plan.saliency;
+        }
+        if a.focus_detail.is_none() {
+            a.focus_detail = plan.focus_detail;
+        }
         if let Some(n) = plan.ladder_keep {
             plan_ladder_keep = Some(n);
         }
@@ -2444,6 +2454,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.stump_feather = m.stump_feather;
         params.sweep_wave = m.sweep_wave;
         params.paper_knee = m.paper_knee;
+        params.brush.rewet = m.rewet;
+        params.chalk_tint = m.chalk_tint;
+        params.flat_brush = m.flat_brush;
+        params.liner = m.liner;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2523,6 +2537,10 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.stump_feather { params.stump_feather = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sweep_wave { params.sweep_wave = v.clamp(0.0, 30.0); }
         if let Some(v) = pl.paper_knee { params.paper_knee = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.rewet { params.brush.rewet = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.chalk_tint { params.chalk_tint = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.flat_brush { params.flat_brush = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.liner { params.liner = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
     }
