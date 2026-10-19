@@ -641,6 +641,15 @@ pub struct MediumProfile {
     /// read by the bone's chain length off the focus. Unset, the far ground's debris drew the eye as strongly as
     /// the figure.
     pub ma_focus: f32,
+    /// MA FLOW (0..1, 0 = off): the attention `ma_focus` reads spread from the focus by an edge-stopping
+    /// diffusion instead of an even blur — a recursive filter run along the rows and the columns (the domain
+    /// transform), each step costing more the more the picture's value changes across it, so the halo runs
+    /// along a hill's line or the sea's edge and stops at a contrasting boundary — and the subject's own
+    /// silhouette (the matte and the segmenter's, not the detectors' boxes) kept at full attention over it, so
+    /// a thin limb at the edge of the focus is not lifted with the ground. Unset, the halo was a round blur of
+    /// the subject's mask, a box around a figure (a detected coat's box) a dark island in the landscape, and a
+    /// cat's hind paws paled with the ground.
+    pub ma_flow: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -765,6 +774,7 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -882,6 +892,7 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -999,6 +1010,7 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1157,6 +1169,7 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1283,6 +1296,7 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1404,6 +1418,7 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1521,6 +1536,7 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1641,6 +1657,7 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     bone_end: 0.5, // the tome where a line meets another, the harai where it fades
     sumi_focus: 0.3, // the black masses only where the eye goes
     ma_focus: 0.3, // the empty space reaching in toward the focus
+    ma_flow: 0.5, // the focus's halo running along the picture's lines
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1758,6 +1775,7 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1878,6 +1896,7 @@ pub const DURER: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2001,6 +2020,7 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -2121,6 +2141,7 @@ pub const PENCIL: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -2243,6 +2264,7 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -2360,6 +2382,7 @@ pub const PASTEL: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2477,6 +2500,7 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2600,6 +2624,7 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     bone_end: 0.0,
     sumi_focus: 0.0,
     ma_focus: 0.0,
+    ma_flow: 0.0,
 };
 
 /// Every declared medium.
@@ -2768,7 +2793,7 @@ mod tests {
                 assert_eq!([m.rewet, m.chalk_tint, m.flat_brush, m.liner], [0.0; 4], "{} has no gouache layer", m.name);
             }
             if m.name != "japanese-ink" {
-                assert_eq!([m.tsuke, m.ma, m.kasure, m.nijimi, m.turn, m.yohaku, m.bone, m.boneless, m.hake, m.join, m.bone_wind, m.bone_dot, m.bone_scatter, m.bone_coherence, m.bone_end, m.sumi_focus, m.ma_focus], [0.0; 17], "{} has no sumi layer", m.name);
+                assert_eq!([m.tsuke, m.ma, m.kasure, m.nijimi, m.turn, m.yohaku, m.bone, m.boneless, m.hake, m.join, m.bone_wind, m.bone_dot, m.bone_scatter, m.bone_coherence, m.bone_end, m.sumi_focus, m.ma_focus, m.ma_flow], [0.0; 18], "{} has no sumi layer", m.name);
             }
         }
     }

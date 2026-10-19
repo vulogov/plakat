@@ -50,7 +50,10 @@ per-cycle commits carry the rationale + before/after.
   the ink pooling) where it stops against another line, a harai (narrowing to a hair) where it fades, the line
   drawn from its tome; **sumi focus** (`sumi_focus`): the black register only where the eye goes; **ma focus**
   (`ma_focus`): the attention `ma` reads, the subject in it and blurred, narrowed to the focus, so the far
-  ground's debris dissolves into the paper and the figure stands alone.
+  ground's debris dissolves into the paper and the figure stands alone; **ma flow** (`ma_flow`): that halo
+  spread by an edge-stopping diffusion (the domain transform's recursive filter guided by the picture's value)
+  from the subject's silhouette alone — the matte and the segmenter's, not the detectors' boxes, which made a
+  dark island of a coat's box — and the silhouette kept whole over it.
 
 ## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
 

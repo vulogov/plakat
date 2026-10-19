@@ -177,7 +177,7 @@ plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charc
 #   tsuke: 0.6                 ma: 0.8                  kasure: 0.5             nijimi: 0.8       turn: 0.6
 #   yohaku: 0.7                sumi_dark: 0.03          bone: 0.6               boneless: 3       hake: 1.0
 #   join: 1.0                  bone_wind: 0.6           bone_dot: 0.6           bone_scatter: 0.7
-#   bone_coherence: 0.7        bone_end: 0.6            sumi_focus: 0.5         ma_focus: 0.4
+#   bone_coherence: 0.7        bone_end: 0.6            sumi_focus: 0.5         ma_focus: 0.4     ma_flow: 0.6
 #   (commit_shadows 0 and sumi_dark 0.03 — at the profile's eighth a woman in a dark coat was one black shape;
 #   contour 0 — the line pass drew worms; skip 0 and loose 0 — square textures and a trowel's smears; the bone
 #   and the hake — without them the ruins were bars crossing at every angle, no line; hotspot 0 — its white
@@ -189,7 +189,8 @@ plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charc
 #   the gradients around it point every way is texture, not a line; bone_end 0.6 — the tome where a line meets
 #   another, the harai where it fades; sumi_focus 0.5 and ma_focus 0.4 — the ruins' debris and the hillside's
 #   near ground drew the eye as strongly as the figure: off the focus the black is left to the washes and the
-#   wash to the paper)
+#   wash to the paper; ma_flow 0.6 — the focus's round halo, a detected coat's box in it, was a dark island
+#   round the woman and paled the cat's paws: the halo runs along the picture's lines, the silhouette whole)
 #
 plakat paint from photo.png --medium japanese-ink --plan japanese-ink.hjson -o out-sumi.png
 

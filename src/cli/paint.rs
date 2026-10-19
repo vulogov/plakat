@@ -1670,6 +1670,7 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bone_end = plan.medium.bone_end;
     params.sumi_focus = plan.medium.sumi_focus;
     params.ma_focus = plan.medium.ma_focus;
+    params.ma_flow = plan.medium.ma_flow;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2492,6 +2493,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.bone_end = m.bone_end;
         params.sumi_focus = m.sumi_focus;
         params.ma_focus = m.ma_focus;
+        params.ma_flow = m.ma_flow;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2592,6 +2594,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.bone_end { params.bone_end = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_focus { params.sumi_focus = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.ma_focus { params.ma_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma_flow { params.ma_flow = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
@@ -2795,6 +2798,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 params.depth = Some(blurred.pixels().map(|p| p.0[0] as f32 / 255.0).collect());
                 params.haze = r.clamp(0.0, 1.0);
             }
+            params.silhouette_mask = Some(mask.clone());
             params.subject_mask = Some(mask);
         } else {
             found!(style("·").yellow(), "subject matte: no clear subject — skipping the body tier");
@@ -2866,6 +2870,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let cov = s.iter().filter(|&&m| m > 0.5).count();
             if cov > s.len() / 50 && cov < s.len() * 49 / 50 {
                 found!(style("·").dim(), "sam: precise subject mask ({}% foreground) — sharp silhouette", cov * 100 / s.len().max(1));
+                // The silhouette alone (see `PaintParams::silhouette_mask`): the matte and SAM, no boxes.
+                match params.silhouette_mask.as_mut() {
+                    Some(sm) if sm.len() == s.len() => {
+                        for (a, b) in sm.iter_mut().zip(&s) {
+                            *a = a.max(*b);
+                        }
+                    }
+                    _ => params.silhouette_mask = Some(s.clone()),
+                }
                 // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {

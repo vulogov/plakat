@@ -492,9 +492,16 @@ and the gouache's liner and focus, borrowed through the plan.
   1 + 4·key — so a passage of middling saliency (debris, a near ground) is lifted toward the paper with the
   periphery and the subject stands alone; the bone's chains off the focus must run longer by the same
   attention.
+- **Ma flow** (`ma_flow`, 0..1): the focus's halo spread by an edge-stopping diffusion instead of an even blur —
+  the domain transform's recursive filter along the rows and the columns, each step costing more the more the
+  picture's value (smoothed over a 256th of the sheet) changes across it, so the halo runs along a hill's line
+  or the sea's edge and stops at a contrasting boundary — seeded by the subject's silhouette alone (the matte
+  and the segmenter's, not the detectors' boxes: a coat's detected box was a dark island round the woman), and
+  that silhouette kept at full attention over it, so a thin limb at the edge of the focus (a cat's hind paws)
+  is not lifted with the ground. Read by `ma`, `sumi_focus` and the bone when `ma_focus` is set.
 - Defaults: `tsuke 0.6` · `ma 0.5` · `kasure 0.5` · `nijimi 0.4` · `turn 0.5` · `yohaku 0.6` · `bone 0.5` ·
   `boneless 2` · `hake 0.7` · `join 1` · `bone_wind 0.5` · `bone_dot 0.5` · `bone_scatter 0.5` ·
-  `bone_coherence 0.3` · `bone_end 0.5` · `sumi_focus 0.3` · `ma_focus 0.3`; every other medium has them at 0.
+  `bone_coherence 0.3` · `bone_end 0.5` · `sumi_focus 0.3` · `ma_focus 0.3` · `ma_flow 0.5`; every other medium has them at 0.
   The recommended plan is in `PAINT_EXAMPLES.md`.
 - No white: the plan sets `hotspot 0` (its dots of titanium were pale dashes on the ground — the light is the
   paper), and on paper the `liner` lays no line lighter than the sheet under it.
@@ -504,7 +511,8 @@ and the gouache's liner and focus, borrowed through the plan.
   up to keep only the smooth long contours, `bone_dot` up for more of the tufts as dots, 0 to drop them;
   `bone_coherence` up to keep the line off every textured ground, 0 to let it draw the grass; `bone_end` 0 for
   lines of one taper; `sumi_focus` up for black only on the subject; `ma_focus` up to dissolve more of the
-  ground into the paper, 0 for an even sheet.
+  ground into the paper, 0 for an even sheet; `ma_flow` up for a halo that hugs the picture's lines, 0 for a
+  round one.
 
 ```hjson
 medium: japanese-ink

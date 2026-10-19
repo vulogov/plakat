@@ -575,18 +575,23 @@ pub struct PaintParams {
     pub sumi_focus: f32,
     /// MA FOCUS (0..1, 0 = off): the attention `ma` reads narrowed to the focus (see `MediumProfile::ma_focus`).
     pub ma_focus: f32,
+    /// MA FLOW (0..1, 0 = off): the focus's halo spread along the picture's lines (see `MediumProfile::ma_flow`).
+    pub ma_flow: f32,
     /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
     /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
     pub sumi_dark: f32,
     /// The FACE's own extent (px) — the face detector's box, not the soft focal mask (whose extent is the
     /// head and shoulders' halo). `None`: read from the mask.
     pub face_extent: Option<f32>,
+    /// The subject's SILHOUETTE alone — the matte and the segmenter's precise mask, without the detectors'
+    /// boxes (a clothing box) that `subject_mask` unions in. Read by `ma_flow`; `None`: `subject_mask`.
+    pub silhouette_mask: Option<Vec<f32>>,
 }
 
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, sumi_dark: 0.0, face_extent: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -642,6 +647,43 @@ fn sobel(luma: &[f32], w: u32, h: u32) -> (Vec<f32>, Vec<f32>) {
 
 /// Separable box blur over an f32 field (radius `r` px, `2r+1` window), clamped at the borders. Cheap and
 /// good enough for smoothing the structure tensor.
+/// EDGE-STOPPING SPREAD (`ma_flow`): the recursive filter of the domain transform (Gastal & Oliveira) — three
+/// iterations of a left-right, right-left, top-down and bottom-up pass over `src`, each step's feedback
+/// `a^(1 + edge·σs/0.08·|Δguide|)` with `a = e^(−√2/σ_i)` and σ_i the iteration's share of `sigma` — so the
+/// field spreads about `sigma` pixels where the guide is flat and stops where it steps by 0.08 at `edge` 1.
+fn edge_spread(src: &[f32], guide: &[f32], w: usize, h: usize, sigma: f32, edge: f32) -> Vec<f32> {
+    let mut out = src.to_vec();
+    let k = edge * sigma / 0.08;
+    let n = 3;
+    for it in 0..n {
+        let si = sigma * 3f32.sqrt() * 2f32.powi(n - it - 1) / (4f32.powi(n) - 1.0).sqrt();
+        let a = (-(2f32.sqrt()) / si.max(1e-3)).exp();
+        let wgt = |g0: f32, g1: f32| a.powf(1.0 + k * (g1 - g0).abs());
+        for y in 0..h {
+            let row = y * w;
+            for x in 1..w {
+                let c = wgt(guide[row + x - 1], guide[row + x]);
+                out[row + x] += c * (out[row + x - 1] - out[row + x]);
+            }
+            for x in (0..w - 1).rev() {
+                let c = wgt(guide[row + x + 1], guide[row + x]);
+                out[row + x] += c * (out[row + x + 1] - out[row + x]);
+            }
+        }
+        for x in 0..w {
+            for y in 1..h {
+                let c = wgt(guide[(y - 1) * w + x], guide[y * w + x]);
+                out[y * w + x] += c * (out[(y - 1) * w + x] - out[y * w + x]);
+            }
+            for y in (0..h - 1).rev() {
+                let c = wgt(guide[(y + 1) * w + x], guide[y * w + x]);
+                out[y * w + x] += c * (out[(y + 1) * w + x] - out[y * w + x]);
+            }
+        }
+    }
+    out
+}
+
 fn box_blur(src: &[f32], w: u32, h: u32, r: i32) -> Vec<f32> {
     if r <= 0 {
         return src.to_vec();
@@ -3009,8 +3051,22 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
             // MA FOCUS (see `MediumProfile::ma_focus`): the subject taken in here and the whole blurred over a
             // forty-eighth of the sheet, so a subject mask's hard edge (a box around a figure) is a gradient
             // when the narrowed attention reaches the paper beside it.
-            let m: Vec<f32> = f.iter().enumerate().map(|(i, v)| v.max(p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0)).clamp(0.0, 1.0)).collect();
-            box_blur(&m, input.width(), input.height(), (input.width().max(input.height()) / 48).max(2) as i32)
+            let (w, h) = (input.width(), input.height());
+            let r = (w.max(h) / 48).max(2) as i32;
+            if p.ma_flow > 0.0 {
+                // MA FLOW (see `MediumProfile::ma_flow`): the silhouette alone seeds the focus, the halo spread
+                // along the picture's lines (its value smoothed over a two-hundred-and-fiftieth of the sheet, so
+                // a grass blade does not stop it and a hill's edge does), and the silhouette kept whole over it.
+                let sil = p.silhouette_mask.as_deref().or(p.subject_mask.as_deref());
+                let s_at = |i: usize| sil.and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let m: Vec<f32> = f.iter().enumerate().map(|(i, v)| v.max(s_at(i)).clamp(0.0, 1.0)).collect();
+                let guide = box_blur(&crate::paint::ink::value_map(input), w, h, (w.max(h) / 256).max(1) as i32);
+                let spread = edge_spread(&m, &guide, w as usize, h as usize, r as f32, p.ma_flow.clamp(0.0, 1.0));
+                spread.iter().enumerate().map(|(i, v)| v.max(s_at(i)).clamp(0.0, 1.0)).collect()
+            } else {
+                let m: Vec<f32> = f.iter().enumerate().map(|(i, v)| v.max(p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0)).clamp(0.0, 1.0)).collect();
+                box_blur(&m, w, h, r)
+            }
         } else {
             f
         }
@@ -5863,7 +5919,7 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
             let (v1, v2) = (value[at([q[0] + ux, q[1] + uy])], value[at([q[0] - ux, q[1] - uy])]);
             dark += 1.0 - v1.min(v2);
             let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-            a_sum += attn.map(|m| m[i]).unwrap_or(1.0).max(subj).clamp(0.0, 1.0);
+            a_sum += attn.map(|m| m[i]).unwrap_or(1.0).max(if p.ma_flow > 0.0 && p.ma_focus > 0.0 { 0.0 } else { subj }).clamp(0.0, 1.0);
             s_sum += subj;
             c_sum += coh.as_ref().map(|m| m[i]).unwrap_or(1.0);
         }
@@ -6323,7 +6379,8 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
                 continue;
             }
             if let Some(f) = focus {
-                let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0);
+                // (Under `ma_flow` the field holds the silhouette already — the subject mask's boxes left out.)
+                let subj = if p.ma_flow > 0.0 && p.ma_focus > 0.0 && attn.is_some() { 0.0 } else { p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0) };
                 if f.get(i).copied().unwrap_or(1.0).max(subj) < p.sumi_focus.clamp(0.0, 1.0) {
                     continue;
                 }
