@@ -101,6 +101,32 @@ pub struct BrushConfig {
     /// wetness and how empty it is — gouache's gum softens again under water (the wet canvas's pickup is
     /// `k_pickup`'s). In the header.
     pub rewet: f32,
+    /// TSUKE (0..1, 0 = off): tsuketate — the lanes across the width loaded from full (the side the path's
+    /// left hand is on) to `1 − 0.85·tsuke`: one dark edge, one pale. In the header.
+    pub tsuke: f32,
+    /// KASURE (0..1, 0 = off): the flying white — the lanes dropping out along the mark by a slow hash of
+    /// their own, by up to this share at its end. In the header.
+    pub kasure: f32,
+    /// NIJIMI (0..1, 0 = off): the ink feathering into the paper — the reach widened, the halo caught by the
+    /// paper's fibres. In the header.
+    pub nijimi: f32,
+    /// TURN (0..1, 0 = off): the width narrowed by up to `0.6·turn` where the path bends (fully at a right angle
+    /// over half a width each way) — the brush lifted on a turn. In the header.
+    pub turn: f32,
+    /// JOIN (0..1, 0 = off): the bristles' spread turned WITH the path over a window of `join·width` along it
+    /// (half a width each way at 1), so the stamps fan around a bend. Laid as a polyline, a mark's stamps are
+    /// square to each straight segment: at every bend a wedge of bare paper is left outside the corner and a
+    /// wedge is laid twice inside it, each as long as half the width — on a wide wash whose path has a control
+    /// point every 68 px, a pale sliver and a dark sliver across the band at every bend (the "broken glass"
+    /// panes and the pale dashes of a sumi-e's ground). A fine mark's wedges are under a pixel. And the swath laid
+    /// ONCE per pixel, each lane's path filled between its stamps: the lanes' pixels are rounded, so a stamp a
+    /// little turned from the last lands some of its lanes on the pixels the last one took and skips others — a
+    /// moiré of dark and bare arcs sweeping across every wide wash. And the swath a 4-CONNECTED FILL — each
+    /// lane's path from its last stamp, each stamp's run from the lane beside it — laid after the lane's gates:
+    /// rounded sample points alone are a lattice turned against the pixel grid, which misses a pixel here and
+    /// lands twice on another, and a pixel claimed by a lane that then laid nothing (the flying white, the
+    /// halo's gate) stayed bare — a lattice of white pinholes over every wash. In the header.
+    pub join: f32,
 }
 
 /// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
@@ -117,7 +143,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0 }
     }
 }
 
@@ -162,6 +188,28 @@ pub struct Stroke {
 }
 
 /// Resample a polyline to ~1px arc-length spacing so the brush stamps continuously.
+/// The pixels strictly between `a` and `b` along a 4-connected digital line, pushed onto `out` — none when the two
+/// are further apart than `max` in either axis (the lane jumped: a new mark, not a step). See `BrushConfig::join`.
+fn push_run(out: &mut Vec<(u32, u32)>, a: (i32, i32), b: (i32, i32), max: i32) {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let steps = dx.abs().max(dy.abs());
+    if steps < 1 || steps > max {
+        return;
+    }
+    let mut prev = a;
+    for s in 1..=steps {
+        let q = (a.0 + dx * s / steps, a.1 + dy * s / steps);
+        if q.0 != prev.0 && q.1 != prev.1 && q.0 >= 0 && prev.1 >= 0 {
+            // A diagonal step: the corner first, so the run is 4-connected.
+            out.push((q.0 as u32, prev.1 as u32));
+        }
+        if s < steps && q.0 >= 0 && q.1 >= 0 {
+            out.push((q.0 as u32, q.1 as u32));
+        }
+        prev = q;
+    }
+}
+
 fn densify(path: &[[f32; 2]]) -> Vec<[f32; 2]> {
     if path.len() < 2 {
         return path.to_vec();
@@ -204,7 +252,13 @@ impl Stroke {
         // spaced tine-lines (a fixed handful of bristles at a wide block-in radius reads as fork/rake marks, not a
         // brush). Each lane still keeps its own evolving load along the whole stroke, so dirty-brush pickup and
         // stroke-order harmonisation survive. Capped so a very wide stroke can't explode the inner loop.
-        let maxw = self.width0.max(self.width1).max(1.0);
+        // NIJIMI (see `BrushConfig::nijimi`): the reach widened by the bleed, more for a wetter mark.
+        let spread = if brush.nijimi > 0.0 { 1.0 + 0.8 * brush.nijimi.clamp(0.0, 1.0) * (0.3 + 0.7 * self.wetness.clamp(0.0, 1.0)) } else { 1.0 };
+        // THE FLOOD (nijimi's): a WASH — wetness over 0.5, fully at 0.9 — is set by its water, not its hairs: the
+        // two tones of `tsuke` mixed, the flying white of `kasure` gone, the hairs not running dry (`deplete`),
+        // the ends faded, the halo a feathered edge. 0 under a brush without nijimi (every other medium untouched).
+        let flood = if brush.nijimi > 0.0 { ((self.wetness.clamp(0.0, 1.0) - 0.5) / 0.4).clamp(0.0, 1.0) } else { 0.0 };
+        let maxw = self.width0.max(self.width1).max(1.0) * spread;
         // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
         // untouched (the rounding), and a wash came out as a dotted screen.
         let dense = brush.flat_ends || brush.hold_charge;
@@ -218,16 +272,33 @@ impl Stroke {
             .map(|b| {
                 // Streak amount from the brush: 0 = even (round), 1 = raked (stiff/fan). Centred on 1 so the
                 // average load — and thus the mark's opacity — is preserved.
-                let f = (1.0 + brush.streak.clamp(0.0, 1.0) * (lane_hash(seed, b as u64) - 0.5) * 1.6).max(0.08);
+                // (NIJIMI: a wet mark's hairs carry the ink alike — the water evens them, the streaks gone by the
+                // key's share of its wetness: a broad wet stroke of sumi is a wash, not a comb.)
+                let streak = brush.streak.clamp(0.0, 1.0) * if brush.nijimi > 0.0 { 1.0 - brush.nijimi.clamp(0.0, 1.0) * self.wetness.clamp(0.0, 1.0) } else { 1.0 };
+                let f = (1.0 + streak * (lane_hash(seed, b as u64) - 0.5) * 1.6).max(0.08);
                 self.load.iter().map(|c| c * f).collect()
             })
             .collect();
+        // TSUKE (see `BrushConfig::tsuke`): the brush loaded in two tones across its width. (A WASH — wetness
+        // over 0.5, fully at 0.9 — evens the two tones: the water mixes them across the hairs, so a flooded
+        // mark is one tone, not a wedge dark along one edge.)
+        if brush.tsuke > 0.0 && nb > 1 {
+            let k = 0.85 * brush.tsuke.clamp(0.0, 1.0) * (1.0 - flood);
+            for (b, lane) in bload.iter_mut().enumerate() {
+                let f = 1.0 - k * (b as f32 + 0.5) / nb as f32;
+                for v in lane.iter_mut() {
+                    *v *= f;
+                }
+            }
+        }
         let mut bwet: Vec<f32> = vec![self.wetness; nb];
         let n = canvas.n_pigments();
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
         // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
         // fraction of what it deposits, so a long stroke lays paint along its whole travel.
-        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { ((CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) * brush.deplete.max(0.0)).min(1.0) };
+        // (Under the FLOOD the water carries the ink the whole sweep: a hair does not run dry mid-band — that
+        // left pale dashes along every wash.)
+        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { ((CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) * brush.deplete.max(0.0)).min(1.0) * (1.0 - flood) };
         // BRISTLE SPLIT (see `BrushConfig::split`): the lanes fall into two to four bundles across the width;
         // each lane knows how far it stands from its bundle's middle (0) toward its edge (1), and the gaps
         // between the bundles open along the mark as it dries — by the mark's own dryness and by each lane's
@@ -279,8 +350,28 @@ impl Stroke {
         // of the path, so over the whole mark the lane has drifted from the one charge to the other.
         let ramp: Option<Vec<f32>> = load_end.filter(|_| pts.len() > 1).map(|le| (0..n.min(self.load.len()).min(le.len())).map(|c| (le[c] - self.load[c]) / (pts.len() - 1) as f32).collect());
 
+        // JOIN (see `BrushConfig::join`): the pixels this mark has laid, over its bounding box, and each lane's
+        // last pixel — a pixel is laid once, and a lane's path between two stamps is filled.
+        let mut seen: Option<(i64, i64, usize, usize, Vec<bool>)> = (brush.join > 0.0 && !pts.is_empty()).then(|| {
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for q in &pts {
+                x0 = x0.min(q[0]);
+                y0 = y0.min(q[1]);
+                x1 = x1.max(q[0]);
+                y1 = y1.max(q[1]);
+            }
+            let r = maxw * 0.5 + 2.0;
+            let (bx0, by0) = (((x0 - r).floor() as i64).max(0), ((y0 - r).floor() as i64).max(0));
+            let (bx1, by1) = (((x1 + r).ceil() as i64).min(canvas.w as i64 - 1), ((y1 + r).ceil() as i64).min(canvas.h as i64 - 1));
+            let (bw, bh) = ((bx1 - bx0 + 1).max(1) as usize, (by1 - by0 + 1).max(1) as usize);
+            (bx0, by0, bw, bh, vec![false; bw * bh])
+        });
+        let mut lane_prev: Vec<(i32, i32)> = if seen.is_some() { vec![(i32::MIN, i32::MIN); nb] } else { Vec::new() };
+        let mut targets: Vec<(u32, u32)> = Vec::with_capacity(8);
+        let mut across_prev: Option<(i32, i32)>;
         for i in 0..pts.len() {
             let p = pts[i];
+            across_prev = None;
             if let (Some(step), true) = (&ramp, i > 0) {
                 for lane in bload.iter_mut() {
                     for (c, d) in step.iter().enumerate() {
@@ -289,8 +380,16 @@ impl Stroke {
                 }
             }
             // Local direction (forward difference), and the perpendicular the bristles spread along.
-            let q = if i + 1 < pts.len() { pts[i + 1] } else { pts[i.saturating_sub(1)] };
-            let (mut dx, mut dy) = (q[0] - p[0], q[1] - p[1]);
+            // JOIN (see `BrushConfig::join`): the direction read over a window along the path, so the stamps fan
+            // around a bend instead of switching square to each segment (a bare wedge outside, a double inside).
+            let (mut dx, mut dy) = if brush.join > 0.0 && pts.len() > 2 {
+                let m = ((brush.join.clamp(0.0, 1.0) * maxw * 0.5).round() as usize).max(1);
+                let (a, c) = (pts[i.saturating_sub(m)], pts[(i + m).min(pts.len() - 1)]);
+                (c[0] - a[0], c[1] - a[1])
+            } else {
+                let q = if i + 1 < pts.len() { pts[i + 1] } else { pts[i.saturating_sub(1)] };
+                (q[0] - p[0], q[1] - p[1])
+            };
             let dl = (dx * dx + dy * dy).sqrt();
             if dl > 1e-4 {
                 dx /= dl;
@@ -306,11 +405,35 @@ impl Stroke {
                 1.0
             };
             let width = (self.width0 + (self.width1 - self.width0) * t) * (0.5 + 0.5 * press);
+            // THE FLOOD's ends (see `flood`): a wash fades in and out over half a width at either end — a
+            // square-cut end left a notch of bare paper against the next band.
+            let end_fade = if flood > 0.0 {
+                let d = i.min(pts.len().saturating_sub(1 + i)) as f32 / (0.5 * maxw).max(1.0);
+                1.0 - flood * (1.0 - d.clamp(0.0, 1.0))
+            } else {
+                1.0
+            };
             // THE TWIST (see `BrushConfig::twist`): the brush turned toward its edge along the mark, its
             // breadth across the motion falling with the cosine of the turn — never under a quarter.
             let width = if twist_turn != 0.0 {
                 let tt = if twist_turn > 0.0 { t } else { 1.0 - t };
                 width * (twist_turn.abs() * std::f32::consts::FRAC_PI_2 * tt).cos().abs().max(0.25)
+            } else {
+                width
+            };
+            let width = width * spread;
+            // TURN (see `BrushConfig::turn`): the brush lifted where the path bends.
+            let width = if brush.turn > 0.0 && pts.len() > 4 {
+                let m = ((width * 0.5).round() as usize).max(2);
+                let (a, c) = (pts[i.saturating_sub(m)], pts[(i + m).min(pts.len() - 1)]);
+                let (ux, uy, vx, vy) = (p[0] - a[0], p[1] - a[1], c[0] - p[0], c[1] - p[1]);
+                let (lu, lv) = ((ux * ux + uy * uy).sqrt(), (vx * vx + vy * vy).sqrt());
+                if lu > 1e-3 && lv > 1e-3 {
+                    let ang = ((ux * vx + uy * vy) / (lu * lv)).clamp(-1.0, 1.0).acos();
+                    width * (1.0 - 0.6 * brush.turn.clamp(0.0, 1.0) * (ang / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0))
+                } else {
+                    width
+                }
             } else {
                 width
             };
@@ -332,12 +455,22 @@ impl Stroke {
                 let x = (p[0] + perpx * off).round();
                 let y = (p[1] + perpy * off).round();
                 if x < 0.0 || y < 0.0 || x >= canvas.w as f32 || y >= canvas.h as f32 {
+                    across_prev = None;
                     continue;
                 }
                 let (px, py) = (x as u32, y as u32);
-                if px as i32 == last_x && py as i32 == last_y {
-                    continue;
-                }
+                // JOIN (see `BrushConfig::join`): where this lane stood at the last stamp — its path from there
+                // is filled below — kept whether or not it lays ink here.
+                let lane_from = if seen.is_some() {
+                    let q = lane_prev[b];
+                    lane_prev[b] = (px as i32, py as i32);
+                    Some(q)
+                } else {
+                    if px as i32 == last_x && py as i32 == last_y {
+                        continue;
+                    }
+                    None
+                };
                 last_x = px as i32;
                 last_y = py as i32;
                 // Cross-section falloff by brush ROUNDNESS: a round brush feathers gently to the edge (soft
@@ -345,15 +478,49 @@ impl Stroke {
                 // interpolates between them.
                 // A wash brush lays its film evenly across its whole width: the water, not the bristles,
                 // sets the film (a cross-section falloff left a third-strength rim along every stroke).
+                // (Under NIJIMI the body is the inner `1/spread` of the reach and the rest its halo.)
+                let d_full = (fr - 0.5).abs() * 2.0;
+                let (d_body, halo) = if spread > 1.0 {
+                    let core = 1.0 / spread;
+                    if d_full <= core { (d_full / core, None) } else { (1.0, Some((d_full - core) / (1.0 - core))) }
+                } else {
+                    (d_full, None)
+                };
                 let edge = if dense || brush.knife > 0.0 {
                     1.0
                 } else {
-                    let d = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
+                    let d = d_body; // 0 centre → 1 edge
                     let rnd = brush.round.clamp(0.0, 1.0);
                     let pw = 2.0 + (1.0 - rnd) * 6.0; // round → parabola, flat → flatter top
+                    // (A flooded wash's edge goes soft to nothing through its HALO — see `flood` — never by a rim
+                    // at zero: that left a seam of bare paper where two bands met.)
                     let floor = 0.12 + (1.0 - rnd) * 0.33; // flat brush deposits more evenly across its width
                     (1.0 - d.powf(pw)).max(floor)
                 };
+                // NIJIMI's halo: falling off outward, caught where the paper's fibres stand above a rising threshold.
+                // A WASH (wetness over 0.5, fully at 0.9) floods the fibres: its threshold drops by up to nine
+                // tenths, so the halo is a soft feathered edge, not a speckle on the paper's tops.
+                let edge = match halo {
+                    Some(hh) => {
+                        let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+                        edge * (1.0 - hh).powi(2) * ((relief - (0.25 + 0.6 * hh) * (1.0 - 0.9 * flood)) / 0.15).clamp(0.0, 1.0)
+                    }
+                    None => edge,
+                };
+                // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
+                // own slow hash falls under the dryness at this point of the mark.
+                let edge = if brush.kasure > 0.0 {
+                    let a = brush.kasure.clamp(0.0, 1.0) * t.powf(1.5) * (1.0 - flood);
+                    let nz = 0.75 * lane_hash(seed ^ 0x6A5E, b as u64) + 0.25 * lane_hash(seed ^ 0x6A5F, ((b as u64) << 20) ^ (i as u64 / 8));
+                    edge * ((nz - a) / 0.08).clamp(0.0, 1.0)
+                } else {
+                    edge
+                };
+                let edge = edge * end_fade;
+                if edge <= 0.0 {
+                    across_prev = None;
+                    continue;
+                }
                 // BRISTLE RIDGES: the paint a lane leaves stands as high as that lane was loaded relative to its
                 // neighbours — a loaded bristle drags a ridge, a dry one a furrow — so a stroke's relief is
                 // striated across its width (the relight read a smooth hump before; every stroke was a
@@ -380,9 +547,48 @@ impl Stroke {
                     (((1.0 - gap) - lane_edge[b]) / 0.2).clamp(0.0, 1.0)
                 };
                 if keep <= 0.0 {
+                    across_prev = None;
                     continue;
                 }
-                self.apply(canvas, px, py, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau);
+                targets.clear();
+                if let Some((bx0, by0, bw, bh, seen)) = &mut seen {
+                    // JOIN (see `BrushConfig::join`): the swath a 4-connected fill — this lane's path from its
+                    // last stamp (up to eight pixels: a wide mark's outer lane on a turn), the stamp's run from
+                    // the lane beside it, and this pixel — each pixel laid once per mark, and only by a lane
+                    // that lays ink (a lane the flying white or the halo's gate silenced claims nothing).
+                    let cur = (px as i32, py as i32);
+                    if let Some(q) = lane_from {
+                        if q.0 != i32::MIN {
+                            push_run(&mut targets, q, cur, 8);
+                        }
+                    }
+                    if let Some(a) = across_prev {
+                        push_run(&mut targets, a, cur, 8);
+                    }
+                    targets.push((px, py));
+                    across_prev = Some(cur);
+                    targets.retain(|&(tx, ty)| {
+                        let (ix, iy) = (tx as i64 - *bx0, ty as i64 - *by0);
+                        if ix < 0 || iy < 0 || ix >= *bw as i64 || iy >= *bh as i64 {
+                            return false;
+                        }
+                        let idx = iy as usize * *bw + ix as usize;
+                        if seen[idx] {
+                            false
+                        } else {
+                            seen[idx] = true;
+                            true
+                        }
+                    });
+                    if targets.is_empty() {
+                        continue;
+                    }
+                } else {
+                    targets.push((px, py));
+                }
+                for &(tx, ty) in &targets {
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau);
+                }
             }
         }
     }

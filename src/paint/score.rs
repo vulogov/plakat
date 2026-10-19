@@ -272,7 +272,7 @@ impl StrokeScore {
         let ground = match h.flow { Some((s, r, m, g, e)) => format!("{ground} flow={},{},{},{},{}", fmt_f(s), fmt_f(r), fmt_f(m), fmt_f(g), fmt_f(e)), None => ground };
         o.push_str(&format!(
             "H palette={} medium={} seed={} size={}x{} tooth={} kd={} kp={} visc={} bristles={} loadmax={} streak={} round={} bleed={} diffuse={} dry={} opacity={} impasto={} chroma={} dryshift={} granulate={} sheen={} edgepool={} paperedge={} contrast={} warmth={} clarity={} lift={}{}{}\n",
-            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if (b.deplete - 1.0).abs() > 1e-6 { format!(" deplete={}", fmt_f(b.deplete)) } else { String::new() } + &if b.comma > 0.0 { format!(" comma={}", fmt_f(b.comma)) } else { String::new() } + &if b.chalk > 0.0 { format!(" chalk={}", fmt_f(b.chalk)) } else { String::new() } + &if b.dust > 0.0 { format!(" dust={}", fmt_f(b.dust)) } else { String::new() } + &if b.rewet > 0.0 { format!(" rewet={}", fmt_f(b.rewet)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &if h.sag > 0.0 { format!(" sag={}", fmt_f(h.sag)) } else { String::new() } + &if h.gloss > 0.0 { format!(" gloss={}", fmt_f(h.gloss)) } else { String::new() } + &if h.hiding > 0.0 { format!(" hiding={}", fmt_f(h.hiding)) } else { String::new() } + (if h.old_paper { " oldpaper=1" } else { "" }) + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
+            h.palette, h.medium, h.seed, h.width, h.height, fmt_f(h.tooth), fmt_f(b.k_deposit), fmt_f(b.k_pickup), fmt_f(b.viscosity), b.bristles, fmt_f(b.load_max), fmt_f(b.streak), fmt_f(b.round), fmt_f(h.bleed), fmt_f(h.diffuse), fmt_f(h.dry), fmt_f(h.opacity), fmt_f(h.impasto), fmt_f(h.chroma), fmt_f(h.dry_shift), fmt_f(h.granulate), fmt_f(h.sheen), fmt_f(h.edge_pool), fmt_f(h.paper_edge), fmt_f(h.contrast), fmt_f(h.warmth), fmt_f(h.clarity), fmt_f(h.lift), if b.ridges > 0.0 { format!(" ridges={}", fmt_f(b.ridges)) } else { String::new() } + &if b.skip > 0.0 { format!(" skip={}", fmt_f(b.skip)) } else { String::new() } + &if (b.deplete - 1.0).abs() > 1e-6 { format!(" deplete={}", fmt_f(b.deplete)) } else { String::new() } + &if b.comma > 0.0 { format!(" comma={}", fmt_f(b.comma)) } else { String::new() } + &if b.chalk > 0.0 { format!(" chalk={}", fmt_f(b.chalk)) } else { String::new() } + &if b.dust > 0.0 { format!(" dust={}", fmt_f(b.dust)) } else { String::new() } + &if b.rewet > 0.0 { format!(" rewet={}", fmt_f(b.rewet)) } else { String::new() } + &if b.tsuke > 0.0 { format!(" tsuke={}", fmt_f(b.tsuke)) } else { String::new() } + &if b.kasure > 0.0 { format!(" kasure={}", fmt_f(b.kasure)) } else { String::new() } + &if b.nijimi > 0.0 { format!(" nijimi={}", fmt_f(b.nijimi)) } else { String::new() } + &if b.turn > 0.0 { format!(" turn={}", fmt_f(b.turn)) } else { String::new() } + &if b.join > 0.0 { format!(" join={}", fmt_f(b.join)) } else { String::new() } + &if h.weave > 0.0 { format!(" weave={}", fmt_f(h.weave)) } else { String::new() } + &if h.sag > 0.0 { format!(" sag={}", fmt_f(h.sag)) } else { String::new() } + &if h.gloss > 0.0 { format!(" gloss={}", fmt_f(h.gloss)) } else { String::new() } + &if h.hiding > 0.0 { format!(" hiding={}", fmt_f(h.hiding)) } else { String::new() } + (if h.old_paper { " oldpaper=1" } else { "" }) + &h.collide.map(|(a, b)| format!(" collide={},{}", fmt_f(a), fmt_f(b))).unwrap_or_default(), ground,
         ));
         // Pigment definitions (self-contained palette) — so a derived/any palette replays without the binary.
         for (name, rgb) in &h.pigments {
@@ -402,6 +402,11 @@ impl StrokeScore {
                             chalk: get("chalk").parse().unwrap_or(0.0),
                             dust: get("dust").parse().unwrap_or(0.0),
                             rewet: get("rewet").parse().unwrap_or(0.0),
+                            tsuke: get("tsuke").parse().unwrap_or(0.0),
+                            kasure: get("kasure").parse().unwrap_or(0.0),
+                            nijimi: get("nijimi").parse().unwrap_or(0.0),
+                            turn: get("turn").parse().unwrap_or(0.0),
+                            join: get("join").parse().unwrap_or(0.0),
                         },
                     });
                 }
@@ -523,6 +528,7 @@ impl StrokeScore {
         let stages = self.pass_stages(&keep);
         let n_stages = stages.len();
         let mut cur = 0usize;
+        let mut dried: Option<String> = None;
         for rec in &self.strokes {
             if !keep(rec) {
                 continue;
@@ -531,6 +537,12 @@ impl StrokeScore {
             if at > cur {
                 self.cross_passes(&mut canvas, cur, at, n_stages);
                 cur = at;
+            }
+            // SUMI-E's registers (see `painter::bone_pass`, `painter::sumi_ink`): the painter dries the sheet
+            // before the bone and again before the ink, so a wet-media final bleed sees only those marks wet.
+            if (rec.stage == "bone" || rec.stage == "ink") && dried.as_deref() != Some(rec.stage.as_str()) {
+                canvas.dry(0.0);
+                dried = Some(rec.stage.clone());
             }
             let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();
             // A CLIP record (`K`): strokes after it lay paint only inside its rings; a one-point record clears.
@@ -659,11 +671,18 @@ impl StrokeScore {
         let stages = self.pass_stages(&|_| true);
         let n_stages = stages.len();
         let mut cur = 0usize;
+        let mut dried: Option<String> = None;
         for rec in &self.strokes {
             let at = stages.iter().position(|st| st == &rec.stage).unwrap_or(n_stages);
             if at > cur {
                 self.cross_passes(&mut canvas, cur, at, n_stages);
                 cur = at;
+            }
+            // SUMI-E's registers (see `painter::bone_pass`, `painter::sumi_ink`): the painter dries the sheet
+            // before the bone and again before the ink, so a wet-media final bleed sees only those marks wet.
+            if (rec.stage == "bone" || rec.stage == "ink") && dried.as_deref() != Some(rec.stage.as_str()) {
+                canvas.dry(0.0);
+                dried = Some(rec.stage.clone());
             }
             if let (true, Some(sm)) = (rec.wipe, rec.smudge) {
                 let path: Vec<[f32; 2]> = rec.spline.iter().map(|p| [p[0] * sx, p[1] * sy]).collect();

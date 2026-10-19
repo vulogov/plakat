@@ -1653,6 +1653,27 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.chalk_tint = plan.medium.chalk_tint;
     params.flat_brush = plan.medium.flat_brush;
     params.liner = plan.medium.liner;
+    params.brush.tsuke = plan.medium.tsuke;
+    params.ma = plan.medium.ma;
+    params.brush.kasure = plan.medium.kasure;
+    params.brush.nijimi = plan.medium.nijimi;
+    params.brush.turn = plan.medium.turn;
+    params.yohaku = plan.medium.yohaku;
+    params.bone = plan.medium.bone;
+    params.boneless = plan.medium.boneless;
+    params.hake = plan.medium.hake;
+    params.brush.join = plan.medium.join;
+    params.bone_wind = plan.medium.bone_wind;
+    params.bone_dot = plan.medium.bone_dot;
+    params.bone_scatter = plan.medium.bone_scatter;
+    params.bone_coherence = plan.medium.bone_coherence;
+    params.bone_end = plan.medium.bone_end;
+    params.sumi_focus = plan.medium.sumi_focus;
+    params.ma_focus = plan.medium.ma_focus;
+    params.ma_flow = plan.medium.ma_flow;
+    params.bone_ryaku = plan.medium.bone_ryaku;
+    params.bone_fade = plan.medium.bone_fade;
+    params.bokashi = plan.medium.bokashi;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2458,6 +2479,27 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.chalk_tint = m.chalk_tint;
         params.flat_brush = m.flat_brush;
         params.liner = m.liner;
+        params.brush.tsuke = m.tsuke;
+        params.ma = m.ma;
+        params.brush.kasure = m.kasure;
+        params.brush.nijimi = m.nijimi;
+        params.brush.turn = m.turn;
+        params.yohaku = m.yohaku;
+        params.bone = m.bone;
+        params.boneless = m.boneless;
+        params.hake = m.hake;
+        params.brush.join = m.join;
+        params.bone_wind = m.bone_wind;
+        params.bone_dot = m.bone_dot;
+        params.bone_scatter = m.bone_scatter;
+        params.bone_coherence = m.bone_coherence;
+        params.bone_end = m.bone_end;
+        params.sumi_focus = m.sumi_focus;
+        params.ma_focus = m.ma_focus;
+        params.ma_flow = m.ma_flow;
+        params.bone_ryaku = m.bone_ryaku;
+        params.bone_fade = m.bone_fade;
+        params.bokashi = m.bokashi;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2541,6 +2583,28 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.chalk_tint { params.chalk_tint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.flat_brush { params.flat_brush = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.liner { params.liner = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.tsuke { params.brush.tsuke = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma { params.ma = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.kasure { params.brush.kasure = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nijimi { params.brush.nijimi = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.turn { params.brush.turn = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.yohaku { params.yohaku = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone { params.bone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.boneless { params.boneless = v.max(0.0); }
+        if let Some(v) = pl.hake { params.hake = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.join { params.brush.join = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_wind { params.bone_wind = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_dot { params.bone_dot = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_scatter { params.bone_scatter = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_coherence { params.bone_coherence = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_end { params.bone_end = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sumi_focus { params.sumi_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma_focus { params.ma_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma_flow { params.ma_flow = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_ryaku { params.bone_ryaku = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_fade { params.bone_fade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bokashi { params.bokashi = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
     }
@@ -2743,6 +2807,7 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                 params.depth = Some(blurred.pixels().map(|p| p.0[0] as f32 / 255.0).collect());
                 params.haze = r.clamp(0.0, 1.0);
             }
+            params.silhouette_mask = Some(mask.clone());
             params.subject_mask = Some(mask);
         } else {
             found!(style("·").yellow(), "subject matte: no clear subject — skipping the body tier");
@@ -2814,6 +2879,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
             let cov = s.iter().filter(|&&m| m > 0.5).count();
             if cov > s.len() / 50 && cov < s.len() * 49 / 50 {
                 found!(style("·").dim(), "sam: precise subject mask ({}% foreground) — sharp silhouette", cov * 100 / s.len().max(1));
+                // The silhouette alone (see `PaintParams::silhouette_mask`): the matte and SAM, no boxes.
+                match params.silhouette_mask.as_mut() {
+                    Some(sm) if sm.len() == s.len() => {
+                        for (a, b) in sm.iter_mut().zip(&s) {
+                            *a = a.max(*b);
+                        }
+                    }
+                    _ => params.silhouette_mask = Some(s.clone()),
+                }
                 // Union with any clothing already added, so SAM sharpens without dropping detected clothing.
                 match params.subject_mask.as_mut() {
                     Some(sm) if sm.len() == s.len() => {

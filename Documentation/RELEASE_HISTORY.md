@@ -8,6 +8,57 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.10.0 — Japanese ink: sumi-e — washes, the bone line, the flying white and the empty space
+
+### `plakat paint`
+
+- **`--medium japanese-ink` is sumi-e.** One black ink in a few dilutions on an absorbent white sheet, over the
+  charcoal's paper (the ink only darkens, the light is the paper), the acrylic's wash-in and the gouache's liner
+  and focus borrowed through the plan, and the ink's own mechanisms, each a plan key and 0 in every other
+  medium (all of them byte-identical). **Tsuke** (`tsuke`, in the score's header): the brush loaded in two
+  tones across its width, the dark edge to the shadow. **Ma** (`ma`): where the eye does not go the value is
+  lifted toward the paper. **Kasure** (header): the flying white, the hairs parting along the mark. **Nijimi**
+  (header): the ink feathering into the sheet — the mark's reach widened, a halo caught on the paper's fibres,
+  the streak evened by the water; and its **flood**: a mark wetter than 0.5 is set by its water — tsuke's tones
+  mixed, kasure's white gone, the hairs not running dry along the sweep, the ends faded, the halo a feathered
+  edge. **Turn** (header): the brush
+  lifted on a turn, the width narrowed where the path bends. **Yohaku**: a flat passage off the subject left as
+  bare paper. **Sumi dark** (`sumi_dark`): the share of the darkest values the black register lays as dry-brush
+  black shapes (unset, the darkest eighth — which drew a woman's dark coat as one black shape). **Bone**
+  (`bone`): the line register — the value's edges thinned and kept by hysteresis, linked into chains, each
+  chain one brush line weighted and inked by the darker side of the edge along it (a near dark form a full
+  black line, a far pale one a grey hair), tapering to its lift-off, longest first. **Boneless** (`boneless`, a
+  count): the block-in and that many passes after it laid as flooded washes at an even width with a soft edge.
+  **Hake** (`hake`): the washes one horizontal sweep of the broad flat brush, off the subject — parallel bands,
+  not bars crossing at every angle (crossed, each translucent bar was a pane of broken glass). On paper the
+  `liner` lays no line lighter than the sheet. The replay dries the sheet before the bone and before the ink
+  as the painter does, so a wet sheet (`bleed`) replays to the bit — every score does. **Join** (`join`, in
+  the score's header): the brush's stamps turned with the path over a window of the width, so they fan
+  around a bend — laid square to each segment of the polyline, they left a wedge of bare paper outside every
+  corner and a double wedge inside it, half a width long: the "broken glass" panes and the pale dashes on a
+  wash's ground, which survived every brush key turned off; and the swath laid once per pixel with the
+  lanes' gaps filled (the rounded lanes of a turning stamp were a moiré of arcs across every wash). **Bone wind** (`bone_wind`): a bone chain that
+  winds (a tuft's isophote, a clump's lobed edge, a small loop) is texture and not drawn as a line; **bone
+  dot** (`bone_dot`): a share of those laid as the tenbyō's dots, the brush's tip touched along the chain;
+  **bone scatter** (`bone_scatter`): the dots thrown off the chain along its normal into clusters; **bone
+  coherence** (`bone_coherence`): a chain is a line only where the gradients around it agree on a direction (the
+  structure tensor's coherence over a window half a `min_len` wide) — in grass, foliage or gravel a strong step is
+  texture, the tenbyō's dots or nothing. And the join's swath a 4-connected fill laid after the lane's gates:
+  rounded sample points alone were a lattice turned against the pixel grid, a pixel missed here and laid twice
+  there, and a pixel claimed by a lane that laid nothing stayed bare — white pinholes over every wash that no
+  key could turn off. **Bone end** (`bone_end`): the line's ends as the calligrapher's — a tome (a round press,
+  the ink pooling) where it stops against another line, a harai (narrowing to a hair) where it fades, the line
+  drawn from its tome; **sumi focus** (`sumi_focus`): the black register only where the eye goes; **ma focus**
+  (`ma_focus`): the attention `ma` reads, the subject in it and blurred, narrowed to the focus, so the far
+  ground's debris dissolves into the paper and the figure stands alone; **ma flow** (`ma_flow`): that halo
+  spread by an edge-stopping diffusion (the domain transform's recursive filter guided by the picture's value)
+  from the subject's silhouette alone — the matte and the segmenter's, not the detectors' boxes, which made a
+  dark island of a coat's box — and the silhouette kept whole over it. *Ryakuga* off the focus: **bone ryaku**
+  (`bone_ryaku`) — a far line simplified (Ramer–Douglas–Peucker, the tolerance growing as the attention falls)
+  and rounded into a few arcs; **bone fade** (`bone_fade`) — at the edge of the empty space no line at all, the
+  far detail left to the washes; **bokashi** (`bokashi`) — the marks off the focus wetter, so the flying white
+  goes and the fading image dissolves into the paper.
+
 ## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
 
 ### `plakat paint`

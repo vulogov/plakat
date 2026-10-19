@@ -156,6 +156,47 @@ plakat paint from photo.png --medium charcoal --palette sumi \
 #
 plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charcoal.png
 
+# ── JAPANESE INK (sumi-e) ────────────────────────────────────────────────────
+# One black ink on an absorbent white sheet (7.10.0): the paper is the light; the masses boneless washes —
+# the block-in and three passes after it flooded, even, soft-edged, one horizontal sweep of the hake off the
+# subject; the brush loaded in two tones (tsuketate), the hairs parting into flying white (kasure), the ink
+# feathering into the sheet (nijimi), lifted on a turn; the empty space (ma) and the blank white (yohaku);
+# the bone — the structure's contours as calligraphic lines, weighted and inked by their darker side; the
+# darkest thirtieth in dry-brush black. The plan:
+#
+#   medium: japanese-ink       palette: sumi            style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 0.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          min_brush: 3.0
+#   rigger: 0.0                liner: 0.5               focus_detail: 0.3       hotspot: 0.0
+#   dry: 1.0                   pickup: 0.0              bleed: 0.3              wash_in: 0.6      wet_cap: 0.6
+#   contour: 0.0               paper: 1.0               touch: 0.6              velvet: 0.03
+#   paper_top: 1.0             paper_knee: 0.5
+#   deplete: 1.0               skip: 0.0                comma: 0.5              turbulence: 0     loose: 0.0
+#   vary: 0.4                  granulate: 0.05          dishes: 4               dither: 0.0
+#   tsuke: 0.6                 ma: 0.8                  kasure: 0.5             nijimi: 0.8       turn: 0.6
+#   yohaku: 0.7                sumi_dark: 0.03          bone: 0.6               boneless: 3       hake: 1.0
+#   join: 1.0                  bone_wind: 0.6           bone_dot: 0.6           bone_scatter: 0.7
+#   bone_coherence: 0.7        bone_end: 0.6            sumi_focus: 0.5         ma_focus: 0.4     ma_flow: 0.6
+#   bone_ryaku: 0.6            bone_fade: 0.3           bokashi: 0.6
+#   (commit_shadows 0 and sumi_dark 0.03 — at the profile's eighth a woman in a dark coat was one black shape;
+#   contour 0 — the line pass drew worms; skip 0 and loose 0 — square textures and a trowel's smears; the bone
+#   and the hake — without them the ruins were bars crossing at every angle, no line; hotspot 0 — its white
+#   dots were pale dashes on the ground; bleed 0.3 — the wet bands flow into one another, replayed to the bit;
+#   join 1 — the pale dashes and the panes were the bare wedges a polyline's square stamps leave at every bend
+#   of a wide wash; bone_wind 0.6 and bone_dot 0.6 — the grass clumps were outlined in looping worms: a winding
+#   chain is texture, half of them the tenbyō's dots; bone_scatter 0.7 — the dots thrown off the chain into
+#   clusters, not a pricked line; bone_coherence 0.7 — the grass ridges were drawn as thin lines: a chain where
+#   the gradients around it point every way is texture, not a line; bone_end 0.6 — the tome where a line meets
+#   another, the harai where it fades; sumi_focus 0.5 and ma_focus 0.4 — the ruins' debris and the hillside's
+#   near ground drew the eye as strongly as the figure: off the focus the black is left to the washes and the
+#   wash to the paper; ma_flow 0.6 — the focus's round halo, a detected coat's box in it, was a dark island
+#   round the woman and paled the cat's paws: the halo runs along the picture's lines, the silhouette whole;
+#   bone_ryaku 0.6, bone_fade 0.3 and bokashi 0.6 — the ruins' far wheel and doll were a pale but exact
+#   drawing: off the focus a line is a few arcs or none, and the marks wetter, dissolving into the paper)
+#
+plakat paint from photo.png --medium japanese-ink --plan japanese-ink.hjson -o out-sumi.png
+
 # ── ACRYLIC ──────────────────────────────────────────────────────────────────
 # Opaque plastic colour in layers, each dry before the next: a thin wash block-in, flat crisp-edged marks on
 # top, a dry-brush finish and a loose hand off the faces, thick accent dabs at the sharp contrasts; darkens on
