@@ -53,7 +53,11 @@ per-cycle commits carry the rationale + before/after.
   ground's debris dissolves into the paper and the figure stands alone; **ma flow** (`ma_flow`): that halo
   spread by an edge-stopping diffusion (the domain transform's recursive filter guided by the picture's value)
   from the subject's silhouette alone — the matte and the segmenter's, not the detectors' boxes, which made a
-  dark island of a coat's box — and the silhouette kept whole over it.
+  dark island of a coat's box — and the silhouette kept whole over it. *Ryakuga* off the focus: **bone ryaku**
+  (`bone_ryaku`) — a far line simplified (Ramer–Douglas–Peucker, the tolerance growing as the attention falls)
+  and rounded into a few arcs; **bone fade** (`bone_fade`) — at the edge of the empty space no line at all, the
+  far detail left to the washes; **bokashi** (`bokashi`) — the marks off the focus wetter, so the flying white
+  goes and the fading image dissolves into the paper.
 
 ## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
 

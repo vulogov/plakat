@@ -422,6 +422,12 @@ pub struct PaintPlan {
     /// MA FLOW (0..1): the focus's halo spread along the picture's lines, stopping at its edges, the subject's
     /// silhouette kept whole (`MediumProfile::ma_flow`).
     pub ma_flow: Option<f32>,
+    /// BONE RYAKU (0..1): the abbreviated drawing: a bone line off the focus simplified to a few arcs (`MediumProfile::bone_ryaku`).
+    pub bone_ryaku: Option<f32>,
+    /// BONE FADE (0..1): a bone chain off the focus left to the washes (`MediumProfile::bone_fade`).
+    pub bone_fade: Option<f32>,
+    /// BOKASHI (0..1): the marks off the focus wetter: the fading edge dissolved, not merely lightened (`MediumProfile::bokashi`).
+    pub bokashi: Option<f32>,
     /// SUMI DARK (0..1): the share of the darkest values the sumi-e's black register lays as dry-brush black
     /// shapes (the darkest eighth when unset) (`PaintParams::sumi_dark`).
     pub sumi_dark: Option<f32>,
@@ -605,6 +611,9 @@ impl Default for PaintPlan {
             sumi_focus: None,
             ma_focus: None,
             ma_flow: None,
+            bone_ryaku: None,
+            bone_fade: None,
+            bokashi: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,
@@ -696,7 +705,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -1102,6 +1111,9 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             sumi_focus: None,
             ma_focus: None,
             ma_flow: None,
+            bone_ryaku: None,
+            bone_fade: None,
+            bokashi: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,

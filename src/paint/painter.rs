@@ -577,6 +577,12 @@ pub struct PaintParams {
     pub ma_focus: f32,
     /// MA FLOW (0..1, 0 = off): the focus's halo spread along the picture's lines (see `MediumProfile::ma_flow`).
     pub ma_flow: f32,
+    /// BONE RYAKU (0..1, 0 = off): the abbreviated drawing: a bone line off the focus simplified to a few arcs (see `MediumProfile::bone_ryaku`).
+    pub bone_ryaku: f32,
+    /// BONE FADE (0..1, 0 = off): a bone chain off the focus left to the washes (see `MediumProfile::bone_fade`).
+    pub bone_fade: f32,
+    /// BOKASHI (0..1, 0 = off): the marks off the focus wetter: the fading edge dissolved, not merely lightened (see `MediumProfile::bokashi`).
+    pub bokashi: f32,
     /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
     /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
     pub sumi_dark: f32,
@@ -591,7 +597,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -651,6 +657,52 @@ fn sobel(luma: &[f32], w: u32, h: u32) -> (Vec<f32>, Vec<f32>) {
 /// iterations of a left-right, right-left, top-down and bottom-up pass over `src`, each step's feedback
 /// `a^(1 + edge·σs/0.08·|Δguide|)` with `a = e^(−√2/σ_i)` and σ_i the iteration's share of `sigma` — so the
 /// field spreads about `sigma` pixels where the guide is flat and stops where it steps by 0.08 at `edge` 1.
+/// RAMER–DOUGLAS–PEUCKER: the polyline `pts` reduced to the vertices that stand more than `eps` px off the
+/// chord between their kept neighbours (`bone_ryaku`). Iterative, the ends always kept.
+fn rdp(pts: &[[f32; 2]], eps: f32) -> Vec<[f32; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut keep = vec![false; pts.len()];
+    keep[0] = true;
+    keep[pts.len() - 1] = true;
+    let mut stack = vec![(0usize, pts.len() - 1)];
+    while let Some((i0, i1)) = stack.pop() {
+        let (a, b) = (pts[i0], pts[i1]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (mut best, mut bi) = (0.0f32, 0usize);
+        for (j, q) in pts.iter().enumerate().take(i1).skip(i0 + 1) {
+            let dist = ((q[0] - a[0]) * dy - (q[1] - a[1]) * dx).abs() / l;
+            if dist > best {
+                best = dist;
+                bi = j;
+            }
+        }
+        if best > eps {
+            keep[bi] = true;
+            stack.push((i0, bi));
+            stack.push((bi, i1));
+        }
+    }
+    pts.iter().zip(&keep).filter(|(_, k)| **k).map(|(q, _)| *q).collect()
+}
+
+/// CHAIKIN corner cutting: each segment's quarter points, the ends kept — a polygon rounded toward its arcs.
+fn chaikin(pts: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if pts.len() < 3 {
+        return pts.to_vec();
+    }
+    let mut out = vec![pts[0]];
+    for s in pts.windows(2) {
+        let (a, b) = (s[0], s[1]);
+        out.push([0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]]);
+        out.push([0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]]);
+    }
+    out.push(pts[pts.len() - 1]);
+    out
+}
+
 fn edge_spread(src: &[f32], guide: &[f32], w: usize, h: usize, sigma: f32, edge: f32) -> Vec<f32> {
     let mut out = src.to_vec();
     let k = edge * sigma / 0.08;
@@ -4482,6 +4534,15 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // A shaded mark is laid calm: wet enough that the dry brush does not skip on the tooth (the skip
                 // fades to nothing at 0.6), so the shadow is a flat quiet patch, not a rake of dry noise.
                 let wet = if shaded > 0.0 && !accented { wet + (0.62 - wet).max(0.0) * shaded } else { wet };
+                // BOKASHI (see `MediumProfile::bokashi`): toward the edge of the focus the brush carries water.
+                let wet = match (&ma_field, p.bokashi > 0.0) {
+                    (Some(mf), true) => {
+                        let m = mf.get(region_i).copied().unwrap_or(1.0).clamp(0.0, 1.0);
+                        let a = if p.ma_focus > 0.0 { m.powf(1.0 + 4.0 * p.ma_focus.clamp(0.0, 1.0)) } else { m.max(subj.clamp(0.0, 1.0)) };
+                        wet + (0.95 - wet).max(0.0) * p.bokashi.clamp(0.0, 1.0) * (1.0 - a).powi(2)
+                    }
+                    _ => wet,
+                };
                 // IMPASTO MAPPED TO THE PICTURE (`impasto_map`): the thickness of the paint is a decision about
                 // the picture, not a global texture — the LIGHTS are laid thick and the shadows thin (the paint
                 // stands where the light falls; a shadow is a glaze), the SUBJECT thick and the background thin
@@ -5953,6 +6014,10 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         } else {
             0.0
         };
+        // BONE FADE (see `MediumProfile::bone_fade`): where the eye does not go, no line and no dot.
+        if p.bone_fade > 0.0 && attn.is_some() && a < p.bone_fade.clamp(0.0, 1.0) * 0.5 {
+            continue;
+        }
         let winds = p.bone_wind > 0.0 && winding > (1.0 - p.bone_wind.clamp(0.0, 1.0)) * 2.0;
         // BONE COHERENCE (see `MediumProfile::bone_coherence`): where the gradients around the chain point every
         // way — grass, foliage, gravel — a strong step is texture, not a contour: not a line either.
@@ -6027,13 +6092,24 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         } else {
             (c, t0, t1)
         };
+        // BONE RYAKU (see `MediumProfile::bone_ryaku`): off the focus the chain generalised into a few arcs.
+        let ryaku: Vec<[f32; 2]>;
+        let cc: &[[f32; 2]] = if p.bone_ryaku > 0.0 && attn.is_some() && a < 1.0 {
+            let eps = 0.5 + 8.0 * p.bone_ryaku.clamp(0.0, 1.0) * base * (1.0 - a).powi(2);
+            ryaku = chaikin(&chaikin(&rdp(cc, eps)));
+            &ryaku
+        } else {
+            cc
+        };
+        // BOKASHI (see `MediumProfile::bokashi`): a far line laid wetter, feathered, its flying white gone.
+        let bone_wet = if p.bokashi > 0.0 && attn.is_some() { 0.3 + 0.65 * p.bokashi.clamp(0.0, 1.0) * (1.0 - a).powi(2) } else { 0.3 };
         *k += 1;
         let path = waver_path(cc, 0.08 * base, p.seed, *k);
         let width = base * (0.5 + d) * (1.0 - 0.3 * sj);
         let mut load = vec![0f32; n];
         load[ink] = p.charge * (0.35 + 0.65 * d) * (1.0 - 0.3 * sj);
         let w1 = if e <= 0.0 { width * 0.45 } else if tome1 { width * (0.45 + 0.55 * e) } else { width * 0.45 * (1.0 - 0.8 * e) };
-        let s = Stroke { path, width0: width, width1: w1.max(if e > 0.0 { 0.5 } else { 0.8 }), load, pressure: 1.0, wetness: 0.3 };
+        let s = Stroke { path, width0: width, width1: w1.max(if e > 0.0 { 0.5 } else { 0.8 }), load, pressure: 1.0, wetness: bone_wet };
         s.rasterize(canvas, &brush);
         *placed += 1;
         score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });

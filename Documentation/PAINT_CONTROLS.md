@@ -499,9 +499,19 @@ and the gouache's liner and focus, borrowed through the plan.
   and the segmenter's, not the detectors' boxes: a coat's detected box was a dark island round the woman), and
   that silhouette kept at full attention over it, so a thin limb at the edge of the focus (a cat's hind paws)
   is not lifted with the ground. Read by `ma`, `sumi_focus` and the bone when `ma_focus` is set.
+- **Bone ryaku** (`bone_ryaku`, 0..1): *ryakuga*, the abbreviated drawing — a bone line off the focus
+  generalised: its chain simplified (Ramer–Douglas–Peucker) to a tolerance of `0.5 + 8·key·base·(1 − a)²` px,
+  `a` the chain's attention (narrowed by `ma_focus`), and the polygon rounded into arcs (two Chaikin passes): a
+  wheel's many-cornered rim at the edge of the sheet is one or two sweeps, the subject keeps every turn.
+- **Bone fade** (`bone_fade`, 0..1): a bone chain whose attention is under `key·0.5` is not drawn at all,
+  neither line nor dot — the far detail is left to the washes' soft masses (a pale structural line in the
+  distance broke the aerial perspective).
+- **Bokashi** (`bokashi`, 0..1): toward the edge of the focus the brush carries water — a mark's wetness raised
+  toward 0.95 by `key·(1 − a)²` on the ladder and the bone; a wet mark is the flood's, so its flying white is
+  gone, its hairs even and its edge feathered: the fading image dissolved into the paper, not merely lightened.
 - Defaults: `tsuke 0.6` · `ma 0.5` · `kasure 0.5` · `nijimi 0.4` · `turn 0.5` · `yohaku 0.6` · `bone 0.5` ·
   `boneless 2` · `hake 0.7` · `join 1` · `bone_wind 0.5` · `bone_dot 0.5` · `bone_scatter 0.5` ·
-  `bone_coherence 0.3` · `bone_end 0.5` · `sumi_focus 0.3` · `ma_focus 0.3` · `ma_flow 0.5`; every other medium has them at 0.
+  `bone_coherence 0.3` · `bone_end 0.5` · `sumi_focus 0.3` · `ma_focus 0.3` · `ma_flow 0.5` · `bone_ryaku 0.5` · `bone_fade 0.4` · `bokashi 0.5`; every other medium has them at 0.
   The recommended plan is in `PAINT_EXAMPLES.md`.
 - No white: the plan sets `hotspot 0` (its dots of titanium were pale dashes on the ground — the light is the
   paper), and on paper the `liner` lays no line lighter than the sheet under it.
@@ -512,7 +522,8 @@ and the gouache's liner and focus, borrowed through the plan.
   `bone_coherence` up to keep the line off every textured ground, 0 to let it draw the grass; `bone_end` 0 for
   lines of one taper; `sumi_focus` up for black only on the subject; `ma_focus` up to dissolve more of the
   ground into the paper, 0 for an even sheet; `ma_flow` up for a halo that hugs the picture's lines, 0 for a
-  round one.
+  round one; `bone_ryaku` up for fewer, broader far lines; `bone_fade` up to drop more of them; `bokashi` up
+  for a wetter, softer periphery.
 
 ```hjson
 medium: japanese-ink
