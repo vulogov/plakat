@@ -8,6 +8,8 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
+## What's new in 7.11.0 — in development
+
 ## What's new in 7.10.0 — Japanese ink: sumi-e — washes, the bone line, the flying white and the empty space
 
 ### `plakat paint`
