@@ -156,6 +156,33 @@ plakat paint from photo.png --medium charcoal --palette sumi \
 #
 plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charcoal.png
 
+# ── JAPANESE INK (sumi-e) ────────────────────────────────────────────────────
+# One black ink on an absorbent white sheet (7.10.0): the paper is the light; the masses boneless washes —
+# the block-in and three passes after it flooded, even, soft-edged, one horizontal sweep of the hake off the
+# subject; the brush loaded in two tones (tsuketate), the hairs parting into flying white (kasure), the ink
+# feathering into the sheet (nijimi), lifted on a turn; the empty space (ma) and the blank white (yohaku);
+# the bone — the structure's contours as calligraphic lines, weighted and inked by their darker side; the
+# darkest thirtieth in dry-brush black. The plan:
+#
+#   medium: japanese-ink       palette: sumi            style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 0.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: follow          min_brush: 3.0
+#   rigger: 0.0                liner: 0.5               focus_detail: 0.3       hotspot: 0.0
+#   dry: 1.0                   pickup: 0.0              bleed: 0.3              wash_in: 0.6      wet_cap: 0.6
+#   contour: 0.0               paper: 1.0               touch: 0.6              velvet: 0.03
+#   paper_top: 1.0             paper_knee: 0.5
+#   deplete: 1.0               skip: 0.0                comma: 0.5              turbulence: 0     loose: 0.0
+#   vary: 0.4                  granulate: 0.05          dishes: 4               dither: 0.0
+#   tsuke: 0.6                 ma: 0.8                  kasure: 0.5             nijimi: 0.8       turn: 0.6
+#   yohaku: 0.7                sumi_dark: 0.03          bone: 0.6               boneless: 3       hake: 1.0
+#   (commit_shadows 0 and sumi_dark 0.03 — at the profile's eighth a woman in a dark coat was one black shape;
+#   contour 0 — the line pass drew worms; skip 0 and loose 0 — square textures and a trowel's smears; the bone
+#   and the hake — without them the ruins were bars crossing at every angle, no line; hotspot 0 — its white
+#   dots were pale dashes on the ground; bleed 0.3 — the wet bands flow into one another, replayed to the bit)
+#
+plakat paint from photo.png --medium japanese-ink --plan japanese-ink.hjson -o out-sumi.png
+
 # ── ACRYLIC ──────────────────────────────────────────────────────────────────
 # Opaque plastic colour in layers, each dry before the next: a thin wash block-in, flat crisp-edged marks on
 # top, a dry-brush finish and a loose hand off the faces, thick accent dabs at the sharp contrasts; darkens on

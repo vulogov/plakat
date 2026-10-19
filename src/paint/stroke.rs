@@ -101,6 +101,18 @@ pub struct BrushConfig {
     /// wetness and how empty it is — gouache's gum softens again under water (the wet canvas's pickup is
     /// `k_pickup`'s). In the header.
     pub rewet: f32,
+    /// TSUKE (0..1, 0 = off): tsuketate — the lanes across the width loaded from full (the side the path's
+    /// left hand is on) to `1 − 0.85·tsuke`: one dark edge, one pale. In the header.
+    pub tsuke: f32,
+    /// KASURE (0..1, 0 = off): the flying white — the lanes dropping out along the mark by a slow hash of
+    /// their own, by up to this share at its end. In the header.
+    pub kasure: f32,
+    /// NIJIMI (0..1, 0 = off): the ink feathering into the paper — the reach widened, the halo caught by the
+    /// paper's fibres. In the header.
+    pub nijimi: f32,
+    /// TURN (0..1, 0 = off): the width narrowed by up to `0.6·turn` where the path bends (fully at a right angle
+    /// over half a width each way) — the brush lifted on a turn. In the header.
+    pub turn: f32,
 }
 
 /// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
@@ -117,7 +129,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, nijimi: 0.0, turn: 0.0 }
     }
 }
 
@@ -204,7 +216,13 @@ impl Stroke {
         // spaced tine-lines (a fixed handful of bristles at a wide block-in radius reads as fork/rake marks, not a
         // brush). Each lane still keeps its own evolving load along the whole stroke, so dirty-brush pickup and
         // stroke-order harmonisation survive. Capped so a very wide stroke can't explode the inner loop.
-        let maxw = self.width0.max(self.width1).max(1.0);
+        // NIJIMI (see `BrushConfig::nijimi`): the reach widened by the bleed, more for a wetter mark.
+        let spread = if brush.nijimi > 0.0 { 1.0 + 0.8 * brush.nijimi.clamp(0.0, 1.0) * (0.3 + 0.7 * self.wetness.clamp(0.0, 1.0)) } else { 1.0 };
+        // THE FLOOD (nijimi's): a WASH — wetness over 0.5, fully at 0.9 — is set by its water, not its hairs: the
+        // two tones of `tsuke` mixed, the flying white of `kasure` gone, the hairs not running dry (`deplete`),
+        // the ends faded, the halo a feathered edge. 0 under a brush without nijimi (every other medium untouched).
+        let flood = if brush.nijimi > 0.0 { ((self.wetness.clamp(0.0, 1.0) - 0.5) / 0.4).clamp(0.0, 1.0) } else { 0.0 };
+        let maxw = self.width0.max(self.width1).max(1.0) * spread;
         // A WASH brush lays lanes at two per pixel: at an angle, one lane per pixel leaves every other pixel
         // untouched (the rounding), and a wash came out as a dotted screen.
         let dense = brush.flat_ends || brush.hold_charge;
@@ -218,16 +236,33 @@ impl Stroke {
             .map(|b| {
                 // Streak amount from the brush: 0 = even (round), 1 = raked (stiff/fan). Centred on 1 so the
                 // average load — and thus the mark's opacity — is preserved.
-                let f = (1.0 + brush.streak.clamp(0.0, 1.0) * (lane_hash(seed, b as u64) - 0.5) * 1.6).max(0.08);
+                // (NIJIMI: a wet mark's hairs carry the ink alike — the water evens them, the streaks gone by the
+                // key's share of its wetness: a broad wet stroke of sumi is a wash, not a comb.)
+                let streak = brush.streak.clamp(0.0, 1.0) * if brush.nijimi > 0.0 { 1.0 - brush.nijimi.clamp(0.0, 1.0) * self.wetness.clamp(0.0, 1.0) } else { 1.0 };
+                let f = (1.0 + streak * (lane_hash(seed, b as u64) - 0.5) * 1.6).max(0.08);
                 self.load.iter().map(|c| c * f).collect()
             })
             .collect();
+        // TSUKE (see `BrushConfig::tsuke`): the brush loaded in two tones across its width. (A WASH — wetness
+        // over 0.5, fully at 0.9 — evens the two tones: the water mixes them across the hairs, so a flooded
+        // mark is one tone, not a wedge dark along one edge.)
+        if brush.tsuke > 0.0 && nb > 1 {
+            let k = 0.85 * brush.tsuke.clamp(0.0, 1.0) * (1.0 - flood);
+            for (b, lane) in bload.iter_mut().enumerate() {
+                let f = 1.0 - k * (b as f32 + 0.5) / nb as f32;
+                for v in lane.iter_mut() {
+                    *v *= f;
+                }
+            }
+        }
         let mut bwet: Vec<f32> = vec![self.wetness; nb];
         let n = canvas.n_pigments();
         let mut scratch: Vec<f32> = Vec::with_capacity(n); // reused deposit buffer — no per-pixel alloc
         // The brush is charged for THIS mark's length (see `CHARGE_PX`): a lane's load depletes per hit by this
         // fraction of what it deposits, so a long stroke lays paint along its whole travel.
-        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { ((CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) * brush.deplete.max(0.0)).min(1.0) };
+        // (Under the FLOOD the water carries the ink the whole sweep: a hair does not run dry mid-band — that
+        // left pale dashes along every wash.)
+        let deplete = if brush.flat_ends || brush.hold_charge { 0.0 } else { ((CHARGE_PX / pts.len().max(1) as f32).clamp(0.02, 1.0) * brush.deplete.max(0.0)).min(1.0) * (1.0 - flood) };
         // BRISTLE SPLIT (see `BrushConfig::split`): the lanes fall into two to four bundles across the width;
         // each lane knows how far it stands from its bundle's middle (0) toward its edge (1), and the gaps
         // between the bundles open along the mark as it dries — by the mark's own dryness and by each lane's
@@ -306,11 +341,35 @@ impl Stroke {
                 1.0
             };
             let width = (self.width0 + (self.width1 - self.width0) * t) * (0.5 + 0.5 * press);
+            // THE FLOOD's ends (see `flood`): a wash fades in and out over half a width at either end — a
+            // square-cut end left a notch of bare paper against the next band.
+            let end_fade = if flood > 0.0 {
+                let d = i.min(pts.len().saturating_sub(1 + i)) as f32 / (0.5 * maxw).max(1.0);
+                1.0 - flood * (1.0 - d.clamp(0.0, 1.0))
+            } else {
+                1.0
+            };
             // THE TWIST (see `BrushConfig::twist`): the brush turned toward its edge along the mark, its
             // breadth across the motion falling with the cosine of the turn — never under a quarter.
             let width = if twist_turn != 0.0 {
                 let tt = if twist_turn > 0.0 { t } else { 1.0 - t };
                 width * (twist_turn.abs() * std::f32::consts::FRAC_PI_2 * tt).cos().abs().max(0.25)
+            } else {
+                width
+            };
+            let width = width * spread;
+            // TURN (see `BrushConfig::turn`): the brush lifted where the path bends.
+            let width = if brush.turn > 0.0 && pts.len() > 4 {
+                let m = ((width * 0.5).round() as usize).max(2);
+                let (a, c) = (pts[i.saturating_sub(m)], pts[(i + m).min(pts.len() - 1)]);
+                let (ux, uy, vx, vy) = (p[0] - a[0], p[1] - a[1], c[0] - p[0], c[1] - p[1]);
+                let (lu, lv) = ((ux * ux + uy * uy).sqrt(), (vx * vx + vy * vy).sqrt());
+                if lu > 1e-3 && lv > 1e-3 {
+                    let ang = ((ux * vx + uy * vy) / (lu * lv)).clamp(-1.0, 1.0).acos();
+                    width * (1.0 - 0.6 * brush.turn.clamp(0.0, 1.0) * (ang / std::f32::consts::FRAC_PI_2).clamp(0.0, 1.0))
+                } else {
+                    width
+                }
             } else {
                 width
             };
@@ -345,15 +404,48 @@ impl Stroke {
                 // interpolates between them.
                 // A wash brush lays its film evenly across its whole width: the water, not the bristles,
                 // sets the film (a cross-section falloff left a third-strength rim along every stroke).
+                // (Under NIJIMI the body is the inner `1/spread` of the reach and the rest its halo.)
+                let d_full = (fr - 0.5).abs() * 2.0;
+                let (d_body, halo) = if spread > 1.0 {
+                    let core = 1.0 / spread;
+                    if d_full <= core { (d_full / core, None) } else { (1.0, Some((d_full - core) / (1.0 - core))) }
+                } else {
+                    (d_full, None)
+                };
                 let edge = if dense || brush.knife > 0.0 {
                     1.0
                 } else {
-                    let d = (fr - 0.5).abs() * 2.0; // 0 centre → 1 edge
+                    let d = d_body; // 0 centre → 1 edge
                     let rnd = brush.round.clamp(0.0, 1.0);
                     let pw = 2.0 + (1.0 - rnd) * 6.0; // round → parabola, flat → flatter top
+                    // (A flooded wash's edge goes soft to nothing through its HALO — see `flood` — never by a rim
+                    // at zero: that left a seam of bare paper where two bands met.)
                     let floor = 0.12 + (1.0 - rnd) * 0.33; // flat brush deposits more evenly across its width
                     (1.0 - d.powf(pw)).max(floor)
                 };
+                // NIJIMI's halo: falling off outward, caught where the paper's fibres stand above a rising threshold.
+                // A WASH (wetness over 0.5, fully at 0.9) floods the fibres: its threshold drops by up to nine
+                // tenths, so the halo is a soft feathered edge, not a speckle on the paper's tops.
+                let edge = match halo {
+                    Some(hh) => {
+                        let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
+                        edge * (1.0 - hh).powi(2) * ((relief - (0.25 + 0.6 * hh) * (1.0 - 0.9 * flood)) / 0.15).clamp(0.0, 1.0)
+                    }
+                    None => edge,
+                };
+                // KASURE (see `BrushConfig::kasure`): the hairs part as the brush runs — a lane drops out where its
+                // own slow hash falls under the dryness at this point of the mark.
+                let edge = if brush.kasure > 0.0 {
+                    let a = brush.kasure.clamp(0.0, 1.0) * t.powf(1.5) * (1.0 - flood);
+                    let nz = 0.75 * lane_hash(seed ^ 0x6A5E, b as u64) + 0.25 * lane_hash(seed ^ 0x6A5F, ((b as u64) << 20) ^ (i as u64 / 8));
+                    edge * ((nz - a) / 0.08).clamp(0.0, 1.0)
+                } else {
+                    edge
+                };
+                let edge = edge * end_fade;
+                if edge <= 0.0 {
+                    continue;
+                }
                 // BRISTLE RIDGES: the paint a lane leaves stands as high as that lane was loaded relative to its
                 // neighbours — a loaded bristle drags a ridge, a dry one a furrow — so a stroke's relief is
                 // striated across its width (the relight read a smooth hump before; every stroke was a

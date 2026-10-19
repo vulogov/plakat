@@ -10,6 +10,30 @@ per-cycle commits carry the rationale + before/after.
 
 ## What's new in 7.10.0 — in development
 
+### `plakat paint`
+
+- **`--medium japanese-ink` is sumi-e.** One black ink in a few dilutions on an absorbent white sheet, over the
+  charcoal's paper (the ink only darkens, the light is the paper), the acrylic's wash-in and the gouache's liner
+  and focus borrowed through the plan, and the ink's own mechanisms, each a plan key and 0 in every other
+  medium (all of them byte-identical). **Tsuke** (`tsuke`, in the score's header): the brush loaded in two
+  tones across its width, the dark edge to the shadow. **Ma** (`ma`): where the eye does not go the value is
+  lifted toward the paper. **Kasure** (header): the flying white, the hairs parting along the mark. **Nijimi**
+  (header): the ink feathering into the sheet — the mark's reach widened, a halo caught on the paper's fibres,
+  the streak evened by the water; and its **flood**: a mark wetter than 0.5 is set by its water — tsuke's tones
+  mixed, kasure's white gone, the hairs not running dry along the sweep, the ends faded, the halo a feathered
+  edge. **Turn** (header): the brush
+  lifted on a turn, the width narrowed where the path bends. **Yohaku**: a flat passage off the subject left as
+  bare paper. **Sumi dark** (`sumi_dark`): the share of the darkest values the black register lays as dry-brush
+  black shapes (unset, the darkest eighth — which drew a woman's dark coat as one black shape). **Bone**
+  (`bone`): the line register — the value's edges thinned and kept by hysteresis, linked into chains, each
+  chain one brush line weighted and inked by the darker side of the edge along it (a near dark form a full
+  black line, a far pale one a grey hair), tapering to its lift-off, longest first. **Boneless** (`boneless`, a
+  count): the block-in and that many passes after it laid as flooded washes at an even width with a soft edge.
+  **Hake** (`hake`): the washes one horizontal sweep of the broad flat brush, off the subject — parallel bands,
+  not bars crossing at every angle (crossed, each translucent bar was a pane of broken glass). On paper the
+  `liner` lays no line lighter than the sheet. The replay dries the sheet before the bone and before the ink
+  as the painter does, so a wet sheet (`bleed`) replays to the bit — every score does.
+
 ## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
 
 ### `plakat paint`

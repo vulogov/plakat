@@ -403,6 +403,65 @@ paper: 1.0
 stump: 0.5
 ```
 
+### Japanese ink — `medium: japanese-ink`  🎯 *sumi-e: the paper is the light, the washes boneless, the line the bone (7.10.0)*
+One black ink in a few dilutions on an absorbent white sheet, in TWO REGISTERS over a wash painting: the ink's
+own mechanisms, each a plan key and 0 in every other medium (all of them byte-identical), over the charcoal's
+paper (the ink only darkens, the light is the paper, the pressure follows the value), the acrylic's wash-in
+and the gouache's liner and focus, borrowed through the plan.
+- **Tsuke** (`tsuke`, 0..1, in the score's header): tsuketate — the brush loaded in two tones across its
+  width (the lanes `1 → 1−0.85·tsuke`), the dark edge turned to the picture's shadow side.
+- **Ma** (`ma`, 0..1): the empty space — where the eye does not go (the focal field, the subject) the value is
+  lifted toward the paper by `ma·(1−attention)²`: the periphery a stroke or two. Needs `paper`.
+- **Kasure** (`kasure`, 0..1, header): the flying white — the hairs part as the brush runs, a lane dropping out
+  where its own slow hash falls under `kasure·t^1.5` along the mark.
+- **Nijimi** (`nijimi`, 0..1, header): the ink feathering into the sheet — the mark's reach widened by
+  `0.8·nijimi·(0.3+0.7·wet)`, the outer part a halo falling off outward and caught where the paper's fibres
+  stand; and the water evening the hairs, the streak damped by `nijimi·wet`. **The flood** (nijimi's): a mark
+  wetter than 0.5 (fully at 0.9) is set by its water — tsuke's two tones mixed, kasure's white gone, the hairs
+  not running dry along the sweep (`deplete` damped — a hair run dry mid-band was a pale dash on every wash),
+  the ends faded in and out over half a width (a square-cut end was a notch of paper against the next band),
+  the halo's gate opened so it is a feathered edge.
+- **Turn** (`turn`, 0..1, header): the brush lifted on a turn — the width narrowed by up to `0.6·turn` where
+  the path bends (fully at a right angle over half a width each way).
+- **Yohaku** (`yohaku`, 0..1): the blank white — a FLAT passage (perceived local range at a sixty-fourth of
+  the sheet under 0.03, by a smoothstep to 0.10) off the subject lifted to the paper by this share: a fog, a
+  pale sky, a white ground left bare. Needs `paper`.
+- **Sumi dark** (`sumi_dark`, 0..1): the share of the darkest values the black register lays as dry-brush
+  black shapes (stage `ink`); unset, the darkest eighth (which drew a dark coat as one black shape).
+- **Bone** (`bone`, 0..1): the LINE register (骨法) — the value's edges thinned to a pixel and kept by
+  hysteresis (the pen-and-ink planner's edge map, opened by `bone`), linked into chains, each chain ONE brush
+  line whose weight (`0.5..1.5 × 0.8·min_brush`) and ink (`0.35..1 × charge`) follow the darker side of the
+  edge along it — a near dark form a full black line, a far pale one a thin grey hair; tapering to its
+  lift-off, `turn` and `kasure` acting on it; longest first under a cap of `0.10+0.25·bone` of the budget; a
+  chain where the eye does not go (`ma`) must run up to twice as far, and ON THE SUBJECT (whose texture is
+  the fine brush's — a feather's barbs, a tuft of fur) twice as far again and laid lighter (×0.7): the line
+  holds the silhouette and the long structures. Stage `bone`, after the ladder, before the black register.
+  The painter dries the sheet before the bone and again before the black register, and the replay does the
+  same at those stages, so a wet sheet (`bleed`) replays to the bit.
+- **Boneless** (`boneless`, a count): 没骨 — the block-in and the next `boneless` passes of the ladder laid
+  as the block-in's flooded wash (`wash_in`: wet, a thin charge), at an even width with a round soft edge: a
+  tonal mass a wash, not a heap of dry tapered wedges. Needs `wash_in`.
+- **Hake** (`hake`, 0..1): on the washed passes the flow turned to the broad flat brush's one horizontal
+  sweep by this share, off the subject — the masses built from parallel bands that overlap along themselves
+  and stop where the tone changes, not from bars crossing at every angle (crossed, each translucent bar was
+  a pane: a sheet of broken glass). Needs `boneless`.
+- Defaults: `tsuke 0.6` · `ma 0.5` · `kasure 0.5` · `nijimi 0.4` · `turn 0.5` · `yohaku 0.6` · `bone 0.5` ·
+  `boneless 2` · `hake 0.7`; every other medium has them at 0. The recommended plan is in `PAINT_EXAMPLES.md`.
+- No white: the plan sets `hotspot 0` (its dots of titanium were pale dashes on the ground — the light is the
+  paper), and on paper the `liner` lays no line lighter than the sheet under it.
+- Tune: `bone` up for a wirier drawing, down for a wash alone; `boneless` down (1) for a drier, more broken
+  ground; `hake` 0 for washes that follow the form; `bleed` up for washes that flow into one another; `sumi_dark`
+  up for more solid black; `ma`/`yohaku` up for more paper; `dishes` 4 holds the ink to four tones.
+
+```hjson
+medium: japanese-ink
+palette: sumi
+new: true
+paper: 1.0
+bone: 0.6
+boneless: 3
+```
+
 ### Acrylic — `medium: acrylic`  🎯 *fast-dry, layered like the indirect oil, darkens on drying*
 Opaque plastic colour painted in LAYERS, each **dry before the next** goes on: the block-in is a thin, flooded
 **wash underpainting** (`wash_in 0.5` — 65 % of the charge), every later mark goes on no wetter than `wet_cap

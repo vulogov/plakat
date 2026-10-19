@@ -545,6 +545,19 @@ pub struct PaintParams {
     pub flat_brush: f32,
     /// LINER (0..1, 0 = off): the long thin lines in a liner's single stroke (see `MediumProfile::liner`).
     pub liner: f32,
+    /// MA (0..1, 0 = off): the empty space where the eye does not go (see `MediumProfile::ma`).
+    pub ma: f32,
+    /// YOHAKU (0..1, 0 = off): the flat passages left blank (see `MediumProfile::yohaku`).
+    pub yohaku: f32,
+    /// BONE (0..1, 0 = off): the line register (see `MediumProfile::bone`).
+    pub bone: f32,
+    /// BONELESS (0 = off; a count): the passes after the block-in laid as washes (see `MediumProfile::boneless`).
+    pub boneless: f32,
+    /// HAKE (0..1, 0 = off): the washed passes' flow turned to one horizontal sweep (see `MediumProfile::hake`).
+    pub hake: f32,
+    /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
+    /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
+    pub sumi_dark: f32,
     /// The FACE's own extent (px) — the face detector's box, not the soft focal mask (whose extent is the
     /// head and shoulders' halo). `None`: read from the mask.
     pub face_extent: Option<f32>,
@@ -553,7 +566,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, face_extent: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, sumi_dark: 0.0, face_extent: None }
     }
 }
 
@@ -2969,6 +2982,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         (None, 0.0)
     };
     let focus_on = focal.is_some();
+    // MA (see `MediumProfile::ma`): where the eye goes — the focal field, the subject taken with it below.
+    let ma_field: Option<Vec<f32>> = (p.ma > 0.0 && p.paper > 0.0).then(|| focal_field(input));
+    // YOHAKU (see `MediumProfile::yohaku`): the picture's perceived local range at a sixty-fourth of the sheet.
+    let yohaku_range: Option<Vec<f32>> = (p.yohaku > 0.0 && p.paper > 0.0).then(|| {
+        let lg: Vec<f32> = luma_map(input).iter().map(|v| v.max(0.0).powf(1.0 / 2.2)).collect();
+        local_range(&lg, input.width() as usize, input.height() as usize, ((input.width().min(input.height()) as f32 / 64.0).round() as usize).max(2))
+    });
     // GRADATION in the PAINTING itself: a soft mass is not only simplified by the armature — a wide stroke lays
     // ONE colour along its whole path (the reference may drift a full `STOP_TOL` before it stops), and the
     // restate floor then leaves a patch that is within tolerance of a slow gradient alone. So a cloud, a
@@ -3316,6 +3336,27 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         // SWEEP (see `MediumProfile::sweep`): on a flat passage off the subject and the faces the flow is turned
         // onto the horizontal (a stroke runs across its gradient, so the gradient onto the vertical), by the
         // key's share of the flatness, its magnitude kept and its sign held.
+        // HAKE (see `MediumProfile::hake`): on the washed passes the flow turned to the broad flat brush's one
+        // horizontal sweep by the key's share, off the subject — the tonal masses as parallel bands that overlap
+        // along themselves, not bars crossing at every angle.
+        let (gx, gy) = if p.hake > 0.0 && p.boneless > 0.0 && p.wash_in > 0.0 && (block_in || (layer as f32) <= p.boneless) {
+            let (mut gx, mut gy) = (gx, gy);
+            for i in 0..gx.len() {
+                let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                let t = p.hake.clamp(0.0, 1.0) * (1.0 - subj);
+                if t > 1e-3 {
+                    // (The field is the gradient; the mark runs across it — a horizontal sweep is a vertical gradient's
+                    // complement here: the sweep's gradient points ALONG x.)
+                    let m = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt().max(1e-3);
+                    let tx = if gx[i] < 0.0 { -m } else { m };
+                    gx[i] += (tx - gx[i]) * t;
+                    gy[i] += (0.0 - gy[i]) * t;
+                }
+            }
+            (gx, gy)
+        } else {
+            (gx, gy)
+        };
         let (gx, gy) = match (&range_field, p.sweep > 0.0 && !block_in) {
             (Some(rf), true) => {
                 let (mut gx, mut gy) = (gx, gy);
@@ -3813,6 +3854,24 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     } else {
                         tl
                     };
+                    // YOHAKU (see `MediumProfile::yohaku`): a flat passage off the subject left blank.
+                    let tl = if let Some(yr) = &yohaku_range {
+                        let at = iy as usize * w as usize + ix as usize;
+                        let u = ((yr.get(at).copied().unwrap_or(1.0) - 0.03) / 0.07).clamp(0.0, 1.0);
+                        let flat = 1.0 - u * u * (3.0 - 2.0 * u);
+                        let subj = p.subject_mask.as_deref().and_then(|m| m.get(at)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                        (tl + (charcoal_paper_l - tl).max(0.0) * p.yohaku.clamp(0.0, 1.0) * flat * (1.0 - subj)).min(charcoal_paper_l)
+                    } else {
+                        tl
+                    };
+                    // MA (see `MediumProfile::ma`): where the eye does not go, the value lifted toward the paper.
+                    let tl = if let Some(mf) = &ma_field {
+                        let at = iy as usize * w as usize + ix as usize;
+                        let attn = mf.get(at).copied().unwrap_or(1.0).max(p.subject_mask.as_deref().and_then(|m| m.get(at)).copied().unwrap_or(0.0)).clamp(0.0, 1.0);
+                        (tl + (charcoal_paper_l - tl).max(0.0) * p.ma.clamp(0.0, 1.0) * (1.0 - attn).powi(2)).min(charcoal_paper_l)
+                    } else {
+                        tl
+                    };
                     if under > tl * (1.0 + PAPER_TOL) {
                         paper_need = Some((tl / under).clamp(0.03, 0.99).powf(1.0 / PAPER_OVERLAP));
                     } else if p.erase > 0.0 && !block_in && !velvet_here && rel_g > 1.0 / 3.0 && under < tl * (1.0 - PAPER_TOL) && p.lift > 1e-3 {
@@ -4250,7 +4309,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                     stroke_brush.flat_ends = true;
                     stroke_brush.round = 0.0;
                 }
-                let (wet, load) = if block_in && p.wash_in > 0.0 {
+                // BONELESS (see `MediumProfile::boneless`): the passes after the block-in laid as its wash.
+                let washed = block_in || (p.boneless > 0.0 && (layer as f32) <= p.boneless);
+                let (wet, load) = if washed && p.wash_in > 0.0 {
                     (wet.max(0.85), load.iter().map(|v| v * (1.0 - 0.7 * p.wash_in)).collect::<Vec<f32>>())
                 } else if crest_here {
                     // Dry and thin: a scumble that lands only where the relief stands up.
@@ -4366,6 +4427,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let width1 = (rw * (0.55 - 0.42 * hair)).max(p.min_brush * 0.5 * (1.0 - 0.6 * hair));
                 let width1 = if hatched { width1 + (rw - width1) * hatch_here } else { width1 };
                 let width1 = if sided { rw } else { width1 };
+                // BONELESS (see `MediumProfile::boneless`): a wash goes on at an even width with a soft round edge —
+                // the water sets the mark, not the pressure (a tapered wedge with a hard edge read as a trowel's smear).
+                let width1 = if washed && p.boneless > 0.0 && p.wash_in > 0.0 { rw } else { width1 };
+                if washed && p.boneless > 0.0 && p.wash_in > 0.0 {
+                    stroke_brush.round = 1.0;
+                }
                 // TOUCH (see `MediumProfile::touch`): the pressure follows the value; VELVET presses full.
                 let pressure = if sided { (pvar * (1.0 - 0.5 * p.side)).clamp(0.3, 1.0) } else { pvar.clamp(0.4, 1.0) };
                 let pressure = match paper_need {
@@ -4375,6 +4442,28 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         pressure + (0.38 + 0.6 * dark.powf(0.7) - pressure) * p.touch.clamp(0.0, 1.0)
                     }
                     _ => pressure,
+                };
+                // TSUKE (see `MediumProfile::tsuke`): the loaded edge (the path's left hand) turned to the darker
+                // side of the form — the path reversed where the picture is lighter on its left (in the record).
+                let path = if p.brush.tsuke > 0.0 && erase_wet.is_none() && path.len() >= 2 {
+                    let m = path.len() / 2;
+                    let (a, b) = (path[m.saturating_sub(1)], path[(m + 1).min(path.len() - 1)]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let dl = (dx * dx + dy * dy).sqrt();
+                    if dl > 1e-3 {
+                        let (nx, ny) = (-dy / dl * rw * 0.5, dx / dl * rw * 0.5);
+                        let mid = path[m];
+                        let at = |x: f32, y: f32| luma[(y.clamp(0.0, h as f32 - 1.0) as usize) * w as usize + x.clamp(0.0, w as f32 - 1.0) as usize];
+                        if at(mid[0] - nx, mid[1] - ny) > at(mid[0] + nx, mid[1] + ny) {
+                            path.iter().rev().copied().collect()
+                        } else {
+                            path
+                        }
+                    } else {
+                        path
+                    }
+                } else {
+                    path
                 };
                 // (An eraser's lift is recorded in the stroke's wetness, as the replay reads a wipe.)
                 let s = Stroke { path, width0: rw, width1, load: if erase_wet.is_some() { Vec::new() } else { load }, pressure, wetness: erase_wet.unwrap_or(wet) };
@@ -4730,6 +4819,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     // subject, they don't only shade it. Laid before the bleed so a smudgy medium softens the lines a touch.
     // (Density media draw their contours in `ink_drawing`; this pass would stack its row-ordered dashes on top,
     // thickening whatever lies in the first rows until its cap hits.)
+    // THE BONE (see `MediumProfile::bone`): the structure's contours as calligraphic brush lines, over the washes.
+    if p.bone > 0.0 && placed < p.budget {
+        canvas.dry(0.0);
+        bone_pass(&mut canvas, &mut score, input, p, protect_all.as_deref(), ma_field.as_deref(), &mut placed, &mut k);
+    }
     // SUMI-E: over the wash painting, the darkest masses as bold dry-brush black shapes (the second register).
     if p.sumi && placed < p.budget {
         canvas.dry(0.0);
@@ -5548,6 +5642,15 @@ fn liner_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p:
             }
             let m = path.len() as f32;
             let c = [(acc[0] / m).round() as u8, (acc[1] / m).round() as u8, (acc[2] / m).round() as u8];
+            // On PAPER (see `MediumProfile::paper`) the line only darkens: a ridge lighter than the sheet under it
+            // is the paper's to keep, not a line of white.
+            if p.paper > 0.0 {
+                let mid = path[path.len() / 2];
+                let under = color::linear_luma(color::srgb_to_linear(canvas.color_at(mid[0] as u32, mid[1] as u32)));
+                if color::linear_luma(color::srgb_to_linear(c)) >= under {
+                    continue;
+                }
+            }
             let load = mixture_cached(&mut mix_cache, c, &p.palette, p.charge, p.palette.pigments.len());
             // Every few points kept: the mark is a spline, not a pixel chain.
             let path: Vec<[f32; 2]> = path.iter().step_by(3).copied().chain(path.last().copied()).collect();
@@ -5650,6 +5753,81 @@ fn contour_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, 
                 streak: brush.streak,
                 round: brush.round, pickup: None, bristles: None, kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None, });
         }
+    }
+}
+
+/// THE BONE (sumi-e; see `MediumProfile::bone`): the line register — the structure's contours as calligraphic
+/// brush lines. The value's edges (thinned to a pixel, kept by hysteresis: the pen-and-ink planner's edge map,
+/// opened by `bone`) linked into chains, each chain ONE brush line: its weight and its ink from the darker side
+/// of the edge along it (a near dark form a full black line, a far pale one a thin grey hair — the ink's own
+/// aerial perspective), tapering to its lift-off, the brush's `turn` and `kasure` acting on it. Longest first,
+/// so the cap keeps the composition's lines; where the eye does not go (`ma`, the focal field and the subject)
+/// a chain must run up to twice as far to be drawn. Off the protected paper. Replay-exact.
+#[allow(clippy::too_many_arguments)]
+fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &PaintParams, protect: Option<&[bool]>, attn: Option<&[f32]>, placed: &mut usize, k: &mut u64) {
+    let (w, h) = (input.width(), input.height());
+    let (wu, hu) = (w as usize, h as usize);
+    let strength = p.bone.clamp(0.0, 1.0);
+    if strength <= 0.0 || *placed >= p.budget || w < 8 || h < 8 {
+        return;
+    }
+    let long = w.max(h) as f32;
+    let value = box_blur(&crate::paint::ink::value_map(input), w, h, 1);
+    let edge = crate::paint::ink::edge_map(&value, wu, hu, strength);
+    let min_len = (long / 150.0).max(6.0) as usize;
+    let mut chains = crate::paint::ink::trace_chains(&edge, wu, hu, min_len);
+    chains.sort_by_key(|c| std::cmp::Reverse(c.len()));
+    let (gx, gy) = sobel(&value, w, h);
+    let ink = crate::paint::canvas::darkest_pigment(&p.palette);
+    let n = p.palette.pigments.len();
+    let base = (p.min_brush * 0.8).max(1.2);
+    let mut brush = p.brush;
+    brush.k_pickup = 0.0;
+    brush.streak = 0.15;
+    brush.round = 0.9;
+    brush.bristles = 5;
+    let cap = ((*placed) as f32 + (p.budget - *placed) as f32 * (0.10 + 0.25 * strength)).min(p.budget as f32) as usize;
+    let at = |q: [f32; 2]| -> usize { (q[1].max(0.0) as usize).min(hu - 1) * wu + (q[0].max(0.0) as usize).min(wu - 1) };
+    for c in &chains {
+        if *placed >= cap {
+            break;
+        }
+        if c.len() < 2 {
+            continue;
+        }
+        if protect.map(|m| m.get(at(c[c.len() / 2])).copied().unwrap_or(false)).unwrap_or(false) {
+            continue;
+        }
+        // The darker side of the edge along the chain, the eye's attention on it, and how much of it is the subject.
+        let (mut dark, mut a_sum, mut s_sum) = (0.0f32, 0.0f32, 0.0f32);
+        for q in c {
+            let i = at(*q);
+            let g = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt().max(1e-6);
+            let (ux, uy) = (gx[i] / g * 1.5, gy[i] / g * 1.5);
+            let (v1, v2) = (value[at([q[0] + ux, q[1] + uy])], value[at([q[0] - ux, q[1] - uy])]);
+            dark += 1.0 - v1.min(v2);
+            let subj = p.subject_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            a_sum += attn.map(|m| m[i]).unwrap_or(1.0).max(subj).clamp(0.0, 1.0);
+            s_sum += subj;
+        }
+        let d = (dark / c.len() as f32).clamp(0.0, 1.0);
+        let a = a_sum / c.len() as f32;
+        let sj = s_sum / c.len() as f32;
+        // ON THE SUBJECT the texture is the fine brush's (a feather's barbs, a tuft of fur): the line holds the
+        // silhouette and the long structures only — a chain there must run twice as far, and is laid lighter.
+        let need = min_len as f32 * (1.0 + sj) * if attn.is_some() { 1.0 + p.ma.clamp(0.0, 1.0) * (1.0 - a) } else { 1.0 };
+        if c.len() < need as usize {
+            continue;
+        }
+        *k += 1;
+        let path = waver_path(c, 0.08 * base, p.seed, *k);
+        let width = base * (0.5 + d) * (1.0 - 0.3 * sj);
+        let mut load = vec![0f32; n];
+        load[ink] = p.charge * (0.35 + 0.65 * d) * (1.0 - 0.3 * sj);
+        let s = Stroke { path, width0: width, width1: (width * 0.45).max(0.8), load, pressure: 1.0, wetness: 0.3 };
+        s.rasterize(canvas, &brush);
+        *placed += 1;
+        score.strokes.push(StrokeRecord { id: *placed as u32, wipe: false, wash: false, stage: "bone".into(), spline: s.path, w0: s.width0, w1: s.width1, taper: 0.3, mix: vec![(p.palette.pigments[ink].name.to_string(), s.load[ink])], wet: s.wetness, press: s.pressure, streak: brush.streak, round: brush.round, pickup: Some(0.0), bristles: Some(brush.bristles), kd: None, cap: None, flat: false, hold: false, visc: None, crest: None, over: None, split: None, tint: None, knife: None, twist: None, tgt: None, mix2: None, smudge: None });
     }
 }
 
@@ -5937,7 +6115,9 @@ fn sumi_ink(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: &
     let fluma = luma_map(&firm);
     let mut sorted = fluma.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let ink_t = sorted[((sorted.len() as f32 - 1.0) * 0.12) as usize].min(0.10);
+    // (The share a plan key — `sumi_dark`; unset, the darkest eighth.)
+    let share = if p.sumi_dark > 0.0 { p.sumi_dark.clamp(0.0, 1.0) } else { 0.12 };
+    let ink_t = sorted[((sorted.len() as f32 - 1.0) * share) as usize].min(0.10);
     let ink = crate::paint::canvas::darkest_pigment(&p.palette);
     let n = p.palette.pigments.len();
     let (fgx, fgy) = coherent_gradient(&fluma, w, h, (long / 200.0).max(2.0) as i32, FlowInfill::Flat);

@@ -1653,6 +1653,15 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.chalk_tint = plan.medium.chalk_tint;
     params.flat_brush = plan.medium.flat_brush;
     params.liner = plan.medium.liner;
+    params.brush.tsuke = plan.medium.tsuke;
+    params.ma = plan.medium.ma;
+    params.brush.kasure = plan.medium.kasure;
+    params.brush.nijimi = plan.medium.nijimi;
+    params.brush.turn = plan.medium.turn;
+    params.yohaku = plan.medium.yohaku;
+    params.bone = plan.medium.bone;
+    params.boneless = plan.medium.boneless;
+    params.hake = plan.medium.hake;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2458,6 +2467,15 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.chalk_tint = m.chalk_tint;
         params.flat_brush = m.flat_brush;
         params.liner = m.liner;
+        params.brush.tsuke = m.tsuke;
+        params.ma = m.ma;
+        params.brush.kasure = m.kasure;
+        params.brush.nijimi = m.nijimi;
+        params.brush.turn = m.turn;
+        params.yohaku = m.yohaku;
+        params.bone = m.bone;
+        params.boneless = m.boneless;
+        params.hake = m.hake;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2541,6 +2559,16 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.chalk_tint { params.chalk_tint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.flat_brush { params.flat_brush = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.liner { params.liner = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.tsuke { params.brush.tsuke = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma { params.ma = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.kasure { params.brush.kasure = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nijimi { params.brush.nijimi = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.turn { params.brush.turn = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.yohaku { params.yohaku = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone { params.bone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.boneless { params.boneless = v.max(0.0); }
+        if let Some(v) = pl.hake { params.hake = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
     }
