@@ -176,10 +176,20 @@ plakat paint from photo.png --medium charcoal --plan charcoal.hjson -o out-charc
 #   vary: 0.4                  granulate: 0.05          dishes: 4               dither: 0.0
 #   tsuke: 0.6                 ma: 0.8                  kasure: 0.5             nijimi: 0.8       turn: 0.6
 #   yohaku: 0.7                sumi_dark: 0.03          bone: 0.6               boneless: 3       hake: 1.0
+#   join: 1.0                  bone_wind: 0.6           bone_dot: 0.6           bone_scatter: 0.7
+#   bone_coherence: 0.7        bone_end: 0.6            sumi_focus: 0.5         ma_focus: 0.4
 #   (commit_shadows 0 and sumi_dark 0.03 — at the profile's eighth a woman in a dark coat was one black shape;
 #   contour 0 — the line pass drew worms; skip 0 and loose 0 — square textures and a trowel's smears; the bone
 #   and the hake — without them the ruins were bars crossing at every angle, no line; hotspot 0 — its white
-#   dots were pale dashes on the ground; bleed 0.3 — the wet bands flow into one another, replayed to the bit)
+#   dots were pale dashes on the ground; bleed 0.3 — the wet bands flow into one another, replayed to the bit;
+#   join 1 — the pale dashes and the panes were the bare wedges a polyline's square stamps leave at every bend
+#   of a wide wash; bone_wind 0.6 and bone_dot 0.6 — the grass clumps were outlined in looping worms: a winding
+#   chain is texture, half of them the tenbyō's dots; bone_scatter 0.7 — the dots thrown off the chain into
+#   clusters, not a pricked line; bone_coherence 0.7 — the grass ridges were drawn as thin lines: a chain where
+#   the gradients around it point every way is texture, not a line; bone_end 0.6 — the tome where a line meets
+#   another, the harai where it fades; sumi_focus 0.5 and ma_focus 0.4 — the ruins' debris and the hillside's
+#   near ground drew the eye as strongly as the figure: off the focus the black is left to the washes and the
+#   wash to the paper)
 #
 plakat paint from photo.png --medium japanese-ink --plan japanese-ink.hjson -o out-sumi.png
 

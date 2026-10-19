@@ -445,13 +445,66 @@ and the gouache's liner and focus, borrowed through the plan.
   sweep by this share, off the subject — the masses built from parallel bands that overlap along themselves
   and stop where the tone changes, not from bars crossing at every angle (crossed, each translucent bar was
   a pane: a sheet of broken glass). Needs `boneless`.
+- **Join** (`join`, 0..1, header): the brush's stamps turned WITH the path over a window of `join·width` along
+  it (half a width each way at 1), so they fan around a bend. A mark is laid as a polyline with its stamps
+  square to each straight segment: at every bend a wedge of bare paper is left outside the corner and a wedge
+  is laid twice inside it, each as long as half the width — on a wide wash with a control point every 68 px
+  that was a pale sliver and a dark sliver across the band at every bend (the "broken glass" panes and the
+  pale dashes on the ground, which survived every brush key turned off). A fine mark's wedges are under a
+  pixel, so `join` is the wide wash's key. And the swath is laid ONCE per pixel, each lane's path filled
+  between its stamps: the lanes' pixels are rounded, so a stamp a little turned from the last lands some of
+  its lanes on pixels the last one took and skips others — a moiré of dark and bare arcs sweeping across
+  every wide wash (they read as contours at the bands' edges). And the swath is a 4-connected fill — each
+  lane's path from its last stamp, each stamp's run from the lane beside it — laid after the lane's gates:
+  rounded sample points alone are a lattice turned against the pixel grid that misses a pixel here and lands
+  twice on another, and a pixel claimed by a lane that then laid nothing (the flying white, the halo's gate)
+  stayed bare — a lattice of white pinholes over every wash, which no key could turn off.
+- **Bone wind** (`bone_wind`, 0..1): a bone chain that WINDS is texture, not structure — the isophote of a
+  tuft of grass, a clump's lobed edge, a small closed loop. Its mean turning per `min_len` of travel (over
+  samples half a `min_len` apart, so the pixel staircase averages out) must stay under `(1−bone_wind)·2`
+  radians — at 0.5 a curve must keep a radius of a `min_len` or more, at 0.75 of two, at 0.9 of five — or it
+  is not drawn as a line (grass clumps were outlined in looping worms).
+- **Bone dot** (`bone_dot`, 0..1): the tenbyō (点描) — of the chains `bone_wind` turned away, this share are
+  laid as DOTS instead: the tip of the brush touched along the chain every four base widths, each a round
+  touch sized by the edge's darkness (`1.5..3.5 × base`) and varied by a third, inked `0.4..1 × charge`,
+  so a mass of foliage or grass reads as a rhythm of touches — not a line, not nothing. Stage `bone`.
+- **Bone scatter** (`bone_scatter`, 0..1): the dots thrown off their chain — each moved along the chain's
+  normal by a Gaussian of `bone_scatter × 4 base widths` (the dots' own spacing at 1, clipped at 2.5 σ), so
+  they fall as the clusters of moss and grass a brush's tip leaves, not as a pricked line along a contour.
+- **Bone coherence** (`bone_coherence`, 0..1): a bone chain is drawn only where the value's gradients around
+  it AGREE on a direction — the structure tensor summed over a window half a `min_len` wide, its coherence
+  `((λ1−λ2)/(λ1+λ2))²` averaged along the chain, must reach the key. The edge detector keeps any strong step,
+  and in grass, foliage or gravel the gradients point every way: a strong step there is texture, laid as the
+  tenbyō's dots (`bone_dot`) or nothing, while a coat's edge against the ground, where every gradient agrees,
+  is a line (the hillside's grass ridges were drawn as thin lines).
+- **Bone end** (`bone_end`, 0..1): the bone line's ends read as the calligrapher's. An end that stops against
+  another line (an edge pixel of another chain within two pixels: a junction) is a *tome* — the brush halts
+  and dwells, a short round press laid on the end, wider (×1 + 0.6·key), darker and wetter; an end where the
+  edge fades into the ground is a *harai* — the line drawn toward it and narrowing to a hair (its end width
+  ×(1 − 0.8·key)), the flying white rising along the mark as it already does. A line with one tome is drawn
+  from it; unset, every line ran at one taper from whichever end the tracer began.
+- **Sumi focus** (`sumi_focus`, 0..1): the black register (`sumi`) laid only where the eye goes — the
+  attention at a mass (the saliency weighted to the centre, or the subject) must reach the key, or the mass is
+  left to the washes beneath (the ruins' debris and the hillside's rocks were black shapes as strong as the
+  figure).
+- **Ma focus** (`ma_focus`, 0..1): the attention `ma` reads narrowed to the focus — the subject taken into it,
+  blurred over a forty-eighth of the sheet (a box mask's edge a gradient, not a cut), raised to the power
+  1 + 4·key — so a passage of middling saliency (debris, a near ground) is lifted toward the paper with the
+  periphery and the subject stands alone; the bone's chains off the focus must run longer by the same
+  attention.
 - Defaults: `tsuke 0.6` · `ma 0.5` · `kasure 0.5` · `nijimi 0.4` · `turn 0.5` · `yohaku 0.6` · `bone 0.5` ·
-  `boneless 2` · `hake 0.7`; every other medium has them at 0. The recommended plan is in `PAINT_EXAMPLES.md`.
+  `boneless 2` · `hake 0.7` · `join 1` · `bone_wind 0.5` · `bone_dot 0.5` · `bone_scatter 0.5` ·
+  `bone_coherence 0.3` · `bone_end 0.5` · `sumi_focus 0.3` · `ma_focus 0.3`; every other medium has them at 0.
+  The recommended plan is in `PAINT_EXAMPLES.md`.
 - No white: the plan sets `hotspot 0` (its dots of titanium were pale dashes on the ground — the light is the
   paper), and on paper the `liner` lays no line lighter than the sheet under it.
 - Tune: `bone` up for a wirier drawing, down for a wash alone; `boneless` down (1) for a drier, more broken
   ground; `hake` 0 for washes that follow the form; `bleed` up for washes that flow into one another; `sumi_dark`
-  up for more solid black; `ma`/`yohaku` up for more paper; `dishes` 4 holds the ink to four tones.
+  up for more solid black; `ma`/`yohaku` up for more paper; `dishes` 4 holds the ink to four tones; `bone_wind`
+  up to keep only the smooth long contours, `bone_dot` up for more of the tufts as dots, 0 to drop them;
+  `bone_coherence` up to keep the line off every textured ground, 0 to let it draw the grass; `bone_end` 0 for
+  lines of one taper; `sumi_focus` up for black only on the subject; `ma_focus` up to dissolve more of the
+  ground into the paper, 0 for an even sheet.
 
 ```hjson
 medium: japanese-ink

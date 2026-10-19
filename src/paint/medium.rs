@@ -596,6 +596,51 @@ pub struct MediumProfile {
     /// angle of the picture's flow (crossed, each translucent bar was a pane — a sheet of broken glass).
     /// Needs `boneless` and `wash_in`.
     pub hake: f32,
+    /// JOIN (0..1, 0 = off): the brush's stamps turned with the path over a window of this share of the width
+    /// (see `BrushConfig::join`) — a bend in a wide wash no longer leaves a sliver of bare paper outside the
+    /// corner and a double sliver inside it. In the score's header.
+    pub join: f32,
+    /// BONE WIND (0..1, 0 = off): the bone's chains that WIND are texture, not structure — the isophote of a
+    /// tuft of grass, a clump's lobed edge, a small closed loop. A chain's mean turning per `min_len` of travel
+    /// (over samples half a `min_len` apart, so the pixel staircase averages out) must stay under
+    /// `(1 − bone_wind)·2` radians — at 0.5 a curve must keep a radius of a `min_len` or more, at 0.75 of two,
+    /// at 0.9 of five — or the chain is not drawn as a line (grass clumps were outlined in looping worms).
+    pub bone_wind: f32,
+    /// BONE DOT (0..1, 0 = off): the tenbyō — of the chains `bone_wind` turned away, this share are laid as DOTS
+    /// instead: the tip of the brush touched along the chain every four base widths, each dot a round touch
+    /// sized by the edge's darkness (`1.5..3.5 × base`) and varied by a third, so a mass of foliage or grass reads as a
+    /// rhythm of touches, not a line and not nothing.
+    pub bone_dot: f32,
+    /// BONE SCATTER (0..1, 0 = off): the tenbyō's dots thrown off their chain — each dot moved along the chain's
+    /// normal by a Gaussian of `bone_scatter × 4 base widths` (the dots' own spacing at 1), so they fall as the
+    /// clusters of moss and grass a brush's tip leaves, not as a pricked line along a contour.
+    pub bone_scatter: f32,
+    /// BONE COHERENCE (0..1, 0 = off): a bone chain is drawn only where the value's gradients around it AGREE
+    /// on a direction — the structure tensor summed over a window half a `min_len` wide, its coherence
+    /// ((λ1−λ2)/(λ1+λ2))² averaged along the chain, must reach the key. The edge detector keeps any strong
+    /// step; in grass, foliage or gravel the gradients point every way, and a strong step there is texture —
+    /// laid as the tenbyō's dots (`bone_dot`) or nothing — while a coat's edge against the ground, where every
+    /// gradient agrees, is a line (a hillside's grass ridges were drawn as thin lines).
+    pub bone_coherence: f32,
+    /// BONE END (0..1, 0 = off): the bone line's ends read as the calligrapher's — the TOME and the HARAI. An
+    /// end that stops against another line (an edge pixel of another chain beside it: a junction, a corner
+    /// met) is a tome: the brush halts and dwells, the ink spreads a little and pools — a round press laid
+    /// there, wider and darker by the key. An end where the edge just fades into the ground is a harai: the
+    /// brush sweeps off the paper, the line drawn toward that end and narrowing to a hair (its width there
+    /// falls with the key), the hairs parting (`kasure` already rises along the mark). Unset, every line ran
+    /// at one taper from whichever end the tracer began.
+    pub bone_end: f32,
+    /// SUMI FOCUS (0..1, 0 = off): the black register (`sumi`) laid only where the eye goes — the attention
+    /// at a mass (the picture's saliency weighted to the centre, or the subject) must reach the key, or the
+    /// mass is left to the washes beneath. Unset, the darkest masses in the far ground — a ruin's debris, a
+    /// hillside's rocks — were black shapes as strong as the subject, competing with it.
+    pub sumi_focus: f32,
+    /// MA FOCUS (0..1, 0 = off): the eye's attention that `ma` reads narrowed to the focus — raised to the
+    /// power 1 + 4·key, so a passage of middling saliency (a ruin's debris, a hillside's near ground) counts as
+    /// far from the eye and is lifted toward the paper with the periphery, and the subject stands alone. Also
+    /// read by the bone's chain length off the focus. Unset, the far ground's debris drew the eye as strongly as
+    /// the figure.
+    pub ma_focus: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -712,6 +757,14 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -821,6 +874,14 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -930,6 +991,14 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1080,6 +1149,14 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1198,6 +1275,14 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1311,6 +1396,14 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1420,6 +1513,14 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1532,6 +1633,14 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     bone: 0.5,     // the line register: the structure's contours as brush lines
     boneless: 2.0, // the block-in and two passes after it as washes
     hake: 0.7,     // the washes one horizontal sweep
+    join: 1.0,     // the stamps fan around a bend: no bare sliver at a wash's corner
+    bone_wind: 0.5, // a winding chain is texture, not a bone
+    bone_dot: 0.5,  // half of them the tenbyō's dots
+    bone_scatter: 0.5, // the dots thrown off their chain into clusters
+    bone_coherence: 0.3, // a line only where the gradients around it agree
+    bone_end: 0.5, // the tome where a line meets another, the harai where it fades
+    sumi_focus: 0.3, // the black masses only where the eye goes
+    ma_focus: 0.3, // the empty space reaching in toward the focus
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1641,6 +1750,14 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1753,6 +1870,14 @@ pub const DURER: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -1868,6 +1993,14 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -1980,6 +2113,14 @@ pub const PENCIL: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -2094,6 +2235,14 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -2203,6 +2352,14 @@ pub const PASTEL: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2312,6 +2469,14 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2427,6 +2592,14 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     bone: 0.0,
     boneless: 0.0,
     hake: 0.0,
+    join: 0.0,
+    bone_wind: 0.0,
+    bone_dot: 0.0,
+    bone_scatter: 0.0,
+    bone_coherence: 0.0,
+    bone_end: 0.0,
+    sumi_focus: 0.0,
+    ma_focus: 0.0,
 };
 
 /// Every declared medium.
@@ -2595,7 +2768,7 @@ mod tests {
                 assert_eq!([m.rewet, m.chalk_tint, m.flat_brush, m.liner], [0.0; 4], "{} has no gouache layer", m.name);
             }
             if m.name != "japanese-ink" {
-                assert_eq!([m.tsuke, m.ma, m.kasure, m.nijimi, m.turn, m.yohaku, m.bone, m.boneless, m.hake], [0.0; 9], "{} has no sumi layer", m.name);
+                assert_eq!([m.tsuke, m.ma, m.kasure, m.nijimi, m.turn, m.yohaku, m.bone, m.boneless, m.hake, m.join, m.bone_wind, m.bone_dot, m.bone_scatter, m.bone_coherence, m.bone_end, m.sumi_focus, m.ma_focus], [0.0; 17], "{} has no sumi layer", m.name);
             }
         }
     }

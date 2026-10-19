@@ -1662,6 +1662,14 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bone = plan.medium.bone;
     params.boneless = plan.medium.boneless;
     params.hake = plan.medium.hake;
+    params.brush.join = plan.medium.join;
+    params.bone_wind = plan.medium.bone_wind;
+    params.bone_dot = plan.medium.bone_dot;
+    params.bone_scatter = plan.medium.bone_scatter;
+    params.bone_coherence = plan.medium.bone_coherence;
+    params.bone_end = plan.medium.bone_end;
+    params.sumi_focus = plan.medium.sumi_focus;
+    params.ma_focus = plan.medium.ma_focus;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2476,6 +2484,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.bone = m.bone;
         params.boneless = m.boneless;
         params.hake = m.hake;
+        params.brush.join = m.join;
+        params.bone_wind = m.bone_wind;
+        params.bone_dot = m.bone_dot;
+        params.bone_scatter = m.bone_scatter;
+        params.bone_coherence = m.bone_coherence;
+        params.bone_end = m.bone_end;
+        params.sumi_focus = m.sumi_focus;
+        params.ma_focus = m.ma_focus;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2568,6 +2584,14 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.bone { params.bone = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.boneless { params.boneless = v.max(0.0); }
         if let Some(v) = pl.hake { params.hake = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.join { params.brush.join = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_wind { params.bone_wind = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_dot { params.bone_dot = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_scatter { params.bone_scatter = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_coherence { params.bone_coherence = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.bone_end { params.bone_end = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.sumi_focus { params.sumi_focus = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.ma_focus { params.ma_focus = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }

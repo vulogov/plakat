@@ -32,7 +32,25 @@ per-cycle commits carry the rationale + before/after.
   **Hake** (`hake`): the washes one horizontal sweep of the broad flat brush, off the subject — parallel bands,
   not bars crossing at every angle (crossed, each translucent bar was a pane of broken glass). On paper the
   `liner` lays no line lighter than the sheet. The replay dries the sheet before the bone and before the ink
-  as the painter does, so a wet sheet (`bleed`) replays to the bit — every score does.
+  as the painter does, so a wet sheet (`bleed`) replays to the bit — every score does. **Join** (`join`, in
+  the score's header): the brush's stamps turned with the path over a window of the width, so they fan
+  around a bend — laid square to each segment of the polyline, they left a wedge of bare paper outside every
+  corner and a double wedge inside it, half a width long: the "broken glass" panes and the pale dashes on a
+  wash's ground, which survived every brush key turned off; and the swath laid once per pixel with the
+  lanes' gaps filled (the rounded lanes of a turning stamp were a moiré of arcs across every wash). **Bone wind** (`bone_wind`): a bone chain that
+  winds (a tuft's isophote, a clump's lobed edge, a small loop) is texture and not drawn as a line; **bone
+  dot** (`bone_dot`): a share of those laid as the tenbyō's dots, the brush's tip touched along the chain;
+  **bone scatter** (`bone_scatter`): the dots thrown off the chain along its normal into clusters; **bone
+  coherence** (`bone_coherence`): a chain is a line only where the gradients around it agree on a direction (the
+  structure tensor's coherence over a window half a `min_len` wide) — in grass, foliage or gravel a strong step is
+  texture, the tenbyō's dots or nothing. And the join's swath a 4-connected fill laid after the lane's gates:
+  rounded sample points alone were a lattice turned against the pixel grid, a pixel missed here and laid twice
+  there, and a pixel claimed by a lane that laid nothing stayed bare — white pinholes over every wash that no
+  key could turn off. **Bone end** (`bone_end`): the line's ends as the calligrapher's — a tome (a round press,
+  the ink pooling) where it stops against another line, a harai (narrowing to a hair) where it fades, the line
+  drawn from its tome; **sumi focus** (`sumi_focus`): the black register only where the eye goes; **ma focus**
+  (`ma_focus`): the attention `ma` reads, the subject in it and blurred, narrowed to the focus, so the far
+  ground's debris dissolves into the paper and the figure stands alone.
 
 ## What's new in 7.9.0 — Gouache: layered body colour — rewetted seams, chalky lights, a flat brush and a liner
 
