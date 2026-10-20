@@ -1674,6 +1674,13 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.bone_ryaku = plan.medium.bone_ryaku;
     params.bone_fade = plan.medium.bone_fade;
     params.bokashi = plan.medium.bokashi;
+    params.velvet_dark = plan.medium.velvet_dark;
+    params.slant = plan.medium.slant;
+    params.grade = plan.medium.grade;
+    params.weight = plan.medium.weight;
+    params.clip = plan.medium.clip;
+    params.tiers = plan.medium.tiers;
+    params.brush.waver = plan.medium.waver;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2500,6 +2507,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.bone_ryaku = m.bone_ryaku;
         params.bone_fade = m.bone_fade;
         params.bokashi = m.bokashi;
+        params.velvet_dark = m.velvet_dark;
+        params.slant = m.slant;
+        params.grade = m.grade;
+        params.weight = m.weight;
+        params.clip = m.clip;
+        params.tiers = m.tiers;
+        params.brush.waver = m.waver;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2604,6 +2618,13 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.bone_ryaku { params.bone_ryaku = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bone_fade { params.bone_fade = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bokashi { params.bokashi = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.velvet_dark { params.velvet_dark = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.slant { params.slant = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.grade { params.grade = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.weight { params.weight = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.clip { params.clip = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.tiers { params.tiers = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.waver { params.brush.waver = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }

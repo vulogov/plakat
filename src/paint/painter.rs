@@ -583,6 +583,18 @@ pub struct PaintParams {
     pub bone_fade: f32,
     /// BOKASHI (0..1, 0 = off): the marks off the focus wetter: the fading edge dissolved, not merely lightened (see `MediumProfile::bokashi`).
     pub bokashi: f32,
+    /// VELVET DARK (0..1, 0 = off): the velvet black held to an absolute dark (see `MediumProfile::velvet_dark`).
+    pub velvet_dark: f32,
+    /// SLANT (0..1, 0 = off): hatching at the hand's angle where the picture has no direction (see `MediumProfile::slant`).
+    pub slant: f32,
+    /// GRADE (0..1, 0 = off): the half-tones lifted toward the paper, the velvet kept (see `MediumProfile::grade`).
+    pub grade: f32,
+    /// WEIGHT (0..1, 0 = off): the bone line at a pencil's weight over the hatching (see `MediumProfile::weight`).
+    pub weight: f32,
+    /// CLIP (0..1, 0 = off): the hatch stopped at the picture's contours (see `MediumProfile::clip`).
+    pub clip: f32,
+    /// TIERS (0..1, 0 = off): the hatching in tonal layers: lights blank, half-tones single, shadows crossed (see `MediumProfile::tiers`).
+    pub tiers: f32,
     /// SUMI DARK (0..1, 0 = the default eighth): the share of the darkest values the sumi-e's black register lays
     /// (see `sumi_ink`) — a figure in a dark coat is a figure, not one black shape. A plan key.
     pub sumi_dark: f32,
@@ -597,7 +609,7 @@ pub struct PaintParams {
 impl PaintParams {
     /// A sensible default over a palette at a stroke budget.
     pub fn new(palette: Palette, budget: usize) -> Self {
-        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
+        Self { palette, budget, passes: None, brush_sizes: vec![28.0, 14.0, 7.0], min_brush: 4.0, armature_side: None, armature_face_side: None, armature_body_side: None, subject_mask: None, armature_levels: 8, region_tiers: Vec::new(), silhouette: 0.0, silhouette_mode: EdgeMode::Line, commit_shadows: 0.0, charge: 6.0, medium: "oil-direct".into(), reserve: None, density: false, ground: None, protect: None, region_mask: None, hair_mask: None, infill: FlowInfill::Flat, rigger: 0.0, hotspot: 0.0, technique: WetTechnique::None, face_ladder_from: None, leak: 0.0, seed: 42, brush: BrushConfig::default(), paint_mask: None, layer_brush: None, depth: None, relief: None, normals: None, materials: None, features: Vec::new(), follow: 1.0, white: None, haze: 0.0, stroke_len: 1.0, stroke_width: 1.0, bleed: 0.0, diffuse: 0.0, opacity: 1.0, impasto: 0.0, chroma: 1.0, dry_shift: 0.0, granulate: 0.0, sheen: 0.0, lift: 1.0, broken: 0.0, contour: 0.0, style: PaintStyle::Legible, define: 0.6, saliency: 0.0, focus_detail: 0.0, preserve_face: 0.0, face_mask: None, splatter: 0.0, edge_pool: 0.0, paper_edge: 0.0, old_paper: false, contrast: 1.0, warmth: 0.0, clarity: 0.0, dry: 0.5, coverage: 0.0, detail_coherence: 0.14, detail_len: 1.0, detail_restate: 0.08, detail_sharpen: 0.0, detail_texture: 1.0, fine_lines: 1.0, impasto_map: 0.0, weave: 0.0, collide: 0.0, gradation: 0.0, hatch_angle: 0.0, engrave: false, draw_contours: false, brush_drawing: false, sumi: false, luminous: false, book: false, threads: 0, from_scratch: false, fill: 0.0, dump_passes: None, wash_in: 0.0, wet_cap: 1.0, scumble: 0.0, turbulence: 0.0, accent: 0.0, loose: 0.0, glaze: 0.0, sfumato: 0.0, glaze_pass: 0.0, vary: 0.0, shade: 0.0, imprimatura: 0.0, body_vary: 0.0, lost: 0.0, crest: 0.0, spatter: 0.0, aerial: 0.0, sink: 0.0, tail: 0.0, film: 0.0, split: 0.0, sag: 0.0, gloss: 0.0, tint: 0.0, knife: 0.0, hiding: 0.0, twist: 0.0, skim: 0.0, hatch: 0.0, verdaccio: 0.0, dishes: 0.0, lights: 0.0, cross: 0.0, dither: 0.0, solid: 0.0, flesh: 0.0, span: 0.0, edge: 0.0, glint: 0.0, smooth: 0.0, bole: 0.0, ramp: 0.0, umbra: 0.0, side: 0.0, blend: 0.0, skin: 0.0, carnation: 0.0, small: 0.0, anchor: 0.0, trim: 0.0, small_min: 0.0, paper: 0.0, erase: 0.0, touch: 0.0, velvet: 0.0, paper_top: 0.0, sweep: 0.0, stump: 0.0, stump_edge: 0.0, stump_feather: 0.0, sweep_wave: 0.0, paper_knee: 0.0, chalk_tint: 0.0, flat_brush: 0.0, liner: 0.0, ma: 0.0, yohaku: 0.0, bone: 0.0, boneless: 0.0, hake: 0.0, bone_wind: 0.0, bone_dot: 0.0, bone_scatter: 0.0, bone_coherence: 0.0, bone_end: 0.0, sumi_focus: 0.0, ma_focus: 0.0, ma_flow: 0.0, bone_ryaku: 0.0, bone_fade: 0.0, bokashi: 0.0, velvet_dark: 0.0, slant: 0.0, grade: 0.0, weight: 0.0, clip: 0.0, tiers: 0.0, sumi_dark: 0.0, face_extent: None, silhouette_mask: None }
     }
 }
 
@@ -1884,6 +1896,49 @@ fn warm_light(target: Srgb, amt: f32, carnation: f32) -> Srgb {
     let warm = color::lab_to_srgb(color::Lab { l: lab.l + (100.0 - lab.l) * a, a: lab.a * (1.0 - 0.3 * a), b: lab.b * (1.0 - 0.3 * a) });
     let plain = lights_tone(target, a);
     [0, 1, 2].map(|i| (warm[i] as f32 * c + plain[i] as f32 * (1.0 - c)).round().clamp(0.0, 255.0) as u8)
+}
+
+/// CLIP (see `MediumProfile::clip`): the path cut where it CROSSES a contour of `edge` — past its first `margin`
+/// pixels (a seed beside a line still lays its mark), walked in half-pixel steps; an edge pixel whose pixel two
+/// steps on is clear is a crossing and the path ends a pixel short of it, while a run of edge pixels is the path
+/// riding along the contour and goes on.
+fn clip_at_edge(path: &[[f32; 2]], edge: &[bool], w: usize, h: usize, margin: f32) -> Vec<[f32; 2]> {
+    if path.len() < 2 {
+        return path.to_vec();
+    }
+    let on = |x: f32, y: f32| -> bool {
+        let (xi, yi) = (x.round(), y.round());
+        xi >= 0.0 && yi >= 0.0 && (xi as usize) < w && (yi as usize) < h && edge[yi as usize * w + xi as usize]
+    };
+    let mut out = vec![path[0]];
+    let mut along = 0.0f32;
+    for q in path.windows(2) {
+        let (dx, dy) = (q[1][0] - q[0][0], q[1][1] - q[0][1]);
+        let l = (dx * dx + dy * dy).sqrt();
+        if l < 1e-6 {
+            continue;
+        }
+        let (ux, uy) = (dx / l, dy / l);
+        let mut s = 0.0f32;
+        while s < l {
+            let (x, y) = (q[0][0] + ux * s, q[0][1] + uy * s);
+            if along + s > margin && on(x, y) && !on(x + ux, y + uy) {
+                let cut = (s - 1.0).max(0.0);
+                let end = [q[0][0] + ux * cut, q[0][1] + uy * cut];
+                if out.len() < 2 || cut > 1e-3 {
+                    out.push(end);
+                }
+                if out.len() < 2 {
+                    out.push([end[0] + ux * 0.5, end[1] + uy * 0.5]);
+                }
+                return out;
+            }
+            s += 0.5;
+        }
+        along += l;
+        out.push(q[1]);
+    }
+    out
 }
 
 /// A HATCH line (see `MediumProfile::hatch`): the path pulled `amt` of the way onto the straight line through its
@@ -3224,6 +3279,11 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     } else {
         0
     };
+    // CLIP (see `MediumProfile::clip`): the picture's contours, the bone's edge map, a stop for the hatch.
+    let clip_edge: Option<Vec<bool>> = (p.clip > 0.0 && w >= 8 && h >= 8).then(|| {
+        let value = box_blur(&crate::paint::ink::value_map(input), w, h, 1);
+        crate::paint::ink::edge_map(&value, w as usize, h as usize, p.clip.clamp(0.0, 1.0))
+    });
     for (layer, pass) in passes.iter().enumerate() {
         let radius = pass.radius.max(p.min_brush);
         let pass_t0 = std::time::Instant::now();
@@ -3245,6 +3305,14 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
         let last_pass = layer + 1 == ladder_len;
         let glazing = pass.stage == "glaze";
         let cresting = pass.stage == "crest";
+        // TIERS (see `MediumProfile::tiers`): which hatched layer this pass is — the passes before it that hatch
+        // (the cross's count: past a quarter of the way from the broadest brush to the finest).
+        let tier_k = if p.tiers > 0.0 {
+            let (rc, rf) = (passes.first().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius), passes.last().map(|q| q.radius.max(p.min_brush)).unwrap_or(radius));
+            passes.iter().take(layer).skip(1).filter(|q| rc > rf + 1e-6 && (rc - q.radius.max(p.min_brush)) / (rc - rf) > 0.25).count()
+        } else {
+            0
+        };
         if placed >= p.budget {
             break;
         }
@@ -3428,6 +3496,50 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 (gx, gy)
             }
             _ => (gx, gy),
+        };
+        // SLANT (see `MediumProfile::slant`): where the picture has no direction, the hatch at the hand's angle.
+        let (gx, gy) = if p.slant > 0.0 && !block_in {
+            let (wu, hu) = (w as usize, h as usize);
+            let (mut lx, mut ly) = (vec![0f32; wu * hu], vec![0f32; wu * hu]);
+            for y in 1..hu.saturating_sub(1) {
+                for x in 1..wu.saturating_sub(1) {
+                    let i = y * wu + x;
+                    lx[i] = 0.5 * (luma[i + 1] - luma[i - 1]);
+                    ly[i] = 0.5 * (luma[i + wu] - luma[i - wu]);
+                }
+            }
+            // The direction read at the drawing's scale, not only the pass's: at a fine pass's few pixels a
+            // stone's own edge is "coherent", and the hatch over the rubble circled from stone to stone.
+            let r = ((radius * 1.5).round() as i32).max(3).max((w.max(h) as f32 / 150.0).round() as i32);
+            let jxx = box_blur(&lx.iter().map(|g| g * g).collect::<Vec<f32>>(), w, h, r);
+            let jyy = box_blur(&ly.iter().map(|g| g * g).collect::<Vec<f32>>(), w, h, r);
+            let jxy = box_blur(&lx.iter().zip(ly.iter()).map(|(a, b)| a * b).collect::<Vec<f32>>(), w, h, r);
+            // The hand's stroke runs up to the right (−45° on the sheet), its "gradient" at +45°; a later pass
+            // crossed off it. In the double angle an orientation and its reverse are one.
+            let phi = std::f32::consts::FRAC_PI_4 + if p.cross > 0.0 { cross_turn(layer, p.cross) } else { 0.0 };
+            let (hc, hs) = ((2.0 * phi).cos(), (2.0 * phi).sin());
+            let key = p.slant.clamp(0.0, 1.0);
+            let (mut gx, mut gy) = (gx, gy);
+            for i in 0..gx.len() {
+                let tr = jxx[i] + jyy[i];
+                let coh = if tr <= 1e-9 { 0.0 } else { (((jxx[i] - jyy[i]).powi(2) + 4.0 * jxy[i] * jxy[i]) / (tr * tr)).clamp(0.0, 1.0) };
+                let keep = p.hair_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0)
+                    .max(p.face_mask.as_deref().and_then(|m| m.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0));
+                let t = key * (1.0 - coh) * (1.0 - keep);
+                if t <= 1e-3 {
+                    continue;
+                }
+                let m = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
+                let th = gy[i].atan2(gx[i]);
+                let (c2, s2) = ((2.0 * th).cos() * (1.0 - t) + hc * t, (2.0 * th).sin() * (1.0 - t) + hs * t);
+                let a = 0.5 * s2.atan2(c2);
+                let k = m.max(1e-4);
+                gx[i] = a.cos() * k;
+                gy[i] = a.sin() * k;
+            }
+            (gx, gy)
+        } else {
+            (gx, gy)
         };
         // The SURFACE leads the stroke where the picture's values do not: on a passage without an edge of its own
         // the mark turns onto the form's direction. An edge the picture draws keeps its stroke, and the pass's
@@ -3952,7 +4064,9 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // (The share and the eraser's third are read on the PERCEIVED scale — the range in gamma: 8% of the
                 // linear range is a sRGB value of about 80, and the whole dark half-tone went to velvet.)
                 let rel_g = ((tluma.max(0.0).powf(1.0 / 2.2) - map_lo.max(0.0).powf(1.0 / 2.2)) / (map_hi.max(0.0).powf(1.0 / 2.2) - map_lo.max(0.0).powf(1.0 / 2.2)).max(0.02)).clamp(0.0, 1.0);
-                let velvet_here = p.velvet > 0.0 && !glazing && !cresting && !lost_here && rel_g < p.velvet;
+                // VELVET DARK (see `MediumProfile::velvet_dark`): and dark on the sheet, not only in the range.
+                let velvet_here = p.velvet > 0.0 && !glazing && !cresting && !lost_here && rel_g < p.velvet
+                    && (p.velvet_dark <= 0.0 || tluma.max(0.0).powf(1.0 / 2.2) < p.velvet_dark);
                 let target = if velvet_here { p.palette.pigments[charcoal_dark].masstone } else { target };
                 // CHALK TINT (see `MediumProfile::chalk_tint`): a light mixed with white loses its chroma.
                 let target = if p.chalk_tint > 0.0 && !glazing && !cresting && !lost_here && !on_face {
@@ -3990,6 +4104,13 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                         let u = ((rel_g - 0.6) / 0.4).clamp(0.0, 1.0);
                         let light = (map_hi / charcoal_paper_l.max(1e-3)).clamp(0.0, 1.0).powi(2);
                         (tl + (charcoal_paper_l - tl).max(0.0) * p.paper_knee.clamp(0.0, 1.0) * u * u * (3.0 - 2.0 * u) * light).min(charcoal_paper_l)
+                    } else {
+                        tl
+                    };
+                    // GRADE (see `MediumProfile::grade`): the half-tones keyed lighter, the velvet black kept.
+                    let tl = if p.grade > 0.0 && !velvet_here {
+                        let g = (tl / charcoal_paper_l.max(1e-3)).clamp(0.0, 1.0).powf(1.0 / 2.2);
+                        (charcoal_paper_l * g.powf(1.0 / (1.0 + p.grade.clamp(0.0, 1.0))).powf(2.2)).max(tl).min(charcoal_paper_l)
                     } else {
                         tl
                     };
@@ -4185,6 +4306,20 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 // SMOOTH: on a calm passage the hatching gives way by the calm — a soft wash, not a line.
                 let hatch_here = p.hatch * ((depth_t - 0.25) / 0.75).clamp(0.0, 1.0) * (1.0 - calm) * (1.0 - sk);
                 let hatched = hatch_here > 1e-3 && !block_in && !glazing && !cresting && !accented && !lost_here && !smooth_face;
+                // TIERS: a hatched layer's lines only where the tone is dark enough for it — the lights left to
+                // the paper, the half-tones one set of lines, the shadows crossed layer over layer.
+                // The block-in's broad marks are the deepest layer's: a pencil drawing has no toned ground, and
+                // laid everywhere they were grey zigzag bands across the half-tones and the lights.
+                if (hatched || block_in) && p.tiers > 0.0 {
+                    let v = color::linear_luma(color::srgb_to_linear(target)).max(0.0).powf(1.0 / 2.2);
+                    let thr = p.tiers.clamp(0.0, 1.0) * if block_in { 0.75 } else { (0.15 + 0.2 * tier_k as f32).min(0.75) };
+                    // A soft threshold — the layer thins out over ±0.1 of darkness round it, by a hash — so a
+                    // half-tone fades from one layer to the next instead of breaking into blank islands.
+                    let t = ((1.0 - v - thr) / 0.2 + 0.5).clamp(0.0, 1.0);
+                    if jitter(p.seed ^ 0x7135_5, k.wrapping_add(89)) + 0.5 >= t * t * (3.0 - 2.0 * t) {
+                        return None;
+                    }
+                }
                 // THE SIDE OF THE STICK (see `MediumProfile::side`): on the broad passes, off the faces and the
                 // hair, this share of the marks (the key's on the block-in, falling with the ladder) are laid
                 // with the stick's SIDE — wider by `0.6·side`, flat with the stick's facets (round 0, streak
@@ -4220,6 +4355,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
                 let path = if flat_mark { straighten_path(&path, 0.5 * p.flat_brush, w, h) } else { path };
                 // An accent dab is set at its own angle, off the flow: the path turned about its middle.
                 let path = if accented { turn_path(&path, (jitter(p.seed ^ 0xACCE_17, k.wrapping_add(13)) * 2.0 * ACCENT_TURN).to_radians(), w, h) } else { path };
+                // CLIP (see `MediumProfile::clip`): a mark of the ground stops at the first contour it crosses (the
+                // subject's own marks are not cut: a fur's every hair is an edge, and the fox's head broke up).
+                let path = match &clip_edge {
+                    Some(ce) if !glazing && !cresting && !lost_here && off_subject => clip_at_edge(&path, ce, w as usize, h as usize, 2.0),
+                    _ => path,
+                };
                 // Laid less wet (0.7, jittered) so strokes sit ON the canvas rather than dissolving into the wet
                 // paint beneath — distinct marks, not a smear. Some wetness remains for light harmonisation.
                 // DETAIL marks are laid DRIER still: a fine accent that resolves a feature (an eye, a window, a
@@ -4986,8 +5127,12 @@ fn paint_inner(input: &RgbImage, p: &PaintParams, critic: Option<&PassCritic>, m
     if p.book && placed < p.budget {
         let plan = book.take().unwrap_or_else(|| book_plan(source, p, p.budget.saturating_sub(placed)));
         book_line(&mut canvas, &mut score, source, p, &mut placed, plan);
-    } else if p.draw_contours && placed < p.budget {
-        ink_contours(&mut canvas, &mut score, input, source, p, protect_all.as_deref(), &mut placed, &mut k);
+    } else if p.draw_contours {
+        // A drawn line from the bone (a pencil's contour traced along the picture's own edges) replaces the
+        // contours of the armature's levels, whose iso-lines ripple round every blob of the simplified picture.
+        if p.bone <= 0.0 && placed < p.budget {
+            ink_contours(&mut canvas, &mut score, input, source, p, protect_all.as_deref(), &mut placed, &mut k);
+        }
     } else if p.contour > 0.0 && !p.density && placed < p.budget {
         contour_pass(&mut canvas, &mut score, input, p, &mut placed, &mut k);
     }
@@ -6105,9 +6250,12 @@ fn bone_pass(canvas: &mut Canvas, score: &mut StrokeScore, input: &RgbImage, p: 
         let bone_wet = if p.bokashi > 0.0 && attn.is_some() { 0.3 + 0.65 * p.bokashi.clamp(0.0, 1.0) * (1.0 - a).powi(2) } else { 0.3 };
         *k += 1;
         let path = waver_path(cc, 0.08 * base, p.seed, *k);
-        let width = base * (0.5 + d) * (1.0 - 0.3 * sj);
+        // WEIGHT (see `MediumProfile::weight`): the line at a graphite point's weight, over the hatched tone —
+        // pressed by the darker side of the edge, so a cloud's light rim keeps a light line.
+        let wt = p.weight.clamp(0.0, 1.0) * d;
+        let width = base * (0.5 + d) * (1.0 - 0.3 * sj) * (1.0 + 1.5 * wt);
         let mut load = vec![0f32; n];
-        load[ink] = p.charge * (0.35 + 0.65 * d) * (1.0 - 0.3 * sj);
+        load[ink] = p.charge * (0.35 + 0.65 * d) * (1.0 - 0.3 * sj) * (1.0 + wt);
         let w1 = if e <= 0.0 { width * 0.45 } else if tome1 { width * (0.45 + 0.55 * e) } else { width * 0.45 * (1.0 - 0.8 * e) };
         let s = Stroke { path, width0: width, width1: w1.max(if e > 0.0 { 0.5 } else { 0.8 }), load, pressure: 1.0, wetness: bone_wet };
         s.rasterize(canvas, &brush);
