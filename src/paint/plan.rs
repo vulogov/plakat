@@ -442,6 +442,18 @@ pub struct PaintPlan {
     pub tiers: Option<f32>,
     /// WAVER (0..1): the pressure wavering along each mark (`MediumProfile::waver`).
     pub waver: Option<f32>,
+    /// NIB (0..1): a steel nib: every line full black, the tone by how many (`MediumProfile::nib`).
+    pub nib: Option<f32>,
+    /// NIBS (count): pens of several sizes in layers, broad to fine (`MediumProfile::nibs`).
+    pub nibs: Option<f32>,
+    /// NIB TONE (0..1): each pen only where the tone is dark enough for its width (`MediumProfile::nib_tone`).
+    pub nib_tone: Option<f32>,
+    /// NIB WHITE (0..1): the share of the paper a cell always keeps (`MediumProfile::nib_white`).
+    pub nib_white: Option<f32>,
+    /// NIB ANCHOR (0..1): the deep cast-shadow touches that set things on the ground (`MediumProfile::nib_anchor`).
+    pub nib_anchor: Option<f32>,
+    /// NIB HINT (0..1): the fine pen's rare short dashes in the lights (`MediumProfile::nib_hint`).
+    pub nib_hint: Option<f32>,
     /// SUMI DARK (0..1): the share of the darkest values the sumi-e's black register lays as dry-brush black
     /// shapes (the darkest eighth when unset) (`PaintParams::sumi_dark`).
     pub sumi_dark: Option<f32>,
@@ -635,6 +647,12 @@ impl Default for PaintPlan {
             clip: None,
             tiers: None,
             waver: None,
+            nib: None,
+            nibs: None,
+            nib_tone: None,
+            nib_white: None,
+            nib_anchor: None,
+            nib_hint: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,
@@ -726,7 +744,7 @@ impl PaintPlan {
         if let Some(v) = self.collide {
             o.push_str(&format!("collide: {v:.2}\n"));
         }
-        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
+        for (k, v) in [("dry", self.dry), ("wash_in", self.wash_in), ("wet_cap", self.wet_cap), ("scumble", self.scumble), ("turbulence", self.turbulence), ("accent", self.accent), ("loose", self.loose), ("glaze", self.glaze), ("deplete", self.deplete), ("broken", self.broken), ("sfumato", self.sfumato), ("glaze_pass", self.glaze_pass), ("vary", self.vary), ("comma", self.comma), ("shade", self.shade), ("imprimatura", self.imprimatura), ("body_vary", self.body_vary), ("lost", self.lost), ("crest", self.crest), ("spatter", self.spatter), ("aerial", self.aerial), ("sink", self.sink), ("tail", self.tail), ("film", self.film), ("split", self.split), ("sag", self.sag), ("gloss", self.gloss), ("tint", self.tint), ("knife", self.knife), ("hiding", self.hiding), ("twist", self.twist), ("skim", self.skim), ("hatch", self.hatch), ("verdaccio", self.verdaccio), ("dishes", self.dishes), ("lights", self.lights), ("cross", self.cross), ("dither", self.dither), ("solid", self.solid), ("flesh", self.flesh), ("span", self.span), ("edge", self.edge), ("glint", self.glint), ("smooth", self.smooth), ("bole", self.bole), ("ramp", self.ramp), ("umbra", self.umbra), ("chalk", self.chalk), ("side", self.side), ("blend", self.blend), ("skin", self.skin), ("carnation", self.carnation), ("small", self.small), ("anchor", self.anchor), ("trim", self.trim), ("small_min", self.small_min), ("contour", self.contour), ("paper", self.paper), ("erase", self.erase), ("touch", self.touch), ("velvet", self.velvet), ("paper_top", self.paper_top), ("sweep", self.sweep), ("stump", self.stump), ("dust", self.dust), ("stump_edge", self.stump_edge), ("stump_feather", self.stump_feather), ("sweep_wave", self.sweep_wave), ("paper_knee", self.paper_knee), ("rewet", self.rewet), ("chalk_tint", self.chalk_tint), ("flat_brush", self.flat_brush), ("liner", self.liner), ("tsuke", self.tsuke), ("ma", self.ma), ("kasure", self.kasure), ("nijimi", self.nijimi), ("turn", self.turn), ("yohaku", self.yohaku), ("bone", self.bone), ("boneless", self.boneless), ("hake", self.hake), ("join", self.join), ("bone_wind", self.bone_wind), ("bone_dot", self.bone_dot), ("bone_scatter", self.bone_scatter), ("bone_coherence", self.bone_coherence), ("bone_end", self.bone_end), ("sumi_focus", self.sumi_focus), ("ma_focus", self.ma_focus), ("ma_flow", self.ma_flow), ("bone_ryaku", self.bone_ryaku), ("bone_fade", self.bone_fade), ("bokashi", self.bokashi), ("velvet_dark", self.velvet_dark), ("slant", self.slant), ("grade", self.grade), ("weight", self.weight), ("clip", self.clip), ("tiers", self.tiers), ("waver", self.waver), ("nib", self.nib), ("nibs", self.nibs), ("nib_tone", self.nib_tone), ("nib_white", self.nib_white), ("nib_anchor", self.nib_anchor), ("nib_hint", self.nib_hint), ("sumi_dark", self.sumi_dark), ("min_brush", self.min_brush), ("pickup", self.pickup), ("bleed", self.bleed)] {
             if let Some(v) = v {
                 o.push_str(&format!("{k}: {v:.2}\n"));
             }
@@ -1142,6 +1160,12 @@ pub fn plan_from(a: &Analysis) -> PaintPlan {
             clip: None,
             tiers: None,
             waver: None,
+            nib: None,
+            nibs: None,
+            nib_tone: None,
+            nib_white: None,
+            nib_anchor: None,
+            nib_hint: None,
             sumi_dark: None,
             min_brush: None,
             pickup: None,
@@ -1211,7 +1235,7 @@ mod tests {
         assert_eq!(plan_from(&noisy).budget.unwrap(), (b1 as f32 * 1.6) as usize, "noise does not explode the budget: 1.6× cap");
         let big = Analysis { short_side: 2048, long_side: 2048, ..base_like(&plain) };
         assert_eq!(plan_from(&big).budget.unwrap(), 2048 * 2048 / 10, "budget is a density: 4× the area, 4× the strokes (no cap)");
-        let drawing = Analysis { medium: "pen-ink".into(), ..base_like(&big) };
+        let drawing = Analysis { medium: "durer".into(), ..base_like(&big) };
         assert_eq!(plan_from(&drawing).budget.unwrap(), 120000, "drawing media keep the 120k cap");
         // structure_of on a flat sheet is 0, on a checkerboard is large
         let flat_img = image::RgbImage::from_pixel(16, 16, image::Rgb([128, 128, 128]));

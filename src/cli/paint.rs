@@ -1681,6 +1681,12 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.clip = plan.medium.clip;
     params.tiers = plan.medium.tiers;
     params.brush.waver = plan.medium.waver;
+    params.nib = plan.medium.nib;
+    params.nibs = plan.medium.nibs;
+    params.nib_tone = plan.medium.nib_tone;
+    params.nib_white = plan.medium.nib_white;
+    params.nib_anchor = plan.medium.nib_anchor;
+    params.nib_hint = plan.medium.nib_hint;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2514,6 +2520,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.clip = m.clip;
         params.tiers = m.tiers;
         params.brush.waver = m.waver;
+        params.nib = m.nib;
+        params.nibs = m.nibs;
+        params.nib_tone = m.nib_tone;
+        params.nib_white = m.nib_white;
+        params.nib_anchor = m.nib_anchor;
+        params.nib_hint = m.nib_hint;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2625,6 +2637,12 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.clip { params.clip = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.tiers { params.tiers = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.waver { params.brush.waver = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib { params.nib = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nibs { params.nibs = v.clamp(0.0, 8.0); }
+        if let Some(v) = pl.nib_tone { params.nib_tone = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_white { params.nib_white = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_anchor { params.nib_anchor = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_hint { params.nib_hint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }

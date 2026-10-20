@@ -710,6 +710,37 @@ pub struct MediumProfile {
     /// ±0.35 and the width by ±0.2 of it (see `BrushConfig::waver`), so a long line in the half-tones goes
     /// lighter and darker along its run instead of lying as one ruled grey.
     pub waver: f32,
+    /// NIB (0..1, 0 = off): a steel nib and black ink — under `paper`, a mark is laid at the ink's full black
+    /// and full pressure (the residual's charge pulled to the fullest by the key) and the sheet it answers is read
+    /// over the mark's cell (a window of 1.2 radii), not at one pixel: the tone is how many black lines a cell
+    /// takes, not how grey each one is, and the hatching stops when the cell's mean reaches the value. And the
+    /// width held under the pass's nib (a 600th of the long side on the broadest pass, a third of it on the finest).
+    pub nib: f32,
+    /// NIBS (a count, 0 = off): pens of several sizes in layers — under `nib`, the ladder's passes drawn with
+    /// this many pens, the k-th taking the k-th share of it coarse to fine: the broadest pen (a 500th of the sheet's
+    /// long side) lays the masses' hatching first, the finest (an 1800th) the detail last, the ones between in a
+    /// geometric series of widths, each mark at its pen's width; the passes shared out evenly on the log of
+    /// their radius. 0 keeps `nib`'s smooth narrowing pass by pass.
+    pub nibs: f32,
+    /// NIB TONE (0..1, 0 = off): under `nibs`, each pen laid only where the tone is dark enough for its width — the
+    /// pen at place q of the set (0 the broadest, 1 the finest) needs a darkness over `key·(0.12 + 0.6·(1 − q))`,
+    /// the darkness read against the eye's attention (`ma`; `(1 − v)·(0.4 + 0.6·attention)`): the broad nib in the
+    /// near deep shadows, the fine one on the lights' edge and the far ground, the lights themselves blank.
+    pub nib_tone: f32,
+    /// NIB WHITE (0..1, 0 = off): under `nib`, a cell is never asked darker than this share of the paper's
+    /// light — the deepest shadow keeps the paper's flecks between its lines instead of closing to a flat black.
+    pub nib_white: f32,
+    /// NIB ANCHOR (0..1, 0 = off): under `nib`, the cast shadows that set things on the ground — after the hatching
+    /// and the bone, on a grid of a 150th of the sheet, where the picture is much darker than its surroundings (a
+    /// 90th of the sheet round it) or just under the subject's silhouette (a 120th of the sheet deep, fading down),
+    /// a cluster of `1 + 3·strength` short black strokes at the middle pen's width along the edge there, crossed;
+    /// so a figure and a stone sit on the slope instead of floating on the paper (stage `nib` in the score).
+    pub nib_anchor: f32,
+    /// NIB HINT (0..1, 0 = off): under `nib`, the shorthand in the lights — on a grid of a 60th of the sheet, a light
+    /// cell (value over 0.6) with a sharp contrast of its own (a grass blade, a pebble's rim) takes, by `key·contrast`,
+    /// one short dash (0.4–0.8 of the cell) at the finest pen's width along the edge at its sharpest point; a sunlit slope keeps its ground
+    /// without being hatched (stage `nib` in the score).
+    pub nib_hint: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -845,6 +876,12 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -973,6 +1010,12 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1101,6 +1144,12 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1270,6 +1319,12 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1407,6 +1462,12 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1539,6 +1600,12 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1667,6 +1734,12 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1798,15 +1871,24 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
+/// PEN AND INK (7.12.0): steel nibs of several sizes and a black ink on white paper — drawn as the pencil is,
+/// mark by mark along the form in passes coarse to fine (a broad nib for the masses' hatching, a fine one for the
+/// detail), not by the ruled hatching of a density medium; the ink does not rub or lift (no stump, no eraser).
 pub const PEN_INK: MediumProfile = MediumProfile {
     name: "pen-ink",
     value_direction: ValueDirection::LightToDark,
     opacity: Opacity::Transparent,
     white_source: WhiteSource::Surface,
     reversibility: Reversibility::None,
-    stage_budget: 1,
+    stage_budget: 4,
     pickup: 0.0,
     bleed: 0.0,
     body: 1.0,
@@ -1821,8 +1903,8 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     contour: 0.6,
     families: Families::Unified,
     subtractive: false,
-    mark_model: MarkModel::Density,
-    mark: MarkCharacter::BRUSH,
+    mark_model: MarkModel::Continuous,
+    mark: MarkCharacter { role: Some("pen"), stroke_len: 1.0, stroke_width: 0.4, charge: 1.0, hatch_angle: 0.0, monochrome: true, engrave: false, budget_scale: 1.0, levels: None, reserve: None, ladder_keep: None, contrast: 1.0, coverage: 0.0, draw_contours: true, brush_drawing: false, sumi: false, luminous: false, book: false },
     finish_policy: FinishPolicy::Uniform,
     dries: 0.5,
     wash_in: 0.0,
@@ -1926,6 +2008,12 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -2057,6 +2145,12 @@ pub const DURER: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2191,6 +2285,12 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -2322,6 +2422,12 @@ pub const PENCIL: MediumProfile = MediumProfile {
     clip: 0.6, // the hatch stopped at the contours
     tiers: 0.7, // lights blank, half-tones single, shadows crossed
     waver: 0.5, // the pressure wavering along the line
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -2455,6 +2561,12 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -2583,6 +2695,12 @@ pub const PASTEL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2711,6 +2829,12 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2845,6 +2969,12 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     clip: 0.0,
     tiers: 0.0,
     waver: 0.0,
+    nib: 0.0,
+    nibs: 0.0,
+    nib_tone: 0.0,
+    nib_white: 0.0,
+    nib_anchor: 0.0,
+    nib_hint: 0.0,
 };
 
 /// Every declared medium.
