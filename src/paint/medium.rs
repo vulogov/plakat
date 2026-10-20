@@ -666,6 +666,50 @@ pub struct MediumProfile {
     /// ladder and the bone; a wet mark is the flood's (see `flood`), so the flying white is gone there, the hairs
     /// even and the edge feathered: the fading image dissolved into the paper, not merely lightened.
     pub bokashi: f32,
+    /// VELVET DARK (0..1, 0 = off): the velvet black held to a dark that is dark on the sheet, not only in the
+    /// picture's own range — `velvet` lays its black only where the perceived (gamma) value of the target is
+    /// also under this key (0.3 ≈ sRGB 77). On a white bird the darkest share of the range was the grey shadow
+    /// under a wing, and it went down as a black patch.
+    pub velvet_dark: f32,
+    /// SLANT (0..1, 0 = off): the pencil's hatching laid at the hand's own angle where the picture has no
+    /// direction of its own — on every pass after the block-in, where the structure tensor's coherence
+    /// ((λ1−λ2)/(λ1+λ2))² over 1.5 brush radii is low (grass, rubble, a flat tone), off the hair and a face,
+    /// the flow turned (in the double angle, its magnitude kept) toward the right hand's diagonal, lower left
+    /// to upper right, by `key·(1 − coherence)`; each later pass crossed off it by `cross` (alternating sides).
+    /// A coherent passage (an edge, a strand of fur) keeps its flow. Unset, a straight hatch line followed a
+    /// flow that circled in every incoherent patch and the shading read as loops.
+    pub slant: f32,
+    /// GRADE (0..1, 0 = off): the pencil's tonal key — the half-tones lifted toward the paper on the
+    /// perceived scale, `g' = g^(1/(1+key))` of the value's share of the paper's (gamma), the velvet black kept;
+    /// a graphite drawing is keyed lighter than the photograph's luminance (a red fur is a dark grey by its
+    /// luma, a pencil sets it as a middle one) and its darkest accents carry the depth.
+    pub grade: f32,
+    /// WEIGHT (0..1, 0 = off): the pencil's LINE — the bone line (`bone`) laid with a graphite point's own
+    /// weight instead of a brush's hairline: `1 + 1.5·key·d` of its width and `1 + key·d` of its charge, `d`
+    /// the darkness of the edge's darker side (a cloud's light rim keeps a light line), so a contour reads
+    /// over the hatched tone (at the brush's width the line went into the hatching as one more
+    /// grey hair, and the wheel, the doll, a chair's legs were lost in the rubble).
+    pub weight: f32,
+    /// CLIP (0..1, 0 = off): the hatch stopped at the picture's CONTOURS — the marks (the block-in's too) cut where
+    /// their path crosses a line of the picture's edge map (the bone's Canny map, opened by the key: the strongest
+    /// 3% of the gradients at 0, ~15% at 1), a mark riding along a contour kept, the subject's own marks not
+    /// cut (a fur's every hair is an edge, and cut at each the fox's head broke into blank islands); so the shading of one form
+    /// does not run out over its neighbour (a doll's light body hatched over by the rubble round it, a coat's
+    /// strokes running on into the grass).
+    pub clip: f32,
+    /// TIERS (0..1, 0 = off): the hatching in TONAL LAYERS — the k-th hatched pass (0 along the form, then
+    /// crossed by `cross`) lays its lines only where the target's perceived darkness exceeds
+    /// `key · min(0.15 + 0.2·k, 0.75)` (thinning out by a hash over ±0.1 round it, so a half-tone fades from one
+    /// layer to the next instead of breaking into blank islands): the lights left to the paper, the half-tones one set of lines along
+    /// the form, the shadows crossed layer over layer — a draughtsman's tonal scale instead of one density of
+    /// tangled lines everywhere. The block-in's broad marks go only where the deepest layer does (no toned
+    /// ground: laid everywhere they were grey zigzag bands across the lights).
+    pub tiers: f32,
+    /// WAVER (0..1, 0 = off): the hand's pressure wavering along each mark — a slow noise of the mark's own
+    /// swinging the pressure (and with it the graphite's reach into the grain) by ±half the key, the deposit by
+    /// ±0.35 and the width by ±0.2 of it (see `BrushConfig::waver`), so a long line in the half-tones goes
+    /// lighter and darker along its run instead of lying as one ruled grey.
+    pub waver: f32,
 }
 
 // ── The medium table (§6.2). P1 executes oil-direct + gouache; the rest are declared for the generator and
@@ -794,6 +838,13 @@ pub const OIL_DIRECT: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const OIL_INDIRECT: MediumProfile = MediumProfile {
@@ -915,6 +966,13 @@ pub const OIL_INDIRECT: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const GOUACHE: MediumProfile = MediumProfile {
@@ -1036,6 +1094,13 @@ pub const GOUACHE: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const WATERCOLOUR: MediumProfile = MediumProfile {
@@ -1198,6 +1263,13 @@ pub const WATERCOLOUR: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 /// LINE-AND-WASH: a pen drawing over big loose watercolour washes, the paper reserved for the light — the
@@ -1328,6 +1400,13 @@ pub const LINE_AND_WASH: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
@@ -1453,6 +1532,13 @@ pub const EARLY_BOOK_ILLUSTRATION: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const INK_WASH: MediumProfile = MediumProfile {
@@ -1574,6 +1660,13 @@ pub const INK_WASH: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 /// JAPANESE INK (sumi-e): the ink-wash physics with a calligraphic brush and the ink's own black.
@@ -1698,6 +1791,13 @@ pub const JAPANESE_INK: MediumProfile = MediumProfile {
     bone_ryaku: 0.5, // a far line simplified to a few arcs
     bone_fade: 0.4, // no line where the eye does not go
     bokashi: 0.5, // the fading edge washed out with water
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const PEN_INK: MediumProfile = MediumProfile {
@@ -1819,6 +1919,13 @@ pub const PEN_INK: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 /// ALBRECHT DÜRER (copperplate engraving): evenly spaced cuts that follow the form and swell with the tone,
@@ -1943,6 +2050,13 @@ pub const DURER: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const TEMPERA: MediumProfile = MediumProfile {
@@ -2070,6 +2184,13 @@ pub const TEMPERA: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const PENCIL: MediumProfile = MediumProfile {
@@ -2194,6 +2315,13 @@ pub const PENCIL: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.3, // the velvet black only where the tone is dark on the sheet
+    slant: 0.7, // the hatch at the hand's diagonal off the form
+    grade: 0.4, // the pencil's lighter key
+    weight: 0.6, // the contour at a pencil's weight
+    clip: 0.6, // the hatch stopped at the contours
+    tiers: 0.7, // lights blank, half-tones single, shadows crossed
+    waver: 0.5, // the pressure wavering along the line
 };
 
 /// A SOFT BLACK PENCIL (6B / carbon): the graphite mark, but the point lays a rich dark instead of a grey —
@@ -2320,6 +2448,13 @@ pub const BLACK_PENCIL: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const PASTEL: MediumProfile = MediumProfile {
@@ -2441,6 +2576,13 @@ pub const PASTEL: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 pub const CHARCOAL: MediumProfile = MediumProfile {
@@ -2562,6 +2704,13 @@ pub const CHARCOAL: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 /// ACRYLIC: a fast-drying, opaque plastic paint, painted in LAYERS like the indirect oil — a thin wash
@@ -2689,6 +2838,13 @@ pub const ACRYLIC: MediumProfile = MediumProfile {
     bone_ryaku: 0.0,
     bone_fade: 0.0,
     bokashi: 0.0,
+    velvet_dark: 0.0,
+    slant: 0.0,
+    grade: 0.0,
+    weight: 0.0,
+    clip: 0.0,
+    tiers: 0.0,
+    waver: 0.0,
 };
 
 /// Every declared medium.
@@ -2855,6 +3011,9 @@ mod tests {
             }
             if m.name != "gouache" {
                 assert_eq!([m.rewet, m.chalk_tint, m.flat_brush, m.liner], [0.0; 4], "{} has no gouache layer", m.name);
+            }
+            if m.name != "pencil" {
+                assert_eq!([m.velvet_dark, m.slant, m.grade, m.weight, m.clip, m.tiers, m.waver], [0.0; 7], "{} has no pencil layer", m.name);
             }
             if m.name != "japanese-ink" {
                 assert_eq!([m.tsuke, m.ma, m.kasure, m.nijimi, m.turn, m.yohaku, m.bone, m.boneless, m.hake, m.join, m.bone_wind, m.bone_dot, m.bone_scatter, m.bone_coherence, m.bone_end, m.sumi_focus, m.ma_focus, m.ma_flow, m.bone_ryaku, m.bone_fade, m.bokashi], [0.0; 21], "{} has no sumi layer", m.name);

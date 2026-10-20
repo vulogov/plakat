@@ -268,20 +268,53 @@ style: legible
 define: 0.8
 ```
 
-### Pencil / graphite — `medium: pencil`  🎯 *soft graphite landscape, hatched shading*
-Monochrome **graphite grey** (not black); value by **hatching / shading density**; soft graded tones from light
-**smudging**; fine lines; paper white for highlights. No colour, no impasto.
-- Defaults: `body 0.7` (greys, semi‑transparent) · `bleed 0.15` (smudge → soft gradients) · `pickup 0.10` ·
-  density marks · reserved paper whites.
-- Tune: `bleed` up (→0.3) for smoother, smudgier shading; `bleed` down for crisper pencil lines;
-  `stroke_length` for longer strokes; `define` up for a sharper drawn line. Use `palette: sumi`.
+### Pencil / graphite — `medium: pencil`  🎯 *a graphite point on white paper: the paper is the light, the tone hatched in layers, the line pressed (7.11.0)*
+Monochrome **graphite grey** (not black); value by **hatching** in tonal layers; the paper white for the lights.
+From 7.11.0 the medium is a drawing: the charcoal's dry machinery (`paper`, `erase`, `touch`, `velvet`,
+`paper_top`, `paper_knee`, `dust`, `stump`) and the pastel's stick (`chalk`, `side`, `blend`) borrowed through
+the plan at a thinner point and a lighter dark, the japanese ink's line (`bone` and its keys) and attention
+(`ma`, `ma_focus`, `ma_flow`) borrowed for the contour, and the pencil's own mechanisms:
+- **Velvet dark** (`velvet_dark`, 0..1): the `velvet` black laid only where the target is dark on the sheet (its
+  perceived value under the key) — the velvet's share is relative to the picture's own darkest, which on a white
+  bird is a mid grey, and pressed black there it drew black patches under the wings.
+- **Slant** (`slant`, 0..1): where the picture has no direction (its structure tensor's coherence, read over a
+  window of at least a 150th of the sheet), the hatch turned toward the hand's diagonal (+45°, crossed with the
+  layer) by this share of the incoherence, off the hair and the faces — the flow that circled in the grass and
+  the rubble drew loops; a ruled hatch does not.
+- **Grade** (`grade`, 0..1): the pencil's lighter key — the half-tones lifted toward the paper (`g^(1/(1+key))`
+  in the perceived value), the velvet marks kept.
+- **Weight** (`weight`, 0..1): the `bone` line at a pencil's weight over the hatched tone — its width
+  `×(1 + 1.5·key·d)` and its charge `×(1 + key·d)`, `d` the darker side of the edge, so a dark form's edge is a
+  pressed line and a cloud's light rim keeps a light one.
+- **Clip** (`clip`, 0..1): the marks of the ground (the block-in's too) cut at their first crossing of the
+  picture's contours — the bone's Canny map, the strongest `3% + 12%·key` of the gradients — a mark riding along
+  a contour kept; the shading of one form does not run out over its neighbour (a doll's light body hatched over
+  by the rubble, a coat's strokes running on into the grass). The subject's own marks are not cut: every hair
+  of a fur is an edge, and cut there a fox's head broke into blank islands.
+- **Tiers** (`tiers`, 0..1): the hatching in tonal layers — the k-th hatched pass lays its lines only where the
+  perceived darkness exceeds `key·min(0.15 + 0.2·k, 0.75)` (soft over ±0.1 by a hash), the block-in only past
+  `key·0.75`: the lights left to the paper, the half-tones one set of lines along the form, the shadows crossed
+  layer over layer.
+- **Waver** (`waver`, 0..1, in the score's header): the hand's pressure wavering along each mark — a slow noise
+  of the mark's own (a knot every `max(12, 2.5·width)` px) swinging the pressure, and with it the graphite's
+  reach into the grain, by ±half the key, the deposit by ±0.35 and the width by ±0.2 of it; a long line in the
+  half-tones goes lighter and darker along its run instead of lying as one ruled grey.
+- With `bone` above 0 the bone line replaces the armature's iso-contours (`contour`'s line pass), which rippled
+  along every outline.
+- Defaults: `velvet_dark 0.3` · `slant 0.7` · `grade 0.4` · `weight 0.6` · `clip 0.6` · `tiers 0.7` ·
+  `waver 0.5`; every other medium has them at 0. The recommended plan is in `PAINT_EXAMPLES.md`.
+- Tune: `tiers` down to bring the half-tones back on a light subject (a white bird); `clip` down for a looser,
+  sketchier ground; `weight` down for a quieter contour; `waver` up for a more nervous hand; `slant` down where
+  the ground should follow its own forms.
 
 ```hjson
 medium: pencil
 palette: sumi
-style: fidelity
-bleed: 0.2
-define: 0.7
+new: true
+bone: 1.0
+weight: 1.0
+slant: 1.0
+infill: 45
 ```
 
 ### Pastel — `medium: pastel`  🎯 *soft pastel on a toothed paper: chalk, the stick's side, the finger (7.7.0)*

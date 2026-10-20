@@ -127,6 +127,12 @@ pub struct BrushConfig {
     /// lands twice on another, and a pixel claimed by a lane that then laid nothing (the flying white, the
     /// halo's gate) stayed bare — a lattice of white pinholes over every wash. In the header.
     pub join: f32,
+    /// WAVER (0..1, 0 = off): the hand's pressure wavering along the mark — a smooth noise of its own (a value
+    /// noise over the mark's length, a knot every `max(12, 2.5·width)` px, cosine-eased, seeded by the mark's
+    /// start) swinging the pressure by up to ±half the key (so the chalk's reach into the grain with it), the
+    /// deposit by ±0.35 of it and the width by ±0.2 of it; a long ruled line in the half-tones goes lighter and
+    /// darker, thinner and fuller as a pencil's does, not as a ruled line. In the header.
+    pub waver: f32,
 }
 
 /// The fill of the tooth (as a share of `SAT_FULL`) past which the chalk slides (see `BrushConfig::chalk`), and
@@ -143,7 +149,7 @@ impl Default for BrushConfig {
         // (hides the ground → deep darks, bright lights, saturated colour, no wash), drying toward its end (the
         // loaded-gradient). Pickup is MODEST — too much drags wet paint and smears every stroke into its
         // neighbour (the "smeared slop"); alla-prima keeps marks distinct, sitting on top, only lightly harmonised.
-        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0 }
+        Self { k_deposit: 0.34, k_pickup: 0.25, viscosity: 1.0, bristles: 7, load_max: 6.0, streak: 0.6, round: 0.7, film_cap: 0.0, flat_ends: false, hold_charge: false, deplete: 1.0, ridges: 0.0, skip: 0.0, comma: 0.0, crest: 0.0, over: 0.0, split: 0.0, tint: 0.0, knife: 0.0, twist: 0.0, chalk: 0.0, dust: 0.0, rewet: 0.0, tsuke: 0.0, kasure: 0.0, nijimi: 0.0, turn: 0.0, join: 0.0, waver: 0.0 }
     }
 }
 
@@ -369,6 +375,9 @@ impl Stroke {
         let mut lane_prev: Vec<(i32, i32)> = if seen.is_some() { vec![(i32::MIN, i32::MIN); nb] } else { Vec::new() };
         let mut targets: Vec<(u32, u32)> = Vec::with_capacity(8);
         let mut across_prev: Option<(i32, i32)>;
+        // WAVER (see `BrushConfig::waver`): the knots of the pressure's noise along the mark.
+        let waver = brush.waver.clamp(0.0, 1.0);
+        let (wv_seed, wv_step) = (seed ^ 0x5EED_0A7E_u64, (2.5 * maxw).max(12.0));
         for i in 0..pts.len() {
             let p = pts[i];
             across_prev = None;
@@ -405,6 +414,17 @@ impl Stroke {
                 1.0
             };
             let width = (self.width0 + (self.width1 - self.width0) * t) * (0.5 + 0.5 * press);
+            // WAVER (see `BrushConfig::waver`): the noise in −1..1 at this point of the mark.
+            let wv = if waver > 0.0 {
+                let u = i as f32 / wv_step;
+                let (k0, f) = (u.floor(), u - u.floor());
+                let (a, b) = (lane_hash(wv_seed, k0 as u64), lane_hash(wv_seed, k0 as u64 + 1));
+                let e = 0.5 - 0.5 * (std::f32::consts::PI * f).cos();
+                waver * (2.0 * (a + (b - a) * e) - 1.0)
+            } else {
+                0.0
+            };
+            let width = if waver > 0.0 { width * (1.0 + 0.2 * wv) } else { width };
             // THE FLOOD's ends (see `flood`): a wash fades in and out over half a width at either end — a
             // square-cut end left a notch of bare paper against the next band.
             let end_fade = if flood > 0.0 {
@@ -446,6 +466,8 @@ impl Stroke {
                 let e = (t.min(1.0 - t) / 0.22).clamp(0.0, 1.0);
                 (0.15 + 0.85 * e * e) * press
             };
+            let end = if waver > 0.0 { end * (1.0 + 0.35 * wv) } else { end };
+            let wv_press = if waver > 0.0 { 1.0 + 0.5 * wv } else { 1.0 };
             // At a tapered/narrow width many adjacent lanes round to the SAME pixel; skip the duplicates so a
             // wide stroke doesn't re-deposit the same pixel dozens of times (the block-in's dominant cost).
             let (mut last_x, mut last_y) = (i32::MIN, i32::MIN);
@@ -587,7 +609,7 @@ impl Stroke {
                     targets.push((px, py));
                 }
                 for &(tx, ty) in &targets {
-                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau);
+                    self.apply(canvas, tx, ty, &mut bload[b], &mut bwet[b], brush, n, edge * end * keep, deplete, &mut scratch, if brush.knife > 0.0 { 1.0 } else { ridge.max(0.05) }, plateau, wv_press);
                 }
             }
         }
@@ -676,7 +698,7 @@ impl Stroke {
     /// `cover` (0..1) is the soft footprint weight — the cross-section falloff toward the width's edges and the
     /// end taper — so a stroke reads as a brush mark, not a hard rectangular slab.
     #[allow(clippy::too_many_arguments)]
-    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32) {
+    fn apply(&self, canvas: &mut Canvas, px: u32, py: u32, load: &mut [f32], bwet: &mut f32, brush: &BrushConfig, n: usize, cover: f32, deplete: f32, deposit: &mut Vec<f32>, ridge: f32, plateau: f32, press_k: f32) {
         let p = py as usize * canvas.w as usize + px as usize;
         if canvas.clipped(p) {
             return;
@@ -689,7 +711,9 @@ impl Stroke {
             }
         }
         let tooth = canvas.tooth[p];
-        let contact = (self.pressure * cover.clamp(0.0, 1.0) * tooth).clamp(0.0, 1.0);
+        // (`press_k`: the WAVER's pressure at this point, 1 without it.)
+        let pressure = if press_k != 1.0 { (self.pressure * press_k).clamp(0.0, 1.0) } else { self.pressure };
+        let contact = (pressure * cover.clamp(0.0, 1.0) * tooth).clamp(0.0, 1.0);
         let sat = (canvas.saturation_at(px, py) / SAT_FULL).clamp(0.0, 1.0);
 
         // Deposit: a fraction of the current load, throttled by contact and remaining tooth. `deposit` is a
@@ -727,7 +751,7 @@ impl Stroke {
             // of the stick's side reaches the raised half.)
             let c = brush.chalk.clamp(0.0, 1.0);
             let fill = (canvas.saturation_at(px, py) / SAT_FULL).clamp(0.0, 1.0);
-            let reach = ((self.pressure - 0.3) / 0.55).clamp(0.0, 1.0);
+            let reach = ((pressure - 0.3) / 0.55).clamp(0.0, 1.0);
             let thr = (0.1 + 0.7 * (1.0 - reach)) * (1.0 - fill);
             let relief = crate::paint::canvas::paper_relief(px as usize, py as usize);
             let t = ((relief - thr + 0.06) / 0.12).clamp(0.0, 1.0);
