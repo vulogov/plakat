@@ -100,6 +100,34 @@ plakat paint from photo.png --medium pen-ink --palette sumi \
 plakat paint from photo.png --medium pencil --palette sumi \
     --contour 0.5 --granulate 0.2 -o out-pencil.png
 
+# A graphite point on white paper (7.11.0): the paper is the light — the charcoal's dry machinery at a
+# thinner point; the contour a line traced along the picture's own edges, pressed by the darker side; the
+# hatch straight, along the form, at the hand's diagonal where the picture has no direction; the ground's
+# marks stopped at the contours; the tone in layers — lights blank, half-tones single, shadows crossed; the
+# pressure wavering along each line. The profile's own keys (clip 0.6, tiers 0.7, waver 0.5) unset. The plan:
+#
+#   medium: pencil             palette: sumi            style: legible
+#   new: true                  armature: 384            armature_face: 768      armature_body: 384
+#   semantic: true             sam: true                families: true          commit_shadows: 0.0
+#   shadow_floor: 0.16         detail_len: 0.5          infill: 45              min_brush: 2.0
+#   dry: 1.0                   pickup: 0.0              bleed: 0.0              wash_in: 0.0      wet_cap: 0.2
+#   scumble: 0.0               deplete: 0.2             granulate: 0.0          contour: 0.15
+#   chalk: 1.0                 side: 0.2                blend: 0.4              skin: 0.5         sfumato: 0.5
+#   small: 400                 small_min: 100           anchor: 0.15            trim: 0.5
+#   hatch: 1.0                 cross: 30                span: 0.6               edge: 0.6         umbra: 1.0
+#   solid: 1.0                 loose: 0.15              lost: 0.0
+#   paper: 1.0                 erase: 0.3               touch: 0.6              velvet: 0.03      velvet_dark: 0.3
+#   paper_top: 1.0             paper_knee: 0.5          dust: 0.6               sweep: 0.0
+#   stump: 0.3                 stump_edge: 0.6          stump_feather: 1.0
+#   bone: 1.0                  bone_coherence: 0.5      bone_ryaku: 0.3         bone_fade: 0.0    bone_wind: 0.5
+#   slant: 1.0                 grade: 0.4               weight: 1.0
+#   ma: 0.4                    ma_focus: 0.4            ma_flow: 0.6
+#   (commit_shadows 0 — grey patches under a white bird's wings; erase 0.3 — at 0.6 its lifts curled as white
+#   whorls in the grass; infill 45 — `follow` circled in the rubble; bone_fade 0 — the near objects kept
+#   their line)
+#
+plakat paint from photo.png --medium pencil --plan pencil.hjson -o out-pencil.png
+
 # ── PASTEL ───────────────────────────────────────────────────────────────────
 # Soft pastel on a toothed paper (7.7.0): the mark a stick of CHALK on the tooth — a light
 # touch catches the raised grain only and the hollows keep the sheet's colour, a hard press fills them, and

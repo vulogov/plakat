@@ -8,7 +8,29 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.11.0 — in development
+## What's new in 7.11.0 — Pencil: graphite — the line pressed, the tone hatched in layers, the hand's own pressure
+
+### `plakat paint`
+
+- **`--medium pencil` is a graphite drawing.** A graphite point on white paper: the charcoal's dry machinery
+  (the paper the light, the touch, the eraser, the velvet, the dust, the stump) and the pastel's stick borrowed
+  through the plan at a thinner point and a lighter dark, the japanese ink's bone line and attention borrowed
+  for the contour, and the pencil's own mechanisms, each a plan key and 0 in every other medium (all of them
+  byte-identical). **Velvet dark** (`velvet_dark`): the velvet black only where the tone is dark on the sheet —
+  a white bird's grey shadows were pressed black. **Slant** (`slant`): where the picture has no direction (its
+  coherence read at the drawing's scale) the hatch at the hand's diagonal — the flow circled in the grass and
+  the rubble and drew loops. **Grade** (`grade`): the pencil's lighter key, the half-tones lifted toward the
+  paper. **Weight** (`weight`): the bone line pressed by the darker side of its edge, over the hatched tone.
+  **Clip** (`clip`): the ground's marks cut at their first crossing of the picture's contours (the bone's
+  Canny map), a mark riding along one kept, so one form's shading does not run out over its neighbour; the
+  subject's own marks left whole (a fur's every hair is an edge). **Tiers** (`tiers`): the hatching in tonal
+  layers — the lights left to the paper, the half-tones one set of lines along the form, the shadows crossed,
+  the block-in only in the deepest dark (its broad zigzags were grey worms across the rubble). **Waver**
+  (`waver`, in the score's header): the hand's pressure wavering along each mark — the graphite's reach into
+  the grain, the deposit and the width with it — so a long line in the half-tones is not a ruled grey.
+- With a bone line (`bone` above 0) the armature's iso-contours give way to it — they rippled along every
+  outline, and the plan's `contour 0` could not switch them off.
+- The recommended plan is in `PAINT_EXAMPLES.md`; every score replays to the bit.
 
 ## What's new in 7.10.0 — Japanese ink: sumi-e — washes, the bone line, the flying white and the empty space
 
