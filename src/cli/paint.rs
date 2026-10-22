@@ -1244,6 +1244,163 @@ async fn build_semantic_regions(path: &std::path::Path, w: u32, h: u32, coarse: 
     Ok((tiers, clothing_mask, hair_mask))
 }
 
+/// NIB OBJECT (see `MediumProfile::nib_object`): the rigid things a figure holds — OWL-ViT's boxes for an umbrella, a
+/// stick or a cane (over 0.10), each box's extent by SAM from one point at its centre: of SAM's candidates the
+/// smallest that holds the point and is between a tenth and one and a half times the box. `None` when nothing is found.
+async fn nib_object_regions(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
+    use crate::pipelines::sam::{build_selection_masks, PointPrompt};
+    let device = crate::device::select("auto")?;
+    let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
+    let (iw, ih) = image::image_dimensions(path)?;
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
+    let mut boxes: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for q in ["an umbrella", "a closed umbrella", "a walking stick", "a cane"] {
+        let hits = owl.detect_all(path, q, 0.0, 4).unwrap_or_default();
+        if loud {
+            for d in &hits {
+                found!(style("·").dim(), "nib object probe: {:?} score {:.3} box ({:.0},{:.0})–({:.0},{:.0})", q, d.score, d.x0, d.y0, d.x1, d.y1);
+            }
+        }
+        boxes.extend(hits.into_iter().filter(|d| d.score >= 0.10).map(|d| (d.x0, d.y0, d.x1, d.y1)));
+    }
+    if boxes.is_empty() {
+        return Ok(None);
+    }
+    let (sx, sy) = (w as f32 / iw as f32, h as f32 / ih as f32);
+    let mut out = vec![0f32; (w * h) as usize];
+    for (x0, y0, x1, y1) in boxes {
+        let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        let box_area = ((x1 - x0) * sx * (y1 - y0) * sy).max(1.0);
+        let pts = vec![PointPrompt { x: cx as f64, y: cy as f64, foreground: true }];
+        let Ok((masks, _)) = build_selection_masks(path, &pts, &device).await else { continue };
+        let (px, py) = (((cx * sx) as u32).min(w - 1), ((cy * sy) as u32).min(h - 1));
+        let mut best: Option<(usize, Vec<f32>)> = None;
+        for m in masks {
+            let scaled = image::imageops::resize(&m, w, h, image::imageops::FilterType::Triangle);
+            let v: Vec<f32> = scaled.pixels().map(|p| p.0[0] as f32 / 255.0).collect();
+            let area = v.iter().filter(|&&x| x >= 0.5).count();
+            let holds = v[(py * w + px) as usize] >= 0.5;
+            if holds && area as f32 >= 0.1 * box_area && area as f32 <= 1.5 * box_area && best.as_ref().map(|(a, _)| area < *a).unwrap_or(true) {
+                best = Some((area, v));
+            }
+        }
+        if let Some((_, v)) = best {
+            for (o, x) in out.iter_mut().zip(&v) {
+                *o = o.max(*x);
+            }
+        }
+    }
+    Ok(out.iter().any(|&v| v >= 0.5).then_some(out))
+}
+
+/// NIB PEOPLE (see `MediumProfile::nib_people`): every person in the picture — OWL-ViT's boxes for a person (up to 24;
+/// over 0.25, or, when the picture has a face, over 0.4 of the best box and 0.05: a crowd scores low, and a picture
+/// without a face takes no doubtful box), each box's extent by SAM from two points (its centre and a point a quarter down from its top): of
+/// SAM's candidates the largest that holds the centre and is between a fifth of the box and the box, clipped to the
+/// box grown by a twentieth. `None` when no one is found.
+async fn nib_person_regions(path: &std::path::Path, w: u32, h: u32, has_face: bool) -> Result<Option<Vec<f32>>> {
+    use crate::pipelines::sam::{build_selection_masks, PointPrompt};
+    let device = crate::device::select("auto")?;
+    let owl = crate::pipelines::owlvit::OwlViT::load_pretrained(&device).await.context("loading OWL-ViT")?;
+    let (iw, ih) = image::image_dimensions(path)?;
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
+    let hits = owl.detect_all(path, "a person", 0.0, 24).unwrap_or_default();
+    if loud {
+        for d in &hits {
+            found!(style("·").dim(), "nib people probe: score {:.3} box ({:.0},{:.0})–({:.0},{:.0})", d.score, d.x0, d.y0, d.x1, d.y1);
+        }
+    }
+    let top = hits.iter().map(|d| d.score).fold(0.0f32, f32::max);
+    let floor = if has_face { (0.4 * top).max(0.05) } else { 0.25 };
+    let boxes: Vec<(f32, f32, f32, f32)> = hits.into_iter().filter(|d| d.score >= floor.min(0.25)).map(|d| (d.x0, d.y0, d.x1, d.y1)).collect();
+    if boxes.is_empty() {
+        return Ok(None);
+    }
+    let (sx, sy) = (w as f32 / iw as f32, h as f32 / ih as f32);
+    let mut out = vec![0f32; (w * h) as usize];
+    for (x0, y0, x1, y1) in boxes {
+        let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+        let box_area = ((x1 - x0) * sx * (y1 - y0) * sy).max(1.0);
+        let (px, py) = (((cx * sx) as u32).min(w - 1), ((cy * sy) as u32).min(h - 1));
+        let pts = vec![PointPrompt { x: cx as f64, y: cy as f64, foreground: true }, PointPrompt { x: cx as f64, y: (y0 + 0.25 * (y1 - y0)) as f64, foreground: true }];
+        let Ok((masks, _)) = build_selection_masks(path, &pts, &device).await else { continue };
+        let (gx, gy) = (0.05 * (x1 - x0) * sx, 0.05 * (y1 - y0) * sy);
+        let (bx0, by0, bx1, by1) = (x0 * sx - gx, y0 * sy - gy, x1 * sx + gx, y1 * sy + gy);
+        let mut best: Option<(usize, Vec<f32>)> = None;
+        for m in masks {
+            let scaled = image::imageops::resize(&m, w, h, image::imageops::FilterType::Triangle);
+            let v: Vec<f32> = scaled.pixels().enumerate().map(|(i, p)| {
+                let (x, y) = ((i as u32 % w) as f32, (i as u32 / w) as f32);
+                if x >= bx0 && x <= bx1 && y >= by0 && y <= by1 { p.0[0] as f32 / 255.0 } else { 0.0 }
+            }).collect();
+            let area = v.iter().filter(|&&x| x >= 0.5).count();
+            if v[(py * w + px) as usize] >= 0.5 && area as f32 >= 0.2 * box_area && area as f32 <= box_area && best.as_ref().map(|(a, _)| area > *a).unwrap_or(true) {
+                best = Some((area, v));
+            }
+        }
+        if let Some((_, v)) = best {
+            for (o, x) in out.iter_mut().zip(&v) {
+                *o = o.max(*x);
+            }
+        }
+    }
+    Ok(out.iter().any(|&v| v >= 0.5).then_some(out))
+}
+
+/// NIB TUFT (see `MediumProfile::nib_tuft`): where the picture IS grass — CLIP over a grid of crops (a fifth of the
+/// long side, every tenth), each crop's share of the grass labels among the scene's stuff (sky, wall, rock, road, trees,
+/// people, books, floor, water, fur…, softmax at CLIP's scale of 100), averaged over the tenth-cells the crops cover; a
+/// cell over 0.6 is grass (a crop of sky over far hills scores up to 0.6). (OWL-ViT names things, not stuff: it scored grass under 0.07 even on a meadow.) `None` when
+/// no cell is grass: no grass, no tufts.
+async fn nib_grass_regions(path: &std::path::Path, w: u32, h: u32) -> Result<Option<Vec<f32>>> {
+    let device = crate::device::select("auto")?;
+    let clip = crate::pipelines::clip_embed::ClipEmbedder::load(&device).await.context("loading CLIP")?;
+    let img = image::open(path).context("opening the picture for the grass")?.to_rgb8();
+    let (iw, ih) = img.dimensions();
+    let loud = std::env::var("PLAKAT_PAINT_SEMANTIC").is_ok();
+    const GRASS: [&str; 3] = ["grass", "a grassy meadow", "tall dry grass"];
+    const STUFF: [&str; 20] = ["the sky", "clouds", "a stone wall", "rocks", "a dirt road", "trees", "a forest", "a person", "clothing", "a face", "books on shelves", "a wooden floor", "a table", "a window", "water", "a building", "an animal's fur", "a bird's feathers", "snow", "sand"];
+    let texts: Vec<Vec<f32>> = GRASS.iter().chain(STUFF.iter()).map(|t| clip.embed_text(&format!("a photo of {t}"))).collect::<Result<_>>()?;
+    let side = iw.max(ih) as f32;
+    let crop = (side / 5.0).round() as u32;
+    let stride = (side / 10.0).round().max(1.0) as u32;
+    let (cols, rows) = ((iw.div_ceil(stride)) as usize, (ih.div_ceil(stride)) as usize);
+    let (mut acc, mut cnt) = (vec![0f32; cols * rows], vec![0f32; cols * rows]);
+    let tmp = tempfile::Builder::new().prefix("plakat-paint-grass-").suffix(".png").tempfile().context("grass scratch file")?;
+    let mut y0 = 0u32;
+    while y0 + crop / 2 < ih {
+        let mut x0 = 0u32;
+        while x0 + crop / 2 < iw {
+            let (cw, ch) = (crop.min(iw - x0), crop.min(ih - y0));
+            image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image().save(tmp.path()).context("saving a grass crop")?;
+            let e = clip.embed_image(tmp.path())?;
+            let logits: Vec<f32> = texts.iter().map(|t| 100.0 * crate::pipelines::clip_embed::cosine(&e, t)).collect();
+            let m = logits.iter().copied().fold(f32::MIN, f32::max);
+            let ex: Vec<f32> = logits.iter().map(|l| (l - m).exp()).collect();
+            let g = ex[..GRASS.len()].iter().sum::<f32>() / ex.iter().sum::<f32>();
+            if loud {
+                let best = (0..ex.len()).max_by(|a, b| ex[*a].total_cmp(&ex[*b])).unwrap_or(0);
+                found!(style("·").dim(), "nib grass probe: crop ({x0},{y0}) grass {:.2} · best {:?}", g, GRASS.iter().chain(STUFF.iter()).nth(best).unwrap_or(&""));
+            }
+            for cj in (y0 / stride) as usize..(((y0 + ch) as usize).div_ceil(stride as usize)).min(rows) {
+                for ci in (x0 / stride) as usize..(((x0 + cw) as usize).div_ceil(stride as usize)).min(cols) {
+                    acc[cj * cols + ci] += g;
+                    cnt[cj * cols + ci] += 1.0;
+                }
+            }
+            x0 += stride;
+        }
+        y0 += stride;
+    }
+    let cellv: Vec<f32> = acc.iter().zip(&cnt).map(|(a, c)| if *c > 0.0 { a / c } else { 0.0 }).collect();
+    let out: Vec<f32> = (0..(w * h) as usize).map(|i| {
+        let (x, y) = ((i as u32 % w) as f32 * iw as f32 / w as f32, (i as u32 / w) as f32 * ih as f32 / h as f32);
+        let (ci, cj) = (((x / stride as f32) as usize).min(cols - 1), ((y / stride as f32) as usize).min(rows - 1));
+        if cellv[cj * cols + ci] > 0.6 { 1.0 } else { 0.0 }
+    }).collect();
+    Ok(out.iter().any(|&v| v >= 0.5).then_some(out))
+}
+
 /// Detect the primary (largest, highest-score) face box `[x0,y0,x1,y1]` in original-image pixels, via SCRFD.
 async fn detect_primary_face(path: &std::path::Path) -> Result<Option<[f32; 4]>> {
     use candle_core::DType;
@@ -1687,6 +1844,31 @@ async fn run_spec(a: SpecArgs) -> Result<()> {
     params.nib_white = plan.medium.nib_white;
     params.nib_anchor = plan.medium.nib_anchor;
     params.nib_hint = plan.medium.nib_hint;
+    params.nib_face = plan.medium.nib_face;
+    params.nib_gap = plan.medium.nib_gap;
+    params.nib_relief = plan.medium.nib_relief;
+    params.nib_far = plan.medium.nib_far;
+    params.nib_occlude = plan.medium.nib_occlude;
+    params.nib_eyes = plan.medium.nib_eyes;
+    params.nib_fur = plan.medium.nib_fur;
+    params.nib_lift = plan.medium.nib_lift;
+    params.nib_contact = plan.medium.nib_contact;
+    params.nib_figure = plan.medium.nib_figure;
+    params.nib_object = plan.medium.nib_object;
+    params.nib_tuft = plan.medium.nib_tuft;
+    params.nib_close = plan.medium.nib_close;
+    params.nib_mass = plan.medium.nib_mass;
+    params.nib_rim = plan.medium.nib_rim;
+    params.nib_pool = plan.medium.nib_pool;
+    params.nib_air = plan.medium.nib_air;
+    params.nib_people = plan.medium.nib_people;
+    params.nib_value = plan.medium.nib_value;
+    params.nib_fine_face = plan.medium.nib_fine_face;
+    params.nib_scatter = plan.medium.nib_scatter;
+    params.nib_falloff = plan.medium.nib_falloff;
+    params.nib_depth = plan.medium.nib_depth;
+    params.nib_lush = plan.medium.nib_lush;
+    params.nib_glint = plan.medium.nib_glint;
     params.impasto_map = plan.medium.impasto_map;
     params.coverage = a.coverage.clamp(0.0, 1.0);
     params.detail_len = a.detail_length.unwrap_or(1.0).clamp(0.1, 2.0);
@@ -2526,6 +2708,31 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         params.nib_white = m.nib_white;
         params.nib_anchor = m.nib_anchor;
         params.nib_hint = m.nib_hint;
+        params.nib_face = m.nib_face;
+        params.nib_gap = m.nib_gap;
+        params.nib_relief = m.nib_relief;
+        params.nib_far = m.nib_far;
+        params.nib_occlude = m.nib_occlude;
+        params.nib_eyes = m.nib_eyes;
+        params.nib_fur = m.nib_fur;
+        params.nib_lift = m.nib_lift;
+        params.nib_contact = m.nib_contact;
+        params.nib_figure = m.nib_figure;
+        params.nib_object = m.nib_object;
+        params.nib_tuft = m.nib_tuft;
+        params.nib_close = m.nib_close;
+        params.nib_mass = m.nib_mass;
+        params.nib_rim = m.nib_rim;
+        params.nib_pool = m.nib_pool;
+        params.nib_air = m.nib_air;
+        params.nib_people = m.nib_people;
+        params.nib_value = m.nib_value;
+        params.nib_fine_face = m.nib_fine_face;
+        params.nib_scatter = m.nib_scatter;
+        params.nib_falloff = m.nib_falloff;
+        params.nib_depth = m.nib_depth;
+        params.nib_lush = m.nib_lush;
+        params.nib_glint = m.nib_glint;
         params.impasto_map = m.impasto_map;
         params.density = m.mark_model == MarkModel::Density;
         if m.white_source == WhiteSource::Surface {
@@ -2643,6 +2850,31 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
         if let Some(v) = pl.nib_white { params.nib_white = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_anchor { params.nib_anchor = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.nib_hint { params.nib_hint = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_face { params.nib_face = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_gap { params.nib_gap = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_relief { params.nib_relief = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_far { params.nib_far = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_occlude { params.nib_occlude = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_eyes { params.nib_eyes = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_fur { params.nib_fur = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_lift { params.nib_lift = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_contact { params.nib_contact = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_figure { params.nib_figure = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_object { params.nib_object = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_tuft { params.nib_tuft = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_close { params.nib_close = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_mass { params.nib_mass = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_rim { params.nib_rim = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_pool { params.nib_pool = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_air { params.nib_air = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_people { params.nib_people = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_value { params.nib_value = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_fine_face { params.nib_fine_face = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_scatter { params.nib_scatter = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_falloff { params.nib_falloff = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_depth { params.nib_depth = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_lush { params.nib_lush = v.clamp(0.0, 1.0); }
+        if let Some(v) = pl.nib_glint { params.nib_glint = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.sumi_dark { params.sumi_dark = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.pickup { params.brush.k_pickup = v.clamp(0.0, 1.0); }
         if let Some(v) = pl.bleed { params.bleed = v.clamp(0.0, 1.0); }
@@ -2887,6 +3119,25 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                         }
                     }
                 }
+                // NIB EYES (see `MediumProfile::nib_eyes`): the eyes and the nose are form, not coat — found in the
+                // picture (the detector does not name an animal's eye) and taken out of the fur by the key's share.
+                if params.nib > 0.0 && params.nib_eyes > 0.0 {
+                    if let Ok(img) = image::open(&a.input) {
+                        let src = image::imageops::resize(&img.to_rgb8(), w, h, image::imageops::FilterType::Triangle);
+                        let em = crate::paint::painter::nib_eye_field(&src, &hm);
+                        let n = em.iter().filter(|&&e| e > 0.5).count();
+                        found!(style("·").dim(), "nib eyes: {}‰ of the frame as the eyes (by their catchlights) — out of the fur, kept from the hatching, drawn in", n * 1000 / em.len().max(1));
+                        let key = params.nib_eyes.clamp(0.0, 1.0);
+                        for (v, e) in hm.iter_mut().zip(&em) {
+                            *v *= 1.0 - key * e;
+                        }
+                        if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                            let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(em[(y * w + x) as usize] * 255.0) as u8]));
+                            let _ = g.save(std::path::Path::new(&dir).join("mask_eyes.png"));
+                        }
+                        params.nib_feature_mask = (n > 0).then_some(em);
+                    }
+                }
                 if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
                     let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(hm[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
                     let _ = g.save(std::path::Path::new(&dir).join("mask_hair.png"));
@@ -2952,6 +3203,71 @@ async fn run_from(mut a: FromArgs) -> Result<()> {
                     _ => fm,
                 });
             }
+        }
+    }
+    // NIB PEOPLE (see `MediumProfile::nib_people`): every person found, joined to the figure.
+    if params.nib > 0.0 && params.nib_figure > 0.0 && params.nib_people > 0.0 {
+        match nib_person_regions(&a.input, w, h, params.face_mask.is_some()).await {
+            Ok(Some(m)) => {
+                let n = m.iter().filter(|&&v| v >= 0.5).count();
+                found!(style("·").dim(), "nib people: {}% of the frame as the people found — each drawn as the figure", n * 100 / m.len().max(1));
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("mask_people.png"));
+                }
+                params.nib_person_mask = Some(m);
+            }
+            Ok(None) => found!(style("·").yellow(), "nib people: no one found"),
+            Err(e) => found!(style("·").yellow(), "nib people: detection failed ({e})"),
+        }
+    }
+    // NIB OBJECT (see `MediumProfile::nib_object`): the rigid things a figure holds, joined to it and outlined.
+    let figure_found = (params.face_mask.is_some() && params.silhouette_mask.is_some()) || (params.nib_people > 0.0 && params.nib_person_mask.is_some());
+    if params.nib > 0.0 && params.nib_figure > 0.0 && params.nib_object > 0.0 && figure_found {
+        match nib_object_regions(&a.input, w, h).await {
+            Ok(Some(m)) => {
+                let n = m.iter().filter(|&&v| v >= 0.5).count();
+                found!(style("·").dim(), "nib object: {}‰ of the frame as the things held (an umbrella, a stick) — outlined with the figure", n * 1000 / m.len().max(1));
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("mask_object.png"));
+                }
+                params.nib_object_mask = Some(m);
+            }
+            Ok(None) => found!(style("·").yellow(), "nib object: nothing held found"),
+            Err(e) => found!(style("·").yellow(), "nib object: detection failed ({e})"),
+        }
+    }
+    // NIB TUFT (see `MediumProfile::nib_tuft`): the grass the tufts may go on — none found, no tufts.
+    if params.nib > 0.0 && params.nib_tuft > 0.0 {
+        match nib_grass_regions(&a.input, w, h).await {
+            Ok(Some(m)) => {
+                let n = m.iter().filter(|&&v| v >= 0.5).count();
+                found!(style("·").dim(), "nib tuft: grass over {}% of the frame — the tufts kept to it", n * 100 / m.len().max(1));
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(m[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("mask_grass.png"));
+                }
+                params.nib_grass_mask = Some(m);
+            }
+            Ok(None) => found!(style("·").yellow(), "nib tuft: no grass found — no tufts"),
+            Err(e) => found!(style("·").yellow(), "nib tuft: grass detection failed ({e}) — no tufts"),
+        }
+    }
+    // NIB DEPTH (see `MediumProfile::nib_depth`): how near the picture is everywhere, for the far planes' pen.
+    if params.nib > 0.0 && params.nib_tone > 0.0 && params.nib_depth > 0.0 {
+        let device = crate::device::select("auto")?;
+        match crate::pipelines::depth::DepthPipeline::load(device).await.and_then(|d| d.depth_map(&a.input, w, h)) {
+            Ok(z) => {
+                let far = z.iter().filter(|&&v| v < 0.3).count();
+                found!(style("·").dim(), "nib depth: {}% of the frame far — the finest pen there, a few lines", far * 100 / z.len().max(1));
+                if let Ok(dir) = std::env::var("PLAKAT_PAINT_MASKS") {
+                    let g = image::GrayImage::from_fn(w, h, |x, y| image::Luma([(z[(y * w + x) as usize].clamp(0.0, 1.0) * 255.0) as u8]));
+                    let _ = g.save(std::path::Path::new(&dir).join("nib_depth.png"));
+                }
+                params.nib_depth_map = Some(z);
+            }
+            Err(e) => found!(style("·").yellow(), "nib depth: estimation failed ({e})"),
         }
     }
     if let Some(d) = a.depth.as_deref() {

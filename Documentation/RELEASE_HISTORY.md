@@ -10,6 +10,35 @@ per-cycle commits carry the rationale + before/after.
 
 ## What's new in 7.12.0 — in development
 
+### `plakat paint`
+
+- **`--medium pen-ink` is a pen drawing.** Steel nibs of several widths and a black ink, drawn line by line
+  along the form instead of the old ruled hatching of a density medium: the profile moved onto the drawing path
+  (continuous, four stages, a new `pen` mark — narrow, even, a flat section to a hard edge), the pencil's
+  drawing machinery and the japanese ink's bone line and attention borrowed through the plan, and the pen's
+  own mechanisms, each a plan key and 0 in every other medium (all of them byte-identical). **The pen**: every
+  line at the ink's full black, the tone by how many lines a cell takes (`nib`); pens of several widths in
+  layers, broad to fine (`nibs`); each pen only where the tone, read against the eye's attention, is dark
+  enough for its width (`nib_tone`); paper kept in the deepest shadow (`nib_white`). **Light and planes**: the
+  face with the finest pen (`nib_face`), a sliver of paper along the long contours (`nib_gap`), the folds'
+  ridges left light (`nib_relief`), the far ground in the finest pen and a few lines (`nib_far`, `nib_air`),
+  the far planes found by the picture's depth (`nib_depth`, Depth-Anything), the broad pen only in the cast
+  shadows (`nib_occlude`), the specular highlights on metal and glass kept white (`nib_glint`). **Animals**:
+  the eyes found by their catchlights and drawn black (`nib_eyes`), the fur thinned on its bulges
+  (`nib_fur`). **The figure**: hatched along its form in cells, the darks closed to black with the folds
+  white, the faces left to the paper and their features drawn, the contours bold (`nib_figure`, `nib_lift`);
+  every person the detector finds drawn as the figure, a group whole, a back turned too (`nib_people`); its
+  tone read against the whole picture, so light clothing stays light (`nib_value`); a group's small faces with
+  the finest pen, their features found among their own gradients (`nib_fine_face`); the held umbrella and
+  stick outlined with it (`nib_object`); its outline closed over gaps and drawn in one line swelling on the
+  shadow side (`nib_close`, `nib_rim`); the contact shadow black only where it meets the ground, broken into
+  fading dashes beyond (`nib_contact`, `nib_pool`, `nib_falloff`). **The ground**: crossed black anchors in
+  the cast shadows (`nib_anchor`), shorthand dashes in the lights (`nib_hint`), and on the grass a CLIP grid
+  finds, tufts of blades (`nib_tuft`) merged in the dark (`nib_mass`), scattered in clumps and clearings by
+  Poisson-disk sampling (`nib_scatter`), grown thick where the grass is dark (`nib_lush`).
+- Score stage `nib` (the accents after the bone line): the replay dries the sheet before it, as before `bone`.
+- The recommended plan is in `PAINT_EXAMPLES.md`; every score replays to the bit.
+
 ## What's new in 7.11.0 — Pencil: graphite — the line pressed, the tone hatched in layers, the hand's own pressure
 
 ### `plakat paint`

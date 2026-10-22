@@ -254,18 +254,127 @@ bleed: 0.7
 opacity: 0.4
 ```
 
-### Pen & ink — `medium: pen-ink`  🎯 *crisp line + hatching (line-and-wash)*
-Crisp lines and **hatching / cross‑hatching**; value built by mark **density**, not paint body. No bleed/pickup.
-For *line‑and‑wash*, render the ink first, then a separate watercolour pass (compose two layers).
-- Defaults: `bleed 0.0` · `opacity 1.0` · `pickup 0.0` · density marks (darker = more hatch).
-- Tune: `stroke_length` for longer hatches; `define` up (→0.8) for crisp contours. `palette: sumi`.
-  `bleed`/`opacity` have little effect (marks are discrete).
+### Pen & ink — `medium: pen-ink`  🎯 *steel nibs of several widths and a black ink, drawn line by line along the form (7.12.0)*
+Black ink on white paper, the tone made by **how many lines** a place takes, never by a grey line. From 7.12.0
+the medium is a drawing on the drawing path (continuous, four stages, its own `pen` mark: narrow, even, a flat
+section to a hard edge): the pencil's drawing machinery (`paper`, `hatch`, `cross`, `tiers`, `clip`, `slant`,
+`weight`, `waver`), the japanese ink's line (`bone` and its keys) and attention (`ma`, `ma_focus`, `ma_flow`)
+borrowed through the plan, and the pen's own mechanisms, each a plan key and 0 in every other medium (all of
+them byte-identical). Every key is unset in the profile itself: run it with the recommended plan in
+`PAINT_EXAMPLES.md`.
+
+**The order of the work** (each stage replayed to the bit; the score dries the sheet before `bone` and `nib`):
+1. *What is in the picture*, read from the picture as given (under `new` the input is the smoothed armature):
+   the faces and the silhouette (the matte and SAM); every person (OWL-ViT "a person", SAM inside each box —
+   `nib_people`); what the figure holds (OWL-ViT "a closed umbrella" / "a cane", SAM — `nib_object`); the
+   grass (a CLIP ViT-L grid — `nib_tuft`); the depth (Depth-Anything — `nib_depth`); the specular highlights
+   (`nib_glint`); an animal's eyes by their catchlights (`nib_eyes`).
+2. *The passes*, broad pen to fine (`nib`, `nibs`), each pen only where the tone, read against the eye's
+   attention, is dark enough for its width (`nib_tone`, `nib_far`, `nib_air`, `nib_occlude`), the paper kept
+   in the shadows, on the face, along the contours and on the highlights (`nib_white`, `nib_face`, `nib_gap`,
+   `nib_relief`, `nib_fur`, `nib_lift`, `nib_glint`).
+3. *The figure*, off the passes' marks: hatched along its form in cells, the darks closed to black, the faces
+   left to the paper with their features drawn (`nib_figure`, `nib_value`, `nib_fine_face`); its outline in one
+   line of changing weight and the contact shadow under it (`nib_rim`, `nib_pool`, `nib_falloff`).
+4. *The bone line* (`bone`), full black at the finest pen's width, closed over the figure's gaps (`nib_close`).
+5. *The accents* (stage `nib`): the cast-shadow anchors (`nib_anchor`, `nib_contact`), the dashes in the
+   lights (`nib_hint`), the grass's tufts (`nib_tuft`, `nib_mass`, `nib_scatter`, `nib_lush`), the eyes.
+
+**The pen**
+- **Nib** (`nib`, 0..1): a steel nib — every mark at the ink's full black and full pressure, the sheet it
+  answers read over the mark's cell (a window of 1.2 radii): the hatching stops when the cell's mean reaches
+  the value.
+- **Nibs** (`nibs`, a count): that many pens in layers, a 500th of the sheet's long side broad to an 1800th
+  fine (a geometric series), the passes shared out on the log of their radius.
+- **Nib tone** (`nib_tone`, 0..1): the pen at place q (0 broadest, 1 finest) laid only where the darkness
+  `(1 − v)·(0.4 + 0.6·attention)` passes `key·(0.12 + 0.6·(1 − q))`: the broad nib in the near deep shadows,
+  the fine one on the far ground, the lights blank.
+- **Nib white** (`nib_white`, 0..1): no cell asked darker than this share of the paper — the deepest shadow
+  keeps paper between its lines.
+
+**Light and planes**
+- **Nib face** (`nib_face`): the face with the finest pen alone, lifted toward the paper by `0.4·key`.
+- **Nib gap** (`nib_gap`): a band of paper `key`·a 400th of the sheet along the long contours (over a 30th of
+  the sheet), the marks cut at it; not on the fur. Over 0.5 it reads as a cartoon's white outline.
+- **Nib relief** (`nib_relief`): a place lighter than its surroundings (a 100th of the sheet) lifted by
+  `3·key` times its excess — a fold's ridge left light; not on the fur.
+- **Nib far** (`nib_far`): off the attention (under `0.6·key`) every mark at the finest pen's width.
+- **Nib air** (`nib_air`): where the attention is under 0.5, the marks dropped by `0.7·key` — the far hills a
+  few lines.
+- **Nib depth** (`nib_depth`): the attention capped by the picture's depth (`1 − key·(1 − smoothstep((z −
+  0.1)/0.4))`), so the far plane and the horizon are taken by `nib_far` and `nib_air` even where the eye's
+  focal field reaches them. At 1.0 a sunlit far slope goes to bare paper.
+- **Nib occlude** (`nib_occlude`): the broadest pen only in the cast shadows (the anchor field over `0.3·key`).
+- **Nib glint** (`nib_glint`): the specular highlights — a spot over `1 − 0.08·key`, a tenth brighter than the
+  mean round it (a 60th of the sheet), under a 30th of the sheet across (a sky or a white wall is not a glint),
+  opened by a 400th of the sheet — kept to the paper: the passes' marks and the figure's hatching cut at it, no
+  dash of `nib_hint` there.
+
+**Fur and animals**
+- **Nib eyes** (`nib_eyes`): an animal's eyes found by their catchlights in the fur, drawn in pure black with
+  the finest pen, the catchlight left white.
+- **Nib fur** (`nib_fur`): the coat's half-tones and lit bulges lifted, the dark markings kept.
+
+**The figure**
+- **Nib figure** (`nib_figure`): the figure (the silhouette when a face is found, every person under
+  `nib_people`) drawn as a pen draws one — in cells a 40th of the sheet across, lines along the form (the
+  structure tensor) under 0.85, across it at 60° under 0.55, closed to black under 0.25, broken at the
+  picture's contours; the face read against its own 30th–95th percentile and left to the paper, its features
+  drawn as the picture's contours; the bone line ×`(1 + 1.5·key)`.
+- **Nib lift** (`nib_lift`): the figure's half-tones lifted by `0.8·key` (only when a face is found).
+- **Nib people** (`nib_people`): every person found is the figure — a group whole, a back turned too; each
+  face read against its own range. The detector's floor is 0.25, or with a face `max(0.05, 0.4·top)` (a crowd
+  scores 0.05–0.12).
+- **Nib value** (`nib_value`): the figure's tone also read against the whole picture — a value's rank in the
+  sheet lifts it by `key·smoothstep((rank − 0.35)/0.3)`: clothing light in its scene stays light.
+- **Nib fine face** (`nib_fine_face`): a face under an eighth of the sheet across hatched with the finest pen,
+  twice as close, under thresholds lowered by `0.04·key` (the skin to the paper), its features found among the
+  small faces' own gradients — a group keeps its eyes and noses.
+- **Nib object** (`nib_object`): an umbrella or a stick the figure holds joined to it, its contours firm black.
+- **Nib close** (`nib_close`): a gap in the outline under `key`·a 40th of the sheet closed with a thin line.
+- **Nib rim** (`nib_rim`): the silhouette in one line `1 + 4·key·shade` times the finest pen — swelling on the
+  shadow side.
+- **Nib contact** (`nib_contact`): the anchor band under the figure `key`·a 40th of the sheet deep.
+- **Nib pool** (`nib_pool`): under the lowest quarter of each figure, the contact shadow closed to black with
+  the broadest pen.
+- **Nib falloff** (`nib_falloff`): the pool solid only within a 600th of the sheet of the contact, beyond it
+  dashes of the broad pen kept by `key·(1 − d)^1.5`.
+
+**The ground**
+- **Nib anchor** (`nib_anchor`): crossed black clusters where the picture is much darker than its
+  surroundings and under the silhouette — a figure and a stone sit on the ground.
+- **Nib hint** (`nib_hint`): one short dash of the finest pen in a light cell with a sharp contrast of its own.
+- **Nib tuft** (`nib_tuft`): on the grass CLIP finds (crops a fifth of the sheet across, three grass labels
+  against twenty kinds of ground, sky and wall, a cell grass over 0.6; none found, no tufts — an interior, a
+  street), fans of 4–9 blades at the middle pen tapering to the finest, by the texture and the attention;
+  doubled under the figure.
+- **Nib mass** (`nib_mass`): in a dark clump `1 + round(4·key·dark)` fans rooted anywhere in the cell, crossing
+  into one dark.
+- **Nib scatter** (`nib_scatter`): the roots by Poisson-disk sampling, the radius from half a cell to two by a
+  smooth noise of five cells; clearings under `0.3·key`.
+- **Nib lush** (`nib_lush`): the grass grown thick — every grass cell's strength floored at `0.7·key`, the
+  Poisson radius cut by `0.2·key` in the light grass to `0.4·key` in the dark.
+
+- **Hand** (the pencil's `waver`, in the score's header): the width of every pen line wavering along it by
+  ±`0.2·waver` on a slow noise (a knot every `max(12, 2.5·width)` px) — at `waver 0.6` the finest pen breathes
+  by about a seventh of a pixel, the broadest by half; the ink stays full black.
+- Debug: `PLAKAT_PAINT_MASKS=<dir>` writes the masks (`mask_people.png`, `nib_depth.png`, `nib_glint.png`,
+  `nib_figure_tone.png`, `nib_face_small.png`, `tuft_field.png`); `PLAKAT_PAINT_SEMANTIC=1` prints the CLIP
+  grass probes.
+- Tune for your subject: no people — the figure keys do nothing, leave them; a landscape too airy — `nib_depth`
+  and `nib_air` down; a group's faces too busy — `nib_fine_face` down; grass too dense — `nib_lush` down,
+  clumpier — `nib_scatter` up; a heavy contact shadow — `nib_falloff` up; the contours outlined in white —
+  `nib_gap` down.
 
 ```hjson
 medium: pen-ink
 palette: sumi
-style: legible
-define: 0.8
+new: true
+nib: 1.0
+nibs: 3
+nib_tone: 1.0
+nib_figure: 1.0
+nib_people: 1.0
 ```
 
 ### Pencil / graphite — `medium: pencil`  🎯 *a graphite point on white paper: the paper is the light, the tone hatched in layers, the line pressed (7.11.0)*
@@ -745,7 +854,7 @@ hotspot: 0.2
 | line-and-wash | 0.32 | 0.50  | 0.00   | 0.00    | 1.70   | +0.08     | 0.20      | 0.00  | 0.20 | 0.10   | 0.40    | WASHES · the picture's own colours, each mass once from the source at wash scale, bloomed edges, wet modelling touches within, a coloured ink line; LUMINOUS (no family split / committed shadows, mild key) | reserved | limited-landscape |
 | early-book-illustration | 0.32 | 0.35 | 0.00 | 0.00 | 1.50 | +0.08 | 0.16 | 0.00 | 0.20 | 0.10 | 0.40 | PRINT · a thirties four-colour book plate: a black key drawn from the picture over four flat inks found in it, the lights paper, one screen in the shadows, the faces drawn by the pattern — the early colour‑book print | reserved | limited-landscape |
 | japanese-ink  | 0.40 | 0.70  | 0.90   | 0.00    | 0.90   | +0.05     | 0.06      | 0.00  | 0.10 | 0.10   | 0.15    | continuous · one wide soft brush, long calligraphic strokes, its own black | reserved | sumi (always) |
-| pen-ink       | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.60    | density    | reserved | sumi |
+| pen-ink       | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.60    | continuous · steel nibs of several widths in full black, the tone by the number of lines (with the plan) | reserved | sumi |
 | durer         | 1.00 | 0.00  | 0.00   | 0.00    | 0.80   | 0.00      | 0.00      | 0.00  | 0.00 | 0.00   | 0.70    | density · copperplate: even cuts along the form, swelling with tone, crossed in the darks | reserved | sumi (always) |
 | pencil        | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · graphite point: thin grey directional strokes, its own grey | reserved | sumi (always) |
 | black-pencil  | 0.70 | 0.15  | 0.10   | 0.00    | 0.70   | 0.00      | 0.18      | 0.05  | 0.60 | 0.00   | 0.50    | continuous · the graphite mark with a soft dark point | reserved | sumi (always) |
