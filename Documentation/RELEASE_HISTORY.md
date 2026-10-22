@@ -8,7 +8,7 @@ older is archived here.
 For commit-level history see `git log`; for migration notes the
 per-cycle commits carry the rationale + before/after.
 
-## What's new in 7.12.0 — in development
+## What's new in 7.12.0 — Pen and ink: steel nibs — the tone by the number of lines, the figure drawn, the planes by depth
 
 ### `plakat paint`
 
